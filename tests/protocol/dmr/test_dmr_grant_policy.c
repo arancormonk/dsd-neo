@@ -1205,6 +1205,41 @@ test_con_plus_blocked_reassignment_ends_follow(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Every decoded Connect Plus grant for the followed slot that names another call ends that assignment before its own
+   follow switch: TG 100 is followed on LCN 5 TS1 with live voice, then a private voice grant for LCN 5 TS1 with private
+   following off, or a data grant for LCN 5 TS1 with data following off (the default), returns the receiver to the
+   control channel, though neither grant is followed. */
+static int
+test_con_plus_unfollowed_reassignment_ends_follow(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        con_plus_env(opts, st);
+        if (variant == 0) {
+            opts->trunk_tune_private_calls = 0;
+        }
+        con_plus_voice(opts, st, 1, 100, 5, 0, 2);
+        rc |= expect_true("con+ follows TG 100 for the unfollowed reassignment",
+                          st->trunk_vc_freq[0] == CP_FA && g_status_tunes == 1);
+        status_clock_at(1.0);
+        accepted_voice_now(opts, st, 0);
+        st->last_vc_sync_time = dsd_decode_time();
+        if (variant == 0) {
+            con_plus_voice(opts, st, 2, 777, 5, 0, 3); // private voice grant, private following off
+        } else {
+            uint8_t bits[256];
+            uint8_t bytes[48];
+            build_con_plus_data(bits, bytes, 0x00CAFEU, 5U, 0U); // data grant, data following off
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        }
+        rc |=
+            expect_true(variant == 0 ? "con+ unfollowed private reassignment returns to the control channel"
+                                     : "con+ unfollowed data grant on the followed slot returns to the control channel",
+                        dmr_sm_get_ctx()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_status_tunes == 1);
+        status_env_done(st);
+    }
+    return rc;
+}
+
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -3223,6 +3258,7 @@ main(void) {
     rc |= test_conplus_grant_lcn_kind(opts, st);
     rc |= test_xpt_csbk_hint_converts(opts, st);
     rc |= test_con_plus_blocked_reassignment_ends_follow(opts, st);
+    rc |= test_con_plus_unfollowed_reassignment_ends_follow(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

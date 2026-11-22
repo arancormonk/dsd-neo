@@ -13574,9 +13574,10 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
     either being the same call whatever its caller) ends that assignment before any admission, whether the receiver
-    would follow it or not: the Tier III and Connect Plus CSBK layers hand every grant to
-    `dmr_sm_note_grant_assignment()` before their call-type switches (data following off, the default; private off),
-    policy check (blocked or locked-out talkgroups) and voice window, and `dmr_sm_submit_grant()` checks it first as
+    would follow it or not: the Tier III and Connect Plus CSBK layers hand every decoded grant (Connect Plus: its voice
+    grants, group and private, and its data grants, opcode 0x06, through `dmr_cspdu_con_plus_grant_event()`) to
+    `dmr_sm_note_grant_assignment()` before their call-type switches (data following off, the default; private off;
+    group off), policy check (blocked or locked-out talkgroups) and voice window, and `dmr_sm_submit_grant()` checks it first as
     well (`dmr_sm_end_changed_assignment()`, `grant-replaces-followed`, REFUSED: the grant itself is not followed). The slot is retired by one per-slot reset (`dmr_sm_retire_slot()`,
     `dmr_slot_retire()` in `dmr_slot_reset.c`) that leaves it as a fresh call there finds it: its call ends (EXPLICIT),
     its record, Capacity Plus seed and ledger entry are cleared, the grant identity stands for nothing, and its crypto

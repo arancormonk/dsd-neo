@@ -2585,31 +2585,41 @@ dmr_cspdu_con_plus_skip_voice_tune(const dsd_opts* opts, uint8_t opt) {
     return opts->trunk_tune_group_calls == 0 && opt != 2 && opt != 3;
 }
 
-/* A Connect Plus voice grant. Its policy is judged before the voice window, which still refuses an ordinary grant while
-   voice was heard within 2 s (4 s with data calls followed), as it always did; a Hold or preempt grant goes to the trunk
-   state machine with that window as its busy hint, where it is followed only by Hold over a non-held call or by
-   preemption over every call the receiver holds. Group tuning off still refuses every grant, private ones included. */
-/* The trunk state machine's event for Connect Plus voice grant @p g on its LCN's carrier @p freq. */
+/* The trunk state machine's event for a decoded Connect Plus grant on LCN @p lcn, timeslot @p tslot (its LCN's carrier
+   from the channel map): @p kind's media and address class, naming @p target from @p source. Both grant handlers hand
+   it to dmr_sm_note_grant_assignment() before their follow switch (group, private or data following off), policy check
+   and window, as the Tier III grants do (dmr_cspdu_pf0_note_assignment()): a grant naming another call on the followed
+   slot ends that assignment whether the receiver follows the grant or not, and is then not followed itself. */
 static dmr_sm_event_t
-dmr_cspdu_con_plus_voice_event(const dmr_con_plus_voice_grant* g, int is_group, long freq) {
-    dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(freq, g->lcn, (int)g->grp_addr, (int)g->src_addr)
-                                 : dmr_sm_ev_indiv_grant(freq, g->lcn, (int)g->grp_addr, (int)g->src_addr);
-    ev.slot = g->tslot;
-    ev.channel_kind = g->lcn != 0 ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+dmr_cspdu_con_plus_grant_event(const dsd_state* state, uint8_t lcn, uint8_t tslot, dsd_call_kind kind, uint32_t target,
+                               uint32_t source) {
+    const long freq = state->trunk_chan_map[lcn];
+    dmr_sm_event_t ev = kind == DSD_CALL_KIND_GROUP_VOICE ? dmr_sm_ev_group_grant(freq, lcn, (int)target, (int)source)
+                                                          : dmr_sm_ev_indiv_grant(freq, lcn, (int)target, (int)source);
+    ev.slot = tslot & 1U;
+    ev.channel_kind = lcn != 0U ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    if (kind == DSD_CALL_KIND_DATA) {
+        ev.kind = DSD_CALL_KIND_DATA;
+    }
     ev.origin = DMR_SM_ORIGIN_GRANT;
     return ev;
 }
 
+/* A Connect Plus voice grant @p grant (@p g decoded) past its assignment check. Its policy is judged before the voice
+   window, which still refuses an ordinary grant while voice was heard within 2 s (4 s with data calls followed), as it
+   always did; a Hold or preempt grant goes to the trunk state machine with that window as its busy hint, where it is
+   followed only by Hold over a non-held call or by preemption over every call the receiver holds. Group tuning off
+   still refuses every grant, private ones included. */
 static void
-dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g) {
+dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g,
+                                  const dmr_sm_event_t* grant) {
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
 
     const int is_group = (g->opt == 3) ? 0 : 1;
-    const long f = state->trunk_chan_map[g->lcn];
-    dmr_sm_event_t ev = dmr_cspdu_con_plus_voice_event(g, is_group, f);
-    // Before any switch or gate: a grant naming another call on the followed slot ends that slot's assignment.
-    if (dmr_sm_note_grant_assignment(opts, state, &ev) || opts->trunk_tune_group_calls != 1) {
+    dmr_sm_event_t ev = *grant;
+    const long f = ev.freq_hz;
+    if (opts->trunk_tune_group_calls != 1) {
         return;
     }
     policy_allowed = dmr_policy_tune_allowed(opts, state, g->grp_addr, g->src_addr, is_group, 0, &policy_decision);
@@ -2668,10 +2678,11 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
 
     dmr_csbk_print_target_label(state, kind, g.grp_addr);
-    if (dmr_cspdu_con_plus_skip_voice_tune(opts, g.opt)) {
+    const dmr_sm_event_t ev = dmr_cspdu_con_plus_grant_event(state, g.lcn, g.tslot, kind, g.grp_addr, g.src_addr);
+    if (dmr_sm_note_grant_assignment(opts, state, &ev) || dmr_cspdu_con_plus_skip_voice_tune(opts, g.opt)) {
         return;
     }
-    dmr_cspdu_con_plus_try_tune_voice(opts, state, &g);
+    dmr_cspdu_con_plus_try_tune_voice(opts, state, &g, &ev);
 }
 
 /* Follow a Connect Plus data grant the talkgroup policy allows, unless the receive policy rejects its slot or the
@@ -2727,7 +2738,8 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
     dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
                               notice);
-    if (opts->trunk_tune_data_calls == 0) {
+    const dmr_sm_event_t ev = dmr_cspdu_con_plus_grant_event(state, lcn, tslot, DSD_CALL_KIND_DATA, dtarget, 0U);
+    if (dmr_sm_note_grant_assignment(opts, state, &ev) || opts->trunk_tune_data_calls == 0) {
         return;
     }
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
