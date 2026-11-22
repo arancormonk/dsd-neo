@@ -2415,6 +2415,10 @@ test_type_d_split_needs_positive_evidence(void) {
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
         }
         state->nxdn_site.type_c = (uint8_t)cases[i].type_c;
+        /* The frame's classification (nxdn_frame_classify()): an RTCH2 frame of a value a composite channel shares,
+           with no SCCH of its own, reads the Type-D layout on the carrier's fresh evidence, the category above. */
+        state->nxdn_frame_type_d =
+            (uint8_t)(cases[i].frame_channel == NXDN_FRAME_CHANNEL_TYPE_D && cases[i].category != 0);
         DSD_MEMSET(bits, 0, sizeof(bits));
         write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x1864U, 0x1805U, 0U, 0U);
         NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));

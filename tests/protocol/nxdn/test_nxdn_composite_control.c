@@ -34,6 +34,7 @@
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 #include "nxdn_const_reinclude.h" // IWYU pragma: keep
 #include "nxdn_internal.h"
 
@@ -1152,6 +1153,262 @@ test_foreign_cch_info_switch_obeys_foreign_check(dsd_opts* opts, dsd_state* stat
     return rc;
 }
 
+/*
+ * A frame is classified before anything of it is committed (issue #903): on a followed traffic channel, site B's
+ * composite control channel sends a frame (LICH 0x73, read as a Type-D RTCH2 while Type-C is unknown) whose only FACCH1
+ * is a CCH_INFO. Its check is the foreign channel's: it confirms nothing of the followed transmission, and it is heard
+ * as another channel's control traffic (dsd_nxdn_foreign_control_last_m()).
+ */
+static int
+test_foreign_cch_info_credits_the_foreign_channel(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->nxdn_site.type_c = 0U; /* the session never decoded Type-C */
+    nxdn_confirm_reset(state);    /* nothing of the followed transmission checked yet */
+    cch_info(cch, SITE_B, 0x20U, 5U);
+    send_frame(opts, state, 0x73U, 0x22U, cch, NULL);
+    rc |=
+        expect_long("foreign cch_info credit: followed transmission unconfirmed", nxdn_confirm_is_confirmed(state), 0L);
+    rc |= expect_long("foreign cch_info credit: heard as another channel's control",
+                      dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+    return rc;
+}
+
+/*
+ * Both FACCH1 halves are read before either publishes (issue #903): the same-frame CCH_INFO case with the halves
+ * swapped, a VCALL to 0x1805 in the first and the CCH_INFO in the second. The VCALL decodes in the Type-C layout.
+ */
+static int
+test_second_half_cch_info_resolves_the_first_half(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t cch[80];
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    info3_scch(scch);
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, vcall, cch);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("second-half cch_info: Type-C known", dsd_nxdn_type_c(state), 1L);
+    rc |= expect_call_target("second-half cch_info: vcall", state, 0x1805L, 0x1805L, "");
+    rc |= expect_long("second-half cch_info: no Type-D evidence", dsd_nxdn_type_d_layout_fresh(state), 0L);
+    return rc;
+}
+
+/* An SCCH INFO3 naming the source 03-0100 from repeater 6, its Area bit @p area. */
+static void
+info3_scch_area(uint8_t scch[25], uint8_t area) {
+    info3_scch(scch);
+    scch[2] = (uint8_t)(area & 1U);
+}
+
+/*
+ * A genuine Type-D frame commits its accepted SCCH before its FACCH1 (issue #903): on a shared LICH value (0x71, Type-C
+ * unknown), two frames' checked SCCHs give the received identity IDAS area 0, and a third frame's SCCH names area 1
+ * (another reception: dsd_rxid_note_nxdn_idas_area()) while its FACCH1 carries an SD data call header. The header binds
+ * to the reception the SCCH left, so it is still bound once the frame ends and its payload may assemble.
+ */
+static int
+test_accepted_scch_applies_before_data_header(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t header[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    info3_scch_area(scch, 0U);
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("scch before header: area 0 received", (state->rx_id.valid & DSD_RXID_NXDN_IDAS_AREA) != 0U, 1L);
+
+    info3_scch_area(scch, 1U);
+    DSD_MEMSET(header, 0, sizeof(header));
+    put_bits(header, 2U, 0x38U, 6U); // SDCALL_REQ_HEADER
+    put_bits(header, 16U, 1U, 3U);   // group call
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, header, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("scch before header: area 1 received", (long)state->rx_id.nxdn_idas_area, 1L);
+    rc |= expect_long("scch before header: header bound", nxdn_data_call_header_bound(state), 1L);
+    return rc;
+}
+
+/* The scrambler register after one frame with a forced scrambler (-4) and a key, the register elsewhere before it. */
+static uint64_t
+forced_scrambler_after_frame(dsd_opts* opts, dsd_state* state, int type_c_known) {
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->R = 0x5A5AULL;
+    state->M = 1;
+    state->nxdn_site.type_c = (uint8_t)type_c_known;
+    state->nxdn_payload_mi = 0x1357ULL;
+    (void)nxdn_frame(opts, state);
+    return state->nxdn_payload_mi;
+}
+
+/*
+ * Once a CCH_INFO shows a frame read as Type-D is a composite one, its checked SACCH places the scrambler (issue #903):
+ * a local frame (LICH 0x73: SACCH, FACCH1, voice) whose superframe SACCH is the second segment and whose FACCH1 is a
+ * CCH_INFO leaves the same register whether or not Type-C was known before it.
+ */
+static int
+test_cch_info_frame_places_scrambler_from_sacch(dsd_opts* opts, dsd_state* state) {
+    uint8_t sacch[18];
+    uint8_t cch[80];
+    uint64_t got[2] = {0U, 0U};
+    DSD_MEMSET(sacch, 0, sizeof(sacch));
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    for (int known = 0; known <= 1; known++) {
+        build_frame_sacch(0x73U, 0x21U, 2U, sacch, cch, NULL);
+        got[known] = forced_scrambler_after_frame(opts, state, known);
+    }
+    if (got[0] != got[1]) {
+        DSD_FPRINTF(stderr, "cch_info frame scrambler: %llX with Type-C unknown, %llX known\n",
+                    (unsigned long long)got[0], (unsigned long long)got[1]);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * A frame a CCH_INFO shows is composite takes no position from its field read as an SCCH (issue #903): a local frame
+ * (LICH 0x71) whose field passes the SCCH check as an INFO3, or fails it, but fails the SACCH's own CRC-6 either way,
+ * and whose first FACCH1 is a CCH_INFO, leaves the same register.
+ */
+static int
+test_cch_info_frame_ignores_the_scch_position(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t k_flips[2] = {0U, 0x5AU};
+    uint8_t scch[25];
+    uint8_t cch[80];
+    uint64_t got[2] = {0U, 0U};
+    info3_scch(scch);
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    for (size_t i = 0U; i < 2U; i++) {
+        uint8_t trellis[32];
+        DSD_MEMSET(trellis, 0, sizeof(trellis));
+        DSD_MEMCPY(trellis, scch, sizeof(scch));
+        put_bits(trellis, 25U, (uint32_t)(crc7_scch(trellis, 25) ^ k_flips[i]) & 0x7FU, 7U);
+        if (crc6(trellis, 26)
+            == (uint8_t)((trellis[26] << 5) | (trellis[27] << 4) | (trellis[28] << 3) | (trellis[29] << 2)
+                         | (trellis[30] << 1) | trellis[31])) {
+            DSD_FPRINTF(stderr, "scch position: fixture %zu passes the SACCH CRC-6\n", i);
+            return 1;
+        }
+        build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, k_flips[i], cch, NULL);
+        got[i] = forced_scrambler_after_frame(opts, state, 0);
+    }
+    if (got[0] != got[1]) {
+        DSD_FPRINTF(stderr, "scch position: %llX after a passing SCCH check, %llX after a failing one\n",
+                    (unsigned long long)got[0], (unsigned long long)got[1]);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * A frame classified as another channel's breaks the SACCH superframe it interrupts (issue #903): the followed RTCH
+ * sends three segments of a VCALL, site B's composite control channel a frame (LICH 0x73, read as Type-D while Type-C
+ * is unknown) whose FACCH1 is a CCH_INFO, then the followed RTCH the fourth segment. The fragments around the foreign
+ * frame are no one superframe: no VCALL is published.
+ */
+static int
+test_foreign_cch_info_frame_breaks_the_sacch_superframe(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[72];
+    uint8_t cch[80];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->nxdn_site.type_c = 0U;
+    call_message(vcall, 0x01U, 2100U, 1100U);
+    for (int part = 0; part < 3; part++) {
+        send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, part);
+    }
+    cch_info(cch, SITE_B, 0x20U, 5U);
+    send_frame(opts, state, 0x73U, 0x22U, cch, NULL);
+    send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, 3);
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    rc |= expect_long("foreign cch_info frame: no VCALL across it", has_call && call.ota_target_id == 1100U, 0L);
+    return rc;
+}
+
+/*
+ * An SCCH a CCH_INFO disproves joins no SCCH streak (issue #903): on the followed channel, site B's frame (LICH 0x71)
+ * whose field passes the SCCH check as an INFO3 for area 1 carries a CCH_INFO; one Type-D frame (LICH 0x63) with the
+ * same SCCH follows. One SCCH is not the two running the IDAS area needs (nxdn_confirm_scch_confirmed()). Control: two
+ * Type-D frames give it.
+ */
+static int
+test_disproved_scch_joins_no_streak(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t cch[80];
+    int rc = 0;
+    info3_scch_area(scch, 1U);
+    cch_info(cch, SITE_B, 0x20U, 5U);
+    for (int control = 0; control <= 1; control++) {
+        follow_call_to_f(opts, state);
+        state->nxdn_site.type_c = 0U;
+        if (control) {
+            build_frame_scch(0x63U, scch, 0U, NULL, NULL);
+        } else {
+            build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, cch, NULL);
+        }
+        (void)nxdn_frame(opts, state);
+        build_frame_scch(0x63U, scch, 0U, NULL, NULL);
+        (void)nxdn_frame(opts, state);
+        rc |= expect_long(control ? "two type-d scchs: area received" : "disproved scch: no area received",
+                          (state->rx_id.valid & DSD_RXID_NXDN_IDAS_AREA) != 0U, control ? 1L : 0L);
+    }
+    return rc;
+}
+
+/*
+ * The location a frame's SRV_INFO verified stays whole (issue #903): on first reception of a composite frame (LICH
+ * 0x71, Type-C unknown), FACCH1 A is a CCH_INFO and FACCH1 B this site's SRV_INFO. The site, system and category
+ * ("Global") are all the SRV_INFO's.
+ */
+static int
+test_same_frame_srv_info_keeps_its_category(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t srv[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    srv_info(srv, SITE_A);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, srv);
+    rc |= expect_long("same-frame srv_info: site kept", state->nxdn_location_site_code, 0x21L);
+    rc |= expect_long("same-frame srv_info: category kept", strcmp(state->nxdn_location_category, "Global") == 0, 1L);
+    if (strcmp(state->nxdn_location_category, "Global") != 0) {
+        DSD_FPRINTF(stderr, "same-frame srv_info: category '%s' want 'Global'\n", state->nxdn_location_category);
+    }
+    return rc;
+}
+
+/*
+ * A LICH value only Type-D has is Type-D's reading by itself (issue #903): right after a retune, with no SCCH of the
+ * carrier checked yet, two outbound RTCH2 frames of LICH 0x63 (no composite Type-C value) whose SCCHs fail carry a
+ * checked FACCH1 VCALL from 0x1864 to 0x1805: it decodes in the Type-D layout, 03-0005.
+ */
+static int
+test_type_d_only_lich_reads_type_d(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[80];
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_type_d_vcall_frame_scch(opts, state, vcall, 0x5AU);
+    send_type_d_vcall_frame_scch(opts, state, vcall, 0x5AU);
+    return expect_call_target("type-d-only lich, failed scch", state, 5L, 5L, "03-0005");
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1188,6 +1445,15 @@ main(void) {
     rc |= test_same_frame_cch_info_discards_provisional_scch(opts, state);
     rc |= test_same_frame_cch_info_reads_srv_info_as_type_c(opts, state);
     rc |= test_foreign_cch_info_switch_obeys_foreign_check(opts, state);
+    rc |= test_foreign_cch_info_credits_the_foreign_channel(opts, state);
+    rc |= test_second_half_cch_info_resolves_the_first_half(opts, state);
+    rc |= test_accepted_scch_applies_before_data_header(opts, state);
+    rc |= test_cch_info_frame_places_scrambler_from_sacch(opts, state);
+    rc |= test_cch_info_frame_ignores_the_scch_position(opts, state);
+    rc |= test_foreign_cch_info_frame_breaks_the_sacch_superframe(opts, state);
+    rc |= test_disproved_scch_joins_no_streak(opts, state);
+    rc |= test_same_frame_srv_info_keeps_its_category(opts, state);
+    rc |= test_type_d_only_lich_reads_type_d(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

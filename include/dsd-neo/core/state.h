@@ -3033,10 +3033,11 @@ struct dsd_state {
      * control channel, dsd_nxdn_control_heard_is_foreign()): they are decoded for the log only, and their checks stamp
      * dsd_nxdn_site_record::foreign_control_m instead of confirming the transmission. */
     uint8_t nxdn_frame_foreign;
-    /* 1 while the RTCH2 frame being decoded carries its own CRC-checked SCCH of defined content
-     * (nxdn_scch_prepare_type_d()): the frame's other channels read the Type-D layout, a Type-C site an older frame
-     * decoded notwithstanding (issue #903). Set only while that frame's channels decode, as nxdn_frame_channel. */
-    uint8_t nxdn_frame_type_d_scch;
+    /* 1 while the RTCH2 frame being decoded reads the Type-D (IDAS) address layout, as nxdn_frame() classified it
+     * before any of its channels acted: its LICH is a value only Type-D has, its own SCCH passed its check, or the
+     * carrier's Type-D evidence is fresh (issue #903). Set only while that frame's channels decode, as
+     * nxdn_frame_channel. */
+    uint8_t nxdn_frame_type_d;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     nxdn_alias_assembly nxdn_alias_prop; /* the Kenwood alias being assembled (nxdn_alias_decode_prop()) */

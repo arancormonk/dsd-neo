@@ -12445,10 +12445,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
   prefix. The VCALL, VCALL_IV and data header layouts split an address into its prefix and 11-bit ID only on positive
-  Type-D evidence fresh on the carrier (`nxdn_location_is_type_d()`). An RTCH2 frame is Type-D when its own SCCH passed
-  its check with defined content (`dsd_state::nxdn_frame_type_d_scch`) or the carrier's "Type-D" category is fresh, even
-  on a site an older frame decoded as Type-C: there a composite LICH reads as RTCH_C, so an RTCH2 reading is one no
-  composite frame gives, and one failed SCCH keeps the carrier's fresh evidence. An element decoded with no frame takes
+  Type-D evidence (`nxdn_location_is_type_d()`), which `nxdn_frame()` decides for the frame before any of its messages
+  act (`nxdn_frame_classify()`, `dsd_state::nxdn_frame_type_d`). An RTCH2 frame is Type-D when its LICH is a value only
+  Type-D has (0x60, 0x62, 0x63, 0x68, 0x6E, 0x70, 0x72, 0x76), when its own SCCH passed its check, or when the carrier's
+  "Type-D" category is fresh, even on a site an older frame decoded as Type-C: there a composite LICH reads as RTCH_C,
+  so an RTCH2 reading is one no composite frame gives, and one failed SCCH keeps the carrier's fresh evidence. An
+  element decoded with no frame takes
   the "Type-D" category a CRC-checked SCCH set unless the site decoded as Type-C. Either way the category counts only
   under the received identity's epoch it was set in
   (`dsd_nxdn_note_type_d_layout()`, `dsd_nxdn_type_d_layout_fresh()`): every carrier boundary, trunk-scan target switch
@@ -12489,10 +12491,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
   `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
   `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH_C profile a composite control channel, an
-  RTCH2 profile Type-D, anything else traffic; a whole CCH_INFO on a frame read as Type-D shows a composite control
-  channel's frame, which reads as RTCH_C from that message on, its foreign check included, so another channel's
-  CCH_INFO on a followed traffic channel notes no Type-C and refreshes no control channel sync,
-  `nxdn_element_handle_cch_info()`), never from the
+  RTCH2 profile Type-D, anything else traffic, as the frame's classification left it, `nxdn_frame_classify()`), never
+  from the
   retained "Type-D" category: only a control channel's
   SRV_INFO, a composite one's included (TS 1-C §5.1.2), refreshes the control-channel sync and anchors the CC to the
   tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
@@ -12540,13 +12540,21 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - NXDN composite control channels (RTCH_C, TS 1-A §5.2.1, TS 1-C §16.3). Their outbound LICH values 0x61, 0x69, 0x6F,
   0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
   UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
-  a whole CCH_INFO, or a whole SITE_INFO on a frame not read as Type-D, messages Type-D does not send; one too short for
+  or a whole CCH_INFO or SITE_INFO on a frame not read as Type-D, messages Type-D does not send; one too short for
   its layout, such as a non-superframe SACCH's 26 elements, says nothing), and as Type-D until then: a session that
   starts on a composite control channel during a call reads its first frames as Type-D until one of those decodes.
-  On such a frame an SCCH that passes its check names the Type-D layout for the frame's other channels at once, but
-  its messages (a talker or target, a busy tune, the area, an INFO1's cipher) act only once those channels decoded,
-  and not at all when one of them said Type-C (`nxdn_frame_scch_provisional()`, `NXDN_decode_scch_deferred()`): that
-  "SCCH" was the composite frame's SACCH passing the short check.
+  A frame is decoded in two phases (`nxdn_frame()`, "classify, then commit"): its SCCH or SACCH field and both FACCH1
+  halves are decoded first (FEC and CRC only, `nxdn_frame_decode_signalling()`: no evidence, call, location, SACCH
+  assembly, scrambler position or print), the frame is classified once (`nxdn_frame_classify()`), and only then is
+  each channel committed in order under that classification: the accepted SCCH or SACCH (its evidence, reception
+  identity, area and scrambler position), then the FACCH1 messages. A shared value read as Type-D whose FACCH1, either
+  half, is a checked CCH_INFO (`nxdn_facch1_says_type_c()`) is a composite frame: its field is decoded and committed
+  as the SACCH it is, the SCCH reading never acts (no message, evidence, SCCH streak or position), it takes the
+  composite foreign check, and its SACCH breaks the superframe being assembled. A value only Type-D has is Type-D's
+  reading, a CCH_INFO in it notwithstanding (`nxdn_element_handle_cch_info()` notes no Type-C on a frame read as
+  Type-D). The frame's "Type-D" category, the carrier's layout evidence, is noted at the frame's end only from its
+  own SCCH of defined content on a confirmed transmission (`dsd_nxdn_note_type_d_layout()`); nothing of the frame is
+  rolled back.
   Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
   Type-D left, and the "Type-D" category an SCCH misread on such a frame left (the VCALL and IV parsers read it as the
   IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
@@ -12556,7 +12564,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
   `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the
   tuner's value while the followed one is a grant's computed frequency). A CAC (decided in
-  `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame()` before its channels decode) heard there sets
+  `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame_classify()` before anything of it is committed, one
+  its own CCH_INFO showed composite included) heard there sets
   `dsd_state::nxdn_frame_foreign` while it decodes: its checks confirm nothing and stamp
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
   `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
@@ -13980,10 +13989,8 @@ Private per-protocol modules worth knowing about:
   frame before's content (`nxdn_confirm_frame_content_counted()`): the frame is heard as PROVEN content by the -Y step
   and the quiet check (`nxdn_confirm_end_frame()`) and starts the scanner's 2 s hold, and the frames after it, which
   only run on, neither refresh the hold nor note anything. The "Type-D" layout a content-invalid SCCH names stays with its frame even on a
-  confirmed transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later channel of that
-  frame verified (`dsd_nxdn_note_type_c()`). That Type-C identification also cancels the frame's own provisional SCCH
-  reading (`dsd_state::nxdn_frame_type_d_scch`): a later FACCH1 of the frame decodes in the Type-C layout, and the
-  frame end restamps no Type-D layout. An End of Transmission (Repeater in Use / Go to Repeater
+  confirmed transmission (`nxdn_channel_result::scch_invalid`): the frame end notes no "Type-D" category for it. An
+  End of Transmission (Repeater in Use / Go to Repeater
   31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, `nxdn_scch_update_busy_display()`).
   An INFO4 EOT's tuner return is the busy message's policy and tune, as before (`nxdn_scch_apply_busy_tune()`); an
   INFO2 EOT retunes nothing, as before, so the release the frame's FACCH1 carries still runs and the receiver is never

@@ -47,7 +47,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -88,10 +87,16 @@ typedef struct {
     int sacch2;
     int pich_tch;
 
-    /* The LICH read as a composite control channel's (RTCH_C) rather than a Type-D RTCH2's (nxdn_apply_lich_profile()). */
+    /* The LICH read as a composite control channel's (RTCH_C) rather than a Type-D RTCH2's (nxdn_apply_lich_profile(),
+       nxdn_frame_classify()). */
     int composite;
+    /* A LICH value a composite control channel shares with Type-D, read as an RTCH2 until this frame's own FACCH1 said
+       Type-C (nxdn_frame_classify()). */
+    int reclassified;
     /* Another channel's control traffic heard on the followed traffic channel (dsd_nxdn_control_heard_is_foreign()). */
     int foreign;
+    /* The frame reads the Type-D (IDAS) address layout (nxdn_frame_classify(), dsd_state::nxdn_frame_type_d). */
+    int type_d;
 
     uint8_t lich_rf;
     uint8_t direction;
@@ -111,6 +116,11 @@ typedef struct {
 
     int nxdn_bit_buffer[364];
     uint8_t nxdn_reliab_buffer[364];
+
+    /* The frame's SCCH or SACCH field and its two FACCH1 halves, decoded before anything of the frame acts
+       (nxdn_frame_decode_signalling()). */
+    nxdn_field_decode field;
+    nxdn_facch1_decode facch1[2];
 
     /* The trunk-tuning generation and newest unresolved tune request when the frame's channels began to decode
        (nxdn_frame_left_carrier()). */
@@ -215,6 +225,10 @@ nxdn_frame_ctx_init(nxdn_frame_ctx* ctx) {
     DSD_MEMSET(ctx->facch2_reliab, 255, sizeof(ctx->facch2_reliab));
     DSD_MEMSET(ctx->facch3_reliab, 255, sizeof(ctx->facch3_reliab));
     DSD_MEMSET(ctx->nxdn_reliab_buffer, 255, sizeof(ctx->nxdn_reliab_buffer));
+    /* Nothing decoded yet is nothing checked. */
+    ctx->field.crc = 1U;
+    ctx->facch1[0].crc = 1U;
+    ctx->facch1[1].crc = 1U;
 }
 
 static void
@@ -283,13 +297,35 @@ nxdn_find_lich_profile(const nxdn_lich_profile* profiles, size_t count, uint8_t 
     return NULL;
 }
 
+/* The composite control channel profile (RTCH_C) of @p lich, NULL for a value no composite frame takes. */
+static const nxdn_lich_profile*
+nxdn_composite_lich_profile(uint8_t lich) {
+    return nxdn_find_lich_profile(k_nxdn_composite_lich_profiles,
+                                  sizeof(k_nxdn_composite_lich_profiles) / sizeof(k_nxdn_composite_lich_profiles[0]),
+                                  lich);
+}
+
+static void
+nxdn_take_lich_profile(nxdn_frame_ctx* ctx, const nxdn_lich_profile* profile) {
+    ctx->voice = profile->voice;
+    ctx->facch = profile->facch;
+    ctx->facch2 = profile->facch2;
+    ctx->udch = profile->udch;
+    ctx->sacch = profile->sacch;
+    ctx->cac = profile->cac;
+    ctx->idas = profile->idas;
+    ctx->scch = profile->scch;
+    ctx->facch3 = profile->facch3;
+    ctx->udch2 = profile->udch2;
+    ctx->sacch2 = profile->sacch2;
+    ctx->pich_tch = profile->pich_tch;
+}
+
 static int
 nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
     const nxdn_lich_profile* profile = NULL;
     if (dsd_nxdn_type_c(state)) {
-        profile = nxdn_find_lich_profile(
-            k_nxdn_composite_lich_profiles,
-            sizeof(k_nxdn_composite_lich_profiles) / sizeof(k_nxdn_composite_lich_profiles[0]), ctx->lich);
+        profile = nxdn_composite_lich_profile(ctx->lich);
         ctx->composite = profile != NULL;
     }
     if (profile == NULL) {
@@ -297,18 +333,7 @@ nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
                                          sizeof(k_nxdn_lich_profiles) / sizeof(k_nxdn_lich_profiles[0]), ctx->lich);
     }
     if (profile != NULL) {
-        ctx->voice = profile->voice;
-        ctx->facch = profile->facch;
-        ctx->facch2 = profile->facch2;
-        ctx->udch = profile->udch;
-        ctx->sacch = profile->sacch;
-        ctx->cac = profile->cac;
-        ctx->idas = profile->idas;
-        ctx->scch = profile->scch;
-        ctx->facch3 = profile->facch3;
-        ctx->udch2 = profile->udch2;
-        ctx->sacch2 = profile->sacch2;
-        ctx->pich_tch = profile->pich_tch;
+        nxdn_take_lich_profile(ctx, profile);
         return 1;
     }
 
@@ -657,23 +682,58 @@ nxdn_frame_left_carrier(const nxdn_frame_ctx* ctx) {
            || dsd_trunk_tuning_pending_request() != ctx->tune_pending_request;
 }
 
-/* Whether the frame's SCCH reading is provisional: its LICH is also a composite control channel's (RTCH_C), which reads
-   as a Type-D RTCH2 only until Type-C is known (nxdn_apply_lich_profile()), so a later channel of the frame can still
-   show that the "SCCH" was a composite frame's SACCH passing the short check (dsd_nxdn_note_type_c()). */
-static int
-nxdn_frame_scch_provisional(const nxdn_frame_ctx* ctx) {
-    return ctx->scch
-           && nxdn_find_lich_profile(k_nxdn_composite_lich_profiles,
-                                     sizeof(k_nxdn_composite_lich_profiles) / sizeof(k_nxdn_composite_lich_profiles[0]),
-                                     ctx->lich)
-                  != NULL;
+/*
+ * Decode the frame's SCCH or SACCH field and its FACCH1 halves (FEC and CRC, NXDN TS 1-A §4.5, TS 1-E §4.5.1) without
+ * acting on any of them: no evidence, call, location, SACCH assembly, scrambler position or print. What they say
+ * classifies the frame (nxdn_frame_classify()) before anything of it is committed.
+ */
+static void
+nxdn_frame_decode_signalling(nxdn_frame_ctx* ctx) {
+    if (ctx->scch) {
+        ctx->field = nxdn_scch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
+    } else if (ctx->sacch) {
+        ctx->field = nxdn_sacch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
+    }
+    if (ctx->facch & 1) {
+        ctx->facch1[0] = nxdn_facch1_decode_soft(ctx->facch_bits_a, ctx->facch_reliab_a);
+    }
+    if (ctx->facch & 2) {
+        ctx->facch1[1] = nxdn_facch1_decode_soft(ctx->facch_bits_b, ctx->facch_reliab_b);
+    }
+}
+
+/*
+ * Classify the frame once, before anything of it is committed (issue #903), from its LICH, the carrier's fresh Type-D
+ * evidence and its own checked messages:
+ * - A LICH value a composite control channel (RTCH_C) shares with a Type-D RTCH2, read as an RTCH2 because Type-C is
+ *   not known yet (nxdn_apply_lich_profile()), is a composite frame when either FACCH1 half is a checked CCH_INFO, a
+ *   Type-C message a Type-D system does not send (nxdn_facch1_says_type_c()): its field is then a SACCH, decoded as
+ *   one, and its SCCH reading is dropped unread.
+ * - A CAC or a composite frame is another channel's while the receiver follows a call elsewhere than this site's
+ *   control channel (dsd_nxdn_control_heard_is_foreign()).
+ * - An RTCH2 frame reads the Type-D address layout when its LICH is a value only Type-D has (0x63 among them), when
+ *   its own SCCH passed its check (no FACCH1 of it said Type-C, or it would be composite), or when the carrier's
+ *   Type-D evidence is fresh (dsd_nxdn_type_d_layout_fresh()). A shared value with none of these, as a composite
+ *   channel's frames give on late entry, keeps the Type-C layout's full IDs.
+ */
+static void
+nxdn_frame_classify(const dsd_opts* opts, const dsd_state* state, nxdn_frame_ctx* ctx) {
+    const nxdn_lich_profile* composite = ctx->scch ? nxdn_composite_lich_profile(ctx->lich) : NULL;
+    if (composite != NULL && (nxdn_facch1_says_type_c(&ctx->facch1[0]) || nxdn_facch1_says_type_c(&ctx->facch1[1]))) {
+        nxdn_take_lich_profile(ctx, composite);
+        ctx->composite = 1;
+        ctx->reclassified = 1;
+        ctx->field = nxdn_sacch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
+    }
+    ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
+    ctx->type_d =
+        ctx->idas && (composite == NULL || ctx->field.crc == ctx->field.check || dsd_nxdn_type_d_layout_fresh(state));
 }
 
 static void
 nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->scch) {
-        *ctx->result = nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab,
-                                             ctx->direction, (uint8_t)nxdn_frame_scch_provisional(ctx));
+        *ctx->result = nxdn_scch_commit(opts, state, &ctx->field, ctx->direction);
         if (nxdn_frame_left_carrier(ctx)) {
             return;
         }
@@ -689,7 +749,14 @@ nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
 static void
 nxdn_decode_sacch_cac_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch) {
-        *ctx->result = nxdn_deperm_sacch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab);
+        if (ctx->reclassified) {
+            /* A frame its own FACCH1 showed composite was read as Type-D until now, whatever the frames before it
+               were: the superframe being assembled does not run on across it. */
+            DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+            DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        }
+        *ctx->result =
+            nxdn_handle_sacch(opts, state, ctx->field.trellis, ctx->field.m_data, ctx->field.crc, ctx->field.check);
     }
     if (ctx->cac) {
         nxdn_deperm_cac_soft(opts, state, (uint8_t*)ctx->cac_bits, (uint8_t*)ctx->cac_reliab);
@@ -722,18 +789,19 @@ nxdn_decode_sacch2_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_c
 
 static void
 nxdn_decode_facch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+    const nxdn_facch1_decode* const a = &ctx->facch1[0];
+    const nxdn_facch1_decode* const b = &ctx->facch1[1];
     if (ctx->facch & 1) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_a, (uint8_t*)ctx->facch_reliab_a,
-                               ctx->facch == 3 ? 1U : 0U);
+        nxdn_handle_facch1(opts, state, a->trellis, a->m_data, a->crc, a->check, ctx->facch == 3 ? 1U : 0U);
     }
     if ((ctx->facch & 2) && !nxdn_frame_left_carrier(ctx)) {
-        nxdn_deperm_facch_soft(opts, state, (uint8_t*)ctx->facch_bits_b, (uint8_t*)ctx->facch_reliab_b,
-                               ctx->facch == 3 ? 2U : 0U);
+        nxdn_handle_facch1(opts, state, b->trellis, b->m_data, b->crc, b->check, ctx->facch == 3 ? 2U : 0U);
     }
 }
 
-/* Decode the frame's signalling channels in their order. Returns 1 when one of them retuned the receiver
-   (nxdn_frame_left_carrier()): no channel after it is decoded (the steps also stop between their own channels). */
+/* Commit the frame's signalling channels in their order, under the frame's one classification: the SCCH or SACCH
+   first, the FACCH1 halves last. Returns 1 when one of them retuned the receiver (nxdn_frame_left_carrier()): no
+   channel after it is committed (the steps also stop between their own channels). */
 static int
 nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
     typedef void (*nxdn_channel_step)(dsd_opts*, dsd_state*, const nxdn_frame_ctx*);
@@ -748,43 +816,19 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* c
             return 1;
         }
     }
-    /* A provisional SCCH (nxdn_frame_scch_provisional()) named only the frame's layout so far: its messages act now
-       that the frame's other channels decoded, unless one of them said Type-C or showed a composite frame
-       (nxdn_element_handle_cch_info(), another channel's included), which shows it was no SCCH. */
-    if (!dsd_nxdn_type_c(state) && state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
-        NXDN_decode_scch_deferred(opts, state, ctx->result, ctx->direction);
-    }
-    return nxdn_frame_left_carrier(ctx);
+    return 0;
 }
 
-/* Decode the frame's signalling channels (nxdn_decode_control_channels()). The "Type-D" layout an SCCH names
-   (nxdn_scch_prepare_type_d()) is read by the frame's other channels whatever the frame proves, but it outlives the
-   frame only on a confirmed transmission: an SCCH's 7-bit CRC passes noise one time in 128, and a category one left
-   behind on another protocol's carrier would read the next Type-C VCALL with Type-D's 11-bit IDs. */
+/* Commit the frame's signalling channels (nxdn_decode_control_channels()). The "Type-D" layout the frame read
+   (dsd_state::nxdn_frame_type_d) outlives it, as the carrier's evidence (dsd_nxdn_note_type_d_layout()), only from its
+   own SCCH of defined content (nxdn_scch_content_valid()) on a confirmed transmission: an SCCH's 7-bit CRC passes noise
+   one time in 128, and a category one left behind on another protocol's carrier would read the next Type-C VCALL with
+   Type-D's 11-bit IDs. */
 static int
 nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
-    char category[sizeof(state->nxdn_location_category)];
-    DSD_MEMCPY(category, state->nxdn_location_category, sizeof(category));
-    const uint32_t type_d_epoch = state->nxdn_type_d_rx_epoch;
-    const uint8_t type_c_before = state->nxdn_site.type_c;
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
-    /* A CCH_INFO may have shown a composite frame mid-frame (nxdn_element_handle_cch_info()): the frame ends as one,
-       another channel's when its foreign check says so. */
-    ctx->foreign = state->nxdn_frame_foreign != 0U;
-    const int shown_composite = ctx->scch && state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
-    /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
-       channels only: it never outlives the frame, whatever confirmed the transmission, and neither does one a CCH_INFO
-       showed was a composite frame's SACCH. The rollback undoes only the SCCH's provisional layout: a Type-C site a
-       later channel of the frame verified (dsd_nxdn_note_type_c()) never reads "Type-D" again. */
-    if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U || shown_composite) {
-        DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
-        state->nxdn_type_d_rx_epoch = type_d_epoch;
-        if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
-            DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
-        }
-    } else if (state->nxdn_frame_type_d_scch != 0U) {
-        /* Kept, as evidence of the reception the frame's own messages left the received identity naming; a Type-C
-           identification in the frame cleared the flag (dsd_nxdn_note_type_c()). */
+    if (ctx->scch && ctx->field.crc == ctx->field.check && ctx->result->scch_invalid == 0U
+        && nxdn_confirm_is_confirmed(state)) {
         dsd_nxdn_note_type_d_layout(state);
     }
     return left_carrier;
@@ -929,20 +973,32 @@ nxdn_frame_left(void) {
     DSD_FPRINTF(stderr, "\n");
 }
 
-/* What the frame does before its channels decode: the SACCH mode its LICH names, the voice/data banner and the cipher
-   slots of a frame that carries no position (nxdn_print_voice_or_data_and_sync_lfsr()), the channel the element
-   parsers read, and whether it is another channel's control traffic. */
+/* What the frame does before its channels are committed: the SACCH mode its LICH names, the voice/data banner and the
+   cipher slots of a frame that carries no position (nxdn_print_voice_or_data_and_sync_lfsr()), and the classification
+   the element parsers read (nxdn_frame_classify()): the channel, the Type-D layout, and whether it is another
+   channel's control traffic, whose checks may confirm nothing and whose messages may name, follow or play nothing
+   here. */
 static void
-nxdn_frame_before_channels(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
+nxdn_frame_before_channels(dsd_state* state, const nxdn_frame_ctx* ctx) {
     nxdn_update_sacch_mode(state, ctx->lich);
     nxdn_print_voice_or_data_and_sync_lfsr(state, ctx);
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
-    state->nxdn_frame_type_d_scch = 0U;
-    /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
-       messages may name, follow or play anything here. A CCH_INFO that shows a frame read as Type-D is a composite one
-       decides it again from that message on (nxdn_element_handle_cch_info()). */
-    ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
+    state->nxdn_frame_type_d = (uint8_t)ctx->type_d;
     state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
+}
+
+/* The frame body read whole: descramble and unpack it, decode its signalling, classify the frame once (issue #903),
+   and print what it was read as. Its channels are committed under that classification afterwards. */
+static void
+nxdn_frame_read_signalling(const dsd_opts* opts, const dsd_state* state, nxdn_frame_ctx* ctx) {
+    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
+    nxdn_unpack_payload_fields(ctx);
+    ctx->lich_rf = (ctx->lich >> 5) & 0x3;
+    ctx->direction = (ctx->lich % 2 == 0) ? 0 : 1;
+    nxdn_frame_decode_signalling(ctx);
+    nxdn_frame_classify(opts, state, ctx);
+    nxdn_print_sync_banner(opts, state, ctx);
+    nxdn_print_rf_channel_type(ctx);
 }
 
 int
@@ -977,7 +1033,6 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     dsd_nxdn96_sync_note_lich(&state->nxdn96_sync, (uint32_t)state->symbolcnt, DSD_NXDN96_LICH_GOOD);
 
     state->carrier = 1;
-    nxdn_print_sync_banner(opts, state, &ctx);
 
     for (int i = 0; i < 174; i++) {
         dsd_dibit_soft_t soft = {.reliability = 255};
@@ -996,26 +1051,21 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         nxdn_mark_bad_sync(state);
         dsd_nxdn96_sync_clear(&state->nxdn96_sync);
+        nxdn_print_sync_banner(opts, state, &ctx);
         DSD_FPRINTF(stderr, "\n");
         goto END;
     }
 
-    nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);
-    nxdn_unpack_payload_fields(&ctx);
-
-    ctx.lich_rf = (ctx.lich >> 5) & 0x3;
-    ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;
-
-    nxdn_print_rf_channel_type(&ctx);
+    nxdn_frame_read_signalling(opts, state, &ctx);
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
     ctx.confirmed_before = nxdn_confirm_is_confirmed(state);
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
-    nxdn_frame_before_channels(opts, state, &ctx);
+    nxdn_frame_before_channels(state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
-    state->nxdn_frame_type_d_scch = 0U;
+    state->nxdn_frame_type_d = 0U;
     nxdn_confirm_end_frame(opts, state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
@@ -1031,7 +1081,7 @@ END:
         nxdn_confirm_frame_rejected(state);
         state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
         state->nxdn_frame_foreign = 0U;
-        state->nxdn_frame_type_d_scch = 0U;
+        state->nxdn_frame_type_d = 0U;
     }
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current

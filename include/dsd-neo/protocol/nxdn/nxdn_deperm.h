@@ -33,23 +33,61 @@ typedef struct nxdn_channel_result {
     /** A CRC-passing SCCH whose content NXDN TS 1-E does not define (nxdn_scch_content_valid()): the Type-D layout it
         names stays with this frame. */
     uint8_t scch_invalid;
-    /** A CRC-passing SCCH on a frame whose LICH is also a composite control channel's (nxdn_deperm_scch_soft()'s
-        @p defer): only the Type-D layout it names was taken for the frame's other channels, and its messages act once
-        they decoded, unless one of them said Type-C (nxdn_frame(), NXDN_decode_scch_deferred()). */
-    uint8_t scch_deferred;
-    /** Whether the transmission was confirmed when that SCCH passed its check, as its messages are judged. */
-    uint8_t scch_acts;
-    /** That SCCH's 32 trellis bits (25 content bits, the CRC-7 and the tail). */
-    uint8_t scch_bits[32];
 } nxdn_channel_result;
+
+/**
+ * @brief A frame's 60-bit SCCH or SACCH field (both take the same place and code), depermuted and Viterbi-decoded as
+ * one or the other: its 32 trellis bits, the decoded bytes the payload log prints, and its CRC (an SCCH's CRC-7, a
+ * SACCH's CRC-6) as computed and as received. Nothing has acted on it.
+ */
+typedef struct nxdn_field_decode {
+    uint8_t trellis[32];
+    uint8_t m_data[5];
+    uint8_t crc;
+    uint8_t check;
+} nxdn_field_decode;
+
+/**
+ * @brief A FACCH1 half, depermuted and Viterbi-decoded: its 96 trellis bits (80 element bits, the CRC-12 and the tail),
+ * the decoded bytes the payload log prints, and its CRC-12 as computed and as received. Nothing has acted on it.
+ */
+typedef struct nxdn_facch1_decode {
+    uint8_t trellis[96];
+    uint8_t m_data[12];
+    uint16_t crc;
+    uint16_t check;
+} nxdn_facch1_decode;
 
 void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);
 
+/**
+ * @brief Decode a FACCH1 half (FEC and CRC-12) without acting on it: nxdn_frame() reads both halves of a frame before
+ * either is committed (nxdn_handle_facch1()).
+ */
+nxdn_facch1_decode nxdn_facch1_decode_soft(const uint8_t bits[144], const uint8_t reliab[144]);
+
+/**
+ * @brief Whether a decoded FACCH1 half says the system is Type-C: a CRC-verified CCH_INFO (0x1A), a Type-C message a
+ * Type-D system does not send. A FACCH1's 80 elements always hold a whole CCH_INFO, and never a whole SITE_INFO.
+ */
+int nxdn_facch1_says_type_c(const nxdn_facch1_decode* facch1);
+
+/** @brief Decode a FACCH1 half and act on it at once (nxdn_facch1_decode_soft(), then nxdn_handle_facch1()). */
 void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
                             uint8_t frame);
 
-nxdn_channel_result nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60],
-                                           const uint8_t reliab[60]);
+/** @brief Decode a frame's field as a SACCH (FEC and CRC-6) without acting on it (nxdn_handle_sacch() commits it). */
+nxdn_field_decode nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+
+/** @brief Decode a frame's field as an SCCH (FEC and CRC-7) without acting on it (nxdn_scch_commit() commits it). */
+nxdn_field_decode nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+
+/**
+ * @brief Act on a decoded SCCH: a CRC-passing one with defined content gives the frame its position and its weak and
+ * SCCH-streak evidence, and its messages decode (NXDN_decode_scch()).
+ */
+nxdn_channel_result nxdn_scch_commit(dsd_opts* opts, dsd_state* state, const nxdn_field_decode* scch,
+                                     uint8_t direction);
 
 void nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]);
 
@@ -62,12 +100,9 @@ void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits
 void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
                                    uint8_t type);
 
-/**
- * @brief Decode a frame's SCCH. With @p defer set, a CRC-passing SCCH only names the frame's Type-D layout: its
- * messages wait in the result (nxdn_channel_result::scch_deferred) for NXDN_decode_scch_deferred().
- */
+/** @brief Decode an SCCH and act on it at once (nxdn_scch_decode_soft(), then nxdn_scch_commit()). */
 nxdn_channel_result nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
-                                          uint8_t direction, uint8_t defer);
+                                          uint8_t direction);
 
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 
@@ -91,11 +126,6 @@ void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
-/**
- * @brief Act on the SCCH nxdn_deperm_scch_soft() deferred (nxdn_channel_result::scch_deferred), as NXDN_decode_scch()
- * would have when it passed its check: judged by the confirmation it saw then (nxdn_channel_result::scch_acts).
- */
-void NXDN_decode_scch_deferred(dsd_opts* opts, dsd_state* state, const nxdn_channel_result* result, uint8_t direction);
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 
 uint8_t crc6(const uint8_t buf[], int len);

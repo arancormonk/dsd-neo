@@ -157,21 +157,20 @@ nxdn_call_type_opens_call(uint8_t call_type) {
 }
 
 /* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it, which
- * splits an address into its prefix and 11-bit ID (issue #903): only on positive Type-D evidence that is fresh on this
- * carrier. An RTCH2 frame is Type-D when its own SCCH passed its check with defined content
- * (dsd_state::nxdn_frame_type_d_scch), or when the "Type-D" category a checked SCCH of this carrier set is fresh
- * (dsd_nxdn_type_d_layout_fresh(): no carrier boundary or trunk-scan switch since; kept past its frame only on a
- * confirmed transmission, nxdn_frame()), a Type-C site an older frame decoded notwithstanding: once Type-C is known a
- * composite control channel's LICH values read as RTCH_C (NXDN_FRAME_CHANNEL_COMPOSITE), so an RTCH2 reading there is
- * one no composite frame gives, and a single failed SCCH does not undo the carrier's fresh evidence. With no frame
- * decoding (an element handed over alone), the fresh category unless the site decoded as Type-C (dsd_nxdn_type_c()).
- * A frame whose LICH names another channel never is. An RTCH2 reading with no SCCH of this carrier yet, which a
- * composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps the full 16-bit ID as
- * Type-C does, with no prefix. */
+ * splits an address into its prefix and 11-bit ID (issue #903). A frame decoding now was classified before any of its
+ * messages act (dsd_state::nxdn_frame_type_d, nxdn_frame()): an RTCH2 frame reads Type-D when its LICH is a value only
+ * Type-D has, when its own SCCH passed its check, or when the "Type-D" category a checked SCCH of this carrier left is
+ * still fresh (dsd_nxdn_type_d_layout_fresh(): no carrier boundary or trunk-scan switch since), a Type-C site an older
+ * frame decoded notwithstanding: once Type-C is known a composite control channel's LICH values read as RTCH_C
+ * (NXDN_FRAME_CHANNEL_COMPOSITE), and a frame whose FACCH1 says Type-C is one whatever was known. An RTCH2 reading of
+ * a value a composite Type-C channel shares (0x71, 0x73) with no SCCH of this carrier yet, as on late entry there,
+ * keeps the full 16-bit ID as Type-C does, with no prefix. With no frame decoding (an element handed over alone), the
+ * fresh category unless the site decoded as Type-C (dsd_nxdn_type_c()). A frame whose LICH names another channel
+ * never is. */
 static int
 nxdn_location_is_type_d(const dsd_state* state) {
     if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
-        return state->nxdn_frame_type_d_scch != 0U || dsd_nxdn_type_d_layout_fresh(state);
+        return state->nxdn_frame_type_d != 0U;
     }
     if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE || dsd_nxdn_type_c(state)) {
         return 0;
@@ -516,34 +515,15 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
 
 /* CCH_INFO and SITE_INFO are Type-C messages a Type-D system does not send (NXDN TS 1-E; independently, SDRTrunk's
  * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded whole, they say the session decodes Type-C trunking. A FACCH1 is
- * laid out alike in both readings of a composite control channel's LICH, so a CCH_INFO says it whichever reading the
- * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own.
- * A CCH_INFO on a frame read as Type-D shows the frame is a composite control channel's (RTCH_C): from this message on
- * the frame is one, as the frames after it are (nxdn_apply_lich_profile()), its foreign check included
- * (dsd_nxdn_control_heard_is_foreign(), as nxdn_frame() decides it for a composite frame): another channel's CCH_INFO
- * heard on a followed traffic channel notes no Type-C and refreshes no control channel sync, and the frame's later
- * channels (a SRV_INFO in its other FACCH1) read it as a composite frame. The frame keeps no Type-D layout of its own
- * SCCH (dsd_state::nxdn_frame_type_d_scch). A CCH_INFO refused as too short says nothing of the frame, which reads as
- * before. */
+ * laid out alike in both readings of a composite control channel's LICH, and a frame whose FACCH1 carries a CCH_INFO
+ * was classified a composite one before anything of it acted (nxdn_frame()); a frame read as Type-D is one whose LICH
+ * only Type-D has, which a CCH_INFO does not make Type-C, nor does a SITE_INFO, which came through a layout of Type-D's
+ * own. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    const uint8_t channel = state->nxdn_frame_channel;
-    const uint8_t foreign = state->nxdn_frame_foreign;
-    const uint8_t type_d_scch = state->nxdn_frame_type_d_scch;
-    const int switches = channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
-    if (switches) {
-        state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
-        state->nxdn_frame_foreign = (uint8_t)dsd_nxdn_control_heard_is_foreign(opts, state);
-        state->nxdn_frame_type_d_scch = 0U;
-    }
     // Only a whole message says it: a short one (a non-superframe SACCH's 26 elements) passed a short CRC at most.
-    if (!NXDN_decode_cch_info(opts, state, elements, elements_bits)) {
-        if (switches) {
-            state->nxdn_frame_channel = channel;
-            state->nxdn_frame_foreign = foreign;
-            state->nxdn_frame_type_d_scch = type_d_scch;
-        }
-    } else if (!state->nxdn_frame_foreign) {
+    if (NXDN_decode_cch_info(opts, state, elements, elements_bits)
+        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
         dsd_nxdn_note_type_c(state);
     }
     nxdn_element_mark_control_sync(opts, state);
@@ -3613,13 +3593,12 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 
 static void
 nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
-    /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
-       confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()), as evidence of this
-       carrier only (dsd_nxdn_type_d_layout_fresh()). Content TS 1-E defines is this frame's own evidence, which a
-       Type-C site an older frame decoded does not overrule (nxdn_location_is_type_d()). */
-    dsd_nxdn_note_type_d_layout(state);
-    if (!info->diagnostic_only) {
-        state->nxdn_frame_type_d_scch = 1U;
+    /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs) is the frame's, classified before this
+       SCCH acts (dsd_state::nxdn_frame_type_d), and kept past it as evidence of this carrier only
+       (dsd_nxdn_type_d_layout_fresh()) once the transmission is confirmed (nxdn_frame()). An SCCH handed over with no
+       frame decoding names it here. */
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_NONE) {
+        dsd_nxdn_note_type_d_layout(state);
     }
     if (!info->acts || info->diagnostic_only) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
@@ -4226,14 +4205,13 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
                               DSD_CALL_ENC_OBSERVED_NONE);
 }
 
-/* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own; it acts only
- * on a transmission @p acts says was confirmed. */
-static void
-nxdn_decode_scch_acting(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction, int acts) {
+/* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
+void
+NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
     const time_t now = dsd_decode_time();
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
-    info.acts = acts;
+    info.acts = nxdn_confirm_is_confirmed(state);
     info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
     info.problem = nxdn_scch_content_problem(Message, direction);
     info.diagnostic_only = (uint8_t)(info.problem != NULL);
@@ -4253,18 +4231,6 @@ nxdn_decode_scch_acting(dsd_opts* opts, dsd_state* state, const uint8_t* Message
     }
     if (info.opcode == 0x07U || info.opcode == 0x03U) {
         nxdn_scch_handle_info1(opts, state, &info);
-    }
-}
-
-void
-NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
-    nxdn_decode_scch_acting(opts, state, Message, direction, nxdn_confirm_is_confirmed(state));
-}
-
-void
-NXDN_decode_scch_deferred(dsd_opts* opts, dsd_state* state, const nxdn_channel_result* result, uint8_t direction) {
-    if (result != NULL && result->scch_deferred != 0U) {
-        nxdn_decode_scch_acting(opts, state, result->scch_bits, direction, result->scch_acts != 0U);
     }
 }
 
