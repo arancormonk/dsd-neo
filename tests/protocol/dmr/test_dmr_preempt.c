@@ -1162,6 +1162,32 @@ test_companion_media_change_is_a_new_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Voice on the companion slot does not take the followed grant's slot out of the busy view while that grant still
+   awaits its first voice: a p90 grant for TS1 is followed, p10 voice on TS2 starts 50 ms later, and at 1.5 s, the p90
+   call not yet on the air, a p50 preempt candidate elsewhere outranks only the companion. It waits; once the p90 call's
+   acquisition window has run out with its slot still silent, the companion alone holds the carrier and p50 takes it. */
+static int
+test_companion_voice_keeps_acquiring_slot_held(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 900, "A", 90, 0);
+    seed_row(st, 10, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 900, 1);
+    clock_at(0.05);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 10, 2);
+    clock_at(1.5);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    int rc = expect_true("p50 does not outrank the p90 grant still awaiting its voice", vc(st) == VC_A);
+    clock_at(4.1);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("past the p90 grant's acquisition window, p50 outranks the companion",
+                      vc(st) == VC_B && sm()->vc_tg == 50);
+    return rc;
+}
+
 /* Companion voice heard before a follow is not the followed grant's: on the composite control channel's carrier, voice
    on TS1 at 3.90 s, then at 3.95 s a grant for TS2 of that carrier, adopted in place, and ticks at 4.05 s and 6.05 s.
    Once the companion is quiet, the grant holds its own acquisition window (to 7.95 s), not a hangtime tail from
@@ -1234,6 +1260,7 @@ main(void) {
     rc |= test_data_grant_never_binds_a_voice_call(opts, st);
     rc |= test_awaiting_data_grant_never_binds_later_voice(opts, st);
     rc |= test_companion_media_change_is_a_new_call(opts, st);
+    rc |= test_companion_voice_keeps_acquiring_slot_held(opts, st);
     rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

@@ -13526,7 +13526,10 @@ Private per-protocol modules worth knowing about:
     code is still being checked is held), and an acquisition whose every slot it rejects (a receive edit after the
     follow rejected the grant's own slot) is not held at all, so the grant's identity never stands for the carrier and
     an ordinary grant elsewhere is followed; once there is voice, each slot the receive policy admits whose voice
-    is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included). ON_CC: calls
+    is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included), and the followed
+    grant's slot until its own first voice since the follow, within its acquisition window
+    (`dmr_sm_followed_slot_acquiring()`: voice on the companion slot ends the carrier's acquisition, not the grant's,
+    so a candidate must outrank the call still to come as well). ON_CC: calls
     heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is
     known there and admitted by the policy, on a slot the receive policy admits (`dsd_receive_allows()`, as for the
     receive hold: rejected media never holds the receiver); an unknown, blocked or receive-rejected resident call never

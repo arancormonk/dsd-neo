@@ -2133,9 +2133,22 @@ dmr_sm_tuned_holds_nothing(const dmr_sm_ctx_t* ctx, dmr_sm_hold_e hold, int memb
     return hold == DMR_SM_HOLD_TAIL || (hold == DMR_SM_HOLD_ACQUIRING && dmr_sm_acquire_slots(ctx) != 0);
 }
 
+/* Whether the followed grant's own slot still awaits its first voice since the follow, within its acquisition window.
+   Voice on the companion slot ends the carrier's acquisition (the retention rule), not the grant's: its call, not yet
+   on the air, still holds the carrier against other candidates. */
+static int
+dmr_sm_followed_slot_acquiring(const dmr_sm_ctx_t* ctx, double now_m) {
+    if (ctx->vc_slot < 0 || ctx->vc_slot > 1) {
+        return 0;
+    }
+    return ctx->slots[ctx->vc_slot].last_active_m < ctx->t_tune_m
+           && !grant_timeout_expired(ctx, now_m, dmr_sm_acquire_window(ctx));
+}
+
 /* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
-   the receive hold: rejected media never holds the receiver, its tail included); before any voice, the acquisition's
-   slots (dmr_sm_acquire_members()). */
+   the receive hold: rejected media never holds the receiver, its tail included); before any voice, and on the followed
+   slot until its own first voice (dmr_sm_followed_slot_acquiring()), the acquisition's slots
+   (dmr_sm_acquire_members()). */
 static int
 dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m,
                      dmr_sm_hold_e hold) {
@@ -2151,7 +2164,7 @@ dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
             members |= 1 << s;
         }
     }
-    if (hold == DMR_SM_HOLD_ACQUIRING) {
+    if (hold == DMR_SM_HOLD_ACQUIRING || dmr_sm_followed_slot_acquiring(ctx, now_m)) {
         members |= dmr_sm_acquire_members(ctx, opts);
     }
     return members;
