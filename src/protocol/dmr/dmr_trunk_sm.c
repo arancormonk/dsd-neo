@@ -2553,15 +2553,42 @@ dmr_sm_grant_changes_followed_media(const dmr_sm_ctx_t* ctx, const dmr_sm_event_
 
 /* A grant that changes the media of the followed slot's assignment on the followed carrier
    (dmr_sm_grant_changes_followed_media()) ends that assignment, whether the receiver would follow the grant or not
-   (data following off, a policy or receive gate refusing it): the follow ends as a release does, back to the control
-   channel, where a repeated grant is followed as any grant is. Returns 1 when the grant ended the assignment. */
+   (data following off, a policy or receive gate refusing it): the slot's call ends, its record and preemption-ledger
+   entry are cleared and the grant identity stands for nothing. The receiver stays on the carrier only for the companion
+   slot's call, while it holds the carrier by the retention rule (live voice or its hangtime tail; the retired grant's
+   acquisition holds nothing): that slot becomes the followed one. Otherwise the follow ends as a release does, back to
+   the control channel, where a repeated grant is followed as any grant is. Returns 1 when the grant ended the
+   assignment. */
 static int
 dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     if (ctx->state != DMR_SM_TUNED || !dmr_sm_grant_changes_followed_media(ctx, ev)
         || resolve_freq(state, ev->freq_hz, ev->lpcn) != ctx->vc_freq_hz) {
         return 0;
     }
-    do_release(ctx, opts, state, "grant-media-change");
+    const int s = ctx->vc_slot;
+    const int companion = s ^ 1;
+    const double now_m = dsd_decode_now_mono_s();
+    if (dsd_call_state_end_ex(state, (uint8_t)s, now_m, DSD_CALL_END_EXPLICIT) > 0) {
+        dsd_event_sync_slot(opts, state, (uint8_t)s);
+    }
+    ctx->slots[s].voice_active = 0;
+    ctx->slots[s].last_active_m = 0.0;
+    dmr_sm_slot_identity_clear(&ctx->slots[s]);
+    (void)dsd_tg_policy_clear_active_call(state, s);
+    dmr_sm_drop_grant_identity(ctx, s);
+    ctx->t_voice_m = ctx->slots[companion].last_active_m; // the carrier's activity is the companion's alone now
+    const dmr_sm_hold_e hold =
+        dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0);
+    if (hold != DMR_SM_HOLD_LIVE && hold != DMR_SM_HOLD_TAIL) {
+        do_release(ctx, opts, state, "grant-media-change");
+        return 1;
+    }
+    sm_log(opts, "grant-media-change");
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[companion];
+    ctx->vc_slot = companion;
+    ctx->vc_data_call = dmr_sm_slot_identity_known(rec) && rec->data_call;
+    ctx->vc_media_heard = 1; // the companion's call is on the air: no acquisition is pending for it
+    state->dmr_mono_slot = companion;
     return 1;
 }
 
@@ -2575,8 +2602,8 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
 
     /* Before any admission: a media change on the followed slot ends its assignment whatever becomes of the grant. The
-       grant itself is not followed; its repeat is, as any grant is (from the control channel, with its own tune,
-       acquisition window, channel, provenance and call). */
+       grant itself is not followed; its repeat is, as any grant is (in place for the slot of a carrier kept for its
+       companion, else from the control channel, with its own tune, acquisition window, channel, provenance and call). */
     if (dmr_sm_end_changed_assignment(ctx, opts, state, ev)) {
         return DMR_SM_GRANT_REFUSED;
     }

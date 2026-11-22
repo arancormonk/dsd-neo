@@ -1233,6 +1233,51 @@ test_unfollowed_media_change_ends_the_assignment(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* A media change on the followed slot retires that slot's assignment alone: TS1 is followed for TG 300 while TS2 carries
+   live voice for TG 100. A data grant for TS1 ends TS1's call and record, while the receiver stays on the carrier for
+   the TS2 call, which goes on as the same call. A voice grant repeated for TS1 is then a new assignment of that slot;
+   once TS2's voice has stopped and its hangtime has run out, the receiver returns to the control channel. */
+static int
+test_media_change_keeps_a_live_companion(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1; // the DMR tick runs only while DMR trunking can recover
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 100U, 1U);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    dsd_call_snapshot call;
+    const uint64_t first = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    const uint64_t companion = dsd_call_state_get(st, 1U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    int rc = expect_true("the receiver stays on the carrier for the companion's live call",
+                         sm()->state == DMR_SM_TUNED && vc(st) == VC_A && opts->trunk_is_tuned == 1 && g_tunes == 1);
+    rc |= expect_true("TS1's assignment is retired: its call ended, its record cleared",
+                      dsd_call_state_get(st, 0U, &call) > 0 && dsd_call_snapshot_transmission(&call) == first
+                          && call.phase != DSD_CALL_PHASE_ACTIVE
+                          && sm()->slots[0].kind == (uint8_t)DSD_CALL_KIND_UNKNOWN && sm()->slots[0].voice_active == 0);
+    rc |= expect_true("the companion's call goes on as the same call",
+                      slot_publishes_bound(st, 1, 100U) && dsd_call_state_get(st, 1U, &call) > 0
+                          && dsd_call_snapshot_transmission(&call) == companion);
+    clock_at(0.6);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_A, 0, 300, 2); // the voice grant repeated for TS1
+    rc |= expect_true("the repeated voice grant names TS1 anew",
+                      sm()->state == DMR_SM_TUNED && g_tunes == 1 && sm()->slots[0].target == 300U
+                          && sm()->slots[0].source == 2U && sm()->slots[0].data_call == 0U
+                          && fabs(sm()->slots[0].follow_m - dsd_decode_now_mono_s()) < 1e-3);
+    clock_at(2.5);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("within the companion's hangtime the carrier is kept", sm()->state == DMR_SM_TUNED);
+    clock_at(2.7);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("past the companion's hangtime the receiver returns", sm()->state == DMR_SM_ON_CC);
+    return rc;
+}
+
 /* Data on a voice grant's slot is not its first voice: a p90 voice grant for TS1 is followed (data following on), p10
    voice on TS2 starts, and one data burst arrives on TS1 at 0.1 s. At 2.5 s, its tail over, the p90 call is still not
    on the air within its acquisition window, so a p50 preempt candidate elsewhere waits. */
@@ -1330,6 +1375,7 @@ main(void) {
     rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
     rc |= test_data_burst_is_no_first_voice(opts, st);
     rc |= test_unfollowed_media_change_ends_the_assignment(opts, st);
+    rc |= test_media_change_keeps_a_live_companion(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
