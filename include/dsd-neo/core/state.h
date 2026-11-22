@@ -1596,6 +1596,9 @@ struct dsd_state {
        protocol or an import wrote is no longer the air's: DMR neither replaces it nor drops it on a network change
        (discussion #900 F2). Core owns the bit so the shared setter can clear it without knowing the DMR module. */
     uint8_t dmr_lcn_ota[0x1000 / 8];
+    /* DMR Tier III: bumped each time dsd_state_set_trunk_chan_freq() takes a row from the DMR over-the-air writer
+       (clears its dmr_lcn_ota bit), whatever the frequency, so DMR's channel revision moves on an ownership change. */
+    uint32_t dmr_lcn_ota_seq;
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -3875,7 +3878,9 @@ dsd_state_dmr_lcn_ota_set(dsd_state* state, uint32_t channel, int held) {
 
 /* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
    row leaves the DFA record and no later parameter change drops it; the same goes for the DMR over-the-air record
-   (dsd_state::dmr_lcn_ota), whose writer marks the row again after this. */
+   (dsd_state::dmr_lcn_ota), whose writer releases its bit before this and marks the row again after. A row another
+   writer takes from that record loses the trust DMR gave it (dsd_state::dmr_lcn_trust) and bumps
+   dsd_state::dmr_lcn_ota_seq. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
@@ -3884,7 +3889,11 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     if (state->nxdn_dfa_learned.count != 0U) {
         dsd_state_nxdn_dfa_untag(state, channel);
     }
-    dsd_state_dmr_lcn_ota_set(state, channel, 0);
+    if (dsd_state_dmr_lcn_ota_get(state, channel)) {
+        dsd_state_dmr_lcn_ota_set(state, channel, 0);
+        state->dmr_lcn_trust[channel] = 0U;
+        state->dmr_lcn_ota_seq++;
+    }
 
     const long int old_freq = state->trunk_chan_map[channel];
     if (old_freq == freq) {

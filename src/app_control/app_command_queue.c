@@ -7623,22 +7623,24 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     }
     /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
-    if (rr_apply_moves_the_receiver(opts, &p)) {
+    const int moves = rr_apply_moves_the_receiver(opts, &p);
+    if (moves) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
            while the calls of the system it leaves are still active, before anything below ends them
            (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
            talkgroup (issue #575). The import runs under the P25 SM tick guard. */
         svc_operator_carrier_boundary(opts, state, 1);
-    } else {
-        /* No tuner moves, but the committed system still replaces the old one: the DMR network baseline and what the
-           old network taught go, so the new system's first checked system code is no change of network. */
-        dmr_t3_chan_network_changed(opts, state);
     }
     (void)svc_leave_channel_scan(opts, state);
     char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
     note[0] = '\0';
     if (rr_apply_mode(opts, state, mode, note, sizeof note) != UI_CMD_APPLY_COMPLETED) {
-        return UI_CMD_APPLY_FAILED;
+        return UI_CMD_APPLY_FAILED; // the previous mode and system stay, and so does what their network taught
+    }
+    if (!moves) {
+        /* No tuner moves, but the system the mode change committed replaces the old one: the DMR network baseline and
+           what the old network taught go, so the new system's first checked system code is no change of network. */
+        dmr_t3_chan_network_changed(opts, state);
     }
     rr_apply_edacs_variants(state, &p, mode);
     if (mode == DSDCFG_MODE_EDACS_PV) {

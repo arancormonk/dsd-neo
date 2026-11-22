@@ -584,6 +584,8 @@ static void
 build_c_bcast_ann_wd_tscc(uint8_t* bits, uint8_t* bytes, uint16_t ch1, uint16_t ch2, uint8_t ch1_flag,
                           uint8_t ch2_flag) {
     build_pf0(bits, bytes, 40U, 0U);
+    bytes[0] = (uint8_t)(0x80U | 40U); /* a single block: LB 1 (Table 7.20) */
+    bits[0] = 1U;
     write_bits_u32(bits, 16U, 0U, 5U);
     bits[33] = (uint8_t)(ch1_flag & 1U);
     bits[34] = (uint8_t)(ch2_flag & 1U);

@@ -1442,6 +1442,34 @@ test_apply_mode_change_failure_keeps_its_reason(void) {
     return rc;
 }
 
+/* An import that moves no tuner resets the DMR network only once its mode change took (discussion #900): a replay that
+   refuses the reopen keeps the previous mode and system, so the rows it learned stay. */
+static int
+test_apply_mode_failure_keeps_learned_rows(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
+    p.trunking = 1U;
+
+    replay_session(&opts, &state);
+    dmr_t3_chan_note_checked_syscode(&state, 0x0000U);
+    rc |= expect_int("replay learns a row", dmr_t3_chan_learn(&opts, &state, 12U, 451062500L, DMR_CHAN_ORIGIN_SITE), 1);
+    g_replan_check_verdict = RTL_STREAM_REPLAN_DIFFERS;
+    g_replan_result = SVC_REPLAY_REPLAN_REFUSED;
+    rc |= expect_int("refused reopen queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refused reopen drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refused reopen tried", g_replan_calls, 1);
+    rc |= expect_int("refused reopen keeps the learned row", state.trunk_chan_map[12] == 451062500L, 1);
+    rc |= expect_int("refused reopen keeps its origin", dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_SITE, 1);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    reset_replay_script();
+    return rc;
+}
+
 /* Main-failing regression (T3): what the mode change had to say on success (here, the rate the replay was reopened
    and resampled at) is carried by the import's own toast, which on main replaced it with the reminder to save. */
 static int
@@ -1885,6 +1913,7 @@ main(void) {
 #ifdef USE_RADIO
     rc |= test_apply_replay_replan_refused_before_commit();
     rc |= test_apply_mode_change_failure_keeps_its_reason();
+    rc |= test_apply_mode_failure_keeps_learned_rows();
     rc |= test_apply_success_keeps_the_mode_note();
     rc |= test_apply_tetra_soapy_rate();
     rc |= test_apply_profile_check_after_the_leave();

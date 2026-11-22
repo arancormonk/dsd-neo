@@ -366,6 +366,33 @@ test_p_clear_follows_in_place_grant(void) {
     assert(opts.trunk_is_tuned == 0);
 }
 
+/* A private data grant from 3003 to 2002 in place on the followed slot of a private voice call from 1001 to 2002 is
+   another call, not a repeat: the followed call is the data grant's, so a clear naming its sender applies. A repeat of
+   the voice grant, its parties in either order, keeps the call as it was. */
+static void
+test_p_clear_private_data_grant_is_not_voice_repeat(void) {
+    init_env();
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 2002, /*src*/ 1001);
+    assert(opts.trunk_is_tuned == 1);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_event_t ev = dmr_sm_ev_indiv_grant(VC_HZ, 20, /*dst*/ 2002, /*src*/ 3003);
+    ev.slot = 0;
+    ev.kind = DSD_CALL_KIND_DATA;
+    assert(dmr_sm_submit_grant(&opts, &state, &ev) == DMR_SM_GRANT_IN_PLACE);
+    assert(ctx->vc_src == 3003 && ctx->vc_dst == 2002 && ctx->vc_data_call == 1);
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    send_pclear(0U, 0U, 0U, 1001U); // the voice call's sender: not the followed call now
+    assert(opts.trunk_is_tuned == 1);
+    send_pclear(0U, 0U, 0U, 3003U);
+    assert(opts.trunk_is_tuned == 0);
+
+    init_env();
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 2002, /*src*/ 1001);
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 1001, /*src*/ 2002);
+    assert(ctx->vc_src == 1001 && ctx->vc_dst == 2002 && ctx->vc_data_call == 0);
+}
+
 /* A checked clear naming another TSCC makes it a hunt candidate; the release still returns to the control channel.
    Neither the control channel itself, an unmapped channel nor an unchecked clear adds one. */
 static void
@@ -525,6 +552,7 @@ main(int argc, char** argv) {
     test_p_clear_busy_companion_kept();
     test_p_clear_matches_followed_grant();
     test_p_clear_follows_in_place_grant();
+    test_p_clear_private_data_grant_is_not_voice_repeat();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();

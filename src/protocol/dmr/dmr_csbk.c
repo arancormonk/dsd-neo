@@ -1163,6 +1163,7 @@ typedef struct {
 
 static void
 dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_fields* f) {
+    DSD_MEMSET(f, 0, sizeof(*f));
     f->a_type = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 5);
     f->bparms1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[21], 14);
     for (int i = 0; i < 14; i++) {
@@ -1178,14 +1179,16 @@ dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_f
         f->bpbits2[i] = cs_pdu_bits[56 + i];
     }
 
+    f->a_channel = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
+    if (dmr_cspdu_current_shape()->is_mbc == 0U) {
+        return; // a single CSBK has no continuation (its fields stay 0)
+    }
     f->mbc_csbko = (uint8_t)convert_bits_into_output(&cs_pdu_bits[98], 6);
     f->mbc_res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[104], 4);
     f->mbc_cc = (uint8_t)convert_bits_into_output(&cs_pdu_bits[108], 4);
     f->mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
     f->mbc_res2 = (uint8_t)convert_bits_into_output(&cs_pdu_bits[116], 2);
     f->mbc_cdefparms = (unsigned long long)convert_bits_into_output(&cs_pdu_bits[118], 58);
-
-    f->a_channel = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 }
 
 static void
@@ -3134,18 +3137,24 @@ dmr_cspdu_c_bcast_uses_abs_params(const uint8_t cs_pdu_bits[], const dmr_cspdu_s
 }
 
 /* 1 when a C_BCAST says something no handler may act on: a single-block Ann_WD_TSCC naming the absolute escape as
-   BCAST_CH1 or BCAST_CH2 (bits 56-67, 68-79), whose frequency only an MBC carries (§7.2.19.1), or a Chan_Freq whose
-   header CH (bits 68-79) and BC_AP CHAN (bits 118-129) both name channels and differ (§7.2.19.6). */
+   BCAST_CH1 or BCAST_CH2 (bits 56-67, 68-79), whose frequency only an MBC carries (§7.2.19.1); a Vote_Now or
+   Adjacent_Site MBC whose channel (bits 68-79) is not the escape, since a logical channel is a single CSBK
+   (§7.2.19.3.0(b), Table 7.71); or a Chan_Freq MBC whose header CH (bits 68-79) and BC_AP CHAN (bits 118-129) both
+   name channels and differ (§7.2.19.6). No continuation bit is read before the shape says there is one. */
 static int
 dmr_cspdu_c_bcast_contradicts(const uint8_t cs_pdu_bits[], const dmr_cspdu_shape* shape) {
     const uint32_t ch_a = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 12);
     const uint32_t ch_b = (uint32_t)convert_bits_into_output(&cs_pdu_bits[68], 12);
     switch (convert_bits_into_output(&cs_pdu_bits[16], 5)) {
         case 0: return shape->is_mbc == 0U && (ch_a == 0xFFFU || ch_b == 0xFFFU);
+        case 2:
+        case 6: return shape->is_mbc != 0U && ch_b != 0xFFFU;
         case 5: {
+            if (shape->is_mbc == 0U) {
+                return 0; // no BC_AP: dmr_cspdu_malformed() refuses it on its parameters
+            }
             const uint32_t bcap_chan = (uint32_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
-            return shape->is_mbc != 0U && dmr_t3_lpcn_is_channel(ch_b) && dmr_t3_lpcn_is_channel(bcap_chan)
-                   && ch_b != bcap_chan;
+            return dmr_t3_lpcn_is_channel(ch_b) && dmr_t3_lpcn_is_channel(bcap_chan) && ch_b != bcap_chan;
         }
         default: return 0;
     }
@@ -3161,23 +3170,33 @@ dmr_cspdu_mbc_shape_malformed(int csbk_o, int csbk_fid, const dmr_cspdu_shape* s
     return dmr_cspdu_appends_abs_params(csbk_o, csbk_fid) && !dmr_abs_params_shape_ok(shape);
 }
 
+/* 1 when a standard C_BCAST single block (data type 3) does not carry LB 1, which Table 7.20 requires: it is no
+   complete PDU. A manufacturer's flags are its own. */
+static int
+dmr_cspdu_c_bcast_single_unfinished(const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid,
+                                    const dmr_cspdu_shape* shape) {
+    return csbk_o == 40 && csbk_fid == 0 && shape->is_mbc == 0U && cs_pdu_bits[0] == 0U;
+}
+
 /* A PDU no handler may act on, refused before any of its effects (scan activity, the control channel heartbeat and
-   anchor included): an MBC of the wrong shape (dmr_cspdu_mbc_shape_malformed()); a grant, standard P_CLEAR or C_MOVE
-   naming a logical channel as an MBC, which only a single CSBK may; a C_BCAST that contradicts itself
+   anchor included): an MBC of the wrong shape (dmr_cspdu_mbc_shape_malformed()); a standard C_BCAST single block
+   without LB; a grant, standard P_CLEAR or C_MOVE naming anything but the absolute escape as an MBC (a logical channel,
+   or a P_CLEAR's 0, the last confirmed TSCC, is a single CSBK); a C_BCAST that contradicts itself
    (dmr_cspdu_c_bcast_contradicts()); or an unprotected PDU that names its channel by absolute parameters without
    usable ones (dmr_abs_params_decode(): that one continuation, Cdeftype 0 and a receive frequency inside Table C.7), a
    single CSBK on 0xFFF among them. */
 static int
 dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid, int csbk_pf,
                     const dmr_cspdu_shape* shape) {
-    if (shape->is_mbc && dmr_cspdu_mbc_shape_malformed(csbk_o, csbk_fid, shape)) {
+    if ((shape->is_mbc && dmr_cspdu_mbc_shape_malformed(csbk_o, csbk_fid, shape))
+        || dmr_cspdu_c_bcast_single_unfinished(cs_pdu_bits, csbk_o, csbk_fid, shape)) {
         return 1;
     }
     if (csbk_pf != 0) {
         return 0;
     }
     const int chan = dmr_cspdu_channel_field(state, cs_pdu_bits, csbk_o, csbk_fid);
-    if (shape->is_mbc && chan >= 0 && dmr_t3_lpcn_is_channel((uint32_t)chan)) {
+    if (shape->is_mbc && chan >= 0 && chan != 0xFFF) {
         return 1;
     }
     if (csbk_o == 40 && dmr_cspdu_c_bcast_contradicts(cs_pdu_bits, shape)) {

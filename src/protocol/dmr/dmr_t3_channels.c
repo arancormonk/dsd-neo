@@ -95,6 +95,7 @@ dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned ori
             ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
             continue;
         }
+        dsd_state_dmr_lcn_ota_set(state, l, 0); /* the air's own row: no takeover */
         dsd_state_set_trunk_chan_freq(state, l, 0);
         state->dmr_lcn_trust[l] = 0U;
         ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
@@ -177,10 +178,15 @@ dmr_t3_chan_generation(const dsd_state* state) {
     return ext != NULL ? ext->generation : 0U;
 }
 
+/* The record's own count, plus the takeovers the shared setter counted (dsd_state::dmr_lcn_ota_seq): another writer
+   taking a row at the frequency it had changes its origin without a DMR write. */
 uint32_t
 dmr_t3_chan_revision(const dsd_state* state) {
+    if (state == NULL) {
+        return 0U;
+    }
     const dmr_ext_t* ext = dmr_ext_get(state);
-    return ext != NULL ? ext->revision : 0U;
+    return (ext != NULL ? ext->revision : 0U) + state->dmr_lcn_ota_seq;
 }
 
 void

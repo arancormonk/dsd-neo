@@ -13391,7 +13391,11 @@ Private per-protocol modules worth knowing about:
   change by a channel map import or another protocol is not noticed until then. A row another
   writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
   shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
-  (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
+  (which the DMR writer releases before it writes and sets after), and the row then reads as FILE, so DMR neither
+  replaces nor drops it. The takeover also clears the row's trust byte (an LPCN-only grant off the control channel
+  needs trust 2, which DMR gave the frequency it learned, not the new one) and bumps the core-owned
+  `dsd_state::dmr_lcn_ota_seq`, which `dmr_t3_chan_revision()` adds to its own count, so the revision moves on an
+  ownership change at an unchanged frequency.
   A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
   their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
   checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the
@@ -13402,7 +13406,8 @@ Private per-protocol modules worth knowing about:
   (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
   that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
   that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
-  a Return-to-CC keeps them). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
+  a Return-to-CC keeps them); a RadioReference apply that moves no tuner does it once its mode change succeeded (one
+  an I/Q replay refuses keeps the old system's rows). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
   voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
   trust bytes, `dmr_lcn_ota`, generation, revision and system-code baseline together
   (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
@@ -13424,12 +13429,16 @@ Private per-protocol modules worth knowing about:
   the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
   absolute-parameter opcode (C_BCAST, the grants and C_MOVE whatever the FID; P_CLEAR only under FID 0, since another
   feature set's opcode 46 is the manufacturer's and keeps the legacy carrier-wide release) whose continuation is not
-  exactly one last block carrying its header's CSBKO; a grant, standard P_CLEAR or C_MOVE naming a logical channel
-  (1..4094) as an MBC, which the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block
-  Ann_WD_TSCC naming 0xFFF as BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Chan_Freq whose header
-  CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
+  exactly one last block carrying its header's CSBKO; a standard (FID 0) C_BCAST single block whose LB is 0 (Table
+  7.20; checked before the protect flag, a manufacturer's flags being its own); a grant, standard P_CLEAR or C_MOVE
+  naming anything but 0xFFF as an MBC (a logical channel 1..4094, or a P_CLEAR's 0, the last confirmed TSCC), which
+  the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block Ann_WD_TSCC naming 0xFFF as
+  BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Vote_Now or Adjacent_Site MBC whose channel is not
+  0xFFF (§7.2.19.3.0(b)); a Chan_Freq whose header CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
   (a grant or standard P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
   Adjacent_Site on 0xFFF) whose parameters `dmr_abs_params_decode()` cannot use, a single block on 0xFFF among them.
+  Neither the gate nor a handler reads a continuation field (bits 96 on) before the shape says there is one, so a
+  single CSBK passed in a 96-bit buffer is read only within it.
   `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP, BC_AP and VN_AP (Cdeftype 0 only; a receive
   frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no frequency). A grant's valid frequency
   whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. A CSBK or MBC header notes its scan
@@ -13515,9 +13524,11 @@ Private per-protocol modules worth knowing about:
   receiver is on moves it to the other one announced. A withdraw removes no candidate an earlier announcement added
   (decided limit). Chan_Freq (Table 7.78) is always an MBC: its header CH names the channel, or 0xFFF leaves it to the
   BC_AP's CHAN (both naming channels that differ: refused before dispatch); a new or changed row also joins the
-  learned hunt list once, unless the user supplied the list, and the candidates. Vote_Now and Adjacent_Site (Tables
-  7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only Active_connection, §6.7.1.3); an
-  absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate. Tests: `DMR_T3_CHANNELS`,
+  hunt candidates, but never the positional channel list (it names a channel's frequency, not a TSCC). Vote_Now and
+  Adjacent_Site (Tables 7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only
+  Active_connection, §6.7.1.3); one naming a logical channel is a single CSBK, and as an MBC is refused before
+  dispatch (§7.2.19.3.0(b)); an absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate.
+  Tests: `DMR_T3_CHANNELS`,
   `DMR_T3_ANN_WD_TSCC`, `DMR_GRANT_POLICY`.
 - Tier III grant classes (`dmr_t3_grant.c`, `<dsd-neo/protocol/dmr/dmr_t3_grant.h>`, discussion #900 B8).
   `dmr_t3_grant_classify()` is the one classifier of a channel grant (TS 102 361-4 Tables 7.9-7.15): group {49, 50,
@@ -13564,7 +13575,9 @@ Private per-protocol modules worth knowing about:
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
+    the call the slot names, or of the grant followed there, keeps record and follow time. A repeat is the same class
+    and kind (group or private, voice or data) and the same talkgroup, or for a private call the same two parties
+    (either way round): a private data grant from another sender to the same unit is another call. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+

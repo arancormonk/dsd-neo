@@ -30,6 +30,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dmr_abs_params.h"
@@ -1330,6 +1331,122 @@ test_chan_freq_contradiction_no_effect(void) {
     dsd_state_trunk_lcn_free(&g_state);
 }
 
+/* A single CSBK is 96 bits: the gate and the handlers read no continuation field of one, whatever the C_BCAST type
+   and whether the CRC checked (an exact-size buffer, which the sanitizer build checks). */
+static void
+test_single_c_bcast_reads_no_continuation(void) {
+    for (uint8_t type = 0U; type < 8U; type++) {
+        for (uint32_t crc = 0U; crc < 2U; crc++) {
+            reset();
+            dmr_sm_init(&g_opts, &g_state);
+            uint8_t* bits = (uint8_t*)calloc(96U, 1U);
+            uint8_t* bytes = (uint8_t*)calloc(12U, 1U);
+            assert(bits != NULL && bytes != NULL);
+            bits[0] = 1U; /* last block */
+            bytes[0] = (uint8_t)(0x80U | 40U);
+            put_bits(bits, 2, 40U, 6);
+            put_bits(bits, 16, type, 5);
+            put_bits(bits, 68, 143U, 12);
+            dmr_cspdu(&g_opts, &g_state, bits, bytes, crc, 0U);
+            assert(g_state.trunk_chan_map[143] == 0L);
+            free(bits);
+            free(bytes);
+        }
+    }
+}
+
+/* Vote_Now and Adjacent_Site naming a logical channel are single CSBKs (TS 102 361-4 §7.2.19.3.0(b), Table 7.71): the
+   same announcement as an MBC is the wrong form, refused before any effect, another network's header dropping
+   nothing. */
+static void
+test_logical_vote_now_adjacent_mbc_is_malformed(void) {
+    static const uint8_t types[] = {2U, 6U};
+    for (size_t i = 0; i < sizeof types; i++) {
+        reset();
+        dmr_sm_init(&g_opts, &g_state);
+        send_aloha(0x1234U);
+        assert(dmr_t3_chan_learn(&g_opts, &g_state, 144U, 451400000L, DMR_CHAN_ORIGIN_SITE) == 1);
+        const uint32_t gen = dmr_t3_chan_generation(&g_state);
+        prepare_no_effect_check();
+        g_bcast_syscode = 0x1254U;
+        send_c_bcast_mbc(types[i], 123U, 145U, 451U, 1200U, 1U);
+        assert(no_effect_since_prepare());
+        assert(g_state.trunk_chan_map[145] == 0L && candidate_count(451150000L) == 0);
+        assert(dmr_t3_chan_generation(&g_state) == gen && g_state.trunk_chan_map[144] == 451400000L);
+    }
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* A standard C_BCAST single block carries LB 1 (TS 102 361-4 Table 7.20): one with LB 0 is refused before its
+   heartbeat or its network identity; a manufacturer's flags are its own. */
+static void
+test_single_c_bcast_without_last_block_is_malformed(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_aloha(0x1234U);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 146U, 451412500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint32_t gen = dmr_t3_chan_generation(&g_state);
+    prepare_no_effect_check();
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, 40U);
+    bits[0] = 0U;
+    bytes[0] = 40U;
+    put_bits(bits, 16, 3U, 5);                 /* Local_Time */
+    put_bits(bits, 40, 0x1254U & 0x3FFFU, 14); /* another network */
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    assert(no_effect_since_prepare());
+    assert(dmr_t3_chan_generation(&g_state) == gen && g_state.trunk_chan_map[146] == 451412500L);
+
+    bytes[1] = 0x10U; /* a manufacturer's */
+    put_bits(bits, 8, 0x10U, 8);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    assert(g_state.last_cc_sync_time_m > 1.0);
+}
+
+/* A P_CLEAR on LPCN 0 sends its parties to the last confirmed TSCC and is a single CSBK; only 0xFFF heads the MBC
+   form (TS 102 361-4 §7.1.1.3.2). The MBC on LPCN 0 is refused before any effect; the single block is not. */
+static void
+test_p_clear_mbc_on_lpcn_zero_is_malformed(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    prepare_no_effect_check();
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, 46U);
+    put_bits(bits, 32, 0xFFFED4U, 24);
+    put_abs_params(bits, 147U, 1300U);
+    dispatch_mbc(bits, bytes, 46U);
+    assert(no_effect_since_prepare());
+    assert(g_state.trunk_chan_map[147] == 0L);
+
+    build_pf0(bits, bytes, 46U);
+    put_bits(bits, 32, 0xFFFED4U, 24);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    assert(g_state.last_cc_sync_time_m > 1.0);
+}
+
+/* Another writer taking a row the air learned takes the trust DMR gave it (an LPCN-only grant off the control channel
+   needs that trust), and moves the channel revision even at the row's frequency. A write to a row the air does not
+   hold moves neither. */
+static void
+test_foreign_takeover_drops_trust_and_moves_revision(void) {
+    reset();
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 148U, 451425000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.dmr_lcn_trust[148] == 2U);
+    uint32_t rev = dmr_t3_chan_revision(&g_state);
+    dsd_state_set_trunk_chan_freq(&g_state, 148U, 451425000L);
+    assert(dmr_t3_chan_origin(&g_state, 148U) == DMR_CHAN_ORIGIN_FILE);
+    assert(g_state.dmr_lcn_trust[148] == 0U);
+    assert(dmr_t3_chan_revision(&g_state) != rev);
+
+    rev = dmr_t3_chan_revision(&g_state);
+    g_state.dmr_lcn_trust[149] = 1U;
+    dsd_state_set_trunk_chan_freq(&g_state, 149U, 451437500L);
+    assert(g_state.dmr_lcn_trust[149] == 1U);
+    assert(dmr_t3_chan_revision(&g_state) == rev);
+}
+
 int
 main(void) {
     test_site_overrides_estimate_and_unverified();
@@ -1370,6 +1487,11 @@ main(void) {
     test_unfinished_mbc_headers_note_no_lock_evidence();
     test_logical_channel_mbc_is_malformed();
     test_chan_freq_contradiction_no_effect();
+    test_single_c_bcast_reads_no_continuation();
+    test_logical_vote_now_adjacent_mbc_is_malformed();
+    test_single_c_bcast_without_last_block_is_malformed();
+    test_p_clear_mbc_on_lpcn_zero_is_malformed();
+    test_foreign_takeover_drops_trust_and_moves_revision();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

@@ -225,8 +225,10 @@ ChannelNumber(dec),frequency(Hz),note
 
 The `999` row seeds the control channel at the front of the hunt list. That works for Connect Plus, whose channel
 numbers never reach 999. On DMR Tier III, 999 is a real channel number, so a grant to channel 999 would tune the
-control channel: seed it under key `0` instead. A key `0` row only takes its place in the list: it never maps channel
-`0`, so it cannot answer a P25 grant for channel `0x0000`.
+control channel: seed it under key `0` instead. A key `0` row takes its place in the list and names no channel a DMR
+grant can use. It does fill channel `0` of the shared map, so in one session that decodes both DMR and P25, a P25
+grant for channel `0` can resolve to that row until the site's band plan arrives; trunk-scan targets keep their own
+channel `0`.
 
 ```csv
 ChannelNumber(dec),frequency(Hz),note

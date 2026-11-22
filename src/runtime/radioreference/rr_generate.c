@@ -951,8 +951,8 @@ rr_tier3_seed_written(const dsd_rr_site* site, int pass, size_t idx) {
  * @brief Emit a Tier III site's control-frequency seed rows.
  *
  * Every marked primary, then alternate, control frequency the rows do not hold
- * already is written once under RR_TIER3_SEED_CHAN, ahead of the rows, so the
- * hunt list starts on the control channel.
+ * already is written once under RR_TIER3_SEED_CHAN, after the numbered control
+ * rows and ahead of the others, so the hunt list starts on a control channel.
  */
 static void
 rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
@@ -970,14 +970,52 @@ rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t 
     }
 }
 
+/** @brief Whether @p freq_hz is a usable control frequency the site marks in pass @p pass (0 primary, 1 alternate). */
+static int
+rr_tier3_freq_marked(const dsd_rr_site* site, int pass, long long freq_hz) {
+    for (size_t i = 0; site->freqs != NULL && i < site->freq_count; i++) {
+        if (rr_tier3_seed_candidate(site, pass, i) && site->freqs[i].freq_hz == freq_hz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Emit a Tier III site's rows in hunt order.
+ *
+ * The rows whose frequency is a marked control frequency come first, the
+ * primaries before the alternates, then the key-0 seeds of the control
+ * frequencies no row holds (rr_tier3_seed_controls()), then every other row in
+ * channel order. The rows hold each frequency once, and a seed only one no row
+ * holds, so no frequency repeats.
+ */
+static void
+rr_tier3_emit_rows(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < count; i++) {
+            if (rr_tier3_freq_marked(site, pass, rows[i].freq_hz)
+                && !(pass == 1 && rr_tier3_freq_marked(site, 0, rows[i].freq_hz))) {
+                rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
+            }
+        }
+    }
+    rr_tier3_seed_controls(site, rows, count, text);
+    for (size_t i = 0; i < count; i++) {
+        if (!rr_tier3_freq_marked(site, 0, rows[i].freq_hz) && !rr_tier3_freq_marked(site, 1, rows[i].freq_hz)) {
+            rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
+        }
+    }
+}
+
 /**
  * @brief Emit a Connect Plus or Tier III channel map.
  *
- * Both index trunk_chan_map[] by the announced channel number, so rows are
- * ascending by channel. Connect Plus seeds the control frequency at the
- * conventional 999 slot when the site marks one; Tier III seeds every marked
- * control frequency the rows do not hold under key 0 (rr_tier3_seed_controls()),
- * and skips a frequency without a ch_id rather than keying it by its row ordinal.
+ * Both index trunk_chan_map[] by the announced channel number. Connect Plus
+ * rows are ascending by channel, with the control frequency seeded at the
+ * conventional 999 slot when the site marks one; Tier III rows are in hunt
+ * order (rr_tier3_emit_rows()), and a frequency without a ch_id is skipped
+ * rather than keyed by its row ordinal.
  *
  * @param protocol CONPLUS or TIER3.
  * @param site     Site.
@@ -1017,11 +1055,11 @@ rr_chan_dmr_lcn(dsd_rr_protocol protocol, const dsd_rr_site* site, rr_text* text
         if (cc_hz > 0 && !seeded) {
             rr_text_chan_row(text, RR_DEFAULT_CC_CHAN, cc_hz, "default cc");
         }
+        for (size_t i = 0; i < count; i++) {
+            rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
+        }
     } else {
-        rr_tier3_seed_controls(site, rows, count, text);
-    }
-    for (size_t i = 0; i < count; i++) {
-        rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
+        rr_tier3_emit_rows(site, rows, count, text);
     }
 
     free(rows);

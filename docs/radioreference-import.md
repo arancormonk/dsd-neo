@@ -569,8 +569,8 @@ names. RadioReference's LCN column on a Tier III site is only the row's position
 no Ch ID, or one that is not a number, is left out, and the preview counts them:
 `RadioReference lists no channel number for 3 frequencies; add them in the app.`
 
-Every control frequency RadioReference marks, the primary and each alternate, that no row already holds is written
-first under key `0`:
+The rows of the control frequencies RadioReference marks come first, the primary before the alternates. Every marked
+control frequency that no row holds follows under key `0`, then the other rows in channel order:
 
 ```csv
 ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)

@@ -213,6 +213,8 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
     if (ext == NULL) {
         return 0;
     }
+    /* The writer's own row is no takeover (dsd_state_set_trunk_chan_freq() would count one): its bit goes first. */
+    dsd_state_dmr_lcn_ota_set(state, lpcn, 0);
     dsd_state_set_trunk_chan_freq(state, lpcn, freq_hz);
     dsd_state_dmr_lcn_ota_set(state, lpcn, 1);
     ext->origin[lpcn] = (uint8_t)origin;

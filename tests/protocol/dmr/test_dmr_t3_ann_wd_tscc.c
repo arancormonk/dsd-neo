@@ -144,7 +144,8 @@ static void
 build_ann_wd_tscc(uint8_t* bits, uint8_t* bytes, uint16_t ch1, uint16_t ch2, uint8_t ch1_flag, uint8_t ch2_flag) {
     DSD_MEMSET(bits, 0, 256);
     DSD_MEMSET(bytes, 0, 48);
-    bytes[0] = 40U; /* C_BCAST */
+    bytes[0] = (uint8_t)(0x80U | 40U); /* C_BCAST, a single block: LB 1 (Table 7.20) */
+    bits[0] = 1U;
     write_bits_u32(bits, 25U, 1U, 4U);
     write_bits_u32(bits, 29U, 2U, 4U);
     bits[33] = (uint8_t)(ch1_flag & 1U);
@@ -161,6 +162,8 @@ send_ann_wd_mbc(dsd_opts* opts, dsd_state* state, uint16_t bcast_ch1, uint8_t aw
     uint8_t bits[256];
     uint8_t bytes[48];
     build_ann_wd_tscc(bits, bytes, bcast_ch1, 0U, aw_flag1, 0U);
+    bits[0] = 0U; /* the header is no last block */
+    bytes[0] = 40U;
     write_bits_u32(bits, 2U, 40U, 6U);
     bits[96] = 1U;
     write_bits_u32(bits, 98U, 40U, 6U);

@@ -2266,11 +2266,20 @@ dmr_sm_event_kind(const dmr_sm_event_t* ev) {
     return ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
-/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same target and policy class. */
+/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same policy class and kind (voice or data),
+   and the same talkgroup, or for a private call the same two parties (either way round: the reply of the call). */
 static int
 dmr_sm_grant_names_call(const dmr_sm_event_t* ev, uint32_t target, const dmr_sm_slot_ctx_t* id, long carrier_hz) {
-    return dmr_sm_slot_identity_known(id) && id->carrier_hz == carrier_hz && id->target == target
-           && id->judged_group == (uint8_t)(ev->is_group != 0);
+    if (!dmr_sm_slot_identity_known(id) || id->carrier_hz != carrier_hz
+        || id->judged_group != (uint8_t)(ev->is_group != 0)
+        || id->data_call != (uint8_t)(dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA)) {
+        return 0;
+    }
+    if (ev->is_group) {
+        return id->target == target;
+    }
+    const uint32_t src = (uint32_t)ev->src;
+    return (id->target == target && id->source == src) || (id->target == src && id->source == target);
 }
 
 /* The followed grant names its call: the followed slot's record takes its identity, and the preemption ledger holds the

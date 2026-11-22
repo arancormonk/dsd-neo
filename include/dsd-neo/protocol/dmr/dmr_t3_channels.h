@@ -75,7 +75,7 @@ void dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state);
 /** The network generation: bumps on every network change. */
 uint32_t dmr_t3_chan_generation(const dsd_state* state);
 
-/** The revision: bumps on any row or origin change. */
+/** The revision: bumps on any row or origin change, another writer taking a row at its frequency included. */
 uint32_t dmr_t3_chan_revision(const dsd_state* state);
 
 /**
