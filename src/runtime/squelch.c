@@ -537,23 +537,59 @@ dsd_squelch_level_is_whole_db(double level, int* out_db) {
 
 /* ---- The analog default squelch's standing (issue #899); dsd_squelch_analog_default_sync() moves it. ---- */
 
+/* Whether @p text (leading blanks skipped) names a dynamic mode, ignoring ASCII case: then the grammar's own reason
+   (a margin out of range) says what is wrong with it. */
+static int
+squelch_default_text_names_dynamic(const char* text) {
+    while (text && (*text == ' ' || *text == '\t')) {
+        text++;
+    }
+    if (!text) {
+        return 0;
+    }
+    static const char* const names[] = {"auto", "noise"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        size_t k = 0;
+        while (names[i][k] != '\0' && tolower((unsigned char)text[k]) == names[i][k]) {
+            k++;
+        }
+        if (names[i][k] == '\0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+squelch_default_refuse(char* err, size_t err_size, const char* what) {
+    if (err && err_size > 0U) {
+        DSD_SNPRINTF(err, err_size, "expects auto[+N] or noise[+N] (N from 3 to 30)%s", what);
+    }
+}
+
 int
 dsd_squelch_analog_default_parse(dsd_opts* opts, const char* text, char* err, size_t err_size) {
     dsd_squelch_setting setting;
     if (dsd_squelch_setting_parse(text, &setting, err, err_size) != 0) {
+        if (!squelch_default_text_names_dynamic(text)) {
+            squelch_default_refuse(err, err_size, "");
+        }
         return -1;
     }
-    if (!dsd_squelch_setting_is_dynamic(&setting) && !dsd_squelch_setting_is_off(&setting)) {
-        if (err && err_size > 0U) {
-            DSD_SNPRINTF(err, err_size, "%s", "expects off, auto[+N] or noise[+N] (N from 3 to 30), not a level");
-        }
+    if (dsd_squelch_setting_is_off(&setting)) {
+        /* No default is the option left out: an Off here would read as a setting the session runs. */
+        squelch_default_refuse(err, err_size, ", not off: leave the option out for no default");
+        return -1;
+    }
+    if (!dsd_squelch_setting_is_dynamic(&setting)) {
+        squelch_default_refuse(err, err_size, ", not a level");
         return -1;
     }
     if (!opts) {
         return 0;
     }
-    opts->squelch_default_mode = dsd_squelch_mode_or_level(setting.mode);
-    opts->squelch_default_margin_db = dsd_squelch_setting_is_dynamic(&setting) ? setting.margin_db : 0;
+    opts->squelch_default_mode = setting.mode;
+    opts->squelch_default_margin_db = setting.margin_db;
     return 0;
 }
 

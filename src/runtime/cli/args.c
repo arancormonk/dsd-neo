@@ -886,13 +886,14 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
     return 1;
 }
 
-/* --squelch-analog-default <off|auto[+N]|noise[+N]> (issue #899): the squelch an analog channel of a radio input runs
- * while no squelch was set explicitly. A level is refused; the refusal names the grammar, never the text. */
+/* --squelch-analog-default <auto[+N]|noise[+N]> (issue #899): the squelch an analog channel of a radio input runs
+ * while no squelch was set explicitly. Off and a level are refused (no default is the option left out); the refusal
+ * names the grammar, never the text. */
 static int
 cli_parse_squelch_analog_default_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
     char err[96];
     if (!in) {
-        LOG_ERROR("--squelch-analog-default requires a setting: off, auto[+N] or noise[+N]\n");
+        LOG_ERROR("--squelch-analog-default requires a setting: auto[+N] or noise[+N]\n");
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }

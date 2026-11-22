@@ -5237,7 +5237,7 @@ suite runs under this compiler.
     `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
   - Analog default squelch (`--squelch-analog-default`, issue #899; `squelch.h`, `src/runtime/squelch.c` for its
     standing, `src/runtime/squelch_analog_default.c` for `dsd_squelch_analog_default_sync()`): an AUTO or NOISE setting
-    (`dsd_squelch_analog_default_parse()`; off or absent is none, a level refused) the decoder runs on an analog channel
+    (`dsd_squelch_analog_default_parse()`; absent is none, `off` and a level refused) the decoder runs on an analog channel
     of a radio input while no squelch was set. No INI key. `dsd_opts::squelch_default_mode`/`_margin_db` hold it and
     `squelch_default_state` (a `dsd_squelch_default_state`, decoder thread only) where it stands: IDLE, APPLIED (the
     `rtl_squelch_*` fields run it, the `squelch_default_base_*` fields keep what they held, the level beneath kept) or

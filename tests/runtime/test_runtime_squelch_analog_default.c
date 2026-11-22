@@ -94,21 +94,24 @@ test_parse(void) {
     assert(dsd_squelch_analog_default_parse(o, "NOISE+17", err, sizeof err) == 0);
     assert(o->squelch_default_mode == DSD_SQUELCH_MODE_NOISE && o->squelch_default_margin_db == 17);
     assert(dsd_squelch_analog_default_pending(o));
-    assert(dsd_squelch_analog_default_parse(o, "off", err, sizeof err) == 0);
-    assert(o->squelch_default_mode == DSD_SQUELCH_MODE_LEVEL && !dsd_squelch_analog_default_pending(o));
-    assert(dsd_squelch_analog_default_parse(o, "0", err, sizeof err) == 0 && !dsd_squelch_analog_default_pending(o));
-    /* Refused, the options untouched: a level, a margin out of range, text that is no setting. */
+    /* Refused, the options untouched: off (no default is the option left out), a level, a margin out of range, text
+       that is no setting. */
     assert(dsd_squelch_analog_default_parse(o, "auto+12", err, sizeof err) == 0);
-    static const char* const refused[] = {"-60", "0.5", "auto+2", "noise+31", "loud", ""};
+    static const char* const refused[] = {"off", "OFF", "0", "-60", "0.5", "auto+2", "noise+31", "loud", ""};
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
         err[0] = '\0';
         assert(dsd_squelch_analog_default_parse(o, refused[i], err, sizeof err) == -1 && err[0] != '\0');
-        /* The reason never repeats the text. */
-        assert(refused[i][0] == '\0' || strstr(err, refused[i]) == NULL);
+        /* The reason never repeats the text (an off names "off" itself, which is the grammar's word). */
+        assert(refused[i][0] == '\0' || i < 3U || strstr(err, refused[i]) == NULL);
         assert(o->squelch_default_mode == DSD_SQUELCH_MODE_AUTO && o->squelch_default_margin_db == 12);
     }
     err[0] = '\0';
     assert(dsd_squelch_analog_default_parse(o, "-60", err, sizeof err) == -1 && strstr(err, "not a level"));
+    assert(dsd_squelch_analog_default_parse(o, "off", err, sizeof err) == -1
+           && strstr(err, "not off: leave the option out for no default"));
+    assert(dsd_squelch_analog_default_parse(o, "loud", err, sizeof err) == -1
+           && strstr(err, "expects auto[+N] or noise[+N] (N from 3 to 30)"));
+    assert(dsd_squelch_analog_default_parse(o, "auto+2", err, sizeof err) == -1 && strstr(err, "3 to 30"));
     free(o);
 }
 
@@ -162,14 +165,16 @@ test_channel_kinds(void) {
     assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
     session_free(o, s);
 
-    /* Off, or never given: nothing ever changes. */
-    for (int given = 0; given < 2; given++) {
+    /* Never given (an off is refused, so it can never be given): nothing ever changes, and a refused off leaves it
+       so. */
+    for (int refused_off = 0; refused_off < 2; refused_off++) {
         session_init(&o, &s, -110);
         o->squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
         o->squelch_default_margin_db = 0;
-        if (given) {
-            assert(dsd_squelch_analog_default_parse(o, "off", NULL, 0U) == 0);
+        if (refused_off) {
+            assert(dsd_squelch_analog_default_parse(o, "off", NULL, 0U) == -1);
         }
+        assert(o->squelch_default_mode == DSD_SQUELCH_MODE_LEVEL && !dsd_squelch_analog_default_pending(o));
         assert(!dsd_squelch_analog_default_wanted(o, s));
         assert(dsd_squelch_analog_default_sync(o, s) == 0 && runs_level(o, -110));
         session_free(o, s);

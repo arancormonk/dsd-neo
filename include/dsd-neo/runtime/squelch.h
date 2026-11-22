@@ -181,9 +181,9 @@ typedef enum {
 } dsd_squelch_default_state;
 
 /**
- * @brief Read `--squelch-analog-default`'s @p text into @p opts (issue #899): `off`, `auto[+N]` or `noise[+N]` (N
- * 3..30, the squelch grammar). Off, like the option left out, is no default. A level is refused: the default opens on
- * what each channel shows, never at a fixed threshold.
+ * @brief Read `--squelch-analog-default`'s @p text into @p opts (issue #899): `auto[+N]` or `noise[+N]` (N 3..30, the
+ * squelch grammar). No default is the option left out: `off` (or `0`) is refused, as a level is (the default opens on
+ * what each channel shows, never at a fixed threshold).
  *
  * @return 0, or -1 with a short reason in @p err (when not NULL), @p opts untouched.
  */

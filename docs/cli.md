@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|0.001..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
 - Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <off|auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
@@ -1701,12 +1701,13 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
 
 ### Analog default squelch (`--squelch-analog-default`)
 
-`--squelch-analog-default <off|auto[+N]|noise[+N]>` (the squelch grammar's dynamic settings, N 3..30; a level is
-refused) is the squelch the decoder runs on an analog channel of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy,
-`--iq-replay`) while no squelch was set. It is for a frontend that starts every radio session the same way: the
-Qt/Android app passes its Settings default (`noise+10` unless changed) with every radio session it starts, so its
-analog channels play only traffic while digital decoding is left exactly as it was. It is no INI key: a config saves
-the squelch the session set, never this default.
+`--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch grammar's dynamic settings, N 3..30; a level is
+refused, and so is `off`: for no default, leave the option out) is the squelch the decoder runs on an analog channel
+of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) while no squelch was set. It is for a frontend
+that starts every radio session the same way: the Qt/Android app passes its Settings default (`noise+10` unless
+changed; nothing when it is Off) with every radio session it starts, so its analog channels play only traffic while
+digital decoding is left exactly as it was. It is no INI key: a config saves the squelch the session set, never this
+default.
 
 - In force on: the standalone `-fA` / `-fM` monitor, from the start and after any live decode switch to it (from the
   terminal, the app, the control API, or a config whose `[mode]` makes the decode analog), and a `-Y` row or trunk-scan
