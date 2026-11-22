@@ -1171,6 +1171,25 @@ test_data_grant_never_binds_a_voice_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A data grant's record awaiting its call never binds to a voice call that opens on its slot afterwards: a private data
+   grant to radio 300 is followed, then anonymous voice (no LC) opens on its slot. The record keeps awaiting a call of
+   its own, and the grant's channel is not published into the voice call. */
+static int
+test_awaiting_data_grant_never_binds_later_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    grant_op(opts, st, 51U, LPCN_A, 0, 300, 1); // PD_GRANT to radio 300
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 0, 0); // late-entry voice, no LC yet
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    const uint64_t voice_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    int rc = expect_true("an awaiting data grant is not bound to a later voice call",
+                         voice_epoch != 0U && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    rc |= expect_true("the data grant's channel is not published into the voice call",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.channel == 0U);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1217,6 +1236,7 @@ main(void) {
     rc |= test_media_change_has_its_own_acquisition_window(opts, st);
     rc |= test_media_change_publishes_its_own_channel(opts, st);
     rc |= test_data_grant_never_binds_a_voice_call(opts, st);
+    rc |= test_awaiting_data_grant_never_binds_later_voice(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

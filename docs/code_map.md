@@ -13569,7 +13569,9 @@ Private per-protocol modules worth knowing about:
     one of the other media or address class (`dmr_sm_call_names_other()`: a data naming never binds a voice call, nor a
     voice naming a data call, and a talkgroup and a unit may share a number) (on the
     followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
-    adopted in place any call), else to the first call to begin on the slot after it was named; the same call named
+    adopted in place any call), else to the first call to begin on the slot after it was named that is of its media and
+    address class (the same `dmr_sm_call_names_other()` check: a data grant awaiting its call never binds a voice call
+    that opens on its slot, nor publishes its channel into it); the same call named
     again while its call is faded but may still be reacquired (`dmr_sm_slot_call_may_heal()`:
     `dsd_call_snapshot_may_reacquire()`, its end reason's own window) keeps that binding, so the reacquired call, which keeps its transmission, stays the
     record's and the next call never inherits it. The call's end leaves

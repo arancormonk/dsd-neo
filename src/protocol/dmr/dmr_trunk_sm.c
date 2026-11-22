@@ -153,8 +153,28 @@ dmr_sm_slot_identity_track(dmr_sm_ctx_t* ctx, int s, const dsd_call_snapshot* ca
     dmr_sm_drop_grant_identity(ctx, s);
 }
 
+/* Whether canonical call @p call names another call than @p named: another media (a voice call for a data naming, or
+   the reverse), another address class (a group call for a private naming, or the reverse: a talkgroup and a unit may
+   share a number), or another target (for a private call, neither party). A call that names nothing yet names no other
+   call. */
+static int
+dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named) {
+    const int call_voice = call->kind == DSD_CALL_KIND_VOICE || call->kind == DSD_CALL_KIND_GROUP_VOICE
+                           || call->kind == DSD_CALL_KIND_PRIVATE_VOICE;
+    if ((named->data_call && call_voice) || (!named->data_call && call->kind == DSD_CALL_KIND_DATA)) {
+        return 1;
+    }
+    if ((call->kind == DSD_CALL_KIND_GROUP_VOICE && !named->judged_group)
+        || (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && named->judged_group)) {
+        return 1;
+    }
+    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+    return target != 0U && target != named->target && !(!named->judged_group && target == named->source);
+}
+
 /* Bind @p slot's identity to the canonical call it names, and let it go when that call is over. An identity awaiting
-   its call binds to the first one to begin on the slot after it was named (a resumed older call is not it). Another
+   its call binds to the first one to begin on the slot after it was named (a resumed older call is not it) that is of
+   its media and address class (dmr_sm_call_names_other(): a voice call is never a data grant's). Another
    call on the slot ends the identity; on the followed carrier, one that began within the hangtime of the named call
    leaves a gap record (unknown) whose renaming as the same call keeps the follow time. A new call never inherits the
    identity, and the followed grant's identity no longer stands for the slot either. */
@@ -169,8 +189,8 @@ dmr_sm_slot_identity_refresh(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, d
     const int have = dsd_call_state_get(state, (uint8_t)s, &call) > 0;
     const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
     if (rec->call_epoch == 0U) {
-        if (current <= rec->call_floor) {
-            return; // still awaiting its call
+        if (current <= rec->call_floor || dmr_sm_call_names_other(&call, rec)) {
+            return; // still awaiting its call: a later call of another media or address is not it
         }
         rec->call_epoch = current;
         rec->call_seen_m = now_m;
@@ -202,25 +222,6 @@ dmr_sm_slot_identities_refresh(dmr_sm_ctx_t* ctx, const dsd_state* state, double
     for (int s = 0; s < 2; s++) {
         dmr_sm_slot_identity_refresh(ctx, state, s, now_m);
     }
-}
-
-/* Whether canonical call @p call names another call than @p named: another media (a voice call for a data naming, or
-   the reverse), another address class (a group call for a private naming, or the reverse: a talkgroup and a unit may
-   share a number), or another target (for a private call, neither party). A call that names nothing yet names no other
-   call. */
-static int
-dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named) {
-    const int call_voice = call->kind == DSD_CALL_KIND_VOICE || call->kind == DSD_CALL_KIND_GROUP_VOICE
-                           || call->kind == DSD_CALL_KIND_PRIVATE_VOICE;
-    if ((named->data_call && call_voice) || (!named->data_call && call->kind == DSD_CALL_KIND_DATA)) {
-        return 1;
-    }
-    if ((call->kind == DSD_CALL_KIND_GROUP_VOICE && !named->judged_group)
-        || (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && named->judged_group)) {
-        return 1;
-    }
-    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
-    return target != 0U && target != named->target && !(!named->judged_group && target == named->source);
 }
 
 /* The canonical call on slot @p s that @p named names now, its transmission (0: none yet, in @p floor the slot's epoch,
