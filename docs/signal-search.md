@@ -477,8 +477,12 @@ pass at 48 kHz):
 | --- | ---: | ---: |
 | Empty pass, 450–460 MHz, 12.5 kHz steps, 16 kHz width | 3.42 s, 22 spans | 5.52 s, 31 spans |
 | Empty pass, 450–460 MHz, 25 kHz steps and width (the TETRA preset) | 4.05 s, 26 spans | 7.29 s, 41 spans |
-| Landing to confirmed: DMR, P25 Phase 1 control channel, weak DMR (20 dB) | 0.34, 0.22, 0.32 s | 0.38, 0.24, 0.35 s |
-| Landing to confirmed: real-air TETRA call, marginal real-air TETRA control channel, DMO call | — | 0.20, 0.19, 0.26 s |
+| Landing to confirmed: DMR, P25 Phase 1 control channel, weak DMR (20 dB) | 0.19, 0.09, 0.22 s | 0.19, 0.12, 0.20 s |
+| Landing to confirmed: real-air TETRA call, marginal real-air TETRA control channel, DMO call | — | 0.05, 0.05, 0.29 s |
+
+Landing to confirmed counts from the first status after the tune has landed,
+when the receiver first hears the channel; the tune itself takes another 0.13
+to 0.19 seconds before that.
 
 A 72 kHz search captures less of the band at a time, so each span covers less (at
 a 25 kHz width, 249 kHz instead of 399 kHz), and each span takes a little longer
@@ -487,8 +491,9 @@ per pass. Against the release before TETRA identification, on the same ranges at
 the same rate, pass times agreed within 1 % and every detection confirmed in about
 the same time. The decoder used about 1 to 2 % of one core in every case, too
 little to compare more closely than the spread between runs, and no run dropped
-input. In the four TETRA runs the DMO call was found on the first pass three times
-and on the second once.
+input. In the four TETRA runs the DMO call was found on the second pass three times
+and on the eleventh once (a pass of its 50 kHz range takes about half a second): its
+bursts meet the RF detector only at some phases.
 
 ### TETRA limits
 
