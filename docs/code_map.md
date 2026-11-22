@@ -4888,9 +4888,11 @@ suite runs under this compiler.
       `ENGINE_CLEANUP_AUDIO`, `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
-    error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
-    pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
-    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. A frontend reading options a user typed
+    error. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
+    (`--dmr-chan-overrides`, `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`), so every pass over the raw argv --
+    bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an
+    option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. The Android receiver's
+    `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user typed
     walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
     `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
     parser's order: the long options out of the whole argv first, up to the first `--` that is no long option's value

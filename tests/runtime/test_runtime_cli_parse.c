@@ -10372,6 +10372,96 @@ test_dmr_chan_overrides_value_is_not_an_option(void) {
     return test_rc;
 }
 
+/* Whether the file @p option named was read: the path it keeps ends in @p name, or its rows were imported. */
+static int
+file_option_was_read(const char* option, const dsd_opts* opts, const dsd_state* state, const char* name) {
+    const char* file = NULL;
+    if (strcmp(option, "--p25-bandplan") == 0) {
+        file = opts->p25_bandplan_in_file;
+    } else if (strcmp(option, "--src-csv") == 0) {
+        file = opts->src_in_file;
+    } else {
+        return state->dmr_tg_key_map_count == 1;
+    }
+    const size_t len = strlen(file);
+    const size_t want = strlen(name);
+    return len >= want && strcmp(file + len - want, name) == 0;
+}
+
+/* The other options naming a CSV to read take a separate value whatever it starts with, as --dmr-chan-overrides does:
+   the bootstrap pre-scan steps over a file named like a one-shot option (--dump-config-template) rather than running
+   that option. */
+static int
+test_file_option_values_are_not_options(void) {
+    static const struct {
+        const char* option;
+        const char* contents;
+    } k_cases[] = {
+        {"--p25-bandplan",
+         "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n4,451000000,12500,1,0,0,,\n"},
+        {"--src-csv", "id,name,tags\n1201,Unit 1201,Ops\n"},
+        {"--dmr-tg-key-csv", "tg (dec),keyid (hex)\n123,7B\n"},
+    };
+
+    static const char k_name[] = "--dump-config-template";
+    int test_rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; ++c) {
+        const char* option = k_cases[c].option;
+        char attached[64];
+        DSD_SNPRINTF(attached, sizeof attached, "%s=%s", option, k_name);
+        if (!dsd_cli_option_takes_free_value(option) || dsd_cli_option_takes_free_value(attached)
+            || dsd_cli_long_option_arity(option) != DSD_CLI_LONG_NEXT) {
+            DSD_FPRINTF(stderr, "%s is not registered as an option taking a free value\n", option);
+            test_rc = 1;
+        }
+        dsd_test_temp_cwd cwd;
+        if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_file_option_name") != 0) {
+            return 1;
+        }
+        FILE* fp = dsd_fopen_private(k_name, "w");
+        if (fp == NULL) {
+            (void)dsd_test_temp_cwd_leave(&cwd);
+            return 1;
+        }
+        (void)fputs(k_cases[c].contents, fp);
+        (void)fclose(fp);
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (opts && state) {
+            initOpts(opts);
+            initState(state);
+            (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+            (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+            char arg0[] = "dsd-neo";
+            char arg1[64];
+            char arg2[sizeof k_name];
+            DSD_SNPRINTF(arg1, sizeof arg1, "%s", option);
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", k_name);
+            char* argv[] = {arg0, arg1, arg2, NULL};
+            int argc_effective = 0;
+            int exit_rc = -1;
+            const int brc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+            const int read = file_option_was_read(option, opts, state, k_name);
+            if (brc != DSD_BOOTSTRAP_CONTINUE || !read) {
+                DSD_FPRINTF(stderr, "bootstrap with %s %s: rc=%d exit_rc=%d read=%d\n", option, k_name, brc, exit_rc,
+                            read);
+                test_rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+        } else {
+            test_rc = 1;
+        }
+        free(opts);
+        free(state);
+        (void)remove(k_name);
+        if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+            test_rc = 1;
+        }
+    }
+    return test_rc;
+}
+
 static int
 test_p25_bandplan_manual_identity(void) {
     const char* contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
@@ -13557,6 +13647,7 @@ main(void) {
     rc |= test_dmr_chan_overrides_long_option_parse();
     rc |= test_dmr_chan_overrides_refusals();
     rc |= test_dmr_chan_overrides_value_is_not_an_option();
+    rc |= test_file_option_values_are_not_options();
     rc |= test_src_csv_allowed_with_trunk_scan();
     rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();
