@@ -17741,7 +17741,8 @@ Qt Quick frontend (`src/ui/qt`):
   were; a CJK session name draws centred in it and unclipped into a few pixels of padding (the D10 limit under "Call
   rows"). `headerBarHeight(t)` sums these boxes for tier t and the session's line conditions (`headingHeight(t)`,
   `scanTimingLineShown`, `roamingLineShown`), never reading the column back. A scan of several lists whose title
-  room in tier t (the header actions that tier shows, the pill at its widest label) cannot hold "+ N lists" and
+  room in tier t (the heading's width: the row less its 12 px right margin and, unless stacked, the header actions
+  that tier shows, the pill at its widest label) cannot hold "+ N lists" and
   max(96, 35% of the room) of the name takes the two-line title (B12, `titleTwoLine(t)`): the name elided on the first
   line, the count (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions (it starts
   `max(0, pillHeight - titleLineBox)` down beside them, at once when stacked), and `headingHeight(t)` adds that line;

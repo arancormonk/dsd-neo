@@ -429,7 +429,9 @@ Item {
         if (otherListCount <= 0)
             return false;
         var row = width - 2 * Theme.screenPadding;
-        var room = headerStackedFor(t) ? row : row - 12 - headerActionsWidthFor(wideHeaderActionsFor(t));
+        // The heading's own width: its 12 px right margin, stacked or beside
+        // the actions.
+        var room = row - 12 - (headerStackedFor(t) ? 0 : headerActionsWidthFor(wideHeaderActionsFor(t)));
         return room < titleSuffixMetrics.advanceWidth + Math.max(96, 0.35 * room);
     }
     // Beside the actions the count line starts below them.

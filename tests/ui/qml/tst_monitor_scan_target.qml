@@ -152,6 +152,42 @@ Item {
             root.height = 900;
         }
 
+        // Stacked over the actions (tier 0) on a 290 dp window at 2x text, the title's room is the heading's, which
+        // keeps a 12 px margin at its right: the form decided with that room keeps a readable name, at least three
+        // letters before the ellipsis, and the count whole, on the title's line or its own.
+        function test_stacked_multi_list_title_keeps_the_name() {
+            var name = "Countywide public safety and municipal services";
+            screen.system = {name: name, sourceType: "usb"};
+            screen.otherListCount = 7;
+            testContext.setHostRunning(true);
+            root.width = 290;
+            root.height = 1600;
+            Ui.Theme.fontScale = 2;
+            try {
+                waitForRendering(screen);
+                tryVerify(function () { return screen.tier === 0 && screen.headerStacked; }, 1000, "tier 0, stacked");
+                var title = findChild(screen, "monitorHeaderTitle");
+                var count = findChild(screen, "monitorHeaderTitleCount");
+                waitForRendering(screen);
+                var cut = title.text.indexOf("…");
+                verify(cut >= 3 && name.indexOf(title.text.substring(0, cut)) === 0, "the name shown: '" + title.text + "'");
+                verify(!title.truncated, "the title line overflows");
+                var heading = title.parent;
+                verify(title.x + title.width <= heading.width + 0.5, "the title runs past its heading");
+                if (count.visible)
+                    verify(!count.truncated && count.text === "+ 7 lists", "the count's line: " + count.text);
+                else
+                    verify(title.text.indexOf(" + 7 lists") > 0, "the count is on the title's line: " + title.text);
+                compare(title.Accessible.name.indexOf(" + 7 lists") > 0, true);
+                compare(findChild(screen, "monitorHeader").height, screen.headerBarHeight(screen.tier));
+            } finally {
+                screen.otherListCount = 0;
+                Ui.Theme.resetFontScale();
+                root.width = 420;
+                root.height = 900;
+            }
+        }
+
         // Issue #901 B12: beside the header actions on a narrow phone at large
         // text the title has no room for "+ 7 lists" and a readable part of the
         // name, so the count takes a second line of the header's whole width
