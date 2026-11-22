@@ -640,10 +640,18 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup home wacn", (int)identity.home_wacn, 0xABCDE);
     rc |= expect_int("Motorola extended regroup home sysid", (int)identity.home_sysid, 0x2A7);
     rc |= expect_int("Motorola extended regroup home unit", (int)identity.home_unit, 1234567);
-    /* A structure that declares nine octets: what follows is another message, never the SUID. */
+    /* A structure that declares nine octets is not the layout the decoder knows: it names no identity, and what
+       follows is another message, never the SUID. */
     mac[3] = 0x09;
-    rc |= expect_int("Motorola short regroup identity present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+    rc |= expect_int("Motorola short regroup names no identity", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
     rc |= expect_int("Motorola short regroup names no home", identity.home_valid, 0);
+    /* Nor does one that declares more than it has room for: 18 octets on a 17-octet FACCH. */
+    mac[3] = 0x12;
+    rc |= expect_int("Motorola long regroup names no identity", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
+    /* A complete 16-octet structure cut off by the span names nothing either. */
+    mac[3] = 0x10;
+    rc |= expect_int("Motorola regroup cut by the span names no identity",
+                     p25p2_mac_decode_voice_identity_span(0, 9, mac, &identity), 0);
     mac[3] = 0x10;
     /* Behind a four-octet Motorola message (0xBF), the 0xA0 ends at octet 20: inside a SACCH, past an LCCH's 18. */
     unsigned long long shifted[24] = {0};
@@ -660,8 +668,8 @@ run_voice_identity_parse_cases(void) {
                      p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 0);
     rc |= expect_int("LCCH-span regroup names no home", identity.home_valid, 0);
 
-    /* The same 0xBF prefix, then a complete nine-octet 0xA0 (declared 9): it ends at octet 13, inside an LCCH. The
-       segments follow the declared length, so the voice user is found there, with no home. */
+    /* The same 0xBF prefix, then a nine-octet 0xA0 (declared 9): it ends at octet 13, inside an LCCH, so the segments
+       find it, but a length the decoder does not know names no identity. */
     DSD_MEMSET(shifted, 0, sizeof(shifted));
     shifted[1] = 0xBF;
     shifted[2] = 0x90;
@@ -675,10 +683,8 @@ run_voice_identity_parse_cases(void) {
     shifted[11] = 0x34;
     shifted[12] = 0x56;
     shifted[13] = 0x78;
-    rc |= expect_int("LCCH-span short regroup present",
-                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 1);
-    rc |= expect_int("LCCH-span short regroup tg", identity.tg, 0x6789);
-    rc |= expect_int("LCCH-span short regroup src", identity.src, 0x345678);
+    rc |= expect_int("LCCH-span short regroup names no identity",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 0);
     rc |= expect_int("LCCH-span short regroup names no home", identity.home_valid, 0);
 
     /* A short 0xA0 (declared 9) followed by an abbreviated group voice user: the next message starts after the nine

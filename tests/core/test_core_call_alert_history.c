@@ -5171,9 +5171,23 @@ test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
     assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
     assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "NEWTALKER") >= 0);
     dsd_event_sync_slot(opts, state, 0U);
+    /* While the call still runs, the committed row the frontends show already names the working address. */
+    int rc = 0;
+    int shown = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (strstr(row->alias, "NEWTALKER") == NULL) {
+            continue;
+        }
+        shown = 1;
+        rc |= expect_int("the live committed row names the working address", (int)row->source_id, 3002);
+        rc |= expect_int("the live committed line no longer names the roamer",
+                         strstr(row->event_string, "1234567@2A7") == NULL, 1);
+        rc |= expect_has_substr("the live committed line names the talker", row->event_string, "3002");
+    }
+    rc |= expect_int("the new talker's alias is on a committed row", shown, 1);
     assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
     dsd_event_sync_slot(opts, state, 0U);
-    int rc = 0;
     int found = 0;
     for (int i = 1; i < 10; i++) {
         const Event_History* row = &event_history[0].Event_History_Items[i];

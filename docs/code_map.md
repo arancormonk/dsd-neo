@@ -13747,9 +13747,10 @@ Private per-protocol modules worth knowing about:
   address from then on; the call records the withdrawal (`dsd_call_source_home::withdrawn`, carried to the history row
   as `Event_History::src_home_withdrawn`), so a row merged across a sync loss drops the earlier radio's home and alias
   too (`watchdog_event_merge_home_and_alias()`). A repeat of the same full SUID with no working address keeps the
-  binding it had. A 0xA0 is segmented by its declared length (a complete short structure is still a voice user, and
-  the next message starts after it), its SUID read only when that length is all 16 octets and the transport's span
-  holds them, and every voice identity form only when the span holds the whole structure (the MAC_ACTIVE pass parses
+  binding it had. A 0xA0 is segmented by its declared length (so the next message starts after it), but it names an
+  identity, in the voice-user pass and in the MAC_ACTIVE parse alike, only when it declares the 16 octets of the one
+  layout the decoder knows (or 0, the table's 16) and the segment and the span hold them all; its SUID only when it
+  declares 16. Every other voice identity form is read only when the span holds the whole structure (the MAC_ACTIVE pass parses
   within the LCCH's span on an LCCH, `p25p2_mac_decode_voice_identity_span()`); such an addressless voice user is
   `source_nonlocal` to the trunk state machine, so a
   working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a

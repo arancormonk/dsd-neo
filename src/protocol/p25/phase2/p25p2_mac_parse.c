@@ -83,10 +83,11 @@ p25p2_mac_motorola_payload_len(uint8_t opcode, int len) {
         case 0x89u:
         case 0x8Fu:
         case 0x91u:
-        case 0x95u:
-        /* Group Regroup Voice Channel User - Extended: 16 octets as transmitted, but a structure that declares fewer
-           ends there, and the next message starts after it (the table's 16 stand only where the octet is 0). */
-        case 0xA0u: return p25p2_mac_positive_len(len);
+        case 0x95u: return p25p2_mac_positive_len(len);
+        /* Group Regroup Voice Channel User - Extended: 16 octets as transmitted, but a structure that declares another
+           length ends there, and the next message starts after it. One that declares less than its own opcode, MFID and
+           length octets, or 0, keeps the table's 16, so no segment starts inside its header. */
+        case 0xA0u: return (len >= 3) ? len : -1;
         case 0xBFu: return (len > 0) ? len : 3;
         default: return -1;
     }
@@ -254,11 +255,12 @@ p25p2_mac_segment_holds(const struct p25p2_mac_segment* segment, int span, int n
 }
 
 /* The length octet a Motorola 0xA0 voice user declares (octet 3, its low six bits counting the whole message from the
-   opcode) says it carries all 16 octets. The segments follow the declared length (p25p2_mac_motorola_payload_len()),
-   but an octet of 0 leaves the table's 16, which say nothing of what was sent: no SUID is read from such a message. */
-static int
-p25p2_mac_motorola_regroup_ext_declares_suid(const unsigned long long mac[24], int pos) {
-    return (p25p2_mac_octet(mac, pos + 2) & 0x3Fu) == 16u;
+   opcode). The segments follow it (p25p2_mac_motorola_payload_len()), but the decoder knows one layout only, of 16
+   octets: a message that declares those (or 0, which leaves the table's 16) is one it can read, anything else names
+   no identity. Only a declared 16 says the SUID was sent: the table's 16 say nothing of what was. */
+static unsigned int
+p25p2_mac_motorola_regroup_ext_declared(const unsigned long long mac[24], int pos) {
+    return p25p2_mac_octet(mac, pos + 2) & 0x3Fu;
 }
 
 /* The Motorola supergroup voice users. The extended form (0xA0, Group Regroup Voice Channel User - Extended, 16 octets)
@@ -281,12 +283,14 @@ p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], cons
         out->src = (int)((p25p2_mac_octet(mac, pos + 5) << 16) | (p25p2_mac_octet(mac, pos + 6) << 8)
                          | p25p2_mac_octet(mac, pos + 7));
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 2);
-    } else if (opcode == 0xA0u && p25p2_mac_segment_holds(segment, span, 9)) {
+    } else if (opcode == 0xA0u && p25p2_mac_segment_holds(segment, span, 16)
+               && (p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 16u
+                   || p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 0u)) {
         out->tg = (int)((p25p2_mac_octet(mac, pos + 4) << 8) | p25p2_mac_octet(mac, pos + 5));
         out->src = (int)((p25p2_mac_octet(mac, pos + 6) << 16) | (p25p2_mac_octet(mac, pos + 7) << 8)
                          | p25p2_mac_octet(mac, pos + 8));
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 3);
-        if (p25p2_mac_segment_holds(segment, span, 16) && p25p2_mac_motorola_regroup_ext_declares_suid(mac, pos)) {
+        if (p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 16u) {
             p25p2_mac_voice_home(mac, pos + 9, out);
         }
     } else {

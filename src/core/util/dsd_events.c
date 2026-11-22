@@ -4033,14 +4033,27 @@ dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t
 // the new talker's, so the row lets the home go with it. Above all on a committed row (a notice committed the
 // reacquired segment before the withdrawal): left with the old home, the terminator's merge would read the staged
 // row's withdrawal as a replacement of that home and put the staged row's empty alias over the new one.
+// A committed row the withdrawal changes (it showed the home) also takes the call's working address, as the staged
+// row's fill-if-blank merge would, and is re-rendered against the environment it committed under, so the line both
+// frontends show names the talker now rather than the withdrawn radio.
 static void
-dsd_event_enrich_follow_home_withdrawal(const dsd_call_snapshot* call, Event_History* item) {
+dsd_event_enrich_follow_home_withdrawal(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle,
+                                        uint8_t history_index, Event_History* item) {
     if (call->source_home.valid != 0U || call->source_home.withdrawn == 0U) {
         return;
     }
+    const int showed_home = item->src_home_key != 0U || item->src_home[0] != '\0';
     item->src_home_key = 0U;
     item->src_home[0] = '\0';
     item->src_home_withdrawn = 1U;
+    if (history_index == 0U || !showed_home) {
+        return;
+    }
+    if (item->source_id == 0U && call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX) {
+        item->source_id = (uint32_t)call->ota_source_id;
+    }
+    int rendered_changed = 0;
+    (void)watchdog_event_rerender_row(&lifecycle->committed_env, item, &rendered_changed);
 }
 
 // Caller holds the call-state lock. Write the enrichment into the row the epoch found, staged or committed.
@@ -4052,7 +4065,7 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
     const int alias_changed =
         kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
     if (kind == DSD_EVENT_ENRICH_ALIAS) {
-        dsd_event_enrich_follow_home_withdrawal(call, item);
+        dsd_event_enrich_follow_home_withdrawal(call, &ext->events[slot], history_index, item);
     }
     dsd_event_enrich_apply(state, slot, epoch, item, value, kind);
     if (state->event_crc_invalid[slot]) {

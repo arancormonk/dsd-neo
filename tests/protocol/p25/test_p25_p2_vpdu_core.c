@@ -3041,6 +3041,44 @@ test_motorola_extended_regroup_voice_user_home(void) {
     return rc;
 }
 
+/* A Motorola 0xA0 that declares six octets after an eleven-octet message on FACCH: the segments end it at octet 17,
+   the end of the message area, but its working address would sit at octets 18-20 (CRC and padding). A length the
+   decoder does not know names no group or source, so no call opens and no affiliation is recorded. */
+static int
+test_motorola_regroup_of_unknown_length_names_no_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+    unsigned long long int MAC[24] = {0};
+    MAC[1] = 0xBF; /* a Motorola message declaring eleven octets */
+    MAC[2] = 0x90;
+    MAC[3] = 0x0B;
+    MAC[12] = 0xA0;
+    MAC[13] = 0x90;
+    MAC[14] = 0x06; /* declares six octets */
+    MAC[15] = 0x00; /* SVC: clear */
+    MAC[16] = 0x12;
+    MAC[17] = 0x34; /* supergroup 0x1234 */
+    MAC[18] = 0x00;
+    MAC[19] = 0x0B;
+    MAC[20] = 0xBA; /* past the message area */
+    process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, 1);
+    dsd_call_snapshot call = {0};
+    const int have = dsd_call_state_get(state, 0U, &call) > 0;
+    rc |= expect_true("p2_moto_short no call from octets past the message area",
+                      !have || (call.ota_target_id != 0x1234U && call.ota_source_id != 0x000BBAU));
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A roaming radio's extended voice user with Source Address 0 names it by its home SUID alone (an L3Harris site does).
    The call records that home identity for display (`unit@system`) and alias matching only: its source stays the working
    address, 0, so no local list, boundary or identity record takes a home unit ID for a local radio (issue #800). A
@@ -3123,6 +3161,7 @@ main(void) {
     rc |= test_abbreviated_voice_user_replaces_roaming_home(1);
     rc |= test_abbreviated_voice_user_replaces_roaming_home(0);
     rc |= test_motorola_extended_regroup_voice_user_home();
+    rc |= test_motorola_regroup_of_unknown_length_names_no_call();
     dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         FILE* diagnostics = fopen(cap.path, "rb");
