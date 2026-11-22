@@ -767,9 +767,13 @@ Generated (do not edit/commit):
       refuses (short data under `--no-data-calls`, a private call under `--no-private-calls`) holds no `-t` and the
       row leaves at its hangtime as an idle one (`test_y_typed_row_holds_on_admitted_activity()`). The checked content
       still resolves an open verdict there. A refused report also marks the row (`dsd_engine_scan_owner::y_refused`,
-      cleared by the next admitted report and by a landing): while it stands an open verdict renews no `-Y` wait
-      (`live_scanner_y_note_partial()`), so the chunks of an M17 packet the table refused, each a PARTIAL note waiting
-      on the packet's end CRC, do not keep the row past `-t`; the quiet check still takes them as pending evidence. DMR, NXDN and P25 typed rows keep the checked-content rule. The `-Y`
+      `y_refused_slot`), for the refused transmission alone: the next frame boundary binds the mark to the call active
+      on that slot (`y_refused_epoch`, the call's `transmission_epoch`), and `live_scanner_y_refusal_stands()` drops it
+      once that slot holds no active call or another transmission's, as do the next admitted report and a landing.
+      While it stands an open verdict renews no `-Y` wait (`live_scanner_y_note_partial()`), so the chunks of an M17
+      packet the table refused, each a PARTIAL note waiting on the packet's end CRC, do not keep the row past `-t`; a
+      later call keeps the open-verdict wait every row gets (`y_admit_case(0, 2)`), and the quiet check still takes
+      the refused chunks as pending evidence. A refused transmission the decoder tracks no call for leaves no mark. DMR, NXDN and P25 typed rows keep the checked-content rule. The `-Y`
       hangtime countdown publishes the same
       deadline (`scan_y_timing_fill_hangtime()` extends the anchor's window to
       `dsd_engine_scan_y_frames_hold_until_m()` on the decode-mono clock;
@@ -1080,8 +1084,10 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   other than `RATE_UNKNOWN` sets `coord->active_tetra_skip`, which `trunk_scan_active_out_of_rotation()` reads, so it
   owes the departure a target out of the rotation owes (ahead of an operator's hold,
   `dsd_engine_trunk_scan_departure_due()` included), named once per target and cause in the log and on the status
-  line (`dsd_trunk_scan_target_runtime::tetra_named_cause`, forgotten when that target is found healthy, so two
-  targets with a lasting cause each warn once however often the rotation returns). One answer for
+  line (`dsd_trunk_scan_target_runtime::tetra_named_cause`, forgotten when a landing of that target is found healthy,
+  ahead of the unchanged-verdict shortcut since every park starts `active_tetra_skip` at OK, so two targets with a
+  lasting cause each warn once however often the rotation returns, and a cause that comes back after a healthy
+  return is named again). One answer for
   every entry path: `trunk_scan_target_tetra_skip()` judges the target on air with its park landed
   (`dsd_engine_trunk_scan_target_confirmed()`) landed, every other target prospectively, for a go-to, a hold and the
   published entry reasons, whose cache keys on the on-air verdict and, with a TETRA DMO target, on the target on air
@@ -1112,7 +1118,8 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   trunk scan), by what the stream applied for the row the receiver is on (a step off it that failed leaves it there);
   while a step of the scan's own is in flight the cause is kept, so a step that fails late leaves the departure paced
   as the step paced it; a cause is named once per row and cause (`channel_scan::tetra_named`, one entry per tetra-dmo
-  row named on the list in force, dropped when the row's chain runs or the list changes). A non-waiting
+  row named on the list in force, dropped when the row is judged healthy, ahead of the unchanged-verdict shortcut, or
+  when the list changes). A non-waiting
   cause is kept in the extension (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row
   does
   (`dsd_engine_channel_scan_on_departing_row()`, which `dsd_engine_channel_scan_hold_keeps_row()`, the departure, the
@@ -1648,7 +1655,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   that row reads it, so a `-Y -mc` tetra-dmo row lands the CQPSK chain with the TETRA filter
   (`y_tetra_locked_chain_case()`). The family switch out of an analog row carries the same choice as its own
   (`dsd_engine_prepare_digital_family()`'s `row_cqpsk_explicit`), so the stream lands it over `DSD_NEO_CQPSK`
-  (`y_tetra_after_nfm_row_case()`). An inherited row parked on the 18000/4 hunt profile recovers
+  (`y_tetra_after_nfm_row_case()`). Every symbol-profile publish of the row on air takes the same chain
+  (`dsd_scan_mode_chain_rf_mod()`: the row's CQPSK choice, else the FSK discriminator, GFSK where the decoder sits on
+  CQPSK): the frame sync's (`rtl_maybe_apply_demod_profile()`, so the `-m` lock's reapply at `getFrameSync()` entry,
+  `frame_sync_apply_cli_mod_lock()`, a hunt step or a timing step never puts a tetra-dmo row or target back on the
+  FSK discriminator, `test_lock_reapply_keeps_a_tetra_row_chain()`) and a live republish's
+  (`svc_publish_symbol_profile()`). An inherited row parked on the 18000/4 hunt profile recovers
   TETRA's profile (`dsd_scan_mode_effective_profile()`). The scan quiet check has no TETRA class
   (`scan_quiet_mode_classes()` 0); a tetra-dmo row or target publishes `DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE` (7,
   "No check: mode" in both frontends, through `scan_timing_view.c`) and its own WARN line, never the missing-width

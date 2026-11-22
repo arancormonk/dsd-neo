@@ -1051,7 +1051,8 @@ The simplex digital types each scan one conventional channel of a mode DSD-neo a
 policy table, voice-only, its keys, and for a `tetra-dmo` row the TETRA rules below (it is visited only where its
 chain runs and holds only on direct mode content). A call the policy table turns away holds a typed row no longer
 than an idle channel: short data under the default `--no-data-calls`, say, does not extend its hangtime (`-t`), and
-neither do the frames of an M17 packet that was turned away, while the packet goes on. A blank row in the same list
+neither do the frames of an M17 packet that was turned away, while the packet goes on. That holds for the refused
+transmission only: the next call on the row gets the usual short wait for its frames to be checked. A blank row in the same list
 runs the session's own decoder and receive chain, whatever row came before it. A
 `tetra-dmo` row always runs the TETRA receive chain, even under a `-m` modulation option such as `-mc`, after an
 `nfm` row, or with `DSD_NEO_CQPSK=0`. An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
@@ -1079,7 +1080,8 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   the radio applied for it and that the radio runs the TETRA receive chain, and checks again all the time. If the rate
   changes, or the timing does not match it, or the radio settled on another receive chain, the scan leaves it at once
   for the next one that can be visited, even under a hold, which stays and keeps where it lands. A radio that is
-  reopening keeps it. The reason is named once for each target or row. Typing the frequency of a target or row the
+  reopening keeps it. The reason is named once for each target or row, and named again if it comes back after a
+  visit where the chain ran. Typing the frequency of a target or row the
   scan is leaving for this reason is refused with the same reason, rather than held, and so is switching off the
   last other list when the target on air is one the scan is leaving.
 - **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is
