@@ -112,6 +112,7 @@
 #ifdef DSD_NEO_TEST_RTL_WRAP
 #include <dsd-neo/core/channel_label.h>
 #include "engine_test_support.h"
+#include "tetra_test_pdu.h"
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 #include <dsd-neo/app_control/commands.h>
@@ -133,7 +134,6 @@
 #include "scan_owner.h"
 #include "scan_quiet.h"
 #include "scan_step_untyped.h"
-#include "tetra_test_pdu.h"
 #endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)
