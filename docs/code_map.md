@@ -16146,7 +16146,9 @@ Qt Quick frontend (`src/ui/qt`):
   `test_scan_list_card_matches_the_system_card`; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden;
   `tst_home_compact_cards.qml`: compact cards at 320/360/411 x 1.0/1.6/2.0, one row, the height from the measured
-  lines at every size and 68 px at normal text where the lines are the base face's own (`cardHead()`), the site
+  lines at every size (`cardHead()`, the measured-height rule under "Monitor layout"), and at normal text, where the
+  test's own mixed-script probes find no fallback face taller than the base face, the height from those probes and
+  the 68 px floor, 68 px with the desktop fonts (an example: a taller base face gives a taller card), the site
   button drawn only where the title keeps its minimum and the count leading the line otherwise, More → Sites for a
   one-site group in both views, the Nearest line, the title's description, held lines under a screen reader, compact
   scan-list cards, the D11 reset shown and hidden, `test_tab_chosen_before_the_reset_keeps_no_old_place`,
@@ -17530,9 +17532,12 @@ Qt Quick frontend (`src/ui/qt`):
   below) is never wider than that, so nothing overflows. Decided limit (r7 K1, with the other left-out extras): beside
   a name or ids in a taller script, drawn smaller to fit their box, a tag that would have fitted in the width the
   smaller text leaves can be left out (a Tibetan private-call name at 320 dp drew in 31 of the 132 px before Skip,
-  and EMERGENCY, 77 px, was left out); it is still heard (`tst_monitor_status_lines.qml`
-  `test_tall_script_lines_keep_the_plan`: no overlap or overflow, the order kept, and the first item left out did not
-  fit beside the text at its asked-for size).
+  and EMERGENCY, 77 px, was left out); it is still heard. Likewise the lead (the strip's identity, the hero's ids)
+  beside a channel or tag text drawn smaller can elide a few px early, since that text keeps the width it asks for
+  (r8 ruling: at 320 dp a Tibetan channel drawn in 46 px keeps 86, and `TG 4001 · SRC 1000001`, 164 px, gets 158); the
+  whole of it is in the accessible text (`tst_monitor_status_lines.qml` `test_tall_script_lines_keep_the_plan`: no
+  overlap or overflow, the order kept, the lead at least min(its asked-for width, 96, the room), the tags spoken as
+  whole fields, and the first item left out did not fit beside the text at its asked-for size).
   The strip reads label, identity, PRIVATE, EMERGENCY, ENC, then Skip and More; the identity first gets
   min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
   the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,
@@ -17556,7 +17561,9 @@ Qt Quick frontend (`src/ui/qt`):
   · idle", the slot still on air, before "SLOT 1 · idle"; r6 J3: built from the label's
   text and the identity's visibility it was renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle";
   `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes as either
-  call ends and comes back; the text-reach walk's every-branch pass, which also shows the tags on an idle strip,
+  call ends and comes back, also through the held ended state, 2 -> 3 -> 1: one rename at 3, none at 1 (r8 L5);
+  `tst_monitor_other_slot.qml` `test_idle_strip_says_no_ended_call_tags` runs at 700 dp, where the call draws all
+  three tags, so their hiding is the idle rule's (r8 L4); the text-reach walk's every-branch pass, which also shows the tags on an idle strip,
   where the app never draws them, allowlists them only in that pass and only while `stripIdle`). Idle it reads
   only the label's `SLOT n · idle` (r5 H1: an ended call's kind and flags, kept through its hold by
   `slotCallView()`, were read as `SLOT 2 · idle, PRIVATE, EMERGENCY, ENC`); with a call its name carries the slot,
@@ -17876,10 +17883,11 @@ Qt Quick frontend (`src/ui/qt`):
   and a scan list's 68 or 69 (decided, as the call rows' S2 limit). The tests derive a compact card's height from the measured lines, padding and
   Play's floor at every size (`cardHead()`, through `compactHeight()` for a system's card: title and source boxes,
   and `compactListHeight()` for a scan list's: the name's box and the count line); at normal text, wherever the
-  card's lines are the base face's own (independent "Ag" probes in the same fonts), they also hold it to those
-  probes and the specified constants alone, 12 px padding and the 68 px floor, never the card's own Play: 68 px with
-  the desktop fonts (r6 J5: a 2 px tolerance had demanded 68 of a 69 px card, and the scan-list test 68 outright;
-  r7 K3: deciding from the card's own numbers whether to check 68 let a Play grown to 56 px pass). Only a
+  test's own probes find no fallback face taller than the base face (each font's mixed-script line, "Ag返🚒", is its
+  Latin line, "Ag"), they also hold it to those probes and the specified constants alone, 12 px padding and the 68
+  px floor, never the card's own Play or boxes: 68 px with the desktop fonts (r6 J5: a 2 px tolerance had demanded
+  68 of a 69 px card, and the scan-list test 68 outright; r7 K3: deciding from the card's own numbers whether to
+  check 68 let a Play grown to 56 px pass; r8 L1: so did title boxes 4 px too tall, 71 px cards). Only a
   script that stands taller than a box is drawn smaller in it: Latin, CJK and emoji keep their pixel size in every
   fixed box (`test_fallback_faces_keep_their_size` on the Monitor, `test_fallback_faces_keep_their_size_in_cards`).
   Measured exception with the host's fonts: an emoji directly before a full stop ("🚒.wav") stands 1 px taller than
