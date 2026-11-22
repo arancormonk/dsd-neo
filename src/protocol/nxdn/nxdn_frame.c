@@ -749,8 +749,9 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* c
         }
     }
     /* A provisional SCCH (nxdn_frame_scch_provisional()) named only the frame's layout so far: its messages act now
-       that the frame's other channels decoded, unless one of them said Type-C, which shows it was no SCCH. */
-    if (!dsd_nxdn_type_c(state)) {
+       that the frame's other channels decoded, unless one of them said Type-C or showed a composite frame
+       (nxdn_element_handle_cch_info(), another channel's included), which shows it was no SCCH. */
+    if (!dsd_nxdn_type_c(state) && state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
         NXDN_decode_scch_deferred(opts, state, ctx->result, ctx->direction);
     }
     return nxdn_frame_left_carrier(ctx);
@@ -767,11 +768,15 @@ nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx
     const uint32_t type_d_epoch = state->nxdn_type_d_rx_epoch;
     const uint8_t type_c_before = state->nxdn_site.type_c;
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
+    /* A CCH_INFO may have shown a composite frame mid-frame (nxdn_element_handle_cch_info()): the frame ends as one,
+       another channel's when its foreign check says so. */
+    ctx->foreign = state->nxdn_frame_foreign != 0U;
+    const int shown_composite = ctx->scch && state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
     /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
-       channels only: it never outlives the frame, whatever confirmed the transmission. The rollback undoes only the
-       SCCH's provisional layout: a Type-C site a later channel of the frame verified (dsd_nxdn_note_type_c()) never
-       reads "Type-D" again. */
-    if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U) {
+       channels only: it never outlives the frame, whatever confirmed the transmission, and neither does one a CCH_INFO
+       showed was a composite frame's SACCH. The rollback undoes only the SCCH's provisional layout: a Type-C site a
+       later channel of the frame verified (dsd_nxdn_note_type_c()) never reads "Type-D" again. */
+    if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U || shown_composite) {
         DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
         state->nxdn_type_d_rx_epoch = type_d_epoch;
         if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
@@ -934,7 +939,8 @@ nxdn_frame_before_channels(const dsd_opts* opts, dsd_state* state, nxdn_frame_ct
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
     state->nxdn_frame_type_d_scch = 0U;
     /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
-       messages may name, follow or play anything here. */
+       messages may name, follow or play anything here. A CCH_INFO that shows a frame read as Type-D is a composite one
+       decides it again from that message on (nxdn_element_handle_cch_info()). */
     ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
     state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
 }

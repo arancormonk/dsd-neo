@@ -1124,6 +1124,34 @@ test_same_frame_cch_info_reads_srv_info_as_type_c(dsd_opts* opts, dsd_state* sta
     return rc;
 }
 
+/*
+ * A composite frame a CCH_INFO shows mid-frame is a composite frame from there on, its foreign check included (issue
+ * #903): the receiver follows a call to F on a session that has not decoded Type-C (as on a Type-D system), and site
+ * B's composite control channel on F sends a frame (LICH 0x71, read as a Type-D RTCH2 until then) whose first FACCH1 is
+ * a CCH_INFO and second a SRV_INFO. Both are another channel's: Type-C is not noted, the control channel sync is not
+ * refreshed, no IDAS identity or Type-D evidence is left, and the call followed is untouched.
+ */
+static int
+test_foreign_cch_info_switch_obeys_foreign_check(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t srv[80];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->nxdn_site.type_c = 0U; /* the session never decoded Type-C */
+    state->last_cc_sync_time = 0;
+    state->last_cc_sync_time_m = 0.0;
+    cch_info(cch, SITE_B, 0x20U, 5U);
+    srv_info(srv, SITE_B);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x22U, cch, srv);
+    rc |= expect_long("foreign switch: no Type-C noted", dsd_nxdn_type_c(state), 0L);
+    rc |= expect_long("foreign switch: no control channel sync", state->last_cc_sync_time_m > 0.0, 0L);
+    rc |= expect_long("foreign switch: no carrier stamp", (long)state->last_cc_sync_time, 0L);
+    rc |= expect_no_type_d_identity("foreign switch", state);
+    rc |= expect_long("foreign switch: no Type-D evidence", dsd_nxdn_type_d_layout_fresh(state), 0L);
+    rc |= expect_followed_call_untouched("foreign switch", state, opts);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1159,6 +1187,7 @@ main(void) {
     rc |= test_same_frame_cch_info_cancels_provisional_type_d(opts, state);
     rc |= test_same_frame_cch_info_discards_provisional_scch(opts, state);
     rc |= test_same_frame_cch_info_reads_srv_info_as_type_c(opts, state);
+    rc |= test_foreign_cch_info_switch_obeys_foreign_check(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 
