@@ -5542,7 +5542,11 @@ test_call_kind_is_kept_and_parts_calls(void) {
         expect("r2: the export row carries it",
                model.exportRows({priv, group}).value(0).gi == 1 && model.exportRows({priv, group}).value(1).gi == 0);
         // Re-review r1: a private call's radio is never a talkgroup heard; not knowing stays as before.
-        const QList<uint32_t> heard = model.heardTalkgroups(0);
+        const QList<dsd_qt::HeardTalkgroupRow> rows = model.heardTalkgroups(0, QString());
+        QList<uint32_t> heard;
+        for (const dsd_qt::HeardTalkgroupRow& r : rows) {
+            heard.append(r.id);
+        }
         expect("r1: heard talkgroups leave the radio out",
                !heard.contains(42U) && heard.contains(43U) && heard.contains(44U));
     }

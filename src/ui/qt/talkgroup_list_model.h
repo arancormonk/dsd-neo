@@ -5,10 +5,17 @@
 
 /**
  * @file
- * @brief Effective talkgroup policy plus talkgroups heard during this session.
+ * @brief Effective talkgroup policy plus the talkgroups heard on the system on air.
  *
  * Refreshed from the single UI poll tick (see ui_controller.h), on the Qt main
  * thread — never from another thread or a second snapshot reader.
+ *
+ * Issue #903: the heard cards are the viewed owner's remembered talkgroups (HeardTalkgroupStore) and this session's
+ * history fragments that owner owns, one card per talkgroup number. The viewed owner is the saved system a call heard
+ * now would be owned by (HeardTalkgroupSource::heardOwnerOnAir()): the running saved system, or under a scan list the
+ * saved system of the target on air; none for Explore, an operator tune or a target no single saved system owns, whose
+ * cards are then the session's fragments no saved system owns. Updates are granular: a changed last heard is one
+ * dataChanged, a card heard or forgotten one row insert or remove, and a tick that changes nothing reads nothing.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_TALKGROUP_LIST_MODEL_H_
@@ -19,6 +26,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QPair>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -28,6 +36,7 @@
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <memory>
 #include <stdint.h>
 // Qt template conversions require this in some consumers; IWYU's answer depends on instantiation.
 #include <type_traits> // IWYU pragma: keep
@@ -38,6 +47,9 @@ class QSet;
 namespace dsd_qt {
 
 class HeardTalkgroupSource;
+class HeardTalkgroupStore;
+class TalkgroupCoverage;
+struct HeardTalkgroupRow;
 
 class TalkgroupListModel : public QAbstractListModel {
     Q_OBJECT
@@ -51,6 +63,10 @@ class TalkgroupListModel : public QAbstractListModel {
     Q_PROPERTY(bool persistent READ persistent NOTIFY policyChanged)
     Q_PROPERTY(QString persistenceScope READ persistenceScope NOTIFY policyChanged)
     Q_PROPERTY(qint64 historySession READ historySession WRITE setHistorySession NOTIFY historySessionChanged)
+    /* Issue #903: the saved system whose talkgroups the heard cards are (empty: none, the Explore context). */
+    Q_PROPERTY(QString viewedOwner READ viewedOwner NOTIFY viewedOwnerChanged)
+    /* Issue #903: the viewed owner learns the talkgroups it hears (it exists with rememberTalkgroups on). */
+    Q_PROPERTY(bool remembering READ remembering NOTIFY rememberingChanged)
 
   public:
     enum Role {
@@ -65,12 +81,18 @@ class TalkgroupListModel : public QAbstractListModel {
         PreemptRole,
         TableIndexRole, /**< The row's index in the effective table, -1 for a heard talkgroup: part of its edit token. */
         TemporaryAvoidCountRole,
-        RecordRole,  /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
-        KindRole,    /**< "exact", "range" or "pattern" */
-        PatternRole, /**< A pattern row's canonical text (its ID); empty on other rows. */
+        RecordRole,     /**< The row's record flag (issue #708): off while not listening, as the decoder keeps it. */
+        KindRole,       /**< "exact", "range" or "pattern" */
+        PatternRole,    /**< A pattern row's canonical text (its ID); empty on other rows. */
+        LastHeardRole,  /**< A heard card's last heard (decode-domain wall seconds): the remembered entry's, or this
+                            session's newest fragment's when newer; 0 for none and on every listed row. */
+        RememberedRole, /**< A heard card the viewed owner remembers (any variant of its number). */
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
+    ~TalkgroupListModel() override;
+    TalkgroupListModel(const TalkgroupListModel&) = delete;
+    TalkgroupListModel& operator=(const TalkgroupListModel&) = delete;
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     QHash<int, QByteArray> roleNames() const override;
@@ -122,10 +144,38 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_generation;
     }
 
+    /** @brief What was last observed of @p id's encryption on the air while @p id's calls were the viewed owner's. */
     Q_INVOKABLE QVariantMap
     observedDecryption(quint32 id) const {
-        return m_observedCrypto.value(id);
+        return m_observedCrypto.value(m_viewedOwner).value(id);
     }
+
+    QString
+    viewedOwner() const {
+        return m_viewedOwner;
+    }
+
+    bool
+    remembering() const {
+        return m_remembering;
+    }
+
+    /** @brief The remembered talkgroups (not owned; it outlives this model, or is null). */
+    void setHeardStore(HeardTalkgroupStore* store);
+
+    /** @brief forgetTalkgroupOf() for the viewed owner. */
+    Q_INVOKABLE void forgetTalkgroup(quint32 id);
+    /**
+     * @brief Forget talkgroup number @p id for @p owner (the owner an edit sheet captured when it opened): every
+     * variant the store holds (HeardTalkgroupStore::forget()), and this session's fragments of it heard so far. A later
+     * call shows it again. An empty @p owner forgets the Explore context's fragments only.
+     */
+    Q_INVOKABLE void forgetTalkgroupOf(const QString& owner, quint32 id);
+    /** @brief clearRememberedOf() for the viewed owner. */
+    Q_INVOKABLE void clearRemembered();
+    /** @brief Clear everything @p owner remembers, and this session's fragments it heard so far (forgetTalkgroupOf()
+     * for every number). */
+    Q_INVOKABLE void clearRememberedOf(const QString& owner);
 
     QString
     persistenceScope() const {
@@ -139,11 +189,29 @@ class TalkgroupListModel : public QAbstractListModel {
     /** Re-read the new target without resetting the list view. */
     void invalidateForTarget();
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief How often the listed rows were read from the policy, the store and the history were read for the heard
+     * set, and the rows were replaced by a whole-list compare (not a patch of the heard cards that changed). */
+    struct WorkCounts {
+        int listedReads = 0;
+        int rememberedReads = 0;
+        int historyReads = 0;
+        int wholeListUpdates = 0;
+    };
+
+    WorkCounts
+    workCountsForTest() const {
+        return m_work;
+    }
+#endif
+
   Q_SIGNALS:
     void countChanged();
     void categoriesChanged();
     void policyChanged();
     void historySessionChanged();
+    void viewedOwnerChanged();
+    void rememberingChanged();
 
   private:
     void updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
@@ -164,6 +232,8 @@ class TalkgroupListModel : public QAbstractListModel {
         qulonglong temporaryAvoidCount = 0;
         uint8_t kind = 0; /* dsd_tg_policy_row_kind */
         QString pattern;
+        qint64 lastHeard = 0; /* LastHeardRole */
+        bool remembered = false;
 
         bool
         isPattern() const {
@@ -180,6 +250,8 @@ class TalkgroupListModel : public QAbstractListModel {
 
         /** @brief This row's value for @p role (a Roles value); none for any other role. */
         QVariant value(int role) const;
+        /** @brief value() for the roles the policy entry gives (name, tags, listening and the other fields). */
+        QVariant policyValue(int role) const;
         /** @brief Whether anything but the bounds differs from @p other. */
         bool fieldsDiffer(const Row& other) const;
 
@@ -190,12 +262,56 @@ class TalkgroupListModel : public QAbstractListModel {
         }
     };
 
+    /** A heard card's merged state: what the store and the history give its number. */
+    struct Heard {
+        qint64 last = 0;
+        bool remembered = false;
+
+        bool
+        operator==(const Heard& other) const {
+            return last == other.last && remembered == other.remembered;
+        }
+    };
+
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);
-    void appendHeardRows(QVector<Row>& rows, bool allowListedOnly) const;
+    /** @brief Read what is dirty (the policy's rows, the store, the history) and move the rows to it; with
+     * @p newTable (another policy context) by a reset. */
+    void readDirty(const dsd_state* snapshot, bool allowListedOnly, bool newTable);
+    /** @brief Read the listed rows, their coverage and what an uncovered heard card shows. */
+    void readListed(const dsd_state* snapshot, bool allowListedOnly, QSet<QString>& categoryTags);
     /** @brief The heard set read through the history's role names, for a history without HeardTalkgroupSource. */
-    QList<uint32_t> heardFromRoles() const;
-    void replaceRows(QVector<Row> rows);
+    QList<HeardTalkgroupRow> heardFromRoles() const;
+    void readRemembered();
+    void readTransient();
+    /** @brief The heard set: the remembered numbers and this session's, less what a forget or clear hid. */
+    QHash<uint32_t, Heard> mergeHeard() const;
+    /** @brief A card for heard number @p id. */
+    Row heardRow(uint32_t id, const Heard& heard, const dsd_state* snapshot) const;
+    /** @brief The listed rows and a card for each uncovered number of @p heard, in list order. */
+    QVector<Row> wholeList(const QHash<uint32_t, Heard>& heard, const dsd_state* snapshot) const;
+    /** @brief Apply @p heard to the heard cards row by row; false (nothing changed) when too much moved for that. */
+    bool patchHeard(const QHash<uint32_t, Heard>& heard, const dsd_state* snapshot);
+    /** @brief The row of heard card @p id, or -1. */
+    int heardRowIndex(uint32_t id) const;
+    void removeRowAt(int row);
+    /** @brief Move to @p rows: by a reset with @p reset (another table), else as diffRows() can. */
+    void replaceRows(QVector<Row> rows, bool reset);
+    /** @brief Move to @p rows by inserts, removes and changes, keeping the rows both have; false when the rows both
+     * have are in another order (nothing changed). */
+    bool diffRows(QVector<Row>& rows);
+    /** @brief Each of @p rows' old row (by identity, -1 for none) into @p match; false when the old rows it names are
+     * not in their old order. */
+    bool matchRows(const QVector<Row>& rows, QVector<int>& match) const;
+    /** @brief Remove the rows @p drop marks, a run at a time from the end. */
+    void dropRows(const QVector<bool>& drop);
     void updateCategories(const QSet<QString>& categoryTags);
+    void updateCounts(int oldCount);
+    /** @brief The owner a call heard now would have (HeardTalkgroupSource::heardOwnerOnAir()); none without a typed
+     * history. */
+    QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot) const;
+    void setViewedOwner(const QString& owner);
+    /** @brief Drop @p owner's heard cards from the list now (a forget or clear for the viewed owner). */
+    void dropHeard(const QString& owner, const QSet<uint32_t>& ids, bool all);
 
     QPointer<QAbstractItemModel> m_history;
     /* m_history's typed read, when it has one; only used while m_history is alive. */
@@ -214,9 +330,36 @@ class TalkgroupListModel : public QAbstractListModel {
     qint64 m_historySession = 0;
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;
-    bool m_heardDirty = true;
-    QHash<quint32, QVariantMap> m_observedCrypto;
+    /* Issue #903. The viewed owner (viewedOwner()) and the store its remembered cards come from. */
+    QPointer<HeardTalkgroupStore> m_store;
+    QString m_viewedOwner;
+    bool m_remembering = false;
+    /* What must be read again: the policy's rows, the viewed owner's store entries, the history's fragments. */
+    bool m_listedDirty = true;
+    /* The policy context the listed rows were read from (invalidateForTarget() keeps it; clear() drops it). */
+    uint64_t m_shownContextId = 0;
+    bool m_rememberedDirty = true;
+    bool m_transientDirty = true;
+    /* The listed rows in list order, their coverage, and what an uncovered heard card shows. */
+    QVector<Row> m_listed;
+    std::unique_ptr<TalkgroupCoverage> m_coverage;
+    bool m_heardListening = true;
+    bool m_heardRecord = true;
+    /* The viewed owner's remembered numbers (HeardTalkgroupStore::policyId()) and their newest last heard. */
+    QHash<uint32_t, qint64> m_remembered;
+    /* This session's numbers the viewed owner owns, with their newest time and ingest serial. */
+    QHash<uint32_t, QPair<qint64, quint64>> m_transient;
+    /* The heard set the rows show (mergeHeard()). */
+    QHash<uint32_t, Heard> m_heard;
+    /* Per owner: the ingest serial each forgotten number, and a clear, hid this session's fragments through. */
+    QHash<QString, QHash<uint32_t, quint64>> m_forgotten;
+    QHash<QString, quint64> m_clearedThrough;
+    /* Per viewed owner: what was last observed of each talkgroup's encryption. */
+    QHash<QString, QHash<quint32, QVariantMap>> m_observedCrypto;
     QString m_persistenceScope = QStringLiteral("session");
+#ifdef DSD_NEO_TEST_HOOKS
+    WorkCounts m_work;
+#endif
 };
 
 } // namespace dsd_qt

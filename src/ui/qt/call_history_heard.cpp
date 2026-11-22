@@ -100,17 +100,23 @@ heard_item_learnable(const Event_History* item) {
 }
 
 QString
-heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* item) {
+heard_owner_for(const HeardOwners& owners, qint64 session, bool operatorTuned, bool scanMember,
+                const QString& channel) {
     const auto who = owners.sessions.constFind(session);
-    if (who == owners.sessions.constEnd() || item->operator_tuned != 0U) {
+    if (who == owners.sessions.constEnd() || operatorTuned) {
         return {};
     }
     // A call heard off any scan is the saved system's; one a scan heard is its target's, when one saved system owns it
     // (an unnamed -Y row, or any scan of a saved-system start, is no one's).
-    if (item->channel_label[0] == '\0') {
-        return item->scan_member == 0U ? who->single : QString();
+    if (channel.isEmpty()) {
+        return scanMember ? QString() : who->single;
     }
-    return who->single.isEmpty() ? who->scan.value(channel_of(item)) : QString();
+    return who->single.isEmpty() ? who->scan.value(channel) : QString();
+}
+
+QString
+heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* item) {
+    return heard_owner_for(owners, session, item->operator_tuned != 0U, item->scan_member != 0U, channel_of(item));
 }
 
 void

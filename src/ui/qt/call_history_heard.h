@@ -71,7 +71,16 @@ qint64 heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session,
 /** @brief Whether @p item carries a proof that may be learnt: a verified talkgroup, live input, not operator tuned. */
 bool heard_item_learnable(const Event_History* item);
 
-/** @brief The saved system that owns @p item, heard in History session @p session, or empty for none. */
+/**
+ * @brief The saved system that owns a call heard in History session @p session, or empty for none: with
+ * @p operatorTuned none; off any scan (@p channel empty, not @p scanMember) the session's single owner; on a scan
+ * target @p channel of a session with no single owner, that target's owner; else none.
+ */
+QString heard_owner_for(const HeardOwners& owners, qint64 session, bool operatorTuned, bool scanMember,
+                        const QString& channel);
+
+/** @brief The saved system that owns @p item, heard in History session @p session, or empty for none
+ * (heard_owner_for() with the item's own stamps). */
 QString heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* item);
 
 /** @brief Set @p session's owners, keeping the newest kHeardOwnerSessions sessions and their rings. */

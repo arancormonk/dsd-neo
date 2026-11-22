@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -18,13 +19,17 @@
 #include <QTemporaryDir>
 #include <QVariant>
 #include <Qt>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,10 +39,13 @@
 #include "../test_support/qt_test_paths.h"
 
 #include "call_history_model.h"
+#include "heard_talkgroup_store.h"
+#include "json_store.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
 
 using dsd_qt::CallHistoryModel;
+using dsd_qt::HeardTalkgroupStore;
 using dsd_qt::TalkgroupFilterModel;
 using dsd_qt::TalkgroupListModel;
 
@@ -110,6 +118,12 @@ struct Fixture {
 
     void
     commit(uint32_t tg, time_t when, bool voice = true) {
+        commitOn(tg, when, nullptr, false, false, voice);
+    }
+
+    /* A call heard on scan target @p channel (none: off any scan unless @p scanMember), as the producer stamps it. */
+    void
+    commitOn(uint32_t tg, time_t when, const char* channel, bool scanMember, bool operatorTuned, bool voice = true) {
         Event_History_I* ring = &rings[0];
         DSD_MEMMOVE(&ring->Event_History_Items[2], &ring->Event_History_Items[1],
                     sizeof(Event_History) * (DSD_EVENT_HISTORY_LEN - 2));
@@ -121,6 +135,12 @@ struct Fixture {
         row->event_start_time = when;
         row->event_time = when + 1;
         DSD_SNPRINTF(row->event_string, sizeof(row->event_string), "test call");
+        if (channel != nullptr) {
+            DSD_SNPRINTF(row->channel_label, sizeof(row->channel_label), "%s", channel);
+        }
+        row->channel_label_resolved = 1U;
+        row->scan_member = scanMember ? 1U : 0U;
+        row->operator_tuned = operatorTuned ? 1U : 0U;
         ++ring->push_seq;
         ++ring->commit_rev;
         ++ring->revision;
@@ -660,7 +680,13 @@ test_pattern_row_equality() {
     model.refresh(fixture.opts, fixture.state);
     expect("first pattern listed", findText(model, QStringLiteral("12*")).isValid());
     int resets = 0;
+    int removes = 0;
+    int inserts = 0;
+    int changes = 0;
     QObject::connect(&model, &QAbstractItemModel::modelReset, &model, [&]() { ++resets; });
+    QObject::connect(&model, &QAbstractItemModel::rowsRemoved, &model, [&]() { ++removes; });
+    QObject::connect(&model, &QAbstractItemModel::rowsInserted, &model, [&]() { ++inserts; });
+    QObject::connect(&model, &QAbstractItemModel::dataChanged, &model, [&]() { ++changes; });
     uint64_t context = 0;
     unsigned int generation = 0;
     dsd_tg_policy_table_version(fixture.state, &context, &generation);
@@ -672,7 +698,8 @@ test_pattern_row_equality() {
     fixture.appendPattern("13*", "A", "Rule", "");
     model.refresh(fixture.opts, fixture.state);
     expect("the other pattern is listed", model.count() == 1 && findText(model, QStringLiteral("13*")).isValid());
-    expect("another pattern resets the rows", resets == 1);
+    // Issue #903: a removal and an insertion, never a field edit of the old row, and never a reset.
+    expect("another pattern replaces the row", resets == 0 && removes == 1 && inserts == 1 && changes == 0);
 }
 
 /* Issue #782: an exact row and a range can share a start ("Exact matches beat ranges"), so the Talkgroups screen
@@ -749,6 +776,390 @@ test_filter_finds_a_card_by_its_row_token() {
     expect("a pattern no row has is not found", view.rowForCard(0, 0, QStringLiteral("77*"), 0) == -1);
 }
 
+/* Issue #903: the model's signals since the last take(). */
+struct Signals {
+    int resets = 0;
+    int inserts = 0;
+    int removes = 0;
+    int changes = 0;
+    int insertedRows = 0;
+    int removedRows = 0;
+
+    explicit Signals(QAbstractItemModel& model) {
+        QObject::connect(&model, &QAbstractItemModel::modelReset, &model, [this]() { ++resets; });
+        QObject::connect(&model, &QAbstractItemModel::rowsInserted, &model,
+                         [this](const QModelIndex&, int first, int last) {
+                             ++inserts;
+                             insertedRows += last - first + 1;
+                         });
+        QObject::connect(&model, &QAbstractItemModel::rowsRemoved, &model,
+                         [this](const QModelIndex&, int first, int last) {
+                             ++removes;
+                             removedRows += last - first + 1;
+                         });
+        QObject::connect(&model, &QAbstractItemModel::dataChanged, &model, [this]() { ++changes; });
+    }
+
+    bool
+    none() const {
+        return resets == 0 && inserts == 0 && removes == 0 && changes == 0;
+    }
+
+    void
+    take() {
+        *this = Signals();
+    }
+
+  private:
+    Signals() = default;
+};
+
+/* A store of its own for each case (json_store name in the isolated app data folder), learning for any owner. */
+struct Store {
+    HeardTalkgroupStore store;
+
+    explicit Store(const char* name) : store(fresh(name)) {
+        store.setOwnerPolicy([](const QString&) { return true; });
+    }
+
+    static QString
+    fresh(const char* name) {
+        QFile::remove(dsd_qt::json_store_path(QLatin1String(name)));
+        return QLatin1String(name);
+    }
+};
+
+const QString kSysA = QStringLiteral("sys-a");
+const QString kSysB = QStringLiteral("sys-b");
+
+qint64
+lastHeard(const TalkgroupListModel& model, uint32_t id) {
+    return model.data(find(model, id), TalkgroupListModel::LastHeardRole).toLongLong();
+}
+
+bool
+remembered(const TalkgroupListModel& model, uint32_t id) {
+    return model.data(find(model, id), TalkgroupListModel::RememberedRole).toBool();
+}
+
+/* The saved system's remembered talkgroups are its cards from the session's start, before any call. */
+void
+test_remembered_cards_at_session_start() {
+    Store held("tg_list_start.json");
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 501, 1000);
+    held.store.observe(kSysA, DSD_HEARD_TG_DMR, 502, 2000);
+    held.store.observe(kSysB, DSD_HEARD_TG_P25, 601, 3000);
+    Fixture fixture;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 start: the running saved system is viewed", model.viewedOwner() == kSysA && model.remembering());
+    expect("903 start: its remembered talkgroups are cards before any call",
+           model.count() == 2 && remembered(model, 501) && remembered(model, 502));
+    expect("903 start: each card's last heard is its entry's",
+           lastHeard(model, 501) == 1000 && lastHeard(model, 502) == 2000);
+    expect("903 start: not listed, and tuned as an unlisted talkgroup is",
+           !model.data(find(model, 501), TalkgroupListModel::ListedRole).toBool()
+               && model.data(find(model, 501), TalkgroupListModel::ListeningRole).toBool());
+    expect("903 start: another system's are not", !find(model, 601).isValid());
+    expect("903 start: the role names",
+           model.roleNames().value(TalkgroupListModel::LastHeardRole) == "lastHeard"
+               && model.roleNames().value(TalkgroupListModel::RememberedRole) == "remembered");
+    // A call this session heard after the entry's last: the card shows the newer time.
+    fixture.commit(501, 4000);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 start: a newer call moves last heard", lastHeard(model, 501) == 4001 && remembered(model, 501));
+    // A system remembering nothing new still shows what it remembers.
+    held.store.setOwnerPolicy([](const QString&) { return false; });
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 start: remembering off keeps the cards", !model.remembering() && model.count() == 2);
+}
+
+/* Under a scan list the cards are the target on air's system: its remembered talkgroups and only the calls this session
+ * heard on it. Explore has its own context: the calls no saved system owns. */
+void
+test_transient_follows_the_target_on_air() {
+    Store held("tg_list_hop.json");
+    held.store.observe(kSysB, DSD_HEARD_TG_P25, 650, 1000);
+    Fixture fixture;
+    fixture.opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-a");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), QString(),
+                             {{QStringLiteral("t-a"), kSysA}, {QStringLiteral("t-b"), kSysB}});
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    fixture.commitOn(701, now, "t-a", true, false);
+    fixture.commitOn(702, now + 5, "t-b", true, false);
+    fixture.commitOn(703, now + 10, "t-z", true, false); // a target no saved system owns
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 hop: target A's system is viewed", model.viewedOwner() == kSysA);
+    expect("903 hop: only A's call is a card", model.count() == 1 && find(model, 701).isValid());
+    expect("903 hop: a session-only card is not remembered",
+           !remembered(model, 701) && lastHeard(model, 701) == now + 1);
+    // The scan moves to B and B hears another call, all before the next poll.
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-b");
+    fixture.commitOn(704, now + 20, "t-b", true, false);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 hop: target B's system is viewed", model.viewedOwner() == kSysB);
+    expect("903 hop: B's remembered and session calls, none of A's",
+           model.count() == 3 && find(model, 650).isValid() && find(model, 702).isValid() && find(model, 704).isValid()
+               && !find(model, 701).isValid());
+    // A relaunched UI reads the saved log: each call keeps the owner it was heard for.
+    history.saveNow();
+    history.waitForSaveForTest();
+    {
+        CallHistoryModel reloaded;
+        TalkgroupListModel again(&reloaded);
+        again.setHistorySession(history.session());
+        again.refresh(fixture.opts, fixture.state);
+        expect("903 relaunch: the saved log keeps each call's owner", again.viewedOwner() == kSysB && again.count() == 2
+                                                                          && find(again, 702).isValid()
+                                                                          && find(again, 704).isValid());
+    }
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-z");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 hop: an unowned target views no system", model.viewedOwner().isEmpty() && !model.remembering());
+    expect("903 hop: its context is the calls no system owns", model.count() == 1 && find(model, 703).isValid());
+
+    // A saved-system start: an operator tune is an Explore stretch with its own cards, gone once back on the system.
+    Fixture single;
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    single.commit(710, now + 30);
+    single.state->operator_tuned = 1U;
+    single.commitOn(711, now + 40, nullptr, false, true);
+    history.refresh(single.state, single.opts);
+    model.refresh(single.opts, single.state);
+    expect("903 explore: an operator tune views no system", model.viewedOwner().isEmpty());
+    expect("903 explore: the tune's own calls only", model.count() == 1 && find(model, 711).isValid());
+    single.state->operator_tuned = 0U;
+    model.refresh(single.opts, single.state);
+    expect("903 explore: back on the system, its calls only",
+           model.viewedOwner() == kSysA && model.count() == 1 && find(model, 710).isValid());
+}
+
+/* One card per talkgroup number: every variant of it (and an NXDN Type-D id by its 11 bits) is one card, and Forget
+ * removes them all, and this session's calls of it, until a later call. */
+void
+test_variants_one_card_and_forget() {
+    Store held("tg_list_forget.json");
+    const quint32 typeD = (3U << 11) | 77U; // the store keeps Type-D's full id; the card is its 11-bit id
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 77, 1000);
+    held.store.observe(kSysA, DSD_HEARD_TG_DMR, 77, 2000);
+    held.store.observe(kSysA, DSD_HEARD_TG_NXDN_D, typeD, 3000);
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, typeD, 500); // a P25 group whose number is Type-D's full id
+    Fixture fixture;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    fixture.commit(77, 2500);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 variants: one card for the number, one for the other group",
+           model.count() == 2 && find(model, 77).isValid() && find(model, typeD).isValid());
+    expect("903 variants: the card's last heard is its newest variant's", lastHeard(model, 77) == 3000);
+    Signals sig(model);
+    model.forgetTalkgroup(77);
+    expect("903 forget: every variant of the number goes from the store", [&held, typeD]() {
+        const auto entries = held.store.entriesFor(kSysA);
+        return entries.size() == 1 && entries.at(0).variant == DSD_HEARD_TG_P25 && entries.at(0).id == typeD;
+    }());
+    expect("903 forget: the card goes at once, one removal",
+           model.count() == 1 && !find(model, 77).isValid() && sig.removes == 1 && sig.resets == 0);
+    sig.take();
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 forget: this session's call of it does not bring it back", !find(model, 77).isValid() && sig.none());
+    fixture.commit(77, 5000);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 forget: a later call shows it again", find(model, 77).isValid() && !remembered(model, 77)
+                                                          && lastHeard(model, 77) == 5001 && sig.inserts == 1
+                                                          && sig.resets == 0);
+    // Clear: every card of the system, and this session's calls so far.
+    sig.take();
+    model.clearRemembered();
+    expect("903 clear: the store holds nothing for the system", held.store.entriesFor(kSysA).isEmpty());
+    expect("903 clear: no card is left, without a reset", model.count() == 0 && sig.resets == 0 && sig.removes >= 1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 clear: none comes back from this session's calls", model.count() == 0);
+    // An edit sheet that captured the owner forgets for it even after the view moved on.
+    held.store.observe(kSysB, DSD_HEARD_TG_P25, 88, 1000);
+    model.forgetTalkgroupOf(kSysB, 88);
+    expect("903 forget: for the captured owner", held.store.entriesFor(kSysB).isEmpty());
+}
+
+/* Listed rows still cover remembered talkgroups (exact, range, pattern); `*` covers none. */
+void
+test_listed_rows_cover_remembered() {
+    Store held("tg_list_cover.json");
+    for (const quint32 id : {900U, 915U, 925U, 930U}) {
+        held.store.observe(kSysA, DSD_HEARD_TG_P25, id, 1000 + id);
+    }
+    Fixture fixture;
+    fixture.append(900, 900, "A", "Exact", "");
+    fixture.append(910, 919, "A", "Range", "");
+    fixture.appendPattern("92*", "A", "Pattern", "");
+    fixture.appendPattern("*", "B", "Everything else", "");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 cover: the listed rows and one card", model.count() == 5);
+    expect("903 cover: the exact row stands for its talkgroup",
+           model.data(find(model, 900), TalkgroupListModel::ListedRole).toBool() && !remembered(model, 900)
+               && lastHeard(model, 900) == 0);
+    expect("903 cover: range and pattern cover theirs", !find(model, 915).isValid() && !find(model, 925).isValid());
+    expect("903 cover: `*` keeps the card, deciding its listening",
+           find(model, 930).isValid() && remembered(model, 930)
+               && !model.data(find(model, 930), TalkgroupListModel::ListeningRole).toBool());
+    // A row added for the card is the same card, listed now: one change, its place kept.
+    Signals sig(model);
+    fixture.append(930, 930, "A", "Named", "");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 cover: adding a row for the card changes it in place",
+           model.count() == 5 && model.data(find(model, 930), TalkgroupListModel::ListedRole).toBool()
+               && sig.resets == 0 && sig.inserts == 0 && sig.removes == 0);
+}
+
+/* Granular updates: a last heard that moves is one dataChanged; an idle tick reads and signals nothing; a busy poll
+ * reads the history again and signals only what moved. */
+void
+test_incremental_updates() {
+    Store held("tg_list_updates.json");
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 501, 1000);
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 502, 1000);
+    Fixture fixture;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    model.refresh(fixture.opts, fixture.state);
+    Signals sig(model);
+    int changedRow = -1;
+    QObject::connect(&model, &QAbstractItemModel::dataChanged, &model,
+                     [&changedRow](const QModelIndex& first, const QModelIndex& last) {
+                         changedRow = first.row() == last.row() ? first.row() : -2;
+                     });
+    const auto before = model.workCountsForTest();
+    for (int i = 0; i < 10; ++i) {
+        model.refresh(fixture.opts, fixture.state);
+    }
+    const auto idle = model.workCountsForTest();
+    expect("903 idle: ten ticks read nothing",
+           idle.listedReads == before.listedReads && idle.rememberedReads == before.rememberedReads
+               && idle.historyReads == before.historyReads && idle.wholeListUpdates == before.wholeListUpdates);
+    expect("903 idle: and signal nothing", sig.none());
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 501, 5000);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 update: a later sighting is one dataChanged on its row",
+           sig.changes == 1 && changedRow == find(model, 501).row() && sig.resets == 0 && sig.inserts == 0
+               && sig.removes == 0 && lastHeard(model, 501) == 5000);
+    sig.take();
+    fixture.commit(502, 6000);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    const auto busy = model.workCountsForTest();
+    expect("903 busy: a call on a card is one dataChanged", sig.changes == 1 && changedRow == find(model, 502).row()
+                                                                && sig.resets == 0 && lastHeard(model, 502) == 6001);
+    expect("903 busy: the history is read, the list is not rebuilt",
+           busy.historyReads == idle.historyReads + 1 && busy.listedReads == idle.listedReads
+               && busy.wholeListUpdates == idle.wholeListUpdates);
+}
+
+/* 2000 remembered talkgroups (the cap): listed at the start, then a call, an update and an eviction each touch one row. */
+void
+test_two_thousand_remembered() {
+    Store held("tg_list_cap.json");
+    for (quint32 i = 0; i < 2000U; ++i) {
+        held.store.observe(kSysA, DSD_HEARD_TG_P25, 10000U + i, 100000 + static_cast<qint64>(i));
+    }
+    Fixture fixture;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    Signals sig(model);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 cap: 2000 cards in order",
+           model.count() == 2000
+               && model.data(model.index(0, 0), TalkgroupListModel::IdStartRole).toULongLong() == 10000U
+               && model.data(model.index(1999, 0), TalkgroupListModel::IdStartRole).toULongLong() == 11999U);
+    expect("903 cap: inserted as one run, no reset", sig.inserts == 1 && sig.insertedRows == 2000 && sig.resets == 0);
+    sig.take();
+    const auto start = model.workCountsForTest();
+    fixture.commit(5, time(nullptr));
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 cap: a new talkgroup heard is one insert",
+           sig.inserts == 1 && sig.insertedRows == 1 && sig.removes == 0 && sig.resets == 0 && sig.changes == 0
+               && find(model, 5).row() == 0 && model.workCountsForTest().wholeListUpdates == start.wholeListUpdates);
+    sig.take();
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 12000, 200000); // over the cap: the oldest, 10000, goes
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 cap: an eviction is one remove and one insert",
+           sig.removes == 1 && sig.inserts == 1 && sig.resets == 0 && !find(model, 10000).isValid()
+               && find(model, 12000).isValid() && model.count() == 2001);
+    sig.take();
+    for (int i = 0; i < 5; ++i) {
+        model.refresh(fixture.opts, fixture.state);
+    }
+    expect("903 cap: idle ticks signal nothing", sig.none());
+}
+
+/* The edit sheet's encryption lookup is the viewed owner's: a talkgroup observed encrypted on A says nothing on B. */
+void
+test_crypto_lookup_scoped_to_owner() {
+    Fixture fixture;
+    fixture.opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-a");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    history.setSessionOwners(history.session(), QString(),
+                             {{QStringLiteral("t-a"), kSysA}, {QStringLiteral("t-b"), kSysB}});
+    model.setHistorySession(history.session());
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.slot = 0U;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 55;
+    call.policy_target_id = 55;
+    call.ota_source_id = 1;
+    call.observed_m = dsd_decode_now_mono_s();
+    expect("903 crypto: a call on the air", dsd_call_state_observe(fixture.state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 crypto: observed for A",
+           model.viewedOwner() == kSysA && model.observedDecryption(55).value("lastObserved").toBool());
+    dsd_state_ext_free_all(fixture.state); // the call is gone from the air (the policy table had none)
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-b");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 crypto: nothing for B", model.viewedOwner() == kSysB && model.observedDecryption(55).isEmpty());
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-a");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 crypto: A's is still A's", model.observedDecryption(55).value("lastObserved").toBool());
+}
 } // namespace
 
 int
@@ -780,6 +1191,13 @@ main(int argc, char** argv) {
     test_catch_all_keeps_heard_talkgroups();
     test_catch_all_decides_heard_card_state();
     test_pattern_row_equality();
+    test_remembered_cards_at_session_start();
+    test_transient_follows_the_target_on_air();
+    test_variants_one_card_and_forget();
+    test_listed_rows_cover_remembered();
+    test_incremental_updates();
+    test_two_thousand_remembered();
+    test_crypto_lookup_scoped_to_owner();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
         return 1;

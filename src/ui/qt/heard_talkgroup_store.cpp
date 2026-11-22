@@ -18,6 +18,7 @@
 #include <tuple>
 #include <utility>
 
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/runtime/log.h>
 
 #include "json_store.h"
@@ -235,11 +236,16 @@ HeardTalkgroupStore::entriesFor(const QString& ownerUid) const {
     return out;
 }
 
+quint32
+HeardTalkgroupStore::policyId(int variant, quint32 id) {
+    return variant == DSD_HEARD_TG_NXDN_D ? (id & 0x7FFU) : id;
+}
+
 void
 HeardTalkgroupStore::forget(const QString& ownerUid, quint32 id) {
+    const auto numbered = [id](quint64 key) { return policyId(key_variant(key), key_id(key)) == id; };
     const auto held = m_owners.constFind(ownerUid);
-    if (!m_loaded || held == m_owners.constEnd()
-        || std::none_of(held->keyBegin(), held->keyEnd(), [id](quint64 key) { return key_id(key) == id; })) {
+    if (!m_loaded || held == m_owners.constEnd() || std::none_of(held->keyBegin(), held->keyEnd(), numbered)) {
         return;
     }
     // Before the removal: what the hook folds may observe the id again, and the forget then takes it too.
@@ -251,7 +257,7 @@ HeardTalkgroupStore::forget(const QString& ownerUid, quint32 id) {
         return;
     }
     const qsizetype removed =
-        owner->removeIf([id](const OwnerEntries::iterator& it) { return key_id(it.key()) == id; });
+        owner->removeIf([&numbered](const OwnerEntries::iterator& it) { return numbered(it.key()); });
     if (removed == 0) {
         return;
     }

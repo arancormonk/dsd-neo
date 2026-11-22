@@ -390,8 +390,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         return m_handoffOwed;
     }
 
-    /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
-    QList<uint32_t> heardTalkgroups(qint64 forSession) const override;
+    /** @brief HeardTalkgroupSource: read straight from the rows and their parts, no QVariant per row (issue #718),
+     * each fragment by its own session and owner (Row::viewOwner). */
+    QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner) const override;
+
+    /** @brief HeardTalkgroupSource: the serial ingestReading() gave the newest fragment it took in. */
+    quint64
+    heardSerial() const override {
+        return m_heardSerial;
+    }
+
+    /** @brief HeardTalkgroupSource: heard_owner_for() in the session @p ring is bound to, else this one. */
+    QString heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember, const QString& channel) const override;
 
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.
@@ -642,6 +652,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint32 heardId = 0;
         uint8_t heardVariant = 0;
         bool liveInput = false;
+        /* Issue #903: the saved system that owns the fragment, and its ingest serial (Row::viewOwner, heardSerial). */
+        QString viewOwner;
+        quint64 heardSerial = 0;
     };
 
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -811,6 +824,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint32 heardId = 0;
         uint8_t heardVariant = 0;
         bool liveInput = false;
+        /* Issue #903: the saved system that owns the fragment for the Talkgroups screen (heard_owner_of(), resolved
+         * where its ring was read, from the ring's own session, whatever its proof; empty for none or without published
+         * options). Each part keeps its own; the row shows its first part's. Persisted (`vo`, also per part). */
+        QString viewOwner;
+        /* Issue #903: when the fragment was last taken in as new, by this process (heardSerial()); 0 for a reload. Each
+         * part keeps its own, and an update of a fragment keeps the serial it had; the row's is its parts' newest. Not
+         * persisted. */
+        quint64 heardSerial = 0;
     };
 
     /**
@@ -1067,6 +1088,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     bool ingestReading(const Row& row, bool isUpdate, bool again, const QString& heardOwner);
     /** @brief Whether the log's row holding @p row's one fragment already has that fragment's proof. */
     bool fragmentProven(const Row& row) const;
+    /** @brief The ingest serial the log's row holding @p row's fragment keeps for it (Row::heardSerial), else 0. */
+    quint64 heldSerial(const Row& row) const;
     /** @brief Hand a sighting to the sink, or hold it until one is set. */
     void noteHeard(const QString& owner, int variant, quint32 id, qint64 whenSecs);
     void saveHeardOwners();
@@ -1280,6 +1303,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /* Issue #903: who owns each recent session's calls, the rings bound to them (persisted, callHistory/heardOwners),
        the sink the verified talkgroups go to, and the sightings waiting for it. */
     HeardOwners m_heardOwners;
+    /* Issue #903: the newest ingest serial given (heardSerial()). */
+    quint64 m_heardSerial = 0;
     /* holdCaptureForStart(): the hold, a count that retires its safety release, and whether the app is away (the last
        application state was Suspended or Hidden), which says whether the tap starts again when the hold ends. */
     bool m_captureHeld = false;

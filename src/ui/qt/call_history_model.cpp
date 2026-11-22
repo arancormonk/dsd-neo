@@ -796,23 +796,50 @@ CallHistoryModel::notifyRecordingRows(const QStringList& fragments) {
     }
 }
 
-QList<uint32_t>
-CallHistoryModel::heardTalkgroups(qint64 forSession) const {
-    QList<uint32_t> heard;
-    QSet<uint32_t> seen;
+namespace {
+
+/* Note one fragment of a heard talkgroup (its time and serial) in @p heard. */
+void
+note_heard_fragment(QHash<uint32_t, HeardTalkgroupRow>& heard, uint32_t tg, qint64 when, qint64 end, quint64 serial) {
+    HeardTalkgroupRow& row = heard[tg];
+    row.id = tg;
+    row.last = qMax(row.last, end > 0 ? end : when);
+    row.serial = qMax(row.serial, serial);
+}
+
+} // namespace
+
+QList<HeardTalkgroupRow>
+CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner) const {
+    QHash<uint32_t, HeardTalkgroupRow> heard;
     for (const Row& row : m_rows) {
         // A private call's target is a radio, never a talkgroup heard (issue #800); not knowing stays as before.
-        if (row.kind != KindVoice || (forSession > 0 && row.session != forSession) || row.tg == 0U
-            || row.tg > UINT32_MAX || row.gi == 1) {
+        if (row.kind != KindVoice || row.tg == 0U || row.tg > UINT32_MAX || row.gi == 1) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);
-        if (!seen.contains(tg)) {
-            seen.insert(tg);
-            heard.append(tg);
+        // Issue #903: each fragment by its own session and owner; a row of one fragment a reload gave is its own part.
+        if (row.parts.isEmpty()) {
+            if ((forSession <= 0 || row.session == forSession) && row.viewOwner == owner) {
+                note_heard_fragment(heard, tg, row.when, row.end, row.heardSerial);
+            }
+            continue;
+        }
+        for (const FragmentPart& part : row.parts) {
+            if (!part.withdrawn && (forSession <= 0 || part.session == forSession) && part.viewOwner == owner) {
+                note_heard_fragment(heard, tg, part.when, part.end, part.heardSerial);
+            }
         }
     }
-    return heard;
+    return heard.values();
+}
+
+QString
+CallHistoryModel::heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember, const QString& channel) const {
+    // The session the ring belongs to, as a call it commits would be read in (walkRing()).
+    const auto bound = m_heardOwners.rings.constFind(ring);
+    const qint64 ringSession = ring != 0U && bound != m_heardOwners.rings.constEnd() ? bound.value() : m_session;
+    return heard_owner_for(m_heardOwners, ringSession, operatorTuned, scanMember, channel);
 }
 
 QHash<int, QByteArray>
@@ -1646,6 +1673,10 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
         row.row.fragmentVers.insert(row.row.fragments.constLast(), static_cast<quint64>(ring.commit_rev));
+        // Issue #903: who the Talkgroups screen shows the fragment for, whether or not its talkgroup may be learnt.
+        if (walk.heardOwners != nullptr && walk.optsPublished) {
+            row.row.viewOwner = heard_owner_of(*walk.heardOwners, heardSession, item);
+        }
         if (kind == KindVoice) {
             row.row.parts.append(fragment_part_of(row.row, row.row.fragments.constLast()));
         }
@@ -2077,6 +2108,8 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.heardVariant = row.heardVariant;
     part.heardId = row.heardId;
     part.liveInput = row.liveInput;
+    part.viewOwner = row.viewOwner;
+    part.heardSerial = row.heardSerial;
     return part;
 }
 
@@ -2134,6 +2167,8 @@ row_of_part(const FragmentPart& part) {
     row.heardVariant = part.heardVariant;
     row.heardId = part.heardId;
     row.liveInput = part.liveInput;
+    row.viewOwner = part.viewOwner;
+    row.heardSerial = part.heardSerial;
     return row;
 }
 
@@ -2160,6 +2195,8 @@ fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& f
         existing.heardId = from.heardId;
     }
     existing.liveInput = existing.liveInput && from.liveInput;
+    // The row shows its first part's owner and its parts' newest serial; each part keeps its own.
+    existing.heardSerial = qMax(existing.heardSerial, from.heardSerial);
 }
 
 /** @brief The index of fragment @p fragment's part in @p row, or -1. For one lookup; PartLookup for many. */
@@ -2470,6 +2507,8 @@ take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& r
     existing.heardVariant = rebuilt.heardVariant;
     existing.heardId = rebuilt.heardId;
     existing.liveInput = rebuilt.liveInput;
+    existing.viewOwner = rebuilt.viewOwner;
+    existing.heardSerial = rebuilt.heardSerial;
 }
 
 /** @brief The index of the first part not withdrawn in @p parts that names a source, and the radio @p radio names when
@@ -3079,7 +3118,25 @@ CallHistoryModel::ingestReading(const Row& row, bool isUpdate, bool again, const
     if (!heardOwner.isEmpty() && row.heardVariant != 0U && !fragmentProven(row)) {
         noteHeard(heardOwner, row.heardVariant, row.heardId, row.end > 0 ? row.end : row.when);
     }
-    return ingestRow(row, isUpdate, again);
+    // The Talkgroups screen's order of what was heard (heardSerial()): a fragment taken in as new gets the next serial,
+    // an update of one keeps the serial it had, so a Forget there hides what came before it and nothing after.
+    Row reading = row;
+    reading.heardSerial = isUpdate ? heldSerial(row) : ++m_heardSerial;
+    for (FragmentPart& part : reading.parts) {
+        part.heardSerial = reading.heardSerial;
+    }
+    return ingestRow(reading, isUpdate, again);
+}
+
+quint64
+CallHistoryModel::heldSerial(const Row& row) const {
+    const int at = rowHoldingFragment(row);
+    if (at < 0 || row.fragments.isEmpty()) {
+        return 0U;
+    }
+    const Row& held = m_rows.at(at);
+    const qsizetype part = part_index(held, row.fragments.constFirst());
+    return part >= 0 ? held.parts.at(part).heardSerial : held.heardSerial;
 }
 
 void
@@ -3734,9 +3791,13 @@ heard_from_json(const QJsonObject& obj) {
     return heard;
 }
 
+/** @brief A row's or part's proof and latch (heard_to_json()), and its owner (`vo`) when it has one. */
 void
 row_heard_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
     heard_to_json(StoredHeard{row.heardVariant, row.heardId, row.liveInput}, obj);
+    if (!row.viewOwner.isEmpty()) {
+        obj.insert(QLatin1String("vo"), row.viewOwner);
+    }
 }
 
 void
@@ -3745,6 +3806,7 @@ row_heard_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.heardVariant = heard.variant;
     row.heardId = heard.id;
     row.liveInput = heard.live;
+    row.viewOwner = obj.value(QLatin1String("vo")).toString();
 }
 
 /** @brief One stored fragment part (row_parts_to_json()), read as the row's own fields are. A part stored without its

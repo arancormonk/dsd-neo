@@ -17095,7 +17095,9 @@ Qt Quick frontend (`src/ui/qt`):
     fragment part keeps its own proof and latch (`FragmentPart::heardVariant`, `heardId`, `liveInput`); the row shows
     its first proven part's proof and is live only while every part is. Persisted on rows, parts and seen entries
     (`hv`, `hid`, `live`; older ones read none and not live), and change detection counts a proof gained or the latch
-    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. A Forget or Clear in the store
+    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. Each part also keeps its display
+    owner (`viewOwner`, persisted `vo` on rows, parts and spill lines; `heard_owner_of()` without the learnable gate,
+    for the Talkgroups screen) and its ingest serial (`heardSerial`, in memory). A Forget or Clear in the store
     cannot be undone by a later fold of a spill History already folded: `HeardTalkgroupStore::setBeforeEdit()` runs
     `CallHistoryModel::settleSpill()` first (wired in `qt_ui.cpp`, through a `QPointer`), which folds what a running tap
     holds and, while a folded spill waits for its acknowledgement, waits out the queued saves and writes History now, so
@@ -19139,12 +19141,44 @@ Qt Quick frontend (`src/ui/qt`):
   `test_failed_update_leaves_the_file`, `test_group_list_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
   (`tst_imports_live_reload.qml`, `tst_main_live_csv_apply.qml`), `UI_QT_CONTROLLER` (`test_reload_bridge`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
-  ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
-  Every history change rescans the whole history (a merge can move a row to another session, so contributions are
-  not tracked incrementally). `CallHistoryModel` hands the heard ids over from its row storage through the
-  `HeardTalkgroupSource` Qt interface (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row;
-  any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
-  with a running maximum end, so overlapping ranges cover correctly (issue #718).
+  ingestion, merging listed rows with uncovered heard talkgroups. Every history change rereads the history's heard set
+  (a merge can move a row to another session, so contributions are not tracked incrementally). `CallHistoryModel`
+  hands the heard ids over from its row storage through the `HeardTalkgroupSource` Qt interface
+  (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row; any other history model is read by
+  role name (no owners, no ingest order). Coverage is a binary search over the listed rows sorted by start with a
+  running maximum end, so overlapping ranges cover correctly (issue #718).
+  - Remembered talkgroups (issue #903; `setHeardStore()`, wired in `qt_ui.cpp` `wire_heard_talkgroups()`). The heard
+    cards are the **viewed owner**'s: `viewedOwner` is the owner a call heard now would get
+    (`HeardTalkgroupSource::heardOwnerOnAir()`: `heard_owner_for()` on the snapshot's tuner stamps, the operator hold,
+    the scan and `dsd_channel_label_current()`, in the session the snapshot's ring is bound to), so the running saved
+    system, or under a scan list the target on air's system; empty for Explore, an operator tune and a target no single
+    saved system owns. Its cards are that owner's store entries (`entriesFor()`) plus this session's history fragments
+    whose `viewOwner` (resolved where the ring was read, from the ring's own session, whatever their proof) is that
+    owner, or for an empty owner the fragments no system owns: non-learnable traffic still shows for the session, and
+    another target's or an Explore stretch's calls never do. One card per number: `HeardTalkgroupStore::policyId()`
+    (NXDN Type-D by its 11-bit id, as the call state numbers it) collapses variants. `LastHeardRole` is the newest of
+    the entry's `last` and this session's fragments (each its end, else its start); `RememberedRole` marks a card the
+    store holds; listed rows have neither. `remembering` is `HeardTalkgroupStore::remembering(viewedOwner)`; entries
+    show while it is off. `observedDecryption()` is kept per viewed owner.
+  - Forget and Clear (`forgetTalkgroup()`/`clearRemembered()` for the viewed owner, `forgetTalkgroupOf()`/
+    `clearRememberedOf()` for an owner an edit sheet captured) remove every variant of the number from the store
+    (`HeardTalkgroupStore::forget()` matches by `policyId()`), then hide this session's fragments of it up to History's
+    ingest serial read after the store's before-edit hook (`heardSerial()`: `ingestReading()` gives each fragment taken
+    in as new the next serial, an update keeps its fragment's; not persisted, so a reloaded row is 0). A later call
+    shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
+    per owner, and a new `historySession` drops them.
+  - Granular updates. Dirty flags (the policy's version, the store's `ownerChanged()` for the viewed owner, any
+    history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. Only the
+    heard cards that moved are patched: a changed last heard or remembered flag is one `dataChanged`, a card heard or
+    gone one row insert or remove at its sorted place. More than 32 inserts and removes at once (a session's start with
+    a long remembered list, an owner change), and any policy change, go through a whole-list compare (`diffRows()`:
+    rows matched by kind, bounds, pattern and occurrence, removed and inserted a run at a time, the rest changed in
+    place), so a heard card that gains a listed row is changed where it is. A new policy context (another table, a
+    target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads and whole-list updates. Tests:
+    `UI_QT_TALKGROUP_LIST_MODEL` (`test_remembered_cards_at_session_start`, `test_transient_follows_the_target_on_air`
+    with a relaunch, `test_variants_one_card_and_forget`, `test_listed_rows_cover_remembered`,
+    `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`),
+    `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`: a row added while hidden keeps the reader's card).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor session menu's **Talkgroups** entry. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the
   edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system

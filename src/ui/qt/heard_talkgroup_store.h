@@ -92,7 +92,14 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     QVector<Entry> entriesFor(const QString& ownerUid) const;
 
     /**
-     * @brief Remove every variant of @p id for @p ownerUid, and write at once. Not gated by the policy.
+     * @brief The talkgroup number a policy row and the Talkgroups screen know entry @p id of @p variant by: an NXDN
+     * Type-D id (`prefix << 11 | id`) by its 11-bit id, as the call state numbers it; every other id as it is.
+     */
+    static quint32 policyId(int variant, quint32 id);
+
+    /**
+     * @brief Remove every entry of @p ownerUid whose talkgroup number (policyId()) is @p id, every variant, and write at
+     * once. Not gated by the policy.
      *
      * When it holds the id, the before-edit hook (setBeforeEdit()) runs first, so nothing learnt before the forget can
      * come back after it.

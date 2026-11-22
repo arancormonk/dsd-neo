@@ -219,15 +219,18 @@ Item {
                 verify(Math.abs(cards.contentY - cards.originY) < 1, "a new search starts from the top");
                 talkgroupView.filterText = "";
 
-                // A row added while hidden changes the table's bounds, which resets the list: from the top, even
-                // though the reader's card is still in it.
+                // A row added while hidden is one insert, not a reset (issue #903): the reader is back on their card.
                 cards.contentY = cards.originY + 600;
                 waitForRendering(cards);
+                top = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                idText = cards.itemAtIndex(top).idText;
                 screen.visible = false;
                 verify(testContext.pushTalkgroup(5031, "A", "Unit 5031", "LONG"));
                 screen.visible = true;
                 compare(cards.count, 31);
-                verify(Math.abs(cards.contentY - cards.originY) < 1, "a reset table starts from the top");
+                now = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                verify(now >= 0);
+                compare(cards.itemAtIndex(now).idText, idText, "an added row keeps the reader on their card");
 
                 cards.contentY = cards.originY + 600;
                 waitForRendering(cards);

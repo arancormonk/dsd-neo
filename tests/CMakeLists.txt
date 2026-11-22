@@ -5618,6 +5618,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        # Issue #903: the remembered talkgroups the heard cards merge.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     )
@@ -6545,6 +6547,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
+            # Issue #903: the remembered talkgroups the Talkgroups screen's heard cards merge.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
