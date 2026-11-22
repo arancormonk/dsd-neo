@@ -23,9 +23,9 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
