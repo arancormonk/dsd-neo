@@ -761,21 +761,30 @@ Item {
                 root.width = 320
                 tryVerify(encryptionFits, 5000, "encryption does not fit on a narrow screen")
 
-                // An unknown algorithm leaves no phantom gap; ENC still fits.
+                // An unknown algorithm leaves no phantom gap; ENC still fits. The channel, placed before the ids
+                // grow (issue #901 G5), may follow ENC; the line ends at the last part drawn, flush right.
                 testContext.setMetric("slot1EncText", "")
+                var heroChannel = findChild(screenLoader.item, "heroChannel")
                 tryVerify(function () {
+                    var last = heroChannel.visible ? heroChannel : enc
                     return !algorithm.visible && ids.truncated && enc.visible
                             && enc.x >= ids.x + ids.width + ids.parent.spacing - 0.5
-                            && Math.abs(enc.x + enc.width - ids.parent.width) < 0.5
+                            && (!heroChannel.visible || heroChannel.x >= enc.x + enc.width + ids.parent.spacing - 0.5)
+                            && Math.abs(last.x + last.width - ids.parent.width) < 0.5
                 }, 5000, "a hidden algorithm still consumes identity space")
 
                 // Clear calls must not reserve space for hidden security fields,
                 // even if a previous header left an algorithm string behind.
                 testContext.setMetric("slot1EncText", "AES-256 K:65535")
                 testContext.setMetric("slot1CallEnc", false)
+                // The ids and the channel (G5) fill the line between them.
                 tryVerify(function () {
-                    return !enc.visible && !algorithm.visible && ids.truncated
-                            && Math.abs(ids.width - ids.parent.width) < 0.5
+                    var filled = heroChannel.visible
+                            ? heroChannel.x >= ids.x + ids.width + ids.parent.spacing - 0.5
+                              && Math.abs(heroChannel.x + heroChannel.width - ids.parent.width) < 0.5
+                              && Math.abs(ids.width + ids.parent.spacing + heroChannel.width - ids.parent.width) < 0.5
+                            : Math.abs(ids.width - ids.parent.width) < 0.5
+                    return !enc.visible && !algorithm.visible && ids.truncated && filled
                 }, 5000, "an unencrypted call loses space to hidden indicators")
 
                 // With no decoded identity the security fields start the row.
