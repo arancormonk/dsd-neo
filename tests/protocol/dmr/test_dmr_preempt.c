@@ -1461,6 +1461,31 @@ test_rejected_companion_keeps_nothing(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The accepted voice that binds a slotless follow to its slot is that grant's first voice: a slotless p90 grant is
+   followed and its only voice arrives on TS1 at 0.1 s, then p10 voice on TS2 runs on. At 2.5 s, TS1's tail over, TS1
+   no longer holds the carrier as an acquisition still to come, so a p50 preempt candidate elsewhere outranks the
+   companion alone and is followed. */
+static int
+test_slotless_follow_first_voice_is_heard(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 900, "A", 90, 0);
+    seed_row(st, 10, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    dmr_sm_emit_group_grant(opts, st, VC_A, 0, 900, 1); // slotless
+    int rc = expect_true("the slotless grant is followed", vc(st) == VC_A && sm()->vc_slot == -1);
+    clock_at(0.1);
+    voice(opts, st, 0);
+    rc |= expect_true("the binding voice is the grant's first voice", sm()->vc_slot == 0 && sm()->vc_media_heard == 1);
+    clock_at(0.2);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 10, 2);
+    clock_at(2.5);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("past TS1's tail, p50 outranks the companion", vc(st) == VC_B && sm()->vc_tg == 50);
+    return rc;
+}
+
 /* A media change's release survives a return the tuner refused: the next tick asks again, though the followed slot's
    voice tail would otherwise keep the carrier. */
 static int
@@ -1583,6 +1608,7 @@ main(void) {
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_rejected_companion_keeps_nothing(opts, st);
+    rc |= test_slotless_follow_first_voice_is_heard(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

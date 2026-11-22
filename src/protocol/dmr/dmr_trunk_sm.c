@@ -1764,8 +1764,10 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
         return;
     }
-    dmr_sm_note_voice_evidence(ctx, state, s, now_m);
+    // A slotless follow binds to this voice's slot first, so the accepted voice that binds it is the grant's first voice
+    // (vc_media_heard), not only the next one.
     update_voice_sync_state(ctx, state, s, now_m);
+    dmr_sm_note_voice_evidence(ctx, state, s, now_m);
 
     if (state && dmr_sm_voice_sync_publishes_grant(ctx, state, s)) {
         int protocol = DSD_SYNC_IS_DMR(state->synctype) ? state->synctype : state->lastsynctype;
