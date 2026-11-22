@@ -2326,6 +2326,38 @@ add_test(
     COMMAND dsd-neo_test_dpmr_reference_vectors
 )
 
+# The same reference frames against the production call store (call_state.c) instead of the stubs: what the call
+# store itself does with a dPMR call (its sync-loss reacquisition seeding an epoch) is tested on the real one.
+add_executable(
+    dsd-neo_test_dpmr_call_store
+    protocol/dpmr/test_dpmr_reference_vectors.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    test_support/event_sync_stub.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr/fixtures
+)
+target_compile_definitions(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE DPMR_TEST_REAL_CALL_STORE
+)
+target_link_libraries(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_fec dsd-neo_platform
+)
+add_test(NAME DPMR_CALL_STORE COMMAND dsd-neo_test_dpmr_call_store)
+
 add_executable(
     dsd-neo_test_ysf_frame
     protocol/ysf/test_ysf_frame.c
@@ -21654,6 +21686,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_talker_alias_utf16
     dsd-neo_test_dmr_talker_alias_utf8
+    dsd-neo_test_dpmr_call_store
     dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse

@@ -430,7 +430,10 @@ Generated (do not edit/commit):
     dPMR call carries its stations' raw 24-bit IDs as `ota_target_id`/`ota_source_id` beside the dial strings only
     when the checked header that opened it named them (`dpmr_publish_header_call()`; frame pairs never set them), so its
     voice is judged by them, as its protocol reports are; a call no checked header opened is anonymous (a decided
-    limit: under a Hold or the allow list it holds nothing).
+    limit: under a Hold or the allow list it holds nothing). An epoch the call store reacquired after a sync loss is
+    seeded with the ended call's IDs, which no header of this reception named: dPMR forgets them on it
+    (`dpmr_forget_reacquired_ids()`, `dsd_call_state_forget_numeric_identity()`, texts kept), and a header that goes on
+    with such an epoch begins one of its own.
     `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
     admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
     cap. It never matches a call of a callsign family (M17, D-STAR, YSF: `dsd_scan_activity_protocol_is_callsign()`),
@@ -14667,8 +14670,9 @@ Private per-protocol modules worth knowing about:
   with a checked half whose colour code decodes to another code than the open call's is another system's transmission
   (two systems can share a frequency with no retune or sync loss between them), and ends the call before the frame's
   evidence, scrambling and service are judged (`dpmr_end_call_on_colour_change()`: `DSD_CALL_END_EXPLICIT`, the
-  capture closed, `dpmr_confirm_reset()`), so the frame's transmission proves itself again and its call is a new,
-  anonymous one; the channel code is sent outside the CRC, so a misread code that still decodes ends the call too. A
+  capture closed, `dpmr_confirm_reset()`, the dPMR received identity's colour code invalidated by
+  `dsd_rxid_forget_system()` so the frontends show none until the new transmission publishes its own), so the frame's
+  transmission proves itself again and its call is a new, anonymous one; the channel code is sent outside the CRC, so a misread code that still decodes ends the call too. A
   header that
   repeats the
   open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not

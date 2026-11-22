@@ -110,6 +110,7 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
     g_capture_closes++;
 }
 
+#ifndef DPMR_TEST_REAL_CALL_STORE /* the call store build links the real receive context (core/receive.c) */
 /* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
 dsd_receive_context
 dsd_receive_context_begin(dsd_state* state, int protocol) {
@@ -124,6 +125,7 @@ dsd_receive_context_end(dsd_state* state, dsd_receive_context saved) {
     state->receive_context_protocol = saved.protocol;
     state->receive_context_active = saved.active;
 }
+#endif
 
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
@@ -690,6 +692,62 @@ test_stations_come_only_from_the_calls_header(void) {
     expect_int("another colour code: the capture closed", g_capture_closes, 1);
 }
 
+#ifdef DPMR_TEST_REAL_CALL_STORE /* the stubs model no reacquisition */
+/* Issue #890, on the production call store: after a sync loss ends a dPMR call, the call store reacquires it within
+   its window and seeds the reopened epoch with the ended call's IDs. Those are no header of this reception: the same
+   radio's next transmission whose header was missed would be judged by the old destination. The reopened epoch keeps
+   its texts but no numbers, and its pairs report anonymous; a header that goes on with it begins an epoch whose IDs
+   are its own again. */
+static void
+test_reacquired_call_is_anonymous(void) {
+    uint32_t called = 0U;
+    uint32_t calling = 0U;
+    reference_frame_stations(&called, &calling);
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = called;
+    header.calling_id = calling;
+    header.mode = 0U;
+    header.color_code = DPMR_REF_COLOUR_CODE;
+    dpmr_process_header(opts, state, &header, 0);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("pair of the header's call", 1, called, 1, calling);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    const uint64_t header_epoch = call.epoch;
+
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("reacquired: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("reacquired: the store reopened the ended call",
+               call.epoch != header_epoch && dsd_call_snapshot_transmission(&call) == header_epoch, 1);
+    expect_int("reacquired: no numbers", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+    expect_int("reacquired: its texts kept", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
+    expect_stations("reacquired pair", 0, 0U, 0, 0U);
+
+    /* A header that goes on with the reacquired call names its stations again, in an epoch of its own. */
+    dpmr_process_header(opts, state, &header, 1);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("header after the reacquisition: its own epoch", call.epoch == dsd_call_snapshot_transmission(&call), 1);
+    expect_int("header after the reacquisition: its numbers",
+               call.ota_target_id == called && call.ota_source_id == calling, 1);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("pair after that header", 1, called, 1, calling);
+}
+#endif
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -712,11 +770,18 @@ main(void) {
     test_a_corrected_bit_error_still_passes_and_two_do_not();
     test_checked_frames_and_headers_report_to_trunk_scan();
     test_stations_come_only_from_the_calls_header();
+#ifdef DPMR_TEST_REAL_CALL_STORE
+    test_reacquired_call_is_anonymous();
+#endif
     free(g_state);
     free(g_opts);
 
     if (g_failures == 0) {
+#ifdef DPMR_TEST_REAL_CALL_STORE
+        printf("DPMR_CALL_STORE: OK\n");
+#else
         printf("DPMR_REFERENCE_VECTORS: OK\n");
+#endif
     }
     return g_failures == 0 ? 0 : 1;
 }

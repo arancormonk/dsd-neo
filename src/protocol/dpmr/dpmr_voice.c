@@ -29,6 +29,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
@@ -463,6 +464,23 @@ dpmr_end_call_on_colour_change(dsd_opts* opts, dsd_state* state) {
     dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
     dpmr_confirm_reset(state);
     state->dpmr_color_code = -1;
+    /* And the carrier's received identity: the old system's code is no longer fresh, so the frontends show none until
+       the new transmission publishes its own. */
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DPMR, 1);
+}
+
+/* A dPMR call's numbers come only from the checked header that opened it (issue #890), and a header that goes on with
+   a reacquired call begins an epoch of its own (dpmr_publish_header_call()). So a reacquired epoch, seeded with the IDs
+   of the call that ended (a sync loss healed within the call store's reacquisition window), holds IDs no header of this
+   reception named: a new transmission whose header was missed, from the same radio, would be judged by the old
+   destination. They go; the texts stay for display. */
+static void
+dpmr_forget_reacquired_ids(dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_DPMR(call.protocol) && call.epoch != dsd_call_snapshot_transmission(&call)) {
+        (void)dsd_call_state_forget_numeric_identity(state, 0U);
+    }
 }
 
 void
@@ -701,6 +719,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_update_superframe_part(opts, state, &part);
     /* Published before it is printed: the line shows the identity this frame bound, not the one before it. */
     dpmr_publish_call(opts, state);
+    dpmr_forget_reacquired_ids(state);
     dpmr_print_ids(state);
     if (opts->payload == 1) {
         /* Each CCH half's CRC-7 verdict (-Z). */
@@ -714,6 +733,8 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
         /* Nothing plays before the transmission is confirmed, but the frame keeps its place in the scrambler. */
         dpmr_track_voice_frames(state);
     }
+    /* The vocoder's media mark can reacquire an ended call too (a frame no half of which passed). */
+    dpmr_forget_reacquired_ids(state);
     DSD_FPRINTF(stderr, "\n");
 
     dpmr_confirm_end_frame(opts, state);

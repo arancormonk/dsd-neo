@@ -1156,7 +1156,8 @@ rules:
   dPMR call whose header was not received, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the
   allow list is on, or when the radio list blocks its known source. A dPMR call's IDs come only from the header that
   opened it; its voice frames confirm the call but never name its stations, and a frame on another colour code ends
-  the call, so a dPMR call joined after its header, or after a colour code change, is anonymous until its own header.
+  the call, so a dPMR call joined after its header, after a colour code change, or picked up again after a short fade
+  without a new header, is anonymous until its own header.
 - The M17 CAN filter: with a receive CAN set, a target holds only on a checked LSF of that CAN; an LSF of another CAN,
   and LICH frames before any checked LSF, hold nothing. On a typed `m17` row such a transmission also does not keep
   the row past `-t`, a long packet of another CAN included.

@@ -1139,6 +1139,31 @@ dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, 
 }
 
 int
+dsd_call_state_forget_numeric_identity(dsd_state* state, uint8_t slot) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return -1;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || (snapshot->ota_target_id == 0U && snapshot->ota_source_id == 0U && snapshot->policy_target_id == 0U)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    snapshot->ota_target_id = 0U;
+    snapshot->ota_source_id = 0U;
+    snapshot->policy_target_id = 0U;
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
 dsd_call_state_note_checked_media_tetra(dsd_state* state, uint8_t slot, int direct, double observed_m) {
     return call_state_note_checked_media(state, slot, DSD_SYNC_TETRA_NDB_POS, direct ? 1U : 0U, observed_m);
 }

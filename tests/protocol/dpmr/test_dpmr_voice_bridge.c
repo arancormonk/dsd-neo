@@ -1850,7 +1850,7 @@ test_colour_code_change_ends_the_call_before_the_frame(void) {
         state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
         /* The open call on colour code 13: confirmed, anonymous (no station named), voice. */
         state->dpmr_confirmed = 1;
-        state->dpmr_color_code = 13;
+        dpmr_publish_color_code(state, 13); /* the carrier's code, in the received identity too */
         dsd_call_observation observation = {.protocol = DSD_SYNC_DPMR_FS2_POS, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
         dsd_call_snapshot call;
@@ -1875,6 +1875,8 @@ test_colour_code_change_ends_the_call_before_the_frame(void) {
                              1);
             rc |= expect_int("colour change: the frame's code", state->dpmr_color_code, 12);
             rc |= expect_int("colour change: the capture closed", g_capture_closes > 0, 1);
+            rc |= expect_int("colour change: the received identity's code is the frame's",
+                             (state->rx_id.valid & DSD_RXID_ACCESS) != 0U && state->rx_id.access == 12U, 1);
             continue;
         }
         /* Half 0 fails, half 1 is checked clear voice: half 0 takes the new frame's checked half, not the old call's. */
@@ -1889,6 +1891,9 @@ test_colour_code_change_ends_the_call_before_the_frame(void) {
                              (int)state->dPMRVoiceFS2Frame.ServiceMode[0], 0);
         }
         rc |= expect_int("colour change: the new transmission must prove itself", state->dpmr_confirmed, 0);
+        /* The weak frame publishes nothing, and the old system's code is no longer the carrier's. */
+        rc |= expect_int("colour change: the old code is no longer the received identity's",
+                         (state->rx_id.valid & DSD_RXID_ACCESS) != 0U, 0);
     }
     return rc;
 }
