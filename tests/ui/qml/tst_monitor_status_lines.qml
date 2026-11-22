@@ -573,8 +573,8 @@ Item {
         // draws a taller script smaller, so beside a Tibetan name or ids a tag that would have fitted beside the
         // smaller text can be left out, and is still heard. With a Tibetan name and source on a private emergency
         // encrypted call at 320/360/411 dp and 1.0/1.6/2.0: nothing overlaps or leaves its line, every drawn item comes
-        // before every left-out one, and the first left out did not fit beside the lead at min(its asked-for width,
-        // 96). An item over the room by any amount is rightly left out, so the half-pixel tolerance is on the
+        // before every left-out one, the lead has at least min(its asked-for width, 96, the room) (r8 L2), and the
+        // first left out did not fit beside the lead at that width. An item over the room by any amount is rightly left out, so the half-pixel tolerance is on the
         // accepting side (r7 K4).
         function test_tall_script_lines_keep_the_plan_data() {
             var rows = [];
@@ -613,6 +613,9 @@ Item {
             verify(identity.contentWidth <= identity.width + 0.5, data.tag + ": the identity draws " + identity.contentWidth + " px in " + identity.width);
             var room = skip.x - 10 - Ui.Theme.cardPadding;
             var used = Math.min(Math.ceil(advanceOf(identity.text, identity.font)), 96);
+            // r8 L2: the lead gets the width the plan reserves for it, whatever is drawn beside it.
+            verify(identity.width >= Math.min(used, room) - 0.5, data.tag + ": the identity has " + identity.width
+                   + " px, under its reserved " + Math.min(used, room));
             var dropped = null;
             for (var part of [item("otherEmergencyTag"), item("otherSlotLabel"), item("otherPrivateTag"), item("otherEncTag")]) {
                 if (part.visible) {
@@ -624,9 +627,11 @@ Item {
                            + " px) left out with room for it, " + used + " of " + room + " px used");
                 }
             }
+            // Each tag a whole field of the name (r8 L3: "EMERGENCY" holds "ENC").
             var spoken = item("otherSlotNode").Accessible.name;
+            var fields = spoken.split(", ");
             for (var word of ["PRIVATE", "EMERGENCY", "ENC"])
-                verify(spoken.indexOf(word) >= 0, data.tag + ": '" + word + "' missing from: " + spoken);
+                verify(fields.indexOf(word) >= 0, data.tag + ": '" + word + "' missing from: " + spoken);
 
             // The hero: EMERGENCY, PRIVATE, ENC, then the algorithm (no less than "ALG 84…"), after the ids' lead.
             var ids = item("heroIds");
@@ -644,6 +649,8 @@ Item {
             verifyClear(rects);
             verify(ids.contentWidth <= ids.width + 0.5, data.tag + ": the ids draw " + ids.contentWidth + " px in " + ids.width);
             used = Math.min(Math.ceil(advanceOf(ids.text, ids.font)), 96);
+            verify(ids.width >= Math.min(used, subline.width) - 0.5, data.tag + ": the ids have " + ids.width
+                   + " px, under their reserved " + Math.min(used, subline.width));
             dropped = null;
             for (part of [item("heroEmergencyTag"), item("heroPrivateTag"), item("heroEncTag"), algorithm]) {
                 var need = part === algorithm
