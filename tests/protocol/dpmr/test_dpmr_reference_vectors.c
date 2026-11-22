@@ -27,6 +27,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -57,6 +58,16 @@ DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
    2 MiB): each case clears it before use, so none sees another's. */
 static dsd_opts* g_opts;
 static dsd_state* g_state;
+
+/* Clear the decoder for a case. The call store build's real call store keeps its state in a state extension, which a
+   clear alone would leak: it is freed first. */
+static void
+reset_state(dsd_state* state) {
+#ifdef DPMR_TEST_REAL_CALL_STORE
+    dsd_state_ext_free_all(state);
+#endif
+    DSD_MEMSET(state, 0, sizeof(*state));
+}
 
 /* The dibit stream processdPMRvoice() reads, and how far into it we are. A frame body is
    copied in rather than pointed at: callers build one on their own stack, and nothing at
@@ -433,7 +444,7 @@ test_reference_frames_decode_through_process_dpmr_voice(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
 
     for (int f = 0; f < DPMR_REF_FRAME_COUNT; f++) {
@@ -488,7 +499,7 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
 
     /* One flipped on-air bit inside the first CCH half: Hamming places it, CRC still passes. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[3] ^= 1U; /* low bit of dibit 3, i.e. on-air bit 7 of CCH half 0 */
@@ -501,7 +512,7 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
        six on-air bits apart land in the same codeword and defeat it -- which is the point
        of interleaving, and why the CRC is what stands behind it. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[0] ^= 2U; /* on-air bit 0 -> block 0 */
@@ -522,7 +533,7 @@ test_checked_frames_and_headers_report_to_trunk_scan(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     for (int f = 0; f < 2; f++) {
         dsd_test_scan_activity_reset();
@@ -582,7 +593,7 @@ reference_frame_stations(uint32_t* called, uint32_t* calling) {
     dsd_state* state = g_state;
     for (int f = 0; f < 2; f++) {
         DSD_MEMSET(opts, 0, sizeof(*opts));
-        DSD_MEMSET(state, 0, sizeof(*state));
+        reset_state(state);
         state->synctype = DSD_SYNC_DPMR_FS2_POS;
         run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
         *(f == 0 ? called : calling) = state->dPMRVoiceFS2Frame.BoundIdValue & 0xFFFFFFU;
@@ -621,7 +632,7 @@ test_stations_come_only_from_the_calls_header(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     dsd_call_snapshot call;
 
@@ -707,7 +718,7 @@ test_reacquired_call_is_anonymous(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     dpmr_header header;
     DSD_MEMSET(&header, 0, sizeof(header));
@@ -774,6 +785,7 @@ main(void) {
 #ifdef DPMR_TEST_REAL_CALL_STORE
     test_reacquired_call_is_anonymous();
 #endif
+    reset_state(g_state);
     free(g_state);
     free(g_opts);
 
