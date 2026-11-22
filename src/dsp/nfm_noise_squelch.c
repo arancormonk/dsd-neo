@@ -65,18 +65,8 @@ nsq_c(double re, double im) {
 }
 
 static nsq_cplx
-nsq_add(nsq_cplx a, nsq_cplx b) {
-    return nsq_c(a.re + b.re, a.im + b.im);
-}
-
-static nsq_cplx
 nsq_mul(nsq_cplx a, nsq_cplx b) {
     return nsq_c((a.re * b.re) - (a.im * b.im), (a.re * b.im) + (a.im * b.re));
-}
-
-static nsq_cplx
-nsq_scale(nsq_cplx a, double s) {
-    return nsq_c(a.re * s, a.im * s);
 }
 
 /* ---------------------------------------------------------------------------------------------- the band */
@@ -164,11 +154,11 @@ nsq_rng_complex(nsq_rng* r) {
 
 /* The calibration noise ahead of the channel filter behind a live rate step (issue #806): complex Gaussian noise at the
    step's input rate through the spectral factor of the cascade's output, then the step, a pass of
-   DSD_LIVE_IQ_STEP_PASS_PAIRS inputs at a time. The ring holds the factor's newest input at pos - 1. */
+   DSD_LIVE_IQ_STEP_PASS_PAIRS inputs at a time. The ring (nsq_ring_push()) holds the factor's inputs. */
 typedef struct {
     const double* factor;
     int factor_len;
-    nsq_cplx ring[DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS];
+    nsq_cplx ring[2 * DSD_NOISE_SQUELCH_MAX_FACTOR_TAPS];
     int pos;
     dsd_iq_resampler* step;
     float in[2 * DSD_LIVE_IQ_STEP_PASS_PAIRS];
@@ -180,7 +170,7 @@ typedef struct {
 
 /* The calibration noise as the channel filter puts it out: white complex noise at twice the rate through the plan's
    cascade FIR (the stages ahead of the last) and the last half-band stage (one output per two inputs), or through a
-   live rate step (stepped), then the channel taps. Each ring holds its newest sample at pos - 1. */
+   live rate step (stepped), then the channel taps, each through a ring of its inputs (nsq_ring_push()). */
 typedef struct {
     nsq_rng rng;
     nsq_step_source* stepped;
@@ -190,38 +180,49 @@ typedef struct {
     int hb_len;
     const float* taps;
     int taps_len;
-    nsq_cplx pre_ring[DSD_NOISE_SQUELCH_CASCADE_TAPS];
+    nsq_cplx pre_ring[2 * DSD_NOISE_SQUELCH_CASCADE_TAPS];
     int pre_pos;
-    nsq_cplx hb_ring[NSQ_HB_MAX];
+    nsq_cplx hb_ring[2 * NSQ_HB_MAX];
     int hb_pos;
-    nsq_cplx ch_ring[DSD_NOISE_SQUELCH_MAX_TAPS];
+    nsq_cplx ch_ring[2 * DSD_NOISE_SQUELCH_MAX_TAPS];
     int ch_pos;
 } nsq_noise_source;
 
+/* A ring of a FIR's last @p len inputs, 2 * len long: each input is written at *pos and again at *pos + len, so the
+   newest len inputs always sit in one run, the newest at *pos + len - 1 once *pos has moved on, and the FIRs below
+   read them without a wrap. The calibration's 2 s of noise passes every sample through these: in an unoptimized or
+   sanitizer build their cost is what keeps the demod thread from its samples while a plan is designed. */
+static void
+nsq_ring_push(nsq_cplx* ring, int* pos, int len, nsq_cplx x) {
+    ring[*pos] = x;
+    ring[*pos + len] = x;
+    *pos = *pos + 1 < len ? *pos + 1 : 0;
+}
+
+/* The FIR's output for the ring's inputs, h[0] on the newest: the products added newest first, as one sum per part. */
 static nsq_cplx
 nsq_ring_fir(const nsq_cplx* ring, int pos, const float* h, int len) {
-    nsq_cplx acc = nsq_c(0.0, 0.0);
+    const nsq_cplx* newest = ring + pos + len - 1;
+    double re = 0.0;
+    double im = 0.0;
     for (int j = 0; j < len; j++) {
-        int at = pos - 1 - j;
-        if (at < 0) {
-            at += len;
-        }
-        acc = nsq_add(acc, nsq_scale(ring[at], (double)h[j]));
+        const double c = (double)h[j];
+        re += newest[-j].re * c;
+        im += newest[-j].im * c;
     }
-    return acc;
+    return nsq_c(re, im);
 }
 
 static nsq_cplx
 nsq_ring_fir_d(const nsq_cplx* ring, int pos, const double* h, int len) {
-    nsq_cplx acc = nsq_c(0.0, 0.0);
+    const nsq_cplx* newest = ring + pos + len - 1;
+    double re = 0.0;
+    double im = 0.0;
     for (int j = 0; j < len; j++) {
-        int at = pos - 1 - j;
-        if (at < 0) {
-            at += len;
-        }
-        acc = nsq_add(acc, nsq_scale(ring[at], h[j]));
+        re += newest[-j].re * h[j];
+        im += newest[-j].im * h[j];
     }
-    return acc;
+    return nsq_c(re, im);
 }
 
 /* One noise sample at twice the rate, through the cascade FIR when the plan has one. */
@@ -231,8 +232,7 @@ nsq_noise_wide(nsq_noise_source* src) {
     if (src->pre_len <= 0) {
         return x;
     }
-    src->pre_ring[src->pre_pos] = x;
-    src->pre_pos = (src->pre_pos + 1) % src->pre_len;
+    nsq_ring_push(src->pre_ring, &src->pre_pos, src->pre_len, x);
     return nsq_ring_fir_d(src->pre_ring, src->pre_pos, src->pre, src->pre_len);
 }
 
@@ -245,8 +245,7 @@ nsq_step_next(nsq_step_source* s, nsq_rng* rng) {
             return nsq_c(0.0, 0.0);
         }
         for (int i = 0; i < DSD_LIVE_IQ_STEP_PASS_PAIRS; i++) {
-            s->ring[s->pos] = nsq_rng_complex(rng);
-            s->pos = (s->pos + 1) % s->factor_len;
+            nsq_ring_push(s->ring, &s->pos, s->factor_len, nsq_rng_complex(rng));
             const nsq_cplx x = nsq_ring_fir_d(s->ring, s->pos, s->factor, s->factor_len);
             s->in[(size_t)i * 2U] = (float)x.re;
             s->in[((size_t)i * 2U) + 1U] = (float)x.im;
@@ -270,15 +269,13 @@ nsq_noise_next(nsq_noise_source* src) {
         in = nsq_step_next(src->stepped, &src->rng);
     } else if (src->hb_len > 0) {
         for (int k = 0; k < 2; k++) {
-            src->hb_ring[src->hb_pos] = nsq_noise_wide(src);
-            src->hb_pos = (src->hb_pos + 1) % src->hb_len;
+            nsq_ring_push(src->hb_ring, &src->hb_pos, src->hb_len, nsq_noise_wide(src));
         }
         in = nsq_ring_fir(src->hb_ring, src->hb_pos, src->hb, src->hb_len);
     } else {
         in = nsq_rng_complex(&src->rng);
     }
-    src->ch_ring[src->ch_pos] = in;
-    src->ch_pos = (src->ch_pos + 1) % src->taps_len;
+    nsq_ring_push(src->ch_ring, &src->ch_pos, src->taps_len, in);
     return nsq_ring_fir(src->ch_ring, src->ch_pos, src->taps, src->taps_len);
 }
 
