@@ -1469,8 +1469,11 @@ Item {
                                     // One line: its box, fitted (r5 H3); wrapping: its lines, as
                                     // the unfitted probe below measures them, never this Text's
                                     // own implicit height, which the fit changes (a binding loop
-                                    // where the box and the line differ: Noto CJK).
-                                    height: card.sharedTitle ? sourceWrapProbe.implicitHeight : card.sourceBox
+                                    // where the box and the line differ: Noto CJK). The probe's
+                                    // height, which it takes from its text (no height is set),
+                                    // never the implicitHeight getter, which lays out pending
+                                    // text under the binding reading it (r6 J6).
+                                    height: card.sharedTitle ? sourceWrapProbe.height : card.sourceBox
                                     verticalAlignment: Text.AlignVCenter
                                     fontSizeMode: card.sharedTitle ? Text.FixedSize : Text.VerticalFit
                                     minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
@@ -1534,7 +1537,8 @@ Item {
                                 // either (the title's description reads it).
                                 Item {
                                     width: parent.width
-                                    height: metaLine.shown ? metaLine.implicitHeight : 0
+                                    // Its line's height, not the implicitHeight getter (r6 J6).
+                                    height: metaLine.shown ? metaLine.height : 0
                                     visible: metaLine.shown || entry.positional
                                     ReadableText {
                                         id: metaLine
@@ -1555,7 +1559,8 @@ Item {
                             }
 
                             // A shared title's supporting line as it wraps, unfitted, for that
-                            // line's height (r5 H3). Never shown; empty for other cards.
+                            // line's height (r5 H3). Never shown; empty for other cards. No
+                            // height is set: its height is its wrapped text's.
                             Text {
                                 id: sourceWrapProbe
                                 objectName: "savedSystemSourceProbe"
