@@ -69,7 +69,9 @@ run_calc(const char* csv, char* out, size_t out_size) {
     FILE* f = fopen(out_path, "rb");
     assert(f != NULL);
     DSD_MEMSET(out, 0, out_size);
-    (void)fread(out, 1U, out_size - 1U, f);
+    const size_t got = fread(out, 1U, out_size - 1U, f);
+    assert(!ferror(f));
+    out[got] = '\0';
     (void)fclose(f);
     remove(out_path);
     return rc;

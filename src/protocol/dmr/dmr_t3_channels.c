@@ -67,7 +67,7 @@ dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
 int
 dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin)) {
     int dropped = 0;
-    for (uint16_t l = 1U; l <= DMR_T3_MAX_LCN; l++) {
+    for (unsigned l = 1U; l <= DMR_T3_MAX_LCN; l++) {
         if (!drop(ext->origin[l])) {
             continue;
         }
@@ -85,7 +85,7 @@ dmr_t3_chan_note_map_loaded(dsd_state* state) {
     if (ext == NULL) {
         return; /* every nonzero row reads as FILE without the record */
     }
-    for (uint16_t l = 0U; l < DMR_T3_ROWS; l++) {
+    for (unsigned l = 0U; l < DMR_T3_ROWS; l++) {
         const int file_row = dmr_t3_lpcn_is_channel(l) && state->trunk_chan_map[l] != 0;
         ext->origin[l] = (uint8_t)(file_row ? DMR_CHAN_ORIGIN_FILE : DMR_CHAN_ORIGIN_NONE);
     }

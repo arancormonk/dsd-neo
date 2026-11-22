@@ -49,7 +49,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "dmr_abs_params.h"
