@@ -17700,7 +17700,15 @@ Qt Quick frontend (`src/ui/qt`):
   (`recentCallsList`, issue #901 B8) take `monitorView` the same way (`recentPlace`, no `keyOf`): Main keeps the
   Monitor hidden under Home whenever no session runs, with the kept calls in its model, and a session shows its calls
   from the newest, so no place is kept. A screen pushed over the session (its Settings, the map) covers the Monitor
-  without hiding it, so its rows stay. Each attach puts the list back to no current row (`onModelChanged:
+  without hiding it, so its rows stay. A start shows the Monitor from inside the host's start, before
+  `startWithMap()` has told `monitorView` which session to show (`beginSessionOn()`, at its end), so the list waits
+  for that: `KeepPlace.ready` (default true) gates attaching a shown list, never releasing a hidden one, and the
+  Monitor's is `!callsPending`, which Main sets from `sessionStarting` (true while `startWithMap()` runs, its body
+  `startSession()` in a `try`/`finally`). r3 M1: with 100 calls kept from earlier sessions the list was handed all
+  100 and built rows of the previous session, then destroyed them, before the first call of the new one. A UI
+  rejoining a running session starts nothing, so its Monitor takes that session's calls as it is shown
+  (`tst_history_session_identity.qml` `test_a_start_hands_the_monitor_its_own_calls_only`, two starts and a rejoin).
+  Each attach puts the list back to no current row (`onModelChanged:
   currentIndex = -1`, r2 D2): a view handed a model that holds rows makes row 0 current, and on a session start with
   calls kept from earlier ones the next call to land then became current and took the keyboard from the disclosure
   (`tst_history_session_identity.qml` `test_attaching_the_calls_keeps_no_current_row`). Its empty state reads

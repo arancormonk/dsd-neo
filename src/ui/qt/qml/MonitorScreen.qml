@@ -30,6 +30,11 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     property string scanTargetName: ""
+    // Issue #901 r3 M1: set by Main while a start is under way, until it has
+    // told monitorView which session to show. The list takes its calls only
+    // after, so a start never builds (and then destroys) rows of the session
+    // before it.
+    property bool callsPending: false
     // Issue #697: the name the session gives the list of the target on air;
     // Main sets it only while the scan has more than one list.
     property string scanListName: ""
@@ -2094,6 +2099,7 @@ Item {
         id: recentPlace
         list: recentList
         model: monitorView
+        ready: !screen.callsPending
     }
 
     // Keyboard focus moving onto a row, or into the header, scrolls it into view.

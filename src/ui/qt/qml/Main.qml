@@ -1795,6 +1795,13 @@ Window {
         });
     }
 
+    // Issue #901 r3 M1: true while startWithMap() runs. The host's start
+    // shows the Monitor before the start has told monitorView which session
+    // to show (beginSessionOn(), at its end), so the Monitor's list waits for
+    // it (MonitorScreen.callsPending) instead of building the previous
+    // session's rows and destroying them.
+    property bool sessionStarting: false
+
     /**
      * Start a session from a system map.
      *
@@ -1820,6 +1827,16 @@ Window {
      * foreground superseded shows nothing: siteRoaming says what follows.
      */
     function startWithMap(sys, row, scan, options) {
+        var was = mainRoot.sessionStarting;
+        mainRoot.sessionStarting = true;
+        try {
+            startSession(sys, row, scan, options);
+        } finally {
+            mainRoot.sessionStarting = was;
+        }
+    }
+    // startWithMap()'s body.
+    function startSession(sys, row, scan, options) {
         var roam = !scan && options && options.roam ? options.roam : null;
         cancelPendingRestart(roam ? "roamStart" : "start");
         mainRoot.awaitingSessionInitialized = false;
@@ -2343,6 +2360,7 @@ Window {
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
         sessionSystemUid: mainRoot.sessionSavedSystemUid
+        callsPending: mainRoot.sessionStarting
         onSystemProfileSaved: function (uid) {
             if (mainRoot.sessionSavedSystemUid === uid)
                 mainRoot.sessionSystem = savedSystems.getByUid(uid);
