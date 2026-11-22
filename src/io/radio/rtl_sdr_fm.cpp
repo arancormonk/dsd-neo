@@ -13960,6 +13960,20 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     return 0;
 }
 
+/* A session's manual retune to @p center_hz with @p ppm_error asked of it (a pending correction when it differs), applied,
+ * finalized and completed as the controller lands one; its completion in @p out_completion. */
+static int
+test_capture_session_manual_retune(uint32_t center_hz, int ppm_error, int* out_completion) {
+    int ppm_rc = 0;
+    int reconfigured = 0;
+    int refused = 0;
+    const int rc =
+        controller_apply_reconfigure(&controller, center_hz, ppm_error, NULL, &ppm_rc, &reconfigured, &refused);
+    *out_completion = controller_manual_retune_completion_result(
+        rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
+    return rc;
+}
+
 extern "C" int
 rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rtl_stream_test_capture_result* out) {
     if (!g_test_capture_session.open) {
@@ -13992,18 +14006,13 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
         rc = capture_set_offset_tuning(value);
     }
     int completion = RTL_STREAM_TUNE_OK;
-    if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE || step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM) {
-        const int with_ppm = step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM;
-        if (!with_ppm && value > 0) {
+    if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE) {
+        if (value > 0) {
             demod.rate_in = value;
         }
-        int ppm_rc = 0;
-        int reconfigured = 0;
-        int refused = 0;
-        rc = controller_apply_reconfigure(&controller, center_hz, with_ppm ? value : load_dongle_ppm_error(), NULL,
-                                          &ppm_rc, &reconfigured, &refused);
-        completion = controller_manual_retune_completion_result(
-            rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
+        rc = test_capture_session_manual_retune(center_hz, load_dongle_ppm_error(), &completion);
+    } else if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM) {
+        rc = test_capture_session_manual_retune(center_hz, value, &completion);
     }
     if (out) {
         test_capture_program_result(rc, out);
