@@ -119,6 +119,7 @@ static const uint64_t k_t0_ns = 1000000ULL * 1000000000ULL; // the TEST clock's 
 
 static int g_tunes = 0;
 static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+static dsd_trunk_tune_result g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
 
 static int
 expect_true(const char* tag, int cond) {
@@ -152,6 +153,9 @@ test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
 static dsd_trunk_tune_result
 test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)request_id;
+    if (g_return_result != DSD_TRUNK_TUNE_RESULT_OK) {
+        return g_return_result;
+    }
     opts->trunk_is_tuned = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -174,6 +178,7 @@ init_env(dsd_opts* opts, dsd_state* state, double hangtime_s) {
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     g_tunes = 0;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
     clock_at(0.0);
     dmr_sm_init(opts, state);
 }
@@ -1278,6 +1283,26 @@ test_media_change_keeps_a_live_companion(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A media change's release survives a return the tuner refused: the next tick asks again, though the followed slot's
+   voice tail would otherwise keep the carrier. */
+static int
+test_media_change_release_retries(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1;
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    clock_at(0.4);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for the followed slot
+    int rc = expect_true("a refused return leaves the receiver where it is", sm()->state == DMR_SM_TUNED);
+    g_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    clock_at(0.5);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("the next tick returns to the control channel", sm()->state == DMR_SM_ON_CC && g_tunes == 1);
+    return rc;
+}
+
 /* Data on a voice grant's slot is not its first voice: a p90 voice grant for TS1 is followed (data following on), p10
    voice on TS2 starts, and one data burst arrives on TS1 at 0.1 s. At 2.5 s, its tail over, the p90 call is still not
    on the air within its acquisition window, so a p50 preempt candidate elsewhere waits. */
@@ -1376,6 +1401,7 @@ main(void) {
     rc |= test_data_burst_is_no_first_voice(opts, st);
     rc |= test_unfollowed_media_change_ends_the_assignment(opts, st);
     rc |= test_media_change_keeps_a_live_companion(opts, st);
+    rc |= test_media_change_release_retries(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

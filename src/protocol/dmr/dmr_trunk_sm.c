@@ -2557,8 +2557,8 @@ dmr_sm_grant_changes_followed_media(const dmr_sm_ctx_t* ctx, const dmr_sm_event_
    entry are cleared and the grant identity stands for nothing. The receiver stays on the carrier only for the companion
    slot's call, while it holds the carrier by the retention rule (live voice or its hangtime tail; the retired grant's
    acquisition holds nothing): that slot becomes the followed one. Otherwise the follow ends as a release does, back to
-   the control channel, where a repeated grant is followed as any grant is. Returns 1 when the grant ended the
-   assignment. */
+   the control channel, where a repeated grant is followed as any grant is; a return the tuner refuses is asked again at
+   the next tick (the force-release latch). Returns 1 when the grant ended the assignment. */
 static int
 dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     if (ctx->state != DMR_SM_TUNED || !dmr_sm_grant_changes_followed_media(ctx, ev)
@@ -2580,6 +2580,7 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     const dmr_sm_hold_e hold =
         dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0);
     if (hold != DMR_SM_HOLD_LIVE && hold != DMR_SM_HOLD_TAIL) {
+        state->trunk_sm_force_release = 1;
         do_release(ctx, opts, state, "grant-media-change");
         return 1;
     }

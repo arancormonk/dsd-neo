@@ -479,8 +479,9 @@ dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, cons
  * refuses a grant before submitting it (a call-type switch, data following off, the talkgroup policy) still hands it
  * here. One that changes the media of the followed slot's assignment on the followed carrier ends that assignment: its
  * call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
- * the control channel. Anything else changes nothing. Returns 1 when the grant ended the assignment: it is not followed
- * itself (its repeat is). Called inside the grant's CRC scope. Decoder thread only.
+ * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.
+ * Returns 1 when the grant ended the assignment: it is not followed itself (its repeat is). Called inside the grant's
+ * CRC scope. Decoder thread only.
  */
 int dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 

@@ -13564,9 +13564,10 @@ Private per-protocol modules worth knowing about:
     retention rule (live voice or its hangtime tail, from the companion's activity alone; the retired grant's
     acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
-    the control channel, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`),
-    with its own tune, acquisition window, channel, CRC provenance, record and call (a new transmission, whatever its
-    parties). The voice sync publishes the followed grant's identity only into a call that names nothing yet
+    the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
+    next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own
+    tune, acquisition window, channel, CRC provenance, record and call (a new transmission, whatever its parties). The
+    voice sync publishes the followed grant's identity only into a call that names nothing yet
     (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
     grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
     splitting that call. A status's in-place entry (origin STATUS) replaces only a seed or grant identity, never a
