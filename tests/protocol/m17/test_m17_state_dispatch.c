@@ -24,6 +24,7 @@
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
@@ -4359,6 +4360,9 @@ enum { VOX_ITER_SAMPLES = 320, VOX_MAX_ITERS = 64 };
 static dsd_state* g_vox_state = NULL;
 static long g_vox_reads = 0;
 static long g_vox_open_reads = 0;
+/* Each sample's flag from a real tracker instead (NULL: g_vox_open_reads decides), closed past g_vox_flags_len. */
+static const uint8_t* g_vox_flags = NULL;
+static long g_vox_flags_len = 0;
 static long g_vox_cap = 0;
 static long g_vox_low_power_from = -1;
 static long g_vox_exit_at = -1;
@@ -4512,7 +4516,9 @@ fake_vox_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* o
         g_vox_state->m17encoder_eot = 1;
     }
     out[0] = (float)next_tone_sample();
-    if (flags != NULL) {
+    if (flags != NULL && g_vox_flags != NULL) {
+        flags[0] = index < g_vox_flags_len ? g_vox_flags[index] : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
+    } else if (flags != NULL) {
         flags[0] = index < g_vox_open_reads ? 0U : (uint8_t)DSD_SQUELCH_FLAG_CLOSED;
     }
     *out_got = 1;
@@ -4629,6 +4635,8 @@ vox_run(dsd_opts* opts, dsd_state* state, int mode, int vox) {
 
 static void
 vox_defaults(long open_iters, long iters) {
+    g_vox_flags = NULL;
+    g_vox_flags_len = 0;
     g_vox_open_reads = open_iters * VOX_ITER_SAMPLES;
     g_vox_cap = iters * VOX_ITER_SAMPLES;
     g_vox_low_power_from = -1;
@@ -4813,6 +4821,119 @@ test_encoder_ends_an_open_stream_on_shutdown(void) {
     err |= expect_int("never keyed: no stream", g_vox_ip_stream + g_vox_ip_eotx, 0);
     return err;
 }
+
+/* Samples of a channel at 8 kHz for the real tracker: complex Gaussian noise 20 dB under the carrier, with an FM 1 kHz
+   tone at 2.5 rad on it while @p carrier, into @p iq. */
+static void
+vox_tracker_iq(float* iq, long n, int carrier, uint32_t* lcg) {
+    for (long i = 0; i < n; i++) {
+        *lcg = (*lcg * 1664525U) + 1013904223U;
+        const double u1 = ((double)(*lcg >> 8) + 1.0) / 16777217.0;
+        *lcg = (*lcg * 1664525U) + 1013904223U;
+        const double u2 = (double)(*lcg >> 8) / 16777216.0;
+        const double radius = 0.1 * sqrt(-log(u1));
+        double re = radius * cos(2.0 * 3.14159265358979323846 * u2);
+        double im = radius * sin(2.0 * 3.14159265358979323846 * u2);
+        if (carrier) {
+            const double ph = 2.5 * sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / 8000.0);
+            re += cos(ph);
+            im += sin(ph);
+        }
+        iq[(size_t)i * 2U] = (float)re;
+        iq[((size_t)i * 2U) + 1U] = (float)im;
+    }
+}
+
+/* The real tracker's flags over a new stream at 8 kHz after a warm restart (issue #899 B9): a second of noise for a
+   floor and half a second of carrier (the gate open as the old stream ended), the restart, then @p carrier_iters
+   iterations of carrier and noise to @p iters, into @p flags. 0, or -1 when the tracker found no floor first. */
+static int
+vox_restart_flags(long carrier_iters, long iters, uint8_t* flags) {
+    static float iq[2 * 8000];
+    static dsd_squelch_floor tracker;
+    dsd_squelch_floor_plan plan;
+    if (dsd_squelch_floor_plan_design(&plan, NULL, 0, NULL, 0, 8000) != 0) {
+        return -1;
+    }
+    DSD_MEMSET(&tracker, 0, sizeof tracker);
+    dsd_squelch_floor_set_plan(&tracker, &plan);
+    dsd_squelch_floor_set_margin(&tracker, 10);
+    dsd_squelch_floor_reset(&tracker);
+    uint32_t lcg = 0x899F0U;
+    vox_tracker_iq(iq, 8000, 0, &lcg);
+    dsd_squelch_floor_process(&tracker, iq, 8000, NULL);
+    vox_tracker_iq(iq, 4000, 1, &lcg);
+    dsd_squelch_floor_process(&tracker, iq, 4000, NULL);
+    if (tracker.state != DSD_SQUELCH_FLOOR_KNOWN || !tracker.gate_open) {
+        return -1;
+    }
+    dsd_squelch_floor_stream_restart(&tracker);
+    for (long it = 0; it < iters; it++) {
+        vox_tracker_iq(iq, VOX_ITER_SAMPLES, it < carrier_iters, &lcg);
+        dsd_squelch_floor_process(&tracker, iq, VOX_ITER_SAMPLES, flags + (it * VOX_ITER_SAMPLES));
+    }
+    return 0;
+}
+
+/* Issue #899 B9 through the M17 encoder's VOX: an encoder started right after a warm restart (its monitor's gate open
+   on a carrier as the old stream ended). On an idle channel the restart's closed start keys nothing; a wanted carrier
+   that goes on through the restart keys it by the second read (80 ms at worst), holds it through the carrier, and
+   unkeys once it drops, in one well-formed transmission. */
+static int
+test_encoder_vox_after_a_warm_restart(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    static uint8_t flags[VOX_MAX_ITERS * VOX_ITER_SAMPLES];
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_int("vox restart: allocated", 0, 1);
+    }
+    int err = 0;
+    const long iters = 36;
+
+    err |=
+        expect_int("vox restart idle: the tracker had a floor and an open gate", vox_restart_flags(0, iters, flags), 0);
+    vox_defaults(0, iters);
+    g_vox_flags = flags;
+    g_vox_flags_len = iters * VOX_ITER_SAMPLES;
+    vox_run(opts, state, DSD_SQUELCH_MODE_AUTO, 1);
+    err |= expect_int("vox restart idle: never keyed", vox_first_unkeyed((int)iters), 1);
+    int keyed = 0;
+    for (long i = 1; i < iters; i++) {
+        keyed |= g_vox_tx[i] != 0;
+    }
+    err |= expect_int("vox restart idle: unkeyed on every read", keyed, 0);
+    err |= expect_int("vox restart idle: nothing sent", g_vox_ip_stream + g_vox_ip_eotx, 0);
+    err |= expect_int("vox restart idle: no RF transmission", vox_rf_transmissions(NULL, NULL, 0), 0);
+
+    const long carrier_iters = 10;
+    err |= expect_int("vox restart carrier: the tracker had a floor and an open gate",
+                      vox_restart_flags(carrier_iters, iters, flags), 0);
+    vox_defaults(0, iters);
+    g_vox_flags = flags;
+    g_vox_flags_len = iters * VOX_ITER_SAMPLES;
+    vox_run(opts, state, DSD_SQUELCH_MODE_AUTO, 1);
+    int held = 1;
+    for (long i = 2; i <= carrier_iters; i++) {
+        held &= g_vox_tx[i] == 1;
+    }
+    err |= expect_int("vox restart carrier: keyed by the second read and through the carrier", held, 1);
+    long unkeyed_at = -1;
+    for (long i = 2; i < iters && unkeyed_at < 0; i++) {
+        unkeyed_at = g_vox_tx[i] == 0 ? i : -1;
+    }
+    err |= expect_int("vox restart carrier: unkeyed after it drops", unkeyed_at > carrier_iters, 1);
+    int streams = 0;
+    int dead = -1;
+    err |= expect_int("vox restart carrier: one transmission ending with EOS and the EOT marker",
+                      vox_rf_transmissions(&streams, &dead, 1), 1);
+    err |= expect_int("vox restart carrier: one IP EOS frame", g_vox_ip_eos, 1);
+    vox_defaults(0, 24);
+    free(opts);
+    free(state);
+    return err;
+}
 #endif
 
 int
@@ -4826,6 +4947,7 @@ main(void) {
     err |= test_encoder_rtl_reader_gates_closed_samples();
     err |= test_encoder_vox_unkeys_on_the_gate();
     err |= test_encoder_ends_an_open_stream_on_shutdown();
+    err |= test_encoder_vox_after_a_warm_restart();
 #endif
     err |= test_encoder_silent_udp_gives_way_to_a_queued_command();
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();

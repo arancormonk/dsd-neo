@@ -3623,6 +3623,117 @@ edacs_run_analog_call_real_tracker_cases(void) {
 #endif
 
 #ifdef USE_RADIO
+/* Samples [@p from, @p from + @p n) of a channel for the real tracker: complex Gaussian noise 20 dB under the carrier,
+   with an FM 1 kHz tone at 2.5 rad on it over samples [@p carrier_from, @p carrier_to), into @p iq. */
+static void
+edacs_tracker_iq(float* iq, long from, long n, long carrier_from, long carrier_to, int rate, uint32_t* lcg) {
+    for (long k = 0; k < n; k++) {
+        const long i = from + k;
+        *lcg = (*lcg * 1664525U) + 1013904223U;
+        const double u1 = ((double)(*lcg >> 8) + 1.0) / 16777217.0;
+        *lcg = (*lcg * 1664525U) + 1013904223U;
+        const double u2 = (double)(*lcg >> 8) / 16777216.0;
+        const double radius = 0.1 * sqrt(-log(u1));
+        double re = radius * cos(2.0 * 3.14159265358979323846 * u2);
+        double im = radius * sin(2.0 * 3.14159265358979323846 * u2);
+        if (i >= carrier_from && i < carrier_to) {
+            const double ph = 2.5 * sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / (double)rate);
+            re += cos(ph);
+            im += sin(ph);
+        }
+        iq[(size_t)k * 2U] = (float)re;
+        iq[((size_t)k * 2U) + 1U] = (float)im;
+    }
+}
+
+/* The flags the real tracker makes at @p rate over a new stream after a warm restart (issue #899 B9): before it, a
+   second of noise for a floor, then @p before_carrier samples of carrier (the gate open as the old stream ended), then
+   dsd_squelch_floor_stream_restart(); after it, @p carrier samples of carrier, then noise, @p total samples in all.
+   NULL when the tracker found no floor before the restart. */
+static uint8_t*
+edacs_restart_flags(int rate, long before_carrier, long carrier, long total, uint32_t seed) {
+    dsd_squelch_floor_plan plan;
+    const long before = (long)rate + before_carrier;
+    const long most = before > total ? before : total;
+    float* iq = (float*)calloc((size_t)most * 2U, sizeof(float));
+    uint8_t* flags = (uint8_t*)calloc((size_t)most, sizeof(uint8_t));
+    dsd_squelch_floor* tracker = (dsd_squelch_floor*)calloc(1U, sizeof(dsd_squelch_floor));
+    int ok = iq && flags && tracker && dsd_squelch_floor_plan_design(&plan, NULL, 0, NULL, 0, rate) == 0;
+    if (ok) {
+        uint32_t lcg = seed;
+        dsd_squelch_floor_set_plan(tracker, &plan);
+        dsd_squelch_floor_set_margin(tracker, 10);
+        dsd_squelch_floor_reset(tracker);
+        edacs_tracker_iq(iq, 0, before, (long)rate, before, rate, &lcg);
+        dsd_squelch_floor_process(tracker, iq, (int)before, flags);
+        dsd_squelch_floor_status st;
+        dsd_squelch_floor_get_status(tracker, &st);
+        ok = st.state == DSD_SQUELCH_FLOOR_KNOWN && st.gate_open == (before_carrier > 0);
+        dsd_squelch_floor_stream_restart(tracker);
+        edacs_tracker_iq(iq, 0, total, 0, carrier, rate, &lcg);
+        dsd_squelch_floor_process(tracker, iq, (int)total, flags);
+    }
+    free(iq);
+    free(tracker);
+    if (!ok) {
+        free(flags);
+        return NULL;
+    }
+    return flags;
+}
+
+/* Issue #899 B9 through the EDACS analog call's release: a call granted right after a warm restart. On an idle channel
+   the restart's closed start plays and stamps nothing, though the old stream ended with the gate open on a carrier,
+   and the gate ends the call no later than the level squelch; a wanted carrier that goes on through the restart is not
+   ended by the closed start, plays, and ends no later than the level squelch after it drops. */
+static int
+edacs_run_analog_call_restart_cases(void) {
+    const int rate = 48000;
+    const long t = edacs_triplet_reads((unsigned int)rate);
+    int rc = 0;
+    dsd_audio_activity_arm();
+    for (int wanted = 0; wanted < 2; wanted++) {
+        const long drop = wanted ? (4L * t) + (t / 2) : 0L;
+        const long total = drop + (8L * t) + ((long)rate / 4L);
+        uint8_t* flags = edacs_restart_flags(rate, rate / 2, drop, total, 0x899E0U + (uint32_t)wanted);
+        if (!flags) {
+            rc |= edacs_expect(0, "analog-call-restart", "tracker", "a floor and the gate as the stream ended");
+            continue;
+        }
+        long opens = 0;
+        for (long i = 0; i < total; i++) {
+            opens += (flags[i] & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+        }
+        edacs_call_defaults(drop, (unsigned int)rate);
+        g_call_cap = total;
+        const edacs_call_result level = edacs_run_analog_call(DSD_SQUELCH_MODE_LEVEL);
+        edacs_call_defaults(drop, (unsigned int)rate);
+        g_call_cap = total;
+        g_call_flags = flags;
+        g_call_flags_len = total;
+        dsd_audio_activity_reset();
+        const edacs_call_result gate = edacs_run_analog_call(DSD_SQUELCH_MODE_AUTO);
+        uint64_t stamp = 0U;
+        dsd_audio_activity_read(&stamp, NULL);
+        g_call_flags = NULL;
+        free(flags);
+        const int in_time = gate.released && level.released && gate.reads >= drop && gate.reads <= level.reads;
+        if (!in_time || (stamp != 0U) != wanted || (opens > 0) != wanted) {
+            DSD_FPRINTF(stderr, "  restart, %s: %ld open, released %d after %ld (level %ld), stamp %d\n",
+                        wanted ? "carrier on" : "idle", opens, gate.released, gate.reads, level.reads, stamp != 0U);
+        }
+        rc |= edacs_expect(in_time, "analog-call-restart", wanted ? "carrier" : "idle",
+                           "the gate ends the call after the carrier and within the level squelch's time");
+        rc |= edacs_expect((stamp != 0U) == wanted && (opens > 0) == wanted, "analog-call-restart",
+                           wanted ? "carrier" : "idle", "the call plays exactly when a carrier is on");
+    }
+    edacs_call_defaults(0, 48000U);
+    dsd_audio_activity_reset();
+    return rc;
+}
+#endif
+
+#ifdef USE_RADIO
 /* A retune that lands as the RTL output rate is read, from 48 to 96 kHz (issue #633): the triplet read then is
    discarded, whatever ratio the converter ran, and the next one is converted at the new rate. The reception is taken
    before the rate, so the retune always shows in it. Before, the converter could stay at the old ratio for a triplet
@@ -4256,6 +4367,7 @@ main(void) {
     rc |= edacs_run_analog_call_disturbance_cases();
     rc |= edacs_run_analog_call_stamp_cases();
     rc |= edacs_run_analog_call_real_tracker_cases();
+    rc |= edacs_run_analog_call_restart_cases();
     rc |= edacs_run_rtl_rate_switch_case();
     rc |= edacs_run_tune_completion_race_case();
     rc |= edacs_run_voice_lane_request_cases();
