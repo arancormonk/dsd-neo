@@ -464,6 +464,48 @@ Item {
             }
         }
 
+        // Issue #901 r5 H5: a compact card's actions sit on its head, the title and one supporting line, however far
+        // a shared title's supporting line wraps. Two same-name replay files with 260-character paths at 320 dp and
+        // text 2.0 centred Play and More on the whole wrapped line, Play at y 779 under a title at y 12. The lines
+        // the wrap adds grow the card below the actions.
+        function test_actions_stay_on_the_head_of_a_wrapped_card_data() {
+            return [{tag: "320 at 2.0", width: 320, scale: 2.0}, {tag: "320 at 1.0", width: 320, scale: 1.0},
+                    {tag: "411 at 1.6", width: 411, scale: 1.6}];
+        }
+        function test_actions_stay_on_the_head_of_a_wrapped_card(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            var dir = "/storage/emulated/0/Recordings/" + "county-dispatch-archive/".repeat(9);
+            verify(dir.length > 230);
+            add("Tape Ridge", {sourceType: "file", filePath: dir + "east-channel-01.wav"});
+            add("Tape Ridge", {sourceType: "file", filePath: dir + "east-channel-02.wav"});
+            add("Plain Ridge");
+            settle();
+            var plain = cardOf("Plain Ridge");
+            var plainPlay = part(plain, "savedSystemPlay");
+            for (var entry of entries()) {
+                if (entry.title !== "Tape Ridge")
+                    continue;
+                var card = findChild(entry, "savedSystemCard");
+                var title = part(card, "savedSystemTitle");
+                var source = part(card, "savedSystemSource");
+                verify(source.lineCount > 2, "the path wraps: " + source.lineCount + " lines");
+                var oneLine = source.height / source.lineCount;
+                var headTop = rectIn(title, card).y;
+                var headBottom = headTop + title.height + title.parent.spacing + oneLine;
+                for (var name of ["savedSystemPlay", "savedSystemManageButton"]) {
+                    var r = rectIn(part(card, name), card);
+                    var centre = r.y + r.h / 2;
+                    verify(centre >= headTop - 0.5 && centre <= headBottom + 0.5, data.tag + ": " + name + " centred at "
+                           + centre + ", off the head " + headTop + "-" + headBottom + " (card " + card.height + ")");
+                }
+                // Where a plain card's Play is, measured from the card's top.
+                fuzzyCompare(rectIn(part(card, "savedSystemPlay"), card).y, rectIn(plainPlay, plain).y, 0.5,
+                             data.tag + ": Play where a plain card has it");
+                verify(card.height >= rectIn(source, card).y + source.height, "the wrapped line inside the card");
+            }
+        }
+
         // Issue #901 r4 F4: in Nearest order a compact shared-title card leads its supporting line with the distance,
         // as every compact card does: two same-name one-site groups at 320 dp both led with "1 site · 851.5 MHz ·
         // Auto", their distances only on the place lines below. The place line then holds the place's name alone,

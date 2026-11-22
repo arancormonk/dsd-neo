@@ -16062,7 +16062,10 @@ Qt Quick frontend (`src/ui/qt`):
   set), not Play's `visible`, so a hidden card's site button stays clear of Play.
   Compact view (D7) keeps the same delegate (no second Repeater or Loader) and makes each card one row: the bold
   17 px title over a supporting line, with the site button, Play and More right-aligned on the title's row, centred on
-  a head of max(the two lines + 24, Play + 16) px, and 12 px of padding; 68 px at normal text for a card whose title
+  a head of max(the two lines + 24, Play + 16) px, the two lines being the title and ONE supporting line however far
+  a shared title's supporting line wraps (r5 H5: two same-name replay files with 260-character paths at 320 dp and
+  2.0 had Play at y 779 under a title at y 12; `test_actions_stay_on_the_head_of_a_wrapped_card`), and 12 px of
+  padding; 68 px at normal text for a card whose title
   no other card shares, the refresh hint under everything; a shared-title card's wrapping lines (its receiver and
   place lines under the two, and its supporting line wrapping) grow it. The title and the supporting line are one line
   each (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows

@@ -1395,8 +1395,13 @@ Item {
                                 compact: compact, hasSites: hasSites, siteWidth: siteButton.implicitWidth, playShown: playShown,
                                 playWidth: play.implicitWidth, moreWidth: manageButton.implicitWidth})
                             // And down it (Util.listenCardRows()), from the labels' heights.
+                            // The head is the title and ONE supporting line, however far a
+                            // shared title's supporting line wraps (r5 H5: Play and More
+                            // were centred halfway down a 260-character path); the lines
+                            // the wrap adds grow the card below the actions.
+                            readonly property real sourceLineHeight: sourceLine.lineCount > 1 ? sourceLine.height / sourceLine.lineCount : sourceLine.height
                             readonly property var rowPlan: Util.listenCardRows(actionPlan, {compact: compact, padding: Theme.cardPadding,
-                                headLines: titleText.height + labels.spacing + sourceLine.height, labelsHeight: labels.height,
+                                headLines: titleText.height + labels.spacing + sourceLineHeight, labelsHeight: labels.height,
                                 siteHeight: siteButton.implicitHeight, playHeight: play.implicitHeight, moreHeight: manageButton.implicitHeight})
                             // Issue #646 B8: as tall as what it holds, so larger text grows
                             // the card instead of running its labels into the hint or past

@@ -605,7 +605,9 @@ function listenCardActions(s) {
 
 // Issue #901: the same card's rows, down it, from listenCardActions()'
 // answer @a a and the heights in @a s: its labels column's (`labelsHeight`),
-// the title and supporting line's with the gap between them (`headLines`),
+// the title and ONE supporting line's with the gap between them
+// (`headLines`; a shared title's wrapping supporting line grows the card
+// below, r5 H5),
 // and the controls'. Play's height counts while it is hidden, as its place
 // does. Gives each control's y, the labels' y, where the actions end
 // (`actionsBottom`), the card's height without a refresh hint (`height`) and
