@@ -171,37 +171,65 @@ soapy_fields_all_empty(char* tok[SOFTY_TOK_MAX], size_t n) {
 
 enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2, SOAPY_HEAD_FREQ_LATE = -3 };
 
-/* Why the frequency place @p idx of the @p n stored fields holds no frequency: SOAPY_HEAD_FREQ_OUT_OF_RANGE for a
-   suffixed number out of range, SOAPY_HEAD_FREQ_LATE when the place is empty and the first field after the empty run
-   that holds anything is a suffixed number (*out_idx at that number), else -1 (opaque args). A K, M or G number is
-   never device args, so one after an empty frequency place (`driver=x::851M`, `driver=x:::851M`, which skipping empty
-   fields once read as tuning) is a frequency placed late. */
+/* The first field from place @p idx on that holds anything, of the tail's @p count fields, of which @p tok holds the
+   first n: past the fields stored it walks on through the split text, where each field follows the one before it and
+   its terminator (dsd_spec_split_fields()). NULL when none does; its place goes to *out_idx. */
+static const char*
+soapy_first_nonempty_field(char* tok[SOFTY_TOK_MAX], size_t n, size_t count, size_t idx, size_t* out_idx) {
+    const char* field = NULL;
+    for (size_t at = idx; at < count; at++) {
+        if (at < n) {
+            field = tok[at];
+        } else if (field) {
+            field += strlen(field) + 1U;
+        } else {
+            return NULL;
+        }
+        if (field[0] != '\0') {
+            *out_idx = at;
+            return field;
+        }
+    }
+    return NULL;
+}
+
+/* Why the frequency place @p idx of the @p n stored fields (of @p count in the tail) holds no frequency:
+   SOAPY_HEAD_FREQ_OUT_OF_RANGE for a suffixed number out of range, SOAPY_HEAD_FREQ_LATE when the place is empty and
+   the first field after the empty run that holds anything is a suffixed number (*out_idx at that number, *out_field
+   its text), else -1 (opaque args). A K, M or G number is never device args, so one after an empty frequency place
+   (`driver=x::851M`, `driver=x:::851M`, which skipping empty fields once read as tuning) is a frequency placed late,
+   however long the empty run, past the fields stored too. */
 static int
-soapy_head_not_a_frequency(char* tok[SOFTY_TOK_MAX], size_t n, size_t idx, size_t* out_idx) {
+soapy_head_not_a_frequency(char* tok[SOFTY_TOK_MAX], size_t n, size_t count, size_t idx, size_t* out_idx,
+                           const char** out_field) {
     if (is_suffixed_freq_token(tok[idx])) {
         *out_idx = idx;
+        *out_field = tok[idx];
         return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
     }
-    size_t next = idx;
-    while (next < n && tok[next][0] == '\0') {
-        next++;
+    if (tok[idx][0] != '\0') {
+        return -1;
     }
-    if (next > idx && next < n && is_suffixed_freq_token(tok[next])) {
+    size_t next = idx;
+    const char* field = soapy_first_nonempty_field(tok, n, count, idx, &next);
+    if (field && is_suffixed_freq_token(field)) {
         *out_idx = next;
+        *out_field = field;
         return SOAPY_HEAD_FREQ_LATE;
     }
     return -1;
 }
 
-/* Reads the optional device args and the frequency from the @p n stored fields. Returns 0 when they parse;
-   SOAPY_HEAD_FREQ_OUT_OF_RANGE, with *out_idx at the frequency token, when that place holds a suffixed number out of
-   range; SOAPY_HEAD_FREQ_LATE, with *out_idx at it, when the frequency place is empty and the first field after it
-   that is not empty holds a suffixed number; and -1 when the head is not shorthand (opaque args). An empty first field is a device-args place
-   left empty (`soapy::154.43M`): *out_arg_tokens counts only args that are there. */
+/* Reads the optional device args and the frequency from the @p n stored fields (of @p count in the tail). Returns 0
+   when they parse; SOAPY_HEAD_FREQ_OUT_OF_RANGE, with *out_idx and *out_field at the frequency token, when that place
+   holds a suffixed number out of range; SOAPY_HEAD_FREQ_LATE, with *out_idx and *out_field at it, when the frequency
+   place is empty and the first field after it that is not empty holds a suffixed number; and -1 when the head is not
+   shorthand (opaque args). An empty first field is a device-args place left empty (`soapy::154.43M`): *out_arg_tokens
+   counts only args that are there. */
 static int
-parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_tokens, size_t* out_idx,
-                        uint32_t* out_freq_hz) {
-    if (!tok || !out_arg_tokens || !out_idx || !out_freq_hz || n == 0) {
+parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t count, size_t* out_arg_tokens, size_t* out_idx,
+                        uint32_t* out_freq_hz, const char** out_field) {
+    if (!tok || !out_arg_tokens || !out_idx || !out_freq_hz || !out_field || n == 0) {
         return -1;
     }
 
@@ -219,7 +247,7 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
 
     uint32_t freq_hz = 0;
     if (parse_freq_hz_token(tok[idx], &freq_hz) != 0) {
-        return soapy_head_not_a_frequency(tok, n, idx, out_idx);
+        return soapy_head_not_a_frequency(tok, n, count, idx, out_idx, out_field);
     }
 
     if (arg_tokens > 0 && (n - idx) == 1 && !has_freq_hint_chars(tok[idx])) {
@@ -366,15 +394,16 @@ soapy_classify_tail(char* tok[SOFTY_TOK_MAX], size_t count, size_t* arg_tokens, 
     if (soapy_fields_all_empty(tok, n) && count <= SOFTY_TOK_MAX) {
         return SOAPY_TAIL_DEFAULT;
     }
-    const int head_rc = parse_soapy_head_tokens(tok, n, arg_tokens, idx, freq_hz);
+    const char* field = NULL;
+    const int head_rc = parse_soapy_head_tokens(tok, n, count, arg_tokens, idx, freq_hz, &field);
     if (head_rc == SOAPY_HEAD_FREQ_OUT_OF_RANGE) {
-        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", tok[*idx]);
+        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", field);
         return SOAPY_TAIL_REFUSED;
     }
     if (head_rc == SOAPY_HEAD_FREQ_LATE) {
         LOG_ERROR("Soapy frequency must follow the device args (field %zu, '%s', comes after an empty field): write "
                   "soapy:<args>:<freq>\n",
-                  *idx + 1U, tok[*idx]);
+                  *idx + 1U, field);
         return SOAPY_TAIL_REFUSED;
     }
     if (head_rc == 0 && soapy_check_squelch(tok, n, *idx) != 0) {

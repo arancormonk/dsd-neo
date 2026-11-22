@@ -522,22 +522,43 @@ test_spec_squelch_field_refused(void) {
    args, as one out of range in the frequency place does. */
 static int
 test_soapy_frequency_after_an_empty_place_refused(void) {
-    /* However many empty fields come between the device args and the frequency. */
+    /* However many empty fields come between the device args and the frequency, the run reaching past the 16 fields
+       the reader stores included: the frequency as the 16th field (the last stored), the 17th and the 18th (the
+       first two past them), and after a long run with more fields behind it. */
     static const char* const refused[] = {"soapy:driver=x::851M",  "soapy:driver=x::851.375M:30", "soapy:::851M",
                                           "soapy:driver=x:::851M", "soapy:driver=x::::851M:30",   "soapy::::851M"};
+
+    static const struct {
+        size_t empty_fields;
+        const char* after;
+    } long_runs[] = {{14U, "851M"}, {15U, "851M"}, {16U, "851M"}, {16U, "851M:30:0"}, {40U, "851.375M"}};
+
+    const size_t n_short = sizeof refused / sizeof refused[0];
+    const size_t n_long = sizeof long_runs / sizeof long_runs[0];
     int rc = 0;
-    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+    for (size_t i = 0; i < n_short + n_long; i++) {
         dsd_opts* opts = alloc_seeded_opts();
         if (!opts) {
             return 1;
         }
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", refused[i]);
+        char spec[256];
+        if (i < n_short) {
+            DSD_SNPRINTF(spec, sizeof spec, "%s", refused[i]);
+        } else {
+            char colons[64];
+            const size_t run = long_runs[i - n_short].empty_fields;
+            DSD_MEMSET(colons, ':', run + 1U);
+            colons[run + 1U] = '\0';
+            DSD_SNPRINTF(spec, sizeof spec, "soapy:driver=x%s%s", colons, long_runs[i - n_short].after);
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
         g_log_text[0] = '\0';
         int applied = 99;
         const int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
         if (nrc != -1 || applied != 0 || !strstr(g_log_text, "Soapy frequency must follow the device args")
-            || strcmp(opts->audio_in_dev, refused[i]) != 0 || opts->rtlsdr_center_freq != 155340000U) {
-            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u log '%s'\n", refused[i], nrc, applied,
+            || !strstr(g_log_text, "'851") || strcmp(opts->audio_in_dev, spec) != 0
+            || opts->rtlsdr_center_freq != 155340000U) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u log '%s'\n", spec, nrc, applied,
                         opts->audio_in_dev, opts->rtlsdr_center_freq, g_log_text);
             rc = 1;
         }

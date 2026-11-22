@@ -3121,7 +3121,7 @@ Advanced (env)
   `args` field is the default device (`soapy::154.43M:30`). Once the `freq` place holds a frequency, a `sql` field
   `--squelch` would refuse stops the start and `--print-config`, naming the field, however many fields follow; it
   used to turn the whole string into device args. The frequency comes right after the args: `soapy:<args>::<freq>`
-  leaves the frequency place empty, and a K, M or G number after it, past one empty field or several, stops the start
+  leaves the frequency place empty, and a K, M or G number after it, past one empty field or any number of them, stops the start
   (`Soapy frequency must follow the device args`). Empty fields at the end hold nothing: a trailing colon
   (`soapy:driver=airspy:154.43M:30:0:24:noise+17:3:`) keeps the tuning.
 - A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args, signed or with

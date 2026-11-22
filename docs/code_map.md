@@ -5199,7 +5199,8 @@ suite runs under this compiler.
     `dsd_squelch_spec_field_apply()` stores it unless `--squelch` set the squelch (`dsd_opts::rtl_squelch_cli_set`).
     The Soapy tail reads its fields in place (`dsd_spec_split_fields()`), an empty first field being no device args
     and empty fields at the end not counted; a K/M/G number after an empty frequency place, past any run of empty
-    fields, is refused (`SOAPY_HEAD_FREQ_LATE`).
+    fields, is refused (`SOAPY_HEAD_FREQ_LATE`); a run longer than the 16 fields stored is followed on through the
+    split text (`soapy_first_nonempty_field()`).
     `dsd_squelch_level_whole_db()` is the whole dB a level saves as in `rtl_sql` (nearest, -120..-1, never 0 while
     active; 0 for off) and `dsd_squelch_level_is_whole_db()` whether a level is exactly one (or off): a config
     snapshot sets `rtl_sql_rounded` when it rounds (a retained [input] merges it with `rtl_sql`), and the INI
