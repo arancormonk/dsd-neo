@@ -756,7 +756,12 @@ Item {
                 // it is on is read at most every 5 s.
                 LiveText {
                     id: scanTargetLine
-                    width: parent.width
+                    // Below the header actions (under a two-line title, or at
+                    // large text) the header's whole width, as the roaming
+                    // line's; beside them the column's (r3 M2: at 320 dp and
+                    // 2.0 it kept 119 of 284 px, "SCANNIN…").
+                    readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
+                    width: clearOfActions ? header.width : parent.width
                     height: screen.headerMetaBox
                     verticalAlignment: Text.AlignVCenter
                     objectName: "scanTargetHeader"
@@ -786,7 +791,9 @@ Item {
                 // app-control; a zero here means "the view withheld it".
                 LiveText {
                     id: scanTimingRow
-                    width: parent.width
+                    // As the scan target line (r3 M2: "Followi…").
+                    readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
+                    width: clearOfActions ? header.width : parent.width
                     height: screen.headerMetaBox
                     verticalAlignment: Text.AlignVCenter
                     objectName: "scanTimingRow"

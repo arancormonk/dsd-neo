@@ -17811,7 +17811,12 @@ Qt Quick frontend (`src/ui/qt`):
   line, the count (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions (it starts
   `max(0, pillHeight - titleLineBox)` down beside them, at once when stacked), and `headingHeight(t)` adds that line;
   the heading is read whole, the full name and then the count (`withOtherLists(sessionLine)`), in either form, since
-  speech has no width (r2 C1: compact at 320 x 914 read "County Fire E… + 7 lists"). A paused scan's line, which drops
+  speech has no width (r2 C1: compact at 320 x 914 read "County Fire E… + 7 lists"). Every header line below the
+  actions (stacked, under a two-line title, or at large text: `clearOfActions`, its `y` at or past the actions' bottom)
+  has the header's whole width, the scan target and timing lines as the roaming line; beside them the column's (r3 M2:
+  at 320 dp compact and 2.0 under a two-line title both kept 119 of 284 px, "SCANNIN…" and "Followi…";
+  `tst_monitor_scan_target.qml` `test_lines_below_the_actions_take_the_whole_width`). Only widths follow it, so the
+  budget's heights are the drawn ones as before. A paused scan's line, which drops
   its noun and then its count to fit (`pausedScanText(width)`), is read whole the same way (the scan target line's
   `speech`). The count's width is
   session configuration, not traffic. Parts move by `parent` bindings between fixed hosts

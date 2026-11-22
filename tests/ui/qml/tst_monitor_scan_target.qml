@@ -319,6 +319,74 @@ Item {
             }
         }
 
+        // Issue #901 r3 M2: a header line that sits below the header actions (the scan target and timing lines under a
+        // two-line multi-list title, at large text) has the header's whole width, as the roaming line has. At 320 dp
+        // compact and text 2.0 they kept the actions' column, 119 of 284 px: "SCANNING · 2/3 · Dispatch" lost its
+        // ordinal ("SCANNIN…") and "Following call" read "Followi…". Each line beside the actions keeps the column.
+        // Both fit, the header's height is the budget's, and nothing meets the actions.
+        function test_lines_below_the_actions_take_the_whole_width_data() {
+            return [{tag: "320 compact at 2.0", width: 320, scale: 2.0, compact: true},
+                    {tag: "320 at 2.0", width: 320, scale: 2.0, compact: false},
+                    {tag: "360 compact at 1.6", width: 360, scale: 1.6, compact: true},
+                    {tag: "411 at 1.0", width: 411, scale: 1.0, compact: false}];
+        }
+        function test_lines_below_the_actions_take_the_whole_width(data) {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: false; property bool compactView: " + data.compact + " }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
+            try {
+                screen.system = {name: "Countywide public safety", sourceType: "usb"};
+                screen.otherListCount = 7;
+                screen.scanTargetName = "Dispatch";
+                testContext.setHostRunning(true);
+                testContext.setMetric("scanRotationActive", true);
+                testContext.setMetric("scanTargetOrdinal", 2);
+                testContext.setMetric("scanTargetCount", 3);
+                testContext.setMetric("scanTimingVisible", true);
+                testContext.setMetric("scanStayPhrase", "Following call");
+                root.width = data.width;
+                root.height = 900;
+                Ui.Theme.fontScale = data.scale;
+                waitForRendering(screen);
+                var header = findChild(screen, "monitorHeader");
+                var actions = findChild(screen, "sessionOptionsButton").parent; // the header's actions row
+                verify(waitForPolish(actions));
+                var actionsRect = {x: actions.mapToItem(header, 0, 0).x, y: actions.mapToItem(header, 0, 0).y, w: actions.width, h: actions.height};
+                var below = 0;
+                var faces = {};
+                for (var name of ["scanTargetHeader", "scanTimingRow"]) {
+                    var line = findChild(screen, name);
+                    verify(line.visible, name);
+                    var at = line.mapToItem(header, 0, 0);
+                    var under = header.stacked || at.y >= actionsRect.y + actionsRect.h - 0.5;
+                    below += under ? 1 : 0;
+                    compare(line.width, under ? header.width : line.parent.width, data.tag + ": " + name + "'s width, "
+                            + (under ? "below" : "beside") + " the actions");
+                    verify(at.x >= -0.5 && at.x + line.width <= header.width + 0.5, name + " inside the header");
+                    verify(under || at.x + line.width <= actionsRect.x + 0.5, name + " clear of the actions");
+                    drawn.font = line.font;
+                    drawn.text = line.text;
+                    drawn.elideWidth = line.width;
+                    faces[name] = drawn.elidedText;
+                }
+                if (data.width === 320 && data.scale === 2.0) {
+                    verify(findChild(screen, "monitorHeaderTitleCount").visible, "the count has its own line");
+                    compare(below, 2, "both lines sit below the actions");
+                    // What the reviewer's case lost: the ordinal and the stay phrase (the target's name may still be
+                    // cut at the end of the whole width).
+                    compare(findChild(screen, "scanTargetHeader").text, "SCANNING · 2/3 · Dispatch");
+                    verify(faces.scanTargetHeader.indexOf("SCANNING · 2/3 · ") === 0, "the ordinal is cut: " + faces.scanTargetHeader);
+                    compare(faces.scanTimingRow, "Following call", "the stay is cut");
+                }
+                compare(header.height, screen.headerBarHeight(screen.tier), "the budget's header is the drawn one");
+            } finally {
+                drawn.destroy();
+                screen.prefsStore = kept;
+                store.destroy();
+            }
+        }
+
         // Issue #901 r2 B1: every header line is one line in its fixed box. A line break in a session name, a scan
         // target's name or a stay phrase (U+2028, U+2029, a newline) is drawn as a space: the header keeps its height,
         // each line holds one line, and the title is read with every word.
