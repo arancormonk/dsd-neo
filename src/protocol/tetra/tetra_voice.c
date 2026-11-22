@@ -11,7 +11,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>

@@ -33,6 +33,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

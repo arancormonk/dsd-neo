@@ -30,6 +30,7 @@ DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
