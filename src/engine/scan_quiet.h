@@ -250,7 +250,7 @@ void scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_q
                             dsd_scan_timing_publication* report);
 
 /** Format the WARN line for @p reason into @p out (the one table of its wording). The receiver's reasons take @p detail
- * (SCAN_QUIET_WARN_AUDIO .. _STREAM), and RATE the capture rate @p rate_hz; the channel's take @p name (NULL or empty:
+ * (SCAN_QUIET_WARN_AUDIO .. _STREAM), and RATE the detail (SCAN_QUIET_WARN_RATE .. _SOAPY_UNKNOWN) and the capture rate @p rate_hz; the channel's take @p name (NULL or empty:
  * -Y row @p row, 0-based), the frequency @p hz, @p detail (scan_quiet_channel_detail()), and for WIDTH the analog
  * @p kind and @p width_hz. Returns the snprintf result. */
 int scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, uint32_t rate_hz, const char* name,
@@ -260,14 +260,17 @@ int scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detai
  * calibration's admitted widths, which a test holds to dsd_signal_quiet_analog_supported(). */
 const uint32_t* scan_quiet_warn_widths(int kind, size_t* count);
 
-/** The receiver detail scan_quiet_format_warn() takes: why the input or the tuner has no check. */
+/** The receiver detail scan_quiet_format_warn() takes: why the input, the tuner or the rate has no check. */
 enum {
-    SCAN_QUIET_WARN_AUDIO = 0,    /**< INPUT: audio input */
-    SCAN_QUIET_WARN_REPLAY = 1,   /**< INPUT: an I/Q replay */
-    SCAN_QUIET_WARN_NO_RADIO = 2, /**< INPUT: a build without radio support */
-    SCAN_QUIET_WARN_AIRSPY = 3,   /**< TUNER: a native Airspy input */
-    SCAN_QUIET_WARN_CENTRED = 4,  /**< TUNER: offset tuning, or the Fs/4 shift off */
-    SCAN_QUIET_WARN_STREAM = 5,   /**< INPUT: an I/Q stream (iqtcp:, iqudp:) */
+    SCAN_QUIET_WARN_AUDIO = 0,         /**< INPUT: audio input */
+    SCAN_QUIET_WARN_REPLAY = 1,        /**< INPUT: an I/Q replay */
+    SCAN_QUIET_WARN_NO_RADIO = 2,      /**< INPUT: a build without radio support */
+    SCAN_QUIET_WARN_AIRSPY = 3,        /**< TUNER: a native Airspy capture that is not centred */
+    SCAN_QUIET_WARN_CENTRED = 4,       /**< TUNER: offset tuning, or the Fs/4 shift off */
+    SCAN_QUIET_WARN_STREAM = 5,        /**< INPUT: an I/Q stream (iqtcp:, iqudp:) */
+    SCAN_QUIET_WARN_RATE = 6,          /**< RATE: a rate the calibration did not validate (any other detail too) */
+    SCAN_QUIET_WARN_SOAPY_AIRSPY = 7,  /**< RATE: an Airspy through SoapySDR, at any rate */
+    SCAN_QUIET_WARN_SOAPY_UNKNOWN = 8, /**< RATE: a SoapySDR device that may be an Airspy, at an Airspy rate */
 };
 
 /** The channel detail scan_quiet_format_warn() takes (bits): what in the session gives MODES (the ProVoice, X2-TDMA

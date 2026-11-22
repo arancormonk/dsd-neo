@@ -316,10 +316,11 @@ quiet_widths_text(int kind, char* out, size_t out_size) {
     }
 }
 
-/* The receiver's WARN lines: what has no check, what to do, and that the scan keeps its timing. */
+/* The receiver's WARN lines: what has no check, what to do, and that the scan keeps its timing. @p rate_line: RATE,
+   whose detail is SCAN_QUIET_WARN_RATE .. _SOAPY_UNKNOWN. */
 static int
-quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate_hz) {
-    switch (detail) {
+quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail, uint32_t rate_hz) {
+    switch (rate_line ? -1 : detail) {
         case SCAN_QUIET_WARN_AUDIO:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels on audio input; it needs a "
@@ -338,9 +339,9 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
                                 "support. Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_AIRSPY:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent channel skip cannot check channels on a native Airspy input; "
-                                "open the Airspy through SoapySDR (-i soapy:driver=airspy) to have them checked. "
-                                "Normal scan timing applies.\n");
+                                "WARNING: scan: silent channel skip cannot check channels on this native Airspy "
+                                "capture: its I/Q is not centred on the tuned frequency, which the check needs. Normal "
+                                "scan timing applies.\n");
         case SCAN_QUIET_WARN_CENTRED:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels while offset tuning is on or "
@@ -350,6 +351,20 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
     }
     char rate[24];
     quiet_scaled_text(rate_hz, 1000000U, 6, rate, sizeof rate);
+    if (detail == SCAN_QUIET_WARN_SOAPY_AIRSPY) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check channels on an Airspy through SoapySDR; "
+                            "use the native Airspy input (-i airspy) to have them checked. Normal scan timing "
+                            "applies.\n");
+    }
+    if (detail == SCAN_QUIET_WARN_SOAPY_UNKNOWN) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check channels at %s Msps on this SoapySDR "
+                            "device: its driver did not say which device it is, and an Airspy, which it cannot check "
+                            "through SoapySDR, runs this rate. For an Airspy, use the native Airspy input (-i airspy). "
+                            "Normal scan timing applies.\n",
+                            rate);
+    }
     return DSD_SNPRINTF(out, out_size,
                         "WARNING: scan: silent channel skip cannot check channels at %s Msps, a sample rate it was "
                         "not calibrated for; docs/trunk-scan.md lists the rates it checks. Normal scan timing "
@@ -475,7 +490,7 @@ scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, u
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_INPUT || reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER
         || reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE) {
-        return quiet_format_receiver_warn(out, out_size, reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE ? -1 : detail,
+        return quiet_format_receiver_warn(out, out_size, reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE, detail,
                                           rate_hz);
     }
     char mhz[24];
@@ -719,6 +734,7 @@ typedef struct {
        read on (receiver_input, receiver_device): the session's reason, which outranks a channel's, for a visit that
        never reads a capture (no class to judge) or still waits for its own. */
     uint8_t receiver_reason;
+    uint8_t receiver_detail; /* its WARN detail (quiet_capture_receiver_detail()) */
     int receiver_input;
     uint32_t receiver_device;
     uint32_t receiver_rate_hz;
@@ -970,6 +986,25 @@ quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
     return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
 }
 
+/* The WARN detail of @p cap's receiver verdict @p reason (TUNER or RATE): which receiver it is, so the line can say what
+   to do. A centred capture on the native Airspy input is the Airspy's; a SoapySDR Airspy, or a SoapySDR device that may
+   be one, says so. */
+static uint8_t
+quiet_capture_receiver_detail(const dsd_opts* opts, const dsd_signal_capture* cap, uint8_t reason) {
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER) {
+        return (uint8_t)(cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                                 || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+                             ? SCAN_QUIET_WARN_AIRSPY
+                             : SCAN_QUIET_WARN_CENTRED);
+    }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT
+        && dsd_signal_quiet_receiver_refused(cap)) {
+        return (uint8_t)(cap->receiver == DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN ? SCAN_QUIET_WARN_SOAPY_UNKNOWN
+                                                                            : SCAN_QUIET_WARN_SOAPY_AIRSPY);
+    }
+    return (uint8_t)SCAN_QUIET_WARN_RATE;
+}
+
 /* What the calibration refuses of the capture (dsd_scan_quiet_reason): the receiver's part
    (quiet_capture_receiver_reason(): TUNER for a geometry it does not cover, RATE for a rate it did not validate under
    the capture's policy), then WIDTH for an analog width it did not validate for its kind there; NONE when it covers
@@ -978,6 +1013,7 @@ static uint8_t
 quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signal_capture* cap) {
     const uint8_t receiver = quiet_capture_receiver_reason(cap);
     c->receiver_reason = receiver;
+    c->receiver_detail = quiet_capture_receiver_detail(opts, cap, receiver);
     c->receiver_input = opts->audio_in_type;
     c->receiver_device = quiet_device_hash(opts);
     c->receiver_rate_hz = cap->rate_hz;
@@ -1825,10 +1861,8 @@ quiet_warn_capture(const dsd_opts* opts, dsd_state* state, const scan_quiet_chec
     quiet_receiver_key key;
     DSD_MEMSET(&key, 0, sizeof key);
     key.reason = reason;
-    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER) {
-        key.detail = (uint8_t)(dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? SCAN_QUIET_WARN_AIRSPY
-                                                                                        : SCAN_QUIET_WARN_CENTRED);
-    } else {
+    key.detail = c->receiver_detail;
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE) {
         key.rate_hz = c->receiver_rate_hz;
     }
     key.input = opts->audio_in_type;

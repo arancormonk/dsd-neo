@@ -11,9 +11,9 @@ The Windows release zip also has the SoapySDR Airspy module, so an Airspy R2 or
 Mini runs through SoapySDR too: `-i soapy:driver=airspy`. Both inputs use the
 same `airspy.dll`, and only one can hold the radio at a time. Through SoapySDR
 it runs the radio's rate nearest what dsd-neo asks for (2.5 MS/s on an R2,
-3 MS/s on a Mini) where the native input runs the highest, and Skip silent
-channels can check it ([trunk-scan.md](trunk-scan.md)), which it cannot do on
-the native input.
+3 MS/s on a Mini) where the native input runs the highest. Skip silent
+channels checks an Airspy on the native input only, not through SoapySDR
+([trunk-scan.md](trunk-scan.md)).
 
 ## Build and install
 

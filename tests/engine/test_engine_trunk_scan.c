@@ -28199,26 +28199,30 @@ static int
 test_scan_quiet_capture_policies(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    static dsd_opts opts;
-    static dsd_state state;
-    if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {
+    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* const state = qt_shared_state();
+    if (!opts) {
+        return 1;
+    }
+    if (quiet_rig_start(opts, state, dir, sizeof dir, path, sizeof path) != 0) {
+        free(opts);
         return 1;
     }
     dsd_signal_capture shifted = g_tap.capture;
-    int rc = qt_expect("the Fs/4 shift is measured", quiet_measures_capture(&opts, &state, &shifted) == 1);
+    int rc = qt_expect("the Fs/4 shift is measured", quiet_measures_capture(opts, state, &shifted) == 1);
     dsd_signal_capture c = shifted;
     c.rotation_hz = (int32_t)(c.rate_hz / 8U);
     c.capture_offset_hz = c.rotation_hz;
     c.capture_hz = k_qt_hz_a + c.rate_hz / 8U;
-    rc |= qt_expect("default policy, rotation Fs/8: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    rc |= qt_expect("default policy, rotation Fs/8: refused", quiet_measures_capture(opts, state, &c) == 0);
     c = shifted;
     c.capture_offset_hz = 0;
     c.capture_hz = k_qt_hz_a;
     rc |= qt_expect("default policy, rotation Fs/4 without the offset: refused",
-                    quiet_measures_capture(&opts, &state, &c) == 0);
+                    quiet_measures_capture(opts, state, &c) == 0);
     c = shifted;
     c.geometry = 2;
-    rc |= qt_expect("an unknown policy: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    rc |= qt_expect("an unknown policy: refused", quiet_measures_capture(opts, state, &c) == 0);
 
     dsd_signal_capture centred;
     DSD_MEMSET(&centred, 0, sizeof centred);
@@ -28226,29 +28230,29 @@ test_scan_quiet_capture_policies(void) {
     centred.capture_hz = k_qt_hz_a;
     centred.gain = 20;
     centred.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
-    rc |= qt_expect("a native Airspy's centred capture is measured",
-                    quiet_measures_capture(&opts, &state, &centred) == 1);
+    rc |=
+        qt_expect("a native Airspy's centred capture is measured", quiet_measures_capture(opts, state, &centred) == 1);
     rc |= qt_expect("its request carries the policy",
                     g_tap.last_request.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
                         && g_tap.last_request.capture.rotation_hz == 0 && g_tap.last_request.frequency_hz == k_qt_hz_a);
     g_tap.centred_rate_ok = 0;
     rc |= qt_expect("centred, at a rate its table did not validate: refused",
-                    quiet_measures_capture(&opts, &state, &centred) == 0);
+                    quiet_measures_capture(opts, state, &centred) == 0);
     rc |= qt_expect("the default policy does not read the centred table",
-                    quiet_measures_capture(&opts, &state, &shifted) == 1);
+                    quiet_measures_capture(opts, state, &shifted) == 1);
     g_tap.centred_rate_ok = 1;
     g_tap.rate_ok = 0;
-    rc |= qt_expect("nor the centred policy the default table", quiet_measures_capture(&opts, &state, &centred) == 1);
+    rc |= qt_expect("nor the centred policy the default table", quiet_measures_capture(opts, state, &centred) == 1);
     g_tap.rate_ok = 1;
     c = centred;
     c.rotation_hz = (int32_t)(c.rate_hz / 4U);
     c.capture_offset_hz = c.rotation_hz;
     c.capture_hz = k_qt_hz_a + c.rate_hz / 4U;
-    rc |= qt_expect("centred policy with the Fs/4 shift: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    rc |= qt_expect("centred policy with the Fs/4 shift: refused", quiet_measures_capture(opts, state, &c) == 0);
     c = centred;
     c.capture_offset_hz = 100000;
     c.capture_hz = k_qt_hz_a + 100000U;
-    rc |= qt_expect("centred policy off the channel: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    rc |= qt_expect("centred policy off the channel: refused", quiet_measures_capture(opts, state, &c) == 0);
     /* A SoapySDR Airspy's capture, the Fs/4 shift exact, at every Airspy rate: refused (No check: rate); the same
        capture from another SoapySDR device is measured. */
     static const uint32_t k_airspy_rates[] = {2500000U, 3000000U, 6000000U, 10000000U};
@@ -28260,18 +28264,19 @@ test_scan_quiet_capture_policies(void) {
         c.capture_offset_hz = c.rotation_hz;
         c.capture_hz = k_qt_hz_a + rate / 4U;
         rc |= qt_expect("another SoapySDR device at an Airspy rate is measured",
-                        quiet_measures_capture(&opts, &state, &c) == 1);
+                        quiet_measures_capture(opts, state, &c) == 1);
         c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
-        rc |= qt_expect("a SoapySDR Airspy is refused", quiet_measures_capture(&opts, &state, &c) == 0);
+        rc |= qt_expect("a SoapySDR Airspy is refused", quiet_measures_capture(opts, state, &c) == 0);
         c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
         rc |= qt_expect("a SoapySDR device that may be an Airspy is refused at an Airspy rate",
-                        quiet_measures_capture(&opts, &state, &c) == 0);
+                        quiet_measures_capture(opts, state, &c) == 0);
     }
     c = shifted;
     c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
     rc |= qt_expect("a SoapySDR device of unknown identity at an RTL rate is measured",
-                    quiet_measures_capture(&opts, &state, &c) == 1);
-    quiet_rig_finish(&opts, &state, dir, path);
+                    quiet_measures_capture(opts, state, &c) == 1);
+    quiet_rig_finish(opts, state, dir, path);
+    free(opts);
     return rc;
 }
 
@@ -28282,39 +28287,44 @@ static int
 test_scan_quiet_policy_change_declines(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    static dsd_opts opts;
-    static dsd_state state;
-    g_qt_centred = 1;
-    const int started = quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path);
-    g_qt_centred = 0;
-    if (started != 0) {
+    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* const state = qt_shared_state();
+    if (!opts) {
         return 1;
     }
-    quiet_publish(&opts, &state);
-    int rc = qt_expect("centred: requested", scan_quiet_phase_get(&state) == SCAN_QUIET_REQUESTED);
+    g_qt_centred = 1;
+    const int started = quiet_rig_start(opts, state, dir, sizeof dir, path, sizeof path);
+    g_qt_centred = 0;
+    if (started != 0) {
+        free(opts);
+        return 1;
+    }
+    quiet_publish(opts, state);
+    int rc = qt_expect("centred: requested", scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
     quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
     g_tap.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
     rc |= qt_expect("policy changed before the take: no hand-back",
-                    quiet_service_after(&opts, &state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
+                    quiet_service_after(opts, state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
     rc |= qt_expect("policy changed before the take: declined, DONE",
-                    quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+                    quiet_apply(opts, state, SCAN_QUIET_OWNER_TRUNK) == 0
+                        && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
 
     g_qt_centred = 1;
-    quiet_land_again(&state, k_qt_hz_a);
-    rc |= quiet_to_ready(&opts, &state);
+    quiet_land_again(state, k_qt_hz_a);
+    rc |= quiet_to_ready(opts, state);
     g_tap.capture.geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
     rc |= qt_expect("policy changed after the take: no hand-back",
-                    quiet_service_after(&opts, &state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
+                    quiet_service_after(opts, state, 5U) != DSD_SCAN_QUIET_HAND_BACK);
     rc |= qt_expect("policy changed after the take: declined, DONE",
-                    quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
-                        && scan_quiet_phase_get(&state) == SCAN_QUIET_DONE);
+                    quiet_apply(opts, state, SCAN_QUIET_OWNER_TRUNK) == 0
+                        && scan_quiet_phase_get(state) == SCAN_QUIET_DONE);
 
-    quiet_land_again(&state, k_qt_hz_a);
-    rc |= quiet_to_ready(&opts, &state);
-    rc |= qt_expect("the same policy: applied", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 1);
+    quiet_land_again(state, k_qt_hz_a);
+    rc |= quiet_to_ready(opts, state);
+    rc |= qt_expect("the same policy: applied", quiet_apply(opts, state, SCAN_QUIET_OWNER_TRUNK) == 1);
     g_qt_centred = 0;
-    quiet_rig_finish(&opts, &state, dir, path);
+    quiet_rig_finish(opts, state, dir, path);
+    free(opts);
     return rc;
 }
 
@@ -30424,6 +30434,67 @@ qt_next_target(dsd_opts* opts, dsd_state* state, uint32_t hz, int32_t rotation_h
 static const char k_qt_warn_targets[] = "n15,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 15000\n"
                                         "nun,nfm-conventional,453000000,,2000,1000,,\n";
 
+/* Set the tap's capture to the Fs/4-shifted capture at @p rate_hz on @p hz, from receiver @p receiver. */
+static void
+qt_shifted_capture(uint32_t hz, uint32_t rate_hz, uint8_t receiver) {
+    g_tap.capture.rate_hz = rate_hz;
+    g_tap.capture.rotation_hz = (int32_t)(rate_hz / 4U);
+    g_tap.capture.capture_offset_hz = g_tap.capture.rotation_hz;
+    g_tap.capture.capture_hz = hz + rate_hz / 4U;
+    g_tap.capture.receiver = receiver;
+}
+
+/* The receiver's reason reaches the WARN line through the trunk scan: a SoapySDR Airspy has no check at its rate and
+   the line points to the native input (-i airspy); a SoapySDR device that may be an Airspy is refused at an Airspy
+   rate with its own line, and the same unknown device at an RTL rate is measured. No line advises SoapySDR. */
+static int
+test_scan_quiet_trunk_names_the_soapy_receiver(void) {
+    static const char k_targets[] = "a,dmr-conventional,452000000,,2000,1000,,\n"
+                                    "b,dmr-conventional,453000000,,2000,1000,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* const state = qt_shared_state();
+    if (!opts) {
+        return 1;
+    }
+    if (qt_warn_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+        free(opts);
+        return 1;
+    }
+    qt_warns_watch();
+    qt_shifted_capture(k_qt_hz_a, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY);
+    qt_decode_at(10U);
+    qt_pass(opts, state);
+    int rc = qt_expect_quiet(state, "a SoapySDR Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("a SoapySDR Airspy: its own line", 1, DSD_SCAN_QUIET_REASON_RATE, SCAN_QUIET_WARN_SOAPY_AIRSPY,
+                         2500000U, NULL, 0U, 0, 0U);
+    rc |= qt_expect("the line points to the native input",
+                    strstr(g_qt_warn, "-i airspy") != NULL && strstr(g_qt_warn, "soapy:") == NULL);
+    rc |= qt_expect("nothing requested", g_tap.requests == 0);
+
+    qt_next_target(opts, state, k_qt_hz_b, 0);
+    qt_shifted_capture(k_qt_hz_b, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN);
+    qt_decode_at(20U);
+    qt_pass(opts, state);
+    rc |= qt_expect_quiet(state, "a SoapySDR device that may be an Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("an unknown SoapySDR device: its own line", 2, DSD_SCAN_QUIET_REASON_RATE,
+                         SCAN_QUIET_WARN_SOAPY_UNKNOWN, 2500000U, NULL, 0U, 0, 0U);
+    rc |= qt_expect("its line names the rate and the native input",
+                    strstr(g_qt_warn, "2.5 Msps") != NULL && strstr(g_qt_warn, "-i airspy") != NULL);
+
+    qt_next_target(opts, state, k_qt_hz_a, 0);
+    qt_shifted_capture(k_qt_hz_a, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN);
+    qt_decode_at(30U);
+    qt_pass(opts, state);
+    rc |= qt_expect("an unknown SoapySDR device at an RTL rate is measured",
+                    scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1 && g_qt_warns == 2);
+    quiet_rig_finish(opts, state, dir, path);
+    free(opts);
+    return rc;
+}
+
 /* The reporter's case on an RTL capture: an NFM 15 kHz target is measured (Quiet check while it runs, the plain
    phrase once it reads busy); an NFM target with no width set gets no check: No check: width, and one WARN line naming
    it however many ticks follow. A native Airspy (a centred capture): No check: tuner, with its own WARN line, which
@@ -30470,6 +30541,8 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
     rc |= qt_expect_quiet(state_p, "a native Airspy", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_TUNER);
     rc |= qt_expect_warn("a native Airspy: one line", 2, DSD_SCAN_QUIET_REASON_TUNER, SCAN_QUIET_WARN_AIRSPY, 0U, NULL,
                          0U, 0, 0U);
+    rc |= qt_expect("the native line does not advise SoapySDR",
+                    strstr(g_qt_warn, "SoapySDR") == NULL && strstr(g_qt_warn, "soapy") == NULL);
     rc |= qt_expect("a centred capture: nothing requested", g_tap.requests == 1);
     qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     qt_decode_at(100U);
@@ -31074,6 +31147,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_tetra_dmo_says_no_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_names_the_soapy_receiver);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_needs_the_stream_session);

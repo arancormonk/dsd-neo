@@ -1339,10 +1339,11 @@ On these the scan keeps its normal timing, as if the setting were off. The Scan 
 brackets below), and the log says how to fix it; see
 [What the screens and the log show](#what-the-screens-and-the-log-show).
 
-- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs (`tuner`). An
-  Airspy through SoapySDR is checked at 2.5, 3, 6 and 10 MS/s, and a HackRF through SoapySDR at the 10 MS/s it normally
-  runs (a HackRF moved to a lower rate near the top of the tuning range is checked only if that rate is one the check
-  covers).
+- An Airspy through SoapySDR (`-i soapy:driver=airspy`), at any rate (`rate`): use the native Airspy input
+  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device whose driver does not say which device
+  it is (as behind some proxies) gets no check at those four rates either, since it may be an Airspy (`rate`). A
+  HackRF through SoapySDR is checked at the 10 MS/s it normally runs (a HackRF moved to a lower rate near the top of
+  the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
   which also removes that shift (`tuner`).
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
@@ -1399,11 +1400,16 @@ setting off and on logs them again. `<channel>` is a target's label (or its id w
   `... channels in an I/Q replay; it needs a live radio input.`,
   `... channels on an I/Q stream; it needs a radio input DSD-neo tunes.`, or
   `... channels: this build has no radio support.` Use a radio input, live.
-- `tuner`: `... channels on a native Airspy input; open the Airspy through SoapySDR (-i soapy:driver=airspy) to have
-  them checked.`, or `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
-  DSD_NEO_RTL_OFFSET_TUNING=0, or unset DSD_NEO_DISABLE_FS4_SHIFT, to have them checked.`
+- `tuner`: `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
+  DSD_NEO_RTL_OFFSET_TUNING=0, or unset DSD_NEO_DISABLE_FS4_SHIFT, to have them checked.`, or, on a native Airspy
+  capture that is not centred (which a working native input never gives), `... channels on this native Airspy
+  capture: its I/Q is not centred on the tuned frequency, which the check needs.`
 - `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
-  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them.
+  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. An Airspy through
+  SoapySDR logs `... channels on an Airspy through SoapySDR; use the native Airspy input (-i airspy) to have them
+  checked.`, and a SoapySDR device that may be an Airspy `... channels at 2.5 Msps on this SoapySDR device: its driver
+  did not say which device it is, and an Airspy, which it cannot check through SoapySDR, runs this rate. For an
+  Airspy, use the native Airspy input (-i airspy).`
 - `width`: `... <channel> <MHz> MHz at NFM 13.5 kHz, a width it was not calibrated for; set --nfm-bandwidth-hz to
   8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000 or 25000 to have it checked.` (on AM: `--am-bandwidth-hz` to
   5000, 6000, 8000, 8333, 10000, 15000 or 20000), `... <channel> <MHz> MHz: it has no NFM width set; set

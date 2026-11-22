@@ -55,7 +55,8 @@ What dsd-neo does with each (none of this is tested on real hardware yet):
 
 - **Airspy R2 and Mini** get the Airspy profile and the device's own rate nearest what dsd-neo asks for (2.5 MS/s on
   an R2, 3 MS/s on a Mini). Gains: `LNA`, `MIX`, `VGA`. They also have a native input, `-i airspy`
-  ([airspy.md](airspy.md)); through SoapySDR, Skip silent channels can check them (see [trunk-scan.md](trunk-scan.md)).
+  ([airspy.md](airspy.md)). Skip silent channels checks them on the native input only, not through SoapySDR (see
+  [trunk-scan.md](trunk-scan.md)).
 - **HackRF One** gets the HackRF profile and runs at 10 MS/s, whatever DSP bandwidth you pick, except where that does
   not fit (see Sample rates below): its makers list 2 MS/s as its lowest rate and recommend 8 MS/s or more. dsd-neo halves 10 MS/s down to the DSP bandwidth, as it does for an
   Airspy. Its filter opens to 5.5 MHz (see Tuner filter below). That is 20 MB/s over USB, 80 MB/s for a cf32

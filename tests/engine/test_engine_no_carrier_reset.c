@@ -16479,6 +16479,8 @@ static struct {
     int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
     int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 R6) */
     int rate_refused;  /* the capture's rate is one the calibration did not validate */
+    uint32_t rate_hz;  /* the capture's rate (0: the RTL chain's 1.536 MS/s) */
+    uint8_t receiver;  /* the capture's receiver (dsd_signal_capture_receiver) */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
     /* When set, the stream's generation moves on while the check judges a capture's rate: the RTL thread opened a new
@@ -16549,10 +16551,12 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     DSD_MEMSET(capture, 0, sizeof *capture);
     capture->generation = yq_stream_gen();
     /* The RTL chain's: tuned Fs/4 above the channel and rotated back. */
-    capture->rate_hz = 1536000U;
-    capture->capture_hz = g_rtl_tune_freq + (g_yq.centred ? 0U : 384000U);
-    capture->rotation_hz = g_yq.centred ? 0 : 384000;
-    capture->capture_offset_hz = g_yq.centred ? 0 : 384000;
+    capture->rate_hz = g_yq.rate_hz != 0U ? g_yq.rate_hz : 1536000U;
+    const uint32_t shift = g_yq.centred ? 0U : capture->rate_hz / 4U;
+    capture->capture_hz = g_rtl_tune_freq + shift;
+    capture->rotation_hz = (int32_t)shift;
+    capture->capture_offset_hz = (int32_t)shift;
+    capture->receiver = g_yq.receiver;
     capture->gain = 20;
     return 1;
 }
@@ -17279,6 +17283,39 @@ yq_cause_case(int which) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y cause %d (warns %d, last '%s')\n", which, g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834: a SoapySDR receiver's reason reaches the -Y WARN line: a SoapySDR Airspy (@p receiver
+   DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY) and a SoapySDR device that may be one, at the 2.5 MS/s an Airspy runs, have no check
+   (No check: rate), and the one WARN line says which, pointing to the native Airspy input. */
+static int
+yq_soapy_receiver_case(uint8_t receiver, int detail) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_hz = 2500000U;
+    g_yq.receiver = receiver;
+    const long int base_hz = 561012500L + (long int)receiver * 10000000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    yq_timing_tick(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a SoapySDR receiver it cannot check", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_RATE, detail, 2500000U, NULL, 0, 0U, 0, 0U);
+    rc |= expect_true("one WARN line saying which receiver, nothing requested",
+                      g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0 && g_yq.requests == 0);
+    rc |= expect_true("it points to the native Airspy input",
+                      strstr(g_yq.warn, "-i airspy") != NULL && strstr(g_yq.warn, "soapy:") == NULL);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y SoapySDR receiver %u (warns %d, last '%s')\n", (unsigned)receiver,
+                    g_yq.warns, g_yq.warn);
     }
     return rc;
 }
@@ -19308,6 +19345,8 @@ test_scan_quiet_decisions(void) {
     for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
         rc |= yq_cause_case(which);
     }
+    rc |= yq_soapy_receiver_case(DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, SCAN_QUIET_WARN_SOAPY_AIRSPY);
+    rc |= yq_soapy_receiver_case(DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, SCAN_QUIET_WARN_SOAPY_UNKNOWN);
     rc |= test_y_quiet_input_shows_until_a_call();
     rc |= test_y_quiet_analog_call_explains_the_stay();
     rc |= test_y_quiet_refused_row_restarts_after_an_edit();

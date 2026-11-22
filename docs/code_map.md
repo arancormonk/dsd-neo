@@ -698,7 +698,11 @@ Generated (do not edit/commit):
       shift (`rotation_hz == rate_hz / 4` and `capture_offset_hz == rotation_hz`; centred I/Q under it, as an RTL-SDR
       with offset tuning on, an E4000 by default over USB, or the shift off, and any other rotation are not covered),
       or `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` (a native Airspy, tuned on the channel: rotation 0, offset 0; a SoapySDR
-      Airspy rotates and runs the default policy). A rate the policy's table did not validate is RATE
+      Airspy rotates and runs the default policy, and `dsd_signal_quiet_receiver_refused()` makes it RATE at any rate,
+      as it does a SoapySDR device of unknown identity at an Airspy rate). The verdict's WARN detail
+      (`quiet_capture_receiver_detail()`) says which receiver it is: TUNER on a native Airspy capture is
+      `SCAN_QUIET_WARN_AIRSPY`, else `_CENTRED`; RATE is `_SOAPY_AIRSPY` or `_SOAPY_UNKNOWN` (both lines point to
+      `-i airspy`) or the plain `_RATE`. A rate the policy's table did not validate is RATE
       (`dsd_signal_quiet_rate_supported()`, `dsd_signal_quiet_airspy_centred_rate_supported()`: 2.5, 3, 6, 10 MS/s),
       an analog width it did not validate there is WIDTH (`dsd_signal_quiet_analog_supported()` with the analog kind).
       The READY recheck compares the whole capture, the policy included (`quiet_capture_equal()`), so a policy change
