@@ -2941,8 +2941,8 @@ Item {
         }
         // B11: the export's day is the local date, also at 00:00 UTC, which is the day before west of UTC.
         function test_export_name_is_the_local_date() {
-            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
-                skip("this host cannot make America/Los_Angeles the process time zone");
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
             systemsStub.nowMs = Date.UTC(2026, 0, 1);
             var id = beginExport("detections");
             compare(testContext.lastDocumentRequest().name, "Signal search detections 2025-12-31.csv");

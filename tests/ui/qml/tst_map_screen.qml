@@ -1450,8 +1450,8 @@ Item {
         // today takes its date at midnight. Literal local times in a zone west
         // of UTC.
         function test_18o_times_follow_the_local_day() {
-            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
-                skip("this host cannot make America/Los_Angeles the process time zone");
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
             testContext.setLocalNowMs(Date.UTC(2025, 5, 15, 3, 0, 0));
             sheet().pin = null;
             sheet().trackId = 0;

@@ -146,8 +146,8 @@ Item {
             testContext.setLocalNowMs(new Date(2026, 0, 1, 0, 0, 5).getTime());
             compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
             // Only this needs a zone west of UTC.
-            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
-                skip("this host cannot make America/Los_Angeles the process time zone");
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
             testContext.setLocalNowMs(Date.UTC(2026, 0, 1, 8, 0, 5));
             recordings.folders = [{uid: "u3", kind: "saved", name: "Midnight", count: 1, bytes: 1000, first: Date.UTC(2026, 0, 1) / 1000, last: Date.UTC(2026, 0, 1) / 1000, available: true}];
             compare(item("callRecordingsFolder0").subtitle, "1 recording · 1 kB · 31 Dec 2025");
@@ -527,7 +527,7 @@ Item {
         // The owner's name made file-safe, and the day as a local date (issue
         // #902 B11): 00:00 UTC on 1 January is still 31 December west of UTC.
         function test_export_file_name_is_safe() {
-            var zoned = testContext.setLocalTimeZone("America/Los_Angeles");
+            var zoned = testContext.localTimeZoneIs("America/Los_Angeles");
             testContext.setLocalNowMs(Date.UTC(2026, 0, 1));
             recordings.folders = [{uid: "u9", kind: "saved", name: "Fire/EMS: \"North\" <1>", count: 2, bytes: 2000, first: 1761300000, last: 1761300000, available: true}];
             recordings.recordingCount = 2;
@@ -538,7 +538,7 @@ Item {
             compare(testContext.lastDocumentRequest().name, name, "the host is asked with that name");
             testContext.answerDocumentCancelled(exportRequest());
             if (!zoned)
-                skip("this host cannot make America/Los_Angeles the process time zone");
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
             compare(name, "Call recordings Fire_EMS_ _North_ _1_ 2025-12-31.zip");
         }
 

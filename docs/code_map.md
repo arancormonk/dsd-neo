@@ -16405,10 +16405,10 @@ Qt Quick frontend (`src/ui/qt`):
   `UI_QT_LOCAL_DAY_WATCH` (a fake clock through `setClockForTest()`/`resetClockForTest()`, a named zone per case
   through `setZoneForTest()` rather than the process's `TZ`, and the timer through `timerForTest()`: test hooks
   compiled only with `DSD_NEO_TEST_HOOKS`; a case whose named zone the host's data lacks is skipped, saying so), the QML
-  harness's `testContext.setLocalNowMs()`, `setLocalTimeZone()` and `resetLocalDay()` (reset for every engine; QML's
-  JavaScript dates need the process zone, so `setLocalTimeZone()` sets `TZ`, checks the effective native and JavaScript
-  offsets, and returns false, back on the run's zone, where the host cannot take it, as on Windows, and a case skips
-  then), `tst_util_clock_text.qml`.
+  harness's `testContext.setLocalNowMs()` (also `savedSystems.realtimeNowMs()`) and `resetLocalDay()` (reset for every
+  engine); QML's JavaScript dates need the process zone, so CTest starts the QML runs with `TZ=America/Los_Angeles` (off
+  Windows) and a case asks `testContext.localTimeZoneIs()`, which checks the native and JavaScript offsets, and skips
+  when it is false (`docs/testing.md`); `tst_util_clock_text.qml`.
   Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`),
   `APP_CONTROL_NOTIFICATION_STATUS`.
 - Call history identity, and order across sessions (`call_history_model.{h,cpp}`), never come from the rows'

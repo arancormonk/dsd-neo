@@ -231,8 +231,8 @@ Item {
         // Issue #902 B11: the name is the local date, also for a moment at
         // 00:00 UTC, which is the day before west of UTC.
         function test_export_name_is_the_local_date() {
-            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
-                skip("this host cannot make America/Los_Angeles the process time zone");
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
             clockStub.nowMs = Date.UTC(2026, 0, 1);
             beginExport(sessionLoader.item);
             compare(testContext.lastDocumentRequest().name, "Call history 2025-12-31.csv");

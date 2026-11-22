@@ -6949,26 +6949,22 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Issue #902: make @p id (an IANA name) the process's local zone, as TZ at launch would, for QDateTime and
-     * JavaScript dates alike, and check the watch; "" puts the run's own zone back. False, with the run's own zone
-     * back, when this host cannot (its C library takes no IANA name in TZ, as on Windows, or has no data for it): a
-     * case then skips what needs that zone.
+     * @brief Issue #902: whether the process's local zone is @p id (an IANA name), for QDateTime and JavaScript dates
+     * alike, at every date the QML fixtures use. The suite never sets the zone itself: writing TZ while Qt's threads
+     * read it is a race (docs/testing.md, "Environment variables in tests"). CTest starts the QML runs with
+     * TZ=America/Los_Angeles; a run without it (one started by hand, or Windows, whose C runtime reads no IANA name in
+     * TZ) answers false, and a case then skips what needs that zone.
      */
     Q_INVOKABLE bool
-    setLocalTimeZone(const QString& id) {
-        apply_local_zone(id, m_engine);
-        if (id.isEmpty() || local_zone_is(id, m_engine)) {
-            return true;
-        }
-        apply_local_zone(QString(), m_engine);
-        return false;
+    localTimeZoneIs(const QString& id) const {
+        return local_zone_is(id, m_engine);
     }
 
-    /** @brief Issue #902: the real clock and the run's own zone again (a case's cleanup). */
+    /** @brief Issue #902: the real clock again for the local-day watch and savedSystems (a case's cleanup). */
     Q_INVOKABLE void
     resetLocalDay() {
-        reset_local_day(m_engine);
-        /* Here, not in reset_local_day(): a new engine's model starts on the real clock, and the old one is gone. */
+        dsd_qt::LocalDayWatch::resetClockForTest();
+        /* Here, not on a new engine: its model starts on the real clock, and the old one is gone. */
         if (m_saved_systems != nullptr) {
             m_saved_systems->setRealtimeClockForTest(nullptr);
         }
@@ -7026,8 +7022,8 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
-        /* Issue #902: each test file starts on the real clock, in the run's own zone. */
-        reset_local_day(engine);
+        /* Issue #902: each test file starts on the real clock. */
+        dsd_qt::LocalDayWatch::resetClockForTest();
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
@@ -7767,36 +7763,7 @@ class Setup : public QObject {
                == m_host_readings;
     }
 
-    /* Issue #902: setLocalTimeZone() on @p engine's JavaScript dates (the engine running now, or the new one
-       qmlEngineAvailable() is handed: never one already gone). */
-    void
-    apply_local_zone(const QString& id, QJSEngine* engine) {
-        if (!m_zone_saved) {
-            m_had_tz = qEnvironmentVariableIsSet("TZ");
-            m_saved_tz = qgetenv("TZ");
-            m_zone_saved = true;
-        }
-        if (!id.isEmpty()) {
-            qputenv("TZ", id.toUtf8());
-        } else if (m_had_tz) {
-            qputenv("TZ", m_saved_tz);
-        } else {
-            qunsetenv("TZ");
-        }
-#ifdef _WIN32
-        _tzset();
-#else
-        tzset();
-#endif
-        if (engine != nullptr) {
-            engine->evaluate(QStringLiteral("Date.timeZoneUpdated()"));
-        }
-        if (dsd_qt::LocalDayWatch* watch = dsd_qt::LocalDayWatch::shared()) {
-            watch->check();
-        }
-    }
-
-    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, now has @p id's offsets at
+    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, has @p id's offsets at
        every date the QML fixtures use, across both of 2025's and 2026's transitions: two zones that agree in January
        and July can still part in November (America/Vancouver kept UTC-7 from November 2026, America/Los_Angeles went
        back to UTC-8). */
@@ -7828,14 +7795,6 @@ class Setup : public QObject {
         return true;
     }
 
-    void
-    reset_local_day(QJSEngine* engine) {
-        if (m_zone_saved) {
-            apply_local_zone(QString(), engine);
-        }
-        dsd_qt::LocalDayWatch::resetClockForTest();
-    }
-
     /* Issue #902: the fake real clock setLocalNowMs() runs the local-day watch on. */
     static qint64&
     local_now_ms() {
@@ -7848,10 +7807,6 @@ class Setup : public QObject {
         return local_now_ms();
     }
 
-    /* Issue #902: the TZ the run started with, kept by the first setLocalTimeZone(). */
-    bool m_zone_saved = false;
-    bool m_had_tz = false;
-    QByteArray m_saved_tz;
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
     bool m_accessibility_activated = false;
     /* Issue #782: the URLs QML opened while captureOpenedUrls() held the handler. */

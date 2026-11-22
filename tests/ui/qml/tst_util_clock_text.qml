@@ -19,17 +19,18 @@ TestCase {
     // 2026-11-21 00:00 in America/Los_Angeles (UTC-8 in November).
     readonly property double dayStart: Date.UTC(2026, 10, 21, 8, 0, 0)
 
-    // Whether this host took the zone (a C library that reads no IANA name in
-    // TZ, as on Windows, does not): the cases that need it skip otherwise.
+    // Whether the run is in America/Los_Angeles (CTest starts the QML runs
+    // with that TZ; a run by hand or on Windows is not): the cases that need
+    // it skip otherwise.
     property bool zoneSet: false
 
     function init() {
-        zoneSet = testContext.setLocalTimeZone("America/Los_Angeles")
+        zoneSet = testContext.localTimeZoneIs("America/Los_Angeles")
     }
 
     function needZone() {
         if (!zoneSet)
-            skip("this host cannot make America/Los_Angeles the process time zone")
+            skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)")
     }
 
     function cleanup() {
@@ -42,7 +43,7 @@ TestCase {
 
     function test_zone_reaches_javascript() {
         needZone()
-        compare(new Date(Date.UTC(2026, 0, 1)).getDate(), 31, "JavaScript dates use the zone the case set")
+        compare(new Date(Date.UTC(2026, 0, 1)).getDate(), 31, "JavaScript dates use the run's zone")
     }
 
     function test_clock_text_data() {

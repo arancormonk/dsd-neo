@@ -6652,6 +6652,16 @@ if(DSD_ENABLE_QT_UI)
             target_compile_options(dsd-neo_test_ui_qt_qml PRIVATE /fp:precise)
         endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
+        # Every run of the QML executable: headless, and (issue #902) in America/Los_Angeles, a zone west of UTC with
+        # daylight saving, so the date cases can assert literal local dates. TZ is set here, before the process starts,
+        # never by the running suite (docs/testing.md, "Environment variables in tests"). Not on Windows, whose C
+        # runtime reads no IANA name in TZ: there testContext.localTimeZoneIs() is false and those cases skip.
+        set(_dsd_qml_test_env
+            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        if(NOT WIN32)
+            list(APPEND _dsd_qml_test_env "TZ=America/Los_Angeles")
+        endif()
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
             NAME UI_QT_QML_ACTION_MENU
@@ -6661,9 +6671,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_ACTION_MENU
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_MODAL_INPUT
@@ -6673,9 +6681,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_MODAL_INPUT
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_CSV_IMPORT_FLOW
@@ -6685,9 +6691,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_CSV_IMPORT_FLOW
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_BACK_MODALS
@@ -6697,9 +6701,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_BACK_MODALS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_SESSION_TOOLS
@@ -6709,9 +6711,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_SESSION_TOOLS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         foreach(
             _case
@@ -6740,9 +6740,7 @@ if(DSD_ENABLE_QT_UI)
             )
             set_tests_properties(
                 UI_QT_QML_${_case_upper}
-                PROPERTIES
-                    ENVIRONMENT
-                        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+                PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
             )
         endforeach()
         # Issue #782: accessibility event churn. Its own directory and run,
@@ -6759,8 +6757,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_A11Y_CHURN
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+                ENVIRONMENT "${_dsd_qml_test_env};DSD_QML_TEST_ACCESSIBILITY=1"
         )
         # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
         # an index naming it and a file the folder lacks, as the APK staging writes one.
@@ -6797,8 +6794,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_CALL_LISTS
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+                ENVIRONMENT "${_dsd_qml_test_env};QT_FORCE_STDERR_LOGGING=1"
         )
     endif()
 endif()
