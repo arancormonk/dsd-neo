@@ -406,20 +406,25 @@ code (**CC 1**), and the cell's site from its system information broadcast
 the cell says it has none. A cell on colour code 0 shows only **MCC 228 · MNC
 8889**: all such cells scramble the same way, so no broadcast can be tied to the
 cell that confirmed. While the cell says it shares its carrier with other cells,
-no site is shown; the access code still is.
+no site is shown. When the cell said so before its site was shown, the access
+code still is; when it says so only after the site was shown, the site and the
+access code are withdrawn together (see below).
 
 The main carrier is the carrier the cell advertises for conventional access, and
 every carrier of the cell broadcasts it, so the line reads the same on each of
-them. Compare it with the detection's own frequency:
+them. Comparing it with the detection's own frequency is a clue, not a verdict:
 
-- the same frequency: the search found the cell's main carrier. In normal mode
-  its first timeslot carries the cell's control channel;
-- another frequency: the search found another carrier of the cell (traffic, for
-  example). To follow the cell's control channel, use the main carrier instead.
+- the same frequency: the search most likely found the cell's main carrier. In
+  normal mode its first timeslot carries the cell's control channel;
+- another frequency: the search may have found another carrier of the cell
+  (traffic, for example), or a search channel next to the main carrier, which
+  still decodes it.
 
-Signal search does not decide this for you. A detection's frequency is the
-search's channel, not the transmitter's measured centre, and TETRA still decodes
-10 kHz off its carrier, so the frequency cannot prove which carrier it is. A cell
+Either way, tune the advertised main carrier to follow the cell's control
+channel. Signal search does not decide which carrier it found. A detection's
+frequency is the search's channel, not the transmitter's measured centre, and
+TETRA still decodes 10 kHz off its carrier, so a detection 6.25 kHz from the
+main carrier may be the main carrier itself. A cell
 that uses direct access (DA) can name the main carrier and LA of its
 conventional-access cell.
 
@@ -435,9 +440,11 @@ a DMO network identity (MNI), a repeater or gateway address, a DM colour code
 
 The site and access code are withdrawn together, for the rest of the visit, when
 a second cell identity appears on the carrier, when the same cell's broadcast
-changes its LA or main carrier, or when the other TETRA mode also confirms. The
-detection stays **TETRA · confirmed**, and history and the CSV export keep it
-withdrawn.
+changes its LA or main carrier, when a cell that showed its site then says it
+shares its carrier, or when the other TETRA mode also confirms. The detection
+stays confirmed with the protocol label of the mode that confirmed first (a
+detection that confirmed as direct mode first stays **TETRA DMO · confirmed**),
+and history and the CSV export keep it withdrawn.
 
 A confirmed TETRA visit ends 2.1 seconds after the last checked TETRA signalling
 (one multiframe and one lost frame), not 500 ms, so a control channel's quiet
