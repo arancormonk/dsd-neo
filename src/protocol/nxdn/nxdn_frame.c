@@ -121,6 +121,8 @@ typedef struct {
        (nxdn_frame_decode_signalling()). */
     nxdn_field_decode field;
     nxdn_facch1_decode facch1[2];
+    /* The frame's Type-D FACCH3 or UDCH2, decoded with the rest of its signalling. */
+    struct nxdn_facch3_udch2_message facch3_udch2;
 
     /* The trunk-tuning generation and newest unresolved tune request when the frame's channels began to decode
        (nxdn_frame_left_carrier()). */
@@ -229,6 +231,8 @@ nxdn_frame_ctx_init(nxdn_frame_ctx* ctx) {
     ctx->field.crc = 1U;
     ctx->facch1[0].crc = 1U;
     ctx->facch1[1].crc = 1U;
+    ctx->facch3_udch2.crc[0] = 1U;
+    ctx->facch3_udch2.crc[1] = 1U;
 }
 
 static void
@@ -692,9 +696,9 @@ nxdn_frame_left_carrier(const nxdn_frame_ctx* ctx) {
 }
 
 /*
- * Decode the frame's SCCH or SACCH field and its FACCH1 halves (FEC and CRC, NXDN TS 1-A §4.5, TS 1-E §4.5.1) without
- * acting on any of them: no evidence, call, location, SACCH assembly, scrambler position or print. What they say
- * classifies the frame (nxdn_frame_classify()) before anything of it is committed.
+ * Decode the frame's SCCH or SACCH field, its FACCH1 halves and its FACCH3 or UDCH2 (FEC and CRC, NXDN TS 1-A §4.5,
+ * TS 1-E §4.5.1) without acting on any of them: no evidence, call, location, SACCH assembly, scrambler position or
+ * print. What they say classifies the frame (nxdn_frame_classify()) before anything of it is committed.
  */
 static void
 nxdn_frame_decode_signalling(nxdn_frame_ctx* ctx) {
@@ -702,6 +706,9 @@ nxdn_frame_decode_signalling(nxdn_frame_ctx* ctx) {
         ctx->field = nxdn_scch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
     } else if (ctx->sacch) {
         ctx->field = nxdn_sacch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
+    }
+    if (ctx->facch3 || ctx->udch2) {
+        ctx->facch3_udch2 = nxdn_facch3_udch2_decode_soft(ctx->facch3_bits, ctx->facch3_reliab);
     }
     if (ctx->facch & 1) {
         ctx->facch1[0] = nxdn_facch1_decode_soft(ctx->facch_bits_a, ctx->facch_reliab_a);
@@ -721,9 +728,11 @@ nxdn_frame_decode_signalling(nxdn_frame_ctx* ctx) {
  * - A CAC or a composite frame is another channel's while the receiver follows a call elsewhere than this site's
  *   control channel (dsd_nxdn_control_heard_is_foreign()).
  * - An RTCH2 frame reads the Type-D address layout when its LICH is a value only Type-D has (0x63 among them), when
- *   its own SCCH passed its check (no FACCH1 of it said Type-C, or it would be composite), or when the carrier's
- *   Type-D evidence is fresh (dsd_nxdn_type_d_layout_fresh()). A shared value with none of these, as a composite
- *   channel's frames give on late entry, keeps the Type-C layout's full IDs.
+ *   its own SCCH passed its check (no FACCH1 of it said Type-C, or it would be composite), when both CRCs of its own
+ *   FACCH3 or UDCH2 passed (a Type-D layout: a composite frame of the same value carries a FACCH2 or UDCH there, which
+ *   the Type-D reading fails), or when the carrier's Type-D evidence is fresh (dsd_nxdn_type_d_layout_fresh()). A
+ *   shared value with none of these, as a composite channel's frames give on late entry, keeps the Type-C layout's
+ *   full IDs.
  */
 static void
 nxdn_frame_classify(const dsd_opts* opts, const dsd_state* state, nxdn_frame_ctx* ctx) {
@@ -735,8 +744,9 @@ nxdn_frame_classify(const dsd_opts* opts, const dsd_state* state, nxdn_frame_ctx
         ctx->field = nxdn_sacch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
     }
     ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
-    ctx->type_d =
-        ctx->idas && (composite == NULL || ctx->field.crc == ctx->field.check || dsd_nxdn_type_d_layout_fresh(state));
+    const int own_check = ctx->field.crc == ctx->field.check
+                          || ((ctx->facch3 || ctx->udch2) && nxdn_facch3_udch2_crc_ok(&ctx->facch3_udch2));
+    ctx->type_d = ctx->idas && (composite == NULL || own_check || dsd_nxdn_type_d_layout_fresh(state));
 }
 
 static void
@@ -748,10 +758,10 @@ nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
         }
     }
     if (ctx->udch2) {
-        nxdn_deperm_facch3_udch2_soft(opts, state, (uint8_t*)ctx->facch3_bits, (uint8_t*)ctx->facch3_reliab, 0);
+        nxdn_handle_facch3_udch2_soft(opts, state, &ctx->facch3_udch2, 0);
     }
     if (ctx->facch3) {
-        nxdn_deperm_facch3_udch2_soft(opts, state, (uint8_t*)ctx->facch3_bits, (uint8_t*)ctx->facch3_reliab, 1);
+        nxdn_handle_facch3_udch2_soft(opts, state, &ctx->facch3_udch2, 1);
     }
 }
 

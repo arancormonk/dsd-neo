@@ -97,9 +97,6 @@ void nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t b
 void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
                                   uint8_t type);
 
-void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
-                                   uint8_t type);
-
 /** @brief Decode an SCCH and act on it at once (nxdn_scch_decode_soft(), then nxdn_scch_commit()). */
 nxdn_channel_result nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
                                           uint8_t direction);

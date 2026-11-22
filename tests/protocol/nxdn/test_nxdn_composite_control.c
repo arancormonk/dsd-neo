@@ -1619,6 +1619,38 @@ test_first_half_unit_activity_reads_the_frame_verdict(dsd_opts* opts, dsd_state*
     return rc;
 }
 
+/*
+ * A checked Type-D FACCH3 or UDCH2 is Type-D evidence of its own frame (issue #903): on late entry, with no SCCH of the
+ * carrier checked yet, two frames of a value a composite channel shares (0x69: SCCH and FACCH3; 0x6F: SCCH and UDCH2)
+ * whose SCCHs fail carry a VCALL from 0x1864 to 0x1805 in a payload whose two CRCs pass: it decodes in the Type-D
+ * layout, 03-0005, not as the full 16-bit 6149.
+ */
+static int
+test_checked_facch3_udch2_reads_type_d(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t k_lich[2] = {0x69U, 0x6FU};
+    uint8_t scch[25];
+    uint8_t vcall[72];
+    uint8_t block0[80];
+    uint8_t block1[80];
+    int rc = 0;
+    info3_scch(scch);
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    DSD_MEMSET(block0, 0, sizeof(block0));
+    DSD_MEMSET(block1, 0, sizeof(block1));
+    DSD_MEMCPY(block0, vcall, sizeof(vcall));
+    for (size_t i = 0U; i < 2U; i++) {
+        clear_state(opts, state);
+        opts->trunk_enable = 1;
+        state->synctype = DSD_SYNC_NXDN_POS;
+        for (int frame = 0; frame < 2; frame++) {
+            build_frame_scch(k_lich[i], scch, 0x5AU, block0, block1);
+            (void)nxdn_frame(opts, state);
+        }
+        rc |= expect_call_target(i == 0U ? "checked facch3" : "checked udch2", state, 5L, 5L, "03-0005");
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1669,6 +1701,7 @@ main(void) {
     rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
     rc |= test_type_d_frame_cch_info_keeps_the_control_channel(opts, state);
     rc |= test_first_half_unit_activity_reads_the_frame_verdict(opts, state);
+    rc |= test_checked_facch3_udch2_reads_type_d(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

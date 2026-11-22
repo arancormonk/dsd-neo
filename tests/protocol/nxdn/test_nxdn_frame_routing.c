@@ -471,13 +471,27 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     }
 }
 
+struct nxdn_facch3_udch2_message
+nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]) {
+    (void)bits;
+    (void)reliab;
+    struct nxdn_facch3_udch2_message out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.crc[0] = out.crc[1] = 1U; /* failed: the routing cases classify by their SCCH stub */
+    return out;
+}
+
+int
+nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message) {
+    return message->crc[0] == message->check[0] && message->crc[1] == message->check[1];
+}
+
 void
-nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
                               uint8_t is_facch3) {
     (void)opts;
     (void)state;
-    (void)bits;
-    (void)reliab;
+    (void)message;
     if (is_facch3 != 0U) {
         g_facch3_calls++;
     } else {

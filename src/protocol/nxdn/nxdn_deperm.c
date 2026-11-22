@@ -981,7 +981,7 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     nxdn_reset_sacch2_if_done(state, &fields);
 }
 
-static int
+int
 nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message) {
     return message->crc[0] == message->check[0] && message->crc[1] == message->check[1];
 }
@@ -1686,17 +1686,15 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
 }
 
 /*
- * Soft-decision FACCH3/UDCH2 depermute/decode path.
- * Processes two 144-bit blocks with separate CRCs (same structure as original).
+ * Soft-decision FACCH3/UDCH2 depermute/decode path: two 144-bit blocks with separate CRCs, decoded without acting on
+ * either (nxdn_handle_facch3_udch2_soft() commits them).
  */
-void
-nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
-                              uint8_t type) {
+struct nxdn_facch3_udch2_message
+nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]) {
     struct nxdn_facch3_udch2_message message;
     DSD_MEMSET(&message, 0, sizeof(message));
     for (size_t block = 0; block < 2U; block++) {
         nxdn_decode_facch3_udch2_block_soft(bits, reliab, block, &message);
     }
-
-    nxdn_handle_facch3_udch2_soft(opts, state, &message, type);
+    return message;
 }

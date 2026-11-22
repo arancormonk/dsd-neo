@@ -234,6 +234,11 @@ struct nxdn_facch3_udch2_message {
     uint16_t check[2];
 };
 
+/* Decode a frame's FACCH3 or UDCH2 field (two blocks, FEC and each block's CRC-12) without acting on it: the frame
+   classifies itself by it (nxdn_frame()) before nxdn_handle_facch3_udch2_soft() commits it. */
+struct nxdn_facch3_udch2_message nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]);
+/* Whether both blocks of a decoded FACCH3 or UDCH2 passed their CRCs. */
+int nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message);
 void nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, size_t block, const uint8_t* trellis_buf,
                                    const uint8_t* m_data);
 void nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
