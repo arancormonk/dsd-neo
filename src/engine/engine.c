@@ -857,15 +857,49 @@ dsd_engine_setup_parse_iq_stream_input(dsd_opts* opts) {
 #endif
 }
 
-/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
+/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB, marked
+   `(default)` while the analog default runs it, as the live readout marks it (issue #899). */
 static void
 dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size) {
+    const char* mark = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? " (default)" : "";
     if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
-        DSD_SNPRINTF(out, out_size, "%s+%ddB", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
-                     opts->rtl_squelch_margin_db);
+        DSD_SNPRINTF(out, out_size, "%s+%ddB%s", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                     opts->rtl_squelch_margin_db, mark);
         return;
     }
-    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", out, out_size);
+    char level[24];
+    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", level, sizeof level);
+    DSD_SNPRINTF(out, out_size, "%s%s", level, mark);
+}
+
+/* A radio input's tuning notice, printed once the squelch the receiver opens with is resolved
+   (dsd_engine_setup_io()): a spec read earlier says which one it owes. */
+typedef enum {
+    ENGINE_TUNING_NOTICE_NONE = 0,
+    ENGINE_TUNING_NOTICE_SOAPY,
+    ENGINE_TUNING_NOTICE_RTL,
+} engine_tuning_notice;
+
+static engine_tuning_notice s_tuning_notice_owed;
+
+static void
+dsd_engine_setup_print_tuning_notice(const dsd_opts* opts) {
+    const engine_tuning_notice owed = s_tuning_notice_owed;
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_NONE;
+    if (owed == ENGINE_TUNING_NOTICE_NONE) {
+        return;
+    }
+    char sql[40];
+    dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
+    if (owed == ENGINE_TUNING_NOTICE_SOAPY) {
+        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
+                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+                 opts->rtl_volume_multiplier);
+        return;
+    }
+    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
+             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+             opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
 }
 
 static int
@@ -883,11 +917,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     }
     LOG_INFO("NOTICE: SoapySDR Input: %s\n", soapy_args[0] != '\0' ? soapy_args : "default device args");
     if (tuning_applied) {
-        char sql[24];
-        dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
-        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
-                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
-                 opts->rtl_volume_multiplier);
+        s_tuning_notice_owed = ENGINE_TUNING_NOTICE_SOAPY;
     }
     opts->rtltcp_enabled = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -985,11 +1015,7 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
     }
 
     opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(opts->rtl_volume_multiplier);
-    char sql[24];
-    dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
-    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
-             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
-             opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_RTL;
     opts->audio_in_type = AUDIO_IN_RTL;
     return 1;
 #else
@@ -1235,6 +1261,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_NONE;
 
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) && !opts->iq_replay_requested) {
         LOG_ERROR("Direct -i iqreplay:... is not supported. Use --iq-replay <path>.\n");
@@ -1266,6 +1293,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     /* The squelch the receiver opens with: the analog default on an analog channel of a radio input while no squelch
        was set (issue #899), from the decoder the CLI and a config left; and the AM monitor's notice. */
     (void)dsd_squelch_analog_default_sync(opts, state);
+    dsd_engine_setup_print_tuning_notice(opts);
     dsd_engine_setup_note_noise_squelch(opts, state);
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;

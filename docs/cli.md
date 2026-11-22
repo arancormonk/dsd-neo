@@ -1730,7 +1730,9 @@ default.
   trunk-scan target. So no analog block runs with the squelch off, and no digital row runs under an analog row's
   default.
 - What it shows: the readout names the default as the configured setting, marked `(default)` (`SQL: noise +10 dB
-  (default; quieting 23 dB)`); after an explicit edit it reads as any other squelch.
+  (default; quieting 23 dB)`), and so does the RTL-SDR and SoapySDR startup tuning notice, which is printed once the
+  squelch the receiver opens with is known (`SQ=noise+10dB (default)`); after an explicit edit it reads as any other
+  squelch.
 
 ### Native AM (`-fM`)
 

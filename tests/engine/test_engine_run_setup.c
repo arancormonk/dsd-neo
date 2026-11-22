@@ -1312,6 +1312,42 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
     return test_rc;
 }
 
+/* Issue #899: the SoapySDR tuning notice names the squelch the receiver opens with, the analog default included and
+   marked as the live readout marks it, not the spec's 0 it was read before: an NFM start with
+   --squelch-analog-default noise+10 reads SQ=noise+10dB (default), a digital one SQ=off. */
+static int
+test_soapy_banner_names_the_analog_default(void) {
+    int test_rc = 0;
+    for (int analog = 1; analog >= 0; analog--) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy:162.475M:30:0:48:0:2");
+        opts->analog_only = analog;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        test_rc |=
+            expect_true("banner default option", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U) == 0);
+        char banner[8192] = {0};
+        int rc = 0;
+        if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        test_rc |= expect_true("banner default run ok", rc == 0);
+        if (analog) {
+            test_rc |= expect_contains("an NFM start names the default", banner, "SQ=noise+10dB (default) VOL=2");
+            test_rc |= expect_omits("an NFM start does not say off", banner, "SQ=off");
+        } else {
+            test_rc |= expect_contains("a digital start runs off", banner, "SQ=off VOL=2");
+            test_rc |= expect_omits("a digital start names no default", banner, "(default)");
+        }
+        free_test_runtime(opts, state);
+    }
+    return test_rc;
+}
+
 /* A small cu8 capture with its sidecar in @p dir; @p out_metadata_path receives the sidecar's path. */
 static int
 write_replay_capture(const char* dir, char* out_metadata_path, size_t out_metadata_path_size) {
@@ -2440,6 +2476,7 @@ main(void) {
     rc |= test_trunk_scan_turns_off_rtl_udp_control();
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();
+    rc |= test_soapy_banner_names_the_analog_default();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
 #ifdef SIGHUP
