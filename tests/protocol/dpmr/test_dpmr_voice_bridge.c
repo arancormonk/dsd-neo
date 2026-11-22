@@ -1881,11 +1881,13 @@ test_colour_code_change_ends_the_call_before_the_frame(void) {
         g_fail_half = 0;
         state->symbolcnt = 80000U;
         (void)processdPMRvoice(opts, state);
-        rc |= expect_int(c == 1 ? "colour change: the failed half is not the old call's scrambled one"
-                                : "colour change: the failed half's mode is not the old call's data",
-                         c == 1 ? (int)state->dPMRVoiceFS2Frame.Scrambled[0]
-                                : (int)state->dPMRVoiceFS2Frame.ServiceMode[0],
-                         c == 1 ? DPMR_HALF_CLEAR : 0);
+        if (c == 1) {
+            rc |= expect_int("colour change: the failed half is not the old call's scrambled one",
+                             (int)state->dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_CLEAR);
+        } else {
+            rc |= expect_int("colour change: the failed half's mode is not the old call's data",
+                             (int)state->dPMRVoiceFS2Frame.ServiceMode[0], 0);
+        }
         rc |= expect_int("colour change: the new transmission must prove itself", state->dpmr_confirmed, 0);
     }
     return rc;
