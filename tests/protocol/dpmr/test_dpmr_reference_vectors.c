@@ -25,7 +25,6 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -111,6 +110,8 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 }
 
 #ifndef DPMR_TEST_REAL_CALL_STORE /* the call store build links the real receive context (core/receive.c) */
+#include <dsd-neo/core/receive.h>
+
 /* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
 dsd_receive_context
 dsd_receive_context_begin(dsd_state* state, int protocol) {
