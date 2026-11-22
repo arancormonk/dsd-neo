@@ -17808,10 +17808,14 @@ Qt Quick frontend (`src/ui/qt`):
   title, the scan target, timing and roaming lines, the hero's ids, algorithm, channel and painted headline, the
   strip's identity) draws `Util.oneLine()` of its text with `maximumLineCount: 1`, measured as drawn, and its speech
   keeps every word (r2 B1: an imported channel `E\u2028W\u2028S` drew three lines, 84 px, in a 29 px hero subline
-  and painted into the strip). The title, which changes only with the session, keeps the
-  Latin line box it always had (`titleLineProbe`, "Ag" in the title font), so the header and the tiers are what they
-  were; a CJK session name draws centred in it and unclipped into a few pixels of padding (the D10 limit under "Call
-  rows"). `headerBarHeight(t)` sums these boxes for tier t and the session's line conditions (`headingHeight(t)`,
+  and painted into the strip). The title changes only with the session, never with traffic, so its box
+  (`titleLineBox`) is the session name's own line in the title font (`titleLineProbe`, `sessionLine` on one line), at
+  least the Latin line it always had (`titleLatinProbe`, "Ag"; `titleCountBox`, which the "+ N lists" line keeps), and
+  the budget uses it: a Latin name keeps the header and the tiers as they were, and a taller script grows the header
+  for the session (r4 F1: in tier 5, where the title sits flush with the list's clipped top, the top 5 px of a
+  Burmese name, "မြို့" at 360x560 and 1.6, were cut away in the Latin box; `tst_monitor_scan_target.qml`
+  `test_title_box_holds_the_session_name`). `headerBarHeight(t)` sums these boxes for tier t and the session's line
+  conditions (`headingHeight(t)`,
   `scanTimingLineShown`, `roamingLineShown`), never reading the column back. A scan of several lists whose title
   room in tier t (the heading's width: the row less its 12 px right margin and, unless stacked, the header actions
   that tier shows, the pill at its widest label) cannot hold "+ N lists" and

@@ -395,13 +395,17 @@ Item {
     // The header's lines (issue #901 B9/B12) are fixed line boxes, so a scan
     // target, a timing phrase or a roaming state in a script with a taller
     // line (Burmese) never changes the header's height or the tier. The lines
-    // that change with traffic take the shared measure (LineBoxes); the title,
-    // which changes only with the session, keeps the Latin line it always had
-    // (a name in CJK draws centred in it, unclipped), so the header and the
-    // tiers are what they were. headingHeight(t) works the column out for
-    // tier t from fonts and widths, never reading it back, since its make-up
-    // follows the tier in force.
-    readonly property real titleLineBox: Math.ceil(titleLineProbe.height)
+    // that change with traffic take the shared measure (LineBoxes). The
+    // title changes only with the session, so its box is the session name's
+    // own line in the title font, at least the Latin line it always had
+    // (r4 F1: in tier 5, flush with the list's clipped top, a Burmese name
+    // lost the top 5 px of its glyphs in the Latin box); a Latin name keeps
+    // the header and the tiers as they were. The count's line ("+ N lists")
+    // keeps the Latin box. headingHeight(t) works the column out for tier t
+    // from fonts and widths, never reading it back, since its make-up follows
+    // the tier in force.
+    readonly property real titleLineBox: Math.max(titleCountBox, Math.ceil(titleLineProbe.height))
+    readonly property real titleCountBox: Math.ceil(titleLatinProbe.height)
     readonly property real headerMetaBox: LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal)
     // The second-slot strip's identity line (B6); its slot label is in the
     // header lines' face and size.
@@ -413,7 +417,7 @@ Item {
     function headingHeight(t) {
         var lines = [titleLineBox];
         if (titleTwoLine(t))
-            lines.push(titleCountPad(t) + titleLineBox);
+            lines.push(titleCountPad(t) + titleCountBox);
         // The scan target line is always there, blank off a scan.
         lines.push(headerMetaBox);
         if (scanTimingLineShown)
@@ -501,9 +505,19 @@ Item {
         font: liveLabel.font
     }
     Text {
-        id: titleLineProbe
+        id: titleLatinProbe
         visible: false
         text: "Ag"
+        textFormat: Text.PlainText
+        font: monitorTitle.font
+    }
+    // The session name's line in the title font (r4 F1), drawn as the title
+    // draws it, one line.
+    Text {
+        id: titleLineProbe
+        visible: false
+        text: screen.sessionLine
+        maximumLineCount: 1
         textFormat: Text.PlainText
         font: monitorTitle.font
     }
@@ -734,13 +748,13 @@ Item {
                     objectName: "monitorHeaderTitleCountLine"
                     visible: monitorTitle.twoLine
                     width: header.width
-                    height: screen.titleCountPad(screen.tier) + screen.titleLineBox
+                    height: screen.titleCountPad(screen.tier) + screen.titleCountBox
 
                     Text {
                         objectName: "monitorHeaderTitleCount"
                         y: screen.titleCountPad(screen.tier)
                         width: parent.width
-                        height: screen.titleLineBox
+                        height: screen.titleCountBox
                         verticalAlignment: Text.AlignVCenter
                         text: screen.titleCountText
                         textFormat: Text.PlainText

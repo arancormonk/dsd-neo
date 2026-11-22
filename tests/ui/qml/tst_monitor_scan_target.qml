@@ -470,6 +470,55 @@ Item {
             }
         }
 
+        // Issue #901 r4 F1: the title's box holds the session's own name. It was the Latin "Ag" line, so in tier 5,
+        // where the title sits flush with the clipped top of the list, the top 5 px of a Burmese session name
+        // ("မြို့", 360x560 at text 1.6) were cut away. The box is measured from the name in the title font (at
+        // least the Latin line), the name being the session's, never traffic, and the budget uses it: the header is
+        // the drawn one. A Latin name keeps the Latin box.
+        function test_title_box_holds_the_session_name_data() {
+            return [{tag: "Burmese 360x560@1.6", name: "မြို့", width: 360, height: 560, scale: 1.6},
+                    {tag: "Latin 360x560@1.6", name: "County Fire", width: 360, height: 560, scale: 1.6},
+                    {tag: "Burmese 411x914@1", name: "မြို့", width: 411, height: 914, scale: 1}];
+        }
+        function test_title_box_holds_the_session_name(data) {
+            var probe = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            var latin = Qt.createQmlObject("import QtQuick; Text { visible: false; text: \"Ag\"; textFormat: Text.PlainText }", root);
+            try {
+                screen.system = {name: data.name, sourceType: "usb"};
+                testContext.setHostRunning(true);
+                root.width = data.width;
+                root.height = data.height;
+                Ui.Theme.fontScale = data.scale;
+                var title = findChild(screen, "monitorHeaderTitle");
+                tryCompare(title, "text", data.name);
+                waitForRendering(screen);
+                var list = findChild(screen, "recentCallsList");
+                list.positionViewAtBeginning();
+                waitForRendering(screen);
+                probe.font = title.font;
+                probe.text = data.name;
+                latin.font = title.font;
+                verify(title.height >= probe.implicitHeight - 0.5, data.tag + ": the title's box " + title.height
+                       + " under the name's line " + probe.implicitHeight);
+                verify(title.height >= latin.implicitHeight - 0.5, data.tag + ": under the Latin line");
+                if (data.name === "County Fire")
+                    compare(title.height, Math.ceil(latin.implicitHeight), "a Latin name keeps the Latin box");
+                // What it paints, centred in its box, is inside the list's view where the header scrolls with it.
+                var paintedTop = title.mapToItem(list, 0, (title.height - title.contentHeight) / 2).y;
+                if (screen.scrollAll) {
+                    verify(paintedTop >= -0.5, data.tag + ": the name painted from " + paintedTop + ", above the list's top");
+                    verify(title.mapToItem(list, 0, 0).y >= -0.5, data.tag + ": the title above the list's top");
+                }
+                if (data.height === 560)
+                    compare(screen.tier, 5, "the tier where the header scrolls with the calls");
+                var header = findChild(screen, "monitorHeader");
+                compare(header.height, screen.headerBarHeight(screen.tier), data.tag + ": the budget's header is the drawn one");
+            } finally {
+                probe.destroy();
+                latin.destroy();
+            }
+        }
+
         // Issue #671: a paused scan is named as one, apart from the rotation's
         // HOLD and the timing row's "(paused)" dwell, with how much there is to
         // go back to. It has no target on air, and no timing to show.
