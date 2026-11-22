@@ -5265,7 +5265,9 @@ suite runs under this compiler.
     AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
     `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
     APPLIED and no row overrides, filling the configured fields from it, and `dsd_app_squelch_view_format()` reads
-    `noise +10 dB (default; ...)`. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
+    `noise +10 dB (default; ...)`; the Qt Radio sheet's status line under the reading shows the same `default; ...`
+    (`MetricsModel::squelchAnalogDefault`, hidden while an edit is outstanding), and its spoken reading says it as the
+    terminal does. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
     Tests: `RUNTIME_SQUELCH_ANALOG_DEFAULT` (channel kinds, explicit sources, scan rows, suspend/resume, saves, the AM
     notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
     change), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the monitor plays).

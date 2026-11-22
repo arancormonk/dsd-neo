@@ -164,7 +164,8 @@ ModalSheet {
         : (baseSquelchMargin > 0 ? baseSquelchMargin : commands.squelchMarginDefaultDb)
     // Issue #782: what makes a moving squelch reading worth hearing at once
     // (SpeechPacer): the gate opening or closing, or the setting changing.
-    readonly property string squelchStep: [metrics.squelchGateOpen === true, squelchReading, squelchRowOverride].join("|")
+    readonly property string squelchStep: [metrics.squelchGateOpen === true, squelchReading, squelchRowOverride,
+        squelchDefaultInForce].join("|")
     // The threshold in force comes first; with a row override that is the row's,
     // and the default being edited is named below it.
     readonly property string squelchReading: (squelchRowOverride && !rowSquelch)
@@ -175,6 +176,16 @@ ModalSheet {
     // off here. Held while a request is outstanding; it describes the old setting.
     readonly property string squelchAutoStatus: (isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
         && metrics.squelchAutoStatus !== undefined) ? metrics.squelchAutoStatus : ""
+    // Issue #899: the squelch in force is the app's default from Settings
+    // (nothing set one for this session), marked "default" as the terminal's
+    // readout marks it. An edit ends it, so a request outstanding hides it.
+    readonly property bool squelchDefaultInForce: !rowSquelch && isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
+        && metrics.squelchAnalogDefault === true
+    // What the reading's status line shows and the reading's speech adds in
+    // brackets: the default marker, then the dynamic squelch's status.
+    readonly property string squelchDetail: squelchDefaultInForce
+        ? (squelchAutoStatus !== "" ? qsTr("default") + "; " + squelchAutoStatus : qsTr("default"))
+        : squelchAutoStatus
     // Issue #899: a signal search this session runs sets the squelch from its
     // range at each landing, from searching until it stops or fails.
     readonly property var searchStatus: typeof signalSearch !== "undefined" && signalSearch && signalSearch.status
@@ -878,7 +889,7 @@ ModalSheet {
                     step: sheet.squelchStep
                     read: function () {
                         return sheet.squelchRowOverride ? metrics.squelchReadout
-                            : (sheet.squelchAutoStatus !== "" ? sheet.squelchReading + " (" + sheet.squelchAutoStatus + ")"
+                            : (sheet.squelchDetail !== "" ? sheet.squelchReading + " (" + sheet.squelchDetail + ")"
                                 : sheet.squelchReading);
                     }
                 }
@@ -906,13 +917,14 @@ ModalSheet {
         }
         // The dynamic squelch in force: the floor it opens over ("learning"
         // until it has one), the quieting the noise squelch reads, or why it is
-        // off here (no radio input, a digital channel).
+        // off here (no radio input, a digital channel); first "default" while
+        // that is the app's default from Settings.
         LiveText {
             objectName: "radioSquelchAutoStatus"
             step: sheet.squelchStep
-            visible: sheet.squelchAutoStatus !== ""
+            visible: sheet.squelchDetail !== ""
             width: parent.width
-            text: sheet.squelchAutoStatus
+            text: sheet.squelchDetail
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.family: Theme.mono

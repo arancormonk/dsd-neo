@@ -67,6 +67,7 @@ Item {
             testContext.setMetric("squelchReadout", "-120.0 dB");
             testContext.setMetric("squelchDb", -120.0);
             testContext.setMetric("squelchOff", false);
+            testContext.setMetric("squelchAnalogDefault", false);
             if (sheet) {
                 sheet.forgetRequests();
                 sheet.savesToSystem = false;
@@ -574,6 +575,35 @@ Item {
             verify(shown.visible, "under dB");
             sheet.squelchStoreError = "";
             verify(!shown.visible);
+        }
+
+        // Issue #899: the app's default from Settings in force is marked "default" on the reading's status line, as
+        // the terminal's readout marks it, and the reading's speech says the same; an edit, or a session's own squelch,
+        // shows no marker.
+        function test_default_marker() {
+            testContext.setMetric("squelchAnalogDefault", true);
+            setNoise(true, true, 10, "quieting 23 dB");
+            var value = findChild(sheet, "radioSquelchValue");
+            var status = findChild(sheet, "radioSquelchAutoStatus");
+            compare(value.text, "noise +10 dB");
+            verify(status.visible);
+            compare(status.text, "default; quieting 23 dB");
+            compare(status.color, Ui.Theme.textSecondary);
+            tryCompare(value.Accessible, "name", "noise +10 dB (default; quieting 23 dB)");
+            // A status the noise squelch has none of yet still shows the marker.
+            setNoise(true, true, 10, "");
+            verify(status.visible);
+            compare(status.text, "default");
+            tryCompare(value.Accessible, "name", "noise +10 dB (default)");
+            setNoise(true, true, 10, "quieting 23 dB");
+            // A step is the user's own setting: no marker while it is outstanding.
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchMarginDb(), 11);
+            verify(!status.visible);
+            sheet.forgetRequests();
+            testContext.setMetric("squelchAnalogDefault", false);
+            tryCompare(status, "text", "quieting 23 dB");
+            tryCompare(value.Accessible, "name", "noise +10 dB (quieting 23 dB)");
         }
     }
 }
