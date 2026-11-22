@@ -775,10 +775,12 @@ Generated (do not edit/commit):
       `y_refused_slot`), for the refused transmission alone: the refused frame's own boundary binds the mark to the call
       active on that slot (every boundary asks, `live_scanner_y_note_frame_content()`, whatever the frame noted, so a
       refused checked frame binds too, never the call after it: `y_admit_case(0, 3)`) (`y_refused_epoch`, the call's
-      `transmission_epoch`), and only when that frame observed a call (`dsd_state::scan_y_call_seq` moved since the
-      boundary before, `dsd_engine_scan_owner::y_call_seq_mark`): a report with no call of its own (an M17 LICH pair the
-      CAN filter refused before any link setup) lets the mark lapse rather than bind to a call an earlier transmission
-      left active (`y_admit_case(0, 4)`). `live_scanner_y_refusal_stands()` drops it
+      `transmission_epoch`), and only when that frame observed the slot's call (`dsd_call_state_observation_seq()`, a
+      per-slot count only `dsd_call_state_observe()` moves, identical repeats included, moved since the boundary
+      before, `dsd_engine_scan_owner::y_call_obs_mark`): a report with no call of its own (an M17 LICH pair the CAN
+      filter refused before any link setup) lets the mark lapse rather than bind to a call an earlier transmission left
+      active (`y_admit_case(0, 4)`), and a media refresh of that call (`dsd_call_state_update_media()`, which M17, YSF
+      and TETRA DMO make from what the decoder retained) is no observation of it (`y_admit_case(0, 5)`). `live_scanner_y_refusal_stands()` drops it
       once that slot holds no active call or another transmission's, as do the next admitted report and a landing.
       While it stands an open verdict renews no `-Y` wait (`live_scanner_y_note_partial()`), so the chunks of an M17
       packet the table refused, each a PARTIAL note waiting on the packet's end CRC, do not keep the row past `-t`; a
@@ -1129,7 +1131,8 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   trunk scan), by what the stream applied for the row the receiver is on (a step off it that failed leaves it there);
   while a step of the scan's own is in flight the cause is kept, so a step that fails late leaves the departure paced
   as the step paced it; a row is named once for the scan session, whatever the cause (`channel_scan::tetra_warned`,
-  the rows named on the list in force, read only when a row is about to be named and dropped when the list changes),
+  one bit per row of the list in force, grown by doubling and cleared when the list changes, so a list-wide check
+  over every row stays linear: `test_tetra_dmo_rows_named_once_list_wide`),
   the list-wide width check included (`channel_scan_warn_row_tetra()`, which still counts the row skipped on the
   status line, `y_tetra_rate_change_named_once_case()`).
   A non-waiting
