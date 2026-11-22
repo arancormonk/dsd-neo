@@ -16057,7 +16057,10 @@ Qt Quick frontend (`src/ui/qt`):
   Compact view (D7) keeps the same delegate (no second Repeater or Loader) and makes each card one row: the bold
   17 px title over a supporting line, with the site button, Play and More right-aligned on the title's row, centred on
   a head of max(the two lines + 24, Play + 16) px, and 12 px of padding; 68 px at normal text, a receiver line under
-  the two lines growing it, the refresh hint under everything. The place and meta lines (the key and when last heard)
+  the two lines growing it, the refresh hint under everything. The title and the supporting line are one line each
+  (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows the
+  head; their names still read the whole text. Only the receiver line and the refresh hint wrap. A scan-list card's
+  name and count line ("Not ready · draft") are one line each the same way. The place and meta lines (the key and when last heard)
   are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
   they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
   card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site

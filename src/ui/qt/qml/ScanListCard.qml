@@ -39,7 +39,8 @@ UiPanel {
             id: nameText
             width: parent.width
             objectName: "scanListTitle"
-            text: card.listName
+            // Compact: one line, cut, as a system card's (G6).
+            text: card.compact ? Util.oneLine(card.listName) : card.listName
             elide: Text.ElideRight
             color: Theme.textPrimary
             font.family: Theme.sans
@@ -51,7 +52,9 @@ UiPanel {
             id: countText
             width: parent.width
             objectName: "scanListCount"
-            wrapMode: Text.Wrap
+            // Compact: one line, cut; its name still says it whole.
+            wrapMode: card.compact ? Text.NoWrap : Text.Wrap
+            elide: card.compact ? Text.ElideRight : Text.ElideNone
             // Each count a whole string, as HistoryScreen's: no QTranslator is
             // installed, so a %n plural would read "1 entries".
             text: card.isDraft ? qsTr("Not ready · draft") : card.entryCount === 1 ? qsTr("1 entry") : qsTr("%1 entries").arg(card.entryCount)

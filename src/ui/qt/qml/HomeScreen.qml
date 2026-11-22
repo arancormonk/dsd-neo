@@ -1404,7 +1404,9 @@ Item {
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     // D8: compact's undrawn lines, from their own words.
                                     Accessible.description: navigationAllowed && visible && !entry.held ? card.undrawnWords : ""
-                                    text: card.name
+                                    // Compact: one line, cut (G6); a line break in an
+                                    // imported name is a space, so its name reads it whole.
+                                    text: card.compact ? Util.oneLine(card.name) : card.name
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
                                     font.weight: Font.Bold
@@ -1418,7 +1420,7 @@ Item {
                                     objectName: "savedSystemSource"
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    text: card.supportingText
+                                    text: card.compact ? Util.oneLine(card.supportingText) : card.supportingText
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued

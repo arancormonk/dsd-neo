@@ -552,6 +552,59 @@ Item {
             tryCompare(count, "text", "2 entries");
         }
 
+        // G6: a compact card's title and supporting line are one line each, cut with an ellipsis, so a long or
+        // multi-line name (an imported one) and a long draft line never grow the card; the full words stay in what a
+        // screen reader reads. Only the receiver line and the refresh hint may wrap.
+        function test_compact_heads_stay_two_lines_data() {
+            return [{tag: "320 at 1.0", scale: 1.0}, {tag: "320 at 2.0", scale: 2.0}];
+        }
+        function test_compact_heads_stay_two_lines(data) {
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            var longName = "Northern county public safety\ninteroperability network\nwith a very long imported name";
+            add("Plain Vale");
+            add(longName);
+            verify(scanLists.add({name: "Loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            verify(scanLists.add({name: "Harbor and river and coastal\nwatch draft list", sourceType: "usb", isDraft: true}));
+            settle();
+            var plain = cardOf("Plain Vale");
+            var long = null;
+            for (var entry of entries()) {
+                if (entry.title !== "Plain Vale")
+                    long = findChild(entry, "savedSystemCard");
+            }
+            verify(long !== null);
+            var title = part(long, "savedSystemTitle");
+            compare(title.lineCount, 1, "the long name on one line");
+            verify(title.truncated, "the long name is cut");
+            fuzzyCompare(long.height, plain.height, 0.5, "a long name grows the card");
+            for (var word of ["Northern", "interoperability", "imported name"])
+                verify(title.Accessible.name.indexOf(word) >= 0, "the title says " + word + ": " + title.Accessible.name);
+            compare(part(long, "savedSystemSource").lineCount, 1);
+            if (data.scale === 1.0)
+                fuzzyCompare(long.height, 68, 0.5);
+            home.showSection("scanLists");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var cards = [];
+            for (var child of findChild(home, "listenScanListsSection").children) {
+                if (child.objectName === "scanListCard" && child.visible)
+                    cards.push(child);
+            }
+            compare(cards.length, 2);
+            var loop = cards[0].listName === "Loop" ? cards[0] : cards[1];
+            var draft = loop === cards[0] ? cards[1] : cards[0];
+            var count = part(draft, "scanListCount");
+            compare(count.text, "Not ready · draft");
+            compare(count.lineCount, 1, "the draft line on one line");
+            compare(part(draft, "scanListTitle").lineCount, 1, "the draft's name on one line");
+            fuzzyCompare(draft.height, loop.height, 0.5, "the draft line grows the card");
+            verify(count.Accessible.name.indexOf("Not ready") >= 0 && count.Accessible.name.indexOf("draft") >= 0,
+                   "the draft line is said whole: " + count.Accessible.name);
+            verify(part(draft, "scanListTitle").Accessible.name.indexOf("draft list") >= 0, "the name is said whole");
+        }
+
         // D11: a change of Compact view puts every Listen tab back at its top (Systems, Scan lists and Explore), the
         // one shown at once and the others when next shown, with Home shown or hidden.
         function test_density_change_resets_listen_places_data() {
