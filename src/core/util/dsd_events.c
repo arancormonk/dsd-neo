@@ -4005,8 +4005,10 @@ dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ex
 static void
 dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t slot,
                                  const dsd_call_event_lifecycle* lifecycle, uint64_t epoch, Event_History* item,
-                                 int alias_changed) {
-    int rendered_changed = 0;
+                                 int alias_changed, int withdrawal_rendered) {
+    /* A withdrawn home already re-rendered the row (dsd_event_enrich_follow_home_withdrawal()): the corrected line goes
+       to the log with the alias, once, whatever the source label does below. */
+    int rendered_changed = withdrawal_rendered;
     if (item->source_id != 0U) {
         char mode[sizeof item->s_mode];
         char name[sizeof item->s_name];
@@ -4035,25 +4037,27 @@ dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t
 // row's withdrawal as a replacement of that home and put the staged row's empty alias over the new one.
 // A committed row the withdrawal changes (it showed the home) also takes the call's working address, as the staged
 // row's fill-if-blank merge would, and is re-rendered against the environment it committed under, so the line both
-// frontends show names the talker now rather than the withdrawn radio.
-static void
+// frontends show names the talker now rather than the withdrawn radio. Returns 1 when that re-render changed the
+// line, which the enrichment then logs (dsd_event_enrich_committed_alias()).
+static int
 dsd_event_enrich_follow_home_withdrawal(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle,
                                         uint8_t history_index, Event_History* item) {
     if (call->source_home.valid != 0U || call->source_home.withdrawn == 0U) {
-        return;
+        return 0;
     }
     const int showed_home = item->src_home_key != 0U || item->src_home[0] != '\0';
     item->src_home_key = 0U;
     item->src_home[0] = '\0';
     item->src_home_withdrawn = 1U;
     if (history_index == 0U || !showed_home) {
-        return;
+        return 0;
     }
     if (item->source_id == 0U && call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX) {
         item->source_id = (uint32_t)call->ota_source_id;
     }
     int rendered_changed = 0;
     (void)watchdog_event_rerender_row(&lifecycle->committed_env, item, &rendered_changed);
+    return rendered_changed;
 }
 
 // Caller holds the call-state lock. Write the enrichment into the row the epoch found, staged or committed.
@@ -4064,9 +4068,10 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     const int alias_changed =
         kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
-    if (kind == DSD_EVENT_ENRICH_ALIAS) {
-        dsd_event_enrich_follow_home_withdrawal(call, &ext->events[slot], history_index, item);
-    }
+    const int withdrawal_rendered =
+        kind == DSD_EVENT_ENRICH_ALIAS
+            ? dsd_event_enrich_follow_home_withdrawal(call, &ext->events[slot], history_index, item)
+            : 0;
     dsd_event_enrich_apply(state, slot, epoch, item, value, kind);
     if (state->event_crc_invalid[slot]) {
         dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
@@ -4074,7 +4079,8 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
         if (kind == DSD_EVENT_ENRICH_ALIAS) {
-            dsd_event_enrich_committed_alias(opts, state, slot, &ext->events[slot], epoch, item, alias_changed);
+            dsd_event_enrich_committed_alias(opts, state, slot, &ext->events[slot], epoch, item, alias_changed,
+                                             withdrawal_rendered);
         }
         state->event_history_s[slot].commit_rev++;
     }

@@ -3068,11 +3068,14 @@ test_motorola_regroup_of_unknown_length_names_no_call(void) {
     MAC[18] = 0x00;
     MAC[19] = 0x0B;
     MAC[20] = 0xBA; /* past the message area */
+    const int ga_before = state->p25_ga_count;
+    const int patches_before = state->p25_patch_count;
     process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, 1);
     dsd_call_snapshot call = {0};
     const int have = dsd_call_state_get(state, 0U, &call) > 0;
-    rc |= expect_true("p2_moto_short no call from octets past the message area",
-                      !have || (call.ota_target_id != 0x1234U && call.ota_source_id != 0x000BBAU));
+    rc |= expect_true("p2_moto_short opens no voice call", !have || call.phase != DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("p2_moto_short records no affiliation", (long)state->p25_ga_count, (long)ga_before);
+    rc |= expect_eq_long("p2_moto_short records no patch", (long)state->p25_patch_count, (long)patches_before);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);

@@ -5139,6 +5139,12 @@ test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
     Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
     assert(opts != NULL && state != NULL && event_history != NULL);
     reset_fixture(opts, state, event_history);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-withdrawn-home-events");
+    assert(fd >= 0);
+    close(fd);
+    remove(path);
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", path);
     state->nac = 0x293;
     note_p25_site(state);
     assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
@@ -5168,8 +5174,8 @@ test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
     assert(dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
     assert(dropped == 1);
     assert(dsd_call_state_get(state, 0U, &call) == 1);
-    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
-    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "NEWTALKER") >= 0);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "NEWTALKER") >= 0);
     dsd_event_sync_slot(opts, state, 0U);
     /* While the call still runs, the committed row the frontends show already names the working address. */
     int rc = 0;
@@ -5200,6 +5206,15 @@ test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
         rc |= expect_int("the committed row drops the roamer's home", row->src_home_key == 0U, 1);
     }
     rc |= expect_int("the working address's row", found, 1);
+    /* The event log follows the row: the corrected line, naming the working address, is written as the withdrawal
+       lands, beside the new talker's alias. */
+    char buf[16384] = {0};
+    const int read_rc = read_event_log(path, buf, sizeof buf);
+    remove(path);
+    rc |= expect_int("the event log was readable", read_rc, 0);
+    rc |= expect_has_substr("the event log names the working address", buf,
+                            "Enriched: TEST TGT: 00000100; SRC: 00003002;");
+    rc |= expect_has_substr("the event log reports the new talker's alias", buf, "Talker Alias: NEWTALKER");
     dsd_state_ext_free_all(state);
     free(event_history);
     free(state);
