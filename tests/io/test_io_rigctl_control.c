@@ -570,9 +570,13 @@ test_connect_bounded_cancel_and_failures_close_the_socket(void) {
 static int
 test_setfreq_success_failure_and_cache(void) {
     reset_stubs();
+    /* Every request that went out and was not refused counts as a move (RigctlFrequencyMoves()); a skipped repeat and
+       a complete refusal do not. */
+    const uint64_t moves = RigctlFrequencyMoves();
     push_response("RPRT 0\n");
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);
+    assert(RigctlFrequencyMoves() == moves + 1U);
     assert(strcmp(g_commands[0], "F 851012500\n") == 0);
 #ifdef MSG_NOSIGNAL
     /* A rigctl server that went away costs a failed send, never a SIGPIPE (issue #659). */
@@ -581,15 +585,19 @@ test_setfreq_success_failure_and_cache(void) {
 
     assert(SetFreq(100, 851012500L));
     assert(g_command_count == 1);
+    assert(RigctlFrequencyMoves() == moves + 1U);
 
     push_response("RPRT 1\n");
     assert(!SetFreq(100, 851025000L));
     assert(g_command_count == 2);
     assert(strcmp(g_commands[1], "F 851025000\n") == 0);
+    assert(RigctlFrequencyMoves() == moves + 1U);
 
     reset_stubs();
     assert(!SetFreq(110, 851037500L));
     assert(g_command_count == 1);
+    /* No reply at all: the peer may have moved. */
+    assert(RigctlFrequencyMoves() == moves + 2U);
 
     reset_stubs();
     g_send_result = -1;

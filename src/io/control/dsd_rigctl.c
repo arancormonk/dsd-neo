@@ -382,6 +382,8 @@ rigctl_response_ok(const char* response) {
    no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
 static uint32_t s_last_freq = 0U;
+/* Frequency requests that went out and were not refused (RigctlFrequencyMoves()): each may have moved the peer. */
+static dsd_atomic_u64 s_freq_moves;
 
 /* What a frequency request's reply says (issue #834): only a complete numeric RPRT line ("RPRT 0", or a non-zero
    status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
@@ -429,6 +431,10 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
     const int outcome = Send(sockfd, buf) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    if (outcome != RIGCTL_FREQ_REFUSED) {
+        /* Confirmed, or no complete reply: the peer moved, or may have. A refusal leaves it where it was. */
+        (void)dsd_atomic_u64_fetch_add_release(&s_freq_moves, 1U);
+    }
     if (outcome == RIGCTL_FREQ_CONFIRMED) {
         s_last_sockfd = sockfd;
         s_last_freq = freq_hz;
@@ -444,6 +450,11 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
 uint32_t
 RigctlConfirmedFreq(dsd_socket_t sockfd) {
     return sockfd != DSD_INVALID_SOCKET && sockfd == s_last_sockfd ? s_last_freq : 0U;
+}
+
+uint64_t
+RigctlFrequencyMoves(void) {
+    return dsd_atomic_u64_load_acquire(&s_freq_moves);
 }
 
 /**

@@ -9443,14 +9443,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   frequency than the last external landing that took a profile, whatever its width. A landing with no profile queued
   (a DMR or NXDN voice-channel tune) and every finalize (a stream open, a controller retune) forget that landing, so
   the next one starts the filters over even on the same frequency. The output ring follows the tuner on its own record
-  (`g_external_output_freq_hz`): every external landing, with a profile or without, takes the reconfigure gate (so the
-  demod thread is parked and no block's output write can publish a head loaded before the flush) and flushes the
-  output, moving its generation, unless the last external landing was on the same frequency since the last finalize; a
-  repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache. The engine also
-  says whether the peer moved (`peer_moved`: it was sent another frequency than `dsd_opts::rigctl_sent_freq_hz`, which
-  every rigctl leg sets), and a landing that moved it flushes the output and starts the filters over whatever the
-  records say, since a leg that lands nothing (the legacy direct return to the control channel) can move the peer
-  between two landings. Tests:
+  (`g_external_output_freq_hz`): every external landing, with a profile or without, parks the demod thread under the
+  reconfigure gate (so no block's output write can publish a head loaded before the flush) and flushes the output, moving its generation, and purges the input I/Q captured before it (`controller_request_input_purge()`, as a
+  controller retune does), unless the last external landing was on the same frequency since the last finalize; a
+  repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache, and since it has
+  nothing to rewrite it takes the gate without raising its flag, so a block in flight keeps its whole output. The
+  engine also says whether the peer moved (`peer_moved`: it was sent another frequency than
+  `dsd_opts::rigctl_sent_freq_hz`, or `RigctlFrequencyMoves()`, which every rigctl leg's request counts, moved since
+  the last landing), and a landing that moved it flushes and starts the filters over whatever the records say, since a
+  leg that lands nothing (a manual tune, the legacy direct return to the control channel) can move the peer between
+  two landings, even away and back. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
   `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`,
   `rtl_stream_test_external_profileless_landing_against_block()`), `ENGINE_TRUNK_RETUNE_REGRESSION` (`peer_moved`).

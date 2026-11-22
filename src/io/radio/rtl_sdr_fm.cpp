@@ -12464,7 +12464,37 @@ enum {
     RTL_DEMOD_GATE_NONE = 0,   /* no stream runs, so there is no demod thread to park and nothing was taken */
     RTL_DEMOD_GATE_ARMED = 1,  /* this entry took the reconfigure gate and raised its flag */
     RTL_DEMOD_GATE_NESTED = 2, /* the thread held the gate already (a reconfiguration or landing applying a profile) */
+    RTL_DEMOD_GATE_HELD = 3,   /* this entry took the reconfigure gate but left its flag down: the demod still runs */
 };
+
+/* Take the reconfigure gate (reconfigure_gate_take()) without parking the demod thread: the caller is ordered with a
+ * controller reconfiguration and another thread's landing, and may still find it has nothing to rewrite, so a block in
+ * flight runs to its end and keeps its output (raising the flag makes the block drop or cut its output write). A
+ * caller that does rewrite demod or output state parks it first (rtl_stream_park_demod_under_gate()). */
+static int
+rtl_stream_take_demod_gate_unparked(void) {
+    if (!g_stream) {
+        return RTL_DEMOD_GATE_NONE;
+    }
+    return reconfigure_gate_take() ? RTL_DEMOD_GATE_HELD : RTL_DEMOD_GATE_NESTED;
+}
+
+/* Park the demod thread between blocks under the gate @p gate took (rtl_stream_take_demod_gate_unparked()): a gate this
+ * entry took gets its flag raised, and the demod thread is waited for. Returns what
+ * rtl_stream_leave_demod_family_switch_gate() gives back. */
+static int
+rtl_stream_park_demod_under_gate(int gate) {
+    if (gate == RTL_DEMOD_GATE_HELD) {
+        controller.retune_in_progress.store(1, std::memory_order_seq_cst);
+        rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
+        controller_wait_for_demod_idle(&controller);
+        return RTL_DEMOD_GATE_ARMED;
+    }
+    if (gate == RTL_DEMOD_GATE_NESTED) {
+        controller_wait_for_demod_idle(&controller);
+    }
+    return gate;
+}
 
 /* Park the demod thread between blocks so the caller can rewrite demod and output state from its own thread: the
  * reconfigure gate is taken for it (reconfigure_gate_take()), waiting while a controller reconfiguration or another
@@ -12472,17 +12502,7 @@ enum {
  * (the controller applying a retune profile, an external landing) only waits for the idle demod thread. */
 static int
 rtl_stream_enter_demod_family_switch_gate(void) {
-    if (!g_stream) {
-        return RTL_DEMOD_GATE_NONE;
-    }
-    if (!reconfigure_gate_take()) {
-        controller_wait_for_demod_idle(&controller);
-        return RTL_DEMOD_GATE_NESTED;
-    }
-    controller.retune_in_progress.store(1, std::memory_order_seq_cst);
-    rtl_stream_signal_output_waiters(g_stream && g_stream->output ? g_stream->output : &output);
-    controller_wait_for_demod_idle(&controller);
-    return RTL_DEMOD_GATE_ARMED;
+    return rtl_stream_park_demod_under_gate(rtl_stream_take_demod_gate_unparked());
 }
 
 /* Give back what rtl_stream_enter_demod_family_switch_gate() returned as @p gate: an armed gate's flag comes down, and
@@ -14578,8 +14598,10 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * that took its profile. One with nothing queued applies nothing but still moved the tuner, so it forgets the record,
  * and the next landing starts the filters over wherever it lands; so does a finalize. The output ring follows the
  * tuner instead (g_external_output_freq_hz): every landing, with a profile or without, flushes it under the gate unless
- * the last external landing was on the same frequency, so a repeated tune to the channel the peer is on keeps it. The
- * records see only external landings, while the peer can also be moved where none follows (the legacy rigctl leg's
+ * the last external landing was on the same frequency, so a repeated tune to the channel the peer is on keeps it, and
+ * purges the input with it, so what the output holds after a flush comes only from after the boundary. A landing with
+ * nothing to apply and nothing to flush takes the gate without parking the demod thread. The records see only external
+ * landings, while the peer can also be moved where none follows (the legacy rigctl leg's
  * direct return to the control channel); a landing the engine says moved the peer (@p peer_moved) flushes the output
  * and starts the filters over whatever the records say. */
 /* An external backend (a rigctl peer) tuned the device to @p target_freq_hz. When @p peer_moved (the engine sent the
@@ -14587,32 +14609,48 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
    retune or open was elsewhere (g_external_output_freq_hz), the output ring, and the symbols the decoder cached from
    it, hold the channel it left. The stream's own retune flushes them; this landing has none, so it flushes the output
    itself and moves its generation, so the decoder drops its cache (a RETRY) and the hunt the epoch it moves. A repeated
-   tune to the channel the peer is on keeps both. The caller holds the reconfigure gate
-   (rtl_stream_enter_demod_family_switch_gate()), so the demod thread is parked between blocks: no output write is in
-   flight to put its head back over the cleared ring. */
-static void
-rtl_stream_clear_output_for_external_retune(uint32_t target_freq_hz, int peer_moved) {
+   tune to the channel the peer is on keeps both. Read under the reconfigure gate the landing holds, so a finalize
+   cannot forget the record between this read and the flush. Returns 1 when the landing flushes. */
+static int
+rtl_stream_external_retune_flushes(uint32_t target_freq_hz, int peer_moved) {
     const uint32_t previous_freq_hz = g_external_output_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
-    if (peer_moved || previous_freq_hz != target_freq_hz) {
-        rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
-    }
+    return (peer_moved || previous_freq_hz != target_freq_hz) ? 1 : 0;
+}
+
+/* The flush rtl_stream_external_retune_flushes() decided, with the demod thread parked between blocks
+   (rtl_stream_park_demod_under_gate()), so no output write is in flight to put its head back over the cleared ring.
+   The input ring is purged too, as a controller retune purges it (controller_request_input_purge(), taken by the demod
+   before its next block): the I/Q it holds was captured before the peer moved, and a block made from it would publish
+   the old channel under the new generation. Only what arrives after this boundary feeds the output, so the next
+   landing on this frequency may keep it. */
+static void
+rtl_stream_flush_for_external_retune(void) {
+    controller_request_input_purge();
+    rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
 }
 
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int peer_moved) {
     RtlRetuneProfile profile{};
     const int taken = rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz);
-    const int gate = rtl_stream_enter_demod_family_switch_gate();
+    /* Ordered with the controller's reconfigurations and other landings, but the demod thread is parked only for work:
+       a repeated tune with nothing to apply and nothing to flush leaves a block in flight its whole output. */
+    int gate = rtl_stream_take_demod_gate_unparked();
+    const int flush = rtl_stream_external_retune_flushes(target_freq_hz, peer_moved);
     if (!taken) {
         /* The external backend tuned the device here, so the filters now run on this channel's samples, whatever the
            record says (a DMR or NXDN voice-channel tune queues no profile; the return to the control channel does). The
-           output is flushed under the gate as a landing with a profile flushes it: the demod thread may be writing a
-           block's output, and a write that loaded the head before the clear would publish it after. */
+           output is flushed with the demod thread parked, as a landing with a profile flushes it: the demod thread may
+           be writing a block's output, and a write that loaded the head before the clear would publish it after. */
         g_external_retune_freq_hz.store(0U, std::memory_order_release);
-        rtl_stream_clear_output_for_external_retune(target_freq_hz, peer_moved);
+        if (flush) {
+            gate = rtl_stream_park_demod_under_gate(gate);
+            rtl_stream_flush_for_external_retune();
+        }
         rtl_stream_leave_demod_family_switch_gate(gate);
         return;
     }
+    gate = rtl_stream_park_demod_under_gate(gate);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     if (g_test_external_landing_hook) {
         g_test_external_landing_hook(g_test_external_landing_ctx);
@@ -14623,7 +14661,9 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int 
     if (peer_moved || previous_freq_hz != target_freq_hz) {
         rtl_demod_clear_filter_histories(&demod);
     }
-    rtl_stream_clear_output_for_external_retune(target_freq_hz, peer_moved);
+    if (flush) {
+        rtl_stream_flush_for_external_retune();
+    }
     rtl_stream_apply_retune_gain_profile(&profile);
     const int symbol_rate_before_hz = demod.symbol_rate_hz;
     int lands_digital_family = 0;
@@ -20823,6 +20863,7 @@ namespace {
  * (rtl_stream_test_external_profileless_landing_against_block()). */
 struct ProfilelessLandingRace {
     uint32_t target_hz = 0U;
+    int peer_moved = 0;
     std::atomic<int> landing_done{0};
 };
 
@@ -20834,7 +20875,7 @@ ProfilelessLandingRace g_profileless_landing_race;
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 profileless_landing_race_decoder(void* arg) {
     ProfilelessLandingRace* r = static_cast<ProfilelessLandingRace*>(arg);
-    rtl_stream_apply_pending_retune_profile_for_target(r->target_hz, 1);
+    rtl_stream_apply_pending_retune_profile_for_target(r->target_hz, r->peer_moved);
     r->landing_done.store(1, std::memory_order_release);
     DSD_THREAD_RETURN;
 }
@@ -20856,6 +20897,40 @@ profileless_landing_race_wait(const ProfilelessLandingRace* r) {
                : 0;
 }
 
+/* One landing on @p target_hz (@p peer_moved as the engine says it) while the stand-in demod thread runs a block, as
+ * demod_process_block() does between its enter and leave, that writes its output once the landing finished or was seen
+ * waiting. Returns 0 when the race ran. */
+static int
+profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_test_external_profileless_phase* out) {
+    ProfilelessLandingRace* r = &g_profileless_landing_race;
+    r->target_hz = target_hz;
+    r->peer_moved = peer_moved;
+    r->landing_done.store(0, std::memory_order_relaxed);
+    g_ring_purge_pending.store(0, std::memory_order_release);
+    if (!demod_enter_processing_block(&controller)) {
+        return -1;
+    }
+    const uint32_t generation = g_rtl_output_generation.load(std::memory_order_acquire);
+    dsd_thread_t decoder{};
+    const int started = dsd_thread_create(&decoder, profileless_landing_race_decoder, r) == 0 ? 1 : 0;
+    out->landing_waited = started ? profileless_landing_race_wait(r) : 0;
+    out->done_during_block = r->landing_done.load(std::memory_order_acquire);
+    out->flushed_during_block = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
+    /* The block's output, published before the block ends: the channel the stream ran on while the block ran. */
+    static const float block_output[64] = {0.5f};
+    const size_t before = ring_used(&output);
+    (void)demod_copy_output_chunk(&output, block_output, NULL, NULL, sizeof block_output / sizeof block_output[0],
+                                  ring_free(&output));
+    demod_leave_processing_block(&controller);
+    if (started) {
+        (void)dsd_thread_join(decoder);
+    }
+    out->block_output_left = (int)(ring_used(&output) > before ? ring_used(&output) - before : 0U);
+    out->flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
+    out->input_purged = g_ring_purge_pending.exchange(0, std::memory_order_acq_rel);
+    return started ? 0 : -2;
+}
+
 extern "C" int
 rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_external_profileless_block_result* out) {
     if (!out) {
@@ -20875,42 +20950,21 @@ rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_exter
     g_cqpsk_toggle_test_stream.opts = &dmr_opts;
     rtl_stream_clear_pending_retune_profile();
     ring_clear(&output);
-    /* The stream's own last retune or open: the landing is on a channel the output does not hold yet. */
+    /* The stream's own last retune or open: the first landing is on a channel the output does not hold yet. */
     g_external_output_freq_hz.store(0U, std::memory_order_release);
     test_stream_set(&g_cqpsk_toggle_test_stream);
-
-    /* The demod thread runs a block, as demod_process_block() does between its enter and leave. */
-    if (!demod_enter_processing_block(&controller)) {
-        test_stream_set(NULL);
-        family_test_restore(saved);
-        fsk_reacquire_test_cleanup_output_ring(initialized_output);
-        return -3;
-    }
-    ProfilelessLandingRace* r = &g_profileless_landing_race;
-    r->target_hz = kFamilyTestRetuneHz + 62500U;
-    r->landing_done.store(0, std::memory_order_relaxed);
-    const uint32_t generation = g_rtl_output_generation.load(std::memory_order_acquire);
-    dsd_thread_t decoder{};
-    const int started = dsd_thread_create(&decoder, profileless_landing_race_decoder, r) == 0 ? 1 : 0;
-    out->landing_waited = started ? profileless_landing_race_wait(r) : 0;
-    out->flushed_during_block = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
-    /* The block's output, published before the block ends: the channel the landing leaves. */
-    static const float block_output[64] = {0.5f};
-    (void)demod_copy_output_chunk(&output, block_output, NULL, NULL, sizeof block_output / sizeof block_output[0],
-                                  ring_free(&output));
-    demod_leave_processing_block(&controller);
-    if (started) {
-        (void)dsd_thread_join(decoder);
-    }
-    out->block_output_left = (int)ring_used(&output);
-    out->flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
+    const uint32_t target_hz = kFamilyTestRetuneHz + 62500U;
+    int rc = profileless_landing_race_phase(target_hz, 1, &out->moved);
+    /* The peer asked again for the channel it is on: nothing to flush or apply. */
+    rc |= profileless_landing_race_phase(target_hz, 0, &out->repeat);
     out->gate_open_after =
         (controller.retune_in_progress.load(std::memory_order_acquire) == 0 && reconfigure_gate_waiters() == 0) ? 1 : 0;
     test_stream_set(NULL);
     g_external_output_freq_hz.store(0U, std::memory_order_release);
+    g_ring_purge_pending.store(0, std::memory_order_release);
     family_test_restore(saved);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
-    return started ? 0 : -4;
+    return rc == 0 ? 0 : -4;
 }
 
 /* Queue a retune to @p target_hz on the stand-in controller @p s, as the engine prepares one and rtl_stream_tune()

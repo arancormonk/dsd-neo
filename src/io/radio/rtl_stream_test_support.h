@@ -2116,20 +2116,28 @@ typedef struct rtl_stream_test_external_landing_filter_result {
  * moved the stand-in peer away with no landing, then D). */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
 
-/* An external backend's landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) while the demod
- * thread runs a block that writes its output. */
-typedef struct rtl_stream_test_external_profileless_block_result {
+/* One external backend's landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) while the
+ * demod thread runs a block that writes its output. */
+typedef struct rtl_stream_test_external_profileless_phase {
     int landing_waited;       /* 1 when the landing raised the gate's flag and waited while the block ran */
-    int flushed_during_block; /* 1 when the output's generation moved before the block ended: 0, the flush waits */
-    int block_output_left;    /* samples of the block's output the ring held once the landing finished: 0 */
-    int flushed;              /* 1 when the landing flushed the output once the block ended */
-    int gate_open_after;      /* 1 when the gate was open again once the landing finished */
+    int done_during_block;    /* 1 when the landing finished while the block still ran */
+    int flushed_during_block; /* 1 when the output's generation moved before the block ended */
+    int block_output_left;    /* samples of the block's output the ring held once the landing finished */
+    int flushed;              /* 1 when the landing flushed the output */
+    int input_purged;         /* 1 when the landing asked for the input ring's purge */
+} rtl_stream_test_external_profileless_phase;
+
+typedef struct rtl_stream_test_external_profileless_block_result {
+    rtl_stream_test_external_profileless_phase moved;  /* on a frequency the output does not hold, the peer moved */
+    rtl_stream_test_external_profileless_phase repeat; /* then the same frequency again, the peer still there */
+    int gate_open_after;                               /* 1 when the gate was open again once both landings finished */
 } rtl_stream_test_external_profileless_block_result;
 
 /* Stand in for the demod thread inside a block (demod_enter_processing_block()) on a DMR stream, start the landing
- * (rtl_stream_apply_pending_retune_profile_for_target(), on a thread of its own standing for the decoder's) on a
- * frequency the output does not hold, wait (bounded) until it finished or raised the gate, then write the block's
- * output into the ring and end the block. */
+ * (rtl_stream_apply_pending_retune_profile_for_target(), on a thread of its own standing for the decoder's), wait
+ * (bounded) until it finished or raised the gate, then write the block's output into the ring and end the block: once
+ * on a frequency the output does not hold with the peer moved, then once more on that frequency with the peer still
+ * there. */
 int rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_external_profileless_block_result* out);
 
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */

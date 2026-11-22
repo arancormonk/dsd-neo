@@ -58,6 +58,14 @@ bool SetFreq(dsd_socket_t sockfd, long int freq);
  * whose request failed takes this as dsd_opts::rigctl_sent_freq_hz, so an unknown frequency counts as a move.
  */
 uint32_t RigctlConfirmedFreq(dsd_socket_t sockfd);
+/**
+ * @brief How many frequency requests have gone out to a rigctl peer and were not refused, on any connection: each
+ * moved the peer, or may have (no complete reply). A request for the frequency the peer last confirmed sends nothing
+ * and counts nothing. Any leg that tunes the peer (a trunk or scan tune, a manual tune, the legacy direct return to
+ * the control channel) counts here, so a reader that kept the count can tell the peer moved since, even back to the
+ * same frequency.
+ */
+uint64_t RigctlFrequencyMoves(void);
 bool SetModulation(dsd_socket_t sockfd, int bandwidth);
 /**
  * @brief Ask the rigctl peer to demodulate @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or DSD_ANALOG_DEMOD_AM) at

@@ -1349,17 +1349,27 @@ test_external_backend_landing_filter_state(void) {
 /* A landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) flushes the output the demod thread
  * writes. It parks the demod thread first, as a landing with a profile does: a block's output write that loaded the
  * ring's head before the flush would otherwise publish it after, putting the old channel's samples back under the new
- * generation. */
+ * generation. It purges the queued input with it, so only I/Q from after the move feeds the output a repeated tune
+ * keeps. A repeated tune with nothing to flush parks nothing: raising the flag would drop or cut the block's output. */
 static int
 test_external_profileless_landing_waits_for_block(void) {
     rtl_stream_test_external_profileless_block_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     int failed = expect_int_eq("profile-less landing race hook",
                                rtl_stream_test_external_profileless_landing_against_block(&r), 0);
-    failed |= expect_int_eq("profile-less landing during a block: waits for it", r.landing_waited, 1);
-    failed |= expect_int_eq("profile-less landing during a block: no flush before it ends", r.flushed_during_block, 0);
-    failed |= expect_int_eq("profile-less landing during a block: its output flushed", r.block_output_left, 0);
-    failed |= expect_int_eq("profile-less landing during a block: output flushed", r.flushed, 1);
+    failed |= expect_int_eq("profile-less landing during a block: waits for it", r.moved.landing_waited, 1);
+    failed |=
+        expect_int_eq("profile-less landing during a block: no flush before it ends", r.moved.flushed_during_block, 0);
+    failed |= expect_int_eq("profile-less landing during a block: its output flushed", r.moved.block_output_left, 0);
+    failed |= expect_int_eq("profile-less landing during a block: output flushed", r.moved.flushed, 1);
+    /* The input queued before the move holds the old channel too: the landing purges it, as a controller retune does. */
+    failed |= expect_int_eq("profile-less landing during a block: input purged", r.moved.input_purged, 1);
+    /* A repeat with nothing to flush or apply leaves the block running and its whole output in place. */
+    failed |= expect_int_eq("repeated landing during a block: does not park it", r.repeat.landing_waited, 0);
+    failed |= expect_int_eq("repeated landing during a block: done while it runs", r.repeat.done_during_block, 1);
+    failed |= expect_int_eq("repeated landing during a block: output kept", r.repeat.block_output_left, 64);
+    failed |= expect_int_eq("repeated landing during a block: nothing flushed", r.repeat.flushed, 0);
+    failed |= expect_int_eq("repeated landing during a block: input kept", r.repeat.input_purged, 0);
     failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }

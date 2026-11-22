@@ -480,12 +480,18 @@ dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
 /* The frequency the stand-in peer last confirmed: every stand-in failure is a complete refusal, which leaves it. */
 static uint32_t g_setfreq_confirmed_hz;
 
+/* Frequency requests the stand-in peer took, as the client counts them (RigctlFrequencyMoves()). */
+static uint64_t g_rigctl_moves;
+
 bool
 SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_setfreq_calls++;
     g_last_setfreq_hz = freq;
     if (g_setfreq_result) {
+        if (g_setfreq_confirmed_hz != (uint32_t)freq) {
+            g_rigctl_moves++;
+        }
         g_setfreq_confirmed_hz = (uint32_t)freq;
     }
     return g_setfreq_result;
@@ -495,6 +501,11 @@ uint32_t
 RigctlConfirmedFreq(dsd_socket_t sockfd) {
     (void)sockfd;
     return g_setfreq_confirmed_hz;
+}
+
+uint64_t
+RigctlFrequencyMoves(void) {
+    return g_rigctl_moves;
 }
 
 /* Records the demodulator and passband each tune asks the rigctl peer for, and through which call (issue #526). */
@@ -1677,7 +1688,8 @@ test_backend_tune_updates_center_freq_cache(void) {
 #ifdef USE_RADIO
 /* A rigctl peer that tunes an RTL input: the stream's landing hears whether the peer moved, so a repeated tune to the
  * frequency the peer last confirmed keeps the stream's output and the decoder's cached symbols, while a tune after
- * another leg moved the peer (the legacy direct return to the control channel, which lands nothing) flushes them. */
+ * another leg moved the peer (the legacy direct return to the control channel, which lands nothing), even away and back
+ * to the same frequency (a manual tune), flushes them. */
 static void
 test_rigctl_rtl_landing_says_whether_the_peer_moved(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1697,6 +1709,14 @@ test_rigctl_rtl_landing_says_whether_the_peer_moved(void) {
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_external_landings == landings + 3);
     assert(g_rtl_external_landing_moved == 1);
+    /* A manual tune away and back with no landing between: the peer ends on the frequency it was last sent, but the
+       stream may still hold samples from the channel it visited. */
+    g_rigctl_moves += 2U;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_external_landings == landings + 4);
+    assert(g_rtl_external_landing_moved == 1);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853025000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_external_landing_moved == 0);
     rtl_stream_clear_pending_retune_profile();
     free(state);
     free(opts);
