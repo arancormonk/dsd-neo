@@ -15,6 +15,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -1912,6 +1913,44 @@ test_info1_cipher_survives_the_numbered_party(void) {
     return rc;
 }
 
+/*
+ * The DCR provenance stays with the cipher that stays applied (issue #903): a confirmed DCR call is received with the
+ * scrambler, then a clear VCALL (an IDAS frame's, whose SCCH failed) contradicts it once: the hysteresis keeps the
+ * scrambler. The cipher still applied is the DCR call's, so the next valid INFO3, another call's, forgets it.
+ */
+static int
+test_quarantined_contradiction_keeps_the_dcr_provenance(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->R = 0x1234ULL;
+    static const uint8_t m_data[5] = {0U};
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    /* The first SB0 confirms the transmission with the second, which names the scrambler; the third corroborates it. */
+    for (int i = 0; i < 3; i++) {
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    int rc = expect_int("dcr-provenance-dcr-scrambler", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("dcr-provenance-established", nxdn_cipher_established_enc(state), 1);
+    state->nxdn_cipher_type = nxdn_cipher_observe(state, 0U, 0); /* the clear VCALL */
+    rc |= expect_int("dcr-provenance-contradiction-held", (int)state->nxdn_cipher_type, 1);
+
+    state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
+    send_outbound_scch(opts, state, 1U);
+    rc |= expect_int("dcr-provenance-forgotten-at-info3", (int)state->nxdn_cipher_type, 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1943,6 +1982,7 @@ main(void) {
     rc |= test_sacch_superframe_position_stays_with_the_frame();
     rc |= test_nxdn_keeps_the_shared_register();
     rc |= test_info1_cipher_survives_the_numbered_party();
+    rc |= test_quarantined_contradiction_keeps_the_dcr_provenance();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

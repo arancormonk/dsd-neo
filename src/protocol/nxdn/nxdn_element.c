@@ -3925,13 +3925,14 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
 }
 
 /* An SCCH that acts is a Type-D call's, never a DCR call's (DCR carries none): the scrambler a DCR call received (its
- * cipher and the classification behind it, dsd_state::nxdn_cipher_dcr) is not that call's, whose voice plays clear until
- * its own signalling names a cipher. It is forgotten once, before the SCCH's own message acts, so an INFO1 naming the
+ * cipher and the classification behind it, while the cipher applied is the DCR call's: dsd_state::nxdn_cipher_origin,
+ * a contradiction the hysteresis held back notwithstanding) is not that call's, whose voice plays clear until its own
+ * signalling names a cipher. It is forgotten once, before the SCCH's own message acts, so an INFO1 naming the
  * new call's cipher ahead of its numbered party keeps it. A scrambler the operator forced (-4: state->M with a key)
  * stays, as at a release. */
 static void
 nxdn_scch_forget_dcr_cipher(dsd_state* state) {
-    if (state->nxdn_cipher_dcr == 0U) {
+    if (state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
         return;
     }
     state->nxdn_cipher_type = 0;

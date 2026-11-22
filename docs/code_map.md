@@ -12438,8 +12438,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   destination), either way: "JPN DCR" meets no numbered party (`call_state_dcr_meets_numbered_party()`). An IDAS SCCH
   naming a talker or target while a DCR call is live is likewise another call at the source
   (`nxdn_scch_names_new_call()`): its observation carries neither "JPN DCR" nor the DCR call's service metadata or
-  crypto. The scrambler the DCR call received (its SACCH-2's cipher, `dsd_state::nxdn_cipher_dcr`) is forgotten, cipher
-  and classification, at the first SCCH that acts, which no DCR call carries, before that SCCH's message acts, so the
+  crypto. The scrambler the DCR call received (its SACCH-2's cipher, while it is the cipher applied:
+  `dsd_state::nxdn_cipher_origin`, which follows the observation the applied cipher equals and stays when the
+  hysteresis holds a contradiction back, `nxdn_cipher_observe_from()`) is forgotten, cipher and classification, at the
+  first SCCH that acts, which no DCR call carries, before that SCCH's message acts, so the
   new call's voice is not descrambled with it, while an INFO1 naming the new call's own cipher ahead of its numbered
   party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call

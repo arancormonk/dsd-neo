@@ -64,18 +64,29 @@ nxdn_cipher_class_step(uint8_t* cls, uint8_t* est, uint8_t* pending, uint8_t obs
     }
 }
 
-/* Feed one cipher observation and return the cipher value to apply. The
- * same observation also steps the over-the-air-only classification
- * (nxdn_cipher_rx_*), which a forced cipher never touches. */
+/* Feed one cipher observation of @p origin and return the cipher value to
+ * apply. The same observation also steps the over-the-air-only
+ * classification (nxdn_cipher_rx_*), which a forced cipher never touches.
+ * The applied cipher's origin (dsd_state::nxdn_cipher_origin) is the
+ * observation's once the applied cipher equals it, a matching repeat
+ * included; a contradiction held back leaves the applied cipher, and so its
+ * origin, as they were. */
 uint8_t
-nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
+nxdn_cipher_observe_from(dsd_state* state, uint8_t cipher, int strong, uint8_t origin) {
     const uint8_t obs = (uint8_t)((cipher & 0x03U) + 1U);
-    state->nxdn_cipher_dcr = 0U;
     nxdn_cipher_class_step(&state->nxdn_cipher_class, &state->nxdn_cipher_class_est, &state->nxdn_cipher_class_pending,
                            obs, strong);
     nxdn_cipher_class_step(&state->nxdn_cipher_rx_class, &state->nxdn_cipher_rx_est, &state->nxdn_cipher_rx_pending,
                            obs, strong);
+    if (state->nxdn_cipher_class == obs) {
+        state->nxdn_cipher_origin = origin;
+    }
     return (uint8_t)(state->nxdn_cipher_class - 1U);
+}
+
+uint8_t
+nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
+    return nxdn_cipher_observe_from(state, cipher, strong, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
 }
 
 /* Authoritative out-of-band evidence (user-forced scrambler mode): apply to
@@ -97,7 +108,7 @@ nxdn_cipher_class_reset(dsd_state* state) {
     state->nxdn_cipher_rx_class = 0U;
     state->nxdn_cipher_rx_est = 0U;
     state->nxdn_cipher_rx_pending = 0U;
-    state->nxdn_cipher_dcr = 0U;
+    state->nxdn_cipher_origin = (uint8_t)NXDN_CIPHER_ORIGIN_OTHER;
 }
 
 int

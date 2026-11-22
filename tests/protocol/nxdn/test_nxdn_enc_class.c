@@ -239,6 +239,33 @@ test_contradiction_of_tentative_replaces(void) {
     assert(nxdn_cipher_established_enc(&state) == 0);
 }
 
+/* The applied cipher's origin is the observation's it equals; a held contradiction leaves it (issue #903). */
+static void
+test_origin_follows_the_applied_cipher(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    // A lone contradiction is held: the scrambler, and its DCR origin, stay.
+    assert(nxdn_cipher_observe(&state, 0U, 0) == 1U);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    // Its repeat applies: the clear cipher is the other source's.
+    assert(nxdn_cipher_observe(&state, 0U, 0) == 0U);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    // A matching repeat from another source makes the applied cipher that source's.
+    (void)nxdn_cipher_observe_from(&state, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    (void)nxdn_cipher_observe(&state, 0U, 0);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    nxdn_cipher_force(&state, 1U);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    nxdn_cipher_class_reset(&state);
+    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+}
+
 static void
 test_force_and_reset(void) {
     static dsd_state state;
@@ -532,6 +559,7 @@ main(void) {
     test_observe_tentative_then_corroborated();
     test_lone_contradiction_is_quarantined_both_directions();
     test_contradiction_of_tentative_replaces();
+    test_origin_follows_the_applied_cipher();
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
     test_vcall_lockout_endpoint_by_call_type();

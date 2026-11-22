@@ -2939,8 +2939,8 @@ nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* va
     const uint64_t dcr_epoch = call.epoch;
     g_state.R = 0x1234ULL; /* the DCR call's scrambler key */
     g_state.M = forced ? 1 : 0;
-    g_state.nxdn_cipher_type = nxdn_cipher_observe(&g_state, 1U, 1);
-    g_state.nxdn_cipher_dcr = 1U; /* received as the DCR call's SACCH-2 names it (nxdn_sacch2_note_cipher()) */
+    /* Received as the DCR call's SACCH-2 names it (nxdn_sacch2_note_cipher()). */
+    g_state.nxdn_cipher_type = nxdn_cipher_observe_from(&g_state, 1U, 1, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
 
     at_seconds(9600.2);
     voice_live();

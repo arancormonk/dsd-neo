@@ -96,6 +96,16 @@ uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* sta
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
+
+/* Where an observed cipher came from (dsd_state::nxdn_cipher_origin): a DCR call's SACCH-2, or anything else. */
+enum {
+    NXDN_CIPHER_ORIGIN_OTHER = 0,
+    NXDN_CIPHER_ORIGIN_DCR = 1,
+};
+
+/* nxdn_cipher_observe() for an observation of @p origin (NXDN_CIPHER_ORIGIN_*): the applied cipher takes that origin
+ * when it equals the observation afterwards, and keeps its own when the hysteresis held the observation back. */
+uint8_t nxdn_cipher_observe_from(dsd_state* state, uint8_t cipher, int strong, uint8_t origin);
 void nxdn_cipher_force(dsd_state* state, uint8_t cipher);
 void nxdn_cipher_class_reset(dsd_state* state);
 
