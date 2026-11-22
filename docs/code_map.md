@@ -13599,7 +13599,9 @@ Private per-protocol modules worth knowing about:
     so an in-place grant naming that call changes only the P_CLEAR addresses. Nor does it publish a data grant's
     identity (`vc_data_call`): voice on that slot is another call and stays as the voice names it (anonymous without an
     LC). That voice still spends the first-voice publication (`vc_identity_published`), so a later in-place voice
-    grant never publishes over the call playing there (a checked LC's call keeps its talkgroup and transmission). A
+    grant never publishes over the call playing there (a checked LC's call keeps its talkgroup and transmission).
+    Decided limit (discussion #900): on a followed data slot, once the first voice has been handled, a later in-place
+    voice grant does not name its call; the call is named by its own link control or stays anonymous. A
     repeat is the same class and kind (group or private, voice
     or data) and the same talkgroup, or for a private call the same two parties (either way round,
     `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
@@ -13611,11 +13613,14 @@ Private per-protocol modules worth knowing about:
     (the slot's record or the followed grant's) never describes the slot's active transmission to the ledger
     (`dmr_sm_data_grant_not_slot_call()`): that call is unknown, so the gate protects it as any unknown call, never
     judged by the data grant's priority or follow time. Its Hold match comes from the canonical call alone
-    (`dmr_sm_active_call_holds_hold()`: its class, target and talker), so a voice call there on the Hold talkgroup is
-    still a held Hold call, and a second grant for that group on another carrier never displaces it. Decided limit
-    (discussion #900): with data following on (`trunk_tune_data_calls`), a missed voice terminator leaves the voice
-    call's canonical record active, so a confirmed packet-data transfer that follows on that slot is protected as an
-    unknown call (no preemption, past any dwell) until the voice record ends. A status's in-place entry
+    (`dmr_sm_active_call_holds_hold()`: its class, target and talker), and only from a DMR call whose own gated voice
+    (`dmr_confidence_voice_m`, never data sync) is live or within the voice hangtime. So a DMR voice call playing there
+    on the Hold talkgroup is still a held Hold call, and a second grant for that group on another carrier never
+    displaces it; a record another protocol left active, or a voice record past its hangtime, claims no Hold and the
+    slot stays unknown. Decided limit (discussion #900): with data following on (`trunk_tune_data_calls`), a missed
+    voice terminator leaves the voice call's canonical record active, so a confirmed packet-data transfer that follows
+    on that slot is protected as an unknown call (no preemption, past any dwell) until the voice record ends; by Hold
+    it is protected only within that voice's hangtime. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
@@ -13625,10 +13630,12 @@ Private per-protocol modules worth knowing about:
     unknown record on the followed
     carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
-    a group entry names its slot's call (on the followed slot the grant identity too, with the status's own LSN and CRC
-    provenance, `dmr_sm_vc_identity_group()`), a private one leaves it unknown and, on the followed slot, withdraws
-    the grant identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a
-    voice LC only at its checked
+    a group entry names its slot's call (on the followed slot the grant identity too, `dmr_sm_vc_identity_group()`), a
+    private one leaves it unknown and, on the followed slot, withdraws the grant identity's fallback and publication.
+    Every group or private entry for the followed slot gives the followed channel its LSN, numbering kind and CRC
+    provenance (`dmr_sm_vc_channel_from_status()`), even one naming the group already followed, so the flags vouch
+    for the channel published with them and a later LC takes that LSN; an LC's identity, idle and unknown entries are
+    left alone), and a voice LC only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and

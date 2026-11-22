@@ -1034,6 +1034,70 @@ test_pending_data_grant_keeps_hold_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Hold 200: slot 0 still holds an ACTIVE P25 TG 200 record (another protocol's, never ended) when a private data
+   grant for this carrier is adopted in place, and the slot's colour-code-gated voice is recent. The record is not a
+   DMR call playing, so it claims no Hold: a DMR TG 200 grant on another carrier is followed by Hold. */
+static int
+test_other_protocol_record_claims_no_hold(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0020U] = CC_HZ;
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 200U,
+        .policy_target_id = 200U,
+        .ota_source_id = 2U,
+    };
+    (void)dsd_call_state_observe(st, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, 0x0020U, 0, 2002, 3003);
+    int rc = expect_true("the data grant adopts the carrier unbound",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == CC_HZ && sm()->slots[0].data_call == 1U
+                             && sm()->slots[0].call_epoch == 0U);
+    clock_at(0.6);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the P25 TG 200 record is still active",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && DSD_SYNC_IS_P25P1(call.protocol) && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the DMR TG 200 grant elsewhere is followed by Hold", vc(st) == VC_B && sm()->vc_tg == 200);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* Hold 200: a TG 200 voice call (its LC names it) loses its terminator, so its record stays ACTIVE, while a private data
+   grant in place keeps the followed slot busy with data past the voice hangtime. That record is not a call playing:
+   it claims no Hold, and the real TG 200 grant on another carrier is followed. */
+static int
+test_stale_voice_record_claims_no_hold(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 200, 2);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    voice(opts, st, 0);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant replaces the slot's record unbound",
+                         vc(st) == VC_A && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    for (int i = 1; i <= 6; i++) {
+        clock_at(0.5 + (0.5 * i));
+        dmr_sm_emit_data_sync(opts, st, 0);
+    }
+    dsd_call_snapshot call;
+    rc |= expect_true("data keeps the carrier past the voice hangtime with TG 200's record active",
+                      vc(st) == VC_A && dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the real TG 200 grant elsewhere is followed by Hold", vc(st) == VC_B && sm()->vc_tg == 200);
+    st->tg_hold = 0;
+    return rc;
+}
+
 /* XPT LSNs 1 and 3 share a carrier. A RAS-accepted group status on LSN 1 is followed; before its voice a checked status
    names another group on LSN 3 (the followed slot). The followed call takes the status's channel with its provenance:
    its first voice publishes LSN 3 as verified, never LSN 1 (the RAS status's) as verified. */
@@ -1063,6 +1127,90 @@ test_xpt_status_rename_takes_its_channel(dsd_opts* opts, dsd_state* st) {
     rc |= expect_true("the first voice never publishes LSN 1 as verified",
                       target == 300U && crc == 0U && dsd_call_state_get(st, 0U, &call) > 0 && call.channel == 3U
                           && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 100 on LSN 1 is followed; before its voice a RAS-accepted status
+   names TG 200 on LSN 3 (the followed slot), then a checked one names TG 200 again, on LSN 1. The group is unchanged,
+   but the followed channel is the last status's, with its provenance: the first voice publishes TG 200 on LSN 1 as
+   verified, never LSN 3. */
+static int
+test_xpt_same_group_status_moves_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 100, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 200U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("TG 200 on LSN 3", sm()->vc_tg == 200 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 200U, 1);
+    rc |= expect_true("the same group on LSN 1 takes that channel and its provenance",
+                      sm()->vc_tg == 200 && sm()->vc_lpcn == 1 && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == 0U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes TG 200 on LSN 1 as verified",
+                      target == 200U && crc == 0U && dsd_call_state_get(st, 0U, &call) > 0 && call.channel == 1U
+                          && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 71 on LSN 1 is followed, a status names TG 83 on LSN 3 (the
+   followed slot), then a private status names the slot's call on LSN 1. The private call's identity is unknown, but its
+   channel is LSN 1: the call its LC names there takes LSN 1, never LSN 3. */
+static int
+test_xpt_private_status_keeps_its_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 71, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 83U, 1);
+    rc |= expect_true("TG 83 on LSN 3", sm()->vc_tg == 83 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 0U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the private status's channel and provenance are the followed call's",
+                      sm()->vc_identity_known == 0 && sm()->vc_lpcn == 1
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 2002U,
+        .policy_target_id = 2002U,
+        .ota_source_id = 1001U,
+    };
+    (void)dsd_call_state_observe(st, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 1001U);
+    rc |= expect_true("the private call's LC takes LSN 1 with the status's provenance",
+                      sm()->slots[0].channel == 1 && sm()->slots[0].channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->slots[0].channel_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the private call publishes LSN 1", dsd_call_state_get(st, 0U, &call) > 0
+                                                              && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                              && call.ota_target_id == 2002U && call.channel == 1U
+                                                              && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
     return rc;
 }
 
@@ -1313,7 +1461,11 @@ main(void) {
     rc |= test_data_grant_never_names_late_entry_voice(opts, st);
     rc |= test_data_follow_first_voice_consumes_publication(opts, st);
     rc |= test_pending_data_grant_keeps_hold_call(opts, st);
+    rc |= test_other_protocol_record_claims_no_hold(opts, st);
+    rc |= test_stale_voice_record_claims_no_hold(opts, st);
     rc |= test_xpt_status_rename_takes_its_channel(opts, st);
+    rc |= test_xpt_same_group_status_moves_channel(opts, st);
+    rc |= test_xpt_private_status_keeps_its_channel(opts, st);
     rc |= test_in_place_chan0_grant_drops_channel(opts, st);
     rc |= test_in_place_grant_names_channel_with_its_provenance(opts, st);
     rc |= test_radio_block_keeps_followed_call(opts, st);
