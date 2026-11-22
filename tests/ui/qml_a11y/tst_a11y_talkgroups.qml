@@ -57,6 +57,20 @@ Item {
                 return counts.chains[chain] + "x " + chain;
             }));
         }
+        // Every card of the list on show built. A list view builds the rows past its edge over later frames; a table
+        // replaced before then makes it cancel that build against the new, shorter list ("DelegateModel::cancel: index
+        // out range"). The app's poll tick never replaces a table that fast; a case that does, settles first. These
+        // tables are short, so every card is built.
+        function settleCards() {
+            var cards = item("talkgroupGrid");
+            tryVerify(function () {
+                for (var i = 0; i < cards.count; ++i) {
+                    if (cards.itemAtIndex(i) === null)
+                        return false;
+                }
+                return true;
+            }, 5000, "the cards settle");
+        }
         function chipTexts(chips) {
             var texts = [];
             for (var i = 0; i < chips.count; ++i) {
@@ -114,6 +128,7 @@ Item {
             talkgroupView.filterText = "";
             talkgroupView.filterTag = "";
             screen.visible = true;
+            settleCards();
             verify(testContext.applyTalkgroupTable(-1));
             testContext.resetCommands();
             testContext.setHostRunning(false);
@@ -268,21 +283,25 @@ Item {
             card.remembered = true;
             card.lastHeard = Math.floor(metrics.decodeNowMs / 1000) - 7200;
             node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
-            compare(node.name, "Listen to talkgroup 1234");
-            compare(node.description, "Last heard 2 h ago");
+            compare(node.name, "Listen to talkgroup 1234, last heard 2 h ago");
+            compare(node.description, "");
             card.destroy();
         }
 
         // Issue #903 (#860): with a screen reader on, the footer's list actions hold still while a scan hops between a
-        // system that remembers talkgroups and a target no saved system owns: Clear stays where it is, disabled where
-        // there is nothing to clear, and no node is shown or hidden.
+        // system that remembers talkgroups and a target no saved system owns, on a scan row with its own list or not:
+        // Save and Clear stay where they are, each disabled where it does not apply, and no node is shown or hidden.
         function test_list_actions_hold_still_under_a_screen_reader() {
             verify(screenReader.active, "this run has a screen reader on");
             screen.visible = true;
             testContext.setHostRunning(true);
             var owner = "903-a11y-owner";
             var clear = item("clearRememberedTalkgroups");
+            var save = item("footerSaveTalkgroupList");
             verify(clear.visible && !clear.enabled, "shown, and disabled with nothing to clear");
+            verify(save.visible && !save.enabled, "shown, and disabled while the owner offers no Save");
+            screen.canSaveList = true;
+            verify(save.enabled);
             testContext.setTalkgroupRemembering(owner, true);
             testContext.rememberTalkgroup(owner, 1, 4242, 300);
             testContext.setTalkgroupOwnerOnAir(owner);
@@ -290,12 +309,18 @@ Item {
             waitForRendering(screen);
             testContext.startAccessibilityCount();
             for (var i = 0; i < switches; ++i) {
+                // A hop a poll tick after the last, once its cards are built.
+                settleCards();
+                testContext.setTalkgroupScanScope(i % 2 === 0);
                 testContext.setTalkgroupOwnerOnAir(i % 2 === 0 ? "" : owner);
-                verify(clear.visible, "Clear stays on hop " + i);
+                verify(clear.visible && save.visible, "Save and Clear stay on hop " + i);
                 compare(clear.enabled, i % 2 !== 0, "Clear applies only on the system's hops");
+                compare(save.enabled, i % 2 !== 0, "Save is refused on the scan row's hops");
             }
             compare(showHide(clear.parent), 0, churn());
             testContext.stopAccessibilityCount();
+            screen.canSaveList = false;
+            testContext.setTalkgroupScanScope(false);
             testContext.resetRememberedTalkgroups();
             testContext.setHostRunning(false);
         }

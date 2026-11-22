@@ -19168,28 +19168,27 @@ Qt Quick frontend (`src/ui/qt`):
     shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
     per owner, and a new `historySession` drops them.
   - The screen (issue #903; `qml/TalkgroupsScreen.qml`, `TalkgroupCard.qml`, `TalkgroupEditSheet.qml`). A remembered
-    card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the
-    screen's minute `ageTick`; a time ahead of the decode clock by its date and time); a card heard only this session
-    keeps "Heard in this session". A heard card has no name line, and its switch reads "Listen to talkgroup %1" with
-    the line in its description. The edit sheet opens with the card's `remembered` flag and `viewedOwner`
-    (`openRow()`'s last two arguments) and offers **Forget this talkgroup** (a second tap, as Remove) on a remembered
-    card only, through `forgetTalkgroupOf()` with that owner; its armed "Tap again to forget" is read out
-    (`Navigation.announce()`). The footer's last row holds **Save talkgroup list** (`saveOffered`: the owner's
-    `canSaveList`, not `scanRowRefusesSave`, decoder running; the sheet's button uses the same property) and **Clear
-    remembered talkgroups…** (`hasRemembered`: the viewed owner has an entry, remembering or not), side by side as the
-    bulk actions are. With a screen reader on (#860) neither is shown or hidden by a scan hop: Save shows while the
-    owner offers it and the decoder runs, Clear always, each disabled where it does not apply. Clear asks first
-    ("Forget the talkgroups remembered for %1?", naming the saved system through `savedSystems.getByUid()`), and
-    clears the owner it captured when it asked. With `remembering` on in session scope, the session-only note says
-    heard talkgroups are remembered and the scope note gives way to it (a scan row keeps its own). `hasRemembered`
-    follows the remembered numbers the model holds: read with them, and dropped at once by a forget or clear of the
-    viewed owner (`noteHasRemembered()`). The
-    saved-system editor (`WizardScreen.qml`, Trunking data) has the **Remember heard talkgroups** switch
-    (`rememberTalkgroups`, on for a new system, kept by an edit, in the draft fingerprint), and Home's store notice
-    names `heard_talkgroups.json` "Remembered talkgroups" (`Util.storeLabel()`). Tests: `UI_QT_QML_CALL_LISTS`
-    (`tst_talkgroups_screen.qml`, `tst_talkgroup_edit_sheet.qml`, `tst_wizard_src.qml`, `tst_home_store_notices.qml`;
-    the fixture's `CallLogStore` is a `HeardTalkgroupSource` over a production `HeardTalkgroupStore`),
-    `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`).
+    card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the screen's
+    minute `ageTick`; a time ahead of the decode clock by its date and time); a card heard only this session keeps
+    "Heard in this session". A heard card has no name line. Its switch reads "Listen to talkgroup %1", and a remembered
+    card's switch name goes on with ", last heard %1" in the order it is drawn (not said again in its description). The
+    edit sheet opens with the card's `remembered` flag and `viewedOwner` (`openRow()`'s last two arguments) and offers
+    **Forget this talkgroup** (a second tap, as Remove) on a remembered card only, through `forgetTalkgroupOf()` with
+    that owner; the armed "Tap again to forget" and "Tap again to remove" are read out (`Navigation.announce()`). The
+    footer's last row holds **Save talkgroup list** (`saveOffered`: the owner's `canSaveList`, not `scanRowRefusesSave`,
+    decoder running; the sheet's button uses the same property) and **Clear remembered talkgroups…** (`hasRemembered`:
+    the viewed owner has an entry, remembering or not), side by side as the bulk actions are. With a screen reader on
+    (#860) neither is shown or hidden by a scan hop: both stay while the decoder runs, each disabled where it does not
+    apply. Clear asks first ("Forget the talkgroups remembered for %1?", naming the saved system through
+    `savedSystems.getByUid()`), and clears the owner it captured when it asked. With `remembering` on in session scope,
+    the session-only note says heard talkgroups are remembered and the scope note gives way to it (a scan row keeps its
+    own). `hasRemembered` follows the remembered numbers the model holds: read with them, and dropped at once by a
+    forget or clear of the viewed owner (`noteHasRemembered()`). The saved-system editor (`WizardScreen.qml`, Trunking
+    data) has the **Remember heard talkgroups** switch (`rememberTalkgroups`, on for a new system, kept by an edit, in
+    the draft fingerprint), and Home's store notice names `heard_talkgroups.json` "Remembered talkgroups"
+    (`Util.storeLabel()`). Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroups_screen.qml`, `tst_talkgroup_edit_sheet.qml`,
+    `tst_wizard_src.qml`, `tst_home_store_notices.qml`; the fixture's `CallLogStore` is a `HeardTalkgroupSource` over a
+    production `HeardTalkgroupStore`), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`).
   - Granular updates. Dirty flags (the policy's version, the store's `ownerChanged()` for the viewed owner, any
     history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. An observe
     names the entries it changed (`ownerChanged(owner, entries)`: the one added or moved and any the cap evicted; empty
@@ -22249,9 +22248,10 @@ that carries meaning reaches a screen reader one of these ways:
   its description (`PlexTextField`, `PlexInput`, the Airspy fields); Qt withholds a password field's name
   (`QQuickAccessibleAttached::name()` is empty while `passwordEdit`), so `PlexTextField` leads its description with the
   label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a talkgroup card's listening
-  switch the talkgroup in its name, whether it is listened to in its state and the card's other lines (rank, tags, an
-  avoid) in its description, a `CallRow` its meta line, tags and time in its description, a choice row its lines in
-  its description. Such a sibling-read `Text` says so with `Accessible.ignored: true` and a comment.
+  switch the talkgroup (and a remembered card's last heard, issue #903) in its name, whether it is listened to in its
+  state and the card's other lines (rank, tags, an avoid) in its description, a `CallRow` its meta line, tags and time
+  in its description, a choice row its lines in its description. Such a sibling-read `Text` says so with
+  `Accessible.ignored: true` and a comment.
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
 A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets

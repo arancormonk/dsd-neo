@@ -337,10 +337,11 @@ Item {
             verify(card.remembered && !card.listed);
             compare(findChild(card, "talkgroupCardTags").text, "Last heard 5 min ago");
             var toggle = findChild(card, "talkgroupListeningSwitch");
-            compare(toggle.accessibleName, "Listen to talkgroup 4242");
-            compare(toggle.Accessible.description, "Last heard 5 min ago");
+            compare(toggle.accessibleName, "Listen to talkgroup 4242, last heard 5 min ago");
+            compare(toggle.Accessible.description, "", "the last heard is said once, in the name");
             testContext.rememberTalkgroup(uid, 1, 4242, 0);
             tryCompare(findChild(card, "talkgroupCardTags"), "text", "Last heard just now");
+            compare(toggle.accessibleName, "Listen to talkgroup 4242, last heard just now");
 
             // A call this session heard on no saved system: not remembered, today's line (the owner's change is the
             // refresh that reads it).

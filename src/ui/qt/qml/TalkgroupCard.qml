@@ -22,6 +22,8 @@ Rectangle {
     readonly property var rank: priority > 0 ? [qsTr("Priority %1").arg(priority)].concat(preempt ? [qsTr("Preempt")] : []) : []
     signal editRequested
     signal clicked
+    // When a remembered card was last heard ("12 min ago", "just now"), empty on any other card.
+    readonly property string heardWhen: !listed && remembered && lastHeard > 0 ? heardAgo() : ""
     // "12 min ago", "just now"; a time ahead of the decode clock (a replay of an older capture) by its date and time.
     function heardAgo() {
         var now = (card.ageTick, metrics.decodeNowMs);
@@ -75,7 +77,7 @@ Rectangle {
             visible: text.length > 0
             // Issue #903: a remembered card says when it was last heard, to the minute, on the decode clock its time
             // is stamped on; one heard only in this session keeps its line.
-            text: card.listed ? card.tags : card.remembered && card.lastHeard > 0 ? qsTr("Last heard %1").arg(card.heardAgo()) : qsTr("Heard in this session")
+            text: card.listed ? card.tags : card.heardWhen.length > 0 ? qsTr("Last heard %1").arg(card.heardWhen) : qsTr("Heard in this session")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             font.family: Theme.sans
@@ -113,9 +115,11 @@ Rectangle {
                 anchors.right: edit.left
                 anchors.rightMargin: 12
                 checked: card.listening
-                // A heard card has no name to read: the talkgroup alone.
-                accessibleName: card.name.length > 0 ? Util.fill(qsTr("Listen to %1, talkgroup %2"), [card.name, card.idText]) : qsTr("Listen to talkgroup %1").arg(card.idText)
-                Accessible.description: [card.rank.join(" · "), tagsLine.visible ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
+                // A heard card has no name to read: the talkgroup alone. A remembered
+                // card's last heard follows it, as it is drawn (issue #903), and is
+                // not said again in the description.
+                accessibleName: (card.name.length > 0 ? Util.fill(qsTr("Listen to %1, talkgroup %2"), [card.name, card.idText]) : qsTr("Listen to talkgroup %1").arg(card.idText)) + (card.heardWhen.length > 0 ? qsTr(", last heard %1").arg(card.heardWhen) : "")
+                Accessible.description: [card.rank.join(" · "), tagsLine.visible && card.heardWhen.length === 0 ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
                     return part.length > 0;
                 }).join(", ")
                 onToggled: card.clicked()

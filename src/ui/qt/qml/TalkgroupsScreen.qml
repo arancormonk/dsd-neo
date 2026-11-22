@@ -463,7 +463,8 @@ Item {
         // Issue #903: the list's own actions, side by side as the bulk actions
         // are, so the cards keep their room on a phone; either alone takes the row.
         // With a screen reader on, a scan hop changes neither (#860: the layout
-        // holds still); each is disabled instead where it does not apply.
+        // holds still): both stay while the decoder runs, each disabled where it
+        // does not apply.
         Row {
             id: listActions
 
@@ -471,7 +472,7 @@ Item {
             spacing: 10
             readonly property bool steady: typeof screenReader !== "undefined" && screenReader !== null && screenReader.active
             // Read from the conditions, not the buttons' visible (false while this row is hidden).
-            readonly property bool showSave: steady ? screen.canSaveList && decoderHost.running : screen.saveOffered
+            readonly property bool showSave: steady ? decoderHost.running : screen.saveOffered
             // The system on air has something remembered, remembering or not (what it remembered before stays).
             readonly property bool showClear: steady || talkgroups.hasRemembered
             readonly property bool both: showSave && showClear
