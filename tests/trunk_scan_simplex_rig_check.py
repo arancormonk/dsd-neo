@@ -34,9 +34,11 @@ and hold run on its real clock, and the paced source catches up after a blocked 
 visit end early or late by about the stall. What keeps a slow runner passing is the slack: LEAVE_PAD_S on every bound,
 an idle visit's bound (DWELL_MS and LEAVE_PAD_S, 5 s) far under the visit cap (15 s) a held trunked target would run to,
 and a held visit's bound well under what the session defaults would give. The run's wall time is bounded by --seconds
-and the CTest TIMEOUT. A visit's profile is judged only on the metrics read before the API was closed, so the visit the
-run's end cuts short is judged on what was read of it. The API is the decoder's own once it says it listens on the
-port: a port another loopback test took first fails the decoder's bind, and the run starts again on another one.
+and the CTest TIMEOUT. A visit's profile is judged only on the metrics read between the subscription and the API's
+close, so a visit the subscription began late in or the run's end cut short is judged on what was read of it, and
+every target needs a visit read for READABLE_S or more that showed its profile. The API is the decoder's own once it
+says it listens on the port: a port another loopback test took first fails the decoder's bind, and the run starts
+again on another one.
 
 Usage: trunk_scan_simplex_rig_check.py DSD_NEO FIXTURE_DIR [--seconds S] [--keep DIR] [--explore]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing (the rig needs it). Serves the loopback interface
@@ -252,6 +254,8 @@ class Api:
                 time.sleep(0.1)
         self.sock.settimeout(1)
         self.sock.sendall(b'{"id":1,"cmd":"subscribe","topics":["metrics"]}\n')
+        # No metrics line can come before this: the start of every visit's observation window.
+        self.subscribed = time.monotonic()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.read, daemon=True)
         self.thread.start()
@@ -385,6 +389,7 @@ def run(args, rows, work):
         "tunes": list(scene.tunes),
         "commanded": list(scene.commanded),
         "end": end,
+        "metrics_start": api.subscribed if api is not None else metrics_end,
         "metrics_end": metrics_end,
         "api": api.lines if api is not None else [],
         "output": output,
@@ -411,19 +416,20 @@ def command_visits(commanded, end, rows):
     return out
 
 
-def check_profile(row, visit, lines, metrics_end):
-    """None when the visit (a command_visits() entry) landed row's profile, else what it showed. Only the part of the
-    visit the metrics were collected for counts (up to @p metrics_end): a visit the run's end cut short there is judged
-    as long as it was read."""
+def check_profile(row, visit, lines, observed):
+    """(what the visit, a command_visits() entry, showed when it did not land row's profile, else None; whether it
+    landed the profile over a window long enough to read it). Only the part of the visit the metrics were collected for
+    counts, @p observed (subscription to the API's close): a visit the subscription began late in, or the run's end cut
+    short, is judged as long as it was read."""
     _row, w0, w1 = visit
-    w1 = min(w1, metrics_end)
-    shown = [profile_of(m, row.profile) for t, m in lines if w0 + SETTLE_S <= t < w1 - END_GUARD_S]
+    w0, w1 = max(w0, observed[0]), min(w1, observed[1])
+    readable = w1 - w0 >= READABLE_S
+    shown = [profile_of(m, row.profile) for t, m in lines if visit[1] + SETTLE_S <= t and w0 <= t < w1 - END_GUARD_S]
     landed = next((i for i, p in enumerate(shown) if p == row.profile), None)
     if landed is None:
-        readable = w1 - w0 >= READABLE_S
-        return f"never showed {row.profile}: {shown}" if readable or shown else None
+        return (f"never showed {row.profile}: {shown}" if readable or shown else None), False
     after = [p for p in shown[landed:] if p != row.profile]
-    return f"showed {after[0]} after landing {row.profile}" if after else None
+    return (f"showed {after[0]} after landing {row.profile}" if after else None), readable and not after
 
 
 def check(record, rows, explore):
@@ -454,11 +460,16 @@ def check(record, rows, explore):
         if len(whole) < 2:
             failures.append(f"{row.id}: {len(whole)} whole visit(s); the run needs two of every target")
             continue
+        observed = (record["metrics_start"], record["metrics_end"])
+        read = 0
         for visit in (v for v in command_visits(record["commanded"], record["end"][1], rows) if v[0] is row):
-            wrong = check_profile(row, visit, record["api"], record["metrics_end"])
+            wrong, landed = check_profile(row, visit, record["api"], observed)
+            read += 1 if landed else 0
             if wrong:
                 at = visit[1] - record["commanded"][0][0]
                 failures.append(f"{row.id}: the visit commanded {at:.2f} s in {wrong}")
+        if read == 0:
+            failures.append(f"{row.id}: no visit read for {READABLE_S:.1f} s or more showed its profile {row.profile}")
         idle = whole
         if row.play == "call":
             first, idle = whole[0], whole[1:]
@@ -489,7 +500,9 @@ def main():
     args = parser.parse_args()
     rows = [Row(i, spec, args.fixture_dir) for i, spec in enumerate(ROWS)]
     with tempfile.TemporaryDirectory(prefix="scan-rig-") as scratch:
-        work = args.keep if args.keep else Path(scratch)
+        # Resolved: the decoder runs in it and is handed the target CSV's path, which a relative path would make
+        # relative twice.
+        work = args.keep.resolve() if args.keep else Path(scratch)
         work.mkdir(parents=True, exist_ok=True)
         # Another loopback test may bind the API port free_port() found before the decoder does: a run whose decoder
         # could not bind it starts again on another port.
