@@ -2676,6 +2676,14 @@ channel is delayed.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
   the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
   uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
+- Your DMR Tier III channels: `--dmr-chan-overrides <file>` (also `--dmr-chan-overrides=<file>`) — one row per
+  channel, `lpcn,frequency_hz` in decimal (the channel number dsd-neo shows, 1..4094, and its frequency in Hz,
+  100000..2147483647), with an optional header line; a frequency of `0` hides the channel, so its calls are not
+  followed. The rows lie over the channel map: they are applied after `-C` loads, before the first frame is decoded,
+  and they stay in force when the map is imported again, reloaded, cleared or refreshed from RadioReference. Nothing
+  heard over the air replaces them. The file is never written, and the channel map file is not changed. A row with
+  another shape or a number out of range is skipped with a warning, as `-C` skips its rows; a channel given twice
+  keeps its later row. Cannot be combined with `--trunk-scan`.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
   `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name,
   `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also

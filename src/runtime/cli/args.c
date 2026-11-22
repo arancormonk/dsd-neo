@@ -544,6 +544,12 @@ cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, in
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
+    /* The user's channels lie over the one global map, which a trunk scan does not have (discussion #900 F3). */
+    if (opts->dmr_chan_overrides_file[0] != '\0') {
+        LOG_ERROR("--dmr-chan-overrides cannot be combined with --trunk-scan\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
     /* Same rule for a config-file [trunking] p25_bandplan_csv: an explicit CLI --trunk-scan
        disowns the inherited plan (targets carry their own), an inherited one is a conflict. */
     if (trunk_scan_cli_seen && !p25_bandplan_cli_seen) {
@@ -1285,6 +1291,23 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
     LOG_ERROR("%s must name an existing regular file\n", option_name);
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
+}
+
+/* --dmr-chan-overrides (discussion #900 F3): only checked and kept here; the decoder applies the file over the channel
+   map before the first frame (dmr_t3_overlay_load_csv()). */
+static int
+cli_set_dmr_chan_overrides(dsd_opts* opts, const char* requested, int* out_exit_rc) {
+    char path[DSD_CLI_LOCAL_PATH_MAX];
+    if (!cli_resolve_existing_local_file_option("--dmr-chan-overrides", requested, path, sizeof path, out_exit_rc)) {
+        return 0;
+    }
+    if (strlen(path) >= sizeof opts->dmr_chan_overrides_file) {
+        LOG_ERROR("--dmr-chan-overrides path is too long\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    DSD_SNPRINTF(opts->dmr_chan_overrides_file, sizeof opts->dmr_chan_overrides_file, "%s", path);
+    return 1;
 }
 
 // Parse long-style options and environment mapping; also supports the
@@ -2345,6 +2368,23 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-tg-key-csv=", 17) == 0) {                                                          \
             dmr_tg_key_csv_cli = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-chan-overrides") == 0) {                                                            \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");                                               \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_set_dmr_chan_overrides(opts, DSD_PARSE_ARGS_NEXT_ARG(), out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-chan-overrides=", 21) == 0) {                                                      \
+            if (!cli_set_dmr_chan_overrides(opts, argv[i] + 21, out_exit_rc)) {                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-bandplan") == 0) {                                                                  \

@@ -15,6 +15,7 @@ target_sources(
         analog_width_view.c
         app_command_queue.c
         key_commands.c
+        dmr_channel_commands.c
         call_view.c
         config_files.c
         crc_policy_view.c

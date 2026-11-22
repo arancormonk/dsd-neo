@@ -430,6 +430,17 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3) lie over the channel map: applied here, after
+ * the map loaded (by -C while parsing, or by import_global_channel_map_if_needed()) and before the first frame. A file
+ * that cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. */
+static int
+import_dmr_chan_overrides_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->dmr_chan_overrides_file[0] == '\0') {
+        return 0;
+    }
+    return dmr_t3_overlay_load_csv(opts, state, opts->dmr_chan_overrides_file) < 0 ? -1 : 0;
+}
+
 static const char*
 group_import_failure_text(dsd_group_import_failure failure) {
     switch (failure) {
@@ -489,6 +500,9 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    if (import_dmr_chan_overrides_if_needed(opts, state) != 0) {
         return -1;
     }
     if (import_group_csv_if_needed(opts, state) != 0) {

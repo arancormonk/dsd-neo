@@ -807,8 +807,10 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->scan_visit_roll_seen = 0;
     dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
-    // And the DMR rows' origins: every row the file sets is the file's, which nothing over the air overwrites.
+    // And the DMR rows' origins: every row the file sets is the file's, which nothing over the air overwrites. The
+    // user's Tier III channels lie over the new map as they lay over the old one (discussion #900 F3).
     dmr_t3_chan_note_map_loaded(dst);
+    dmr_t3_overlay_reapply(dst);
     // So is the NXDN DFA record: the rows it named went with the old map, and a row the new file sets is the file's.
     dsd_nxdn_dfa_disown_all(dst);
     dst->trunk_chan_map_seq++;
@@ -996,6 +998,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // frequency no longer in the map.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
     dmr_t3_chan_note_map_cleared(state);
+    dmr_t3_overlay_reapply(state); /* the user's Tier III channels stay over the empty map (discussion #900 F3) */
     dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;
     return 0;

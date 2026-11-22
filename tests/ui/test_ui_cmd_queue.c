@@ -26355,6 +26355,172 @@ test_channel_map_reload_expected_path(void) {
     return rc;
 }
 
+/* A DSD_APP_CMD_DMR_CHANNEL_SET against Tier III channel @p lpcn as the session holds it now (discussion #900 F3). */
+static dsd_app_dmr_channel_set_payload
+dmr_channel_edit(const dsd_state* state, uint16_t lpcn, uint8_t op, int64_t hz) {
+    dsd_app_dmr_channel_set_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.session_seq = dsd_app_command_session_generation();
+    p.request = dsd_app_dmr_channel_request_next();
+    p.generation = dmr_t3_chan_generation(state);
+    p.hz = hz;
+    p.expected_hz = state->trunk_chan_map[lpcn];
+    p.lpcn = lpcn;
+    p.op = op;
+    p.expected_origin = (uint8_t)dmr_t3_chan_origin(state, lpcn);
+    return p;
+}
+
+/* Submit @p p, drain it, and return the code of its retained result (-100 when it got none). */
+static int32_t
+dmr_channel_edit_result(dsd_opts* opts, dsd_state* state, const dsd_app_dmr_channel_set_payload* p, size_t size) {
+    dsd_app_dmr_channel_set_result before;
+    (void)dsd_app_dmr_channel_set_result_get(&before);
+    if (dsd_app_command_submit(DSD_APP_CMD_DMR_CHANNEL_SET, p, size) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return -100;
+    }
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_dmr_channel_set_result out[4];
+    const int n = dsd_app_dmr_channel_set_results_since(before.sequence, out, 4);
+    if (n != 1 || out[0].request != p->request || out[0].lpcn != p->lpcn || out[0].op != p->op) {
+        return -100;
+    }
+    return out[0].code;
+}
+
+/* The channel-set command: applied against the row the editor read, refused when the session, the network or the row
+   moved on, under a trunk scan or for a payload it cannot take, and every request answered through its result. */
+static int
+test_dmr_channel_set_command(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_map", "channel,freq\n12,451012500\n13,451025000\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(&state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("channel set applied", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |=
+        expect_true("channel set is live and the user's",
+                    state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_USER);
+    dsd_app_dmr_channel_set_result last;
+    rc |= expect_true("the result carries the channel revision", dsd_app_dmr_channel_set_result_get(&last) == 1
+                                                                     && last.revision == dmr_t3_chan_revision(&state)
+                                                                     && last.session_seq == p.session_seq);
+
+    /* Stale: the row moved on, its origin, the network, the session. Nothing changes. */
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.expected_hz = 451012500;
+    rc |= expect_int("a moved row is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.expected_origin = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    rc |= expect_int("another origin is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.generation++;
+    rc |= expect_int("another network is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.session_seq++;
+    rc |= expect_int("another session is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    rc |= expect_true("stale edits change nothing", state.trunk_chan_map[13] == 451025000L
+                                                        && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_FILE);
+
+    /* Invalid: no such channel or frequency, a short payload. */
+    p = dmr_channel_edit(&state, 4095U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("channel 4095 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_SET, INT64_C(4294967296));
+    rc |= expect_int("a frequency no row holds is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("a short payload is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p - 4U),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+
+    /* Refused under a trunk scan: its targets' channels are read-only. */
+    opts.trunk_scan_enabled = 1;
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("refused under trunk scan", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN);
+    opts.trunk_scan_enabled = 0;
+    rc |= expect_true("the trunk scan refusal changes nothing", state.trunk_chan_map[13] == 451025000L);
+
+    /* A request the stop discards unapplied is answered too. */
+    dsd_app_dmr_channel_set_result before;
+    (void)dsd_app_dmr_channel_set_result_get(&before);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("dropped edit queued", dsd_app_command_dmr_channel_set(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_frontend_runtime_stop();
+    dsd_app_dmr_channel_set_result dropped[2];
+    rc |= expect_true("the stop answers the queued edit DROPPED",
+                      dsd_app_dmr_channel_set_results_since(before.sequence, dropped, 2) == 1
+                          && dropped[0].request == p.request && dropped[0].code == DSD_APP_DMR_CHANNEL_SET_DROPPED);
+    rc |= expect_int("a NULL edit is rejected", dsd_app_command_dmr_channel_set(NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
+    freeState(&state);
+    (void)remove(map);
+    return rc;
+}
+
+/* Review Focus 4: the user's channels survive the saved map's reload (what an RR refresh posts after writing the file)
+   and its clear, through the real import services; RESTORE then returns the reloaded file's row. */
+static int
+test_dmr_channel_overlay_reapplied_after_reload(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_reload", "channel,freq\n12,451012500\n13,451025000\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("reload map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(&state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("reload: channel 12 set", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("reload: channel 13 hidden", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+
+    const char* refreshed = "channel,freq\n12,451012600\n13,451025100\n14,451037500\n";
+    rc |= write_file_bytes(map, refreshed, strlen(refreshed));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, map);
+    rc |= expect_int("overlay map reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |=
+        expect_true("the reload keeps channel 12 the user's",
+                    state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_USER);
+    rc |= expect_true("the reload keeps channel 13 hidden",
+                      state.trunk_chan_map[13] == 0L && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_USER);
+    rc |= expect_true("the reload's new row loads", state.trunk_chan_map[14] == 451037500L);
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("reload: channel 13 restored", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |=
+        expect_true("restore returns the reloaded file's row",
+                    state.trunk_chan_map[13] == 451025100L && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_FILE);
+
+    rc |= expect_int("overlay map clear queued", post_empty(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("overlay map clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("the clear keeps the user's channel",
+                      state.trunk_chan_map[12] == 451137500L && state.trunk_chan_map[13] == 0L
+                          && state.trunk_chan_map[14] == 0L && dmr_t3_overlay_count(&state) == 1U);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(map);
+    return rc;
+}
+
 /*
  * Issue #900: a map whose only usable rows are positional (a Tier III control frequency under key 0, which names no
  * channel) is a hunt list and loads; a file of zero-frequency placeholders has nothing to load and leaves the live map.
@@ -32215,6 +32381,8 @@ main(void) {
     rc |= test_group_reload_expected_path();
     rc |= test_group_reload_under_a_row_list();
     rc |= test_channel_map_reload_expected_path();
+    rc |= test_dmr_channel_set_command();
+    rc |= test_dmr_channel_overlay_reapplied_after_reload();
     rc |= test_channel_map_import_positional_rows();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     for (int scenario = GROUP_RELEASE_IMPORT; scenario <= GROUP_RELEASE_RETURN_FAILS; scenario++) {

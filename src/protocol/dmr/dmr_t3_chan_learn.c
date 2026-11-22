@@ -190,7 +190,7 @@ dmr_t3_chan_origin_is_estimate(unsigned origin) {
 }
 
 /* An anchor appeared, moved or went: every estimate goes, and the fill runs again from the anchors left. */
-static void
+void
 dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
     if (dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_estimate)) {
         ext->revision++;

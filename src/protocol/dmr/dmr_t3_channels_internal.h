@@ -44,6 +44,8 @@ typedef struct {
     uint8_t syscode_valid;
     /* The channels granted without a frequency (dmr_t3_missing_note_grant()). */
     dmr_t3_missing_ledger missing;
+    /* The user's channels over the map (dmr_t3_overlay.c). */
+    dmr_t3_overlay overlay;
 } dmr_ext_t;
 
 /* The extension, or NULL when nothing allocated it yet. */
@@ -56,9 +58,22 @@ dmr_ext_t* dmr_ext_get_or_create(dsd_state* state);
  * the writer takes and a network change drops. */
 int dmr_t3_chan_origin_is_ota(unsigned origin);
 
-/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns
- * whether any row went. */
+/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins, and the
+ * overlay bases of that origin (RESTORE then returns no frequency). Returns whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
+
+/* An anchor of the heuristic fill appeared, moved or went: every estimate goes and the fill runs again (with
+ * dsd_opts::dmr_t3_heuristic_fill on; @p opts may be NULL). */
+void dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext);
+
+/* Whether @p lpcn is hidden by the user (an overlay HIDE entry). */
+int dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn);
+
+/* Keep the live row as overlay entry @p l's base (its frequency, origin and trust); called with the row not overlaid. */
+void dmr_t3_overlay_take_base(const dsd_state* state, dmr_ext_t* ext, uint16_t l);
+
+/* Lay overlay entry @p l over the live row: the user's frequency, or none for a hidden channel, as USER, trust 0. */
+void dmr_t3_overlay_write_live(dsd_state* state, dmr_ext_t* ext, uint16_t l);
 
 /* Row @p lpcn gained a frequency: it leaves the missing-channel ledger (the one-row dmr_t3_missing_reconcile()). */
 void dmr_t3_missing_forget(dmr_ext_t* ext, uint16_t lpcn);

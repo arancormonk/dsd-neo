@@ -10331,6 +10331,29 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_test_support
     )
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
+    # --dmr-chan-overrides lies over the -C map before the first frame (discussion #900 F3).
+    add_executable(
+        dsd-neo_test_engine_dmr_chan_overrides
+        engine/test_engine_dmr_chan_overrides.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_DMR_CHAN_OVERRIDES
+        COMMAND dsd-neo_test_engine_dmr_chan_overrides
+    )
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
@@ -10501,10 +10524,12 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
-    # The DMR channel provenance a target switch saves and restores, and its writer, which a test seeds through
-    # (discussion #900).
+    # The DMR channel provenance a target switch saves and restores, and its writers (the air's and the user's), which
+    # a test seeds through (discussion #900).
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_overlay.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/dmr_chan_overrides_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).

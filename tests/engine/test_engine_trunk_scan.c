@@ -2269,6 +2269,78 @@ test_dmr_missing_ledger_per_target(void) {
     return test_rc;
 }
 
+/* Whether the live state shows LPCN @p lpcn as the user's entry @p op with frequency @p hz (0 for HIDE). */
+static int
+dmr_overlay_shows(const dsd_state* state, uint16_t lpcn, int op, long hz) {
+    long user_hz = -1;
+    return dmr_t3_overlay_get(state, lpcn, &user_hz, NULL) == op && user_hz == hz && state->trunk_chan_map[lpcn] == hz
+           && dmr_t3_chan_origin(state, lpcn) == DMR_CHAN_ORIGIN_USER;
+}
+
+/* Review Focus 3 (discussion #900 F3): two DMR targets that share LPCN numbers each keep their own user's channels: A's
+   set 12 and hidden 13 and B's set 12 go and come back with their target and never show on the other. */
+static int
+test_dmr_overlay_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* A live edit is refused under the scan; the targets' entries are seeded unchecked, as a start-up file would. */
+    if (dmr_t3_overlay_apply(&opts, &state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
+        != DMR_T3_SET_TRUNK_SCAN) {
+        DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, &state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, &state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_overlay_count(&state) != 0U
+        || state.trunk_chan_map[12] != 0 || dmr_t3_chan_origin(&state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, &state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dmr_t3_overlay_count(&state) != 2U
+        || !dmr_overlay_shows(&state, 12U, DMR_T3_OVERLAY_SET, 452137500L)
+        || !dmr_overlay_shows(&state, 13U, DMR_T3_OVERLAY_HIDE, 0L)) {
+        DSD_FPRINTF(stderr, "dmr overlay: target A's channels not restored\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_overlay_count(&state) != 1U
+        || !dmr_overlay_shows(&state, 12U, DMR_T3_OVERLAY_SET, 453137500L)) {
+        DSD_FPRINTF(stderr, "dmr overlay: target B's channel not restored\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Fill every registration owner slot with values derived from @p tag (a distinct table per target). */
 static void
 seed_aff_owners(dsd_state* state, uint32_t tag) {
@@ -27419,6 +27491,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
     rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_overlay_per_target);
     rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);

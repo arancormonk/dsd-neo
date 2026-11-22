@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -40,6 +41,7 @@
 #include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
@@ -1471,6 +1473,7 @@ test_save_restore_keeps_effective_revision(void) {
 
 /* ---- Missing-channel ledger (F1) ---- */
 
+static int g_override_warnings;
 static int g_missing_notices;
 static char g_missing_notice[256];
 static int g_missing_summaries;
@@ -1481,6 +1484,10 @@ missing_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)level;
     (void)ctx;
     if (text == NULL) {
+        return;
+    }
+    if (strncmp(text, "WARNING: DMR channel overrides file ", 36) == 0) {
+        g_override_warnings++;
         return;
     }
     if (strncmp(text, "NOTICE: DMR Tier III: channel ", 30) == 0) {
@@ -1746,6 +1753,320 @@ test_missing_network_change_resets(void) {
     assert(l->revision > rev2 && l->revision > a.missing.revision);
 }
 
+/* ---- The user's channels (F3 overlay) ---- */
+
+/* An edit checked against the row as it is now (what an editor that just read it sends). */
+static dmr_t3_set_result
+overlay_edit(uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
+    return dmr_t3_overlay_apply(&g_opts, &g_state, lpcn, op, hz, g_state.trunk_chan_map[lpcn],
+                                (uint8_t)dmr_t3_chan_origin(&g_state, lpcn), dmr_t3_chan_generation(&g_state), 1);
+}
+
+static void
+test_overlay_set_hide_restore_live(void) {
+    reset();
+    g_state.trunk_chan_map[12] = 451012500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    uint32_t rev = dmr_t3_chan_revision(&g_state);
+
+    /* SET: the user's frequency is live and the user's; the file's row is kept for RESTORE. */
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    long hz = 0;
+    long base_hz = 0;
+    assert(dmr_t3_overlay_get(&g_state, 12U, &hz, &base_hz) == DMR_T3_OVERLAY_SET);
+    assert(hz == 451137500L && base_hz == 451012500L && dmr_t3_overlay_count(&g_state) == 1U);
+    assert(dmr_t3_chan_revision(&g_state) != rev);
+    /* Nothing over the air replaces it. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451250000L, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.trunk_chan_map[12] == 451137500L);
+
+    /* HIDE: no frequency live, still the user's (listed, never filled over the air), the same base. */
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 0L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_overlay_get(&g_state, 12U, &hz, &base_hz) == DMR_T3_OVERLAY_HIDE && hz == 0L);
+    assert(base_hz == 451012500L && dmr_t3_overlay_count(&g_state) == 1U);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451250000L, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.trunk_chan_map[12] == 0L);
+
+    /* RESTORE: the file's row comes back as the file's. */
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 451012500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_FILE);
+    assert(dmr_t3_overlay_get(&g_state, 12U, NULL, NULL) == 0 && dmr_t3_overlay_count(&g_state) == 0U);
+
+    /* A channel with no row: SET adds it, RESTORE empties it again, the trust byte back too. */
+    g_state.dmr_lcn_trust[20] = 0U;
+    assert(overlay_edit(20U, DMR_T3_OVERLAY_SET, 451250000L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[20] == 451250000L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_USER);
+    assert(overlay_edit(20U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[20] == 0L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_NONE);
+
+    /* RESTORE with no entry and a SET to the same frequency change nothing. */
+    rev = dmr_t3_chan_revision(&g_state);
+    assert(overlay_edit(21U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(overlay_edit(22U, DMR_T3_OVERLAY_SET, 451262500L) == DMR_T3_SET_OK);
+    const uint32_t rev2 = dmr_t3_chan_revision(&g_state);
+    assert(rev2 != rev);
+    assert(overlay_edit(22U, DMR_T3_OVERLAY_SET, 451262500L) == DMR_T3_SET_OK);
+    assert(dmr_t3_chan_revision(&g_state) == rev2);
+
+    /* Not channels, operations or frequencies. */
+    assert(overlay_edit(0U, DMR_T3_OVERLAY_SET, 451000000L) == DMR_T3_SET_INVALID);
+    assert(overlay_edit(4095U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_INVALID);
+    assert(overlay_edit(23U, DMR_T3_OVERLAY_SET, 0L) == DMR_T3_SET_INVALID);
+    assert(overlay_edit(23U, DMR_T3_OVERLAY_SET, 99999L) == DMR_T3_SET_INVALID);
+    assert(overlay_edit(23U, (dmr_t3_overlay_op)0, 451000000L) == DMR_T3_SET_INVALID);
+    assert(overlay_edit(23U, (dmr_t3_overlay_op)4, 451000000L) == DMR_T3_SET_INVALID);
+    assert(g_state.trunk_chan_map[23] == 0L && dmr_t3_chan_revision(&g_state) == rev2);
+}
+
+/* An edit made against a row that changed since the editor read it is refused and changes nothing. */
+/* An entry over a row the air taught is DMR's own write: no takeover is counted, and RESTORE gives the row back to the
+   air (its dsd_state::dmr_lcn_ota bit), so a network change drops it again. A row another writer took from the air
+   reads FILE, and RESTORE keeps it FILE, which a network change leaves. */
+static void
+test_overlay_restore_gives_the_air_its_row(void) {
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 0;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 30U, 451300000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint8_t trust = g_state.dmr_lcn_trust[30];
+    const uint32_t takeovers = g_state.dmr_lcn_ota_seq;
+    assert(overlay_edit(30U, DMR_T3_OVERLAY_SET, 451312500L) == DMR_T3_SET_OK);
+    assert(g_state.dmr_lcn_ota_seq == takeovers && !dsd_state_dmr_lcn_ota_get(&g_state, 30U));
+    assert(dmr_t3_chan_origin(&g_state, 30U) == DMR_CHAN_ORIGIN_USER);
+    assert(overlay_edit(30U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[30] == 451300000L && dmr_t3_chan_origin(&g_state, 30U) == DMR_CHAN_ORIGIN_SITE);
+    assert(dsd_state_dmr_lcn_ota_get(&g_state, 30U) && g_state.dmr_lcn_trust[30] == trust);
+    assert(g_state.dmr_lcn_ota_seq == takeovers);
+
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 31U, 451400000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dsd_state_set_trunk_chan_freq(&g_state, 31U, 451400000L); /* another writer takes it at its frequency */
+    assert(dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_FILE);
+    assert(overlay_edit(31U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(overlay_edit(31U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[31] == 451400000L && dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_FILE);
+
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    assert(g_state.trunk_chan_map[30] == 0L && dmr_t3_chan_origin(&g_state, 30U) == DMR_CHAN_ORIGIN_NONE);
+    assert(g_state.trunk_chan_map[31] == 451400000L && dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_FILE);
+}
+
+static void
+test_overlay_stale_expectations_refused(void) {
+    reset();
+    g_state.trunk_chan_map[12] = 451012500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    const uint32_t gen = dmr_t3_chan_generation(&g_state);
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    const uint8_t file = (uint8_t)DMR_CHAN_ORIGIN_FILE;
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_SET, 451137500L, 451025000L, file, gen, 1)
+           == DMR_T3_SET_STALE);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_SET, 451137500L, 451012500L,
+                                (uint8_t)DMR_CHAN_ORIGIN_SITE, gen, 1)
+           == DMR_T3_SET_STALE);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_SET, 451137500L, 451012500L, file, gen + 1U, 1)
+           == DMR_T3_SET_STALE);
+    assert(g_state.trunk_chan_map[12] == 451012500L && dmr_t3_overlay_count(&g_state) == 0U);
+    assert(dmr_t3_chan_revision(&g_state) == rev);
+
+    /* A network change moves the generation: what the editor read on the old network is stale. */
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_HIDE, 0L, 451012500L, file, gen, 1)
+           == DMR_T3_SET_STALE);
+    assert(g_state.trunk_chan_map[12] == 451012500L);
+    /* The expectations hold: applied. Unchecked (a start-up file): applied whatever they say. */
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_HIDE, 0L, 451012500L, file,
+                                dmr_t3_chan_generation(&g_state), 1)
+           == DMR_T3_SET_OK);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 13U, DMR_T3_OVERLAY_SET, 451150000L, 7L, 9U, 99U, 0)
+           == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 0L && g_state.trunk_chan_map[13] == 451150000L);
+}
+
+static void
+test_overlay_refused_under_trunk_scan(void) {
+    reset();
+    g_opts.trunk_scan_enabled = 1;
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_TRUNK_SCAN);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_TRUNK_SCAN);
+    assert(g_state.trunk_chan_map[12] == 0L && dmr_t3_overlay_count(&g_state) == 0U);
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, "never-opened.csv") == -1);
+}
+
+/* Review Focus 4: a reload of the saved map (an RR refresh writes the file and reloads it) lays the overlay over the
+   new rows, the new file's row becomes the base, a clear keeps the overlay over the empty map. */
+static void
+test_overlay_reapplied_after_reload(void) {
+    reset();
+    g_state.trunk_chan_map[12] = 451012500L;
+    g_state.trunk_chan_map[13] = 451025000L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+
+    /* The reload replaces the map wholesale (chan_map_adopt()), then notes it and lays the overlay again. */
+    DSD_MEMSET(g_state.trunk_chan_map, 0, sizeof g_state.trunk_chan_map);
+    g_state.trunk_chan_map[12] = 451012600L;
+    g_state.trunk_chan_map[13] = 451025100L;
+    g_state.trunk_chan_map[14] = 451037500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    dmr_t3_overlay_reapply(&g_state);
+    long base_hz = 0;
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(g_state.trunk_chan_map[13] == 0L && dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_origin(&g_state, 14U) == DMR_CHAN_ORIGIN_FILE);
+    assert(dmr_t3_overlay_get(&g_state, 12U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 451012600L);
+    /* A second re-apply with nothing replaced keeps the bases. */
+    dmr_t3_overlay_reapply(&g_state);
+    assert(dmr_t3_overlay_get(&g_state, 13U, NULL, &base_hz) == DMR_T3_OVERLAY_HIDE && base_hz == 451025100L);
+
+    /* RESTORE returns the new file's row. */
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[13] == 451025100L && dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_FILE);
+
+    /* A clear empties the base; the user's row stays. */
+    DSD_MEMSET(g_state.trunk_chan_map, 0, sizeof g_state.trunk_chan_map);
+    dmr_t3_chan_note_map_cleared(&g_state);
+    dmr_t3_overlay_reapply(&g_state);
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_overlay_get(&g_state, 12U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 0L);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 0L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_NONE);
+}
+
+/* A network change drops what the air taught, from the overlay's bases too; the user's rows stay. */
+static void
+test_overlay_network_change_keeps_user_rows(void) {
+    reset();
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    long base_hz = 1;
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_USER && dmr_t3_overlay_count(&g_state) == 2U);
+    assert(dmr_t3_overlay_get(&g_state, 12U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 0L);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 0L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_NONE);
+    assert(g_state.dmr_lcn_trust[12] == 0U);
+}
+
+/* Review Focus 3: a trunk-scan target's overlay goes and comes back with it, never shown on another target. */
+static void
+test_overlay_save_restore_per_target(void) {
+    reset();
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    static dmr_t3_chan_target_snapshot a;
+    static dmr_t3_chan_target_snapshot b;
+    dmr_t3_chan_save(&g_state, &a);
+    DSD_MEMSET(&b, 0, sizeof b);
+    dmr_t3_chan_restore(&g_state, &b);
+    assert(dmr_t3_overlay_count(&g_state) == 0U && dmr_t3_overlay_get(&g_state, 12U, NULL, NULL) == 0);
+    dmr_t3_chan_restore(&g_state, &a);
+    long hz = 0;
+    assert(dmr_t3_overlay_count(&g_state) == 1U && dmr_t3_overlay_get(&g_state, 12U, &hz, NULL) == DMR_T3_OVERLAY_SET);
+    assert(hz == 451137500L);
+}
+
+/* Review Focus 5: hiding the channel of the call being followed leaves the call on its carrier; the next grant naming
+   the channel is not followed, and it is no missing channel either. */
+static void
+test_hide_followed_channel_keeps_call(void) {
+    reset_missing();
+    g_state.trunk_chan_map[12] = 451012500L;
+    g_state.trunk_chan_map[13] = 451025000L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    dmr_sm_init(&g_opts, &g_state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_request});
+    send_grant(49U, 12U, 0U);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451012500L);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_TUNED);
+
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451012500L);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_TUNED);
+
+    /* Back on the control channel: a grant for 12 is not followed and not recorded; 13's still is. */
+    g_opts.trunk_is_tuned = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+    dmr_sm_init(&g_opts, &g_state);
+    send_grant(49U, 12U, 0U);
+    assert(g_opts.trunk_is_tuned == 0 && g_state.trunk_vc_freq[0] == 0L);
+    assert(dmr_t3_missing_count(&g_state) == 0U && g_missing_notices == 0);
+    send_grant(49U, 13U, 0U);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451025000L);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A hidden channel leaves the ledger and stays out of it; restored, its grants are recorded again (one notice). */
+static void
+test_overlay_hidden_channel_leaves_ledger(void) {
+    reset_missing();
+    send_grant(49U, 40U, 0U);
+    send_grant(49U, 41U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 2U && g_missing_notices == 2);
+    assert(overlay_edit(40U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(overlay_edit(41U, DMR_T3_OVERLAY_SET, 451512500L) == DMR_T3_SET_OK);
+    assert(dmr_t3_missing_count(&g_state) == 0U && missing_copy()->detail_count == 0U);
+    send_grant(49U, 40U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+    assert(overlay_edit(40U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    send_grant(49U, 40U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U && g_missing_notices == 2);
+}
+
+/* Write @p text to a new temporary file named into @p path. */
+static void
+write_temp_csv(char* path, size_t size, const char* text) {
+    const int fd = dsd_test_mkstemp(path, size, "dmr_chan_overrides");
+    assert(fd >= 0);
+    const size_t len = strlen(text);
+    assert(dsd_write(fd, text, len) == (ssize_t)len);
+    assert(dsd_close(fd) == 0);
+}
+
+/* The --dmr-chan-overrides file: a header, set and hide rows, and every malformed row skipped with a warning. */
+static void
+test_overlay_load_csv_rows(void) {
+    reset_missing();
+    g_state.trunk_chan_map[12] = 451012500L;
+    g_state.trunk_chan_map[13] = 451025000L;
+    char path[DSD_TEST_PATH_MAX];
+    write_temp_csv(path, sizeof path,
+                   "lpcn,frequency_hz\r\n"
+                   "12,451137500\r\n"
+                   "13,0\n"
+                   "\n"
+                   " 20 , 451250000 \n"
+                   "0,451000000\n"
+                   "4095,451000000\n"
+                   "21,99999\n"
+                   "22,-451000000\n"
+                   "23,2147483648\n"
+                   "24,451000000,extra\n"
+                   "25\n"
+                   "0x1A,451000000\n"
+                   "26,451.0125\n"
+                   "lpcn,frequency_hz\n"
+                   "20,451262500\n");
+    g_override_warnings = 0;
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == 4);
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(g_state.trunk_chan_map[13] == 0L && dmr_t3_overlay_get(&g_state, 13U, NULL, NULL) == DMR_T3_OVERLAY_HIDE);
+    assert(g_state.trunk_chan_map[20] == 451262500L); /* given twice: the later row */
+    for (uint16_t l = 21U; l <= 26U; l++) {
+        assert(g_state.trunk_chan_map[l] == 0L && dmr_t3_overlay_get(&g_state, l, NULL, NULL) == 0);
+    }
+    assert(dmr_t3_overlay_count(&g_state) == 3U);
+    /* 0, 4095, 21..25, the hex channel, 26 and the second header: ten skipped, and the repeated 20 reported. */
+    assert(g_override_warnings == 11);
+    (void)remove(path);
+
+    /* No file: nothing applied. */
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == -1);
+    assert(dmr_t3_overlay_count(&g_state) == 3U);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(missing_log_tap, NULL);
@@ -1784,6 +2105,16 @@ main(void) {
     test_synthesized_and_ms_data_56_ignored();
     test_reconcile_clears_only_mapped_bits();
     test_missing_network_change_resets();
+    test_overlay_set_hide_restore_live();
+    test_overlay_restore_gives_the_air_its_row();
+    test_overlay_stale_expectations_refused();
+    test_overlay_refused_under_trunk_scan();
+    test_overlay_reapplied_after_reload();
+    test_overlay_network_change_keeps_user_rows();
+    test_overlay_save_restore_per_target();
+    test_hide_followed_channel_keeps_call();
+    test_overlay_hidden_channel_leaves_ledger();
+    test_overlay_load_csv_rows();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();
     test_chan_freq_user_list_not_appended();

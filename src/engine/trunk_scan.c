@@ -6238,7 +6238,8 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
 
 // Each target carries its own missing-channel ledger and channel map, so the exit summary the
 // engine logs once for a single system becomes one line per target here: an NXDN target with a
-// channel map, and a DMR trunk target named by its id (discussion #900 F1).
+// channel map, and any target whose DMR ledger holds a channel, named by its id (discussion #900 F1;
+// an empty ledger logs nothing).
 static void
 trunk_scan_log_missing_channel_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
     if (!coord || coord->count == 0) {
@@ -6250,10 +6251,7 @@ trunk_scan_log_missing_channel_summaries(dsd_trunk_scan_coord* coord, const dsd_
     }
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-        if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-            dmr_t3_missing_log_summary_for(&rt->snapshot.dmr_chan.missing, rt->target.id);
-            continue;
-        }
+        dmr_t3_missing_log_summary_for(&rt->snapshot.dmr_chan.missing, rt->target.id);
         if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
             continue;
         }

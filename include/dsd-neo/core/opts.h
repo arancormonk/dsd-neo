@@ -516,6 +516,9 @@ struct dsd_opts {
     char rtltcp_hostname[1024];
     char group_in_file[1024];
     char chan_in_file[1024];
+    /* --dmr-chan-overrides (discussion #900 F3): the user's Tier III channels, applied over the channel map on the
+       decoder thread before the first frame (dmr_t3_overlay_load_csv()). No INI key, never saved; "" for none. */
+    char dmr_chan_overrides_file[1024];
     /* --trunk-scan/--trunk-scan-off or [trunk_scan] targets_csv(_N) and lists_off, in list order (issue #697). */
     dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
     int trunk_scan_list_count;

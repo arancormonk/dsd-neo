@@ -6631,11 +6631,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     start states, never a live switch. Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
-  - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
-    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
-    history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
-    completion (the control API, which reports a `result_gap` when more completed than the history held).
+  - Retained results: talkgroup export, decryption, scan list toggle and DMR Tier III channel edit completions are
+    kept as the latest result (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`,
+    `dsd_app_scan_list_result_get()`, `dsd_app_dmr_channel_set_result_get()`) and in a history of the last
+    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`,
+    `dsd_app_dmr_channel_set_results_since()`), for a consumer that must see every completion (the control API, which reports a `result_gap` when more completed than the history held).
     `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
     open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
     sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
@@ -13428,6 +13429,29 @@ Private per-protocol modules worth knowing about:
   and past both sides on a restore. The snapshot saves the revision a reader sees (`dmr_t3_chan_revision()`, the
   takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
   `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+- Tier III "your channels" overlay (`dmr_t3_overlay.c`, the overlay helpers in `dmr_t3_channels.c`,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries lie over the channel map in the
+  same extension (`dmr_t3_overlay`, saved per trunk-scan target with the origins): SET puts the user's frequency in the
+  live row, HIDE empties it (no grant for it is followed, and none is recorded as missing), both as USER with trust 0,
+  which nothing over the air replaces (`dmr_t3_chan_origin()` reads a hidden row as USER); the row they replaced (its
+  frequency, origin and trust) is kept as the entry's base, and RESTORE puts it back. `chan_map_adopt()` and
+  `svc_clear_channel_map()` call `dmr_t3_overlay_reapply()` after the origin notes, so an import, a reload (what an RR
+  refresh posts), an RR apply and a clear take the new row as the base and lay the entry over it again; a row still
+  USER keeps its base, so a second re-apply changes nothing. A network change drops what the air taught from the bases
+  too, and the entries stay. `dmr_t3_overlay_apply()` refuses an unknown channel, operation or frequency (INVALID), a
+  trunk scan (TRUNK_SCAN), and with `check` an edit whose expected row, origin or network generation is not the live
+  one (STALE); an applied edit bumps the revision, reconciles the ledger and redoes the heuristic estimates. A followed
+  call keeps its carrier: an edit takes effect from the next grant. Frontends edit through
+  `DSD_APP_CMD_DMR_CHANNEL_SET` (`src/app_control/dmr_channel_commands.c`): the payload carries the row as the editor
+  read it plus the command session generation (another session is STALE) and a request id from
+  `dsd_app_dmr_channel_request_next()`; every request the queue took gets a retained result
+  `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` plus app-control's
+  `SEARCH` and `DROPPED`, handed back along `apply_cmd()` in `ui_cmd_result_codes`. Not in the control API. At start,
+  `--dmr-chan-overrides <csv>` (`lpcn,frequency_hz`, 0 hides; read by `<dsd-neo/core/dmr_chan_overrides_csv.h>`,
+  bad rows skipped with a warning) is applied unchecked by the engine after the map loads and before the first frame
+  (`import_dmr_chan_overrides_if_needed()`); it cannot be combined with `--trunk-scan` and has no INI key. Tests:
+  `DMR_T3_CHANNELS`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `RUNTIME_CLI_PARSE`,
+  `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the

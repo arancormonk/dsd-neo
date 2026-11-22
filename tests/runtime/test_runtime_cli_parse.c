@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -10200,6 +10201,109 @@ test_src_csv_allowed_with_trunk_scan(void) {
     return test_rc;
 }
 
+/* --dmr-chan-overrides (discussion #900 F3): both spellings keep the path for the decoder, which applies the file over
+   the channel map at start; the parse itself applies nothing. */
+static int
+test_dmr_chan_overrides_long_option_parse(void) {
+    int test_rc = 0;
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents("lpcn,frequency_hz\n12,451137500\n", csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--dmr-chan-overrides";
+        char arg_eq[1200];
+        DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--dmr-chan-overrides=%s", csv_path);
+        char* argv_pair[] = {arg0, arg1, csv_path, NULL};
+        char* argv_eq[] = {arg0, arg_eq, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(shape == 0 ? 3 : 2, shape == 0 ? argv_pair : argv_eq, opts, state,
+                                      &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, csv_path) != 0
+            || dmr_t3_overlay_count(state) != 0U || state->trunk_chan_map[12] != 0) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides shape %d: rc=%d exit=%d file=\"%s\"\n", shape, rc, exit_rc,
+                        opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* A missing file, a missing value and a trunk scan (in either order) are refused at parse. */
+static int
+test_dmr_chan_overrides_refusals(void) {
+    char csv_path[1024];
+    if (test_create_temp_csv_with_contents("12,451137500\n", csv_path, sizeof csv_path) != 0) {
+        return 1;
+    }
+    char arg_eq[1200];
+    DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--dmr-chan-overrides=%s", csv_path);
+    char arg0[] = "dsd-neo";
+    char arg_missing[] = "--dmr-chan-overrides=dsdneo_missing_overrides_file.csv";
+    char arg_bare[] = "--dmr-chan-overrides";
+    char arg_scan[] = "--trunk-scan=targets.csv";
+    char* argv_missing[] = {arg0, arg_missing, NULL};
+    char* argv_bare[] = {arg0, arg_bare, NULL};
+    char* argv_scan_a[] = {arg0, arg_scan, arg_eq, NULL};
+    char* argv_scan_b[] = {arg0, arg_eq, arg_scan, NULL};
+
+    struct {
+        char** argv;
+        int argc;
+        const char* name;
+    } cases[] = {
+        {argv_missing, 2, "a missing file"},
+        {argv_bare, 2, "no value"},
+        {argv_scan_a, 3, "after --trunk-scan"},
+        {argv_scan_b, 3, "before --trunk-scan"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            (void)remove(csv_path);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected a refusal, rc=%d exit=%d\n", cases[i].name, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    (void)remove(csv_path);
+    return test_rc;
+}
+
 static int
 test_p25_bandplan_manual_identity(void) {
     const char* contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
@@ -13382,6 +13486,8 @@ main(void) {
     rc |= test_src_csv_long_option_parse();
     rc |= test_src_csv_missing_file_returns_error();
     rc |= test_src_csv_missing_value_returns_error();
+    rc |= test_dmr_chan_overrides_long_option_parse();
+    rc |= test_dmr_chan_overrides_refusals();
     rc |= test_src_csv_allowed_with_trunk_scan();
     rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();
