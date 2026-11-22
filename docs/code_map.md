@@ -16044,11 +16044,13 @@ Qt Quick frontend (`src/ui/qt`):
   natural sizes and the labels' heights, never the title's laid-out width, so nothing feeds back; `ScanListCard.qml`
   uses the same two. By default More is at the top, Play under it at `moreHeight + 6`, the site button left of Play
   and centred on it, and the label column is centred 10 px above the middle of the actions' box,
-  `[0, actionsBottom + cardPadding]` (122 px at normal text), never above the top padding. Where that column leaves
-  the title less than max(96, 35% of the card) (B1: a one-site card with Play at 320 dp and text 2.0), the labels
-  start at the top padding and the actions go on a right-aligned row under them, More at the right edge (`stacked`);
-  where that row is wider than the card, Play and More keep it and the site button takes a second right-aligned row
-  (`wrapped`). The refresh hint takes the full width 8 px below the lower of labels and actions; the card ends
+  `[0, actionsBottom + cardPadding]` (122 px at normal text), never above the top padding. In both views the site
+  button is drawn only while the title keeps max(96, 35% of the card) beside it (`siteDrawn`, from natural widths:
+  B1, a one-site card with Play at 320 dp left the title 72 px at text 2.0); otherwise the source line leads with
+  `N sites · ` and the chooser is on More → Sites and the long press. Play and More keep their places, so the card's
+  height never follows the button: 122 px by default at normal text at any width (a one-site group's button is
+  drawn at 411 dp at normal text, left out at 320 and 360). The refresh hint takes the full width 8 px below the lower
+  of labels and actions; the card ends
   `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as before, and grows at large
   text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being set), not
   Play's `visible`, so a hidden card's site button stays clear of Play.
@@ -16059,9 +16061,9 @@ Qt Quick frontend (`src/ui/qt`):
   are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
   they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
   card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site
-  button is drawn only while the title keeps max(96, 35% of the card) beside it (`siteDrawn`); otherwise the
-  supporting line names the count, and it reads [the distance, in Nearest order] · [`N sites`, while the site button
-  is not drawn] · `Util.systemMeta()`, so cards that share a title still differ by endpoint, file or frequency. The
+  button follows the same `siteDrawn` rule against compact's row (site button, Play, More), and the supporting line
+  reads [the distance, in Nearest order] · [`N sites`, while the site button is not drawn] · `Util.systemMeta()`, so
+  cards that share a title still differ by endpoint, file or frequency. The
   site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
   site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
   also still offers it for 2+ sibling rows). Play and More alone leave the title its minimum on any card 248 px wide

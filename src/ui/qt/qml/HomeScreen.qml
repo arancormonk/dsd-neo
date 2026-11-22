@@ -1345,11 +1345,12 @@ Item {
                             }).join(" · ")
                             readonly property string siteCountText: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
                             readonly property string sourceText: Util.systemMeta(entry)
-                            // The line under the title. Compact: led by the distance in
-                            // Nearest order, then the site count while the site button is
-                            // not drawn, so cards that share a title still differ by their
-                            // endpoint, file or frequency.
-                            readonly property string supportingText: !compact ? sourceText : [distanceText, hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
+                            // The line under the title: the site count while the site button
+                            // is not drawn (either view), then the source, so cards that share
+                            // a title still differ by their endpoint, file or frequency.
+                            // Compact leads with the distance in Nearest order (the full card
+                            // has it on its place line).
+                            readonly property string supportingText: [compact ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
                             // heardTick forces the minute-by-minute refresh.
@@ -1363,8 +1364,9 @@ Item {
                             width: parent.width
                             height: fullHeight
 
-                            // Issue #901 (B1): where the actions go across the card, from
-                            // the controls' natural widths only (Util.listenCardActions()).
+                            // Issue #901 (B1): where the actions go across the card and
+                            // whether the site button is drawn, from the controls' natural
+                            // widths only (Util.listenCardActions()).
                             readonly property var actionPlan: Util.listenCardActions({width: width, padding: Theme.cardPadding,
                                 compact: compact, hasSites: hasSites, siteWidth: siteButton.implicitWidth, playShown: playShown,
                                 playWidth: play.implicitWidth, moreWidth: manageButton.implicitWidth})
@@ -1390,8 +1392,7 @@ Item {
                                 // Default: centred 10 px above the middle of the actions'
                                 // box (the actions plus the bottom padding, 122 px at
                                 // normal text), so they sit where they always have, never
-                                // above the top padding; from the top padding with the
-                                // actions under them. Compact: centred on the title row.
+                                // above the top padding. Compact: centred on the title row.
                                 y: card.rowPlan.labelsY
                                 spacing: 4
 
@@ -1511,9 +1512,9 @@ Item {
                             OutlineButton {
                                 id: siteButton
                                 objectName: "homeSiteChooserButton"
-                                // Issue #901: compact draws it only while the title keeps its
-                                // minimum beside it; the supporting line then leads with the
-                                // count and More offers Sites.
+                                // Issue #901: drawn only while the title keeps its minimum
+                                // beside it, in either view; the supporting line then leads
+                                // with the count and More offers Sites.
                                 readonly property bool shown: card.hasSites && card.actionPlan.siteDrawn
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
                                 // B11: unnamed while covered or hidden, as while held.

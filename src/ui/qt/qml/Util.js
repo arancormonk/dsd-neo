@@ -563,46 +563,38 @@ function systemMeta(sys) {
 // though Play's place is kept while it is hidden). Only these inputs decide,
 // never the title's laid-out width, so nothing it returns can feed back.
 //
-// The default card has More over Play and the site button left of Play
-// (`column`); when that leaves the title less than max(96, 35 % of the card),
-// the actions go on a row of their own under the labels (`stacked`), and when
-// the controls alone are wider than the card, the site button takes a second
-// action row (`wrapped`). The compact card is always one row: site button,
-// Play and More on the title's line, the site button drawn only while the
-// title keeps its minimum beside it (`siteDrawn`; the card then names the
-// count in its supporting line and its More menu offers Sites). Rows are
-// right-aligned, More at the right edge.
+// The default card has More over Play at the right and the site button left
+// of Play; the compact card is one row, site button, Play and More on the
+// title's line, More at the right edge. In both, the site button is drawn
+// only while the title keeps max(96, 35 % of the card) beside it
+// (`siteDrawn`); otherwise the card names the count in its supporting line
+// and its More menu (and long press) offer Sites. The card's height never
+// follows it: 122 px by default and 68 compact at normal text.
 function listenCardActions(s) {
     var gap = 8
     var labelGap = 12
     var inner = Math.max(0, s.width - 2 * s.padding)
     var minimum = Math.max(96, 0.35 * s.width)
     var siteWidth = Math.min(s.siteWidth, inner)
-    var tail = (s.playShown ? s.playWidth + gap : 0) + s.moreWidth
-    var siteDrawn = s.hasSites && (!s.compact || inner - (siteWidth + gap + tail) - labelGap >= minimum)
-    var rowWidth = (siteDrawn ? siteWidth + gap : 0) + tail
-    var column = s.hasSites ? (s.playShown ? s.playWidth + gap : 0) + siteWidth : s.playWidth
-    var stacked = !s.compact && inner - column - labelGap < minimum
-    var wrapped = stacked && rowWidth > inner + 0.5
-    var out = {siteDrawn: siteDrawn, stacked: stacked, wrapped: wrapped, minimum: minimum, siteWidth: siteWidth,
-        labelsWidth: Math.max(0, s.compact ? inner - rowWidth - labelGap : stacked ? inner : inner - column - labelGap)}
-    placeListenCardActions(s, out, gap)
-    return out
-}
-
-// listenCardActions()' x of each control in @a out: More centred over Play
-// at the right in the default column, else a right-aligned row.
-function placeListenCardActions(s, out, gap) {
+    var playPart = s.playShown ? s.playWidth + gap : 0
+    // Beside the labels with the site button, and without it (the default
+    // column keeps Play's width, as Play's place is kept).
+    var withSite = s.compact ? siteWidth + gap + playPart + s.moreWidth : playPart + siteWidth
+    var without = s.compact ? playPart + s.moreWidth : s.playWidth
+    var siteDrawn = s.hasSites && inner - withSite - labelGap >= minimum
+    var out = {siteDrawn: siteDrawn, minimum: minimum, siteWidth: siteWidth,
+        labelsWidth: Math.max(0, inner - (siteDrawn ? withSite : without) - labelGap)}
     var right = s.width - s.padding
-    if (!s.compact && !out.stacked) {
+    if (!s.compact) {
         out.playX = right - s.playWidth
         out.moreX = out.playX + (s.playWidth - s.moreWidth) / 2
-        out.siteX = (s.playShown ? out.playX - gap : right) - out.siteWidth
-        return
+        out.siteX = (s.playShown ? out.playX - gap : right) - siteWidth
+    } else {
+        out.moreX = right - s.moreWidth
+        out.playX = out.moreX - gap - s.playWidth
+        out.siteX = (s.playShown ? out.playX : out.moreX) - gap - siteWidth
     }
-    out.moreX = right - s.moreWidth
-    out.playX = out.moreX - gap - s.playWidth
-    out.siteX = out.wrapped ? right - out.siteWidth : (s.playShown ? out.playX : out.moreX) - gap - out.siteWidth
+    return out
 }
 
 // Issue #901: the same card's rows, down it, from listenCardActions()'
@@ -615,12 +607,10 @@ function placeListenCardActions(s, out, gap) {
 //
 // Default: More at the top, Play under it, the site button centred on Play,
 // and the labels centred 10 px above the middle of that box (122 px at
-// normal text); stacked, the labels start at the top padding and the action
-// rows follow them. Compact: 12 px of padding, the actions centred on a head
-// as tall as the two lines plus that padding, at least Play plus 8 above and
+// normal text). Compact: 12 px of padding, the actions centred on a head as
+// tall as the two lines plus that padding, at least Play plus 8 above and
 // below; a receiver line under the two lines grows the card.
 function listenCardRows(a, s) {
-    var gap = 8
     var out = {}
     if (s.compact) {
         var head = Math.max(s.headLines + 24, s.playHeight + 16)
@@ -635,21 +625,11 @@ function listenCardRows(a, s) {
         return out
     }
     out.bottomPadding = s.padding
-    if (!a.stacked) {
-        out.moreY = 0
-        out.playY = s.moreHeight + 6
-        out.siteY = out.playY + (s.playHeight - s.siteHeight) / 2
-        out.actionsBottom = Math.max(s.moreHeight, out.playY + s.playHeight, a.siteDrawn ? out.siteY + s.siteHeight : 0)
-        out.labelsY = Math.max(s.padding, (out.actionsBottom + s.padding - s.labelsHeight) / 2 - 10)
-    } else {
-        out.labelsY = s.padding
-        var top = out.labelsY + s.labelsHeight + gap
-        var rowHeight = Math.max(s.moreHeight, s.playHeight, a.siteDrawn && !a.wrapped ? s.siteHeight : 0)
-        out.moreY = top + (rowHeight - s.moreHeight) / 2
-        out.playY = top + (rowHeight - s.playHeight) / 2
-        out.siteY = a.wrapped ? top + rowHeight + gap : top + (rowHeight - s.siteHeight) / 2
-        out.actionsBottom = a.wrapped && a.siteDrawn ? out.siteY + s.siteHeight : top + rowHeight
-    }
+    out.moreY = 0
+    out.playY = s.moreHeight + 6
+    out.siteY = out.playY + (s.playHeight - s.siteHeight) / 2
+    out.actionsBottom = Math.max(s.moreHeight, out.playY + s.playHeight, a.siteDrawn ? out.siteY + s.siteHeight : 0)
+    out.labelsY = Math.max(s.padding, (out.actionsBottom + s.padding - s.labelsHeight) / 2 - 10)
     out.height = Math.max(out.labelsY + s.labelsHeight, out.actionsBottom) + out.bottomPadding
     return out
 }
