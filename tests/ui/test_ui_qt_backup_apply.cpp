@@ -29,6 +29,7 @@
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
@@ -161,15 +162,28 @@ generated(const QString& name) {
     static const QRegularExpression pattern(QStringLiteral(
         "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"
         "|^dmr_channels/[0-9a-f-]{36}\\.csv$"));
-    return pattern.match(name).hasMatch();
+    // '$' also matches before a final newline: the match must span the whole name.
+    const QRegularExpressionMatch match = pattern.match(name);
+    return match.hasMatch() && match.capturedLength() == name.size();
 }
 
 /** Files under decryption/, scan_lists/ and dmr_channels/ the app never generates, which every apply keeps
- * byte-identical. */
+ * byte-identical. On POSIX that includes a generated name with a newline after it, which a '$' alone would take for
+ * the generated one. */
 const char* const kUnknownBesideGenerated[] = {
-    "scan_lists/notes.txt",   "scan_lists/sub dir/list.csv",  "scan_lists/Not a list.csv",
-    "decryption/stray.wav",   "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
-    "dmr_channels/notes.txt", "dmr_channels/not-a-uuid.csv",
+    "scan_lists/notes.txt",
+    "scan_lists/sub dir/list.csv",
+    "scan_lists/Not a list.csv",
+    "decryption/stray.wav",
+    "decryption/managed/notes.txt",
+    "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+    "dmr_channels/notes.txt",
+    "dmr_channels/not-a-uuid.csv",
+#ifndef _WIN32
+    "dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e70.csv\n",
+    "scan_lists/newline.csv\n",
+    "decryption/managed/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e70.hex.csv\n",
+#endif
 };
 
 QString

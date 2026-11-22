@@ -1826,14 +1826,25 @@ Item {
                 height: Math.max(48, siteLabel.implicitHeight + 20)
                 visible: metrics.siteLine.length > 0
                 opacity: metrics.siteConfirmed ? 1 : 0.55
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(siteRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: metrics.siteLine
                 readonly property bool navigationAllowed: Navigation.allows(siteRow)
                 Accessible.ignored: !navigationAllowed
-                Accessible.onPressAction: {
-                    if (Navigation.allows(siteRow))
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(siteRow))
                         siteSheet.visible = true;
                 }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
                 Text {
                     id: siteLabel
                     anchors.centerIn: parent
@@ -1846,7 +1857,54 @@ Item {
                     color: Theme.textPrimary
                 }
                 GatedTapHandler {
-                    onAllowedTap: siteSheet.visible = true
+                    onAllowedTap: siteRow.activate()
+                }
+            }
+
+            // Discussion #900 F3: the Tier III Channels sheet, while the live
+            // channel list holds channels of the user's (set or hidden). Before
+            // the site names itself there is no Site row, and with every grant
+            // given a frequency no NO FREQ reading: this stays the way to
+            // correct a saved frequency, by tap, key or screen reader.
+            UiPanel {
+                id: channelsRow
+                objectName: "monitorChannelsRow"
+                width: parent.width
+                height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
+                visible: metrics.dmrUserChannels === true
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Tier III channels")
+                readonly property bool navigationAllowed: Navigation.allows(channelsRow)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(channelsRow))
+                        channelsSheet.open();
+                }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
+                Text {
+                    id: channelsLabel
+                    objectName: "monitorChannelsText"
+                    anchors.centerIn: parent
+                    width: parent.width - 24
+                    text: qsTr("Tier III channels ›")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textPrimary
+                }
+                GatedTapHandler {
+                    onAllowedTap: channelsRow.activate()
                 }
             }
 

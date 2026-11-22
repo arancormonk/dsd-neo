@@ -4670,9 +4670,10 @@ class Setup : public QObject {
      *
      * @p spec: `missing` [{lpcn, slot (0/1, the view's), group, data, caller, recipient, agoMs (heard that long before
      * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the
-     * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz,
-     * hidden, baseHz}], `names` [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here),
-     * `generation`, `revision`, `session` (default 1), `trunkScan`. Every call is a new body (content_seq moves), as a
+     * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz (the
+     * frequency DMR uses), hidden, baseHz, sharedHz (the shared map row, when another writer moved it)}], `names`
+     * [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`, `session`
+     * (default 1), `trunkScan`. Every call is a new body (content_seq moves), as a
      * snapshot copied anew is.
      */
     Q_INVOKABLE void
@@ -8035,7 +8036,11 @@ class Setup : public QObject {
             const bool hidden = c.value(QStringLiteral("hidden")).toBool();
             const long hz = hidden ? 0L : static_cast<long>(c.value(QStringLiteral("hz")).toLongLong());
             view->origin[lpcn] = static_cast<uint8_t>(origin);
-            state->trunk_chan_map[lpcn] = hz;
+            view->channel_hz[lpcn] = hz;
+            /* sharedHz: what another protocol's writer left in the shared map row under the frequency DMR uses. */
+            state->trunk_chan_map[lpcn] = c.contains(QStringLiteral("sharedHz"))
+                                              ? static_cast<long>(c.value(QStringLiteral("sharedHz")).toLongLong())
+                                              : hz;
             if (origin == DSD_UI_DMR_T3_ORIGIN_USER && view->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
                 dsd_ui_dmr_t3_overlay_row& row = view->overlay[view->overlay_count++];
                 row.lpcn = static_cast<uint16_t>(lpcn);

@@ -201,7 +201,8 @@ class MetricsModel : public QObject {
     /* Discussion #900 F3: the Monitor's NO FREQ count, the DMR Tier III channels granted without a frequency (the
        app-control Tier III view's ledger, the channels past its details included), and whether the session is a Tier
        III one the Channels sheet edits: an identity checked messages named Tier III (never a RAS-only one), or a
-       session started with a saved system's Tier III channels (--dmr-chan-overrides). */
+       session started with a saved system's Tier III channels (--dmr-chan-overrides). All three read none while the
+       carrier names another system (dsd_ui_dmr_t3_view::other_system_here): its channel map is that system's. */
     Q_PROPERTY(int noFreqCount READ noFreqCount NOTIFY controlChanged)
     Q_PROPERTY(bool dmrTier3 READ dmrTier3 NOTIFY controlChanged)
     /* Discussion #900 F3: the session's live channel list holds channels of the user's (set or hidden), whatever

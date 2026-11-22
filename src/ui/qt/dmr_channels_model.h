@@ -47,9 +47,10 @@ class DmrChannelsModel : public QObject {
     Q_PROPERTY(QVariantList missingByChannel READ missingByChannel NOTIFY missingChanged)
     Q_PROPERTY(int missingCount READ missingCount NOTIFY missingChanged)
     /**
-     * @brief The channels with a frequency or an entry of the user's, by channel number ascending: {lpcn, hz, origin
-     * ("file", "user", "hidden", "site", "unchecked", "neighbour", "estimated"), originCode (dmr_chan_origin_e), baseHz
-     * (what Restore returns to, 0 none), hidden, yours (the user's overlay holds an entry)}.
+     * @brief The channels with a frequency or an entry of the user's, by channel number ascending: {lpcn, hz (the
+     * frequency DMR uses, dsd_ui_dmr_t3_view::channel_hz), origin ("file", "user", "hidden", "site", "unchecked",
+     * "neighbour", "estimated"), originCode (dmr_chan_origin_e), baseHz (what Restore returns to, 0 none), hidden,
+     * yours (the user's overlay holds an entry)}.
      */
     Q_PROPERTY(QVariantList channels READ channels NOTIFY channelsChanged)
     /** @brief The session recorded DMR channel state (dsd_ui_dmr_t3_view::present). */
@@ -105,7 +106,7 @@ class DmrChannelsModel : public QObject {
     void clear();
 
     /**
-     * @brief Channel @p lpcn as an edit expects it: {lpcn, hz (its live frequency, 0 none or hidden), originCode,
+     * @brief Channel @p lpcn as an edit expects it: {lpcn, hz (the frequency DMR uses, 0 none or hidden), originCode,
      * origin, baseHz, hidden, yours, missing, valid (a channel number 1..4094)}. Read from the rows last published.
      */
     Q_INVOKABLE QVariantMap channel(int lpcn) const;

@@ -37,7 +37,7 @@ ModalSheet {
         // sheet, perhaps on another session, the next time it opens. An edit
         // already sent stays the sheet's to answer (request).
         editSheet.visible = false;
-        firstChannelPage();
+        firstPages();
         // A save still owed keeps the words that say so.
         if (statusSeen && owedSaveCount === 0)
             setStatus("", false);
@@ -78,11 +78,14 @@ ModalSheet {
     // The channels with a frequency a page at a time, by number: a channel
     // map can list thousands, and each row is built when it is listed. Show
     // more channels adds the next page; the sheet opens on the first again,
-    // and holds no rows past it.
+    // and holds no rows past it. The channels with no frequency are paged the
+    // same way: the ledger can hold every channel number (4094).
     readonly property int channelPageSize: 50
     property int channelLimit: channelPageSize
     readonly property var allChannels: channels.channels
     readonly property var channelPage: allChannels.length > channelLimit ? allChannels.slice(0, channelLimit) : allChannels
+    property int missingLimit: channelPageSize
+    readonly property var missingPage: missingEntries.length > missingLimit ? missingEntries.slice(0, missingLimit) : missingEntries
     // Edits the decoder made whose save failed (the saved system could not be
     // written), the latest for each system and channel: Try saving again saves
     // them. Kept while the sheet is closed; a save that cannot work (the system
@@ -186,11 +189,28 @@ ModalSheet {
         else
             addButton.forceActiveFocus();
     }
-    function firstChannelPage() {
+    function showMoreMissing() {
+        var first = missingLimit;
+        var focusHere = moreMissingButton.activeFocus;
+        missingLimit += channelPageSize;
+        if (focusHere && missingEntries.length <= missingLimit)
+            Qt.callLater(sheet.focusMissingAt, first);
+    }
+    function focusMissingAt(at) {
+        var row = at < missingRows.live ? missingRepeater.itemAt(at) : null;
+        if (row)
+            row.forceActiveFocus();
+        else
+            addButton.forceActiveFocus();
+    }
+    function firstPages() {
         channelLimit = channelPageSize;
+        missingLimit = channelPageSize;
         // Closed, no screen reader is told of rows that go.
         if (channelRows.count > channelPageSize)
             channelRows.remove(channelPageSize, channelRows.count - channelPageSize);
+        if (missingRows.count > channelPageSize)
+            missingRows.remove(channelPageSize, missingRows.count - channelPageSize);
     }
     function owe(result) {
         var key = result.systemUid + "|" + result.lpcn;
@@ -304,9 +324,23 @@ ModalSheet {
         }
         return null;
     }
+    function channelIndexOf(lpcn) {
+        for (var i = 0; i < allChannels.length; ++i) {
+            if (Number(allChannels[i].lpcn) === lpcn)
+                return i;
+        }
+        return -1;
+    }
     function follow() {
         if (followLpcn <= 0 || !visible)
             return;
+        // An editor open on another channel has the focus, whether it was
+        // open when the answer came or opened since: it stays there (the one
+        // that sent the edit closed when it was answered).
+        if (editSheet.visible) {
+            followLpcn = 0;
+            return;
+        }
         // Not before the record has the edit: until then a row of the channel
         // can be one about to go (a channel of yours with no base frequency,
         // removed).
@@ -316,6 +350,16 @@ ModalSheet {
         if (row !== null) {
             followLpcn = 0;
             row.forceActiveFocus();
+            return;
+        }
+        // Listed past the pages shown: show up to the page that holds it,
+        // then focus its row once built.
+        var at = channelIndexOf(followLpcn);
+        if (at >= 0) {
+            if (at >= channelLimit) {
+                channelLimit = (Math.floor(at / channelPageSize) + 1) * channelPageSize;
+                Qt.callLater(sheet.follow);
+            }
             return;
         }
         // The record has the edit and no row for it (a channel of yours with
@@ -518,7 +562,8 @@ ModalSheet {
     // rows past the end of a shorter list held out of sight and out of the
     // tree rather than removed, as the Network sheet's are: a grant heard
     // again renames or moves nothing but its own row, and a hop to a target
-    // with fewer channels raises no hide.
+    // with fewer channels raises no hide. A page at a time, as the Channels
+    // list below: the rows held are bounded by the pages shown.
     Column {
         id: missingList
         objectName: "channelsMissingList"
@@ -540,7 +585,7 @@ ModalSheet {
             id: missingRepeater
             model: StableRows {
                 id: missingRows
-                entries: sheet.missingEntries
+                entries: sheet.missingPage
                 holdRows: true
                 keyOf: function (m) {
                     return String(m.lpcn);
@@ -558,6 +603,15 @@ ModalSheet {
                 }
             }
         }
+    }
+    // The next page of channels with no frequency (channelPageSize at a time).
+    OutlineButton {
+        id: moreMissingButton
+        objectName: "channelsMissingShowMore"
+        width: parent.width
+        visible: sheet.missingEntries.length > sheet.missingLimit
+        text: qsTr("Show more channels without a frequency")
+        onClicked: sheet.showMoreMissing()
     }
 
     MicroLabel {

@@ -656,6 +656,144 @@ Item {
             compare(allRows("channelsChannelRow").length, 50, "and holding no rows past it");
         }
 
+        // Another protocol's writer can empty or fill the shared map row under one of the user's entries: the sheet
+        // shows the frequency DMR uses, and an edit expects it (the decoder's STALE check compares against it).
+        function test_rows_show_the_frequency_dmr_uses() {
+            var spec = view({});
+            spec.channels[1] = {lpcn: 20, origin: 2, hz: 451137500, baseHz: 451100000, sharedHz: 0};
+            spec.channels[2] = {lpcn: 21, origin: 2, hidden: true, baseHz: 451200000, sharedHz: 452000000};
+            openSheet(spec);
+            compare(row("channelsChannelRow", 20).words, "Channel 20 · 451.137500 MHz · yours");
+            compare(row("channelsChannelRow", 21).words, "Channel 21 · hidden");
+            tap(row("channelsChannelRow", 20));
+            tryCompare(edit, "visible", true);
+            compare(findChild(edit, "channelEditFrequency").text, "451.1375", "opens on the frequency DMR uses");
+            type(findChild(edit, "channelEditFrequency"), "451.1500");
+            tap(findChild(edit, "channelEditSave"));
+            compare(lastRequest().expectedHz, 451137500);
+            commands.answerDmrChannel({result: "ok"});
+            tryCompare(edit, "visible", false);
+            tap(row("channelsChannelRow", 21));
+            tryCompare(edit, "visible", true);
+            tap(findChild(edit, "channelEditRestore"));
+            compare(lastRequest().op, dmrChannels.opRestore);
+            compare(lastRequest().expectedHz, 0, "a hidden channel expects none, whatever the shared row holds");
+        }
+
+        // The ledger can hold every channel number: "No frequency" builds a page of them, and Show more adds the
+        // next. The rows held are bounded by the pages shown, the count stays whole, and the sheet opens on the first
+        // page again.
+        function test_missing_are_paged() {
+            var all = [];
+            for (var lpcn = 1; lpcn <= 4094; ++lpcn) {
+                if ([9, 12, 7].indexOf(lpcn) < 0)
+                    all.push(lpcn);
+            }
+            openSheet(view({extra: all, channels: []}));
+            compare(dmrChannels.missingCount, 4094, "the count is every channel");
+            compare(rows("channelsMissingRow").length, 50);
+            compare(allRows("channelsMissingRow").length, 50, "no row built past the page");
+            compare(words("channelsMissingRow")[0], "Channel 9 (unchecked) · slot 1 · data · TG 77 · last heard just now",
+                    "the most recently heard first");
+            var more = item("channelsMissingShowMore");
+            verify(more.visible);
+            compare(more.text, "Show more channels without a frequency");
+            tap(more);
+            tryVerify(function () { return rows("channelsMissingRow").length === 100; });
+            compare(allRows("channelsMissingRow").length, 100);
+            // The ledger shrinks: the rows held stay within the pages shown.
+            testContext.setDmrChannelsView(view({extra: [40], channels: []}));
+            tryVerify(function () { return rows("channelsMissingRow").length === 4; });
+            verify(allRows("channelsMissingRow").length <= 100);
+            verify(!more.visible);
+            sheet.visible = false;
+            openSheet(view({extra: all, channels: []}));
+            compare(rows("channelsMissingRow").length, 50, "opened on the first page again");
+            compare(allRows("channelsMissingRow").length, 50, "and holding no rows past it");
+        }
+
+        // The last page of channels with no frequency takes its Show more with it: the focus goes on to the first
+        // channel it added.
+        function test_last_missing_page_moves_the_focus_on() {
+            var extra = [];
+            for (var lpcn = 100; lpcn < 158; ++lpcn)
+                extra.push(lpcn);
+            openSheet(view({extra: extra}));
+            compare(dmrChannels.missingCount, 61);
+            var more = item("channelsMissingShowMore");
+            more.forceActiveFocus();
+            more.activate();
+            tryVerify(function () { return rows("channelsMissingRow").length === 61; });
+            verify(!more.visible);
+            // The 51st: 9, 12 and 7 heard most recently, then 100 on by number.
+            tryVerify(function () { return row("channelsMissingRow", 147).activeFocus; }, 2000, "on the first one added");
+        }
+
+        // A channel given a frequency from "No frequency" can land past the Channels page shown: the page that holds
+        // it is shown, and the focus follows it there.
+        function test_follow_reveals_the_page_of_the_channel() {
+            var spec = view({channels: manyChannels(120)});
+            spec.missing = [{lpcn: 200, slot: 0, group: true, caller: 5001, recipient: 1234, agoMs: 1000}];
+            spec.extra = [];
+            openSheet(spec);
+            var missing = row("channelsMissingRow", 200);
+            missing.forceActiveFocus();
+            tap(missing);
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "452.5");
+            tap(findChild(edit, "channelEditSave"));
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            tryCompare(edit, "visible", false);
+            var moved = view({revision: 10, channels: manyChannels(120).concat([{lpcn: 200, origin: 2, hz: 452500000}])});
+            moved.missing = [];
+            moved.extra = [];
+            testContext.setDmrChannelsView(moved);
+            tryVerify(function () { return row("channelsChannelRow", 200) !== null; }, 2000, "its page is shown");
+            tryVerify(function () { return row("channelsChannelRow", 200).activeFocus; }, 2000, "the focus follows it");
+            compare(sheet.followLpcn, 0);
+            compare(rows("channelsChannelRow").length, 121);
+        }
+
+        // An earlier edit's answer is still handled while an editor is open on another channel, but the focus stays
+        // in that editor, whether the record came with the answer or after the editor opened.
+        function test_earlier_answer_keeps_the_open_editor_focus() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            edit.visible = false;
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            var freq = findChild(edit, "channelEditFrequency");
+            freq.forceActiveFocus();
+            tryVerify(function () { return freq.activeFocus; });
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            testContext.setDmrChannelsView(view({revision: 10}));
+            wait(50);
+            compare(sheet.request, 0, "the answer is handled");
+            verify(findChild(edit, "channelEditSave").enabled, "and the open editor can send");
+            verify(edit.visible, "the newer editor stays");
+            verify(freq.activeFocus, "and keeps the focus");
+            edit.visible = false;
+
+            // Answered with no editor open, the record still to come; an editor opened meanwhile keeps the focus.
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            tap(findChild(edit, "channelEditHide"));
+            commands.answerDmrChannel({result: "ok", revision: 11});
+            tryCompare(edit, "visible", false);
+            compare(sheet.followLpcn, 22, "waiting for the record");
+            tap(row("channelsChannelRow", 23));
+            tryCompare(edit, "visible", true);
+            freq.forceActiveFocus();
+            tryVerify(function () { return freq.activeFocus; });
+            testContext.setDmrChannelsView(view({revision: 11}));
+            wait(50);
+            verify(freq.activeFocus, "the record coming later moves nothing either");
+            compare(sheet.followLpcn, 0);
+        }
+
         // The last page takes Show more channels with it: the focus goes on to the first channel it added.
         function test_last_page_moves_the_focus_on() {
             openSheet(view({channels: manyChannels(120)}));
@@ -775,6 +913,43 @@ Item {
             keyClick(Qt.Key_Return);
             tryVerify(function () { return freq.activeFocus; });
             compare(number.text, "12");
+        }
+
+        // The Monitor keeps a way to the sheet while the live list holds channels of the user's, before the site
+        // names itself (no Site row) and with every grant given a frequency (no NO FREQ): by key, tap and screen
+        // reader. The Site row opens its sheet from the keyboard too.
+        function test_monitor_channels_entry() {
+            monitor.visible = true;
+            var entry = monitorItem("monitorChannelsRow");
+            var site = monitorItem("siteRow");
+            verify(!entry.visible, "no channels of the user's");
+            verify(!site.visible, "no site yet");
+            testContext.setMetric("dmrUserChannels", true);
+            tryCompare(entry, "visible", true);
+            verify(entry.activeFocusOnTab, "reached with Tab");
+            compare(entry.Accessible.role, Accessible.Button);
+            compare(entry.Accessible.name, "Tier III channels");
+            compare(monitorItem("monitorChannelsText").text, "Tier III channels ›");
+            entry.forceActiveFocus();
+            keyClick(Qt.Key_Return);
+            tryCompare(monitorItem("channelsSheet"), "visible", true);
+            monitorItem("channelsSheet").visible = false;
+            entry.Accessible.pressAction();
+            tryCompare(monitorItem("channelsSheet"), "visible", true);
+            monitorItem("channelsSheet").visible = false;
+            waitForRendering(entry);
+            tap(entry);
+            tryCompare(monitorItem("channelsSheet"), "visible", true);
+            monitorItem("channelsSheet").visible = false;
+            testContext.setMetric("dmrUserChannels", false);
+            tryCompare(entry, "visible", false);
+
+            testContext.setMetric("siteLine", "DMR · CC 1");
+            tryCompare(site, "visible", true);
+            verify(site.activeFocusOnTab, "the Site row is reached with Tab");
+            site.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            tryCompare(monitorItem("siteSheet"), "visible", true);
         }
 
         function test_no_freq_row() {

@@ -26,6 +26,7 @@
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
 #include <QSet>
 #include <QStringList>
 #include <QVariant>
@@ -232,7 +233,9 @@ generated_file(const QString& relative) {
                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(hex|dec|map)\\.csv"
                        "|scan_lists/[A-Za-z0-9_-]{1,63}(/[^/]+)?\\.csv"
                        "|dmr_channels/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.csv)$"));
-    return pattern.match(relative).hasMatch();
+    // '$' also matches before a final newline: the match must span the whole name, as leftover_name()'s does.
+    const QRegularExpressionMatch match = pattern.match(relative);
+    return match.hasMatch() && match.capturedLength() == relative.size();
 }
 
 /** The native avoid store's own format (signal_search_store.cpp save_avoids()): "[a,b]\n", "[]\n" when empty. */

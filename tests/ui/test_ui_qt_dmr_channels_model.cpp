@@ -41,8 +41,8 @@ expect(const char* what, bool ok) {
 
 /* The options, state and Tier III view every case reads, on the heap (main() owns them). */
 struct Fixture {
-    dsd_opts opts;
-    dsd_state state;
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    std::unique_ptr<dsd_state> state = std::make_unique<dsd_state>();
     dsd_ui_dmr_t3_view view;
 };
 
@@ -65,6 +65,13 @@ add_detail(uint16_t lpcn, uint8_t slot, bool group, uint32_t caller, uint32_t re
     set_bit(g_fixture->view.missing.checked, lpcn);
 }
 
+/* Channel @p lpcn at @p hz in both the shared map row and the frequency DMR uses, as they read with no other writer. */
+void
+set_row(uint16_t lpcn, long hz) {
+    g_fixture->state->trunk_chan_map[lpcn] = hz;
+    g_fixture->view.channel_hz[lpcn] = hz;
+}
+
 void
 add_overlay(uint16_t lpcn, bool hidden, long hz, long base) {
     dsd_ui_dmr_t3_overlay_row& row = g_fixture->view.overlay[g_fixture->view.overlay_count++];
@@ -73,7 +80,7 @@ add_overlay(uint16_t lpcn, bool hidden, long hz, long base) {
     row.hz = hz;
     row.base_hz = base;
     g_fixture->view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_USER;
-    g_fixture->state.trunk_chan_map[lpcn] = hidden ? 0 : hz;
+    set_row(lpcn, hidden ? 0 : hz);
 }
 
 /* A Tier III site: three channels granted without a frequency (12 heard last, 7 before it, 40 past the details and
@@ -94,16 +101,16 @@ seed_view() {
     add_detail(12U, 0U, true, 5001U, 1234U, 2000U);
     add_detail(7U, 1U, false, 5002U, 5003U, 1000U);
     g_fixture->view.origin[18] = DSD_UI_DMR_T3_ORIGIN_FILE;
-    g_fixture->state.trunk_chan_map[18] = 451012500L;
+    set_row(18U, 451012500L);
     add_overlay(20U, false, 451137500L, 451100000L);
     add_overlay(21U, true, 0, 451200000L);
     const int origins[] = {DSD_UI_DMR_T3_ORIGIN_SITE, DSD_UI_DMR_T3_ORIGIN_UNVERIFIED, DSD_UI_DMR_T3_ORIGIN_NEIGHBOUR,
                            DSD_UI_DMR_T3_ORIGIN_ESTIMATE};
     for (int i = 0; i < 4; ++i) {
         g_fixture->view.origin[22 + i] = static_cast<uint8_t>(origins[i]);
-        g_fixture->state.trunk_chan_map[22 + i] = 451300000L + 12500L * i;
+        set_row(static_cast<uint16_t>(22 + i), 451300000L + 12500L * i);
     }
-    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
+    g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
 }
 
 QList<int>
@@ -121,12 +128,12 @@ test_rows() {
     dsd_tg_policy_entry entry = {};
     expect("a talkgroup name",
            dsd_tg_policy_make_exact_entry(1234U, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0
-               && dsd_tg_policy_append_exact(&g_fixture->state, &entry) == 0);
+               && dsd_tg_policy_append_exact(g_fixture->state.get(), &entry) == 0);
     dsd_qt::DmrChannelsModel model;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("closed, nothing is read", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
     model.setActive(true);
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("the most recently heard first, then the rest by channel",
            lpcns(model.missing()) == QList<int>({12, 7, 40}));
     expect("the reading order is by channel", lpcns(model.missingByChannel()) == QList<int>({7, 12, 40}));
@@ -179,11 +186,11 @@ test_rows() {
     expect("the identity and the control channel", model.present() && model.tier3() && !model.tier3Unchecked()
                                                        && model.ccConfirmedHere() && model.ccHz() == 451000000);
     expect("what an edit expects", model.generation() == 3U && model.revision() == 9U && model.session().isEmpty());
-    model.refresh(&g_fixture->opts, &g_fixture->state, 42U);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get(), 42U);
     expect("and the command session it was read in", model.session() == QStringLiteral("42"));
     expect("no trunk scan", !model.trunkScanActive());
-    dsd_state_ext_free_all(&g_fixture->state);
-    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
+    dsd_state_ext_free_all(g_fixture->state.get());
+    g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
 }
 
 /* Repeated grants publish nothing: the rows are rebuilt only when the body moved, and published only when they
@@ -197,53 +204,77 @@ test_no_churn() {
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::missingChanged, [&]() { ++missingSignals; });
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::channelsChanged, [&]() { ++channelSignals; });
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::stateChanged, [&]() { ++stateSignals; });
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("the first read publishes each group once", missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     g_fixture->view.content_seq++;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("the same body, or a body copied again unchanged, publishes nothing",
            missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
-    g_fixture->state.trunk_chan_map[18] = 451025000L;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    set_row(18U, 451025000L);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("rows are read only when the body moved",
            channelSignals == 1 && model.channel(18).value("hz").toLongLong() == 451012500);
     g_fixture->view.content_seq++;
     g_fixture->view.revision++;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("a moved body is read again",
            channelSignals == 2 && model.channel(18).value("hz").toLongLong() == 451025000 && missingSignals == 1);
     expect("and the revision is published", stateSignals == 2 && model.revision() == 10U);
 
     set_bit(g_fixture->view.missing.missing, 41U);
     g_fixture->view.content_seq++;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("a channel newly missing moves only the missing rows",
            missingSignals == 2 && channelSignals == 2 && model.missingCount() == 4);
 
-    g_fixture->opts.trunk_scan_enabled = 1;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    g_fixture->opts->trunk_scan_enabled = 1;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("under a trunk scan the sheet is read only", model.trunkScanActive() && stateSignals == 3);
-    g_fixture->opts.trunk_scan_enabled = 0;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    g_fixture->opts->trunk_scan_enabled = 0;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
 
     model.setSessionSystemUid(QStringLiteral("8d3b1e7a-0000-4000-8000-000000000001"));
     expect("the session's saved system", model.sessionHasSavedSystem() && stateSignals == 5);
 
-    model.replaceForTarget(&g_fixture->opts, nullptr);
+    model.replaceForTarget(g_fixture->opts.get(), nullptr);
     expect("no live session: no rows", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
-    model.replaceForTarget(&g_fixture->opts, &g_fixture->state);
+    model.replaceForTarget(g_fixture->opts.get(), g_fixture->state.get());
     expect("a new target's rows in one replacement", model.missingCount() == 4 && model.channels().size() == 7);
     model.setActive(false);
-    model.replaceForTarget(&g_fixture->opts, &g_fixture->state);
+    model.replaceForTarget(g_fixture->opts.get(), g_fixture->state.get());
     expect("closed, a hop drops the rows", model.channels().isEmpty());
     model.setActive(true);
     g_fixture->view.present = 0U;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("a session with no DMR record lists nothing", model.channels().isEmpty() && !model.present());
-    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
-    model.refresh(&g_fixture->opts, &g_fixture->state);
+    g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("nor does a snapshot without the view", model.channels().isEmpty());
+}
+
+/* Another protocol's writer can empty or fill the shared map row under one of the user's entries: the sheet shows the
+ * frequency DMR uses, and an edit expects it, since the decoder's STALE check compares against that value. */
+void
+test_rows_read_the_effective_frequency() {
+    seed_view();
+    g_fixture->state->trunk_chan_map[20] = 0;          // emptied under the user's SET entry at 451.1375 MHz
+    g_fixture->state->trunk_chan_map[21] = 452000000L; // filled under the hidden channel
+    g_fixture->state->trunk_chan_map[18] = 452500000L; // and a row of the file's moved in the shared map only
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a set channel shows its entry's frequency",
+           model.channel(20).value("hz").toLongLong() == 451137500 && !model.channel(20).value("hidden").toBool());
+    expect("a hidden channel shows none and an edit expects none",
+           model.channel(21).value("hz").toLongLong() == 0 && model.channel(21).value("hidden").toBool());
+    expect("any other channel shows what DMR uses", model.channel(18).value("hz").toLongLong() == 451012500);
+    QList<qint64> listed;
+    for (const QVariant& row : model.channels()) {
+        listed.append(row.toMap().value("hz").toLongLong());
+    }
+    expect("the list reads the same values",
+           listed.size() == 7 && listed.at(0) == 451012500 && listed.at(1) == 451137500 && listed.at(2) == 0);
 }
 
 void
@@ -267,9 +298,10 @@ main(int argc, char** argv) {
     g_fixture = fixture.get();
     test_rows();
     test_no_churn();
+    test_rows_read_the_effective_frequency();
     test_origin_keys();
-    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
-    dsd_state_ext_free_all(&g_fixture->state);
+    g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    dsd_state_ext_free_all(g_fixture->state.get());
     g_fixture = nullptr;
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

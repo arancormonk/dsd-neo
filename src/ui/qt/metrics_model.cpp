@@ -532,9 +532,14 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
     const dsd_ui_dmr_t3_view* t3 = dsd_app_dmr_t3_view(snapshot);
     const bool t3_present = t3 != nullptr && t3->present != 0U;
-    next.no_freq_count = t3_present ? static_cast<int>(dsd_app_dmr_t3_view_missing_count(t3)) : 0;
-    next.dmr_tier3 = (t3_present && t3->tier3 != 0U) || opts_snapshot->dmr_chan_overrides_file[0] != '\0';
-    next.dmr_user_channels = t3_present && t3->overlay_count > 0U;
+    /* A carrier that names another system (another DMR trunking system, or another protocol's) has that system's
+       channel map: no Tier III Channels route opens there, the saved system's channels file included. */
+    const bool t3_here = t3_present && t3->other_system_here == 0U;
+    const bool t3_elsewhere = t3_present && !t3_here;
+    next.no_freq_count = t3_here ? static_cast<int>(dsd_app_dmr_t3_view_missing_count(t3)) : 0;
+    const bool saved_channels = opts_snapshot->dmr_chan_overrides_file[0] != '\0';
+    next.dmr_tier3 = (t3_here && t3->tier3 != 0U) || (!t3_elsewhere && saved_channels);
+    next.dmr_user_channels = t3_here && t3->overlay_count > 0U;
     next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
     next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);
     next.call_skip_count = dsd_tg_policy_call_skip_count(snapshot, dsd_decode_now_mono_s());

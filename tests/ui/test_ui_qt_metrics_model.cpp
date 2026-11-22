@@ -3212,6 +3212,20 @@ test_dmr_tier3_readings() {
     model.refresh(&opts, &state);
     expect("channels of the user's keep the entry open", model.dmrUserChannels() && control == before + 4);
     expect("and do not make the site Tier III", !model.dmrTier3());
+    /* A carrier naming another system (Connect Plus, or P25 under Auto) has that system's map: no Channels route
+       opens there, the saved system's channels file included. */
+    view.tier3 = 1U;
+    DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    view.other_system_here = 1U;
+    model.refresh(&opts, &state);
+    expect("another system on the carrier opens no editor",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
+    view.other_system_here = 0U;
+    model.refresh(&opts, &state);
+    expect("back on the Tier III system, the route is back",
+           model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
+    view.tier3 = 0U;
+    opts.dmr_chan_overrides_file[0] = '\0';
     view.present = 0U;
     model.refresh(&opts, &state);
     expect("a view with no record reads none",

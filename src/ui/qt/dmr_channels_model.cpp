@@ -255,14 +255,16 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
         }
         const dsd_ui_dmr_t3_overlay_row* entry = overlay.at(lpcn);
         const bool hidden = entry != nullptr && entry->hidden != 0U;
-        rows.append(QVariantMap{
-            {QStringLiteral("lpcn"), lpcn},
-            {QStringLiteral("hz"), QVariant::fromValue<qint64>(hidden ? 0 : snapshot->trunk_chan_map[lpcn])},
-            {QStringLiteral("origin"), originKey(origin, hidden)},
-            {QStringLiteral("originCode"), origin},
-            {QStringLiteral("baseHz"), QVariant::fromValue<qint64>(entry != nullptr ? entry->base_hz : 0)},
-            {QStringLiteral("hidden"), hidden},
-            {QStringLiteral("yours"), entry != nullptr}});
+        /* The frequency DMR uses (the user's entry over the shared map row), which an edit's STALE check compares
+           against: another protocol can empty or fill the shared row under an entry. */
+        rows.append(
+            QVariantMap{{QStringLiteral("lpcn"), lpcn},
+                        {QStringLiteral("hz"), QVariant::fromValue<qint64>(static_cast<qint64>(view.channel_hz[lpcn]))},
+                        {QStringLiteral("origin"), originKey(origin, hidden)},
+                        {QStringLiteral("originCode"), origin},
+                        {QStringLiteral("baseHz"), QVariant::fromValue<qint64>(entry != nullptr ? entry->base_hz : 0)},
+                        {QStringLiteral("hidden"), hidden},
+                        {QStringLiteral("yours"), entry != nullptr}});
     }
     publishLists(recent, byChannel, rows);
 }
