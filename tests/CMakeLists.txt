@@ -29176,6 +29176,37 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_signal_search_rig
         PRIVATE dsd-neo_app_control dsd-neo_engine dsd-neo_feature_radio ${LIBS}
     )
+    # The rig refuses a pass count or a time limit that is not a positive whole number in range (negative, past
+    # uint64, zero, or seconds past a day, whose milliseconds once wrapped the deadline) before it opens anything.
+    foreach(
+        _rig_limit
+        "SECONDS_NEGATIVE:SECONDS=-1"
+        "SECONDS_OVERFLOW:SECONDS=18446744073709551616"
+        "SECONDS_PAST_A_DAY:SECONDS=86401"
+        "SECONDS_ZERO:SECONDS=0"
+        "PASSES_NEGATIVE:PASSES=-1"
+        "PASSES_OVERFLOW:PASSES=18446744073709551616"
+    )
+        string(REGEX REPLACE ":.*" "" _rig_limit_id "${_rig_limit}")
+        string(REGEX REPLACE "^[^:]*:" "" _rig_limit_env "${_rig_limit}")
+        string(REGEX REPLACE "=.*" "" _rig_limit_name "${_rig_limit_env}")
+        add_test(
+            NAME ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            COMMAND
+                ${CMAKE_COMMAND} -E env DSD_SEARCH_RIG_STORE=unused.jsonl
+                DSD_SEARCH_RIG_RANGES=r,450000000,450100000,12500,16000,0,3000,0
+                DSD_SEARCH_RIG_${_rig_limit_env}
+                $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+        )
+        set_tests_properties(
+            ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            PROPERTIES
+                PASS_REGULAR_EXPRESSION
+                    "RIG ERROR: bad DSD_SEARCH_RIG_${_rig_limit_name} "
+                FAIL_REGULAR_EXPRESSION "are required|did not open"
+                TIMEOUT 30
+        )
+    endforeach()
 endif()
 if(DSD_ENABLE_QT_UI)
     add_executable(

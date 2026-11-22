@@ -12,8 +12,8 @@
  *   DSD_SEARCH_RIG_STORE   the history journal's path (its folder must exist); required
  *   DSD_SEARCH_RIG_RANGES  ranges, ';' between them, each "name,start_hz,end_hz,step_hz,bandwidth_hz,digital,probe_ms,
  *                          max_visit_ms" (digital as dsd_signal_search_range.digital; 0 analog, 1 Auto, 10 TETRA)
- *   DSD_SEARCH_RIG_PASSES  stop once this many passes have ended (default 1)
- *   DSD_SEARCH_RIG_SECONDS stop after this long whatever the passes (default 120)
+ *   DSD_SEARCH_RIG_PASSES  stop once this many passes have ended (default 1; a positive whole number)
+ *   DSD_SEARCH_RIG_SECONDS stop after this long whatever the passes (default 120; 1 to 86400)
  *   DSD_SEARCH_RIG_STOP    also stop once a file of this name exists (a driver that knows when it has seen enough;
  *                          a signal would end the run without the history on every platform but POSIX)
  *
@@ -22,12 +22,12 @@
  * closed and opened again ({"rig":"reload",...}). Time stamps are dsd_realtime_mono_ms(). */
 #include <atomic>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -45,6 +45,8 @@
 #include <vector>
 
 namespace {
+
+constexpr uint64_t kMaxRigSeconds = 86400;
 
 struct Rig {
     dsd_signal_search_config config{};
@@ -169,18 +171,26 @@ read_config(Rig* rig) {
         }
         at = semi + 1;
     }
-    for (const char* name : {"DSD_SEARCH_RIG_PASSES", "DSD_SEARCH_RIG_SECONDS"}) {
-        const char* text = std::getenv(name);
+
+    /* Positive whole numbers; the seconds at most a day, so the deadline in milliseconds cannot wrap. */
+    const struct {
+        const char* name;
+        uint64_t max;
+        uint64_t* out;
+    } limits[] = {{"DSD_SEARCH_RIG_PASSES", UINT64_MAX, &rig->passes},
+                  {"DSD_SEARCH_RIG_SECONDS", kMaxRigSeconds, &rig->seconds}};
+
+    for (const auto& limit : limits) {
+        const char* text = std::getenv(limit.name);
         if (!text || !text[0]) {
             continue;
         }
-        char* end = nullptr;
-        const unsigned long long value = std::strtoull(text, &end, 10);
-        if (!end || *end != '\0' || value == 0) {
-            DSD_FPRINTF(stderr, "RIG ERROR: bad %s \"%s\"\n", name, text);
+        uint64_t value = 0;
+        if (dsd_parse_uint64_strict(text, 10, limit.max, &value) != 0 || value == 0) {
+            DSD_FPRINTF(stderr, "RIG ERROR: bad %s \"%s\"\n", limit.name, text);
             return 0;
         }
-        (std::strcmp(name, "DSD_SEARCH_RIG_PASSES") == 0 ? rig->passes : rig->seconds) = value;
+        *limit.out = value;
     }
     return 1;
 }
@@ -259,8 +269,11 @@ int
 main(int argc, char** argv) {
     static Rig rig;
     const char* store = std::getenv("DSD_SEARCH_RIG_STORE");
-    if (!store || !store[0] || !read_config(&rig)) {
-        DSD_FPRINTF(stderr, "RIG ERROR: DSD_SEARCH_RIG_STORE and DSD_SEARCH_RIG_RANGES are required\n");
+    if (!store || !store[0]) {
+        DSD_FPRINTF(stderr, "RIG ERROR: DSD_SEARCH_RIG_STORE is not set\n");
+        return 2;
+    }
+    if (!read_config(&rig)) {
         return 2;
     }
     if (dsd_app_signal_search_store_open(store) != 0) {
