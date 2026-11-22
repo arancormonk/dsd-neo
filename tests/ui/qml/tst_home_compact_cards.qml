@@ -327,38 +327,73 @@ Item {
 
         // One system on two receivers: compact keeps each card's receiver line, which wraps, and the card grows by it.
         // Two TCP cards of one title differ by their addresses on their faces.
-        function test_receivers_tell_cards_apart() {
+        function test_receivers_tell_cards_apart_data() {
+            return [{tag: "320 at 1.0 compact", scale: 1.0, compact: true}, {tag: "320 at 2.0 compact", scale: 2.0, compact: true},
+                    {tag: "320 at 1.0 full", scale: 1.0, compact: false}, {tag: "320 at 2.0 full", scale: 2.0, compact: false}];
+        }
+        function test_receivers_tell_cards_apart(data) {
+            prefs.compactView = data.compact;
             root.width = 320;
+            Ui.Theme.fontScale = data.scale;
             site("Twin Mesa", 35, 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125"});
             site("Twin Mesa", 35, 1, undefined, undefined, {host: "10.20.30.40", port: 61234, freqMhz: "852.0125"});
+            // G1: endpoints and files that differ only past where the source line is cut at large text.
             add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.1", port: 7355});
-            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.2", port: 7356});
+            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.2", port: 7355});
+            add("Port Mesa", {sourceType: "udp", port: 7355});
+            add("Port Mesa", {sourceType: "udp", port: 7356});
+            add("Tape Mesa", {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-01.wav"});
+            add("Tape Mesa", {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-02.wav"});
             add("Plain Mesa");
             settle();
             var plain = cardOf("Plain Mesa");
             for (var entry of entries()) {
                 var card = findChild(entry, "savedSystemCard");
-                checkCompactCard(card, entry.title + " " + entry.y);
-                if (entry.title === "Twin Mesa") {
+                if (data.compact)
+                    checkCompactCard(card, entry.title + " " + entry.y);
+                if (entry.title !== "Plain Mesa") {
                     var line = part(card, "savedSystemReceiver");
-                    verify(line.visible && line.opacity === 1, "the receiver line stays");
-                    verify(!line.truncated && line.contentWidth <= line.width + 0.5, "never cut");
-                    verify(card.height >= plain.height + line.height - 0.5, "the card grows by it");
+                    verify(line.visible && line.opacity === 1, entry.title + ": the receiver line stays");
+                    verify(!line.truncated && line.contentWidth <= line.width + 0.5, entry.title + ": never cut");
+                    // Compact grows by it; the full card holds it inside its 122 px at normal text, or grows.
+                    if (data.compact)
+                        verify(card.height >= plain.height + line.height - 0.5, entry.title + ": the card grows by it");
+                    else
+                        verify(line.mapToItem(card, 0, line.height).y <= card.height + 0.5, entry.title + ": the line inside the card");
                 }
             }
+            // What each card draws: its source line as cut to its width, and its receiver line, which wraps whole.
+            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
             var faces = function (title) {
                 return entries().filter(function (e) {
                     return e.title === title;
                 }).map(function (e) {
                     var card = findChild(e, "savedSystemCard");
                     var receiver = part(card, "savedSystemReceiver");
-                    return part(card, "savedSystemSource").text + "|" + (receiver.visible ? receiver.text : "");
+                    var source = part(card, "savedSystemSource");
+                    drawn.font = source.font;
+                    drawn.text = source.text;
+                    drawn.elideWidth = source.width;
+                    return drawn.elidedText + "|" + (receiver.visible && receiver.opacity > 0 ? receiver.text : "");
                 });
             };
-            for (var title of ["Twin Mesa", "Wire Mesa"]) {
-                var shown = faces(title);
-                compare(shown.length, 2);
-                verify(shown[0] !== shown[1], title + " cards differ on their faces: " + JSON.stringify(shown));
+            try {
+                for (var title of ["Twin Mesa", "Wire Mesa", "Port Mesa", "Tape Mesa"]) {
+                    var shown = faces(title);
+                    compare(shown.length, 2);
+                    verify(shown[0] !== shown[1], title + " cards differ on their faces: " + JSON.stringify(shown));
+                }
+                // The address is on the receiver line once, not again on the source line.
+                for (var e of entries()) {
+                    if (e.title !== "Wire Mesa")
+                        continue;
+                    var c = findChild(e, "savedSystemCard");
+                    var receiverText = part(c, "savedSystemReceiver").text;
+                    verify(receiverText.indexOf("TCP 10.0.0.") === 0, "the TCP card's receiver: " + receiverText);
+                    verify(part(c, "savedSystemSource").text.indexOf("10.0.0.") < 0, "the address twice");
+                }
+            } finally {
+                drawn.destroy();
             }
         }
 

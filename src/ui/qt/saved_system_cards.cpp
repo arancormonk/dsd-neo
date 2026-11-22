@@ -66,8 +66,10 @@ only_playable(const QList<const Member*>& group) {
     return playable;
 }
 
-/* What tells @p member's receiver apart where the card's meta does not already say it (Util.systemMeta() names a
-   TCP or UDP source's address and a file's name): the dongle, an RTL-TCP server's address, an Airspy's serial. */
+/* What tells @p member's receiver apart from another card of the same title: the dongle, an RTL-TCP or TCP
+   server's address, a UDP port, an Airspy's serial, a file's name. Shown on a line of its own that wraps, so it is
+   never cut where the card's source line is (issue #901 G1); Util.systemMeta() then leaves the address or name off
+   that line. */
 QString
 receiver_text(const Member& member) {
     if (member.sourceType == QLatin1String("usb")) {
@@ -80,7 +82,14 @@ receiver_text(const Member& member) {
         const QString serial = member.airspySerial.trimmed().toUpper();
         return serial.isEmpty() ? QStringLiteral("Airspy") : QStringLiteral("Airspy %1").arg(serial);
     }
-    return QString();
+    if (member.sourceType == QLatin1String("tcp")) {
+        return QStringLiteral("TCP %1:%2").arg(member.host.trimmed(), QString::number(member.port));
+    }
+    if (member.sourceType == QLatin1String("udp")) {
+        return QStringLiteral("UDP :%1").arg(member.port);
+    }
+    const QString path = member.filePath.trimmed();
+    return path.isEmpty() ? QString() : path.mid(path.lastIndexOf(QLatin1Char('/')) + 1);
 }
 
 /* HomeScreen's needsSiteRefresh(): a trunked row in no site group whose channel or group file came from

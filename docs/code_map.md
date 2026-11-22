@@ -18701,11 +18701,13 @@ Qt Quick frontend (`src/ui/qt`):
   sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
   TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
   so `sectionStart` marks only a section's first card in the shown order. `receiverLabel` is the receiver ("USB",
-  "RTL-TCP host:port", "Airspy SERIAL") of a card whose title another shown card has (one system on two receivers), else
-  empty; TCP, UDP and file cards name their source in the meta already and get none. Home shows it on a line of its own
-  under the source line, which then leaves RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not,
-  after its row signals and `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's
-  bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
+  "RTL-TCP host:port", "TCP host:port", "UDP :port", "Airspy SERIAL", a file's name) of a card whose title another
+  shown card has (one system on two receivers or endpoints), else empty. Home shows it on a line of its own under the
+  source line, which wraps and is never cut, and `Util.systemMeta()` then leaves RTL-TCP's marker and the TCP or UDP
+  address or file name off the source line, which elides (issue #901 G1: two TCP cards of one title both read "TCP
+  10.0…" at 320 dp and text 2.0). `rebuilt()` follows every rebuild, changed or not, after its row signals and
+  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge, given through
+  its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
   key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
   screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
   coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,

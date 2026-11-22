@@ -543,14 +543,20 @@ function systemMeta(sys) {
         var decode = decodeLabel(sys.decodeFlag)
         parts.push(sys.trunking ? decode + " trunked" : decode)
     } else if (sys.sourceType === "udp") {
-        parts.push("UDP :" + sys.port)
+        // A card whose title another card shares names its port, address or
+        // file on its receiver line, which wraps (issue #901 G1), not here,
+        // where a long one is cut.
+        if (!sys.receiverLabel)
+            parts.push("UDP :" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))
     } else if (sys.sourceType === "tcp") {
-        parts.push("TCP " + sys.host + ":" + sys.port)
+        if (!sys.receiverLabel)
+            parts.push("TCP " + sys.host + ":" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))
     } else {
         var path = sys.filePath || ""
-        parts.push(path.substring(path.lastIndexOf('/') + 1))
+        if (!sys.receiverLabel)
+            parts.push(path.substring(path.lastIndexOf('/') + 1))
         parts.push(decodeLabel(sys.decodeFlag))
     }
     return parts.join(" · ")

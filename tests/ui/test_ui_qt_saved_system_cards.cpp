@@ -781,8 +781,9 @@ test_positional_rows() {
 }
 
 /* One system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
-   RTL-TCP server's address, an Airspy's serial), and a card whose title no other shown card has names none. A
-   TCP or UDP source's meta already says its address, so it names none either. */
+   RTL-TCP or TCP server's address, a UDP port, an Airspy's serial, a file's name), on a line that is never cut, and
+   a card whose title no other shown card has names none (issue #901 G1: two TCP cards of one title read the same
+   once their source line was cut). */
 void
 test_receiver_label_for_shared_titles() {
     Fixture f;
@@ -805,15 +806,42 @@ test_receiver_label_for_shared_titles() {
     check("receiver: each shared title names its receiver",
           f.column(SavedSystemCards::ReceiverLabelRole)
               == QStringList({QStringLiteral("USB"), QStringLiteral("RTL-TCP 192.168.1.5:1234"),
-                              QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"), QString(), QString()}));
+                              QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"),
+                              QStringLiteral("TCP 10.0.0.9:7355"), QString()}));
     f.cards->setQuery(QStringLiteral("marine"));
     settle();
     check("receiver: a USB card named apart from a TCP one",
-          f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QStringLiteral("USB"), QString()}));
+          f.column(SavedSystemCards::ReceiverLabelRole)
+              == QStringList({QStringLiteral("USB"), QStringLiteral("TCP 10.0.0.9:7355")}));
     f.cards->setQuery(QStringLiteral("156.8"));
     settle();
     check("receiver: alone in the list, a card names none",
           f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QString()}));
+}
+
+/* Network audio and files of one title name their port or file the same way (issue #901 G1). */
+void
+test_receiver_label_for_endpoints_and_files() {
+    Fixture f;
+    QVariantMap udpA = plain(QStringLiteral("Port Mesa"), QString());
+    udpA.insert(QStringLiteral("sourceType"), QStringLiteral("udp"));
+    udpA.insert(QStringLiteral("port"), 7355);
+    QVariantMap udpB = udpA;
+    udpB.insert(QStringLiteral("port"), 7356);
+    QVariantMap fileA = plain(QStringLiteral("Tape Mesa"), QString());
+    fileA.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+    fileA.insert(QStringLiteral("filePath"), QStringLiteral("/captures/dispatch-01.wav"));
+    QVariantMap fileB = fileA;
+    fileB.insert(QStringLiteral("filePath"), QStringLiteral("/captures/dispatch-02.wav"));
+    QVariantMap lone = fileA;
+    lone.insert(QStringLiteral("name"), QStringLiteral("Lone Tape"));
+    f.add({udpA, udpB, fileA, fileB, lone});
+    QStringList labels = f.column(SavedSystemCards::ReceiverLabelRole);
+    labels.sort();
+    check("receiver: ports and file names of shared titles",
+          labels
+              == QStringList({QString(), QStringLiteral("UDP :7355"), QStringLiteral("UDP :7356"),
+                              QStringLiteral("dispatch-01.wav"), QStringLiteral("dispatch-02.wav")}));
 }
 
 void
@@ -1448,6 +1476,7 @@ main(int argc, char** argv) {
     test_sort_signals();
     test_positional_rows();
     test_receiver_label_for_shared_titles();
+    test_receiver_label_for_endpoints_and_files();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();
