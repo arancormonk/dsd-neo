@@ -41,7 +41,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dmr_address_layout.h"
 #include "dmr_call_channel.h"

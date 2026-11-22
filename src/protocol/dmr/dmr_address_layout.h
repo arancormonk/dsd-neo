@@ -8,6 +8,8 @@
 
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 /*
  * The address layout later LCs, data headers and preamble CSBKs are read with: Capacity Plus and Hytera XPT carry
