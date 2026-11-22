@@ -63,8 +63,9 @@ int dsd_cli_compact_args(int argc, char** argv);
 /**
  * @brief Nonzero when @p arg is an option whose separate value may be any text.
  *
- * An API token (`--api-token`), its file (`--api-token-file`) or a trunk-scan
- * target id (`--trunk-scan-hold`) can read like an option of its own
+ * An API token (`--api-token`), its file (`--api-token-file`), a trunk-scan
+ * target id (`--trunk-scan-hold`) or the DMR channels file
+ * (`--dmr-chan-overrides`) can read like an option of its own
  * ("--print-config", "--trunk-scan"). A pre-scan of the raw argv must step over
  * such a value, as the parser and dsd_cli_compact_args() do, instead of reading
  * it as an option.

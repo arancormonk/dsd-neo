@@ -1769,10 +1769,10 @@ test_missing_network_change_resets(void) {
 
 /* ---- The user's channels (F3 overlay) ---- */
 
-/* An edit checked against the row as it is now (what an editor that just read it sends). */
+/* An edit checked against the channel as it is now (what an editor that just read it sends: the frequency DMR uses). */
 static dmr_t3_set_result
 overlay_edit(uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
-    return dmr_t3_overlay_apply(&g_opts, &g_state, lpcn, op, hz, g_state.trunk_chan_map[lpcn],
+    return dmr_t3_overlay_apply(&g_opts, &g_state, lpcn, op, hz, dmr_t3_chan_effective_hz(&g_state, lpcn),
                                 (uint8_t)dmr_t3_chan_origin(&g_state, lpcn), dmr_t3_chan_generation(&g_state), 1);
 }
 
@@ -2149,6 +2149,89 @@ test_missing_reconciled_after_other_writers(void) {
     assert(dmr_t3_missing_revision(&g_state) == rev);
 }
 
+/* Review gate b-r2 C2: an edit's expected frequency is the one DMR uses for the channel (the entry over the shared
+   row), not the shared row, which another protocol's writer can empty or fill under an entry. A set channel whose row
+   P25 emptied and a hidden one whose row P25 filled both take an edit naming the entry's frequency; the shared row's
+   value is stale for both. A channel with no entry is judged by its shared row. */
+static void
+test_overlay_edit_expects_the_effective_frequency(void) {
+    reset();
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    dsd_state_set_trunk_chan_freq(&g_state, 12U, 0L);         /* P25's IDEN invalidation empties it */
+    dsd_state_set_trunk_chan_freq(&g_state, 13U, 451162500L); /* P25's frequency cache fills it */
+    assert(dmr_t3_chan_effective_hz(&g_state, 12U) == 451137500L && dmr_t3_chan_effective_hz(&g_state, 13U) == 0L);
+    const uint8_t user = (uint8_t)DMR_CHAN_ORIGIN_USER;
+    assert(dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_USER);
+    const uint32_t gen = dmr_t3_chan_generation(&g_state);
+
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_SET, 451150000L, 0L, user, gen, 1)
+           == DMR_T3_SET_STALE);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 13U, DMR_T3_OVERLAY_RESTORE, 0L, 451162500L, user, gen, 1)
+           == DMR_T3_SET_STALE);
+    assert(dmr_t3_overlay_count(&g_state) == 2U);
+
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 12U, DMR_T3_OVERLAY_SET, 451150000L, 451137500L, user, gen, 1)
+           == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 451150000L && dmr_t3_chan_effective_hz(&g_state, 12U) == 451150000L);
+    assert(dmr_t3_overlay_apply(&g_opts, &g_state, 13U, DMR_T3_OVERLAY_RESTORE, 0L, 0L, user, gen, 1) == DMR_T3_SET_OK);
+    assert(dmr_t3_overlay_get(&g_state, 13U, NULL, NULL) == 0 && dmr_t3_overlay_count(&g_state) == 1U);
+
+    dsd_state_set_trunk_chan_freq(&g_state, 14U, 451175000L);
+    assert(dmr_t3_chan_effective_hz(&g_state, 14U) == 451175000L);
+    assert(dmr_t3_chan_effective_hz(&g_state, 0U) == 0L && dmr_t3_chan_effective_hz(&g_state, 4095U) == 0L);
+}
+
+/* Review gate b-r2 C3: the fill anchors on the frequency DMR uses. A hidden channel whose shared row another protocol
+   filled anchors nothing (one anchor left: no estimate); a set channel whose row another protocol emptied anchors at
+   the user's frequency (two anchors: the gap between them fills). */
+static void
+test_anchors_resolve_the_overlay(void) {
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    assert(overlay_edit(10U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    dsd_state_set_trunk_chan_freq(&g_state, 10U, 450000000L);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[11] == 0L && dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_NONE);
+
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    assert(overlay_edit(20U, DMR_T3_OVERLAY_SET, 450000000L) == DMR_T3_SET_OK);
+    dsd_state_set_trunk_chan_freq(&g_state, 20U, 0L);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 22U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[21] == 450012500L && dmr_t3_chan_origin(&g_state, 21U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(g_state.trunk_chan_map[20] == 0L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_USER);
+}
+
+/* Review gate b-r2 C4: a fill the user's edit caused (or the --dmr-chan-overrides file) has no received burst behind
+   it: its notice is a system notice, with no protocol, slot or CRC flags. A fill a learned row caused stays received
+   data on that burst's slot. */
+static void
+test_user_fill_notice_is_a_system_notice(void) {
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    g_state.currentslot = 1;
+    g_state.event_crc_invalid[1] = DSD_CRC_RAS_UNVERIFIED;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 450000000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint64_t before0 = pushes(0);
+    uint64_t before1 = pushes(1);
+    assert(overlay_edit(14U, DMR_T3_OVERLAY_SET, 450025000L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[13] == 450012500L && dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(pushes(1) == before1 && pushes(0) == before0 + 1U);
+    const Event_History* row = &g_state.event_history_s[0].Event_History_Items[1];
+    assert(strstr(row->event_string, "DMR TIII: Heuristic filled 1 LCNs") != NULL);
+    assert(row->category == (uint8_t)DSD_EVENT_CATEGORY_SYSTEM && row->systype == DSD_SYNC_NONE);
+    assert(row->crc_invalid == 0U);
+
+    before1 = pushes(1);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 16U, 450050000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[15] == 450037500L && pushes(1) == before1 + 2U);
+    row = &g_state.event_history_s[1].Event_History_Items[1];
+    assert(strstr(row->event_string, "DMR TIII: Heuristic filled 2 LCNs") != NULL);
+    assert(row->category == (uint8_t)DSD_EVENT_CATEGORY_DATA && row->crc_invalid == DSD_CRC_RAS_UNVERIFIED);
+}
+
 /* Write @p text to a new temporary file named into @p path. */
 static void
 write_temp_csv(char* path, size_t size, const char* text) {
@@ -2267,6 +2350,27 @@ test_cc_evidence_from_checked_aloha(void) {
     g_opts.audio_in_type = 0;
     send_aloha(0x1234U);
     assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+}
+
+/* Review gate b-r2 C6: a trunk retune (to a voice channel, back, a hunt's next candidate) moves the runtime tuning
+   generation, not always the carrier count: the evidence goes stale with it, and none holds while a tune is pending. */
+static void
+test_cc_evidence_stale_after_trunk_retune(void) {
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = (uint32_t)CC_HZ;
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == CC_HZ);
+    const uint32_t carrier = g_state.carrier_seq;
+    const uint64_t request = dsd_trunk_tuning_request_begin();
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+    dsd_trunk_tuning_request_complete(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_state.carrier_seq == carrier && dsd_trunk_tuning_pending_request() == 0U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+    /* Heard again on the carrier reached: confirmed there. */
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == CC_HZ);
 }
 
 /* The flag rides each trunk-scan target's snapshot; the evidence never crosses to another target. */
@@ -2403,6 +2507,9 @@ main(void) {
     test_overlay_governs_grants_over_the_shared_map();
     test_hidden_channel_anchors_no_estimate();
     test_missing_reconciled_after_other_writers();
+    test_overlay_edit_expects_the_effective_frequency();
+    test_anchors_resolve_the_overlay();
+    test_user_fill_notice_is_a_system_notice();
     test_overlay_load_csv_rows();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();
@@ -2421,6 +2528,7 @@ main(void) {
     test_foreign_takeover_drops_trust_and_moves_revision();
     test_save_restore_keeps_effective_revision();
     test_cc_evidence_from_checked_aloha();
+    test_cc_evidence_stale_after_trunk_retune();
     test_tier3_and_evidence_per_target();
     test_tier3_from_checked_grant_and_bcast();
     test_mapped_grant_allocates_nothing();

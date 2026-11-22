@@ -2686,8 +2686,11 @@ channel is delayed.
   file is never written, and the channel map file is not changed. A file that does not exist is refused at start, and
   one that cannot be read stops the start. A row with another shape or a number out of range is skipped with a
   warning, as `-C` skips its rows; a channel given twice keeps its later row. The file names at most 256 channels; a
-  row naming one more is skipped with a warning. Cannot be combined with `--trunk-scan`, and has no INI key. Format
-  and examples: [DMR Tier III](csv-formats.md#dmr-tier-iii) in `docs/csv-formats.md`.
+  row naming one more is skipped with a warning. The file is applied only when the session decodes DMR and runs no
+  trunk scan, judged after the config file (its `[mode] decode`), `--profile` and the command line: a session that
+  does not decode DMR, or one that runs a trunk scan (which has no global channel map), starts without it and logs one
+  notice. It has no INI key. Format and examples: [DMR Tier III](csv-formats.md#dmr-tier-iii) in
+  `docs/csv-formats.md`.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
   `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `--dmr-chan-overrides`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`,
   the `-Q` file name, `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and

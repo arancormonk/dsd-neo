@@ -432,10 +432,23 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
 
 /* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3) lie over the channel map: applied here, after
  * the map loaded (by -C while parsing, or by import_global_channel_map_if_needed()) and before the first frame. A file
- * that cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. */
+ * that cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. Only a session that
+ * decodes DMR and runs no trunk scan takes it, judged on the options as the config file (its [mode] decode), the
+ * profile and the command line left them: the map is shared with the other trunking protocols, and a trunk scan has no
+ * global map. Any other session starts without it, with one notice. */
 static int
 import_dmr_chan_overrides_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_chan_overrides_file[0] == '\0') {
+        return 0;
+    }
+    if (opts->frame_dmr != 1) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: this session does not decode DMR.\n",
+                 opts->dmr_chan_overrides_file);
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: a trunk scan uses each target's own channel map.\n",
+                 opts->dmr_chan_overrides_file);
         return 0;
     }
     return dmr_t3_overlay_load_csv(opts, state, opts->dmr_chan_overrides_file) < 0 ? -1 : 0;

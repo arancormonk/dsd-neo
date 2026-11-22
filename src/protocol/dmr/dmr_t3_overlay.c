@@ -35,11 +35,12 @@ dmr_t3_overlay_args_valid(uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
     return op == DMR_T3_OVERLAY_HIDE || op == DMR_T3_OVERLAY_RESTORE;
 }
 
-/* Whether the row is still the one the editor showed: its frequency, its origin, and the network it belonged to. */
+/* Whether the row is still the one the editor showed: the frequency DMR uses for it (the user's entry over the map, so
+   another writer of the shared row changes nothing an editor read), its origin, and the network it belonged to. */
 static int
 dmr_t3_overlay_expected(const dsd_state* state, uint16_t lpcn, long expected_hz, uint8_t expected_origin,
                         uint32_t generation) {
-    return generation == dmr_t3_chan_generation(state) && expected_hz == state->trunk_chan_map[lpcn]
+    return generation == dmr_t3_chan_generation(state) && expected_hz == dmr_t3_chan_effective_hz(state, lpcn)
            && expected_origin == (uint8_t)dmr_t3_chan_origin(state, lpcn);
 }
 
@@ -115,7 +116,7 @@ dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_ove
     if (changed > 0) {
         ext->revision++;
         dmr_t3_missing_reconcile(state);
-        dmr_t3_chan_anchors_changed(opts, state, ext);
+        dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
     }
     return DMR_T3_SET_OK;
 }

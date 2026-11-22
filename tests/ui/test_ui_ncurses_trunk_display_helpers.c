@@ -182,11 +182,18 @@ printw(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
+static dsd_ui_dmr_t3_view g_t3;
+
+/* A map row, and the frequency DMR uses for it in the Tier III view (its channel_hz), as the snapshot copy leaves them
+   for a channel with no entry of the user's. */
 static void
 add_trunk_channel(dsd_state* state, uint16_t channel, long int freq) {
     assert(channel < DSD_TRUNK_CHAN_MAP_SIZE);
     state->trunk_chan_map_used[state->trunk_chan_map_used_count++] = channel;
     state->trunk_chan_map[channel] = freq;
+    if (channel < DSD_UI_DMR_T3_ROWS - 1) {
+        g_t3.channel_hz[channel] = freq;
+    }
 }
 
 static void
@@ -398,8 +405,6 @@ t3_fixture_free(t3_fixture* f) {
     free(f->state);
 }
 
-static dsd_ui_dmr_t3_view g_t3;
-
 static void
 attach_t3(dsd_state* state) {
     DSD_MEMSET(&g_t3, 0, sizeof g_t3);
@@ -556,6 +561,41 @@ test_t3_numbering_follows_the_current_system(void) {
     reset_render_capture();
     ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL && strstr(g_output, "CH 12:") == NULL);
+
+    /* Review gate b-r2 C5: on a DMR carrier whose identity names another trunking system (a Connect Plus site after a
+       Tier III one in the same session), its map keeps the hex its grant notices use. */
+    f.opts->frame_p25p1 = 0;
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_t3.other_system_here = 1U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL && strstr(g_output, "CH 12:") == NULL);
+    g_t3.other_system_here = 0U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 12: 851.150000 MHz") != NULL);
+    t3_fixture_free(&f);
+}
+
+/* Review gate b-r2 C2: the Tier III list shows the frequency DMR uses (the view's channel_hz), not the shared row: a
+   set channel whose row P25 emptied shows the user's frequency, a hidden one whose row P25 filled is not listed. */
+static void
+test_t3_map_shows_the_effective_frequency(void) {
+    t3_fixture f = t3_fixture_new();
+    f.opts->trunk_enable = 1;
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(f.state);
+    g_t3.tier3 = 1U;
+    add_trunk_channel(f.state, 12U, 0L); /* the user's 451.137500 MHz, the shared row emptied */
+    g_t3.channel_hz[12] = 451137500L;
+    add_trunk_channel(f.state, 13U, 451162500L); /* hidden by the user, the shared row filled */
+    g_t3.channel_hz[13] = 0L;
+    add_trunk_channel(f.state, 14U, 451175000L);
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 12: 451.137500 MHz") != NULL);
+    assert(strstr(g_output, "CH 13:") == NULL && strstr(g_output, "451.162500") == NULL);
+    assert(strstr(g_output, "CH 14: 451.175000 MHz") != NULL);
     t3_fixture_free(&f);
 }
 
@@ -574,6 +614,7 @@ main(void) {
     test_t3_missing_rows_are_capped();
     test_t3_mapped_rows_decimal_and_distinct();
     test_t3_numbering_follows_the_current_system();
+    test_t3_map_shows_the_effective_frequency();
     return 0;
 }
 

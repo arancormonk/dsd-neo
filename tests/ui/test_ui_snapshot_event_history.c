@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -634,6 +635,7 @@ test_dmr_t3_view_carries_the_record(void) {
     ext->overlay.count = 2U;
     ext->cc_evidence = 1U;
     ext->cc_evidence_carrier = st->carrier_seq;
+    ext->cc_evidence_tune_gen = dsd_trunk_tuning_generation();
     ext->cc_evidence_hz = 451000000L;
     view = dmr_t3_view_after_publish(st);
     assert(view->present == 1U && view->tier3 == 1U && view->state_id == st->state_instance);
@@ -696,6 +698,77 @@ test_dmr_t3_view_reconciles_rows_other_writers_filled(void) {
     view = dmr_t3_view_after_publish(st);
     assert(!dsd_app_dmr_t3_view_missing_has(view, 12U) && dsd_app_dmr_t3_view_missing_count(view) == 0U);
     assert(view->missing.detail_count == 0U && dmr_t3_missing_count(st) == 0U);
+    free_session_state(st);
+}
+
+/* Review gate b-r2 C2: the view carries the frequency DMR uses per channel (channel_hz). A set channel whose shared row
+   another protocol emptied shows the user's frequency, a hidden one whose row another protocol filled shows none, and a
+   channel with no entry shows its row; the snapshot's shared rows keep what the other writer left. */
+static void
+test_dmr_t3_view_carries_the_effective_frequency(void) {
+    dsd_state* st = new_session_state();
+    dsd_state_set_trunk_chan_freq(st, 18U, 451225000L);
+    dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    /* The user's entries (set 14, hidden 13); then another writer empties 14's shared row and fills 13's. */
+    ext->overlay.op[14] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[14] = 451175000L;
+    ext->overlay.op[13] = (uint8_t)DMR_T3_OVERLAY_HIDE;
+    ext->overlay.count = 2U;
+    ext->origin[13] = ext->origin[14] = (uint8_t)DMR_CHAN_ORIGIN_USER;
+    dsd_state_set_trunk_chan_freq(st, 14U, 0L);
+    dsd_state_set_trunk_chan_freq(st, 13U, 451162500L);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->channel_hz[14] == 451175000L && view->channel_hz[13] == 0L);
+    assert(view->channel_hz[18] == 451225000L && view->channel_hz[12] == 0L);
+    assert(view->channel_hz[0] == 0L && view->channel_hz[4095] == 0L);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert(snap->trunk_chan_map[14] == 0L && snap->trunk_chan_map[13] == 451162500L);
+    free_session_state(st);
+}
+
+/* Review gate b-r2 C5: Tier III numbering and the editor belong to the current Tier III system. A Connect Plus site
+   reached later in the same session (or another protocol's system) reads tier3 0 and lists no LPCNs, though the
+   session's flags hold; back on a Tier III site, or on a carrier that named nothing yet, they hold again. */
+static void
+test_dmr_t3_view_follows_the_current_system(void) {
+    dsd_state* st = new_session_state();
+    dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    ext->tier3 = 1U;
+    ext->tier3_unchecked = 1U;
+    st->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    st->rx_id.valid = DSD_RXID_DMR_T3_SYSCODE;
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->other_system_here == 0U && view->tier3 == 1U && dsd_app_dmr_t3_view_shows_lpcns(view));
+
+    st->rx_id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET;
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->other_system_here == 1U && view->tier3 == 0U && view->tier3_unchecked == 0U);
+    assert(!dsd_app_dmr_t3_view_shows_lpcns(view) && dmr_t3_tier3_seen(st));
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U)); /* the ledger is still the session's */
+
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS;
+    st->rx_id.valid = DSD_RXID_DMR_REST_LSN;
+    assert(dmr_t3_view_after_publish(st)->other_system_here == 1U);
+
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    st->rx_id.valid = DSD_RXID_DMR_T3_SYSCODE;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->other_system_here == 0U && view->tier3 == 1U && dsd_app_dmr_t3_view_shows_lpcns(view));
+
+    /* A DMR carrier with no trunking part, and a reset record, name no other system. */
+    st->rx_id.valid = DSD_RXID_ACCESS;
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    assert(dmr_t3_view_after_publish(st)->tier3 == 1U);
+    DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
+    assert(dmr_t3_view_after_publish(st)->tier3 == 1U);
+
+    st->rx_id.family = (uint8_t)DSD_RXID_FAMILY_P25;
+    st->rx_id.valid = DSD_RXID_P25_SYSID;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->other_system_here == 1U && view->tier3 == 0U && !dsd_app_dmr_t3_view_shows_lpcns(view));
+    DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
     free_session_state(st);
 }
 
@@ -1276,6 +1349,8 @@ main(void) {
     test_dmr_t3_view_carries_the_record();
     test_dmr_t3_view_idle_refresh_copies_nothing();
     test_dmr_t3_view_reconciles_rows_other_writers_filled();
+    test_dmr_t3_view_carries_the_effective_frequency();
+    test_dmr_t3_view_follows_the_current_system();
     test_dmr_t3_view_keys_on_target_and_session();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");

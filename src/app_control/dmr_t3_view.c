@@ -47,7 +47,7 @@ dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view) {
 
 int
 dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view) {
-    if (view == NULL || view->present == 0U) {
+    if (view == NULL || view->present == 0U || view->other_system_here != 0U) {
         return 0;
     }
     return view->tier3 != 0U || view->tier3_unchecked != 0U || view->overlay_count != 0U

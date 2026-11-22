@@ -10247,7 +10247,9 @@ test_dmr_chan_overrides_long_option_parse(void) {
     return test_rc;
 }
 
-/* A missing file, a missing value and a trunk scan (in either order) are refused at parse. */
+/* A missing file and a missing value are refused at parse. A trunk scan (in either order) is not (review gate b-r2 C1):
+   the path is kept, and the decoder starts without the file, with a notice, as it does for a session that does not
+   decode DMR. */
 static int
 test_dmr_chan_overrides_refusals(void) {
     char csv_path[1024];
@@ -10267,13 +10269,14 @@ test_dmr_chan_overrides_refusals(void) {
 
     struct {
         char** argv;
-        int argc;
         const char* name;
+        int argc;
+        int refused;
     } cases[] = {
-        {argv_missing, 2, "a missing file"},
-        {argv_bare, 2, "no value"},
-        {argv_scan_a, 3, "after --trunk-scan"},
-        {argv_scan_b, 3, "before --trunk-scan"},
+        {argv_missing, "a missing file", 2, 1},
+        {argv_bare, "no value", 2, 1},
+        {argv_scan_a, "after --trunk-scan", 3, 0},
+        {argv_scan_b, "before --trunk-scan", 3, 0},
     };
 
     int test_rc = 0;
@@ -10291,9 +10294,16 @@ test_dmr_chan_overrides_refusals(void) {
         int argc_effective = 0;
         int exit_rc = -1;
         const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
-        if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        if (cases[i].refused && (rc != DSD_PARSE_ERROR || exit_rc != 1)) {
             DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected a refusal, rc=%d exit=%d\n", cases[i].name, rc,
                         exit_rc);
+            test_rc = 1;
+        }
+        if (!cases[i].refused
+            && (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1
+                || strcmp(opts->dmr_chan_overrides_file, csv_path) != 0)) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected it kept, rc=%d exit=%d file=\"%s\"\n",
+                        cases[i].name, rc, exit_rc, opts->dmr_chan_overrides_file);
             test_rc = 1;
         }
         freeState(state);
@@ -10301,6 +10311,64 @@ test_dmr_chan_overrides_refusals(void) {
         free(state);
     }
     (void)remove(csv_path);
+    return test_rc;
+}
+
+/* Review gate b-r2 C7: the bootstrap pre-scan steps over the channels file's separate value, as the parser does: a file
+   named like a one-shot option ("--print-config", in the working directory) is the file, never the option. Read as the
+   option, the bootstrap would print the config and exit 0 instead of starting with the file. */
+static int
+test_dmr_chan_overrides_value_is_not_an_option(void) {
+    if (!dsd_cli_option_takes_free_value("--dmr-chan-overrides")
+        || dsd_cli_option_takes_free_value("--dmr-chan-overrides=--print-config")) {
+        DSD_FPRINTF(stderr, "--dmr-chan-overrides is not registered as an option taking a free value\n");
+        return 1;
+    }
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_overrides_name") != 0) {
+        return 1;
+    }
+    static const char k_name[] = "--print-config";
+    FILE* fp = dsd_fopen_private(k_name, "w");
+    if (fp == NULL) {
+        (void)dsd_test_temp_cwd_leave(&cwd);
+        return 1;
+    }
+    (void)fputs("lpcn,frequency_hz\n12,451137500\n", fp);
+    (void)fclose(fp);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int test_rc = 1;
+    if (opts && state) {
+        initOpts(opts);
+        initState(state);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--dmr-chan-overrides";
+        char arg2[] = "--print-config";
+        char* argv[] = {arg0, arg1, arg2, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int brc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+        const size_t len = strlen(opts->dmr_chan_overrides_file);
+        const int named = len >= sizeof k_name - 1U
+                          && strcmp(opts->dmr_chan_overrides_file + len - (sizeof k_name - 1U), k_name) == 0;
+        test_rc = 0;
+        if (brc != DSD_BOOTSTRAP_CONTINUE || !named) {
+            DSD_FPRINTF(stderr, "bootstrap with --dmr-chan-overrides --print-config: rc=%d exit_rc=%d file=\"%s\"\n",
+                        brc, exit_rc, opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+    }
+    free(opts);
+    free(state);
+    (void)remove(k_name);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        test_rc = 1;
+    }
     return test_rc;
 }
 
@@ -13488,6 +13556,7 @@ main(void) {
     rc |= test_src_csv_missing_value_returns_error();
     rc |= test_dmr_chan_overrides_long_option_parse();
     rc |= test_dmr_chan_overrides_refusals();
+    rc |= test_dmr_chan_overrides_value_is_not_an_option();
     rc |= test_src_csv_allowed_with_trunk_scan();
     rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();

@@ -544,12 +544,6 @@ cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, in
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
-    /* The user's channels lie over the one global map, which a trunk scan does not have (discussion #900 F3). */
-    if (opts->dmr_chan_overrides_file[0] != '\0') {
-        LOG_ERROR("--dmr-chan-overrides cannot be combined with --trunk-scan\n");
-        cli_set_exit_rc(out_exit_rc, 1);
-        return DSD_PARSE_ERROR;
-    }
     /* Same rule for a config-file [trunking] p25_bandplan_csv: an explicit CLI --trunk-scan
        disowns the inherited plan (targets carry their own), an inherited one is a conflict. */
     if (trunk_scan_cli_seen && !p25_bandplan_cli_seen) {

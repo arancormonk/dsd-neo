@@ -173,14 +173,16 @@ ui_trunk_render_chan_map(const dsd_state* state, uint32_t chan_map_count, ui_tru
     }
 }
 
-/* The Tier III map by LPCN ascending: every LPCN with a frequency, two sharing one included (each names its own
-   channel). Frequencies are still marked seen, so the positional rows after it skip theirs. */
+/* The Tier III map by LPCN ascending: every LPCN with a frequency DMR uses (the view's channel_hz: the user's entry
+   over the shared row, so a hidden channel is not listed and a set one shows the user's frequency, whatever another
+   protocol left in the row), two sharing one included (each names its own channel). Frequencies are still marked seen,
+   so the positional rows after it skip theirs. */
 static void
-ui_trunk_render_t3_map(const dsd_state* state, ui_trunk_render_state* render) {
+ui_trunk_render_t3_map(const dsd_ui_dmr_t3_view* view, ui_trunk_render_state* render) {
     int printed = 0;
     int extra = 0;
     for (int lpcn = 1; lpcn <= UI_TRUNK_T3_MAX_LPCN; lpcn++) {
-        const long int freq = state->trunk_chan_map[lpcn];
+        const long int freq = view->channel_hz[lpcn];
         if (freq == 0) {
             continue;
         }
@@ -333,7 +335,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     }
 
     if (have_chan_map && t3_lpcns) {
-        ui_trunk_render_t3_map(state, &render);
+        ui_trunk_render_t3_map(t3, &render);
     } else if (have_chan_map) {
         ui_trunk_render_chan_map(state, chan_map_count, &render);
     }

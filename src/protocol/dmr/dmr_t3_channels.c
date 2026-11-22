@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -269,6 +270,45 @@ dmr_t3_overlay_resolve(const dsd_state* state, uint16_t lpcn, long* hz) {
     }
     *hz = op == (uint8_t)DMR_T3_OVERLAY_SET ? ext->overlay.hz[lpcn] : 0;
     return 1;
+}
+
+/* dmr_t3_chan_effective_hz() with the extension @p ext (NULL for none) already looked up; @p lpcn is below
+   DMR_T3_ROWS. */
+static long
+dmr_t3_chan_row_effective_hz(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
+    if (!dmr_t3_lpcn_is_channel(lpcn)) {
+        return 0;
+    }
+    if (ext != NULL && ext->overlay.op[lpcn] != 0U) {
+        return ext->overlay.op[lpcn] == (uint8_t)DMR_T3_OVERLAY_SET ? ext->overlay.hz[lpcn] : 0;
+    }
+    return state->trunk_chan_map[lpcn];
+}
+
+long
+dmr_t3_chan_effective_hz(const dsd_state* state, uint16_t lpcn) {
+    if (state == NULL || lpcn >= DMR_T3_ROWS) {
+        return 0;
+    }
+    return dmr_t3_chan_row_effective_hz(state, dmr_ext_get(state), lpcn);
+}
+
+void
+dmr_t3_chan_effective_copy(const dsd_state* state, long* out, size_t count) {
+    if (out == NULL) {
+        return;
+    }
+    if (count > DMR_T3_ROWS) {
+        count = DMR_T3_ROWS;
+    }
+    DSD_MEMSET(out, 0, count * sizeof(*out));
+    if (state == NULL) {
+        return;
+    }
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    for (size_t l = 1U; l < count; l++) {
+        out[l] = dmr_t3_chan_row_effective_hz(state, ext, (uint16_t)l);
+    }
 }
 
 void
@@ -660,6 +700,7 @@ dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state) {
     }
     ext->cc_evidence = 1U;
     ext->cc_evidence_carrier = state->carrier_seq;
+    ext->cc_evidence_tune_gen = dsd_trunk_tuning_generation();
     ext->cc_evidence_hz = hz;
 }
 
@@ -667,6 +708,11 @@ long
 dmr_t3_cc_confirmed_hz(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
     if (ext == NULL || ext->cc_evidence == 0U || ext->cc_evidence_carrier != state->carrier_seq) {
+        return 0;
+    }
+    /* A trunk retune (to a voice channel, back, or a hunt's next candidate) moves the tuning generation, not always the
+       carrier count; a tune in flight leaves the receiver nowhere known. */
+    if (!dsd_trunk_tuning_frame_is_current(ext->cc_evidence_tune_gen)) {
         return 0;
     }
     return ext->cc_evidence_hz;

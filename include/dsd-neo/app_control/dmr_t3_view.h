@@ -8,11 +8,13 @@
  * @brief The DMR Tier III channels as the frontends read them (discussion #900 F3).
  *
  * The UI snapshot (<dsd-neo/app_control/snapshot.h>) carries an owned copy of the DMR module's channel record: where
- * each channel map row came from, the channels granted without a frequency (the missing-channel ledger), the user's
- * channels over the map (set and hidden), whether the site was named Tier III, and the control channel frequency
- * checked evidence names on the current carrier. Both snapshot hops copy it, and each copies the record's body
- * (origins, ledger, overlay rows) only when its content moved: the state instance, the parked trunk-scan target, the
- * channel revision, the ledger's revision or the channel map's sequence. Only the decoder thread writes the source.
+ * each channel map row came from, the frequency DMR uses for each channel (the user's entry over the shared map row),
+ * the channels granted without a frequency (the missing-channel ledger), the user's channels over the map (set and
+ * hidden), whether the site was named Tier III and whether the carrier names another system now, and the control
+ * channel frequency checked evidence names on the current carrier. Both snapshot hops copy it, and each copies the
+ * record's body (origins, frequencies, ledger, overlay rows) only when its content moved: the state instance, the
+ * parked trunk-scan target, the channel revision, the ledger's revision or the channel map's sequence. Only the decoder
+ * thread writes the source.
  *
  * dsd_app_dmr_t3_view() reads it from a snapshot; a live decoder state carries none.
  */
@@ -95,11 +97,17 @@ typedef struct {
 typedef struct {
     uint8_t present;           /**< 1 when the DMR module recorded anything for the session; all else 0 when not */
     uint8_t tier3;             /**< a checked C_ALOHA, C_SYS_Parms, P_SYS_Parms, C_BCAST or grant named the site Tier
-                                    III (this session, or on this trunk-scan target) */
+                                    III (this session, or on this trunk-scan target), and the receiver is not on
+                                    another system now (other_system_here 0) */
     uint8_t cc_confirmed_here; /**< checked TSCC evidence (C_ALOHA or C_SYS_Parms, no call followed) on the current
                                     carrier: cc_hz is this carrier's TSCC */
     uint8_t tier3_unchecked;   /**< a message -F accepted as RAS named the site Tier III: display only (channel numbers
-                                    show in decimal), never identity */
+                                    show in decimal), never identity; 0 too while other_system_here */
+    uint8_t other_system_here; /**< the carrier's received identity (dsd_state::rx_id) names a system that is not Tier
+                                    III: another DMR trunking system (Capacity Plus, Connect Plus, XPT;
+                                    dsd_rxid_dmr_trunk_named()) or another protocol's. Its map is that system's, so
+                                    no Tier III numbering or editor applies; tier3 and tier3_unchecked read 0. 0 while
+                                    the carrier named nothing yet */
     uint64_t state_id;         /**< dsd_state::state_instance of the source */
     uint32_t target_id;        /**< moves whenever the parked trunk-scan target changes; never repeats in a process */
     uint32_t revision;         /**< dmr_t3_chan_revision(): bumps on any row, origin or overlay change */
@@ -109,6 +117,11 @@ typedef struct {
     uint8_t origin[DSD_UI_DMR_T3_ROWS]; /**< dmr_t3_chan_origin() per LPCN (a dmr_chan_origin_e; USER when hidden) */
     uint16_t overlay_count;             /**< overlay rows in use, by LPCN ascending */
     dsd_ui_dmr_t3_overlay_row overlay[DSD_UI_DMR_T3_OVERLAY_MAX_ROWS];
+    /** The frequency DMR uses per LPCN (dmr_t3_chan_effective_hz()): the user's entry over the shared map row (a set
+     * channel its frequency, a hidden one 0), else the map row; 0 for LPCN 0 and 4095. What a frontend shows and
+     * sends as DSD_APP_CMD_DMR_CHANNEL_SET's expected frequency: the snapshot's trunk_chan_map row is the shared one,
+     * which another protocol's writer can empty or fill under an entry. Copied with the body. */
+    long channel_hz[DSD_UI_DMR_T3_ROWS];
     long cc_hz; /**< the TSCC frequency when cc_confirmed_here, else 0 */
 } dsd_ui_dmr_t3_view;
 
@@ -123,7 +136,8 @@ size_t dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view);
 
 /**
  * Whether the channel map shows as Tier III LPCNs, in decimal: the site was named Tier III (checked or RAS-accepted),
- * or the ledger or the user's overlay holds a channel. 0 for NULL.
+ * or the ledger or the user's overlay holds a channel, and the receiver is not on another system now
+ * (other_system_here). 0 for NULL.
  */
 int dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view);
 

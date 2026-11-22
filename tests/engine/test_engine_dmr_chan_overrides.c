@@ -7,7 +7,9 @@
  * --dmr-chan-overrides at start (discussion #900 F3): the decoder applies the user's Tier III channels over the -C map
  * after the map loaded and before the first frame, so a grant in the first dispatched frame resolves to the user's
  * frequency, a hidden channel's grant is not followed, and RESTORE has the file's row to return to. A file that cannot
- * be read stops the start. Real engine run; the frame sync is wrapped and dispatches the grants itself.
+ * be read stops the start. Only a session that decodes DMR and runs no trunk scan takes it (review gate b-r2 C1): any
+ * other starts without it, with one notice. Real engine run; the frame sync is wrapped and dispatches the grants
+ * itself.
  */
 
 #include <assert.h>
@@ -23,6 +25,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,6 +38,28 @@ static const long CC_HZ = 451000000L;
 static int g_sync_calls;
 static long g_tuned_hz[1];
 static int g_tunes;
+/* Whether the run under test takes the file; and the "not applied" notices logged. */
+static int g_expect_applied = 1;
+static int g_skip_notices;
+static char g_skip_notice[512];
+static int g_overrides_refusals;
+static int g_scan_start_errors;
+
+static void
+skip_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text != NULL && strncmp(text, "NOTICE: DMR Tier III channels in ", 33) == 0 && strstr(text, " not applied: ")) {
+        g_skip_notices++;
+        DSD_SNPRINTF(g_skip_notice, sizeof g_skip_notice, "%s", text);
+    }
+    if (text != NULL && strstr(text, "--dmr-chan-overrides cannot be combined") != NULL) {
+        g_overrides_refusals++;
+    }
+    if (text != NULL && strstr(text, "--trunk-scan requires targets_csv") != NULL) {
+        g_scan_start_errors++;
+    }
+}
 
 // NOLINTBEGIN(misc-use-internal-linkage)
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
@@ -106,6 +131,14 @@ int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     ++g_sync_calls;
+    if (!g_expect_applied) {
+        /* Not this session's: no entry was made, and a map's rows are the map file's. */
+        assert(dmr_t3_overlay_count(state) == 0U && dmr_t3_chan_origin(state, 12U) != DMR_CHAN_ORIGIN_USER);
+        assert(opts->chan_in_file[0] == '\0'
+               || (state->trunk_chan_map[12] == 451012500L && state->trunk_chan_map[13] == 451025000L));
+        dsd_exitflag_store(1);
+        return DSD_SYNC_NONE;
+    }
     /* The first frame: the user's rows already lie over the file's. */
     assert(state->trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
     assert(state->trunk_chan_map[13] == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER);
@@ -170,6 +203,50 @@ test_overrides_applied_before_first_frame(const char* map, const char* overrides
     free(opts);
 }
 
+/* Review gate b-r2 C1: a session whose decode, after the config file and the command line, is not DMR (an INI's
+   [mode] decode, -fp) starts without the file, with one notice; so does one that runs a trunk scan (a profile can turn
+   it on), which has no global map: its start goes on to the trunk scan's own checks (this one has no targets or tuner,
+   which stop it there). */
+static void
+test_overrides_skipped_without_dmr(const char* map, const char* overrides) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    init_run(opts, state, map, overrides);
+    opts->frame_dmr = 0;
+    opts->frame_p25p1 = 1;
+    g_expect_applied = 0;
+    g_sync_calls = 0;
+    g_skip_notices = 0;
+    assert(dsd_engine_run_with_lifecycle(opts, state, NULL) == 0);
+    assert(g_sync_calls == 1 && g_skip_notices == 1);
+    assert(strstr(g_skip_notice, "this session does not decode DMR") != NULL);
+    g_expect_applied = 1;
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+static void
+test_overrides_skipped_under_trunk_scan(const char* overrides) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    init_run(opts, state, "", overrides);
+    opts->trunk_scan_enabled = 1;
+    g_sync_calls = 0;
+    g_skip_notices = 0;
+    g_overrides_refusals = 0;
+    g_scan_start_errors = 0;
+    assert(dsd_engine_run_with_lifecycle(opts, state, NULL) != 0);
+    assert(g_skip_notices == 1 && g_overrides_refusals == 0 && g_scan_start_errors == 1 && g_sync_calls == 0);
+    assert(strstr(g_skip_notice, "a trunk scan uses each target's own channel map") != NULL);
+    assert(dmr_t3_overlay_count(state) == 0U);
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_unreadable_overrides_stop_the_start(const char* map, const char* missing) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -190,7 +267,10 @@ main(void) {
     char overrides[DSD_TEST_PATH_MAX];
     write_file(map, sizeof map, "dmr_overrides_map", "channel,freq\n12,451012500\n13,451025000\n14,451037500\n");
     write_file(overrides, sizeof overrides, "dmr_overrides", "lpcn,frequency_hz\n12,451137500\n13,0\n");
+    dsd_neo_log_set_tap(skip_log_tap, NULL);
     test_overrides_applied_before_first_frame(map, overrides);
+    test_overrides_skipped_without_dmr(map, overrides);
+    test_overrides_skipped_under_trunk_scan(overrides);
     (void)remove(overrides);
     test_unreadable_overrides_stop_the_start(map, overrides);
     (void)remove(map);

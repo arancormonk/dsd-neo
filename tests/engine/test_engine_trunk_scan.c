@@ -27880,6 +27880,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     return 0;
 }
 
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
+    return 0;
+}
+
 /* The close of the recordings no call owns, which a target switch runs as it leaves the carrier (issue #809 B4):
    counted. CORE_WAV_JOURNAL runs the real one through the real switch. */
 void

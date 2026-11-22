@@ -77,7 +77,7 @@ internal object UsbReceiverKind {
         "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
         "--p25-sm-log", "--wav-journal", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
         "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--rdio-analog-system-id", "--rdio-analog-talkgroup",
-        "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--dmr-chan-overrides",
+        "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--dmr-tg-key-csv",
         "--p25-bandplan", "--src-csv", "--p25-bandplan-export",
         "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",
         "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
@@ -98,11 +98,11 @@ internal object UsbReceiverKind {
     )
 
     /**
-     * Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin
-     * with '-'. `k_free_value_options`.
+     * Long options whose value is free text, taken whatever it starts with: an API token, a target id or the DMR
+     * channels file's name may begin with '-'. `k_free_value_options`.
      */
     private val LONG_FREE_VALUE: Set<String> = setOf(
-        "--api-token", "--api-token-file", "--trunk-scan-hold",
+        "--api-token", "--api-token-file", "--trunk-scan-hold", "--dmr-chan-overrides",
     )
 
     /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */

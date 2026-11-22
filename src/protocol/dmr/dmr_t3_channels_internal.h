@@ -53,10 +53,12 @@ typedef struct {
        as RAS (tier3_unchecked, display only); saved per trunk-scan target. */
     uint8_t tier3;
     uint8_t tier3_unchecked;
-    /* The last checked TSCC evidence on the carrier the receiver was on (dmr_t3_cc_note_evidence()): its frequency and
-       dsd_state::carrier_seq then. Valid only while that count holds; never saved per target. */
+    /* The last checked TSCC evidence on the carrier the receiver was on (dmr_t3_cc_note_evidence()): its frequency,
+       dsd_state::carrier_seq and the runtime trunk-tuning generation then. Valid only while both hold and no tune is
+       pending; never saved per target. */
     uint8_t cc_evidence;
     uint32_t cc_evidence_carrier;
+    uint64_t cc_evidence_tune_gen;
     long cc_evidence_hz;
 } dmr_ext_t;
 
@@ -74,9 +76,13 @@ int dmr_t3_chan_origin_is_ota(unsigned origin);
  * overlay bases of that origin (RESTORE then returns no frequency). Returns whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
 
+/* Who moved an anchor of the heuristic fill: a received burst (its notice is received data, on that burst's slot with
+ * its CRC flags) or the user (an edit or the --dmr-chan-overrides file: a system notice, no burst behind it). */
+typedef enum { DMR_T3_ANCHORS_FROM_AIR = 0, DMR_T3_ANCHORS_FROM_USER = 1 } dmr_t3_anchors_cause;
+
 /* An anchor of the heuristic fill appeared, moved or went: every estimate goes and the fill runs again (with
- * dsd_opts::dmr_t3_heuristic_fill on; @p opts may be NULL). */
-void dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext);
+ * dsd_opts::dmr_t3_heuristic_fill on; @p opts may be NULL). @p cause says how the fill's notice is posted. */
+void dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext, dmr_t3_anchors_cause cause);
 
 /* Whether @p lpcn is hidden by the user (an overlay HIDE entry). */
 int dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn);

@@ -203,8 +203,9 @@ typedef struct {
 
 /**
  * Edit channel @p lpcn (1..4094): SET it to @p hz, HIDE it, or RESTORE the row the entry replaced (no entry: nothing to
- * do). With @p check nonzero the edit is refused, changing nothing, unless the live row is @p expected_hz with origin
- * @p expected_origin (dmr_t3_chan_origin(), USER for a hidden row) and the network generation is @p generation; with
+ * do). With @p check nonzero the edit is refused, changing nothing, unless the channel's frequency is @p expected_hz
+ * (dmr_t3_chan_effective_hz(): the entry's over the shared row, 0 for a hidden channel), its origin @p expected_origin
+ * (dmr_t3_chan_origin(), USER for a channel with an entry) and the network generation @p generation; with
  * @p check 0 (a start-up file) none of them is compared. Refused under a trunk scan (dsd_opts::trunk_scan_enabled), and
  * a SET or HIDE that would give a channel past DMR_T3_OVERLAY_MAX_ROWS an entry is FULL. An applied change bumps the
  * revision, reconciles the missing-channel ledger and redoes the heuristic estimates.
@@ -242,6 +243,18 @@ size_t dmr_t3_overlay_count(const dsd_state* state);
  * the grant path's only overlay read.
  */
 int dmr_t3_overlay_resolve(const dsd_state* state, uint16_t lpcn, long* hz);
+
+/**
+ * The frequency DMR uses for channel @p lpcn now: the user's entry decides (a SET its frequency, a hidden channel 0),
+ * else the shared channel map row. What an editor shows, what a channel-set edit's expected frequency is checked
+ * against (dmr_t3_overlay_apply()) and what the heuristic fill anchors on: another writer of the shared map (P25's
+ * frequency cache or IDEN invalidation) changes it for no channel the user set or hid. 0 for a NULL state or an LPCN
+ * that names no channel (0, 4095 and past).
+ */
+long dmr_t3_chan_effective_hz(const dsd_state* state, uint16_t lpcn);
+
+/** dmr_t3_chan_effective_hz() for LPCN 0 .. @p count - 1 (at most 0x1000) into @p out, with one extension lookup. */
+void dmr_t3_chan_effective_copy(const dsd_state* state, long* out, size_t count);
 
 /** The rows the overlay's entries replaced (dmr_t3_overlay's base_*), kept with a Signal search session. */
 typedef struct {
@@ -285,13 +298,14 @@ int dmr_t3_tier3_unchecked_seen(const dsd_state* state);
 /**
  * A checked C_ALOHA or C_SYS_Parms was received on the carrier the receiver is on: while no call is followed
  * (dsd_opts::trunk_is_tuned 0) and the tuned frequency is known (dsd_opts_tuned_freq_hz()), that frequency is this
- * carrier's TSCC until the receiver leaves it (dsd_state::carrier_seq moves). Also notes Tier III. The caller judges
- * the provenance. Decoder thread only.
+ * carrier's TSCC until the receiver leaves it: a carrier boundary (dsd_state::carrier_seq moves) or a trunk retune
+ * (the runtime trunk-tuning generation, dsd_trunk_tuning_generation(), moves, or a tune is pending). Also notes Tier
+ * III. The caller judges the provenance. Decoder thread only.
  */
 void dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state);
 
-/** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none or the receiver left
- * it. */
+/** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none, the receiver left it
+ * (a carrier boundary or a trunk retune since) or a trunk tune is pending (dsd_trunk_tuning_frame_is_current()). */
 long dmr_t3_cc_confirmed_hz(const dsd_state* state);
 
 /** Whether the DMR module recorded anything for @p state (its extension exists). */

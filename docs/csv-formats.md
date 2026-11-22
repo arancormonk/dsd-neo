@@ -318,7 +318,9 @@ lpcn,frequency_hz
   from the next start, the channel's frequency from the map or the air is used again.
 - dsd-neo never writes the file and never changes the channel map file. The Android app writes one into its private
   folder for each start of a saved system that has channels of yours.
-- Cannot be combined with `--trunk-scan`; there is no INI key.
+- Applied only when the session decodes DMR and runs no trunk scan, judged after the config file (its
+  `[mode] decode`), `--profile` and the command line. Any other session starts without it and logs one notice
+  (`DMR Tier III channels in <file> not applied: ...`). There is no INI key.
 
 ### Scoped row options
 

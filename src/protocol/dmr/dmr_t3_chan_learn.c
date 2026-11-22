@@ -90,14 +90,17 @@ typedef struct {
     int anchors;
 } dmr_heuristic_anchor_stats;
 
-/* A row with a live frequency that is no estimate: a hidden channel (USER at no frequency) anchors nothing. */
-static int
-dmr_heuristic_is_anchor(const dsd_state* state, int l) {
-    if (state->trunk_chan_map[l] <= 0) {
+/* The frequency row @p l anchors the fill at, or 0 when it anchors nothing: the frequency DMR uses for the channel
+   (dmr_t3_chan_effective_hz(): a hidden channel has none, whatever another writer left in its row, and a set one
+   anchors at the user's frequency), of a row that is no estimate. */
+static long
+dmr_heuristic_anchor_hz(const dsd_state* state, int l) {
+    const long hz = dmr_t3_chan_effective_hz(state, (uint16_t)l);
+    if (hz <= 0) {
         return 0;
     }
     const dmr_chan_origin_e origin = dmr_t3_chan_origin(state, (uint16_t)l);
-    return origin != DMR_CHAN_ORIGIN_NONE && origin != DMR_CHAN_ORIGIN_ESTIMATE;
+    return (origin != DMR_CHAN_ORIGIN_NONE && origin != DMR_CHAN_ORIGIN_ESTIMATE) ? hz : 0;
 }
 
 static void
@@ -107,10 +110,10 @@ dmr_heuristic_collect_anchor_stats(const dsd_state* state, dmr_heuristic_anchor_
 
     DSD_MEMSET(stats, 0, sizeof(*stats));
     for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        if (!dmr_heuristic_is_anchor(state, l)) {
+        const long f = dmr_heuristic_anchor_hz(state, l);
+        if (f == 0) {
             continue;
         }
-        const long f = state->trunk_chan_map[l];
         if (stats->first_lcn == 0) {
             stats->first_lcn = l;
             stats->first_freq = f;
@@ -138,11 +141,12 @@ dmr_heuristic_estimate_step(const dmr_heuristic_anchor_stats* stats) {
 static int
 dmr_heuristic_validate_model(const dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step) {
     for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        if (!dmr_heuristic_is_anchor(state, l)) {
+        const long f = dmr_heuristic_anchor_hz(state, l);
+        if (f == 0) {
             continue;
         }
         const long model = stats->first_freq + (long)(l - stats->first_lcn) * step;
-        if (labs(state->trunk_chan_map[l] - model) > 500) {
+        if (labs(f - model) > 500) {
             return 0;
         }
     }
@@ -162,17 +166,23 @@ dmr_heuristic_fill_gaps(dsd_opts* opts, dsd_state* state, const dmr_heuristic_an
     return filled;
 }
 
+/* The fill's summary: received data when a burst moved an anchor, else (the user's edit or file) a system notice, which
+   names no slot, protocol or CRC state, since no burst produced the estimates. */
 static void
 dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step,
-                          int filled) {
+                          int filled, dmr_t3_anchors_cause cause) {
     char msg[160];
     DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Heuristic filled %d LCNs (%0.3f kHz step) from %04d@%0.6f MHz;", filled,
                  (double)step / 1000.0, stats->first_lcn, (double)stats->first_freq / 1000000.0);
-    dmr_t3_chan_emit_notice(opts, state, msg);
+    if (cause == DMR_T3_ANCHORS_FROM_AIR) {
+        dmr_t3_chan_emit_notice(opts, state, msg);
+    } else {
+        (void)dsd_event_emit_system_notice(opts, state, 0U, msg);
+    }
 }
 
 static void
-dmr_heuristic_fill(dsd_opts* opts, dsd_state* state) {
+dmr_heuristic_fill(dsd_opts* opts, dsd_state* state, dmr_t3_anchors_cause cause) {
     if (opts == NULL || !opts->dmr_t3_heuristic_fill) {
         return;
     }
@@ -184,7 +194,7 @@ dmr_heuristic_fill(dsd_opts* opts, dsd_state* state) {
     }
     const int filled = dmr_heuristic_fill_gaps(opts, state, &stats, step);
     if (filled > 0) {
-        dmr_heuristic_report_fill(opts, state, &stats, step, filled);
+        dmr_heuristic_report_fill(opts, state, &stats, step, filled, cause);
     }
 }
 
@@ -195,11 +205,11 @@ dmr_t3_chan_origin_is_estimate(unsigned origin) {
 
 /* An anchor appeared, moved or went: every estimate goes, and the fill runs again from the anchors left. */
 void
-dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
+dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext, dmr_t3_anchors_cause cause) {
     if (dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_estimate)) {
         ext->revision++;
     }
-    dmr_heuristic_fill(opts, state);
+    dmr_heuristic_fill(opts, state, cause);
 }
 
 int
@@ -234,7 +244,7 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
        on the model line, so the model through the anchors (its step is the first-to-last slope) and every estimate
        stay as they are. */
     if (cur == DMR_CHAN_ORIGIN_NONE || cur_hz != freq_hz) {
-        dmr_t3_chan_anchors_changed(opts, state, ext);
+        dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_AIR);
     }
     return 1;
 }
