@@ -35,7 +35,7 @@ test_tetra_range_value(void) {
         range_validates(&r, NULL);
         assert(dsd_signal_search_range_is_tetra(&r) == (digital == DSD_SEARCH_DIGITAL_TETRA));
     }
-    assert(DSD_SEARCH_DIGITAL_TETRA == 10);
+    _Static_assert(DSD_SEARCH_DIGITAL_TETRA == 10, "digital 10 is TETRA");
     r.digital = 11;
     range_validates(&r, "AM requires analog-only monitoring");
     r.digital = -1;
@@ -266,7 +266,7 @@ test_worst_case_bytes(void) {
     note.tetra.main_hz = 1002387500;
     assert(dsd_signal_search_site_apply(&record, &note));
     const dsd_signal_search_hit hit = {0};
-    assert(sizeof hit.site == 96);
+    _Static_assert(sizeof hit.site == 96, "the hit's site field is 96 bytes");
     char text[sizeof hit.site];
     const size_t n = dsd_signal_search_site_format(&record, text, sizeof text);
     assert(n == sizeof worst - 1 && strcmp(text, worst) == 0);
