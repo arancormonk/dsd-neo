@@ -78,8 +78,11 @@
  * mode in its own class and in both, beside every analog width; each analog mode beside either digital class; noise
  * alone under each two-class mask. --add occupancy adds occupied captures (a share of the reference span raised by
  * 1.5 to 10 dB, clear of the channel and its sidebands) for the lowest-margin rows of each class and kind, with noise
- * alone under each (informational: the occupancy check's speed cost). Both come after the shipped matrix, so its
- * conditions keep their order, names and seeds.
+ * alone under each row's tag and then under every other noise tag (informational: the occupancy check's speed cost).
+ * --add cross adds the -8 masks crossed with neighbours, offsets and a DMR mobile's droop (Builder::cross()); --add
+ * raised the raised-sideband scenes, 80 to 99% of the span raised 1.5 to 10 dB with only the channel clear
+ * (informational: a documented limit, Builder::raised()). Every group comes after the shipped matrix (the late ones
+ * after everything else), so earlier conditions keep their order, names and seeds.
  * --seed-salt N gives every trial a fresh seed (0, the default, keeps the shipped calibration's); --occupancy-veto SHARE
  * judges with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off), in selection as in
  * validation, as --guard does: a trial it voids is invalid, and selection's statistics leave it out (noise alone
@@ -1012,15 +1015,16 @@ struct Builder {
     }
 
     /* The raised hardware bands that put @p share of the capture-wide reference's span over the noise, clear of the
-       channel and its sidebands (3.5 of the widest width a side): on the upper side first (@p both false) or half on
-       each side, each side's overflow on the other. */
+       channel and its sidebands (@p clear_widths of the widest width a side; 3.5 keeps the sideband blocks clean, 1.25
+       raises them and leaves only the channel): on the upper side first (@p both false) or half on each side, each
+       side's overflow on the other. */
     std::vector<std::pair<double, double>>
-    occupied_bands(uint32_t rate, double widest, double share, bool both) const {
+    occupied_bands(uint32_t rate, double widest, double share, bool both, double clear_widths = 3.5) const {
         const bool centred = geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
         const auto entry = std::find_if(std::begin(kCentredSpans), std::end(kCentredSpans),
                                         [&](const CentredSpan& e) { return e.rate == rate; });
         const double span = (centred && entry != std::end(kCentredSpans) ? entry->span : kDefaultSpan) * rate;
-        const double channel = centred ? 0.0 : -(double)rate / 4, clear = 3.5 * widest;
+        const double channel = centred ? 0.0 : -(double)rate / 4, clear = clear_widths * widest;
         const double upper_room = span - (channel + clear), lower_room = (channel - clear) + span;
         const double length = share * (2 * span - widest);
         double up = both ? length / 2 : length, down = both ? length / 2 : 0;
@@ -1068,6 +1072,102 @@ struct Builder {
                         c.occupied = occupied_bands(rate, m.width_hz, share, both);
                         add(c, "p" + std::to_string((int)std::lround(share * 100)) + "/" + signed_text(raise, 1) + "dB/"
                                    + (both ? "both" : "upper"));
+                    }
+                }
+            }
+        }
+    }
+
+    /* The raised-sideband class (informational, issue #834 review): 80 to 99% of the reference span raised by 1.5 to
+       10 dB, the raise reaching the channel's sidebands (clear 1.25 widths a side) and leaving only the channel on the
+       noise. The occupancy check does not see it and the channel reads low by about the raise, a documented limit; the
+       group measures how low (active rows, 1 dB under reception; no gate reads it). */
+    void
+    raised(const Mode& m) {
+        static const double shares[] = {0.80, 0.90, 0.95, 0.99};
+        static const double raises[] = {1.5, 3.0, 6.0, 10.0};
+        for (uint32_t rate : rates) {
+            for (double share : shares) {
+                for (double raise : raises) {
+                    for (bool both : {false, true}) {
+                        Condition c = base("raised", m, rate);
+                        c.floor = OCCUPIED;
+                        c.floor_b = raise;
+                        c.occupied = occupied_bands(rate, m.width_hz, share, both, 1.25);
+                        add(c, "p" + std::to_string((int)std::lround(share * 100)) + "/" + signed_text(raise, 1) + "dB/"
+                                   + (both ? "both" : "upper"));
+                    }
+                }
+            }
+        }
+    }
+
+    /* The -8 masks crossed with the scenes the plain masks leave out: each digital mode judged in its class beside the
+       narrowest and the widest analog width, with neighbours (12.5 and 25 kHz away, +10, +30 and +50 dB, upper, lower
+       and both; at the neighbour scenes' rates), offset from the channel (the digital offsets but 0), and a DMR
+       mobile's droop at each offset. Names start with the group, so none meets an existing condition's name or seed. */
+    void
+    cross() {
+        std::vector<Request> widths;
+        for (const Request& r : noise_requests()) {
+            if (r.width) {
+                widths.push_back(r);
+            }
+        }
+        if (widths.empty()) {
+            return;
+        }
+        const auto by_width = [](const Request& a, const Request& b) { return a.width < b.width; };
+        std::vector<Request> masks = {*std::min_element(widths.begin(), widths.end(), by_width)};
+        const Request wide = *std::max_element(widths.begin(), widths.end(), by_width);
+        if (wide.width != masks[0].width) {
+            masks.push_back(wide); /* one width only: one mask */
+        }
+        static const double offsets[] = {-500, 500, -1000, 1000, -2500, 2500};
+        const int nb = find_source(sources, kNeighbourRow);
+        for (const Mode& m : modes) {
+            if (m.analog) {
+                continue;
+            }
+            for (const Request& r : masks) {
+                const auto masked = [&](uint32_t rate) {
+                    Condition c = base("mask_cross", m, rate);
+                    c.classes = m.cls | DSD_SIGNAL_QUIET_CLASS_ANALOG;
+                    c.analog_width = r.width;
+                    c.name += "/" + std::string(class_text(c.classes)) + "/" + r.tag;
+                    return c;
+                };
+                for (uint32_t rate : scene_rates) {
+                    for (double spacing : {12500.0, 25000.0}) {
+                        for (double level : {10.0, 30.0, 50.0}) {
+                            for (int side : {1, -1, 0}) {
+                                Condition c = masked(rate);
+                                for (int sgn : {1, -1}) {
+                                    if (side == 0 || side == sgn) {
+                                        c.carriers.push_back(Carrier{nb, sgn * spacing, 0, level, true});
+                                    }
+                                }
+                                const char* where = side > 0 ? "upper" : side < 0 ? "lower" : "both";
+                                add(c, signed_text(spacing / 1000, 1).substr(1) + "k/" + signed_text(level, 0) + "dB/"
+                                           + where);
+                            }
+                        }
+                    }
+                }
+                const int count = m.cls == DSD_SIGNAL_QUIET_CLASS_6K25 ? 6 : 4;
+                for (uint32_t rate : rates) {
+                    for (int i = 0; i < count; ++i) {
+                        Condition c = masked(rate);
+                        c.carriers[0].offset_hz = c.snr_offset_hz = offsets[i];
+                        add(c, "off" + signed_text(offsets[i], 0));
+                    }
+                    if (m.name == "dmr_ms") {
+                        for (double off : {0.0, -500.0, 500.0, -1000.0, 1000.0}) {
+                            Condition c = masked(rate);
+                            c.carriers[0].offset_hz = c.snr_offset_hz = off;
+                            c.carriers[0].droop = true;
+                            add(c, "droop/off" + signed_text(off, 0));
+                        }
                     }
                 }
             }
@@ -1136,7 +1236,8 @@ struct Options {
     std::string sources, phase, out, filter, dump, modes_file, pilot, trial_log, bounds;
     long trials = 0, jobs = 0, memory_mb = 8192, seed_salt = 0;
     double threshold = 0, guard = kGuardOff, occupancy_veto = 0;
-    bool add_masks = false, add_occupancy = false; /* --add masks,occupancy: the groups beyond the shipped matrix */
+    /* --add masks,occupancy,cross,raised: the groups beyond the shipped matrix */
+    bool add_masks = false, add_occupancy = false, add_cross = false, add_raised = false;
     int estimator = -1;
     std::vector<double> neighbour_levels{30.0, 50.0};
     uint8_t geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
@@ -1261,6 +1362,41 @@ add_groups(Builder* b, const Options& o) {
     }
 }
 
+/* After every condition the build made before them, so those keep their order, names and seeds: --add occupancy's
+   noise alone under every other noise tag (each analog width's first mode; the occupied captures' noise-only
+   conditions under all 18 tags), then --add cross and --add raised. */
+void
+add_late_groups(Builder* b, const Options& o) {
+    if (o.add_occupancy) {
+        std::vector<std::string> noise_tags;
+        for (const Mode& m : b->modes) {
+            const auto named = [&](const char* name) { return m.name == name; };
+            if (std::any_of(std::begin(kOccupancyNoise), std::end(kOccupancyNoise), named)) {
+                noise_tags.push_back(m.analog ? m.tag : class_text(m.cls));
+            }
+        }
+        for (const Mode& m : b->modes) {
+            const std::string tag = m.analog ? m.tag : class_text(m.cls);
+            if (std::find(noise_tags.begin(), noise_tags.end(), tag) == noise_tags.end()) {
+                b->occupancy(m, INFO);
+                noise_tags.push_back(tag);
+            }
+        }
+    }
+    if (o.add_cross) {
+        b->cross();
+    }
+    if (!o.add_raised) {
+        return;
+    }
+    for (const Mode& m : b->modes) {
+        const auto named = [&](const char* name) { return m.name == name; };
+        if (std::any_of(std::begin(kOccupancyRows), std::end(kOccupancyRows), named)) {
+            b->raised(m);
+        }
+    }
+}
+
 std::vector<Condition>
 build_conditions(const std::vector<Source>& sources, const std::vector<Waveform>& waves, const std::vector<Mode>& modes,
                  const Options& o) {
@@ -1287,6 +1423,7 @@ build_conditions(const std::vector<Source>& sources, const std::vector<Waveform>
             b.floors(m, INFO);
         }
     }
+    add_late_groups(&b, o);
     derive(&b.out, o, sources, waves);
     return b.out;
 }
@@ -2300,7 +2437,7 @@ parse_rates(const char* text, std::vector<uint32_t>* out) {
     return !out->empty();
 }
 
-/* --add's comma-separated groups (masks, occupancy) into @p o; false for any other. */
+/* --add's comma-separated groups (masks, occupancy, cross, raised) into @p o; false for any other. */
 bool
 parse_groups(const char* text, Options* o) {
     std::istringstream fields(text);
@@ -2311,6 +2448,10 @@ parse_groups(const char* text, Options* o) {
             o->add_masks = true;
         } else if (field == "occupancy") {
             o->add_occupancy = true;
+        } else if (field == "cross") {
+            o->add_cross = true;
+        } else if (field == "raised") {
+            o->add_raised = true;
         } else {
             return false;
         }

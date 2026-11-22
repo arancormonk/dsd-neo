@@ -13,6 +13,8 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   trial whose share is over it is void for occupancy.
 - A --dump or --trial-log that cannot be opened (a directory) stops the run before it starts: nonzero, nothing written.
 - One whose writes do not land (/dev/full, where present) exits nonzero once the run ends.
+- The late groups (--add cross, raised) only append: the conditions of --add masks,occupancy keep their order and
+  names (and so their seeds), and cross adds the -8 masks crossed with neighbours, offsets and droop.
 """
 import argparse
 import csv
@@ -144,6 +146,31 @@ def check_full_disk(driver, root):
     return rc
 
 
+def condition_names(driver, root, groups):
+    bounds = root / f"bounds-{groups.replace(',', '-')}.csv"
+    done = subprocess.run([driver, "--phase", "select", "--sources", str(root), "--modes-file", str(root / "modes.tsv"),
+                           "--out", os.devnull, "--trials", "1", "--jobs", "1", "--rates", "1536000", "--filter",
+                           "NO-SUCH", "--add", groups, "--bounds", str(bounds)],
+                          capture_output=True, text=True, timeout=120, check=False)
+    if done.returncode != 0:
+        return None
+    with bounds.open(newline="") as f:
+        return [r["condition"] for r in csv.DictReader(f)]
+
+
+def check_late_groups(driver, root):
+    early = condition_names(driver, root, "masks,occupancy")
+    late = condition_names(driver, root, "masks,occupancy,cross,raised")
+    if early is None or late is None:
+        return fail("a --bounds run failed")
+    if late[:len(early)] != early or len(set(late)) != len(late):
+        return fail("the late groups moved or repeated an earlier condition")
+    added = {name.split("/")[0] for name in late[len(early):]}
+    if added != {"mask_cross"}:
+        return fail(f"late groups added {sorted(added)}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("driver")
@@ -155,6 +182,7 @@ def main():
         rc |= check_good_run(driver, root, SELECT)
         rc |= check_unopenable(driver, root)
         rc |= check_full_disk(driver, root)
+        rc |= check_late_groups(driver, root)
     return rc
 
 
