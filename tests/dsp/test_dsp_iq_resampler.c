@@ -1753,8 +1753,10 @@ test_prime_phasor(void) {
         const int got = in ? run_once(&r, in, n, &y) : -1;
         double worst = 0.0;
         for (int i = 1; i < got; i++) {
-            const double re = (double)y[2 * i] * (double)y[2 * i - 2] + (double)y[2 * i + 1] * (double)y[2 * i - 1];
-            const double im = (double)y[2 * i + 1] * (double)y[2 * i - 2] - (double)y[2 * i] * (double)y[2 * i - 1];
+            const float* cur = y + (2U * (size_t)i);
+            const float* prev = cur - 2;
+            const double re = (double)cur[0] * (double)prev[0] + (double)cur[1] * (double)prev[1];
+            const double im = (double)cur[1] * (double)prev[0] - (double)cur[0] * (double)prev[1];
             worst = fmax(worst, fabs(atan2(im, re) - 0.5 * w_out));
         }
         /* Between none and the tone's step (0 .. w_out), with room for the filter's ringing. */
