@@ -9,7 +9,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
-#include <type_traits>
+#include <type_traits> // IWYU pragma: keep -- QPointer<SquelchDefaultPolicy> needs it in some includers only.
 #include <utility>
 #include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")
