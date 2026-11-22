@@ -317,12 +317,10 @@ dsd_cli_usage_section_decode(void) {
     printf("                               over the input spec's sql field; works with --iq-replay. Off on digital\n");
     printf("                               channels. On audio input (PCM) noise learns the noise above voice from\n");
     printf("                               the input and gates the FM monitor; auto needs a radio input.\n");
-    printf("      --squelch-analog-default <setting>  off, auto[+N] or noise[+N]: the squelch an analog\n");
-    printf("                               channel of a radio input runs (the -fA/-fM monitor, an analog scan row\n");
-    printf("                               without its own) until a squelch is set: --squelch, a spec's sql field\n");
-    printf("                               other than 0, a config's rtl_sql, or any live edit. Digital channels,\n");
-    printf("                               audio input, EDACS and the M17 encoder run without it. noise runs as\n");
-    printf("                               auto on AM.\n");
+    printf("      --squelch-analog-default <setting>  off, auto[+N] or noise[+N] on a radio input's analog\n");
+    printf("                               channels (-fA/-fM, analog scan rows without their own) until a squelch\n");
+    printf("                               is set (--squelch, a spec sql other than 0, rtl_sql, a live edit). Not\n");
+    printf("                               on digital, audio input, EDACS or the M17 encoder; noise is auto on AM.\n");
     printf("  -fM           Native AM receiver (I/Q inputs: RTL-SDR, rtl_tcp, SoapySDR, Airspy, --iq-replay)\n");
     printf("      --am-bandwidth-hz <Hz>   AM channel-filter width, the full RF passband in whole Hz (5000..20000;\n");
     printf("                               default 6000). Not the tuner or audio bandwidth; it must fit the DSP\n");
