@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_slot_reset.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -2581,6 +2582,25 @@ dmr_sm_grant_replaces_followed(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev
            && !(grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq));
 }
 
+/* The followed slot @p s's assignment ended (dmr_sm_end_changed_assignment()): the slot is left as a fresh call there
+   finds it, and the companion slot, whose call may keep the receiver, is not touched. The slot's call ends (EXPLICIT,
+   with an event sync), its voice timers, record, Capacity Plus seed and preemption-ledger entry are cleared, the grant
+   identity stands for nothing, and its crypto (privacy state, key selection, MI chain), talker metadata and packet
+   assembly are reset with its voice held until its next call says how it is encrypted (dmr_slot_retire()). */
+static void
+dmr_sm_retire_slot(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int s, double now_m) {
+    if (dsd_call_state_end_ex(state, (uint8_t)s, now_m, DSD_CALL_END_EXPLICIT) > 0) {
+        dsd_event_sync_slot(opts, state, (uint8_t)s);
+    }
+    ctx->slots[s].voice_active = 0;
+    ctx->slots[s].last_active_m = 0.0;
+    dmr_sm_slot_identity_clear(&ctx->slots[s]);
+    dmr_sm_capplus_seed_clear(ctx, s);
+    (void)dsd_tg_policy_clear_active_call(state, s);
+    dmr_sm_drop_grant_identity(ctx, s);
+    dmr_slot_retire(state, (uint8_t)s);
+}
+
 /* A checked grant for the followed slot that names another call (dmr_sm_grant_replaces_followed()) ends that slot's
    assignment, whether the receiver would follow the grant or not (a call-type switch, data following off, a policy or
    receive gate refusing it): the slot's call ends, its record and preemption-ledger entry are cleared and the grant
@@ -2597,14 +2617,7 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     const int s = ctx->vc_slot;
     const int companion = s ^ 1;
     const double now_m = dsd_decode_now_mono_s();
-    if (dsd_call_state_end_ex(state, (uint8_t)s, now_m, DSD_CALL_END_EXPLICIT) > 0) {
-        dsd_event_sync_slot(opts, state, (uint8_t)s);
-    }
-    ctx->slots[s].voice_active = 0;
-    ctx->slots[s].last_active_m = 0.0;
-    dmr_sm_slot_identity_clear(&ctx->slots[s]);
-    (void)dsd_tg_policy_clear_active_call(state, s);
-    dmr_sm_drop_grant_identity(ctx, s);
+    dmr_sm_retire_slot(ctx, opts, state, s, now_m);
     ctx->t_voice_m = ctx->slots[companion].last_active_m; // the carrier's activity is the companion's alone now
     const dmr_sm_hold_e hold =
         dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0);

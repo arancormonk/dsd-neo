@@ -86,6 +86,9 @@ int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
  * with no slot held, whatever an earlier run on the same state left. docs/code_map.md (the encrypted-audio verdict)
  * has the rules in full. */
 void dmr_enc_class_hold(dsd_state* state);
+/** dmr_enc_class_hold() for slot @p slot alone: the slot's assignment ended while the receiver stays on the carrier for
+ * the other slot's call (dmr_slot_retire()), whose voice and hold are left as they are. */
+void dmr_enc_class_hold_slot(dsd_state* state, uint8_t slot);
 /** The slot's call said whether it is encrypted, as far as the decoder reads it (an LC that passed its check, a PI
  * header or Hytera Enhanced LC naming a cipher), or a run starts: its voice is held no more. */
 void dmr_enc_class_release_hold(dsd_state* state, uint8_t slot);

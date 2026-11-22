@@ -13572,8 +13572,14 @@ Private per-protocol modules worth knowing about:
     would follow it or not: the Tier III and Connect Plus CSBK layers hand every grant to
     `dmr_sm_note_grant_assignment()` before their call-type switches (data following off, the default; private off),
     policy check (blocked or locked-out talkgroups) and voice window, and `dmr_sm_submit_grant()` checks it first as
-    well (`dmr_sm_end_changed_assignment()`, `grant-replaces-followed`, REFUSED: the grant itself is not followed). The slot's call ends (EXPLICIT), its record and ledger entry are
-    cleared and the grant identity stands for nothing. While the companion slot's call still holds the carrier by the
+    well (`dmr_sm_end_changed_assignment()`, `grant-replaces-followed`, REFUSED: the grant itself is not followed). The slot is retired by one per-slot reset (`dmr_sm_retire_slot()`,
+    `dmr_slot_retire()` in `dmr_slot_reset.c`) that leaves it as a fresh call there finds it: its call ends (EXPLICIT),
+    its record, Capacity Plus seed and ledger entry are cleared, the grant identity stands for nothing, and its crypto
+    (FID, service options, ALG, key ID, MI and derived DES IV, encryption class, vendor late-entry mode, held pre-call
+    PI, MI chain, heal stash, autoloaded talkgroup key), talker metadata and data header and packet assembly are reset,
+    with its voice held until its next call says how it is encrypted (`dmr_enc_class_hold_slot()`), so the replacement
+    call's voice or blocks before their own signalling are neither decrypted nor addressed with the retired call's. The
+    companion slot's call, crypto and decryption go on untouched. While the companion slot's call still holds the carrier by the
     retention rule (live voice or its hangtime tail, from the companion's activity alone; the retired grant's
     acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
@@ -13954,6 +13960,13 @@ Private per-protocol modules worth knowing about:
   1, never written by decoding): Kirisun's SB identifier is read for an encrypted Kirisun call whatever `-3` says;
   standard SB/RC parsing needs the user's setting on and no vendor mode on the slot; `dmr_late_entry_mi_fragment()`
   skips a Hytera Enhanced call's slot.
+- `src/protocol/dmr/dmr_slot_reset.{c,h}` — one slot's call state, reset slot by slot: the live crypto field map the
+  terminator reset and the heal stash share (`dmr_slot_crypto_fields()`), the terminator's crypto and metadata halves
+  (`dmr_slot_reset_crypto()`, `dmr_slot_reset_metadata()`), the slot's share of `dmr_reset_blocks()`
+  (`dmr_slot_reset_blocks()`, inline), and the retirement that runs them all for a slot whose assignment a grant ended
+  (`dmr_slot_retire()`, called by the trunk machine's `dmr_sm_retire_slot()`; see the gate under DMR talkgroup priority
+  and preemption). The other slot is never touched. Trunk-machine fixtures that compile `dmr_trunk_sm.c` alone stub
+  the retirement in `tests/test_support/dmr_carrier_leave_stubs.c`. Test: `DMR_PREEMPT`.
 - `src/protocol/nxdn/nxdn_confirm.{c,h}` — its NXDN counterpart, and for the same reason: the 10-symbol sync word and
   one-parity-bit LICH ahead of it are weak enough that receiver noise clears both. Channel decoders report their CRC
   verdicts to it, and `nxdn_frame.c` consults it before refreshing the scan hold or synthesizing voice, as

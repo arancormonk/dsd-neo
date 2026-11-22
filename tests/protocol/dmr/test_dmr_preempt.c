@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -1331,6 +1332,93 @@ test_media_change_keeps_a_live_companion(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* What a slot's encrypted call and its packet left behind: privacy state, key selection, MI chain and an armed data
+   header, each slot's own values told apart by @p base. */
+static void
+seed_slot_call_state(dsd_state* st, int slot, int base) {
+    unsigned int* so = slot == 0 ? &st->dmr_so : &st->dmr_soR;
+    unsigned int* fid = slot == 0 ? &st->dmr_fid : &st->dmr_fidR;
+    int* algid = slot == 0 ? &st->payload_algid : &st->payload_algidR;
+    int* keyid = slot == 0 ? &st->payload_keyid : &st->payload_keyidR;
+    unsigned long long int* mi = slot == 0 ? &st->payload_mi : &st->payload_miR;
+    *so = 0x40U;
+    *fid = 0x10U;
+    *algid = 0x24;
+    *keyid = base;
+    *mi = 0x1000ULL + (unsigned long long int)base;
+    st->dmr_enc_class[slot] = DMR_ENC_CLASS_ENC;
+    st->dmr_enc_class_est[slot] = 1U;
+    st->dmr_enc_class_held[slot] = 0U;
+    st->dmr_vc_ref_state[slot] = 2U; // DMR_VC_REF_VALID: a trusted MI chain
+    st->dmr_vc_untrusted[slot] = 0U;
+    st->dmr_heal_valid[slot] = 1U;
+    st->dmr_tg_autoload.slot_tg[slot] = (uint32_t)base;
+    st->data_header_valid[slot] = 1U;
+    st->data_header_blocks[slot] = 1;
+    st->data_header_format[slot] = 2U;
+    st->data_header_sap[slot] = 4U;
+    st->dmr_lrrp_source[slot] = (unsigned long long int)base;
+    st->dmr_lrrp_target[slot] = (unsigned long long int)base + 1ULL;
+    DSD_SNPRINTF(st->generic_talker_alias[slot], sizeof(st->generic_talker_alias[slot]), "%s", "ALIAS");
+}
+
+/* Whether @p slot still holds what seed_slot_call_state() gave it. */
+static int
+slot_call_state_kept(const dsd_state* st, int slot, int base) {
+    const int algid = slot == 0 ? st->payload_algid : st->payload_algidR;
+    const int keyid = slot == 0 ? st->payload_keyid : st->payload_keyidR;
+    const unsigned long long int mi = slot == 0 ? st->payload_mi : st->payload_miR;
+    const unsigned int so = slot == 0 ? st->dmr_so : st->dmr_soR;
+    return algid == 0x24 && keyid == base && mi == 0x1000ULL + (unsigned long long int)base && so == 0x40U
+           && st->dmr_enc_class[slot] == DMR_ENC_CLASS_ENC && st->dmr_enc_class_held[slot] == 0U
+           && st->dmr_vc_ref_state[slot] == 2U && st->dmr_vc_untrusted[slot] == 0U
+           && st->dmr_tg_autoload.slot_tg[slot] == (uint32_t)base && st->data_header_valid[slot] == 1U
+           && st->data_header_sap[slot] == 4U && st->dmr_lrrp_source[slot] == (unsigned long long int)base;
+}
+
+/* Whether @p slot is as a fresh call finds it: no privacy state, key selection or MI chain, its voice held until the
+   call says how it is encrypted, and no armed data header nor packet addressing. */
+static int
+slot_call_state_fresh(const dsd_state* st, int slot) {
+    const int algid = slot == 0 ? st->payload_algid : st->payload_algidR;
+    const int keyid = slot == 0 ? st->payload_keyid : st->payload_keyidR;
+    const unsigned long long int mi = slot == 0 ? st->payload_mi : st->payload_miR;
+    const unsigned int so = slot == 0 ? st->dmr_so : st->dmr_soR;
+    const unsigned int fid = slot == 0 ? st->dmr_fid : st->dmr_fidR;
+    return algid == 0 && keyid == 0 && mi == 0ULL && so == 0U && fid == 0U
+           && st->dmr_enc_class[slot] == DMR_ENC_CLASS_NONE && st->dmr_enc_class_held[slot] == 1U
+           && st->dmr_vc_ref_state[slot] == 0U && st->dmr_vc_untrusted[slot] == 1U && st->dmr_heal_valid[slot] == 0U
+           && st->dmr_tg_autoload.slot_tg[slot] == 0U && st->data_header_valid[slot] == 0U
+           && st->data_header_format[slot] == 7U && st->data_header_sap[slot] == 0U && st->dmr_lrrp_source[slot] == 0ULL
+           && st->dmr_lrrp_target[slot] == 0ULL && st->generic_talker_alias[slot][0] == '\0';
+}
+
+/* A slot retired for its companion is left as a fresh call finds it, and the companion is not touched: TS1 is followed
+   for an encrypted TG 300 call with a data header armed, while TS2 carries a live encrypted TG 100 call. A TD_GRANT for
+   TS1 retires TS1 and the receiver stays for TS2. TS1's privacy state, key selection and MI chain are gone, its voice
+   is held until its next call says how it is encrypted, and its armed header is disarmed, so the replacement call's
+   voice or blocks before their own signalling cannot be decrypted or addressed with the previous call's. TS2 keeps
+   every one of its own. */
+static int
+test_retired_slot_starts_fresh(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 100U, 1U);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    seed_slot_call_state(st, 0, 5);
+    seed_slot_call_state(st, 1, 7);
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    int rc = expect_true("the receiver stays for the companion", sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1);
+    rc |= expect_true("the retired slot is left as a fresh call finds it", slot_call_state_fresh(st, 0));
+    rc |= expect_true("the companion keeps its call's crypto and packet state", slot_call_state_kept(st, 1, 7));
+    return rc;
+}
+
 /* A media change's release survives a return the tuner refused: the next tick asks again, though the followed slot's
    voice tail would otherwise keep the carrier. */
 static int
@@ -1451,6 +1539,7 @@ main(void) {
     rc |= test_media_change_keeps_a_live_companion(opts, st);
     rc |= test_media_change_release_retries(opts, st);
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
+    rc |= test_retired_slot_starts_fresh(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

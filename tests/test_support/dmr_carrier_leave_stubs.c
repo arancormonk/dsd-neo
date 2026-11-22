@@ -5,12 +5,14 @@
 
 /* For the trunk state machine fixtures that compile dmr_trunk_sm.c without the DMR encryption sources: the machine's
  * leave of a carrier (dmr_sm_leave_carrier(), dmr_sm_note_carrier_tune()) forgets the left calls' privacy and MI chain
- * and holds the next carrier's voice through these. The fixtures test tuning, so the stubs forget only the service
- * options, the FID and each slot's chain state, and set each slot's hold. */
+ * and holds the next carrier's voice through these, and its retirement of one slot's assignment resets that slot
+ * (dmr_slot_retire()). The fixtures test tuning, so the stubs forget only the service options, the FID and each slot's
+ * chain state, and set each slot's hold. */
 
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
+#include "dmr_slot_reset.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -34,4 +36,18 @@ dmr_vcrypt_forget(dsd_state* state, uint8_t slot) {
 void
 dmr_enc_class_hold(dsd_state* state) {
     state->dmr_enc_class_held[0] = state->dmr_enc_class_held[1] = 1U;
+}
+
+void
+dmr_slot_retire(dsd_state* state, uint8_t slot) {
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    if (idx == 0U) {
+        state->dmr_so = 0U;
+        state->dmr_fid = 0U;
+    } else {
+        state->dmr_soR = 0U;
+        state->dmr_fidR = 0U;
+    }
+    dmr_vcrypt_forget(state, idx);
+    state->dmr_enc_class_held[idx] = 1U;
 }
