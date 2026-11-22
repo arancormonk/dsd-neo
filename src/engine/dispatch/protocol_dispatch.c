@@ -118,6 +118,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         }
         const uint32_t carrier_seq = state->carrier_seq;
         const int synctype = state->synctype;
+        const uint32_t content_seq = state->scan_y_content_seq;
         /* The frame's protocol and carrier, for the decoders' MBE capture: a decoder that borrows another protocol's
            vocoder changes state->synctype, not this, and a frame read across a carrier boundary is captured nowhere
            (issue #661). */
@@ -127,10 +128,15 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
         state->frame_dispatch_active = 0;
         process_frame_settle_verdict(state, carrier_seq, unchecked && process_frame_may_be_a_call(synctype));
-        /* A frame its decoder confirmed, on the carrier it was read on and uninterrupted, confirms its protocol here: a
-           DMR address layout held across its sync, which may have been noise, goes. */
-        if (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
-            || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN) {
+        /* A frame whose own content check passed in this dispatch (its decoder's PROVEN content evidence, which moves
+           scan_y_content_seq), on the carrier it was read on and uninterrupted, confirms its protocol here: a DMR
+           address layout held across its sync, which may have been noise, goes. The verdict alone is no such check: a
+           handler reports PRODUCTIVE for frames it took on the sync word (dPMR FS1, FS3, FS4), and PROFILE_PROVEN for
+           an earlier frame's proof (a P25p1 NID that validated within the evidence window). */
+        const int content_checked = state->scan_y_content_seq != content_seq;
+        if (content_checked
+            && (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
+                || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN)) {
             dsd_rxid_note_confirmed_frame(state, synctype);
         }
     }

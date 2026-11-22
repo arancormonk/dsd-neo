@@ -4558,7 +4558,10 @@ suite runs under this compiler.
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
   the record (the DMR trunking system its fresh parts named stays held for the DMR address layout,
   `dsd_state::rx_dmr_layout_held`, until a frame of another protocol is confirmed, `dsd_rxid_note_confirmed_frame()`
-  after the handler's productive verdict, or noted, or a DMR colour code other than the one the layout was verified on,
+  when its own content check passed in that dispatch (its decoder's PROVEN content evidence, which moves
+  `scan_y_content_seq`; a productive verdict alone, a dPMR FS1 taken on its sync word or an SPS hunt's PROFILE_PROVEN
+  credit from an earlier P25p1 NID, is none, and a protocol with no content check, X2-TDMA, ProVoice, EDACS or TETRA,
+  never confirms), or noted, or a DMR colour code other than the one the layout was verified on,
   kept with it, `rx_dmr_layout_held_access*`, so the first DMR burst back on another code ends it (any code, when none
   was known), the no-carrier pass, the DMR reset or a carrier boundary), and a frame of another protocol than the last
   one's (`dsd_state::rx_sync_protocol`: the family, or

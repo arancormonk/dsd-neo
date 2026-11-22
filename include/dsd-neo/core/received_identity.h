@@ -321,8 +321,10 @@ int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t ne
  * confirmed (dsd_state::rx_dmr_layout_held), else NONE (also for NULL). A stale record (the no-carrier pass, which an
  * external scanner's move to another channel may be the only sign of) names none until fresh checked evidence. */
 uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
-/** The frame of @p synctype that processFrame() dispatched was confirmed (its handler's verdict productive, on the
- * carrier it was read on): a frame of another protocol than DMR ends a DMR layout held across its sync. */
+/** The frame of @p synctype that processFrame() dispatched was confirmed: its own content check passed in that
+ * dispatch (its decoder's PROVEN content evidence, dsd_frame_sync_hook_content_evidence()), on the carrier it was read
+ * on and uninterrupted, not merely a productive verdict. A frame of another protocol than DMR ends a DMR layout held
+ * across its sync. */
 void dsd_rxid_note_confirmed_frame(dsd_state* state, int synctype);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */

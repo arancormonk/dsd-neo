@@ -14,6 +14,7 @@
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -50,6 +51,8 @@ static int g_retune_during_handler = 0;
 static int g_boundary_during_handler = 0;
 /* A Signal search's yield (or a stalled live read) interrupts the input while the handler reads its frame. */
 static int g_interrupt_during_handler = 0;
+/* The handler's frame passed its protocol's own content check (a CRC or FEC its decoder verified). */
+static int g_content_proven_during_handler = 0;
 static dsd_state* g_dispatch_state = NULL;
 /* The dispatch context a handler saw (issue #661). */
 static int g_seen_dispatch_active = -1;
@@ -110,6 +113,9 @@ record_handler(int handler_id) {
         dsd_rxid_request_trunk_tune(g_dispatch_state);
         g_published_after_tune = g_dispatch_state->rx_id;
         dsd_rxid_note_access(g_dispatch_state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x5A5U);
+    }
+    if (g_content_proven_during_handler && g_dispatch_state != NULL) {
+        dsd_frame_sync_hook_content_evidence(NULL, g_dispatch_state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
     if (g_interrupt_during_handler && g_dispatch_state != NULL) {
         g_dispatch_state->input_interrupted = 1;
@@ -426,7 +432,9 @@ check_received_identity_follows_the_protocol(void) {
 
 /* A sync of another protocol may be noise (multi-protocol decoding): it drops the DMR record as before, but the address
    layout a checked Capacity Plus note named holds across an NXDN frame its decoder did not confirm and across DMR
-   frames, and an NXDN frame its decoder confirmed ends it. */
+   frames. A productive verdict alone is no confirmation (a dPMR FS1 or an NXDN frame its handler took on the sync word,
+   an SPS hunt's earlier proof): only a frame whose own content check passed in this dispatch, on the carrier it was
+   read on and uninterrupted, ends it. */
 static void
 check_unconfirmed_sync_keeps_the_dmr_layout(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -451,11 +459,45 @@ check_unconfirmed_sync_keeps_the_dmr_layout(void) {
     assert(g_called_handler == TEST_HANDLER_DMR);
     assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
 
+    static const struct {
+        int synctype;
+        dsd_frame_verdict verdict;
+        int handler;
+    } unchecked[] = {
+        {DSD_SYNC_NXDN_NEG, DSD_FRAME_VERDICT_PRODUCTIVE, TEST_HANDLER_NXDN},
+        {DSD_SYNC_NXDN_POS, DSD_FRAME_VERDICT_PROFILE_PROVEN, TEST_HANDLER_NXDN},
+        {DSD_SYNC_DPMR_FS1_POS, DSD_FRAME_VERDICT_PRODUCTIVE, TEST_HANDLER_DPMR},
+    };
+
+    for (size_t i = 0; i < sizeof(unchecked) / sizeof(unchecked[0]); i++) {
+        state->synctype = unchecked[i].synctype;
+        g_handler_verdict = unchecked[i].verdict;
+        g_called_handler = TEST_HANDLER_NONE;
+        processFrame(opts, state);
+        assert(g_called_handler == unchecked[i].handler);
+        assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+    }
+
+    /* Checked content in a frame the input interruption cut confirms nothing. */
+    state->synctype = DSD_SYNC_NXDN_POS;
+    g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+    g_content_proven_during_handler = 1;
+    g_interrupt_during_handler = 1;
+    g_dispatch_state = state;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_NXDN);
+    assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+    g_interrupt_during_handler = 0;
+    state->input_interrupted = 0;
+
     state->synctype = DSD_SYNC_NXDN_NEG;
     g_called_handler = TEST_HANDLER_NONE;
     processFrame(opts, state);
     assert(g_called_handler == TEST_HANDLER_NXDN);
     assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_NONE);
+    g_content_proven_during_handler = 0;
+    g_dispatch_state = NULL;
     free(state);
     free(opts);
 }
