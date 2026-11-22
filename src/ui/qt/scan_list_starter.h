@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <functional>
 #include <utility>
 Q_MOC_INCLUDE("decoder_host.h")
@@ -36,6 +38,8 @@ QString scan_list_csv_path(const QString& uid, const QString& name, int listNumb
 /** @brief Call @p hook with an imported list's copy once it is written, checked and its folder cleaned, before the
  *  starter makes sure it is there: a test removes it, as a copy written under another name is removed. */
 void scan_list_set_copy_written_hook_for_test(std::function<void(const QString&)> hook);
+/** @brief How many times ScanListStarter::hasTetraTargets() has read an imported target CSV since the process began. */
+int scan_list_tetra_csv_reads_for_test();
 #endif
 
 class ScanListStarter : public QObject {
@@ -94,6 +98,11 @@ class ScanListStarter : public QObject {
      * else 72 kHz with a TETRA DMO target (hasTetraTargets()), else the app's. The editor's App default note.
      */
     Q_INVOKABLE int bandwidthKhz(const QVariantMap& list) const;
+    /**
+     * @brief Forget what hasTetraTargets() learnt of each imported target CSV (issue #890), so the next ask reads the
+     * file again: the imported files changed (one replaced or removed).
+     */
+    void forgetTargetFiles();
     static int maxLists();
     static QString draftRefusal();
 
@@ -149,6 +158,22 @@ class ScanListStarter : public QObject {
     QString materializeLists(const QVariantList& lists, bool tetraTargets, QStringList* paths, int* total) const;
     /* The recording session prepareForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
+    /* Whether the imported target CSV at @p path has a tetra-dmo-conventional row (hasTetraTargets()), read once per
+       version of the file. */
+    bool csvHasTetraTargets(const QString& path) const;
+
+    /* An imported target CSV hasTetraTargets() read: the file as it was then (its size and times) and its answer. The
+       Scan with other lists sheet asks for every list at each change, and a read parses the whole file; a file whose
+       size or times differ, or forgetTargetFiles(), reads it again. UI thread only, as every caller is. */
+    struct CsvTetraVerdict {
+        qint64 size = -1;
+        qint64 modifiedMs = 0;
+        qint64 changedMs = 0;
+        qint64 bornMs = 0;
+        bool tetra = false;
+    };
+
+    mutable QHash<QString, CsvTetraVerdict> m_csvTetra;
     std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;

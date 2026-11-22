@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QChar>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -391,18 +392,61 @@ ScanListStarter::build(const QVariantMap& list) const {
     return prepare(list, true, hasTetraTargets(list));
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+namespace {
+int g_tetra_csv_reads = 0;
+} // namespace
+
+int
+scan_list_tetra_csv_reads_for_test() {
+    return g_tetra_csv_reads;
+}
+#endif
+
+void
+ScanListStarter::forgetTargetFiles() {
+    m_csvTetra.clear();
+}
+
+bool
+ScanListStarter::csvHasTetraTargets(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    QFileInfo info(path);
+    info.setCaching(false);
+    CsvTetraVerdict now;
+    if (info.isFile()) {
+        now.size = info.size();
+        now.modifiedMs = info.lastModified().toMSecsSinceEpoch();
+        now.changedMs = info.metadataChangeTime().toMSecsSinceEpoch();
+        now.bornMs = info.birthTime().toMSecsSinceEpoch();
+    }
+    const auto known = m_csvTetra.constFind(path);
+    if (now.size >= 0 && known != m_csvTetra.cend() && known->size == now.size && known->modifiedMs == now.modifiedMs
+        && known->changedMs == now.changedMs && known->bornMs == now.bornMs) {
+        return known->tetra;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    ++g_tetra_csv_reads;
+#endif
+    QStringList types;
+    const dsd_app_scan_csv_callbacks callbacks{collectCsvTargetType, nullptr, &types, nullptr};
+    now.tetra = dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) == 0
+                && std::any_of(types.cbegin(), types.cend(),
+                               [](const QString& type) { return isTetraDmo(scan_protocol_for_type(type)); });
+    if (now.size >= 0) {
+        m_csvTetra.insert(path, now);
+    } else {
+        m_csvTetra.remove(path);
+    }
+    return now.tetra;
+}
+
 bool
 ScanListStarter::hasTetraTargets(const QVariantMap& list) const {
     if (list.value("targetSource", "entries").toString() == QStringLiteral("csv")) {
-        const QString path = list.value("targetsCsvPath").toString();
-        QStringList types;
-        const dsd_app_scan_csv_callbacks callbacks{collectCsvTargetType, nullptr, &types, nullptr};
-        if (path.isEmpty()
-            || dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) != 0) {
-            return false;
-        }
-        return std::any_of(types.cbegin(), types.cend(),
-                           [](const QString& type) { return isTetraDmo(scan_protocol_for_type(type)); });
+        return csvHasTetraTargets(list.value("targetsCsvPath").toString());
     }
     const QVariantList entries = list.value("entries").toList();
     return std::any_of(entries.cbegin(), entries.cend(), [this](const QVariant& value) {

@@ -189,6 +189,10 @@ wire_target_files(ScanListStarter* starter, ScanListsModel* scanLists, const Imp
         const int row = files->rowForPath(path);
         return row >= 0 && files->get(row).value("type") == "trunkTargets";
     });
+    // Issue #890: the starter reads each imported target CSV once for its TETRA DMO rows; a replaced or removed file is
+    // read again.
+    QObject::connect(files, &ImportedFilesModel::entriesChanged, starter,
+                     [starter]() { starter->forgetTargetFiles(); });
     // Issue #697: Home and the Scan with other lists sheet count a CSV list's targets as its import accepted them.
     scanLists->setAcceptedRowsLookup([files](const QString& path) {
         const int row = files->rowForPath(path);

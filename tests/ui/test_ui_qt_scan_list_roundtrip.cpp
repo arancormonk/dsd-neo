@@ -969,6 +969,28 @@ checkTetraListRate(const QTemporaryDir& dir) {
     csvList["bandwidthKhz"] = -1;
     const auto csvBuilt = csvStarter.build(csvList);
     check(csvBuilt.value("ok").toBool() && specBandwidth(csvBuilt.value("args").toStringList()) == "72");
+
+    // The Scan with other lists sheet asks at each change: the file is read once, not at every ask, while it stays the
+    // same file; a rewrite and forgetTargetFiles() each read it again.
+    csvList["bandwidthKhz"] = -1;
+    const QVariantMap p25List = listOf("p25-default", {p25}, -1);
+    const int readsBefore = scan_list_tetra_csv_reads_for_test();
+    for (int i = 0; i < 8; ++i) {
+        check(csvStarter.hasTetraTargets(csvList));
+        check(csvStarter.joinConflict(p25List, csvList, {csvList}).isEmpty());
+    }
+    check(scan_list_tetra_csv_reads_for_test() - readsBefore <= 1);
+    check(targets.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    targets.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "site,p25-conventional,851500000,,,,,\n");
+    targets.close();
+    check(!csvStarter.hasTetraTargets(csvList));
+    const int readsAfterRewrite = scan_list_tetra_csv_reads_for_test();
+    check(!csvStarter.hasTetraTargets(csvList) && scan_list_tetra_csv_reads_for_test() == readsAfterRewrite);
+    csvStarter.forgetTargetFiles();
+    check(!csvStarter.hasTetraTargets(csvList) && scan_list_tetra_csv_reads_for_test() == readsAfterRewrite + 1);
+    check(QFile::remove(targetPath));
+    check(!csvStarter.hasTetraTargets(csvList));
 }
 
 int
