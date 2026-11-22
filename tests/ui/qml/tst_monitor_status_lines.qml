@@ -170,6 +170,10 @@ Item {
             verify(label.visible, "the idle strip shows its label");
             compare(label.text, "SLOT 2 · idle");
             verifyInside(rectIn(label, item("otherSlotPanel")), item("otherSlotPanel"), "the idle strip");
+            // r6 J2: idle, Skip and More are hidden and the label has the strip's width (at 320 dp and 2.0 the node
+            // stopped at Skip's place and cut "SLOT 2 · idle", 223 px, to 102), inside the strip's node.
+            verify(!label.truncated, data.tag + ": the idle label is cut, " + label.width + " of " + label.implicitWidth + " px");
+            verifyInside(rectIn(label, item("otherSlotNode")), item("otherSlotNode"), "the strip's node");
 
             var other = data.name === "long"
                     ? {kind: 3, name: "Dispatcher North Zone Seven", tgLabel: "Dispatcher North Zone Seven", tg: "2001234", id: 2001234, src: "7001", enc: true, emergency: true}
@@ -204,6 +208,12 @@ Item {
                 rects.push(r);
             }
             verifyClear(rects);
+            // With a call the label is drawn only where it fits: whole, inside the node, which stops at Skip.
+            if (label.visible) {
+                verify(!label.truncated, data.tag + ": the slot label is cut");
+                verifyInside(rectIn(label, item("otherSlotNode")), item("otherSlotNode"), "the strip's node");
+            }
+            verify(item("otherSlotNode").width <= skip.x + 0.5, data.tag + ": the node runs past Skip");
             var natural = naturalWidth(identity.text, identity.font);
             var lead = Math.min(natural, 96);
             var drawnBelow = label.visible || privateTag.visible || emergency.visible || enc.visible;

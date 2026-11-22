@@ -1651,29 +1651,41 @@ Item {
                     text: otherIdentityText.text
                 }
 
-                // The line, up to Skip: the strip's one node (r4 F3), shown with
-                // the panel whatever it draws, and as wide as the label, the
-                // identity and the tags it reads (r5 H2: a touch on the drawn
-                // label found no node). Idle it reads only the idle state the
-                // label draws (r5 H1: an ended call's flags, kept through its
-                // hold, are not read: only what the line draws is);
-                // with a call, the slot, the call and its tags, each even where
-                // the line has no room to draw it, since the kind of call is not
-                // something to drop for a screen reader (issue #782). Unnamed
-                // while covered.
+                // The line: the strip's one node (r4 F3), shown with the panel
+                // whatever it draws, and as wide as the label, the identity and
+                // the tags it reads (r5 H2: a touch on the drawn label found no
+                // node). With a call it stops at Skip; idle, Skip and More are
+                // hidden and the line is the panel's width, so the idle label
+                // has all of it (r6 J2: stopped at Skip's hidden place, "SLOT 2 ·
+                // idle" was cut to 102 of its 223 px at 320 dp and 2.0). Idle it
+                // reads only the idle state the label draws (r5 H1: an ended
+                // call's flags, kept through its hold, are not read); with a
+                // call, the slot, the call and its tags, each even where the
+                // line has no room to draw it, since the kind of call is not
+                // something to drop for a screen reader (issue #782). Built from
+                // the call's state, never from what the children show, so a
+                // call ending renames it once (r6 J3: the label changed before
+                // the identity hid, and the node was renamed "SLOT 2 · idle, TG
+                // 4002", then "SLOT 2 · idle"). Unnamed while covered.
                 Item {
                     id: otherSlotLine
                     objectName: "otherSlotNode"
                     readonly property bool navigationAllowed: Navigation.allows(otherSlotLine)
                     x: 0
-                    width: otherSkip.x
+                    width: screen.stripIdle ? parent.width : otherSkip.x
                     height: parent.height
                     Accessible.role: Accessible.StaticText
                     Accessible.focusable: navigationAllowed && visible
                     Accessible.ignored: !navigationAllowed || !visible
-                    Accessible.name: !navigationAllowed || !visible ? "" : [otherSlotLabel.text, otherIdentityText.visible ? otherIdentityText.text : "", (screen.otherActive && screen.otherPrivate) || otherPrivateTag.visible ? otherPrivateTag.label : "", (screen.otherActive && screen.otherEmergency) || otherEmergencyTag.visible ? otherEmergencyTag.label : "", (screen.otherActive && screen.otherEnc) || otherEncTag.visible ? otherEncTag.label : ""].filter(function (part) {
-                        return part.length > 0;
-                    }).join(", ")
+                    Accessible.name: {
+                        if (!navigationAllowed || !visible)
+                            return "";
+                        if (screen.stripIdle)
+                            return qsTr("SLOT %1 · idle").arg(screen.stripSlot);
+                        return [qsTr("SLOT %1").arg(screen.otherSlot), Util.oneLine(screen.otherIdentity), screen.otherPrivate ? otherPrivateTag.label : "", screen.otherEmergency ? otherEmergencyTag.label : "", screen.otherEnc ? otherEncTag.label : ""].filter(function (part) {
+                            return part.length > 0;
+                        }).join(", ");
+                    }
 
                     // Drawn text only, in MicroLabel's look: no node of its own
                     // (r4 F3). It comes and goes with the room the line has, and a

@@ -286,15 +286,20 @@ Item {
                 return hit.exists && hit.object ? hit.object.objectName : "";
             };
             try {
-                for (var step of [{width: 411, active: false}, {width: 320, active: true}]) {
+                // r6 J2: idle at 320 dp and 2.0 too, where the node stopped at Skip's hidden place and cut the label.
+                for (var step of [{width: 411, scale: 1.0, active: false}, {width: 320, scale: 2.0, active: false},
+                                  {width: 320, scale: 1.0, active: true}]) {
+                    var tag = step.width + "@" + step.scale + (step.active ? " with a call" : " idle");
                     app.width = step.width;
+                    Ui.Theme.fontScale = step.scale;
                     setSlotCall(1, "4001");
                     setSlotCall(2, "4002");
                     testContext.setMetrics({leadSlot: 1, slot2CallState: step.active ? 2 : 0});
                     waitForRendering(app.contentItem);
                     wait(20);
-                    verify(panel.visible && label.visible, step.width + ": the label is drawn");
-                    compare(touched(label), "otherSlotNode", step.width + ": a touch on the label");
+                    verify(panel.visible && label.visible, tag + ": the label is drawn");
+                    verify(!label.truncated, tag + ": the label is cut, " + label.width + " of " + label.implicitWidth + " px");
+                    compare(touched(label), "otherSlotNode", tag + ": a touch on the label");
                     if (step.active) {
                         verify(drawnIdentity.visible);
                         compare(touched(drawnIdentity), "otherSlotNode", "a touch on the identity");
@@ -302,6 +307,57 @@ Item {
                     }
                 }
             } finally {
+                Ui.Theme.resetFontScale();
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
+        // Issue #901 r6 J3: the strip's name changes once as its call ends. Built from the label's text and the drawn
+        // identity's visibility, it was renamed twice when slot 2's call ended with slot 1 still on air: first to
+        // "SLOT 2 · idle, 4002" (the label had changed, the identity was still shown), then to "SLOT 2 · idle". Each
+        // name the node takes across the change is recorded as it is set: exactly one, the idle name, with one
+        // NameChanged from the node; and back once to the call's name as a call starts again.
+        function test_h2_the_strip_renames_once_as_its_call_ends() {
+            var monitor = findChild(app, "monitorScreen");
+            var node = findChild(monitor, "otherSlotNode");
+            var width = app.width;
+            var names = [];
+            var record = function () {
+                names.push(node.Accessible.name);
+            };
+            try {
+                app.width = 411;
+                setSlotCall(1, "4001");
+                setSlotCall(2, "4002");
+                testContext.setMetrics({leadSlot: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                compare(node.Accessible.name, "SLOT 2, TG 4002", "the strip reads the call");
+                node.Accessible.nameChanged.connect(record);
+                testContext.startAccessibilityCount();
+                testContext.setMetrics({slot2CallState: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 2 · idle"]), "the names the strip took as its call ended");
+                var owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as its call ended: " + churn(counts));
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetrics({slot2CallState: 2});
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 2, TG 4002"]), "the names the strip took as a call started");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as a call started: " + churn(counts));
+            } finally {
+                node.Accessible.nameChanged.disconnect(record);
+                testContext.stopAccessibilityCount();
                 app.width = width;
                 testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
                     slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
