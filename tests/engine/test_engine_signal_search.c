@@ -37,6 +37,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -4118,6 +4119,33 @@ test_refusal_then_resume_reaches_frontend(dsd_opts* o, dsd_state* s, const dsd_s
     stop_tag_session(o, s);
 }
 
+/* What a Signal search start changes in the options and the decoder state: the decoder settings with the live symbol
+   timing, the -Y row option the test below runs (voice only), the tuned frequency, the scan scope's class and a -Y
+   resume still waiting on its row. */
+typedef struct {
+    dsd_scan_settings settings;
+    uint32_t center_hz;
+    int resume_pending;
+    dsd_scan_mode active;
+    dsd_scan_mode row;
+} start_view;
+
+static void
+start_view_capture(const dsd_opts* o, const dsd_state* s, start_view* v) {
+    dsd_scan_settings_capture(o, s, &v->settings);
+    v->center_hz = o->rtlsdr_center_freq;
+    v->resume_pending = s->lcn_scan_resume_pending;
+    v->active = dsd_scan_mode_active(s);
+    v->row = dsd_scan_mode_row(s);
+}
+
+static int
+start_view_same(const start_view* a, const start_view* b) {
+    return dsd_scan_settings_equal(&a->settings, &b->settings, 1)
+           && a->settings.scan_voice_only == b->settings.scan_voice_only && a->center_hz == b->center_hz
+           && a->resume_pending == b->resume_pending && a->active == b->active && a->row == b->row;
+}
+
 /* Issue #748 B13: a start is validate-then-commit. Each step a fresh start can fail at fails it with nothing changed:
    the options, the decoder state (a scan owner made for the start goes again), the quiet check a scan owner holds, a -Y
    resume still waiting on its row, the tuner and the carrier. */
@@ -4125,9 +4153,8 @@ static void
 test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     static const int points[] = {DSD_SEARCH_START_FAIL_COORD, DSD_SEARCH_START_FAIL_SCOPE, DSD_SEARCH_START_FAIL_SITE,
                                  DSD_SEARCH_START_FAIL_OWNER};
-    dsd_opts* opts_before = malloc(sizeof(*opts_before));
-    dsd_state* state_before = malloc(sizeof(*state_before));
-    assert(opts_before && state_before);
+    static start_view before;
+    static start_view after;
     dsd_signal_search_config one = tag_config(config, 92, 1, 0);
     o->rtlsdr_center_freq = 100000000;
     // A session the preset would change, a mono -f1 decoder on a NXDN48 hunt, and a typed -Y row (voice only) whose
@@ -4147,15 +4174,14 @@ test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_se
             const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(s);
             const uint32_t quiet_inv = owner ? owner->quiet_inv_seq : 0U;
             const int before_boundary = boundary;
-            DSD_MEMCPY(opts_before, o, sizeof(*o));
-            DSD_MEMCPY(state_before, s, sizeof(*s));
+            start_view_capture(o, s, &before);
             dsd_engine_signal_search_test_fail_start(points[i]);
             assert(start_action(o, s, &one) == 2);
             dsd_engine_signal_search_test_fail_start(DSD_SEARCH_START_FAIL_NONE);
             assert(strcmp(store_status.message, "Not enough memory to start Signal search") == 0);
             assert(store_status.phase == DSD_SEARCH_ERROR && !store_status.owned);
-            assert(memcmp(opts_before, o, sizeof(*o)) == 0);
-            assert(memcmp(state_before, s, sizeof(*s)) == 0);
+            start_view_capture(o, s, &after);
+            assert(start_view_same(&before, &after));
             owner = dsd_engine_scan_owner_get(s);
             assert(owned ? owner && owner->quiet_inv_seq == quiet_inv : owner == NULL);
             assert(!dsd_engine_signal_search_active(s) && !dsd_signal_search_is_running(s));
@@ -4186,8 +4212,6 @@ test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_se
     o->dmr_stereo = 1;
     scan_resumes_taken = 0;
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
-    free(state_before);
-    free(opts_before);
 }
 
 /* What the M17 decoder reports for a CRC-checked LSF of CAN @p can (m17.c, M17decodeLSF() then
