@@ -11203,7 +11203,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   0.25 / (1 - p) quantile of the noise left, so the reference reads high; where the sidebands are clean the ratio is
   judged against them instead, so the check matters for a raise that also covers them; a floor with a lower part,
   such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off, as the
-  calibration driver's own parameters do unless asked). An invalid complete result says why in
+  calibration driver's own parameters do unless asked). The check reads its level from the span itself, so it is
+  blind when a raise fills more than about three quarters of the span and the sidebands with the channel clear: the
+  quartile and the sideband floor then both stand on the raise and the channel reads low by about the raise, on both
+  policies (a documented limit, docs/signal-search.md "Limits"; the driver's informational `raised` group measures
+  it). An invalid complete result says why in
   `dsd_signal_quiet_result.void_causes` (`DSD_SIGNAL_QUIET_VOID_GEOMETRY`, `_REFERENCE`, `_GUARD`,
   `_OCCUPANCY`, or-ed over every sub-window and class; 0 when valid), which the calibration driver's
   `--trial-log` records as the detector's own decision. Under the default policy the span is ±0.45 Fs

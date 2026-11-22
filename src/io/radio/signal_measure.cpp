@@ -1414,7 +1414,10 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    quantile of the noise left, so the reference reads high: about +0.1 dB at p = 10%, +0.4 to +0.6 dB at a third,
    +0.8 to +1.1 dB at a half (6 to 32 transforms a sub-window; more for the narrowest widths). Where the sidebands stand
    on the channel's own noise, the ratio is judged against them instead (quiet_judged_noise()), so the check is for a
-   raise that also covers the sidebands, and for a strong one it voids the reading whatever the denominator. Simulated
+   raise that also covers the sidebands, and for a strong one it voids the reading whatever the denominator while
+   enough of the span stays on the noise. It reads its level from the span itself, so once a raise fills more than
+   about three quarters of the span and the sidebands, with the channel clear, it is blind and the channel reads low by
+   about the raise (a documented limit, docs/signal-search.md "Limits"). Simulated
    over 6 to 32 transforms and 2,000 to 14,000 bins, a reference the check keeps is at most about 0.3 dB high (a floor
    raised by only 2.6 to 3 dB over part of the span, which moves fewer bins over the percentile; a broad raise of
    1.5 dB moves fewer still), and noise alone never reaches it (its share stays under 1.5%). It only voids readings,
