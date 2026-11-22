@@ -1190,6 +1190,49 @@ test_awaiting_data_grant_never_binds_later_voice(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* A grant that changes the media of the companion slot's call is a new call there: it takes the slot's record (its
+   identity and its follow time), while the followed slot's grant is not touched. Slot 0 is followed; on slot 1 a
+   private voice grant to radio 300 from radio 2, then a private data grant to radio 300 from radio 3, name the data
+   call; and a data grant then a voice grant for radio 300 give the voice call its own dwell, so a preempting candidate
+   50 ms into that voice call waits it out. */
+static int
+test_companion_media_change_is_a_new_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    const double first_tune_m = sm()->t_tune_m;
+    clock_at(0.2);
+    grant_op(opts, st, 48U, LPCN_A, 1, 300, 2); // PV_GRANT on slot 1
+    clock_at(0.4);
+    grant_op(opts, st, 51U, LPCN_A, 1, 300, 3); // PD_GRANT on slot 1, same radio
+    int rc = expect_true("the companion's data grant names its call",
+                         sm()->slots[1].data_call == 1U && sm()->slots[1].source == 3U
+                             && sm()->slots[1].kind == (uint8_t)DSD_CALL_KIND_DATA
+                             && fabs(sm()->slots[1].follow_m - dsd_decode_now_mono_s()) < 1e-3);
+    rc |= expect_true("the followed slot's grant is not restarted", sm()->vc_slot == 0 && sm()->vc_tg == 100
+                                                                        && sm()->vc_src == 1 && sm()->vc_data_call == 0
+                                                                        && fabs(sm()->t_tune_m - first_tune_m) < 1e-9);
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    const double followed_tune_m = sm()->t_tune_m;
+    clock_at(0.1);
+    grant_op(opts, st, 51U, LPCN_A, 1, 300, 1); // PD_GRANT on slot 1
+    clock_at(3.0);
+    grant_op(opts, st, 48U, LPCN_A, 1, 300, 1); // PV_GRANT on slot 1, same radio
+    rc |= expect_true("the companion's voice grant follows from its own assignment",
+                      sm()->slots[1].data_call == 0U && fabs(sm()->slots[1].follow_m - dsd_decode_now_mono_s()) < 1e-3
+                          && fabs(sm()->t_tune_m - followed_tune_m) < 1e-9);
+    clock_at(3.05);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |=
+        expect_true("a preempting candidate 50 ms into the companion's voice call waits out its dwell", vc(st) == VC_A);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1237,6 +1280,7 @@ main(void) {
     rc |= test_media_change_publishes_its_own_channel(opts, st);
     rc |= test_data_grant_never_binds_a_voice_call(opts, st);
     rc |= test_awaiting_data_grant_never_binds_later_voice(opts, st);
+    rc |= test_companion_media_change_is_a_new_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

@@ -13532,7 +13532,9 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_may_displace()`: a decision the caller evaluated for a known identity, no held call of unknown identity,
     and `dsd_tg_policy_should_preempt()` over every held slot); otherwise `grant-busy`. A candidate on the held carrier
     is followed as before (IN_PLACE), and names its slot's call (`dmr_sm_grant_reconcile_in_place()`): another call
-    there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
+    there (another target, policy class or media: on the companion slot a data grant after a voice grant for the same
+    radio, or the reverse, is another call, and the followed slot's grant is not touched) takes the slot's record with
+    its follow time now, so its dwell runs from that grant (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
     slot names, or of the grant followed there, keeps record and follow time. A grant that changes the media of the
@@ -13559,9 +13561,9 @@ Private per-protocol modules worth knowing about:
     the grant identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a
     voice LC only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
-    (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
-    in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
-    the acquisition a target switch starts.
+    (policy class, target, media, carrier) changes, so a candidate's dwell runs from the conversation's first follow.
+    They live in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an
+    operator move and the acquisition a target switch starts.
   - Call binding. Each record is bound to the canonical call it names (`call_epoch`: that slot's
     `dsd_call_snapshot_transmission()`), so it never outlives it (`dmr_sm_slot_identity_refresh()`, run by the busy
     view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was

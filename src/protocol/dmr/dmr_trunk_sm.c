@@ -265,10 +265,19 @@ dmr_sm_slot_call_may_heal(const dsd_state* state, int s, uint64_t epoch, double 
     return dsd_call_snapshot_transmission(&call) == epoch && dsd_call_snapshot_may_reacquire(&call, now_m);
 }
 
+/* Whether record @p rec describes the call @p named does: the same policy class, target, media and carrier (a data
+   call and a voice call to one radio are two calls). */
+static int
+dmr_sm_slot_names_same_call(const dmr_sm_slot_ctx_t* rec, const dmr_sm_slot_ctx_t* named) {
+    return rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->target == named->target
+           && rec->judged_group == named->judged_group && rec->data_call == named->data_call
+           && rec->carrier_hz == named->carrier_hz;
+}
+
 /* Name the call on slot @p s (@p named, from dmr_sm_slot_identity_set()) and bind it to its canonical call. The same
-   call named again (policy class, target and carrier; a gap record only for the very call that followed it) keeps its
-   follow time and binding, so dwell runs from the conversation's first follow; another call starts at its own. Named
-   again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that binding. */
+   call named again (policy class, target, media and carrier; a gap record only for the very call that followed it)
+   keeps its follow time and binding, so dwell runs from the conversation's first follow; another call starts at its
+   own. Named again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that binding. */
 static void
 dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_slot_ctx_t* named, int force,
                  double now_m) {
@@ -276,8 +285,7 @@ dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_
     dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
     uint64_t floor = 0U;
     const uint64_t bound = dmr_sm_slot_call_for(ctx, state, s, named, force, &floor);
-    const int raw = rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->target == named->target
-                    && rec->judged_group == named->judged_group && rec->carrier_hz == named->carrier_hz;
+    const int raw = dmr_sm_slot_names_same_call(rec, named);
     const int same =
         raw && (rec->gap ? (bound != 0U && bound == rec->call_epoch) : rec->kind != (uint8_t)DSD_CALL_KIND_UNKNOWN);
     const dmr_sm_slot_ctx_t prev = *rec;
@@ -2291,11 +2299,13 @@ dmr_sm_event_kind(const dmr_sm_event_t* ev) {
     return ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
-/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same target and policy class. */
+/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same target, policy class and media (a data
+   grant names no voice call, nor a voice grant a data call, whatever their numbers). */
 static int
 dmr_sm_grant_names_call(const dmr_sm_event_t* ev, uint32_t target, const dmr_sm_slot_ctx_t* id, long carrier_hz) {
+    const uint8_t data_call = (uint8_t)(dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA);
     return dmr_sm_slot_identity_known(id) && id->carrier_hz == carrier_hz && id->target == target
-           && id->judged_group == (uint8_t)(ev->is_group != 0);
+           && id->judged_group == (uint8_t)(ev->is_group != 0) && id->data_call == data_call;
 }
 
 /* The followed grant names its call: the followed slot's record takes its identity, and the preemption ledger holds the
@@ -2470,11 +2480,13 @@ dmr_sm_grant_displacement(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* st
 }
 
 /* A grant for the carrier already followed (IN_PLACE) names the call its slot carries now. Another call there (a new
-   assignment of the slot) takes the slot's record with its follow time now, so preemption compares a candidate with
-   it and its dwell runs from the assignment; on the followed slot it is the grant identity as well. A repeat of the
-   call the slot names, or of the grant the machine followed there, keeps the record and its follow time. A slotless
-   grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces only a seed
-   or grant identity, never the call a checked LC named on that carrier (as dmr_sm_status_slot_reconcile()). */
+   assignment of the slot: another target, policy class or media, dmr_sm_grant_names_call()) takes the slot's record
+   with its follow time now, so preemption compares a candidate with it and its dwell runs from the assignment; on the
+   followed slot it is the grant identity as well (a media change there is re-followed, dmr_sm_refollow_slot()). A
+   repeat of the call the slot names, or of the grant the machine followed there, keeps the record and its follow time.
+   A slotless grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces
+   only a seed or grant identity, never the call a checked LC named on that carrier (as
+   dmr_sm_status_slot_reconcile()). */
 static void
 dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev, long freq) {
     const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
