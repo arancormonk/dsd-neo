@@ -5258,25 +5258,40 @@ suite runs under this compiler.
     ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
     ended it, and so does a failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except
     that a config apply whose squelch keys ended the default keeps it ended over the session's own squelch when its
-    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`). A step that puts the options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and
-    `channel_scan_tune_staged()`, a suspended scope's restart on the profile that ran,
-    `svc_rtl_start_on_the_profile_that_ran_locked()` with `dsd_scan_mode_suspended_squelch()`) saves the fields and the
+    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`;
+    the in-place Airspy failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
+    options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and `channel_scan_tune_staged()`, a suspended
+    scope's restart on the profile that ran, `svc_rtl_start_on_the_profile_that_ran_locked()`) saves the fields and the
     standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured
-    squelch the captures hold. One rule (issue #899 r2): the receiver holds the effective squelch before any sample of a
-    new stream or channel. `dsd_squelch_analog_default_sync()` moves it in or out (`..._settle()` also pushes) at:
-    every stream open (`svc_rtl_start_locked()`, which every live open goes through: an input switch, a restart, a
-    replay re-plan, a config reopen, a recovery; `live_scanner_start_rtl_if_needed()` and `dsd_engine_setup_io()` at
-    startup), since the stream reads its squelch at the open; `dsd_scan_mode_options()` (a row's commit),
+    squelch the captures hold. While a command has a scan scope suspended the options hold the configured squelch and
+    the sync leaves them alone; what the row runs over them meanwhile is `dsd_scan_mode_suspended_row_squelch()`: the
+    row's own option, else the default where it ran on the row and is still pending (not ended by the command's keys or
+    edit), else the configured squelch the command left. Every stream open under a suspended scope opens on it
+    (`svc_rtl_open_on_the_channel_squelch_locked()`), and every push to a running receiver from app-control goes
+    through `svc_rtl_push_channel_squelch()`, which pushes it under a suspended scope and otherwise syncs and pushes
+    the options (a config's squelch push, a live Airspy apply, the drain's sync), so a config apply never hands an
+    inheriting row the configured Off. One rule (issue #899 r2): the receiver holds the effective squelch before any
+    sample of a new stream or channel. `dsd_squelch_analog_default_sync()` moves it in or out (`..._settle()` also
+    pushes) at: every stream open (`svc_rtl_start_locked()`, which every live open goes through: an input switch, a
+    restart, a replay re-plan, a config reopen, a recovery; `live_scanner_start_rtl_if_needed()` and
+    `dsd_engine_setup_io()` at startup), since the stream reads its squelch at the open; `dsd_scan_mode_options()` (a
+    row's commit),
     `dsd_scan_mode_leave()` (its options cleared, so the decoder left on air decides) and `dsd_scan_mode_resume()`;
     `decode_mode_apply_value_noted()` and a config's family or FM/AM change (`apply_cfg_receive_family_change()`,
     `apply_cfg_analog_profile_change()`) before their republish, and a config's squelch push to a running receiver
     (`apply_cfg_push_squelch()`); a signal search's restore before its family request; and `dsd_app_drain_cmds()` after
-    each command and each receive-request settle (`ui_sync_analog_default_squelch()`, which pushes with
-    `svc_rtl_push_squelch()`), which is left for rollbacks (a switch put back, an input change to audio). A -Y row's gate
-    goes to the receiver ahead of its retune (`dsd_scan_mode_push_squelch()` from `channel_scan_tune_staged()`, the row's
-    own option or `dsd_squelch_analog_default_effective_on()`), so a pending tune that lands before its commit already
-    runs it, and the row on air's gate comes back when the tune moved nothing; the scope's next settle judges against
-    what was pushed. A trunk-scan target's commit pushes before its retune. It also logs the AM notice each time a NOISE setting starts running as
+    each command and each receive-request settle (`ui_sync_analog_default_squelch()`), which is left for rollbacks (a
+    switch put back, an input change to audio); a refused receive request's settle syncs before it publishes the
+    settings it put back, so the snapshot and the receiver agree. A -Y row's gate goes to the receiver ahead of its
+    retune (`dsd_scan_mode_push_squelch()` from `channel_scan_tune_staged()`, the row's own option or
+    `dsd_squelch_analog_default_effective_on()`, kept as `channel_scan::staged_gate`), so a pending tune that lands
+    before its commit already runs it. Every end of a tune without a landing hands the row on air's gate back
+    (`channel_scan_gate_on_air()`: a refusal or deferral at the tune, a late failure or an out-of-date landing in
+    `dsd_engine_channel_scan_pending()`, a dropped retry, a resume's row that failed), and a go-to refused before anything
+    moved hands back the gate of the request it reinstates while that one can still land (`channel_scan_gate_back()`).
+    The scope's next settle judges against what the receiver was last told: what was pushed, what a stream opened on
+    and what app-control pushed (`dsd_scan_mode_note_receiver_squelch()`), so a row whose gate a restarted stream lost
+    is told it again at its landing. A trunk-scan target's commit pushes before its retune. It also logs the AM notice each time a NOISE setting starts running as
     AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
     `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
     APPLIED and no row overrides, filling the configured fields from it, and `dsd_app_squelch_view_format()` reads
@@ -5285,8 +5300,11 @@ suite runs under this compiler.
     terminal does. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
     Tests: `RUNTIME_SQUELCH_ANALOG_DEFAULT` (channel kinds, explicit sources, scan rows, suspend/resume, saves, the AM
     notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
-    change, a stream reopened by the RTL-SDR row, a config's [mode] alone), `ENGINE_CHANNEL_SCAN` (the -Y coordinator's
-    gate at each tune, pending and failed tunes), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW`
+    change, a stream reopened by the RTL-SDR row, a config's [mode] alone, a config under an inheriting -Y row in
+    place, with keys and reopened, an FM-to-AM refusal's publication), `ENGINE_CHANNEL_SCAN` (the -Y coordinator's
+    gate at each tune, pending and failed tunes, late failures, a refused go-to over a pending one, a dropped retry, a
+    restarted stream), `UI_MENU_SERVICES` (a suspended scope's recovery, the default ended or not),
+    `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running receiver told), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW`
     (what the monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
