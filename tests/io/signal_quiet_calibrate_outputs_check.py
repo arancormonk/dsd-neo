@@ -8,7 +8,9 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
 - A good run exits 0 and writes the CSV, --dump (8 bytes a trial: ratio and rise) and --trial-log (12 bytes a trial:
   occupancy, clip crossings, status), rows in the CSV's order. Each completed trial's status carries the detector's own
   decision: valid exactly when no void cause is set, quiet only when valid, and per row the quiet bits count the CSV's
-  quiet column and the void bits its invalid column.
+  quiet column and the void bits its invalid column. So does a selection run (both estimators) under the guard and the
+  occupancy check, whose decision the detector makes there too: with the check on everywhere (share 0.000001), every
+  trial whose share is over it is void for occupancy.
 - A --dump or --trial-log that cannot be opened (a directory) stops the run before it starts: nonzero, nothing written.
 - One whose writes do not land (/dev/full, where present) exits nonzero once the run ends.
 """
@@ -61,10 +63,15 @@ def write_inputs(root):
     )
 
 
-def run(driver, root, out, extra):
-    args = [driver, "--phase", "validate", "--threshold", "5", "--estimator", "trimmed", "--guard", "8.7",
-            "--sources", str(root), "--modes-file", str(root / "modes.tsv"), "--out", str(out),
-            "--trials", str(TRIALS), "--jobs", "2", "--rates", "1536000", "--filter", FILTER] + extra
+VALIDATE = ["--phase", "validate", "--threshold", "5", "--estimator", "trimmed", "--guard", "8.7"]
+SELECT = ["--phase", "select", "--guard", "8.7", "--occupancy-veto", "0.000001"]
+OCCUPANCY = 8  # DSD_SIGNAL_QUIET_VOID_OCCUPANCY
+
+
+def run(driver, root, out, extra, phase=None):
+    args = [driver] + (phase or VALIDATE) + [
+        "--sources", str(root), "--modes-file", str(root / "modes.tsv"), "--out", str(out),
+        "--trials", str(TRIALS), "--jobs", "2", "--rates", "1536000", "--filter", FILTER] + extra
     return subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
 
 
@@ -73,14 +80,16 @@ def fail(message):
     return 1
 
 
-def check_good_run(driver, root):
+def check_good_run(driver, root, phase=None):
+    select = phase is not None
     out, dump, log = root / "good.csv", root / "good.dump", root / "good.log"
-    done = run(driver, root, out, ["--dump", str(dump), "--trial-log", str(log)])
+    done = run(driver, root, out, ["--dump", str(dump), "--trial-log", str(log)], phase)
     if done.returncode != 0:
         return fail(f"a good run exits {done.returncode}: {done.stderr}")
     with out.open(newline="") as f:
         rows = list(csv.DictReader(f))
-    if [r["condition"] for r in rows] != WANT_ROWS:
+    want = [c for c in WANT_ROWS for _ in ((0, 1) if select else (0,))]
+    if [r["condition"] for r in rows] != want:
         return fail(f"rows {[r['condition'] for r in rows]}")
     if dump.stat().st_size != 8 * TRIALS * len(rows) or log.stat().st_size != 12 * TRIALS * len(rows):
         return fail(f"dump {dump.stat().st_size} B, trial log {log.stat().st_size} B")
@@ -96,8 +105,14 @@ def check_good_run(driver, root):
             valid = bool(status & VALID)
             if valid == bool(causes) or (status & QUIET and not valid) or status & ~(VALID | QUIET | 0xFF0000):
                 rc |= fail(f"{row['condition']}: inconsistent decision {status:#x}")
+            if select and bool(causes & OCCUPANCY) != (occupancy > 0.000001):
+                rc |= fail(f"{row['condition']}: share {occupancy}, causes {causes:#x}")
             quiet += bool(status & QUIET)
             invalid += not valid
+        if select:
+            if invalid != int(row["invalid"]):
+                rc |= fail(f"{row['condition']}: bits say {invalid} invalid; CSV {row['invalid']}")
+            continue
         if quiet != int(row["quiet"]) or invalid != int(row["invalid"]):
             rc |= fail(f"{row['condition']}: bits say {quiet} quiet, {invalid} invalid; CSV {row['quiet']}, "
                        f"{row['invalid']}")
@@ -137,6 +152,7 @@ def main():
         root = Path(temporary)
         write_inputs(root)
         rc = check_good_run(driver, root)
+        rc |= check_good_run(driver, root, SELECT)
         rc |= check_unopenable(driver, root)
         rc |= check_full_disk(driver, root)
     return rc

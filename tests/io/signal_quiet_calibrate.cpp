@@ -81,8 +81,9 @@
  * alone under each (informational: the occupancy check's speed cost). Both come after the shipped matrix, so its
  * conditions keep their order, names and seeds.
  * --seed-salt N gives every trial a fresh seed (0, the default, keeps the shipped calibration's); --occupancy-veto SHARE
- * judges validation with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off; selection
- * always runs it off and reports the share in --trial-log).
+ * judges with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off), in selection as in
+ * validation, as --guard does: a trial it voids is invalid, and selection's statistics leave it out (noise alone
+ * counts it busy). --trial-log reports the share whether or not the check is on.
  * --trial-log FILE writes every trial's occupancy share, samples at or over the clip level and status (12 bytes a
  * trial, rows in the CSV's order; the status holds the completion, the detector's failure, and its decision: the result
  * valid, quiet and why it is void, write_trial_log()); --bounds FILE lists every condition's scene bound and the scale it renders
@@ -1814,7 +1815,7 @@ run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o
                 continue;
             }
             const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard,
-                                                 select ? 0.0f : (float)o.occupancy_veto, 0.0f};
+                                                 (float)o.occupancy_veto, 0.0f};
             out.trials[e][(size_t)trial] = judge(c, trial, w.detectors[e], params, samples);
             out.trials[e][(size_t)trial].crossings = crossings;
         }
