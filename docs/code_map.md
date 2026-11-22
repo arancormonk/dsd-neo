@@ -303,7 +303,9 @@ Generated (do not edit/commit):
     (`dsd_engine_channel_scan_row_width_fits()`, split out of `channel_scan_row_reachable()`: the effective width, a
     session edit's included, and AM feasibility on audio input; the trunk width skip at the published DSP rate), and a
     TETRA DMO row's chain able to run (issue #890: `dsd_engine_channel_scan_row_tetra_reason()`, the trunk scan's
-    `trunk_scan_entry_reason()`; the `TETRA_*` reasons). A
+    `trunk_scan_entry_reason()`; the `TETRA_*` reasons), judged for the row or target on air by what the stream applied
+    for it, the verdict its judge acts on, so a frequency typed for a row the scan is leaving for its TED or chain is
+    refused, never held. A
     trunk target's retry cooldown does not exclude it. An untyped -Y list's run of adjacent rows on one frequency is
     one channel, as the walk's `lcn_cycle_pick()` treats it: the row of the run the scan is confirmed on speaks for
     it while that row is in the rotation, whatever its neighbours (the timed step visits every row of a run and passes
@@ -429,7 +431,9 @@ Generated (do not edit/commit):
     Hold or the allow list voice-only holds no dPMR row; its protocol reports carry the numeric IDs).
     `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
     admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
-    cap. TETRA voice the gate mutes for policy or encryption is never decoded, so it never earns checked media.
+    cap. It never matches a call of a callsign family (M17, D-STAR, YSF: `dsd_scan_activity_protocol_is_callsign()`),
+    whose target value is no talkgroup (an M17 destination is its base-40 callsign), as the policy table takes no
+    talkgroup policy for them. TETRA voice the gate mutes for policy or encryption is never decoded, so it never earns checked media.
   - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
     epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
     none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`
@@ -752,7 +756,17 @@ Generated (do not edit/commit):
       `YC_SYNC_LOST_CONTENT`): no content a protocol's CRC/FEC gate passed for `-t` (`dsd_state::scan_y_content_m`),
       nor the last frame of a protocol with no such gate (`dsd_state::scan_y_unchecked_m`), and the latest open
       verdict's hold, `dsd_state::scan_y_partial_until_m`, has ended: a deadline, capped at `SCAN_QUIET_PENDING_MAX_MS`
-      after its frame, that adds no `-t` (case `YC_PARTIAL_DEADLINE`). The `-Y` hangtime countdown publishes the same
+      after its frame, that adds no `-t` (case `YC_PARTIAL_DEADLINE`). On a typed row of a simplex class (dPMR,
+      D-STAR, YSF, M17, TETRA DMO: `dsd_engine_scan_y_row_holds_on_admitted()`, issue #890) checked content alone
+      sets no content time: only a protocol activity report the policy table admits does
+      (`dsd_engine_scan_y_typed_activity()`, installed with the frame-sync hooks as the runtime's row-activity hook
+      beside the trunk-scan table, `dsd_trunk_scan_row_activity_hook_set()`: `-Y` without `--trunk-scan`, a typed
+      simplex row, the row's family, an observation of the row's landing, `dsd_receive_allows()`, then
+      `dsd_scan_activity_policy_allows()`; it moves `dsd_engine_scan_owner::y_admitted_seq`), so a call the policy
+      refuses (short data under `--no-data-calls`, a private call under `--no-private-calls`) holds no `-t` and the
+      row leaves at its hangtime as an idle one (`test_y_typed_row_holds_on_admitted_activity()`). The checked content
+      still resolves an open verdict there. DMR, NXDN and P25 typed rows keep the checked-content rule. The `-Y`
+      hangtime countdown publishes the same
       deadline (`scan_y_timing_fill_hangtime()` extends the anchor's window to
       `dsd_engine_scan_y_frames_hold_until_m()` on the decode-mono clock;
       `test_y_hangtime_publishes_the_deadline_the_step_keeps()`). PARTIAL never counts as content, it only delays
@@ -1045,7 +1059,10 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   (`dsd_tetra_dsp_rate_runs()`: `RATE`), and, once the row has landed, the TED timing the stream applied for it
   (`dsd_engine_scan_tetra_ted_sps()` in `trunk_tuning.c`: the override and the TED's own samples per symbol, read only
   once the published profile is the TETRA one the landing came with, since until then both are the last profile's)
-  equal to the rate over 18000 (`TED`). Prospectively (a candidate walk while another family is on air) the TED is not
+  equal to the rate over 18000 (`TED`), and, landed, the TETRA chain itself
+  (`dsd_engine_scan_tetra_chain_settled_other()`: no receive request still pending, and the stream publishes
+  another profile than the CQPSK chain at 18000 symbols/s with the TETRA filter: `CHAIN`, which
+  `dsd_engine_scan_tetra_ted_sps()` cannot see, since it reads a non-TETRA profile as no timing). Prospectively (a candidate walk while another family is on air) the TED is not
   judged: the landing sets its own and clears the override another family's tune left. It reads nothing of the row's
   own, so it is one answer for every TETRA row of the session. Document validation stays hardware-independent. In the
   trunk scan, `trunk_scan_target_skipped()` (the analog width skip or the TETRA rule) feeds every candidate walk and
@@ -1057,7 +1074,12 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   (`trunk_scan_judge_tetra_on_air()`: landed, against the applied TED; a park in flight waits for its landing): a cause
   other than `RATE_UNKNOWN` sets `coord->active_tetra_skip`, which `trunk_scan_active_out_of_rotation()` reads, so it
   owes the departure a target out of the rotation owes (ahead of an operator's hold,
-  `dsd_engine_trunk_scan_departure_due()` included), named once in the log and on the status line. A resume judges the
+  `dsd_engine_trunk_scan_departure_due()` included), named once in the log and on the status line. One answer for
+  every entry path: `trunk_scan_target_tetra_skip()` judges the target on air with its park landed
+  (`dsd_engine_trunk_scan_target_confirmed()`) landed, every other target prospectively, for a go-to, a hold and the
+  published entry reasons, whose cache keys on the on-air verdict too; the `-Y` scan's `channel_scan_row_tetra_skip()`
+  does the same for the row on air (the judge's own guard, `channel_scan_tetra_judging()`), so a frequency entry
+  or hold on a row the judge is leaving is refused. A resume judges the
   target it resumes at the same way first.
   The start warns once per target (`trunk_scan_warn_targets()`, `trunk_scan_warn_tetra_target()`: the full reason with
   its fix, "it is skipped at every visit until then"; `INPUT` is for good) and again when the DSP rate changes
@@ -1608,7 +1630,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   which keep none. `dsd_scan_mode_auto_rf_mod()` is what modulation `auto` lands for a class (C4FM for P25, YSF, M17
   and dPMR, GFSK for DMR, NXDN and D-STAR, QPSK for TETRA DMO), shared by `dsd_scan_mode_apply_modulation()` and the
   trunk-scan landing profile; `scan_scope_cqpsk_choice()` gives every --trunk-scan digital class but an unmodulated
-  P25 its own CQPSK state (TETRA DMO on, the others off). An inherited row parked on the 18000/4 hunt profile recovers
+  P25 its own CQPSK state (TETRA DMO on, the others off), and a `-Y` `tetra-dmo` row its own too (on: its class has
+  one chain, whatever a `-m` lock left on `rf_mod`; the other `-Y` classes land with the decoder's). Each timing of a
+  row records that choice on the live scope (`scan_scope::timed_cqpsk`, `dsd_scan_mode_timed_cqpsk()`), a row
+  `dsd_scan_mode_prepare()` stages included, and the `-Y` retune `dsd_engine_prepare_scan_profile()` queues for
+  that row reads it, so a `-Y -mc` tetra-dmo row lands the CQPSK chain with the TETRA filter
+  (`y_tetra_locked_chain_case()`). An inherited row parked on the 18000/4 hunt profile recovers
   TETRA's profile (`dsd_scan_mode_effective_profile()`). The scan quiet check has no TETRA class
   (`scan_quiet_mode_classes()` 0); a tetra-dmo row or target publishes `DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE` (7,
   "No check: mode" in both frontends, through `scan_timing_view.c`) and its own WARN line, never the missing-width
@@ -5965,8 +5992,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   chunk 0 disputes it. The receive CAN gate `m17_can_en` is kept; never BERT)
   and TETRA `tetra_calls.c` (`dmo_scan_report()`: DSB DM-SETUP, DM-CONNECT ACK, DM-OCCUPIED, DM-2-C opaque
   presence (known encrypted, known non-data; under a DMO reserved system code, `tetra_calls_dmo_sync_pdu()`, EN 300
-  396-3 clause 9.3.29, shown and recorded as a call but the profile only for the scan), SDS after its FCS check and
-  before the notice dedupe, and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs,
+  396-3 clause 9.3.29, shown and recorded as a call but the profile only for the scan); the circuit mode classifies
+  data only for its defined values (EN 300 396-3 clause 9.6.3: 0 and 8 speech, 1 to 7 data; 9 to 15 reserved, left
+  unknown), SDS after its FCS check and before the notice dedupe (DM-SDS DATA, the acknowledged service, is private,
+  clauses 6.3 and 6.3.1.1.2; DM-SDS UDATA's party stays unknown), and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs,
   DM-RESERVED, DM-SETUP PRES or gateway set-up).
   Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
   `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
@@ -15736,7 +15765,7 @@ What each decoded event does:
 | A PDU whose channel allocation has its cell change flag set | nothing | nothing; decoded and printed only |
 | Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress (not its transmission), the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
 | Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`); while a scan session holds the state (`dsd_state::tetra_ext_scan_held`, issue #890) the state stays allocated, dormant | nothing |
-| A scan's landing while it holds the state (`tetra_scan_visit_reset()`, issue #890) | in this order: the visit's burst proof (`tetra_confirm_reset()`), the direct mode call, the network, each part once (`tetra_bsch_forget_network()`, with the identity still known: the D-MM STATUS, the call records with their canonical calls and the follow of their identifiers, the SDS reassembly, the cell with the partial TM-SDUs; then MCC, MNC, colour code and scrambling seed, `net_known` last), the carrier (`tetra_forget_carrier()`), the location area of the records, `decode_ok`, `enc_mode`, `frames_resource`, the hyperframe number, the trunking state machine's staged and in-flight work (`tetra_sm_init()`), the polarity and frame sync capture, and the publication | nothing: the state stays allocated, with the speech decoder's storage, the operator air keys (`dsd_state`) and the KSG evidence kept per network; a `--tetra-net` preset seeds the identity at the next burst |
+| A scan's landing while it holds the state (`tetra_scan_visit_reset()`, issue #890) | in this order: the visit's burst proof (`tetra_confirm_reset()`), the direct mode call, the network, each part once (`tetra_bsch_forget_network()`, with the identity still known: the D-MM STATUS, the call records with their canonical calls and the follow of their identifiers, the SDS reassembly, the cell with the partial TM-SDUs; then MCC, MNC, colour code and scrambling seed, `net_known` last), the carrier (`tetra_forget_carrier()`), the visit's codec health (`tetra_voice_visit_reset()`: speech in progress, the frame, concealment and codec error counts, the last decode status and the gap hold, so a visit's first publication shows none of the last row's), the location area of the records, `decode_ok`, `enc_mode`, `frames_resource`, the hyperframe number, the trunking state machine's staged and in-flight work (`tetra_sm_init()`), the polarity and frame sync capture, and the publication | nothing: the state stays allocated, with the speech decoder's storage, the operator air keys (`dsd_state`) and the KSG evidence kept per network; a `--tetra-net` preset seeds the identity at the next burst |
 
 Scan sessions (issue #890). A scan that has a TETRA DMO row (a trunk-scan list with a `tetra-dmo-conventional`
 target, a typed `-Y` list with a `tetra-dmo` row) owns the TETRA state's lifetime through `src/engine/scan_tetra.c`:

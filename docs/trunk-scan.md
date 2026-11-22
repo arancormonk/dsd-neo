@@ -1049,7 +1049,9 @@ The simplex digital types each scan one conventional channel of a mode DSD-neo a
 `-Y` channel maps take the matching row modes `ysf`, `dstar`, `dpmr`, `m17` and `tetra-dmo` (see
 [csv-formats.md](csv-formats.md)). A typed row follows the same rules as the target of its type: what holds it, the
 policy table, voice-only, its keys, and for a `tetra-dmo` row the TETRA rules below (it is visited only where its
-chain runs and holds only on direct mode content). An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
+chain runs and holds only on direct mode content). A call the policy table turns away holds a typed row no longer
+than an idle channel: short data under the default `--no-data-calls`, say, does not extend its hangtime (`-t`). A
+`tetra-dmo` row always runs the TETRA receive chain, even under a `-m` modulation option such as `-mc`. An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
 holds on checked TETRA content, trunked or direct.
 
 The Qt and Android scan lists build these targets from frequency entries and saved systems
@@ -1071,9 +1073,11 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
 | The channel filter on (no `DSD_NEO_CHANNEL_LPF=0`) and no `--tetra-uplink` | Skipped. |
 
 - **Checked again on air.** Once a TETRA DMO target (or a `-Y` `tetra-dmo` row) is on air, the scan checks the timing
-  the radio applied for it, and checks again all the time. If the rate changes, or the timing does not match it, the
-  scan leaves it at once for the next one that can be visited, even under a hold, which stays and keeps where it lands.
-  A radio that is reopening keeps it. The reason is named once.
+  the radio applied for it and that the radio runs the TETRA receive chain, and checks again all the time. If the rate
+  changes, or the timing does not match it, or the radio settled on another receive chain, the scan leaves it at once
+  for the next one that can be visited, even under a hold, which stays and keeps where it lands. A radio that is
+  reopening keeps it. The reason is named once. Typing the frequency of a target or row the scan is leaving for this
+  reason is refused with the same reason, rather than held.
 - **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is
   a TETRA DMO target at the wrong rate, say, or an NFM target whose width the rate cannot filter), the scan does not
   start: `--trunk-scan: no target can be visited on this input; target "a" (and 1 more): ...`, with the first target's
@@ -1083,7 +1087,7 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   anyway. Give the hold again, or type the frequency again, once the radio is up.
 - **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO
   target, the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing
-  shown. So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and
+  shown, no voice frame or decode error counts. So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and
   kept between rows, so a mixed list costs nothing extra per hop. Pausing the scan or stopping it leaves the decoder
   cold too; a session you started with `-fT` keeps decoding TETRA after it.
 - **Dwell.** A DMO call sends its synchronisation bursts in frames 6, 12 and 18, about every 340 ms. A dwell shorter
@@ -1124,7 +1128,7 @@ rules:
 | D-STAR | not used (callsigns) | the header's DATA flag; a D-PRS record is never data (presence of its voice transmission) | never known | never encrypted |
 | M17 | not used (callsigns); the receive CAN filter still applies | packet mode and data streams | never known | the checked LSF's encryption type |
 | dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown) | the checked communications mode | never known (dPMR has no group bit) | scrambled, as the decoder reads it (Version 3, which TS 102 658 calls manufacturer specific) |
-| TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data; an encrypted DM-2-C burst is never data (presence) | the set-up's call type | the call's security class; a DM-2-C burst is encrypted |
+| TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data (circuit modes 1 to 7; a reserved mode, 9 to 15, is of unknown kind); an encrypted DM-2-C burst is never data (presence) | the set-up's call type; acknowledged short data (DM-SDS DATA) is private, unacknowledged (DM-SDS UDATA) never known | the call's security class; a DM-2-C burst is encrypted |
 
 - A setting that limits a field holds nothing while that field is unknown: with data calls off (`--no-data-calls`,
   the default) a call of unknown kind does not hold, with `--enc-lockout` a call of unknown encryption does not hold,
@@ -1146,7 +1150,8 @@ rules:
 - The M17 CAN filter: with a receive CAN set, a target holds only on a checked LSF of that CAN; an LSF of another CAN,
   and LICH frames before any checked LSF, hold nothing.
 - A talkgroup Hold keeps a `tetra-dmo` target or row past its visit cap only while a direct mode call on the held
-  talkgroup is heard on this visit; a trunked call on the same talkgroup does not.
+  talkgroup is heard on this visit; a trunked call on the same talkgroup does not. YSF, D-STAR and M17 calls never
+  keep a target past its cap for a talkgroup Hold: they address callsigns, not talkgroups.
 
 ### Voice-only scanning
 
