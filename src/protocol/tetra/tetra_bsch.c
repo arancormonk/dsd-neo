@@ -204,6 +204,7 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         state->trunk_cc_freq = 0;
     }
     ts->dl_carrier_hz = 0;
+    ts->cell_main_hz = 0;
     ts->frames_sysinfo = 0;
     ts->sysinfo_main_carrier = 0;
     ts->la = 0;
@@ -282,12 +283,14 @@ tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, 
     if (!ts) {
         return;
     }
-    const int other_main = ts->dl_carrier_hz > 0L && main_carrier_hz > 0L && main_carrier_hz != ts->dl_carrier_hz;
+    /* The cell's last main carrier, not the published one: a SYSINFO naming none in between withdraws that, and two
+       cells of one network, colour code and location area differ only here. */
+    const int other_main = ts->cell_main_hz > 0L && main_carrier_hz > 0L && main_carrier_hz != ts->cell_main_hz;
     const int other_area = ts->sysinfo_known && la_present && la != ts->la;
     if (other_main || other_area) {
         TETRA_LOG_VERBOSE(ts, 1,
                           "[TETRA SYSINFO] main carrier %ld Hz, location area %u: another cell than %ld Hz, %u\n",
-                          main_carrier_hz, (unsigned)la, ts->dl_carrier_hz, (unsigned)ts->la);
+                          main_carrier_hz, (unsigned)la, ts->cell_main_hz, (unsigned)ts->la);
         bsch_forget_cell(opts, state, ts);
         /* The received identity forgets the last cell's location area and control channel too. */
         dsd_rxid_note_tetra_other_cell(state);

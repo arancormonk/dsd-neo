@@ -1109,9 +1109,11 @@ sysinfo_applies(const mac_block* b, long dl_hz, const tetra_mac_sysinfo* si) {
 /* A SYSINFO of the cell names no main carrier a frequency can be given for: none (band 0 and carrier 0, EN 300 392-2
  * table 21.65 note 3), band 0 with another carrier, or a band with no base frequency (TS 100 392-15 table 1). The main
  * carrier the cell's last SYSINFO named is no longer the cell's word: its frequency, carrier number, band and offset go,
- * so the publication shows no control channel, with the control channel it set (not one set otherwise) and the received identity's control channel, so nothing pairs the old
- * frequency with the new carrier number. The next valid SYSINFO takes them on again. On the carrier of a guarded follow
- * such a SYSINFO is not applied at all (sysinfo_applies()). */
+ * so the publication shows no control channel, with the control channel it set (not one set otherwise) and the received
+ * identity's control channel, so nothing pairs the old frequency with the new carrier number. The next valid SYSINFO
+ * takes them on again. The cell's last main carrier (cell_main_hz) stays, so a SYSINFO naming another one after this
+ * still tells another cell (tetra_bsch_sysinfo_cell()). On the carrier of a guarded follow such a SYSINFO is not
+ * applied at all (sysinfo_applies()). */
 static void
 sysinfo_no_main_carrier(const mac_block* b) {
     tetra_state_t* const ts = b->ts;
@@ -1147,6 +1149,7 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     }
     if (dl_hz > 0L) {
         ts->dl_carrier_hz = dl_hz;
+        ts->cell_main_hz = dl_hz;
         ts->freq_band = si->band;
         ts->freq_offset = si->offset;
         b->state->trunk_cc_freq = dl_hz;

@@ -198,6 +198,55 @@ test_sysinfo(void) {
     return ok;
 }
 
+/* A SYSINFO naming no main carrier withdraws the published frequency, not the cell's word on which cell it is: cells
+ * that share the network, colour code and location area differ only in the main carrier their SYSINFO names, so after
+ * carrier A, one naming none and then carrier B the decoder still forgets cell A (bsch_forget_cell(): its partial
+ * TM-SDUs and timebase among the rest), and after A, none and A again it keeps them. */
+static int
+test_sysinfo_cell_change_across_no_main_carrier(void) {
+    static const struct {
+        uint32_t carrier;
+        uint32_t band;
+    } k_none[] = {{0, 0}, {100, 0}, {100, 12}};
+
+    int ok = 1;
+    for (size_t i = 0; i < sizeof k_none / sizeof k_none[0]; i++) {
+        for (int other = 0; other <= 1; other++) {
+            dsd_state* state = new_state();
+            dsd_opts* opts = new_opts();
+            tetra_state_t* ts = tetra_st(state);
+            ttb_block a = {0};
+            put_sysinfo(&a, 50, 4, 2);
+            tetra_mac_parse_schd(a.bits, a.n, 0, opts, state);
+            /* A TM-SDU of cell A being rebuilt on timeslot 2. */
+            ts->tdma_valid = 1;
+            ts->mac_frag[2].active = 1;
+            ts->mac_frag[2].nbits = 40;
+            ttb_block none = {0};
+            put_sysinfo(&none, k_none[i].carrier, k_none[i].band, 0);
+            tetra_mac_parse_schd(none.bits, none.n, 0, opts, state);
+            ok &= check(ts->dl_carrier_hz == 0L && ts->mac_frag[2].active && ts->tdma_valid,
+                        "cell change: a SYSINFO naming no main carrier withdraws the frequency, not the cell");
+            ttb_block next = {0};
+            put_sysinfo(&next, other ? 60 : 50, 4, 2);
+            tetra_mac_parse_schd(next.bits, next.n, 0, opts, state);
+            const long next_hz = other ? 401493750L : 401243750L;
+            const int forgot = !ts->mac_frag[2].active && !ts->tdma_valid;
+            if (forgot != other || ts->dl_carrier_hz != next_hz) {
+                DSD_FPRINTF(stderr, "  none %u/%u then %s: frag=%u tdma=%u dl=%ld\n", (unsigned)k_none[i].carrier,
+                            (unsigned)k_none[i].band, other ? "B" : "A", (unsigned)ts->mac_frag[2].active,
+                            (unsigned)ts->tdma_valid, ts->dl_carrier_hz);
+            }
+            ok &= check(forgot == other && ts->dl_carrier_hz == next_hz,
+                        other ? "cell change: A, no main carrier, B forgets cell A"
+                              : "cell change: A, no main carrier, A keeps the cell");
+            free_state(state);
+            free(opts);
+        }
+    }
+    return ok;
+}
+
 /* The received identity record (dsd_state::rx_id): a CRC-passed BSCH names the network and the cell's colour code, a
  * SYSINFO the location area, and the control channel where the receiver is tuned only when that is the main carrier
  * the SYSINFO names (every carrier of the cell broadcasts it). */
@@ -1155,6 +1204,7 @@ main(void) {
     ok &= test_llc_fcs_annex_c();
     ok &= test_sysinfo();
     ok &= test_sysinfo_without_a_main_carrier_clears_it();
+    ok &= test_sysinfo_cell_change_across_no_main_carrier();
     ok &= test_sysinfo_received_identity();
     ok &= test_sysinfo_tooshort();
     ok &= test_sysinfo_security();

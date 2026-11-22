@@ -486,8 +486,12 @@ typedef struct tetra_state {
      * too); the frequency band and offset of the last SYSINFO with a valid main
      * carrier, which a channel allocation without extended carrier numbering uses (clause 21.5.2; freq_band 0 while
      * none is known); and the location area of its D-MLE-SYSINFO (clause 18.4.2.2), sysinfo_known once one was
-     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier while dl_carrier_hz names one. */
+     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier while dl_carrier_hz names
+     * one. cell_main_hz is the frequency of the main carrier the cell's SYSINFO named last, kept across one naming none,
+     * which tells cells sharing the network, colour code and location area apart (tetra_bsch_sysinfo_cell()); 0 until
+     * one named a frequency, and once another cell was taken on (bsch_forget_cell()). */
     long dl_carrier_hz;
+    long cell_main_hz;
     uint32_t frames_sysinfo;
     uint16_t sysinfo_main_carrier;
     /* The cell's broadcast security: sec from the last SYSINFO with the extended services broadcast (sec_valid once

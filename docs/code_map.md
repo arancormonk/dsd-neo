@@ -15013,7 +15013,9 @@ when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO
 is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
 cell shares it. The cells of a network may share a colour code, so a SYSINFO naming another main carrier (the cell's,
 clause 21.4.4.1) or another location area than the cell's known one is another cell too, which forgets the same before
-the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). While the trunking state
+the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). The main carrier
+compared is the last one the cell's SYSINFO named (`cell_main_hz`), which a SYSINFO naming none keeps while it
+withdraws the published one, so carrier A, then none, then B is still another cell. While the trunking state
 machine guards a follow, neither BSCH nor SYSINFO of another cell is taken on from the followed carrier, and they forget
 nothing (Trunking, "Another cell on the followed carrier"). Another cell is also another carrier, whatever the engine
 saw (a radio retuned outside the decoder), so what the last carrier's speech left goes as at a carrier boundary: its

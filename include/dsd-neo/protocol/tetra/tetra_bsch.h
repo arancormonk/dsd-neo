@@ -87,8 +87,9 @@ void tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state);
 /* A SYSINFO of the cell being received names its main carrier, @p main_carrier_hz (0 when it names none), and, when
  * @p la_present, its location area @p la (EN 300 392-2 clause 21.4.4.1, D-MLE-SYSINFO clause 18.4.2.2). Cells of a
  * network may share a colour code, which a BSCH alone tells them apart by: a main carrier or a location area other
- * than the cell's known one is another cell all the same, and what a BSCH of another cell forgets goes here, before the
- * SYSINFO is taken. Never creates TETRA state. */
+ * than the cell's known one (the main carrier its SYSINFO named last, whether or not one naming none came since) is
+ * another cell all the same, and what a BSCH of another cell forgets goes here, before the SYSINFO is taken. Never
+ * creates TETRA state. */
 void tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, int la_present, uint16_t la);
 
 /* Run the TDMA clock (EN 300 392-2 clauses 7.3 and 7.4) to the slot that started at symbol count `slot_start`: TN,
