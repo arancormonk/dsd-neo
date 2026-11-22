@@ -141,8 +141,9 @@ Item {
         function describe(r) {
             return "[" + Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.w) + "x" + Math.round(r.h) + "]";
         }
+        // The title's minimum beside the site button (issue #901 G4): 96 px.
         function minimumTitle(card) {
-            return Math.max(96, 0.35 * card.width);
+            return 96;
         }
         // What a card draws: every visible, opaque part inside it, no two of its actions meeting, each action at least
         // 48 px square, the actions on one row beside the labels, and the title at least its minimum width.
@@ -185,8 +186,8 @@ Item {
 
         // Compact cards at 320, 360 and 411 dp at text 1.0, 1.6 and 2.0: a plain card, a one-site group (site button and
         // Play), a group of two (its site button plays), every part inside, the 48 px targets apart and the title at its
-        // minimum at least. A one-site card's site button is drawn only where it leaves the title that minimum: at 411
-        // dp at normal text; elsewhere the supporting line leads with "1 site". Play stays.
+        // minimum (96 px) at least. A one-site card's site button is drawn only where it leaves the title that minimum:
+        // at 411 dp at every size, not at 320 or 360 dp; elsewhere the supporting line leads with "1 site". Play stays.
         function test_compact_cards_fit_data() {
             var rows = [];
             for (var w of [320, 360, 411]) {
@@ -208,8 +209,15 @@ Item {
             var single = cardOf("Single Vale");
             var sites = part(single, "homeSiteChooserButton");
             verify(part(single, "savedSystemPlay").visible, "the one-site card keeps Play");
-            var drawn = data.width === 411 && data.scale === 1.0;
+            // Drawn only where the title keeps 96 px beside the site button, Play, More and the gaps: at 411 dp at
+            // every size; not at 360 dp at normal text (the title would get 94 px) or at 320 dp.
+            var drawn = single.width - 32 - (sites.implicitWidth + 8 + part(single, "savedSystemPlay").implicitWidth + 8
+                + part(single, "savedSystemManageButton").implicitWidth) - 12 >= 96;
             compare(sites.visible, drawn, "the site button drawn only where it fits");
+            if (data.width === 411)
+                verify(drawn, "one site's button at 411 dp, " + data.tag);
+            if (data.width === 360 && data.scale === 1.0)
+                verify(!drawn, "the button at 360 dp at normal text in compact");
             var source = part(single, "savedSystemSource").text;
             compare(source.indexOf("1 site · ") === 0, !drawn, "the count leads the line when the button is not drawn: " + source);
             if (data.scale === 1.0)

@@ -572,15 +572,16 @@ function systemMeta(sys) {
 // The default card has More over Play at the right and the site button left
 // of Play; the compact card is one row, site button, Play and More on the
 // title's line, More at the right edge. In both, the site button is drawn
-// only while the title keeps max(96, 35 % of the card) beside it
-// (`siteDrawn`); otherwise the card names the count in its supporting line
+// only while the title keeps 96 px beside it (`siteDrawn`; a flat minimum,
+// so a one-site group keeps its button at normal text on a 320 dp phone, a
+// 110 px title, as before); otherwise the card names the count in its supporting line
 // and its More menu (and long press) offer Sites. The card's height never
 // follows it: 122 px by default and 68 compact at normal text.
 function listenCardActions(s) {
     var gap = 8
     var labelGap = 12
     var inner = Math.max(0, s.width - 2 * s.padding)
-    var minimum = Math.max(96, 0.35 * s.width)
+    var minimum = 96
     var siteWidth = Math.min(s.siteWidth, inner)
     var playPart = s.playShown ? s.playWidth + gap : 0
     // Beside the labels with the site button, and without it (the default

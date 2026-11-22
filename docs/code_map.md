@@ -16045,11 +16045,13 @@ Qt Quick frontend (`src/ui/qt`):
   uses the same two. By default More is at the top, Play under it at `moreHeight + 6`, the site button left of Play
   and centred on it, and the label column is centred 10 px above the middle of the actions' box,
   `[0, actionsBottom + cardPadding]` (122 px at normal text), never above the top padding. In both views the site
-  button is drawn only while the title keeps max(96, 35% of the card) beside it (`siteDrawn`, from natural widths:
-  B1, a one-site card with Play at 320 dp left the title 72 px at text 2.0); otherwise the source line leads with
+  button is drawn only while the title keeps a flat 96 px beside it (`siteDrawn`, from natural widths: B1, a
+  one-site card with Play at 320 dp left the title 72 px at text 2.0); otherwise the source line leads with
   `N sites · ` and the chooser is on More → Sites and the long press. Play and More keep their places, so the card's
-  height never follows the button: 122 px by default at normal text at any width (a one-site group's button is
-  drawn at 411 dp at normal text, left out at 320 and 360). The refresh hint takes the full width 8 px below the lower
+  height never follows the button: 122 px by default at normal text at any width. The full card draws a one-site
+  group's button at normal text at 320, 360 and 411 dp, as on main (a 110 px title at 320); it leaves it out for
+  10 sites at 320 dp and at larger text where the title would fall under 96. Compact draws it at 411 dp at every
+  size and not at 320 or 360 (94 px at 360). The refresh hint takes the full width 8 px below the lower
   of labels and actions; the card ends
   `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as before, and grows at large
   text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being set), not

@@ -277,11 +277,14 @@ Item {
                     var r = rectIn(part[1], card);
                     verify(inside(r, card), name + ": " + part[0] + " " + describe(r) + " inside the card, " + card.height + " tall");
                 }
-                // The site group's button where the title keeps its minimum beside it (issue #901 G4), else its count
-                // leads the source line; a system outside a group has neither.
+                // At normal text the site group draws its button and the plain system none, as on main. At larger
+                // text the group's button gives way where the title would fall under 96 px (issue #901 G4) and its
+                // count leads the source line instead.
                 var sites = findChild(card, "homeSiteChooserButton");
                 var source = findChild(card, "savedSystemSource").text;
-                if (name === "Grouped system")
+                if (data.scale === 1.0)
+                    verify(sites.visible === (name === "Grouped system"), name + ": the site button at normal text");
+                else if (name === "Grouped system")
                     verify(sites.visible || source.indexOf("1 site · ") === 0, name + ": neither the button nor the count: " + source);
                 else
                     verify(!sites.visible && source.indexOf("site") < 0, name + ": a site count outside a group");
@@ -312,13 +315,13 @@ Item {
             verify(waitForPolish(root.Window.window));
         }
         // Every part inside the card, the actions 48 px targets apart from each other and from the labels, and the
-        // title at least max(96, 35 % of the card) wide.
+        // title at least 96 px wide (the site button's rule).
         function checkActions(card, label) {
             var labels = findChild(card, "savedSystemTitle").parent;
             var title = findChild(card, "savedSystemTitle");
             var labelsRect = rectIn(labels, card);
             verify(inside(labelsRect, card), label + ": labels " + describe(labelsRect) + " inside, " + card.height);
-            var minimum = Math.max(96, 0.35 * card.width);
+            var minimum = 96;
             verify(title.width >= minimum - 0.5, label + ": the title is " + title.width + " wide, under " + minimum);
             var actions = [];
             for (var name of ["homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"]) {
@@ -340,7 +343,7 @@ Item {
 
         // B1 (issue #901): a site group with one site to play keeps the default card's 122 px at normal text and its
         // place for Play and More (More over Play at the right), at every width; its site button is drawn only while
-        // the title keeps max(96, 35 % of the card) beside it, measured from natural widths, and otherwise the source
+        // the title keeps 96 px beside it, measured from natural widths, and otherwise the source
         // line leads with the count ("10 sites · ") and More offers Sites. The labels and the controls never meet, at
         // 1.0, 1.6 and 2.0.
         function test_site_button_gives_way_data() {
@@ -374,11 +377,14 @@ Item {
             verify(moreRect.y + moreRect.h <= playRect.y + 0.5, "More above Play");
             // Drawn only where the title keeps its minimum beside the site button, Play and the gaps.
             var label = data.count === 1 ? "1 site" : data.count + " sites";
-            var minimum = Math.max(96, 0.35 * card.width);
-            var fits = card.width - 2 * 16 - (play.implicitWidth + 8 + sites.implicitWidth) - 12 >= minimum;
+            var fits = card.width - 2 * 16 - (play.implicitWidth + 8 + sites.implicitWidth) - 12 >= 96;
             compare(sites.visible, fits, "the site button drawn only where it fits");
-            if (data.width === 411 && data.scale === 1.0 && data.count === 1)
-                verify(sites.visible, "one site's button fits at 411 dp at normal text");
+            // Pinned: one site's button at normal text on every phone width, as on main (a 110 px title at 320 dp);
+            // left out for 10 sites at 320 dp and for one site at 2x text there.
+            if (data.scale === 1.0 && data.count === 1)
+                verify(sites.visible, "one site's button at " + data.width + " dp at normal text");
+            if (data.width === 320 && (data.scale === 1.0 && data.count === 10 || data.scale === 2.0 && data.count === 1))
+                verify(!sites.visible, "the button is drawn at " + data.tag);
             if (sites.visible) {
                 compare(sites.text, label);
                 verify(source.text.indexOf(label) < 0, "the count twice: " + source.text);
