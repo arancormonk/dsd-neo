@@ -18659,6 +18659,11 @@ y_admit_case(int voice, int partial, int receive_refused) {
     }
     int rc = y_tetra_start(opts, state, what);
     y_tetra_published(4, 0);
+    /* The open verdicts' holds (80 ms after each frame) and the -t the cases age run on the decode clock: frozen from
+       here, a host pause between the frames cannot end a hold before the next frame renews it. Frozen at the wall time
+       the fixture's landing stamped its hangtime anchor with (time(NULL)), so that anchor reads as it did; the stamps
+       of the monotonic clock before it read as long past, as the cases' own aging makes them. */
+    dsd_decode_clock_use_test((uint64_t)dsd_realtime_time() * 1000000000ULL);
     dsd_trunk_scan_row_activity_hook_set(dsd_engine_scan_y_typed_activity);
     dsd_trunk_scan_activity_identity id;
     DSD_MEMSET(&id, 0, sizeof id);
@@ -18705,6 +18710,7 @@ y_admit_case(int voice, int partial, int receive_refused) {
     dsd_trunk_scan_row_activity_hook_set(NULL);
     g_frame_sync_type = DSD_SYNC_NXDN_POS;
     y_tetra_finish(opts, state);
+    dsd_decode_clock_use_system();
     return rc;
 }
 
