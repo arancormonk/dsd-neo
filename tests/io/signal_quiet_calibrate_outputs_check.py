@@ -97,7 +97,7 @@ def check_good_run(driver, root, phase=None):
     rc = 0
     for i, row in enumerate(rows):
         quiet = invalid = 0
-        for occupancy, _crossings, status in records[i * TRIALS:(i + 1) * TRIALS]:
+        for occupancy, status in ((r[0], r[2]) for r in records[i * TRIALS:(i + 1) * TRIALS]):
             if status & 0xFF != STATUS_DONE or not math.isfinite(occupancy):
                 rc |= fail(f"{row['condition']}: status {status:#x}, occupancy {occupancy}")
                 continue
