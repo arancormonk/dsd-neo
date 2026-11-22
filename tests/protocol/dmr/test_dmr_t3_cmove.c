@@ -188,10 +188,11 @@ csbk_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint
 }
 
 /* A CRC-valid MBC grant whose channel is the absolute escape (0xFFF), defined by its CdefParms: LPCN @p apcn on
-   @p rx_int MHz plus @p rx_step 125 Hz steps. */
+   @p rx_int MHz plus @p rx_step 125 Hz steps. Handed over as the MBC assembler does with @p appended continuation
+   blocks received, or as a standalone CSBK (the header alone, the CdefParms bits then only buffer content) when 0. */
 static void
 csbk_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, uint16_t rx_int, uint16_t rx_step,
-                    uint8_t slot, uint32_t target) {
+                    uint8_t slot, uint32_t target, uint8_t appended) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -205,7 +206,11 @@ csbk_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t a
     put_bits(bits, 118U, apcn, 12U);
     put_bits(bits, 153U, rx_int, 10U);
     put_bits(bits, 163U, rx_step, 13U);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    if (appended == 0U) {
+        dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    } else {
+        dmr_cspdu_mbc(opts, state, bits, bytes, 1U, 0U, appended);
+    }
 }
 
 static void
@@ -542,7 +547,7 @@ test_t3_absolute_grant_uses_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     static const uint16_t lpcns[] = {37U, 1U, 4094U};
     for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
         trunk_env(opts, state);
-        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101, 1U);
         assert(state->trunk_vc_freq[0] == CH_F4);
         assert(state->trunk_chan_map[lpcns[i]] == CH_F4);
         clock_at(0.5);
@@ -558,13 +563,47 @@ test_t3_absolute_grant_invalid_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     static const uint16_t lpcns[] = {0U, 4095U};
     for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
         trunk_env(opts, state);
-        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101, 1U);
         assert(state->trunk_vc_freq[0] == CH_F4);
         assert(state->trunk_chan_map[0] == 0 && state->trunk_chan_map[4095] == 0);
         clock_at(0.5);
         accepted_voice(opts, state, 0);
         expect_channel(state, 0, 0U, DSD_CALL_CHANNEL_NONE);
     }
+}
+
+/* An absolute grant is followed only with the block that gives its frequency: the header alone (a standalone CSBK)
+   names no frequency, so it publishes none, tunes nothing and teaches the channel map nothing; the same grant with
+   its continuation tunes to the block's frequency. */
+static void
+test_t3_absolute_grant_needs_its_block(dsd_opts* opts, dsd_state* state) {
+    trunk_env(opts, state);
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_t3_abs_grant") == 0);
+    csbk_absolute_grant(opts, state, 49U, 37U, 855U, 0U, 0, 101, 0U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, g_out, sizeof g_out) == 0);
+    assert(g_tunes == 0U && state->trunk_vc_freq[0] == 0 && opts->trunk_is_tuned == 0);
+    assert(dmr_sm_get_ctx()->state != DMR_SM_TUNED);
+    assert(state->trunk_chan_map[37] == 0);
+    expect_out("TV_GRANT", 1, "lone absolute grant");
+    expect_out("Frequency", 0, "lone absolute grant");
+    expect_out("RX APCN", 0, "lone absolute grant");
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) > 0
+        && recent.entries[0].observation.kind != DSD_CALL_KIND_UNKNOWN) {
+        assert(recent.entries[0].observation.frequency_hz == 0 && recent.entries[0].observation.channel == 0U);
+    }
+
+    // With trunking off a grant's frequency would be written as the VC frequency: none either.
+    trunk_env(opts, state);
+    opts->trunk_enable = 0;
+    csbk_absolute_grant(opts, state, 49U, 37U, 855U, 0U, 0, 101, 0U);
+    assert(state->trunk_vc_freq[0] == 0 && state->trunk_vc_freq[1] == 0);
+
+    trunk_env(opts, state);
+    csbk_absolute_grant(opts, state, 49U, 37U, 855U, 0U, 0, 101, 1U);
+    assert(g_tunes == 1U && state->trunk_vc_freq[0] == CH_F4 && state->trunk_chan_map[37] == CH_F4);
 }
 
 /* With no CC known yet, a CRC-valid CSBK received on a radio input anchors the CC at the tuned frequency. */
@@ -602,6 +641,7 @@ main(int argc, char** argv) {
     test_t3_grant_lpcn_kind(&opts, &state);
     test_t3_absolute_grant_uses_mbc_lpcn(&opts, &state);
     test_t3_absolute_grant_invalid_mbc_lpcn(&opts, &state);
+    test_t3_absolute_grant_needs_its_block(&opts, &state);
     test_csbk_anchors_unknown_cc(&opts, &state);
 
     dsd_decode_clock_use_system();

@@ -201,6 +201,7 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
+extern void dmr_cspdu_mbc(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t, uint8_t);
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
@@ -2419,7 +2420,7 @@ main(void) {
 
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3300U, 4400U, 0U, 88U, 452U, 100U);
-    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U); // the header and its absolute-parameters block
     rc |= expect_true("absolute grant learns mbc lpcn", st->trunk_chan_map[88] == 452012500L);
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
     rc |= expect_true("absolute grant publishes mbc lpcn activity",
@@ -2431,7 +2432,7 @@ main(void) {
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3310U, 4410U, 0U, 89U, 453U, 200U);
     write_bits_u32(bits, 112U, 3U, 4U);
-    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("unknown absolute cdef does not learn lpcn", st->trunk_chan_map[89] == 0);
     rc |= expect_true("unknown absolute cdef does not tune", opts->trunk_is_tuned == 0);
 

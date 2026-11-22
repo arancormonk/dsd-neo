@@ -408,8 +408,17 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
     return 0;
 }
 
+/* An absolute grant's channel (TS 102 361-4 §7.1.1.1.1.1.1): the CdefParms of the block appended to its MBC header.
+   Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over):
+   a header heard as a standalone CSBK carries only its own 96 bits, so it names no frequency, is not followed and
+   teaches the channel map nothing (fail closed). */
 static uint16_t
-dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq) {
+dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t appended_blocks,
+                                   long int* freq) {
+    if (appended_blocks == 0U) {
+        DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Absolute Parameters Not Received;");
+        return 0;
+    }
     uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
     unsigned long long int mbc_cdefparms = (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58);
     if (mbc_cdeftype != 0) {
@@ -462,9 +471,9 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
 
 static uint16_t
 dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
-                                long int* freq) {
+                                uint8_t appended_blocks, long int* freq) {
     if (lpchannum == 0xFFF) {
-        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq);
+        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, appended_blocks, freq);
     }
     if (lpchannum != 0) {
         *freq = state->trunk_chan_map[lpchannum];
@@ -551,7 +560,8 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
 }
 
 static void
-dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o) {
+dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
+                            uint8_t appended_blocks) {
     if (csbk_o < 48 || csbk_o > 56) {
         return;
     }
@@ -583,7 +593,8 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     }
     dmr_gateway_identifier(source, target);
 
-    uint16_t mbc_lpchannum = dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq);
+    uint16_t mbc_lpchannum =
+        dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, appended_blocks, &freq);
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
@@ -1734,7 +1745,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         DSD_FPRINTF(stderr, "%s", KYEL);
 
-        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o);
+        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o, appended_blocks);
 
         dmr_cspdu_pf0_handle_aloha(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 

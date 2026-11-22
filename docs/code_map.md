@@ -13555,7 +13555,10 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
     `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
     (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's absolute escape 0xFFF names its MBC's
-    CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
+    CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range; the CdefParms are
+    read only when the MBC assembler handed the continuation over, `dmr_cspdu_mbc()`'s `appended_blocks`, so an
+    absolute grant heard as a standalone CSBK names no frequency, is not followed and teaches the map nothing,
+    `test_t3_absolute_grant_needs_its_block()` in `DMR_T3_CMOVE`), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
