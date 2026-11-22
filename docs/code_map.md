@@ -1760,6 +1760,21 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it, and falls back to
     the paths when it fails. Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a
     missing file)
+  - One file's identity (issue #902): `dsd_path_file_identity()` reads a regular file's `dsd_file_identity_t` without
+    following a link: its size and modification time, whole seconds and nanoseconds apart so no date the file system
+    keeps overflows (`expect_path_file_identity` sets one in 2300); POSIX `lstat()`, Windows the name itself opened with
+    `FILE_FLAG_OPEN_REPARSE_POINT` and `GetFileInformationByHandle()`. No device, inode, volume or file id is kept (FAT
+    and exFAT number a file anew when it is read again from disk, a remount numbers a volume anew), and
+    `dsd_file_identity_equal()` says whether two readings are one regular file unchanged as far as size and time tell,
+    so another file of exactly the same size and time reads as the same one (the store's decided limit below); a link (ELOOP; on Windows the reparse-point bit is checked before the folder bit, so a folder
+    link or junction is a link), a folder (EISDIR), anything else read and known not to be a regular file (ENODEV: a
+    FIFO, a socket or a device, on Windows `GetFileType()` other than a disk file) or a missing name (ENOENT, ENOTDIR)
+    has none, and a name that cannot be read fails with the system's own errno (EACCES, EIO), which says nothing about a
+    file being there. The call recording store keeps each recording's and checks it right before a delete's unlink.
+    Test: `PLATFORM_FILE_COMPAT` (`expect_path_file_identity`: read twice, the same size with only its modification
+    time set apart, another file of the same size and time (equal), a date in 2300 where `time_t` holds it and the file
+    system stored it as set, another file renamed over it, another file, a FIFO or the `NUL` device, the error cases;
+    also run under mingw-w64 and Wine).
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`

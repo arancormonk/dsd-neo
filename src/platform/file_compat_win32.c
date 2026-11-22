@@ -908,6 +908,81 @@ dsd_path_same_file(const char* a, const char* b, int* same) {
     return 0;
 }
 
+/* The identity of the regular file open at @p h (attributes only): its size and last write time; 0, or -1 with errno,
+   leaving @p out as it is. */
+static int
+dsd_handle_file_identity(HANDLE h, dsd_file_identity_t* out) {
+    /* A device or a pipe opens under a name too (NUL, CON): read, and known to be no file. ENODEV, as POSIX gives. */
+    const DWORD type = GetFileType(h);
+    const DWORD type_err = type == FILE_TYPE_UNKNOWN ? GetLastError() : NO_ERROR;
+    if (type != FILE_TYPE_DISK) {
+        errno = type_err != NO_ERROR ? dsd_path_errno(type_err) : ENODEV;
+        return -1;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)) {
+        errno = dsd_path_errno(GetLastError());
+        return -1;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        errno = ELOOP; /* first: a folder link or junction carries the folder bit too, and is a link */
+        return -1;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        errno = EISDIR;
+        return -1;
+    }
+    out->kind = 1;
+    out->size = (int64_t)(((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    /* FILETIME counts 100 ns from 1601-01-01: whole seconds and the rest apart, so no date overflows. */
+    const ULONGLONG ticks = ((ULONGLONG)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime;
+    out->mtime_s = (int64_t)(ticks / 10000000ULL) - 11644473600LL;
+    out->mtime_ns = (int32_t)((ticks % 10000000ULL) * 100ULL);
+    return 0;
+}
+
+int
+dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
+    if (!path || path[0] == '\0' || !out) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Wide or ANSI as dsd_win32_path_wide() chooses (file_compat.h's note), never both; the name itself, not what a
+       reparse point at it names. */
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind < 0) {
+        return -1;
+    }
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    HANDLE h = kind > 0 ? CreateFileW(wide, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL)
+                        : CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+    const DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    free(wide);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = dsd_path_errno(err);
+        return -1;
+    }
+    const int rc = dsd_handle_file_identity(h, out);
+    const int saved_errno = errno;
+    CloseHandle(h);
+    if (rc != 0) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
+    errno = saved_errno;
+    return rc;
+}
+
+int
+dsd_file_identity_equal(const dsd_file_identity_t* a, const dsd_file_identity_t* b) {
+    return a != NULL && b != NULL && a->kind != 0 && b->kind != 0 && a->size == b->size && a->mtime_s == b->mtime_s
+           && a->mtime_ns == b->mtime_ns;
+}
+
 static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || requested[0] == '\\'
