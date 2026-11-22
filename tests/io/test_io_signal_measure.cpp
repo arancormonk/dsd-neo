@@ -851,24 +851,25 @@ test_signal_geometries() {
        Airspy's keys on another backend, is not. */
     struct ReceiverCase {
         int backend;
-        const char *driver_key, *hardware_key, *profile;
+        const char *factory, *driver_key, *hardware_key, *profile;
         int want;
     };
 
     static const ReceiverCase receivers[] = {
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "Airspy", "Airspy", "generic", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "HackRF", "HackRF One", "airspy", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "AirspyHF", "AirspyHF+", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "Generic RTL2832U", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "AirSpy Mini", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "remote", "", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "", "", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {RTL_DEVICE_TEST_BACKEND_AIRSPY, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_USB, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspy", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspy", "Airspy", "Airspy", "generic", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "hackrf", "HackRF", "HackRF One", "airspy", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspyhf", "AirspyHF", "AirspyHF+", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "rtlsdr", "Generic RTL2832U", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "rtlsdr", "AirSpy Mini", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "remote", "HackRF", "HackRF One", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "", "HackRF", "HackRF One", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {RTL_DEVICE_TEST_BACKEND_AIRSPY, "", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_USB, "", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
     };
     for (const ReceiverCase& r : receivers) {
-        assert(rtl_device_test_signal_receiver(r.backend, r.driver_key, r.hardware_key, r.profile) == r.want);
+        assert(rtl_device_test_signal_receiver(r.backend, r.factory, r.driver_key, r.hardware_key, r.profile)
+               == r.want);
     }
 }
 

@@ -453,12 +453,13 @@ int rtl_device_signal_geometry(const struct rtl_device* dev);
 /**
  * @brief The receiver behind @p dev's captures (dsd_signal_capture.receiver, a dsd_signal_capture_receiver value).
  *
- * For a SoapySDR device, from the opened handle's exact identifying fields only (its driver key and hardware key, and
- * the device arguments' driver=, remote:driver= and remote= selectors parsed as key=value; hostnames, labels and
- * serials never count; the requested profile plays no part), latched over the open and every configure:
- * DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY when anything named an Airspy (an Airspy HF+ is not one), so a bare -i soapy that
- * opened an Airspy is one; DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN for a proxy (driver remote) or a device nothing known
- * named; DSD_SIGNAL_RECEIVER_OTHER for a known other driver. DSD_SIGNAL_RECEIVER_OTHER for every other backend (a
+ * For a SoapySDR device, from the factory SoapySDR selected to open it (the enumeration record's driver, or with no
+ * record the arguments' driver= as the SDK parses them) and the driver and hardware keys it reported, taken only as
+ * evidence of an Airspy; argument text and the requested profile play no part. Latched over the open and every
+ * configure: DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN for a proxy (the remote factory, auto-discovered or not) whatever its
+ * device forwards, or a factory dsd-neo does not know; DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY when anything named an Airspy
+ * (an Airspy HF+ is not one), so a bare -i soapy that opened an Airspy is one; DSD_SIGNAL_RECEIVER_OTHER for a known
+ * local factory. DSD_SIGNAL_RECEIVER_OTHER for every other backend (a
  * native Airspy included: its own policy, DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) and NULL.
  *
  * The SoapySDR identity is published atomically (configure may add to it), so any thread may ask while the device

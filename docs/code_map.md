@@ -11113,18 +11113,22 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   lookups gave, latched on the device for the handle's life (`soapy_identity_evidence`, an
   atomic or-ed by `soapy_note_identity_locked()` at the open and again at configure, read with
   acquire by any thread; a lookup that throws keeps the key read before, so a refresh never
-  turns a known device into an unknown one). `dsdneo::soapy_identity_evidence()` reads only the
-  handle's exact identifying fields, compared whole without case: the driver key (airspy;
-  airspyhf; remote, a proxy; or a known driver: rtlsdr, hackrf, sdrplay, lime, limesuite,
-  plutosdr, uhd, sddc, bladerf), the hardware key (airspy, airspy mini, airspy r2; airspyhf), and
-  the device arguments parsed as comma-separated key=value pairs, of which only driver=,
-  remote:driver= (airspy or airspyhf) and a remote= key count. Hostnames, labels, serials and any
-  other text never count, nor does the requested profile.
-  `dsdneo::soapy_receiver_from_evidence()` then gives `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` as soon
-  as anything named an Airspy (a conflicting pair included: the Airspy cannot be ruled out),
-  `DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN` for a proxy (it can stand for any device at any rate),
-  `DSD_SIGNAL_RECEIVER_OTHER` (0) when a known other driver or an HF+ was named, and UNKNOWN when
-  nothing was; every other backend is 0. `dsd_signal_quiet_receiver_refused()` (inline in the
+  turns a known device into an unknown one). The open enumerates the arguments, opens the
+  first record (as `SoapySDR::Device::make()` selects it, filled with the arguments' other keys
+  as make() fills it) and keeps that record's factory (`soapy_factory`, from
+  `soapy_selected_factory()`: the record's "driver", which SoapySDR writes into every record,
+  or with no record the arguments' "driver" as the SDK's `KwargsFromString()` parses them:
+  case-sensitive keys, the last duplicate winning). `dsdneo::soapy_identity_evidence()` reads
+  that factory, compared exactly as modules register it (airspy; airspyhf; remote, a proxy,
+  auto-discovered or not; a known local factory: hackrf, rtlsdr, sdrplay, plutosdr, bladerf,
+  lime, uhd, SDDC), and takes the driver and hardware keys only as evidence of an Airspy
+  (modules report other things there: LimeSuite its connection module, SoapyUHD its device type,
+  SoapyRemote its server's device). Argument text never counts, nor does the requested profile.
+  `dsdneo::soapy_receiver_from_evidence()` then gives `DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN` for a
+  proxy whatever its device forwards (it can stand for any device at any rate),
+  `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` as soon as anything named an Airspy (a local factory whose
+  keys name one included), `DSD_SIGNAL_RECEIVER_OTHER` (0) for a known local factory, and UNKNOWN
+  for any other factory or none; every other backend is 0. `dsd_signal_quiet_receiver_refused()` (inline in the
   header, so the detector and the scan read one rule) refuses anything but OTHER at every rate;
   the scan gives those `No check: rate`. A SoapySDR Airspy's passband leaves the reference under or over the
   channel's noise by an amount nobody has measured. Geometry and receiver are the last fields,

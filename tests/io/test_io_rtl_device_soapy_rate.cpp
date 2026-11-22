@@ -378,50 +378,65 @@ test_open_capture_and_ring(void) {
 }
 
 /* The receiver an opened SoapySDR device names for its captures, through the open (its keys read from the driver), the
- * configure (which reads them again) and the stream's open programming, which stamps the captures: latched at the
- * open, so a lookup at configure that throws keeps an identified Airspy an Airspy and an identified HackRF a HackRF; a
- * conflicting pair (an RTL-SDR driver key, an Airspy hardware key) and an HF+ driver with an Airspy hardware key are an
- * Airspy (it cannot be ruled out); keys that name nothing (empty, opaque, every lookup failing) are unknown; a bare
- * -i soapy and a profile asked for change nothing. */
+ * configure (which reads them again) and the stream's open programming, which stamps the captures. The device is what
+ * SoapySDR selected: the factory of the enumeration record it opened (the record's "driver", which SoapySDR writes), or
+ * with no record the SDK's own parse of the arguments (case-sensitive keys, the last duplicate winning). A remote
+ * factory, or one dsd-neo does not know, is unknown whatever keys its device forwards; a known local factory is not an
+ * Airspy (LimeSDR and UHD by their factories, though their keys name a connection or a device type); the airspy
+ * factory, or keys naming an Airspy on a local factory, is an Airspy. Latched at the open, so a lookup that throws at
+ * configure changes nothing; a profile asked for never counts. @p factory nullptr: no enumeration record. */
 void
 test_receiver_identity_through_open(void) {
     struct IdentityCase {
-        const char *label, *driver_key, *hardware_key, *args, *profile;
+        const char *label, *factory, *driver_key, *hardware_key, *args, *profile;
         int open_throws;      /* lookups throwing at the open */
         int configure_throws; /* lookups throwing at the configure */
         int want;
     };
 
     static const IdentityCase cases[] = {
-        {"an Airspy whose keys fail to read at configure", "Airspy", "Airspy", "driver=airspy", nullptr, 0, 2,
+        {"an Airspy whose keys fail to read at configure", "airspy", "Airspy", "Airspy", "driver=airspy", nullptr, 0, 2,
          DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"a bare -i soapy that opened an Airspy, keys failing at configure", "Airspy", "Airspy", nullptr, nullptr, 0, 2,
+        {"a bare -i soapy that opened an Airspy, every key lookup failing", "airspy", "Airspy", "Airspy", nullptr,
+         nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"an Airspy with the generic profile asked for", "airspy", "Airspy", "Airspy", nullptr, "generic", 0, 0,
          DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"a conflicting pair", "rtlsdr", "AirSpy Mini", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"an HF+ driver key with an Airspy hardware key", "AirspyHF", "Airspy", nullptr, nullptr, 0, 0,
-         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"an Airspy with the generic profile asked for", "Airspy", "Airspy", nullptr, "generic", 0, 0,
-         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"a HackRF with the Airspy profile asked for", "HackRF", "HackRF One", nullptr, "airspy", 0, 0,
+        {"a HackRF with the Airspy profile asked for", "hackrf", "HackRF", "HackRF One", nullptr, "airspy", 0, 0,
          DSD_SIGNAL_RECEIVER_OTHER},
-        {"a HackRF whose keys fail to read at configure", "HackRF", "HackRF One", nullptr, nullptr, 0, 2,
+        {"a HackRF whose keys fail to read at configure", "hackrf", "HackRF", "HackRF One", nullptr, nullptr, 0, 2,
          DSD_SIGNAL_RECEIVER_OTHER},
-        {"an Airspy HF+", "AirspyHF", "AirspyHF+", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_OTHER},
-        {"opaque keys behind a proxy", "remote", "custom", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {"keys that never read", "Airspy", "Airspy", nullptr, nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        /* The two proxy cases: an Airspy whose key lookups fail behind a proxy named for a HackRF, and opaque keys
-           behind a proxy named for an HF+ with a selector naming the Airspy behind it. */
-        {"an Airspy behind a proxy, keys failing, hostname naming a HackRF", "Airspy", "Airspy",
-         "driver=remote,remote=hackrf-lab", nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {"opaque keys behind a proxy, its selector naming the Airspy", "remote", "custom",
-         "driver=remote,remote:driver=airspy,remote=airspyhf-lab", nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {"a HackRF behind a proxy named for an Airspy", "HackRF", "HackRF One", "driver=remote,remote=airspy-lab",
+        {"a local factory whose keys name an Airspy", "rtlsdr", "rtlsdr", "AirSpy Mini", nullptr, nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"an Airspy HF+", "airspyhf", "AirspyHF", "AirspyHF+", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_OTHER},
+        /* The review's sequences. */
+        {"DRIVER=hackrf, no record, keys failing (the SDK has no driver key)", nullptr, "Airspy", "Airspy",
+         "DRIVER=hackrf", nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"DRIVER=hackrf selecting an Airspy, keys failing", "airspy", "Airspy", "Airspy", "DRIVER=hackrf", nullptr, 2,
+         2, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"remote:driver=airspyhf behind a proxy, keys failing", "remote", "Airspy", "Airspy",
+         "driver=remote,remote:driver=airspyhf", nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"remote:driver=airspyhf with no record, keys failing", nullptr, "Airspy", "Airspy", "remote:driver=airspyhf",
+         nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"driver=airspy,driver=hackrf: the last one selects a HackRF", nullptr, "HackRF", "HackRF One",
+         "driver=airspy,driver=hackrf", nullptr, 0, 0, DSD_SIGNAL_RECEIVER_OTHER},
+        {"an auto-discovered proxy forwarding a HackRF's keys", "remote", "HackRF", "HackRF One", nullptr, nullptr, 0,
+         0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"an opaque wrapper forwarding a HackRF's keys", nullptr, "HackRF", "HackRF One", "driver=hackrf,driver=custom",
          nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"a bare -i soapy opening a LimeSDR-USB", "lime", "FX3", "LimeSDR-USB", nullptr, nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_OTHER},
+        {"a UHD B210 opened by serial", "uhd", "b200", "B210", "serial=31A2B3C", nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_OTHER},
+        {"a proxy whose keys name an Airspy", "remote", "Airspy", "Airspy", "remote=lab-host", nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"an unknown factory", "customsdr", "HackRF", "HackRF One", nullptr, nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
     };
     static const double only_2500k[] = {2.5e6};
     for (const IdentityCase& c : cases) {
         rtl_device_test_soapy_gain_fake fake{};
         fake.identity_from_device = 1;
+        fake.factory = c.factory;
         fake.driver_key = c.driver_key;
         fake.hardware_key = c.hardware_key;
         fake.args = c.args;
@@ -456,6 +471,38 @@ test_receiver_identity_through_open(void) {
         expect_true(label, opened == 0 && got.signal_receiver == c.want);
         free(opts);
         rtl_device_test_soapy_gain_device_free(dev);
+    }
+}
+
+/* The factory SoapySDR selects, as dsd-neo reads it: the first enumeration record's "driver" (SoapySDR writes it for
+ * every record, so an auto-discovered proxy is "remote" with no remote= argument), else the arguments parsed as the SDK
+ * parses them: keys are case-sensitive and the last duplicate wins, so DRIVER= and remote:driver= select nothing. */
+void
+test_selected_factory(void) {
+    struct FactoryCase {
+        const char* label;
+        const char* records[2];
+        size_t count;
+        const char* args;
+        const char* want;
+    };
+
+    static const FactoryCase cases[] = {
+        {"an auto-discovered proxy",
+         {"driver=remote,remote=tcp://lab:55132,remote:driver=hackrf", nullptr},
+         1,
+         "",
+         "remote"},
+        {"the first record wins", {"driver=lime,serial=1", "driver=airspy,serial=2"}, 2, "", "lime"},
+        {"no record: DRIVER= is not driver=", {nullptr, nullptr}, 0, "DRIVER=hackrf", ""},
+        {"no record: the last driver= wins", {nullptr, nullptr}, 0, "driver=airspy,driver=hackrf", "hackrf"},
+        {"no record: remote:driver= is not driver=", {nullptr, nullptr}, 0, "remote:driver=airspyhf", ""},
+        {"no record: keys are trimmed", {nullptr, nullptr}, 0, " driver = uhd ", "uhd"},
+    };
+    for (const FactoryCase& c : cases) {
+        char got[64] = {};
+        const int rc = rtl_device_test_soapy_selected_factory(c.records, c.count, c.args, got, sizeof got);
+        expect_true(c.label, rc == 0 && std::strcmp(got, c.want) == 0);
     }
 }
 
@@ -1573,6 +1620,7 @@ main(int argc, char** argv) {
         {"explicit_warns", test_explicit_narrow_bandwidth_warns},
         {"open", test_open_capture_and_ring},
         {"receiver_identity", test_receiver_identity_through_open},
+        {"selected_factory", test_selected_factory},
         {"filter_follows_rate", test_filter_follows_rate_on_retune},
         {"write_programs_asked_rate", test_write_programs_asked_rate},
         {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},

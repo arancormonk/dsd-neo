@@ -67,9 +67,9 @@ int rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t 
                                  uint32_t* out_written_hz);
 /* rtl_device_signal_geometry() of a device converting as @p conversion says (NULL: no device). */
 int rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion);
-/* rtl_device_signal_receiver() of a device on @p backend (RTL_DEVICE_TEST_BACKEND_*) whose opened SoapySDR device
-   reported @p driver_key and @p hardware_key, with @p requested_profile asked for. */
-int rtl_device_test_signal_receiver(int backend, const char* driver_key, const char* hardware_key,
+/* rtl_device_signal_receiver() of a device on @p backend (RTL_DEVICE_TEST_BACKEND_*) whose SoapySDR device was opened
+   by @p factory and reported @p driver_key and @p hardware_key, with @p requested_profile asked for. */
+int rtl_device_test_signal_receiver(int backend, const char* factory, const char* driver_key, const char* hardware_key,
                                     const char* requested_profile);
 /* The floats that device's cu8 conversion makes of @p len (even, at most 64) bytes, starting at Fs/4 phase 0: 0, or -1
    on bad arguments. */
@@ -782,6 +782,9 @@ typedef struct {
     int driver_key_throws;
     int hardware_key_throws;
     const char* args;
+    /* The factory of the enumeration record the open selected (NULL: no record; the arguments' driver= as the SDK
+       parses them). */
+    const char* factory;
     /* The next bandwidth_write_throws setBandwidth() calls throw without taking the bandwidth. */
     int bandwidth_write_throws;
     /* The bandwidth getBandwidth() reports (0: the bandwidth last set), as a driver whose filter write did not take. */
@@ -798,6 +801,10 @@ typedef struct {
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
+/* The factory the open keeps for @p args when enumerating them found @p records (each a SoapySDR markup string, the
+   records in order; @p count 0: none), into @p out: 0, or -1 without SoapySDR. */
+int rtl_device_test_soapy_selected_factory(const char* const* records, size_t count, const char* args, char* out,
+                                           size_t out_size);
 void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
 /* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left
