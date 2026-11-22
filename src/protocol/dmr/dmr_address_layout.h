@@ -14,8 +14,8 @@
  * The address layout later LCs, data headers and preamble CSBKs are read with: Capacity Plus and Hytera XPT carry
  * 16-bit addresses where the standard layout has 24-bit ones. The one source is the carrier's current trunking system
  * as the received identity names it (dsd_rxid_dmr_layout_trunk()): only content that passed its own check notes a part
- * there, it counts while fresh (the no-carrier pass ends it until fresh evidence), a sync of another protocol that is
- * not confirmed leaves it, a carrier boundary resets it, and a checked note of another trunking system replaces it.
+ * there, it counts while fresh (the no-carrier pass ends it until fresh evidence), a sync of another protocol ends it
+ * with the record it drops, a carrier boundary resets it, and a checked note of another trunking system replaces it.
  * The branding strings (dsd_state::dmr_branding, dmr_branding_sub) are display text and select nothing.
  */
 typedef enum {

@@ -3535,19 +3535,6 @@ struct dsd_state {
        dsd_rxid_reset() or since an applied trunking retune): dsd_rxid_note_sync(). Decoder thread; outside every
        snapshot copy range. */
     uint8_t rx_p25_phase;
-    /* The DMR trunking system (dsd_rxid_dmr_trunk) rx_id's fresh trunking parts named when a sync of another protocol
-       dropped the record, before that protocol's frame was confirmed: DMR decoding keeps its address layout
-       (dsd_rxid_dmr_layout_trunk()) until a confirmed frame or a checked note of another protocol, another DMR access
-       code, the no-carrier pass, the DMR reset or dsd_rxid_reset() ends it. 0 for none. Decoder thread; outside every
-       snapshot copy range. */
-    uint8_t rx_dmr_layout_held;
-    /* The DMR access code (kind, DSD_ACCESS_CODE_NONE when none was known, and value) of the record whose trunking
-       parts rx_dmr_layout_held holds: the code that layout was verified on. A DMR access code noted while the layout is
-       held that is not this one (also any code, when none was known) ends it, the first burst back on the carrier
-       included. Set with rx_dmr_layout_held, read only while that holds a system. Decoder thread; outside every
-       snapshot copy range. */
-    uint8_t rx_dmr_layout_held_access_kind;
-    uint16_t rx_dmr_layout_held_access;
     /* Moves with every change of P25 phase between two P25 syncs (dsd_rxid_note_sync()), never back: a part of the
        reception generation (dsd_state_reception_generation()), so a transmission of the other phase on the carrier is
        another reception for every multi-part report, sender evidence and history row, while the system the two phases

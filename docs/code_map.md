@@ -4556,14 +4556,10 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record (the DMR trunking system its fresh parts named stays held for the DMR address layout,
-  `dsd_state::rx_dmr_layout_held`, until a frame of another protocol is confirmed, `dsd_rxid_note_confirmed_frame()`
-  when its own content check passed in that dispatch (its decoder's PROVEN content evidence, which moves
-  `scan_y_content_seq`; a productive verdict alone, a dPMR FS1 taken on its sync word or an SPS hunt's PROFILE_PROVEN
-  credit from an earlier P25p1 NID, is none, and a protocol with no content check, X2-TDMA, ProVoice, EDACS or TETRA,
-  never confirms), or noted, or a DMR colour code other than the one the layout was verified on,
-  kept with it, `rx_dmr_layout_held_access*`, so the first DMR burst back on another code ends it (any code, when none
-  was known), the no-carrier pass, the DMR reset or a carrier boundary), and a frame of another protocol than the last
+  the record (and with it the DMR address layout its fresh trunking parts named, `dsd_rxid_dmr_layout_trunk()`, until
+  fresh checked Capacity Plus or XPT evidence: in multi-protocol decoding a false sync of another protocol can make a
+  Cap+ or XPT header read with the standard 24-bit layout until the next checked Cap+ or XPT message, a decided
+  limit), and a frame of another protocol than the last
   one's (`dsd_state::rx_sync_protocol`: the family, or
   for a protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800,
   fail closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and
@@ -13442,10 +13438,9 @@ Private per-protocol modules worth knowing about:
   a checked 0x3E status, its rest LSN 0 included, a checked XPT alert, CSBK or short LC), a checked note of another
   system (a Connect Plus short LC after a Capacity Plus one) replaces it, and it counts only while fresh: after the
   no-carrier pass (on an untrunked input, an external scanner's move to another channel may be the only sign) the
-  standard layout holds until fresh checked evidence, and a carrier boundary resets it. A sync of another protocol whose
-  frame is not confirmed (noise in multi-protocol decoding) drops the record but leaves the layout
-  (`dsd_state::rx_dmr_layout_held`, with the colour code it was verified on); only that protocol's confirmed frame or
-  checked note, or a DMR burst back on another colour code, ends it. Only a voice channel
+  standard layout holds until fresh checked evidence, and a carrier boundary resets it. A sync of another protocol drops
+  the record and so ends the layout until the next checked Cap+ or XPT message (a decided limit: in multi-protocol
+  decoding the sync may be noise). Only a voice channel
   user opens a call,
   holds the scan, arms or releases the encryption lockout, moves the slot's encryption classification or ends its voice
   hold, and shows its parties and service options (emergency, encrypted, priority) on the terminal; any other LC shows

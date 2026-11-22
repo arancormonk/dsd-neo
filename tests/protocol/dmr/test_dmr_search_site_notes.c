@@ -1188,8 +1188,9 @@ test_capplus_slco_selects_layout(dsd_opts* opts, dsd_state* state) {
 
 /* The Cap+ address layout counts while the carrier's checked evidence is fresh: a checked 0x3E status names Capacity
    Plus even with rest LSN 0; the no-carrier pass (an external scanner may have moved to another channel) returns the
-   standard layout until fresh evidence; a sync of another protocol whose frame is not confirmed (NXDN noise in
-   multi-protocol mode) keeps it, and a checked note of that protocol ends it. */
+   standard layout until fresh evidence; a sync of another protocol ends it with the record it drops (an NXDN noise sync
+   in multi-protocol mode included, a decided limit), and DMR bursts back on the same colour code do not restore it:
+   only the next checked Cap+ message does. */
 static int
 test_capplus_layout_counts_while_fresh(dsd_opts* opts, dsd_state* state) {
     // Target bits 32..55 0x000123, source bits 56..79 0x020123: Cap+ reads target 291 and source 291, the standard
@@ -1207,19 +1208,17 @@ test_capplus_layout_counts_while_fresh(dsd_opts* opts, dsd_state* state) {
     rc |= csbk_send(opts, state, k_private_preamble, 0U);
     rc |= expect_log("a stale record after the no-carrier pass selects the standard layout", "Source: 131363");
 
-    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U); // the gate's lock
     rc |= csbk_send(opts, state, k_status_rest1, 0U);
     dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
     rc |= csbk_send(opts, state, k_private_preamble, 0U);
-    rc |= expect_log("an unconfirmed foreign sync keeps the cap+ layout", "Source: 291 - Target: 291");
+    rc |= expect_log("a foreign sync ends the cap+ layout", "Source: 131363");
     dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
-    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_NEG);
     rc |= csbk_send(opts, state, k_private_preamble, 0U);
-    rc |= expect_log("dmr bursts and another noise sync keep the cap+ layout", "Source: 291 - Target: 291");
-    dsd_rxid_note_nxdn_location(state, 2U, 0x12U, 3U);
+    rc |= expect_log("dmr bursts on the same colour code do not restore it", "Source: 131363");
+    rc |= csbk_send(opts, state, k_status_rest1, 0U);
     rc |= csbk_send(opts, state, k_private_preamble, 0U);
-    rc |= expect_log("a checked note of the other protocol ends the cap+ layout", "Source: 131363");
+    rc |= expect_log("the next checked cap+ status restores it", "Source: 291 - Target: 291");
     clear_record(state);
     return rc;
 }

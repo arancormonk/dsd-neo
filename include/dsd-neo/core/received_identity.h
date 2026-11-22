@@ -57,12 +57,12 @@
  * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
  * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
- * The DMR address layout (16-bit Capacity Plus and Hytera XPT addresses, dsd_rxid_dmr_layout_trunk()) is read from
- * the record's DMR trunking parts while they are fresh. Noise passes a sync word: a sync of another protocol drops the
- * record before its frame is confirmed (multi-protocol decoding), so the trunking system its fresh parts named is held
- * (dsd_state::rx_dmr_layout_held) until another protocol's frame is confirmed (dsd_rxid_note_confirmed_frame()) or its
- * checked note arrives, a DMR access code other than the one the layout was verified on (the first burst back
- * included; any code when none was known), the no-carrier pass, the DMR reset or a carrier boundary.
+ * The DMR address layout (16-bit Capacity Plus and Hytera XPT addresses, dsd_rxid_dmr_layout_trunk()) is the record's
+ * DMR trunking system while one of its checked trunking parts is fresh, and nothing else: a sync of another protocol,
+ * which replaces the record's family, ends it, as do a carrier boundary and the no-carrier pass, until fresh checked
+ * Capacity Plus or XPT evidence. In multi-protocol decoding a false sync of another protocol can therefore make a
+ * Capacity Plus or XPT header read with the standard 24-bit layout until the next checked Cap+ or XPT message (a
+ * decided limit).
  *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
  *
@@ -317,15 +317,10 @@ void dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint
 int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net);
 /** The DMR trunking system (dsd_rxid_dmr_trunk) whose address layout DMR decoding reads with: the record's while one
  * of its trunking parts is fresh (rest LSN, site text, network, site, brand, Tier III system code or XPT free LCN; the
- * Capacity Max marker is never fresh), else the one held across a sync of another protocol whose frame was not
- * confirmed (dsd_state::rx_dmr_layout_held), else NONE (also for NULL). A stale record (the no-carrier pass, which an
- * external scanner's move to another channel may be the only sign of) names none until fresh checked evidence. */
+ * Capacity Max marker is never fresh), else NONE (also for NULL). A stale record (the no-carrier pass, which an
+ * external scanner's move to another channel may be the only sign of) and a record a sync of another protocol dropped
+ * name none until fresh checked evidence. */
 uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
-/** The frame of @p synctype that processFrame() dispatched was confirmed: its own content check passed in that
- * dispatch (its decoder's PROVEN content evidence, dsd_frame_sync_hook_content_evidence()), on the carrier it was read
- * on and uninterrupted, not merely a productive verdict. A frame of another protocol than DMR ends a DMR layout held
- * across its sync. */
-void dsd_rxid_note_confirmed_frame(dsd_state* state, int synctype);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */
 void dsd_rxid_note_dmr_ras(dsd_state* state);
