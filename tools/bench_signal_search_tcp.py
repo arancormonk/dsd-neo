@@ -212,6 +212,17 @@ def landed_hit(message):
     return hit if hit.get("hit_id") and not hit.get("ended") else None
 
 
+def load_average():
+    """The 1, 5 and 15 minute load averages, or None where the platform has none (Windows)."""
+    getloadavg = getattr(os, "getloadavg", None)
+    if getloadavg is None:
+        return None
+    try:
+        return list(getloadavg())
+    except OSError:
+        return None
+
+
 def prepare_rig_folder(work):
     """@p work as an absolute folder, made if missing, for one rig run. The child runs inside it, so every path it is
     given must be absolute. Refuses (ValueError) a folder that already holds a rig journal: the rig would reopen it and
@@ -384,7 +395,7 @@ def rig_main(args):
         stops = [tx.stop_at for tx in transmitters]
         return bool(transmitters) and None not in stops and scene.sample_time > max(stops) + 4.0
 
-    load = os.getloadavg()
+    load = load_average()
     record = run_rig(args.rig, transmitters, ranges, args.bw, out, args.seconds, done=done, passes=passes,
                      perf=True, seed=args.seed)
     passes_s = pass_times(record)[1:] if not transmitters else []
@@ -412,7 +423,7 @@ def rig_main(args):
         "cpu_per_s": record["cpu_s"] / record["wall_s"] if record["cpu_s"] is not None and record["wall_s"] else None,
         "perf": record["perf"],
         "load_average_start": load,
-        "load_average_end": os.getloadavg(),
+        "load_average_end": load_average(),
         "rates": sorted({rate for _t, _w, _c, rate in record["tunes"][1:]}),
     }
     (out / "result.json").write_text(json.dumps(result, indent=1), encoding="utf-8")

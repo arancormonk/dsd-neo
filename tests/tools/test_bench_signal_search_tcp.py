@@ -7,6 +7,7 @@
 - A rig folder is made absolute before the child is told its paths, since the child runs inside it: a relative --out
   once sent it looking for results/results/stop.
 - A folder that already holds a rig journal is refused: the rig would reopen it and count the earlier run's rows.
+- The load average is optional metadata: None where the platform has none (Windows), not an AttributeError.
 
 These run in seconds and never start a decoder or serve a scene.
 """
@@ -161,6 +162,21 @@ class Folder(unittest.TestCase):
         with unittest.mock.patch.object(bench, "run_rig") as run_rig, unittest.mock.patch("sys.stderr"):
             self.assertEqual(bench.rig_main(args), 2)
         run_rig.assert_not_called()
+
+
+class LoadAverage(unittest.TestCase):
+    def test_present(self):
+        with unittest.mock.patch.object(bench.os, "getloadavg", create=True, return_value=(1.0, 2.0, 3.0)):
+            self.assertEqual(bench.load_average(), [1.0, 2.0, 3.0])
+
+    def test_missing(self):
+        with unittest.mock.patch.object(bench, "os") as fake_os:
+            del fake_os.getloadavg
+            self.assertIsNone(bench.load_average())
+
+    def test_unavailable(self):
+        with unittest.mock.patch.object(bench.os, "getloadavg", create=True, side_effect=OSError):
+            self.assertIsNone(bench.load_average())
 
 
 if __name__ == "__main__":
