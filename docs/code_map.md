@@ -17548,7 +17548,9 @@ Qt Quick frontend (`src/ui/qt`):
   label as well as its hit target). Its name is built from the call's state (`stripIdle`, the slot, the identity
   and the flags), never from what its children show, so a call ending renames it once (r6 J3: built from the label's
   text and the identity's visibility it was renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle";
-  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes). Idle it reads
+  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes; the
+  text-reach walk's every-branch pass, which also shows the tags on an idle strip, where the app never draws them,
+  allowlists them only while `stripIdle`). Idle it reads
   only the label's `SLOT n · idle` (r5 H1: an ended call's kind and flags, kept through its hold by
   `slotCallView()`, were read as `SLOT 2 · idle, PRIVATE, EMERGENCY, ENC`); with a call its name carries the slot,
   the identity and PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
