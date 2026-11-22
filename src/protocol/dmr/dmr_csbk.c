@@ -510,9 +510,9 @@ dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpcha
     }
 }
 
-/* The grant's slot assignment, before any switch or policy refuses the grant (dmr_sm_note_grant_assignment()): a media
-   change on the followed slot ends that assignment whether the receiver follows the grant or not. Returns 1 when it
-   did: the grant itself is not followed. */
+/* The grant's slot assignment, before any switch or policy refuses the grant (dmr_sm_note_grant_assignment()): a grant
+   naming another call on the followed slot ends that assignment whether the receiver follows the grant or not. Returns
+   1 when it did: the grant itself is not followed. */
 static int
 dmr_cspdu_pf0_note_assignment(dsd_opts* opts, dsd_state* state, int csbk_o, uint8_t lcn, uint16_t call_channel,
                               long int freq, uint32_t target, uint32_t source) {
@@ -2589,16 +2589,29 @@ dmr_cspdu_con_plus_skip_voice_tune(const dsd_opts* opts, uint8_t opt) {
    voice was heard within 2 s (4 s with data calls followed), as it always did; a Hold or preempt grant goes to the trunk
    state machine with that window as its busy hint, where it is followed only by Hold over a non-held call or by
    preemption over every call the receiver holds. Group tuning off still refuses every grant, private ones included. */
+/* The trunk state machine's event for Connect Plus voice grant @p g on its LCN's carrier @p freq. */
+static dmr_sm_event_t
+dmr_cspdu_con_plus_voice_event(const dmr_con_plus_voice_grant* g, int is_group, long freq) {
+    dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(freq, g->lcn, (int)g->grp_addr, (int)g->src_addr)
+                                 : dmr_sm_ev_indiv_grant(freq, g->lcn, (int)g->grp_addr, (int)g->src_addr);
+    ev.slot = g->tslot;
+    ev.channel_kind = g->lcn != 0 ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    return ev;
+}
+
 static void
 dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g) {
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
-    long f;
 
-    if (opts->trunk_tune_group_calls != 1) {
+    const int is_group = (g->opt == 3) ? 0 : 1;
+    const long f = state->trunk_chan_map[g->lcn];
+    dmr_sm_event_t ev = dmr_cspdu_con_plus_voice_event(g, is_group, f);
+    // Before any switch or gate: a grant naming another call on the followed slot ends that slot's assignment.
+    if (dmr_sm_note_grant_assignment(opts, state, &ev) || opts->trunk_tune_group_calls != 1) {
         return;
     }
-    const int is_group = (g->opt == 3) ? 0 : 1;
     policy_allowed = dmr_policy_tune_allowed(opts, state, g->grp_addr, g->src_addr, is_group, 0, &policy_decision);
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
         return;
@@ -2611,17 +2624,10 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
     if (window && !policy_decision.tg_hold_match && !policy_decision.preempt_requested) {
         return;
     }
-
-    f = state->trunk_chan_map[g->lcn];
     if (f == 0) {
         return;
     }
 
-    dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr)
-                                 : dmr_sm_ev_indiv_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr);
-    ev.slot = g->tslot;
-    ev.channel_kind = g->lcn != 0 ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
-    ev.origin = DMR_SM_ORIGIN_GRANT;
     ev.caller_busy = window;
     ev.policy_valid = 1;
     ev.policy = policy_decision;

@@ -13564,13 +13564,15 @@ Private per-protocol modules worth knowing about:
     its follow time now, so its dwell runs from that grant (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
-    slot names, or of the grant followed there, keeps record and follow time. A checked grant that changes the media of
-    the followed slot's assignment on the followed carrier (a data grant for a slot followed for voice, a voice grant
-    for one followed for data, `dmr_sm_grant_changes_followed_media()`) ends that assignment before any admission,
-    whether the receiver would follow it or not: the Tier III CSBK layer hands every grant to
-    `dmr_sm_note_grant_assignment()` before its call-type switches (data following off, the default) and its policy
-    check, and `dmr_sm_submit_grant()` checks it first as well (`dmr_sm_end_changed_assignment()`, `grant-media-change`,
-    REFUSED: the grant itself is not followed). The slot's call ends (EXPLICIT), its record and ledger entry are
+    slot names, or of the grant followed there, keeps record and follow time. A checked grant (not a channel status)
+    for the followed slot of the followed carrier that names another call than the slot is followed for
+    (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
+    where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
+    either being the same call whatever its caller) ends that assignment before any admission, whether the receiver
+    would follow it or not: the Tier III and Connect Plus CSBK layers hand every grant to
+    `dmr_sm_note_grant_assignment()` before their call-type switches (data following off, the default; private off),
+    policy check (blocked or locked-out talkgroups) and voice window, and `dmr_sm_submit_grant()` checks it first as
+    well (`dmr_sm_end_changed_assignment()`, `grant-replaces-followed`, REFUSED: the grant itself is not followed). The slot's call ends (EXPLICIT), its record and ledger entry are
     cleared and the grant identity stands for nothing. While the companion slot's call still holds the carrier by the
     retention rule (live voice or its hangtime tail, from the companion's activity alone; the retired grant's
     acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the

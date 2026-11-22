@@ -2499,8 +2499,9 @@ dmr_sm_grant_displacement(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* st
 /* A grant for the carrier already followed (IN_PLACE) names the call its slot carries now. Another call there (a new
    assignment of the slot: another target, policy class or media, dmr_sm_grant_names_call()) takes the slot's record
    with its follow time now, so preemption compares a candidate with it and its dwell runs from the assignment; on the
-   followed slot it is the grant identity as well (a media change there ends the follow instead, as a release does). A
-   repeat of the call the slot names, or of the grant the machine followed there, keeps the record and its follow time.
+   followed slot only a channel status, or a grant while neither the slot's record nor the followed grant names a call,
+   names the grant identity anew (any other grant naming another call there ends the assignment instead,
+   dmr_sm_end_changed_assignment()). A repeat of the call the slot names, or of the grant the machine followed there, keeps the record and its follow time.
    A slotless grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces
    only a seed or grant identity, never the call a checked LC named on that carrier (as
    dmr_sm_status_slot_reconcile()). */
@@ -2543,26 +2544,54 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
     }
 }
 
-/* Whether grant @p ev, for the carrier followed, changes the media of the followed slot's assignment: a data grant
-   for a slot followed for voice, or a voice grant for one followed for data. */
+/* Whether grant @p ev, on @p freq, is a grant (not a channel status nor a placeholder) for the followed slot of the
+   followed carrier. */
 static int
-dmr_sm_grant_changes_followed_media(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev) {
-    return ctx->vc_slot >= 0 && ev->slot == ctx->vc_slot && dmr_sm_event_identity_known(ev)
-           && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0);
+dmr_sm_grant_for_followed_slot(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
+    return ctx->state == DMR_SM_TUNED && ctx->vc_slot >= 0 && ev->slot == ctx->vc_slot && freq == ctx->vc_freq_hz
+           && ev->origin != DMR_SM_ORIGIN_STATUS && dmr_sm_event_identity_known(ev);
 }
 
-/* A grant that changes the media of the followed slot's assignment on the followed carrier
-   (dmr_sm_grant_changes_followed_media()) ends that assignment, whether the receiver would follow the grant or not
-   (data following off, a policy or receive gate refusing it): the slot's call ends, its record and preemption-ledger
-   entry are cleared and the grant identity stands for nothing. The receiver stays on the carrier only for the companion
-   slot's call, while it holds the carrier by the retention rule (live voice or its hangtime tail; the retired grant's
-   acquisition holds nothing): that slot becomes the followed one. Otherwise the follow ends as a release does, back to
-   the control channel, where a repeated grant is followed as any grant is; a return the tuner refuses is asked again at
-   the next tick (the force-release latch). Returns 1 when the grant ended the assignment. */
+/* Whether grant @p ev, for the followed slot of the followed carrier @p freq, names another call than the one that
+   slot is followed for: another media (a data grant for a slot followed for voice, or the reverse), or, where the
+   slot's record or the followed grant names a call, another target or address class than both
+   (dmr_sm_grant_names_call(): a repeat of either, whatever its caller, is the same call). A channel status (it
+   reconciles the slot instead), a slotless grant and a placeholder name no other call. */
+static int
+dmr_sm_grant_replaces_followed(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
+    if (!dmr_sm_grant_for_followed_slot(ctx, ev, freq)) {
+        return 0;
+    }
+    if ((dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0)) {
+        return 1;
+    }
+    const int s = ctx->vc_slot;
+    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+    if (s > 1 || target == 0U) {
+        return 0;
+    }
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
+    const int rec_known = dmr_sm_slot_identity_known(rec) && rec->carrier_hz == freq;
+    dmr_sm_slot_ctx_t grant;
+    const int grant_known = dmr_sm_grant_identity(ctx, &grant);
+    if (!rec_known && !grant_known) {
+        return 0;
+    }
+    return !(rec_known && dmr_sm_grant_names_call(ev, target, rec, freq))
+           && !(grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq));
+}
+
+/* A checked grant for the followed slot that names another call (dmr_sm_grant_replaces_followed()) ends that slot's
+   assignment, whether the receiver would follow the grant or not (a call-type switch, data following off, a policy or
+   receive gate refusing it): the slot's call ends, its record and preemption-ledger entry are cleared and the grant
+   identity stands for nothing. The receiver stays on the carrier only for the companion slot's call, while it holds
+   the carrier by the retention rule (live voice or its hangtime tail; the retired grant's acquisition holds nothing):
+   that slot becomes the followed one. Otherwise the follow ends as a release does, back to the control channel, where
+   a repeated grant is followed as any grant is; a return the tuner refuses is asked again at the next tick (the
+   force-release latch). Returns 1 when the grant ended the assignment. */
 static int
 dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    if (ctx->state != DMR_SM_TUNED || !dmr_sm_grant_changes_followed_media(ctx, ev)
-        || resolve_freq(state, ev->freq_hz, ev->lpcn) != ctx->vc_freq_hz) {
+    if (!dmr_sm_grant_replaces_followed(ctx, ev, resolve_freq(state, ev->freq_hz, ev->lpcn))) {
         return 0;
     }
     const int s = ctx->vc_slot;
@@ -2581,10 +2610,10 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0);
     if (hold != DMR_SM_HOLD_LIVE && hold != DMR_SM_HOLD_TAIL) {
         state->trunk_sm_force_release = 1;
-        do_release(ctx, opts, state, "grant-media-change");
+        do_release(ctx, opts, state, "grant-replaces-followed");
         return 1;
     }
-    sm_log(opts, "grant-media-change");
+    sm_log(opts, "grant-replaces-followed");
     const dmr_sm_slot_ctx_t* rec = &ctx->slots[companion];
     ctx->vc_slot = companion;
     ctx->vc_data_call = dmr_sm_slot_identity_known(rec) && rec->data_call;
@@ -2602,8 +2631,8 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     // The slots' identities as of their canonical calls now: an in-place grant matches the calls they name.
     dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
 
-    /* Before any admission: a media change on the followed slot ends its assignment whatever becomes of the grant. The
-       grant itself is not followed; its repeat is, as any grant is (in place for the slot of a carrier kept for its
+    /* Before any admission: a grant naming another call on the followed slot ends its assignment whatever becomes of
+       the grant. The grant itself is not followed; its repeat is, as any grant is (in place for the slot of a carrier kept for its
        companion, else from the control channel, with its own tune, acquisition window, channel, provenance and call). */
     if (dmr_sm_end_changed_assignment(ctx, opts, state, ev)) {
         return DMR_SM_GRANT_REFUSED;
@@ -2645,7 +2674,12 @@ dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_even
         return 0;
     }
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    return ctx->initialized && dmr_sm_end_changed_assignment(ctx, opts, state, ev);
+    if (!ctx->initialized) {
+        return 0;
+    }
+    // The slots' identities as of their canonical calls now, as dmr_sm_submit_grant() compares them.
+    dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
+    return dmr_sm_end_changed_assignment(ctx, opts, state, ev);
 }
 
 dmr_sm_grant_result_e

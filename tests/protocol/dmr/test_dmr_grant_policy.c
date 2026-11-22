@@ -1186,6 +1186,25 @@ test_con_plus_policy_before_window(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A Connect Plus grant for the followed slot that names another talkgroup ends the followed assignment though the
+   policy blocks it: TG 100 is followed on LCN 5 TS1 with live voice, then a grant for TG 200 (blocked) on LCN 5 TS1
+   returns the receiver to the control channel. */
+static int
+test_con_plus_blocked_reassignment_ends_follow(dsd_opts* opts, dsd_state* st) {
+    con_plus_env(opts, st);
+    seed_policy_row(st, 200, "B", 0, 0);
+    con_plus_voice(opts, st, 1, 100, 5, 0, 2);
+    int rc = expect_true("con+ follows TG 100", st->trunk_vc_freq[0] == CP_FA && g_status_tunes == 1);
+    status_clock_at(1.0);
+    accepted_voice_now(opts, st, 0);
+    st->last_vc_sync_time = dsd_decode_time();
+    con_plus_voice(opts, st, 2, 200, 5, 0, 2);
+    rc |= expect_true("con+ blocked reassignment of the followed slot returns to the control channel",
+                      dmr_sm_get_ctx()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_status_tunes == 1);
+    status_env_done(st);
+    return rc;
+}
+
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -3203,6 +3222,7 @@ main(void) {
     rc |= test_cap_plus_lc_record_takes_status_lsn(opts, st);
     rc |= test_conplus_grant_lcn_kind(opts, st);
     rc |= test_xpt_csbk_hint_converts(opts, st);
+    rc |= test_con_plus_blocked_reassignment_ends_follow(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

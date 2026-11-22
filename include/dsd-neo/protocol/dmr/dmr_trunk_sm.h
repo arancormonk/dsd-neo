@@ -63,8 +63,8 @@ typedef enum {
 typedef enum {
     DMR_SM_GRANT_FOLLOWED = 0, // the receiver was tuned to it
     DMR_SM_GRANT_IN_PLACE = 1, // already on its carrier: nothing to tune
-    /* Policy, receive admission, channel map or trust refused it; or it changed the followed slot's media, which ends
-       that slot's assignment (dmr_sm_note_grant_assignment()) and is not followed itself (its repeat is). */
+    /* Policy, receive admission, channel map or trust refused it; or it named another call on the followed slot, which
+       ends that slot's assignment (dmr_sm_note_grant_assignment()) and is not followed itself (its repeat is). */
     DMR_SM_GRANT_REFUSED = 2,
     DMR_SM_GRANT_BUSY = 3,     // the receiver holds a call the grant may neither hold over nor preempt
     DMR_SM_GRANT_DEFERRED = 4, // the tune was not accepted: nothing changed
@@ -468,17 +468,18 @@ dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_
  *
  * A candidate on another carrier while the receiver is held (or @ref dmr_sm_event_t::caller_busy) is followed only by
  * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
- * (IN_PLACE) names the call of its slot. One that changes the followed slot's media (data for a voice follow, or the
- * reverse) ends that slot's assignment before any admission (dmr_sm_note_grant_assignment()) and is REFUSED: its
- * repeat is followed anew.
+ * (IN_PLACE) names the call of its slot. One that names another call on the followed slot (another target, address
+ * class or media) ends that slot's assignment before any admission (dmr_sm_note_grant_assignment()) and is REFUSED:
+ * its repeat is followed anew.
  */
 dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 
 /**
  * A checked channel grant names the assignment of its slot whether or not the receiver follows it: a caller that
  * refuses a grant before submitting it (a call-type switch, data following off, the talkgroup policy) still hands it
- * here. One that changes the media of the followed slot's assignment on the followed carrier ends that assignment: its
- * call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
+ * here. One for the followed slot of the followed carrier that names another call than the slot is followed for
+ * (another target, address class or media; a repeat of the followed grant or of the call the slot names, whatever its
+ * caller, is the same call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
  * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.
  * Returns 1 when the grant ended the assignment: it is not followed itself (its repeat is). Called inside the grant's
  * CRC scope. Decoder thread only.

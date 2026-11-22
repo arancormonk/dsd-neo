@@ -690,8 +690,9 @@ test_release_clears_ledger(dsd_opts* opts, dsd_state* st) {
                        dsd_tg_policy_should_preempt(opts, st, &candidate, &d, dsd_decode_now_mono_s()) == 0);
 }
 
-/* A grant assigning another call to the followed slot of the carrier already tuned (IN_PLACE) names that slot's call
-   anew, its follow time now; a repeat of that call keeps the follow time. */
+/* A grant assigning another call to the followed slot of the carrier already tuned ends the followed assignment: with
+   the companion slot silent the receiver returns to the control channel, and the grant repeated there is followed with
+   a tune of its own, its follow time then; a repeat of that call keeps the follow time. */
 static int
 test_in_place_reassignment(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
@@ -704,8 +705,11 @@ test_in_place_reassignment(dsd_opts* opts, dsd_state* st) {
     clock_at(1.0);
     voice(opts, st, 0);
     tv_grant(opts, st, LPCN_A, 0, 10, 2);
-    int rc = expect_true("in-place reassignment names the slot's new call",
-                         vc(st) == VC_A && g_tunes == 1 && sm()->slots[0].target == 10U);
+    int rc = expect_true("a reassignment of the followed slot returns to the control channel",
+                         sm()->state == DMR_SM_ON_CC && g_tunes == 1);
+    tv_grant(opts, st, LPCN_A, 0, 10, 2); // its repeat on the control channel
+    rc |= expect_true("the repeated reassignment is followed anew",
+                      vc(st) == VC_A && g_tunes == 2 && sm()->slots[0].target == 10U);
     clock_at(1.5);
     voice(opts, st, 0);
     tv_grant(opts, st, LPCN_B, 0, 50, 3);
@@ -790,16 +794,18 @@ test_followed_media_change_returns_to_cc(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-/* An in-place group grant for TG 300 arrives while the followed slot still carries a private call to unit 300 (a checked
-   LC names it): the private call is not the group's, whatever the number, so the grant's record awaits its own call
-   instead of binding to the private one. Once the private call ends, the group's unnamed voice is that call: it stays
-   known (group 300, p10, its dwell from the grant), so a p100 preempt elsewhere takes the receiver after the dwell. */
+/* An in-place group grant for TG 300 arrives while the companion slot of the followed carrier still carries a private
+   call to unit 300 (a checked LC names it): the private call is not the group's, whatever the number, so the grant's
+   record awaits its own call instead of binding to the private one. Once the private call ends, the group's unnamed
+   voice is that call: it stays known (group 300, p10, its dwell from the grant), so a p100 preempt elsewhere takes the
+   receiver after the dwell. */
 static int
 test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
     seed_row(st, 300, "A", 10, 0);
     seed_row(st, 999, "A", 100, 1);
-    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    tv_grant(opts, st, LPCN_A, 1, 100, 1); // TS2 is followed
     clock_at(0.3);
     const dsd_call_observation private_call = {
         .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
@@ -809,6 +815,7 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
         .policy_target_id = 300U,
         .ota_source_id = 7U,
     };
+    voice(opts, st, 1);
     voice(opts, st, 0);
     (void)dsd_call_state_observe(st, &private_call, DSD_CALL_BOUNDARY_BEGIN);
     dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 300, 7);
@@ -832,11 +839,13 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
         .kind = DSD_CALL_KIND_VOICE,
     };
     (void)dsd_call_state_observe(st, &unnamed, DSD_CALL_BOUNDARY_BEGIN);
+    voice(opts, st, 1);
     voice(opts, st, 0);
     rc |= expect_true("the group's unnamed voice is the grant's call, still known",
                       sm()->slots[0].target == 300U && sm()->slots[0].kind == (uint8_t)DSD_CALL_KIND_GROUP_VOICE
-                          && sm()->vc_identity_known == 1);
+                          && sm()->slots[0].call_epoch != 0U && sm()->slots[0].call_epoch != private_epoch);
     clock_at(1.5);
+    voice(opts, st, 1);
     voice(opts, st, 0);
     tv_grant(opts, st, LPCN_B, 0, 999, 9);
     rc |= expect_true("a p100 preempt takes the p10 group call after the dwell", vc(st) == VC_B && sm()->vc_tg == 999);
@@ -855,8 +864,9 @@ slot0_call_crc(const dsd_state* st, uint32_t* target) {
 }
 
 /* A grant that passed its CRC is followed; before its first voice, a RAS-accepted grant (-F) reassigns the followed
-   slot in place. Its identity is published at the first voice with its own provenance, never the verified grant's: the
-   call reads RAS-unverified. And the reverse: a verified reassignment of a RAS grant reads verified. */
+   slot, which returns the receiver to the control channel, and its repeat there is followed. Its identity is published
+   at the first voice with its own provenance, never the verified grant's: the call reads RAS-unverified. And the
+   reverse: a verified reassignment of a RAS grant reads verified. */
 static int
 test_in_place_reassignment_carries_crc_provenance(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
@@ -871,6 +881,8 @@ test_in_place_reassignment_carries_crc_provenance(dsd_opts* opts, dsd_state* st)
         clock_at(0.2);
         st->event_crc_invalid[0] = second;
         tv_grant(opts, st, LPCN_A, 0, 200, 2);
+        rc |= expect_true("the reassignment returns to the control channel", sm()->state == DMR_SM_ON_CC);
+        tv_grant(opts, st, LPCN_A, 0, 200, 2); // its repeat there
         st->event_crc_invalid[0] = 0U;
         rc |= expect_true("the reassignment carries its own provenance",
                           vc(st) == VC_A && sm()->vc_tg == 200 && sm()->vc_crc_flags == second);
@@ -1238,6 +1250,42 @@ test_unfollowed_media_change_ends_the_assignment(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* A checked grant for the followed slot that names another call (another talkgroup, or a private call) ends the
+   followed assignment whether or not it is admitted: TS1 is followed for TG 300; a TV_GRANT for TS1 naming TG 400,
+   which the policy blocks, and a PV_GRANT for TS1 with private following off, each return the receiver to the control
+   channel, so later voice on TS1 is never read as TG 300's. A repeat of the followed grant (another caller, same
+   talkgroup) is the same call and changes nothing. */
+static int
+test_unfollowed_reassignment_ends_the_assignment(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        init_env(opts, st, 2.0);
+        if (variant == 0) {
+            seed_row(st, 400, "B", 0, 0);
+        } else {
+            opts->trunk_tune_private_calls = 0;
+        }
+        tv_grant(opts, st, LPCN_A, 0, 300, 3);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        clock_at(0.3);
+        tv_grant(opts, st, LPCN_A, 0, 300, 4); // a repeat with another caller: the same call
+        rc |= expect_true("a repeat of the followed talkgroup keeps the follow",
+                          sm()->state == DMR_SM_TUNED && sm()->vc_tg == 300 && g_tunes == 1);
+        clock_at(0.4);
+        if (variant == 0) {
+            tv_grant(opts, st, LPCN_A, 0, 400, 9); // blocked talkgroup on the followed slot
+        } else {
+            grant_op(opts, st, 48U, LPCN_A, 0, 777, 9); // PV_GRANT, private following off
+        }
+        rc |= expect_true(
+            variant == 0 ? "a policy-blocked reassignment of the followed slot returns to the control channel"
+                         : "an unfollowed private reassignment of the followed slot returns to the control channel",
+            sm()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_tunes == 1);
+    }
+    return rc;
+}
+
 /* A media change on the followed slot retires that slot's assignment alone: TS1 is followed for TG 300 while TS2 carries
    live voice for TG 100. A data grant for TS1 ends TS1's call and record, while the receiver stays on the carrier for
    the TS2 call, which goes on as the same call. A voice grant repeated for TS1 is then a new assignment of that slot;
@@ -1402,6 +1450,7 @@ main(void) {
     rc |= test_unfollowed_media_change_ends_the_assignment(opts, st);
     rc |= test_media_change_keeps_a_live_companion(opts, st);
     rc |= test_media_change_release_retries(opts, st);
+    rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
