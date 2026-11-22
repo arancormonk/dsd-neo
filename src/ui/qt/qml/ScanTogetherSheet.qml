@@ -95,8 +95,16 @@ ModalSheet {
         if (next.join() !== chosen.join())
             chosen = next;
     }
-    // A list that left, or can no longer join, leaves the choice with it.
-    onOthersChanged: setChosen("", false)
+    // A list that left, or can no longer join, leaves the choice with it. Pruned once others is
+    // done changing: others reads chosen, so setting chosen while others notifies would
+    // re-evaluate others inside its own change (a binding loop that kept the rows' reasons from
+    // following the pruned choice). The sheet's own timer, so no prune outlives the sheet.
+    Timer {
+        id: pruneChosen
+        interval: 0
+        onTriggered: sheet.setChosen("", false)
+    }
+    onOthersChanged: pruneChosen.restart()
     onPrimaryChanged: {
         if (visible && (!primary || !primary.uid || primary.isDraft))
             visible = false;

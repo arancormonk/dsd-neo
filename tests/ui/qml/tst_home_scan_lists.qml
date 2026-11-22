@@ -17,6 +17,8 @@ Item {
         function init() {
             // A session map without a name used to bind undefined to the monitor header.
             failOnWarning(/MonitorScreen.qml.*Unable to assign/);
+            // Issue #890: the Scan with other lists sheet's reasons follow its choice without a loop.
+            failOnWarning(/ScanTogetherSheet.*Binding loop/);
             testContext.useLifecycleHost(true);
             while (scanLists.count)
                 scanLists.remove(0);
