@@ -113,8 +113,10 @@ Generated (do not edit/commit):
     its landings and starts it cold at every departure, after the boundary and before the session's P25 site returns
     (`dsd_engine_scan_tetra_landing()`), and lets it go at the end (`dsd_engine_scan_tetra_release()`). A start with an
     enabled TETRA range is refused, before anything changes, for a published DSP rate TETRA cannot run at, the channel
-    filter forced off, `--tetra-uplink` or a TED that is not the rate's (#890's row check); a paused 48 kHz search whose
-    Resume adds one is told to stop and start again; and any fresh start on a session that decodes TETRA is refused.
+    filter forced off, `--tetra-uplink` or a TED that is not the rate's (#890's landed row check: a published TETRA
+    profile's override, or with none its applied timing; another profile's timing is not read); a paused 48 kHz search
+    whose Resume adds one is told to stop and start again; and any fresh start on a session that decodes TETRA is
+    refused.
     The first TETRA mode a visit confirms names its detection ("TETRA" or "TETRA DMO"): a later report of the other
     mode changes nothing (`search_tetra_mode_latched()`). Its access code is the coordinator's, from the TETRA gate's
     evidence, which the app-control observer neither reads nor copies back; a withdrawal clears site and access

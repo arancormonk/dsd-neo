@@ -4630,6 +4630,21 @@ test_tetra_start_checks(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     char error[192] = "";
     assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
     tetra_ted_override = 0;
+    /* The TED timing the published TETRA profile applied counts as well, with no override: 3 at 72 kHz is refused,
+       the rate's own 4 is not. */
+    tetra_ted_applied = 3;
+    start_refused(o, s, &tetra,
+                  "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream runs "
+                  "another timing");
+    tetra_ted_applied = 4;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    /* A stream settled on another receive profile than TETRA's (an Auto session's FSK chain, the usual start) is no
+       refusal, whatever timing it runs: a visit lands TETRA's own chain and timing. */
+    tetra_chain_other = 1;
+    tetra_ted_applied = 3;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    tetra_chain_other = 0;
+    tetra_ted_applied = 0;
     dsp_rate_hz = 0;
     assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0);
     /* The rate checks are TETRA's: an Auto search at 48 kHz starts. */

@@ -366,7 +366,8 @@ reason, when TETRA cannot run:
 
 - the session already decodes TETRA: **Stop TETRA decoding before Signal search**;
 - the DSP bandwidth is not 72 kHz, `--tetra-uplink` is on, the channel filter is
-  off (`DSD_NEO_CHANNEL_LPF=0`), or a symbol timing override does not match
+  off (`DSD_NEO_CHANNEL_LPF=0`), or the symbol timing the receiver runs for
+  TETRA (a timing override, or the timing it applied itself) does not match
   72 kHz;
 - a paused 48 kHz search whose edited ranges now enable TETRA cannot take it on
   at **Resume**: **To identify TETRA, stop the search and start it again (this

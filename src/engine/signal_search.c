@@ -677,7 +677,8 @@ search_reception_phase(const search_coord* c) {
 /* Why @p config's TETRA ranges cannot be identified on this session (issue #748), in @p why; 0 when they can or there
    are none. The static causes only: a DSP rate the stream published that TETRA cannot run at (for a paused search's
    Resume, which keeps the rate it started at, how to get one), the channel filter forced off, --tetra-uplink, and a TED
-   timing a published TETRA profile applies that is not the rate's. A rate not published yet is none: a visit that lands
+   timing a published TETRA profile applies that is not the rate's (its override or, with none, the TED's own: the
+   landed row check, which reads no timing of another profile). A rate not published yet is none: a visit that lands
    where TETRA cannot run hears nothing and ends unresolved. */
 static int
 search_tetra_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_signal_search_config* config, int resume,
@@ -686,7 +687,7 @@ search_tetra_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_sig
         return 0;
     }
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    switch (dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 0)) {
+    switch (dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 1)) {
         case DSD_ENGINE_TETRA_ROW_UPLINK:
             DSD_SNPRINTF(why, capacity, "%s", "Identifying TETRA decodes the downlink, which --tetra-uplink turns off");
             return 1;
@@ -707,18 +708,13 @@ search_tetra_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_sig
                          rate);
             return 1;
         }
-        case DSD_ENGINE_TETRA_ROW_OK: break;
+        case DSD_ENGINE_TETRA_ROW_TED:
+            DSD_SNPRINTF(why, capacity, "%s",
+                         "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream "
+                         "runs another timing");
+            return 1;
         default: return 0;
     }
-    int override_sps = 0;
-    dsd_engine_scan_tetra_ted_sps(opts, state, &override_sps, NULL);
-    if (override_sps > 0 && override_sps != rate_hz / DSD_TETRA_SYMBOL_RATE_HZ) {
-        DSD_SNPRINTF(why, capacity, "%s",
-                     "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream runs "
-                     "another timing");
-        return 1;
-    }
-    return 0;
 }
 
 /* The TETRA checks of a start that passed every other (issue #748). A fresh start on a session that decodes TETRA is
