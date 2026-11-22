@@ -1372,6 +1372,8 @@ tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
         /* The carrier: the TDMA clock, the speech in progress, direct mode with its DM colour code and protection,
            the timeslots' speech context and the air evidence. */
         tetra_forget_carrier(state);
+        /* The codec's counts, last decode status and kept gap: the last row's, not this one's. */
+        tetra_voice_visit_reset(&ts->voice);
         ts->calls.la = 0;
         ts->calls.la_known = 0;
         ts->decode_ok = 0;

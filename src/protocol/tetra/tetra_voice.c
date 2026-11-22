@@ -394,6 +394,21 @@ tetra_voice_forget_carrier(tetra_voice_t* voice) {
     voice_speech_reset(voice);
 }
 
+void
+tetra_voice_visit_reset(tetra_voice_t* voice) {
+    if (!voice) {
+        return;
+    }
+    voice_speech_reset(voice);
+    voice->frames = 0U;
+    voice->concealed = 0U;
+    voice->codec_errors = 0U;
+    voice->last_decode_failed = 0U;
+    voice->gap_kept = 0U;
+    voice->gap_last_good_m = 0.0;
+    DSD_MEMSET(&voice->gap_owner, 0, sizeof(voice->gap_owner));
+}
+
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Whether the burst plays is judged first
    (tetra_voice_audible()), so that only speech that plays holds the receiver on its timeslot (tetra_voice_hold());
    speech whose CRC passed then reaches the call (tetra_calls_on_speech()), and the record policy is asked once per

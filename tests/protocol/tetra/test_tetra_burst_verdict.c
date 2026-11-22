@@ -1604,9 +1604,23 @@ test_scan_visit_reset_forgets_the_last_row(void) {
     s.state->tetra_air_keys[0].loaded = 1U;
     s.state->tetra_air_keys[0].mcc = 460U;
     const uint32_t generation = s.state->tetra_pub.generation;
+    /* What row A's speech left with the codec: frames decoded, concealed and failed, the last decode failing, and a
+       transmission a carrier gap kept. */
+    ts->voice.frames = 12U;
+    ts->voice.concealed = 3U;
+    ts->voice.codec_errors = 2U;
+    ts->voice.last_decode_failed = 1U;
+    ts->voice.gap_kept = 1U;
+    ts->voice.gap_last_good_m = 5.0;
 
     scan_switch(&s);
     assert(tetra_st_existing(s.state) == ts && ts->voice.codec == codec);
+    if (ts->voice.frames != 0U || ts->voice.codec_errors != 0U || ts->voice.last_decode_failed != 0U) {
+        DSD_FPRINTF(stderr, "FAIL the scan visit kept row A's codec counts (%u frames, %u errors)\n",
+                    (unsigned)ts->voice.frames, (unsigned)ts->voice.codec_errors);
+    }
+    assert(ts->voice.frames == 0U && ts->voice.concealed == 0U && ts->voice.codec_errors == 0U
+           && ts->voice.last_decode_failed == 0U && ts->voice.gap_kept == 0U);
     assert(!ts->net_known && ts->mcc == 0U && ts->mnc == 0U && ts->colour == 0U && ts->lfsr_seed == 0U);
     assert(!ts->sysinfo_known && ts->dl_carrier_hz == 0L && ts->la == 0U && ts->decode_ok == 0U && !ts->tdma_valid);
     assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_NONE && s.state->tetra_sync.polarity == 0U);
@@ -1619,6 +1633,11 @@ test_scan_visit_reset_forgets_the_last_row(void) {
     assert(!ts->net_known && !ts->sysinfo_known && s.state->tetra_sync.polarity == 0U);
     assert(!s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 0U && s.state->tetra_pub.mnc == 0U
            && !s.state->tetra_pub.cc_known && !s.state->tetra_pub.la_known);
+
+    /* Row B's first checked burst publishes the cell, and nothing of row A's codec. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_pub.net_known && s.state->tetra_pub.codec_frames == 0U
+           && s.state->tetra_pub.codec_errors == 0U && s.state->tetra_pub.codec_status == DSD_TETRA_CODEC_UNKNOWN);
 
     /* A --tetra-net preset is configuration: the next burst after another switch seeds the descrambler from it. */
     scan_switch(&s);
