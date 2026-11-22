@@ -4142,9 +4142,10 @@ test_squelch_pref() {
         expect("each choice notified once", changes == 4);
         prefs.setSquelch(QStringLiteral("noise+10"));
         expect("a repeated choice does not notify", changes == 4);
-        for (const QString& bad : {QStringLiteral("noise+2"), QStringLiteral("auto+31"), QStringLiteral("-60"),
-                                   QStringLiteral("noise"), QStringLiteral("auto+010"), QStringLiteral("Noise+10"),
-                                   QStringLiteral(" off"), QStringLiteral("noise+10 "), QString()}) {
+        for (const QString& bad :
+             {QStringLiteral("noise+2"), QStringLiteral("auto+31"), QStringLiteral("-60"), QStringLiteral("noise"),
+              QStringLiteral("auto+010"), QStringLiteral("Noise+10"), QStringLiteral(" off"),
+              QStringLiteral("noise+10 "), QStringLiteral("auto+12\n"), QStringLiteral("off\n"), QString()}) {
             prefs.setSquelch(bad);
             expect("anything else is refused and writes nothing", prefs.squelch() == QStringLiteral("noise+10")
                                                                       && stored.value(key).toString() == "noise+10"
@@ -4155,8 +4156,9 @@ test_squelch_pref() {
     {
         AppPrefs reloaded;
         expect("the squelch persists", reloaded.squelch() == QStringLiteral("auto+12"));
-        for (const QVariant& damaged : {QVariant(QStringLiteral("-65")), QVariant(QStringLiteral("auto+99")),
-                                        QVariant(7), QVariant(QStringList{"noise+10", "x"})}) {
+        for (const QVariant& damaged :
+             {QVariant(QStringLiteral("-65")), QVariant(QStringLiteral("auto+99")),
+              QVariant(QStringLiteral("auto+30\n")), QVariant(7), QVariant(QStringList{"noise+10", "x"})}) {
             stored.setValue(key, damaged);
             expect("a damaged stored squelch reads as the default", reloaded.squelch() == QStringLiteral("noise+10"));
         }

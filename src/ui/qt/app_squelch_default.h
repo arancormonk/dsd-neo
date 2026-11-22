@@ -27,14 +27,17 @@ inline constexpr char kAppSquelchDefault[] = "noise+10";
 /**
  * @brief Whether @p setting is a squelch the app-wide default can hold (issue #899): exactly "off", "auto+N" or
  * "noise+N", N a whole number of dB from DSD_SQUELCH_MARGIN_MIN_DB to DSD_SQUELCH_MARGIN_MAX_DB written without a
- * sign or leading zero. A fixed level is never one: levels stay a session's or a saved system's.
+ * sign or leading zero, and nothing after it (not even a newline). A fixed level is never one: levels stay a session's
+ * or a saved system's.
  */
 inline bool
 app_squelch_default_valid(const QString& setting) {
     if (setting == QLatin1String("off")) {
         return true;
     }
-    static const QRegularExpression dynamic(QStringLiteral("^(auto|noise)\\+([1-9][0-9]?)$"));
+    /* Anchored on the whole string: `$` alone also matches before a final newline, so "auto+12\n" would pass. */
+    static const QRegularExpression dynamic(
+        QRegularExpression::anchoredPattern(QStringLiteral("(auto|noise)\\+([1-9][0-9]?)")));
     const QRegularExpressionMatch match = dynamic.match(setting);
     if (!match.hasMatch()) {
         return false;
