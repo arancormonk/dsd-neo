@@ -598,11 +598,13 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
 }
 
 /* The absolute escape of a C_MOVE: the TSCC's frequency is in the MV_AP block appended to the MBC header (TS 102 361-4
-   Table 7.18), whose CdefParms Cdeftype 0 gives it (§7.2.42 Table 7.103). A single-block move (LB set) has no appended
-   block. Printed only: the channel map learns nothing from it. */
+   Table 7.18), whose CdefParms Cdeftype 0 gives it (§7.2.42 Table 7.103). It is read only when that block was received
+   (@p appended_blocks, the continuation blocks the MBC assembler handed over with the header): a single-block move
+   (LB set) has none, and a header that reached the dispatcher as a standalone CSBK carries only its own 96 bits.
+   Printed only: the channel map learns nothing from it. */
 static void
-dmr_cspdu_pf0_move_print_absolute(const uint8_t cs_pdu_bits[], int single_block) {
-    if (single_block) {
+dmr_cspdu_pf0_move_print_absolute(const uint8_t cs_pdu_bits[], int single_block, uint8_t appended_blocks) {
+    if (single_block || appended_blocks == 0U) {
         return;
     }
     const uint8_t cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
@@ -624,7 +626,8 @@ dmr_cspdu_pf0_move_print_absolute(const uint8_t cs_pdu_bits[], int single_block)
    It names no talkgroup, source or timeslot, so it is printed and nothing else: no activity row, no grant to the trunk
    state machine, no slot or burst state change. */
 static void
-dmr_cspdu_pf0_handle_move(const dsd_state* state, uint8_t cs_pdu_bits[], const uint8_t cs_pdu[], int csbk_o) {
+dmr_cspdu_pf0_handle_move(const dsd_state* state, uint8_t cs_pdu_bits[], const uint8_t cs_pdu[], int csbk_o,
+                          uint8_t appended_blocks) {
     if (csbk_o != 57 || cs_pdu_bits == NULL || cs_pdu == NULL) {
         return;
     }
@@ -641,7 +644,7 @@ dmr_cspdu_pf0_handle_move(const dsd_state* state, uint8_t cs_pdu_bits[], const u
     DSD_FPRINTF(stderr, "\n  Mask: %u; Reg: %u; Backoff: %u; PCN: %04u; MS: %08u", (unsigned)mask, (unsigned)reg,
                 (unsigned)backoff, (unsigned)pcn, (unsigned)ms);
     if (pcn == 0xFFF) {
-        dmr_cspdu_pf0_move_print_absolute(cs_pdu_bits, (cs_pdu[0] & 0x80) != 0);
+        dmr_cspdu_pf0_move_print_absolute(cs_pdu_bits, (cs_pdu[0] & 0x80) != 0, appended_blocks);
     } else if (pcn != 0) {
         dmr_cspdu_pf0_print_frequency(pcn, state->trunk_chan_map[pcn]);
     }
@@ -1699,7 +1702,7 @@ dmr_cspdu_pf0_is_standard_only(const dsd_state* state, int csbk_o) {
 // one must also take its opcode out of dmr_cspdu_pf0_is_standard_only(), or both lines print.
 static void
 dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], const uint8_t cs_pdu[],
-                                   int csbk_o, int csbk_fid) {
+                                   int csbk_o, int csbk_fid, uint8_t appended_blocks) {
     if (csbk_fid != 0) {
         if (dmr_cspdu_pf0_is_standard_only(state, csbk_o)) {
             DSD_FPRINTF(stderr, "\n");
@@ -1708,7 +1711,7 @@ dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_
         return;
     }
     dmr_cspdu_pf0_handle_c_ahoy(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
-    dmr_cspdu_pf0_handle_move(state, cs_pdu_bits, cs_pdu, csbk_o);
+    dmr_cspdu_pf0_handle_move(state, cs_pdu_bits, cs_pdu, csbk_o, appended_blocks);
     dmr_cspdu_pf0_handle_p_maint(state, cs_pdu_bits, csbk_o);
     dmr_cspdu_pf0_handle_ackvit(csbk_o);
     dmr_cspdu_pf0_handle_acks(opts, state, cs_pdu_bits, csbk_o);
@@ -1718,7 +1721,7 @@ dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_
 
 static void
 dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_pf, int csbk_o,
-                     int csbk_fid) {
+                     int csbk_fid, uint8_t appended_blocks) {
     if (csbk_pf == 0) //okay to run
     {
 
@@ -1741,7 +1744,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         dmr_cspdu_pf0_handle_c_bcast(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
-        dmr_cspdu_pf0_handle_standard_only(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
+        dmr_cspdu_pf0_handle_standard_only(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid, appended_blocks);
 
         dmr_cspdu_pf0_handle_preamble(opts, state, cs_pdu_bits, csbk_o);
         //end tier 2 csbks
@@ -3153,8 +3156,8 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
 
 //function for handling Control Signalling PDUs (CSBK, MBC) messages
 void
-dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
-          uint32_t IrrecoverableErrors) {
+dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
+              uint32_t IrrecoverableErrors, uint8_t appended_blocks) {
     if (opts == NULL || state == NULL || cs_pdu_bits == NULL || cs_pdu == NULL) {
         return;
     }
@@ -3184,7 +3187,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
         dmr_cspdu_init_cc_anchor(opts, state);
 
-        dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid);
+        dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid, appended_blocks);
         dmr_cspdu_handle_cap_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
         dmr_cspdu_handle_con_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
         dmr_cspdu_handle_xpt(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
@@ -3200,6 +3203,12 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+void
+dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
+          uint32_t IrrecoverableErrors) {
+    dmr_cspdu_mbc(opts, state, cs_pdu_bits, cs_pdu, CRCCorrect, IrrecoverableErrors, 0U);
 }
 
 void

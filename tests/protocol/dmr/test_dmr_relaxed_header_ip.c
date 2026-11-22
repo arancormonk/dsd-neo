@@ -301,14 +301,15 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint32_t CRCCorrect,
-          uint32_t IrrecoverableErrors) {
+dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint32_t CRCCorrect,
+              uint32_t IrrecoverableErrors, uint8_t appended_blocks) {
     (void)opts;
     (void)state;
     (void)bits;
     (void)bytes;
     (void)CRCCorrect;
     (void)IrrecoverableErrors;
+    (void)appended_blocks;
 }
 
 void

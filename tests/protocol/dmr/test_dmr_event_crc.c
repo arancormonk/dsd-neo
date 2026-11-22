@@ -437,6 +437,68 @@ test_t3_mbc_grant_channel_provenance(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A checked C_MOVE header (TS 102 361-4 Table 7.17: Backoff 2, PCN 0xFFF, MS 0) through the burst handler, as data
+   type @p databurst with CRC mask @p mask. LB is clear: it claims an appended MV_AP block. */
+static void
+send_cmove_header(dsd_opts* opts, dsd_state* state, uint8_t databurst, uint16_t mask) {
+    uint8_t hdr[12] = {0x39, 0x00, 0x00, 0x00, 0x02, 0x0F, 0xFF, 0x00, 0x00, 0x00, 0, 0};
+    uint8_t bits[96];
+    unpack(hdr, bits, sizeof hdr);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ mask);
+    hdr[10] = (uint8_t)(crc >> 8);
+    hdr[11] = (uint8_t)crc;
+    unpack(hdr, bits, sizeof hdr);
+    send_burst_bits(opts, state, bits, k_no_reserved, databurst);
+}
+
+/* What the burst handler prints for a C_MOVE: when @p as_mbc, an MBC header (0x04) then its MV_AP continuation; else the same
+   header as a standalone CSBK, 0x03), in @p out. */
+static int
+capture_cmove(dsd_opts* opts, dsd_state* state, int as_mbc, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_cmove_block") != 0) {
+        return 1;
+    }
+    if (as_mbc) {
+        send_cmove_header(opts, state, 0x04, 0xAAAAU);
+        uint8_t block[96] = {0};
+        put_bits(block, 0, 1, 1U);     // last block
+        put_bits(block, 2, 6, 57U);    // CSBKO of the header
+        put_bits(block, 22, 12, 303U); // CdefParms LPCN (MBC bits 118..129)
+        put_bits(block, 57, 10, 851U); // RX MHz (MBC bits 153..162)
+        put_bits(block, 67, 13, 100U); // RX 125 Hz steps (MBC bits 163..175)
+        put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+        send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    } else {
+        send_cmove_header(opts, state, 0x03, 0xA5A5U);
+    }
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, out, out_size) != 0;
+}
+
+/* A C_MOVE's absolute TSCC frequency comes only from an MV_AP block that was received: the assembled MBC prints it; the
+   same header heard as a standalone CSBK (one decoded block) prints no frequency from the bits past it. */
+static int
+test_t3_cmove_appended_block(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    char out[4096];
+    int rc = capture_cmove(opts, state, 1, out, sizeof out);
+    if (rc != 0 || strstr(out, "Move TSCC (C_MOVE) - Absolute") == NULL
+        || strstr(out, "TSCC APCN: 0303; RX INT: 851; RX STEP: 100;") == NULL
+        || strstr(out, "Frequency: 851.012500 MHz") == NULL || state->trunk_chan_map[303] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: assembled C_MOVE MBC prints its MV_AP block: '%s'\n", out);
+        rc = 1;
+    }
+    int lone = capture_cmove(opts, state, 0, out, sizeof out);
+    if (lone != 0 || strstr(out, "Move TSCC (C_MOVE) - Absolute") == NULL || strstr(out, "APCN") != NULL
+        || strstr(out, "Frequency") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a standalone C_MOVE header reads no MV_AP block: '%s'\n", out);
+        lone = 1;
+    }
+    return rc | lone;
+}
+
 // A RAS-accepted voice LC header publishes the call marked [RAS] at the voice row's ordinary severity, which the
 // terminal colours by category; a checked header publishes it unmarked.
 static void
@@ -1315,6 +1377,7 @@ main(void) {
     rc |= test_lrrp_summary_motion(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
+    rc |= test_t3_cmove_appended_block(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);

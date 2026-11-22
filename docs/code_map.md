@@ -13659,11 +13659,14 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
   - C_MOVE (CSBKO 57, TS 102 361-4 §7.1.1.1.3 Table 7.17; FID 0x00 only). It tells the radios its MS address and Mask
     select to move to another TSCC: the Physical Channel Number, or for the escape 0xFFF the frequency the appended
-    MV_AP block's CdefParms give (Table 7.18; only an MBC header, LB 0, has one). It names no talkgroup, source or
-    timeslot, so `dmr_cspdu_pf0_handle_move()` prints Mask, Reg, Backoff, PCN, MS address and the TSCC frequency and
-    does nothing else: no activity row, no grant to the trunk state machine, no slot or burst state change, nothing
-    learned into the channel map. Following a move to a new TSCC is not implemented. Tests: `DMR_T3_CMOVE`,
-    `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`.
+    MV_AP block's CdefParms give (Table 7.18). The block is read only when it was received: the MBC assembler hands an
+    assembled MBC over through `dmr_cspdu_mbc()` with its continuation count (`dmr_block_type2_dispatch()`), while a
+    standalone CSBK (`dmr_cspdu()`, one 96-bit block) and a single-block move (LB 1) have none, so bits past the first
+    block are never read as a frequency. It names no talkgroup, source or timeslot, so `dmr_cspdu_pf0_handle_move()`
+    prints Mask, Reg, Backoff, PCN, MS address and the TSCC frequency and does nothing else: no activity row, no grant
+    to the trunk state machine, no slot or burst state change, nothing learned into the channel map. Following a move
+    to a new TSCC is not implemented. Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC` (`test_t3_cmove_appended_block()`, through
+    the burst handler), `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`.
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order

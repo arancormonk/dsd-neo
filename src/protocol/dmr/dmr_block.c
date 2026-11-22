@@ -1819,8 +1819,8 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
                                       && ctx->state->data_header_valid[ctx->slot]);
         const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
         ctx->state->event_crc_invalid[ctx->slot] |= crc_flags;
-        dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
-                  accepted ? 0U : ctx->irrecoverable_errors);
+        dmr_cspdu_mbc(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
+                      accepted ? 0U : ctx->irrecoverable_errors, (uint8_t)ctx->blocks);
         ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
     }
     if (ctx->is_udt && !ctx->pf) {

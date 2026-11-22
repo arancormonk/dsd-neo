@@ -25,11 +25,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -121,8 +123,6 @@ crc8(uint8_t bits[], unsigned int len) {
     (void)len;
     return 0xFF;
 }
-
-extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
 // --- Helpers ---
 
@@ -266,12 +266,17 @@ append_mv_ap(uint8_t* bits, uint16_t lpcn, uint16_t rx_int, uint16_t rx_step) {
     put_bits(bits, 163U, rx_step, 13U);
 }
 
-/* Send the frame through the CSBK dispatcher, its terminal output in g_out. */
+/* Send the frame through the CSBK dispatcher, its terminal output in g_out: as a standalone CSBK when @p appended is 0,
+   else as the MBC assembler hands over a header with @p appended continuation blocks received. */
 static void
-run_captured(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
+run_captured(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint8_t appended) {
     dsd_test_capture_stderr cap;
     assert(dsd_test_capture_stderr_begin(&cap, "dmr_t3_cmove") == 0);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    if (appended == 0U) {
+        dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    } else {
+        dmr_cspdu_mbc(opts, state, bits, bytes, 1U, 0U, appended);
+    }
     assert(dsd_test_capture_stderr_end(&cap) == 0);
     assert(dsd_test_capture_stderr_read(&cap, g_out, sizeof g_out) == 0);
 }
@@ -416,7 +421,7 @@ cmove_spec_frame_prints_only(dsd_opts* opts, dsd_state* state) {
         uint8_t bits[256];
         uint8_t bytes[48];
         build_cmove(bits, bytes, &k_move, 0);
-        run_captured(opts, state, bits, bytes);
+        run_captured(opts, state, bits, bytes, 0U);
         expect_untouched(state, opts, &before, k_names[where]);
         expect_out("Move TSCC (C_MOVE)", 1, k_names[where]);
         expect_out("Mask: 8; Reg: 1; Backoff: 3; PCN: 0005; MS: 00004660", 1, k_names[where]);
@@ -429,7 +434,7 @@ cmove_spec_frame_prints_only(dsd_opts* opts, dsd_state* state) {
     uint8_t bits[256];
     uint8_t bytes[48];
     build_cmove(bits, bytes, &k_move, 0);
-    run_captured(opts, state, bits, bytes);
+    run_captured(opts, state, bits, bytes, 0U);
     csbk_grant(opts, state, 49U, VC_LPCN1, 0, 101, 1234);
     assert(g_tunes == 1U && state->trunk_vc_freq[0] == VC_F1 && dmr_sm_get_ctx()->vc_tg == 101);
 }
@@ -449,7 +454,7 @@ cmove_mbc_channel_form_prints_only(dsd_opts* opts, dsd_state* state) {
         uint8_t bytes[48];
         build_cmove(bits, bytes, &k_move, 1);
         append_mv_ap(bits, 0x123U, 855U, 0U);
-        run_captured(opts, state, bits, bytes);
+        run_captured(opts, state, bits, bytes, 1U);
         expect_untouched(state, opts, &before, "mbc move");
         assert(state->trunk_chan_map[0x123] == 0);
         expect_out("Move TSCC (C_MOVE) - Absolute", 1, "mbc move");
@@ -458,18 +463,39 @@ cmove_mbc_channel_form_prints_only(dsd_opts* opts, dsd_state* state) {
         expect_out("Frequency: 855.000000 MHz", 1, "mbc move");
     }
 
+    /* No MV_AP block received: a single block (LB set), or an MBC header (LB clear) that reached the dispatcher on its
+       own, as a standalone CSBK. Bits past the first block are padding there, never a frequency. */
+    for (int mbc_header = 0; mbc_header <= 1; mbc_header++) {
+        cmove_context(opts, state, CMOVE_CTX_ON_CC);
+        cmove_view before;
+        view_take(state, opts, &before);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_cmove(bits, bytes, &k_move, mbc_header);
+        append_mv_ap(bits, 0x123U, 855U, 0U);
+        run_captured(opts, state, bits, bytes, 0U);
+        expect_untouched(state, opts, &before, "absolute move without its block");
+        expect_out("Move TSCC (C_MOVE) - Absolute", 1, "absolute move without its block");
+        expect_out("Frequency", 0, "absolute move without its block");
+        expect_out("APCN", 0, "absolute move without its block");
+        expect_out("MV_AP", 0, "absolute move without its block");
+    }
+
+    /* A caller that hands over exactly one decoded block (96 bits, 12 octets): nothing past it is read. */
     cmove_context(opts, state, CMOVE_CTX_ON_CC);
-    cmove_view before;
-    view_take(state, opts, &before);
-    uint8_t bits[256];
-    uint8_t bytes[48];
-    build_cmove(bits, bytes, &k_move, 0);
-    append_mv_ap(bits, 0x123U, 855U, 0U); // stale bits past a single block are no appended block
-    run_captured(opts, state, bits, bytes);
-    expect_untouched(state, opts, &before, "single-block absolute move");
-    expect_out("Move TSCC (C_MOVE) - Absolute", 1, "single-block absolute move");
-    expect_out("Frequency", 0, "single-block absolute move");
-    expect_out("APCN", 0, "single-block absolute move");
+    uint8_t full_bits[256];
+    uint8_t full_bytes[48];
+    build_cmove(full_bits, full_bytes, &k_move, 1);
+    uint8_t* one_block_bits = (uint8_t*)malloc(96U);
+    uint8_t* one_block_bytes = (uint8_t*)malloc(12U);
+    assert(one_block_bits != NULL && one_block_bytes != NULL);
+    DSD_MEMCPY(one_block_bits, full_bits, 96U);
+    DSD_MEMCPY(one_block_bytes, full_bytes, 12U);
+    run_captured(opts, state, one_block_bits, one_block_bytes, 0U);
+    free(one_block_bits);
+    free(one_block_bytes);
+    expect_out("Move TSCC (C_MOVE) - Absolute", 1, "one-block header");
+    expect_out("Frequency", 0, "one-block header");
 }
 
 /* Opcode 57 under a manufacturer's FID is not a C_MOVE: it prints as a manufacturer CSBK and nothing else. */
@@ -483,7 +509,7 @@ cmove_nonzero_fid_ignored(dsd_opts* opts, dsd_state* state) {
         uint8_t bits[256];
         uint8_t bytes[48];
         build_cmove(bits, bytes, &k_move, 0);
-        run_captured(opts, state, bits, bytes);
+        run_captured(opts, state, bits, bytes, 0U);
         expect_untouched(state, opts, &before, "FID 0x10 opcode 57");
         expect_out("C_MOVE", 0, "FID 0x10 opcode 57");
         expect_out("Manufacturer CSBK: FID 10; Opcode 39;", 1, "FID 0x10 opcode 57");
@@ -552,7 +578,7 @@ test_csbk_anchors_unknown_cc(dsd_opts* opts, dsd_state* state) {
     uint8_t bits[256];
     uint8_t bytes[48];
     build_cmove(bits, bytes, &k_move, 0);
-    run_captured(opts, state, bits, bytes);
+    run_captured(opts, state, bits, bytes, 0U);
     assert(opts->trunk_is_tuned == 0);
     assert(state->trunk_cc_freq == 851012500);
 }
