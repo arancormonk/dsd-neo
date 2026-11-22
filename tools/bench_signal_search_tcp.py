@@ -46,8 +46,7 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import build_iq_fixtures as bif  # noqa: E402
+import build_iq_fixtures as bif
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "iq"
 

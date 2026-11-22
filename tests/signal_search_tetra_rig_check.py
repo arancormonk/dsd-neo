@@ -43,6 +43,8 @@ hardware.
 """
 
 import argparse
+import importlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -50,17 +52,15 @@ import re
 import sys
 import tempfile
 
-try:
-    import numpy  # noqa: F401
-except ImportError:
+if importlib.util.find_spec("numpy") is None:
     print(f"SKIP: the rig needs numpy, which {sys.executable} does not have")
     sys.exit(77)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import bench_signal_search_tcp as tcp_bench  # noqa: E402
-import build_iq_fixtures as bif  # noqa: E402
+tcp_bench = importlib.import_module("bench_signal_search_tcp")
+bif = importlib.import_module("build_iq_fixtures")
 
 DSP_KHZ = 72
 # The capture rate the RTL front end asks the source for at a 72 kHz DSP bandwidth (16 times it).
