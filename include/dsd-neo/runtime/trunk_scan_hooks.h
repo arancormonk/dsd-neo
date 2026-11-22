@@ -116,6 +116,10 @@ typedef struct {
     uint8_t encrypted;
     uint8_t data_call;
     uint8_t known; /**< DSD_SCAN_ACTIVITY_KNOWN_* bits */
+    /** The protocol's own receive filter refused the transmission (M17's CAN filter, dsd_state::m17_can_en): the scan's
+     * policy table admits nothing of it (dsd_scan_activity_policy_allows()), so no target or row holds on it, and a
+     * typed -Y row its frames keep busy renews no wait on its open verdicts. The other fields say nothing then. */
+    uint8_t receive_refused;
 } dsd_trunk_scan_activity_identity;
 
 typedef struct {

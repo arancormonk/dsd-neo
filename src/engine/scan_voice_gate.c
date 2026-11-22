@@ -206,7 +206,8 @@ scan_activity_numeric_allows(const dsd_opts* opts, const dsd_state* state,
 int
 dsd_scan_activity_policy_allows(const dsd_opts* opts, const dsd_state* state, int protocol,
                                 const dsd_trunk_scan_activity_identity* identity) {
-    if (!opts || !state || !identity || !scan_activity_restrictions_allow(opts, identity)) {
+    if (!opts || !state || !identity || identity->receive_refused != 0U
+        || !scan_activity_restrictions_allow(opts, identity)) {
         return 0;
     }
     return dsd_scan_activity_protocol_is_callsign(protocol) || scan_activity_numeric_allows(opts, state, identity);

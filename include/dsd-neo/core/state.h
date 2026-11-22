@@ -3331,12 +3331,23 @@ struct dsd_state {
      * unheard, or a Golay miscorrection. A decoded EOS needs no dispute: the next transmission's first frame drops the
      * checked LSF, its copy here and the dispute with it (m17_confirm_reset()). A disputed binding is no identity of the
      * call for a scan hold (its report is anonymous until an LSF is checked again); the decoder's checked fields are
-     * left as they are. Only LICH chunks 0 to 2 carry these bits: after a missed EOS and EOT, a new transmission whose
-     * chunks 3 to 5 come first is not disputed until its chunk 0, so its reports of those frames (about two pair
-     * reports) still carry the old LSF's CAN, encryption and type, a bounded fail-open limit. Meaningful only while
-     * m17_lsf_checked is set. */
+     * left as they are. Meaningful only while m17_lsf_checked is set.
+     * m17_lsf_reconfirmed: which of the LICH chunks that carry those bits (0 to 2, bit k for chunk k) agreed with the
+     * checked LSF since the RF stream was last continuous with it. A checked LSF sets all three; a stream frame that
+     * does not end one M17 frame after the RF frame before it (m17_rf_frame_symbol, m17_rf_frame_epoch: a frame lost,
+     * or another transmission's frames after a missed EOS, EOT and LSF frame, which take at least three frame periods)
+     * clears them, and each clean chunk 0 to 2 that agrees sets its own again. The binding vouches for the stream
+     * (m17_link_setup_vouched(): its scan report's fields, its checked speech) only while all three are set, so a new
+     * transmission that differs only in a chunk not yet heard clean (a CAN or encryption change, in chunk 2) is never
+     * credited under the old LSF.
+     * m17_rf_frame_symbol, m17_rf_frame_epoch, m17_rf_frame_valid: where the last RF LSF or stream frame M17 read whole
+     * ended (dsd_state::symbolcnt, dsd_state::symbol_clock_epoch). */
     uint8_t m17_lsf_checked_head[14];
     uint8_t m17_lsf_disputed;
+    uint8_t m17_lsf_reconfirmed;
+    uint8_t m17_rf_frame_valid;
+    uint32_t m17_rf_frame_symbol;
+    uint32_t m17_rf_frame_epoch;
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
     uint8_t m17_tx_ended;

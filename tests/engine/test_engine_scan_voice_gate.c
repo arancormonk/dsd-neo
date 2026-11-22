@@ -2213,6 +2213,11 @@ test_policy_table_rows(void) {
         const int p = callsigns[i];
         dsd_trunk_scan_activity_identity voice = policy_identity(all, 0U, 0U, 0U, 0U, 0U);
         CHECK("callsign: a clear group voice call holds", dsd_scan_activity_policy_allows(o, st, p, &voice) == 1);
+        /* Issue #890: one the protocol's own receive filter refused (M17's CAN filter) holds nothing. */
+        dsd_trunk_scan_activity_identity refused = voice;
+        refused.receive_refused = 1U;
+        CHECK("callsign: a call its receive filter refused holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &refused) == 0);
         o->trunk_use_allow_list = 1;
         st->tg_hold = 55U;
         CHECK("callsign: no allow list or Hold applies", dsd_scan_activity_policy_allows(o, st, p, &voice) == 1);
@@ -2274,6 +2279,10 @@ test_policy_table_rows(void) {
             policy_identity(all & ~DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0U, 0U, 0U, 0U, 0U);
         CHECK("numeric: anonymous holds without a Hold or allow list",
               dsd_scan_activity_policy_allows(o, st, p, &anon));
+        dsd_trunk_scan_activity_identity anon_refused = anon;
+        anon_refused.receive_refused = 1U;
+        CHECK("numeric: a call its receive filter refused holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &anon_refused) == 0);
         st->tg_hold = 55U;
         CHECK("numeric: anonymous under a Hold holds nothing", dsd_scan_activity_policy_allows(o, st, p, &anon) == 0);
         st->tg_hold = 0U;

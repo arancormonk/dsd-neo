@@ -354,22 +354,27 @@ m17_lich_note_chunk(const dsd_opts* opts, dsd_state* state, uint8_t counter) {
     a->held |= (uint8_t)(1U << counter);
 }
 
-/* A clean LICH chunk @p counter whose bits of the LSF's DST, SRC and TYPE (bits 0-111, M17 spec 2.0.11, Link Setup
-   Frame; the LICH carries the transmission's LSF, 40 bits a frame) disagree with the checked LSF bound to the
-   transmission is another transmission's (its EOT and its LSF frame went unheard) or a Golay miscorrection: either
-   way the binding is disputed (dsd_state::m17_lsf_disputed), so a scan hold takes nothing of the last checked LSF's
-   CAN, encryption or type for it until an LSF is checked again. The decoder's checked fields stay (a relaxed LSF still
-   replaces none of them). The META bits are left out: a transmission's META may change from LSF to LSF (text, GNSS). */
+/* The LICH chunks that carry the LSF's DST, SRC and TYPE (bits 0-111, M17 spec 2.0.11, Link Setup Frame; the LICH
+   carries the transmission's LSF, 40 bits a frame): chunks 0 to 2. */
+enum { M17_LICH_HEAD_CHUNKS = 3U, M17_LICH_HEAD_MASK = (1U << M17_LICH_HEAD_CHUNKS) - 1U };
+
+/* A clean LICH chunk @p counter checked against the checked LSF bound to the transmission (issue #890). Bits of its
+   DST, SRC and TYPE that disagree make the chunk another transmission's (its EOT and its LSF frame went unheard) or a
+   Golay miscorrection: either way the binding is disputed (dsd_state::m17_lsf_disputed), so a scan hold takes nothing
+   of the last checked LSF's CAN, encryption or type for it until an LSF is checked again. A chunk 0 to 2 that agrees
+   in all of them reconfirms its part of the binding (dsd_state::m17_lsf_reconfirmed). The decoder's checked fields
+   stay (a relaxed LSF still replaces none of them). The META bits are left out: a transmission's META may change from
+   LSF to LSF (text, GNSS). */
 static void
 m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk) {
-    if (state->m17_lsf_checked == 0U || state->m17_lsf_disputed != 0U) {
+    if (state->m17_lsf_checked == 0U || state->m17_lsf_disputed != 0U || counter >= M17_LICH_HEAD_CHUNKS) {
         return;
     }
     const size_t head_bits = sizeof(state->m17_lsf_checked_head) * 8U;
     for (size_t i = 0; i < M17_LICH_CHUNK_BITS; i++) {
         const size_t bit = ((size_t)counter * M17_LICH_CHUNK_BITS) + i;
         if (bit >= head_bits) {
-            return;
+            break;
         }
         const uint8_t checked = (uint8_t)((state->m17_lsf_checked_head[bit / 8U] >> (7U - (bit % 8U))) & 1U);
         if ((chunk[i] & 1U) != checked) {
@@ -377,14 +382,39 @@ m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk
             return;
         }
     }
+    state->m17_lsf_reconfirmed |= (uint8_t)(1U << counter);
+}
+
+/* An RF LSF or stream frame M17 read whole ends here (issue #890). A stream frame that does not end one M17 frame
+   (192 symbols, within 32, as the strict RF packet rule measures, in one symbol clock epoch) after the RF frame before
+   it is not known to be the same transmission's: a frame was lost, or the frames are another transmission's after a
+   missed EOS, EOT and LSF frame. Its link setup's identity chunks must then agree again before the binding vouches for
+   it (dsd_state::m17_lsf_reconfirmed). */
+static void
+m17_note_rf_frame_end(dsd_state* state, int stream_frame) {
+    enum { M17_RF_FRAME_SYMBOLS = 192, M17_RF_FRAME_SLACK = 32 };
+
+    const uint32_t since = state->symbolcnt - state->m17_rf_frame_symbol;
+    const int continuous = state->m17_rf_frame_valid != 0U && state->m17_rf_frame_epoch == state->symbol_clock_epoch
+                           && since >= (uint32_t)(M17_RF_FRAME_SYMBOLS - M17_RF_FRAME_SLACK)
+                           && since <= (uint32_t)(M17_RF_FRAME_SYMBOLS + M17_RF_FRAME_SLACK);
+    if (stream_frame && !continuous) {
+        state->m17_lsf_reconfirmed = 0U;
+    }
+    state->m17_rf_frame_valid = 1U;
+    state->m17_rf_frame_symbol = state->symbolcnt;
+    state->m17_rf_frame_epoch = state->symbol_clock_epoch;
 }
 
 /* Whether the transmission's link setup vouches for it (issue #890): a checked LSF bound its CAN, encryption and type
-   (dsd_state::m17_lsf_checked) and no clean LICH chunk has disputed it since (m17_lich_note_other_link()). Everything
-   the scan takes from the binding asks here: the activity report's fields and the speech it credits. */
+   (dsd_state::m17_lsf_checked), no clean LICH chunk has disputed it since (m17_lich_note_other_link()), and every
+   identity chunk agreed with it since the RF stream was last continuous with it (dsd_state::m17_lsf_reconfirmed,
+   m17_note_rf_frame_end()). Everything the scan takes from the binding asks here: the activity report's fields and
+   the speech it credits. */
 static int
 m17_link_setup_vouched(const dsd_state* state) {
-    return state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U;
+    return state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U
+           && (state->m17_lsf_reconfirmed & M17_LICH_HEAD_MASK) == M17_LICH_HEAD_MASK;
 }
 
 /* Checked M17 content to trunk scan's policy table (issue #890): an LSF whose CRC passed (its frame's, or rebuilt whole
@@ -394,16 +424,21 @@ m17_link_setup_vouched(const dsd_state* state) {
    a clean LICH chunk disputed it (m17_lich_note_other_link()); before one,
    the report is anonymous and its fields unknown, so a scan restriction that depends on them holds nothing until the
    LSF is checked. The receive side's own CAN gate (dsd_state::m17_can_en, m17_can_filter_allows()) is kept: a CAN it
-   refuses never holds, nor an unknown CAN while it is set. M17 names stations by 48-bit callsigns, outside talkgroup
+   refuses, and an unknown CAN while it is set, is reported refused (receive_refused) and never holds. M17 names stations by 48-bit callsigns, outside talkgroup
    policy, and has no party bit. A BERT frame (a test) and an LSF -F decodes despite a failed CRC never report. */
 static void
 m17_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int packet) {
     const int checked = m17_link_setup_vouched(state);
-    if (state->m17_can_en >= 0 && (!checked || !m17_can_filter_allows(state->m17_can_en, state->m17_can))) {
-        return;
-    }
     dsd_trunk_scan_activity_identity identity;
     DSD_MEMSET(&identity, 0, sizeof(identity));
+    if (state->m17_can_en >= 0 && (!checked || !m17_can_filter_allows(state->m17_can_en, state->m17_can))) {
+        /* The receive CAN filter refuses the transmission (or cannot tell its CAN): reported as refused, so a typed
+           -Y row its frames keep busy renews no wait on it (a packet's chunks waiting on their end's CRC), and nothing
+           holds on it. */
+        identity.receive_refused = 1U;
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, m17_received_protocol(state), -1, &identity);
+        return;
+    }
     if (checked) {
         identity.known |= DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
         identity.encrypted = (uint8_t)(state->m17_enc != 0U);
@@ -631,6 +666,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
     if (publish_canonical != 0) {
         state->m17_lsf_checked = 1U;
         state->m17_lsf_disputed = 0U;
+        state->m17_lsf_reconfirmed = (uint8_t)M17_LICH_HEAD_MASK;
         for (size_t i = 0; i < sizeof(state->m17_lsf_checked_head); i++) {
             state->m17_lsf_checked_head[i] = (uint8_t)convert_bits_into_output(&state->m17_lsf[i * 8U], 8);
         }
@@ -1912,6 +1948,7 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
+    m17_note_rf_frame_end(state, 1);
 
     m17_confirm_begin_frame(state);
 
@@ -2270,6 +2307,7 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
+    m17_note_rf_frame_end(state, 0);
 
     m17_confirm_begin_frame(state);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
@@ -4806,6 +4844,7 @@ typedef struct {
     uint8_t checked;
     uint8_t checked_head[14];
     uint8_t disputed;
+    uint8_t reconfirmed;
     uint8_t str_dt;
     uint8_t can;
     uint8_t enc;
@@ -4826,6 +4865,7 @@ m17_link_setup_hold(const dsd_state* state, m17_link_setup_held* held) {
     held->checked = state->m17_lsf_checked;
     DSD_MEMCPY(held->checked_head, state->m17_lsf_checked_head, sizeof(held->checked_head));
     held->disputed = state->m17_lsf_disputed;
+    held->reconfirmed = state->m17_lsf_reconfirmed;
     held->str_dt = state->m17_str_dt;
     held->can = state->m17_can;
     held->enc = state->m17_enc;
@@ -4841,6 +4881,7 @@ m17_link_setup_give_back(dsd_state* state, const m17_link_setup_held* held) {
     state->m17_lsf_checked = held->checked;
     DSD_MEMCPY(state->m17_lsf_checked_head, held->checked_head, sizeof(held->checked_head));
     state->m17_lsf_disputed = held->disputed;
+    state->m17_lsf_reconfirmed = held->reconfirmed;
     state->m17_str_dt = held->str_dt;
     state->m17_can = held->can;
     state->m17_enc = held->enc;

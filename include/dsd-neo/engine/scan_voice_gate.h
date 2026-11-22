@@ -62,6 +62,9 @@ int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_
  *   both IDs, a group call or one of unknown party by its target and source); with no target known, nothing holds
  *   under a talkgroup Hold or the allow list, nor a source the radio list blocks, and the known restrictions apply.
  *
+ * - A transmission the protocol's own receive filter refused (@p identity receive_refused: M17's CAN filter) holds
+ *   nothing.
+ *
  * 0 for a NULL @p identity.
  */
 int dsd_scan_activity_policy_allows(const dsd_opts* opts, const dsd_state* state, int protocol,

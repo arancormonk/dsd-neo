@@ -1147,14 +1147,16 @@ rules:
   read: an encrypted DM-2-C burst under such a code holds nothing.
 - M17: a decoded end of stream, or a clean LICH that disagrees with the checked link setup's callsigns or type
   (another transmission whose end was missed), makes the reports after it anonymous until a link setup is checked
-  again. Only the first three LICH parts carry those fields, so when the end was missed and a new transmission is
-  joined on its last three parts, about two reports (no more than those three frames) can still carry the old link
-  setup's CAN, encryption and type.
+  again. Only the first three LICH parts carry those fields, so after any gap in the stream (frames lost, or a missed
+  end and link setup) the reports stay anonymous, and its speech does not count for `--scan-voice-only`, until each of
+  those three parts has been heard clean and agreed with the checked link setup again. A transmission that changed
+  only its CAN or encryption is therefore never credited with the old link setup's fields.
 - dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
   dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
   list is on, or when the radio list blocks its known source.
 - The M17 CAN filter: with a receive CAN set, a target holds only on a checked LSF of that CAN; an LSF of another CAN,
-  and LICH frames before any checked LSF, hold nothing.
+  and LICH frames before any checked LSF, hold nothing. On a typed `m17` row such a transmission also does not keep
+  the row past `-t`, a long packet of another CAN included.
 - A talkgroup Hold keeps a `tetra-dmo` target or row past its visit cap only while a direct mode call on the held
   talkgroup is heard on this visit; a trunked call on the same talkgroup does not. YSF, D-STAR and M17 calls never
   keep a target past its cap for a talkgroup Hold: they address callsigns, not talkgroups.

@@ -1221,6 +1221,7 @@ test_stream_voice_replaces_foreign_active_call(void) {
     /* A checked LSF a clean LICH chunk has since disputed (another transmission after a missed EOT and LSF frame) vouches
        for nothing: its speech plays but earns no checked media either. */
     state->m17_lsf_checked = 1U;
+    state->m17_lsf_reconfirmed = 0x7U; /* every identity chunk agreed since the stream was continuous */
     state->m17_lsf_disputed = 1U;
     err |= expect_int("disputed-LSF M17 voice dispatches under a scan",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),

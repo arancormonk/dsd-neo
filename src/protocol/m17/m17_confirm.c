@@ -48,6 +48,7 @@ m17_confirm_reset(dsd_state* state) {
     /* The scan side's copy of the checked LSF and its dispute (issue #890): no binding outlives the transmission. */
     DSD_MEMSET(state->m17_lsf_checked_head, 0, sizeof(state->m17_lsf_checked_head));
     state->m17_lsf_disputed = 0U;
+    state->m17_lsf_reconfirmed = 0U;
     state->m17_lsf_stream_mode = 0U;
     state->m17_str_dt = (uint8_t)M17_STREAM_TYPE_UNKNOWN;
     state->m17_can = 0U;
