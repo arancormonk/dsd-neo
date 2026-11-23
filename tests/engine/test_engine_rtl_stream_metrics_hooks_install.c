@@ -41,9 +41,7 @@ static int g_p25p2_err_calls;
 static int g_stream_active_calls;
 static int g_input_level_calls;
 static int g_channel_squelch_calls;
-static float g_last_channel_squelch;
 static int g_channel_squelch_setting_calls;
-static dsd_squelch_setting g_last_channel_squelch_setting;
 static dsdneoRuntimeConfig g_runtime_config;
 
 static int g_last_symbol_rate;
@@ -299,13 +297,13 @@ rtl_stream_get_input_level(dsd_input_level_snapshot* out) {
 void
 rtl_stream_set_channel_squelch(float level) {
     ++g_channel_squelch_calls;
-    g_last_channel_squelch = level;
+    (void)level;
 }
 
 void
 rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     ++g_channel_squelch_setting_calls;
-    g_last_channel_squelch_setting = *setting;
+    (void)setting;
 }
 
 /* The receiver's channel-tagged gates (issue #899): a write and the channel it named, the epoch and open, and the
@@ -557,18 +555,14 @@ main(void) {
     assert(level.source == DSD_INPUT_LEVEL_SOURCE_RTL_CU8);
     assert(level.sample_count == 1024U);
 
-    /* Scan rows push their squelch through the runtime table to the same demod setter the
-     * operator's squelch command uses (issue #521). */
-    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
-    assert(g_channel_squelch_calls == 1);
-    assert(fabsf(g_last_channel_squelch - 1e-6f) < 1e-12f);
-    /* A whole setting, the auto squelch's margin included, reaches its own setter (issue #518 follow-up). */
+    /* Scan rows' squelch (issue #521) and whole settings (issue #518 follow-up) reach the demod's setters only through
+       the engine's channel-tagged writes below (issue #899 round 5): the engine installs no untagged setter, so nothing
+       reaches the demod without naming the channel it is for. */
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == -1);
     const dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
-    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&auto6) == 0);
-    assert(g_channel_squelch_setting_calls == 1 && g_channel_squelch_calls == 1);
-    assert(g_last_channel_squelch_setting.mode == DSD_SQUELCH_MODE_AUTO
-           && g_last_channel_squelch_setting.margin_db == 6);
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&auto6) == -1);
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
+    assert(g_channel_squelch_setting_calls == 0 && g_channel_squelch_calls == 0);
     /* A gate write reaches the stream whole with the channel it names, and the stream's verdict comes back (issue
        #899). */
     const dsd_squelch_setting noise10 = {DSD_SQUELCH_MODE_NOISE, 0.0, 10};

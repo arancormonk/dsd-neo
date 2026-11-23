@@ -33,17 +33,6 @@ rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int
                                             0);
 }
 
-/* The demod keeps the threshold as a float, like the operator's own squelch command does. */
-static void
-rtl_stream_metrics_set_channel_squelch(double mean_power) {
-    rtl_stream_set_channel_squelch((float)mean_power);
-}
-
-static void
-rtl_stream_metrics_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
-    rtl_stream_set_channel_squelch_setting(setting);
-}
-
 /* The fields DSP reads of the replay batch tag: the labels, the media span its samples run the decode clock on, the
  * centre they were captured on (issue #575) and the stream gaps recorded before them (issue #518). The decoder thread
  * calls it while the stream is open, the one thread rtl_stream_get_replay_batch() may be called on. */
@@ -98,8 +87,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25_timing_proof = rtl_stream_set_p25_timing_proof;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
-    hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
-    hooks.set_channel_squelch_setting = rtl_stream_metrics_set_channel_squelch_setting;
+    /* No untagged squelch setter (issue #899): every gate the engine hands the receiver names its channel. */
     hooks.write_channel_gate = rtl_stream_write_channel_gate;
     hooks.channel_gate_epoch = rtl_stream_channel_gate_epoch;
     hooks.channel_gate_opened = rtl_stream_channel_gate_opened;
