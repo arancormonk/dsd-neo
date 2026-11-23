@@ -466,6 +466,7 @@ test_t3_mbc_header_only_reads_no_stale_block(dsd_opts* opts, dsd_state* state) {
     opts->aggressive_framesync = 0;
     send_mbc_grant_header(opts, state, 0);
     uint8_t block[96] = {0};
+    put_bits(block, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT): only the assembler keeps the block out
     put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
@@ -502,6 +503,7 @@ test_t3_mbc_header_only_disarms_the_assembly(dsd_opts* opts, dsd_state* state) {
     send_burst_bits(opts, state, orphan_bits, k_no_reserved, 0x05);
     uint8_t block[96] = {0};
     block[0] = 1U;                 // LB: the last block
+    put_bits(block, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT): only the assembler keeps the block out
     put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
