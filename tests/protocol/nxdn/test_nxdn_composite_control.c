@@ -964,6 +964,10 @@ test_late_entry_policy_source_follows_the_vcall_layout(dsd_opts* opts, dsd_state
     const uint64_t transmission = dsd_call_state_get(state, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
     rc |= expect_long("late entry policy: held call judged by its source",
                       (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+    /* An INFO3 naming another talker updates the live call's source, never the bound call's verified one, which is the
+       source the bound call is judged with. */
+    rc |= expect_long("late entry policy: the bound call is judged by its own verified source",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 100U), 0x1864L);
     /* A transmission the held call is not bound to has no verdict of its own: the live frame's layout decides. */
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D; /* a frame read as RTCH2, Type-C layout */
     state->nxdn_frame_type_d = 0U;

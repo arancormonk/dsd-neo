@@ -77,5 +77,11 @@ nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint6
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
     const int bound = (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
     const int type_d = bound ? id->type_d != 0U : nxdn_receiver_on_type_d(opts, state);
-    return type_d ? 0U : (uint32_t)source;
+    if (type_d) {
+        return 0U;
+    }
+    /* So does its source: the held call's verified one, as the held-call paths judge it (nxdn_held_policy_source()),
+       never the talker an INFO3 named on the live call since (nxdn_call_identity_follow_source_update()). A call a gap
+       left unnamed has none of its own. */
+    return bound && id->valid ? id->source : (uint32_t)source;
 }

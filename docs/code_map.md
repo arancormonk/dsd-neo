@@ -12707,8 +12707,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     source, which may misname the talker, never reaches policy. A VCALL on an RTCH2 reading of a value a composite
     channel shares, with no Type-D evidence, keeps the Type-C layout's full IDs and names a Type-C call, judged by its
     source. The live lookup (`nxdn_held_call_policy_source()`) takes the verdict of the held call bound to the
-    transmission, Type-D or not, even on a followed Type-D repeater's route; only a transmission with no verdict of its
-    own is judged by where the receiver is (`nxdn_receiver_on_type_d()`: the frame verdict,
+    transmission, Type-D or not, even on a followed Type-D repeater's route, and that call's own verified source, never
+    the talker an INFO3 named on the live call since; only a transmission with no verdict of its own is judged by where
+    the receiver is (`nxdn_receiver_on_type_d()`: the frame verdict,
     `dsd_state::nxdn_frame_type_d`, never the RTCH2 channel alone, or a followed Type-D route).
   - Call types (`nxdn_call_type_kind()`, `nxdn_call_type_opens_call()` in `nxdn_internal.h`; TS 1-A Table 6.5-8, TS
     1-E Table 6.6-15): one matrix for VCALL, VCALL_ASSGN, TX_REL, the encryption lockout, the reconcile, the
