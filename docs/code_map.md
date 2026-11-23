@@ -17003,7 +17003,13 @@ Qt Quick frontend (`src/ui/qt`):
     (`noteRootSeenAwayLocked()`): remembered, and every selection made before stale at once; the worker marking a root
     away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). A recheck a
     transfer asked for that finds the file the index knows but cannot open it (no read access) marks it unreadable, so
-    the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`).
+    the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
+    by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
+    bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
+    offers no recording path to any reader: History shows its rows as away, and play, save and share refuse them
+    (`folderReadLocked()`, `test_unread_folder_offers_no_paths`). A journal is compacted only in a folder read and on
+    storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
+    `test_compaction_waits_for_a_rescan`).
     A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
     with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
     that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
@@ -17042,6 +17048,10 @@ Qt Quick frontend (`src/ui/qt`):
       may let the read commit; the next pass reads the folder again.
     - A folder.json read that fails with EIO because removable storage disconnected mid-read is retried for that folder
       only, so a folder newly present on the returning storage can be missed until the next storage scan.
+    - A folder.json probe that cannot tell a missing name from a parent that does not resolve (the card absent during
+      the probe) can drop a known folder until the next storage scan.
+    - A card that disconnects between a recheck's stat and its open marks that recording unreadable until a later read
+      can open it.
 
     In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
@@ -17144,7 +17154,8 @@ Qt Quick frontend (`src/ui/qt`):
     storage that is there unread); otherwise it waits (`m_limitPending`) and runs in the pass that reads the folder, so
     it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`). A removal
     whose check finds another file counts it at the size found (another time only: as it was), so nothing else goes
-    when that total is under the target (`test_limit_counts_the_size_its_unlink_check_found`). Each removal
+    when that total is under the target, and the entry is accounted at that size from then on, its identity kept
+    (`test_limit_counts_the_size_its_unlink_check_found`). Each removal
     checks that again under the unlink's lock: a folder unread or a pass asked for since the count (a session start
     adopting a folder of older recordings) ends the walk (`DeleteResult::Stale`), and the limit runs again once the
     store is settled (`test_limit_walk_stops_when_its_count_goes_stale`):

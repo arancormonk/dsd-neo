@@ -662,6 +662,19 @@ RecordingStore::statOf(const QString& path) {
 }
 
 bool
+RecordingStore::opensAgainLocked(const QString& path, const FileStat& stat) {
+    // A recording a transfer could not open stays unreadable until an open succeeds: its metadata read is not enough.
+    if (!stat.regular || !m_unopenable.contains(path)) {
+        return true;
+    }
+    if (!opensToRead(path)) {
+        return false;
+    }
+    m_unopenable.remove(path);
+    return true;
+}
+
+bool
 RecordingStore::opensToRead(const QString& path) {
     // As a transfer opens it: once, never through a link, never waiting on a FIFO.
     FILE* fp = dsd_fopen_existing_regular_file(platform_path(path).constData(), "rb");
@@ -1302,7 +1315,9 @@ RecordingStore::applyPublishLocked(const Folder& folder, const RecordingJournalR
     const QString id =
         record.id.isEmpty() ? QStringLiteral("file:") + folder.path + QLatin1Char('/') + record.file : record.id;
     const FileStat stat = files.value(record.file);
+    const QString path = QDir::cleanPath(folder.path + QLatin1Char('/') + record.file);
     if (!stat.regular && !stat.unreadable) {
+        m_unopenable.remove(path);
         // Missing on disk with its root available (deleted, or not a plain file any more): not in the index.
         if (m_entries.contains(id)) {
             removeEntryLocked(id, pass);
@@ -1311,7 +1326,7 @@ RecordingStore::applyPublishLocked(const Folder& folder, const RecordingJournalR
     }
     Entry entry;
     entry.id = id;
-    entry.path = QDir::cleanPath(folder.path + QLatin1Char('/') + record.file);
+    entry.path = path;
     entry.folder = folder.path;
     entry.file = record.file;
     entry.t = record.t;
@@ -1322,7 +1337,7 @@ RecordingStore::applyPublishLocked(const Folder& folder, const RecordingJournalR
     entry.identity = stat.identity;
     // Its name cannot be read (no access, an I/O error, a name too long here): kept, its journal line with it, but
     // never deleted (no identity matches it), counted, exported, played or shared (readerEntryLocked()).
-    entry.unreadable = stat.unreadable;
+    entry.unreadable = stat.unreadable || !opensAgainLocked(path, stat);
     entry.hasInstance = record.hasInstance;
     entry.instance = record.instance;
     entry.slot = record.slot;
@@ -1480,9 +1495,11 @@ RecordingStore::commitFolderLocked(const QString& folder, Pass* pass) {
 const RecordingStore::Entry*
 RecordingStore::readerEntryLocked(const QString& id) const {
     // A recording whose name cannot be read is no reader's: never played, saved, shared or listed.
+    // Nor one in a folder not read (its journal not read since its storage came back, perhaps under another owner's
+    // folder.json): its path may name another recording now.
     const auto live = m_entries.constFind(id);
     if (live != m_entries.cend() && !m_committed.contains(live->folder)) {
-        return live->unreadable ? nullptr : &live.value();
+        return live->unreadable || !folderReadLocked(live->folder) ? nullptr : &live.value();
     }
     for (const CommittedFolder& committed : m_committed) {
         const auto held = committed.entries.constFind(id);
@@ -1504,7 +1521,10 @@ RecordingStore::readerIdForPathLocked(const QString& path) const {
     }
     const QString id = m_byPath.value(path);
     const auto live = m_entries.constFind(id);
-    return live != m_entries.cend() && !m_committed.contains(live->folder) && !live->unreadable ? id : QString();
+    return live != m_entries.cend() && !m_committed.contains(live->folder) && !live->unreadable
+                   && folderReadLocked(live->folder)
+               ? id
+               : QString();
 }
 
 QList<const RecordingStore::Entry*>
@@ -1540,6 +1560,12 @@ RecordingStore::storageReadLocked() const {
     // A folder a session start adopted, or one on storage that came back, waits for its first read or its read again.
     return std::none_of(m_folders.cbegin(), m_folders.cend(),
                         [this](const Folder& folder) { return !folder.loaded && m_rootAvailable.value(folder.root); });
+}
+
+bool
+RecordingStore::folderReadLocked(const QString& folder) const {
+    const auto it = m_folders.constFind(folder);
+    return it != m_folders.cend() && it->loaded;
 }
 
 bool
@@ -1595,7 +1621,9 @@ RecordingStore::recheckRegularLocked(Entry& entry, const FileStat& stat, bool re
     } else if (readChanged && !opensToRead(entry.path)) {
         // The file the index knows, which a transfer could not open (no read access to it): kept, its journal line with
         // it, and out of every index and selection (the unreadable recording's rule), so the next export takes the
-        // others.
+        // others. Remembered by its path, so a later read of its folder that sees it by its metadata alone does not
+        // bring it back: only an open that succeeds does (applyPublishLocked()).
+        m_unopenable.insert(entry.path);
         markEntryUnreadableLocked(entry.id, pass);
     } else if (stat.size != entry.bytes) {
         entry.bytes = stat.size;
@@ -1946,10 +1974,17 @@ RecordingStore::removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int
             // Not the file the index knows: skipped, left on disk and told (deletesSkipped()). It still counts, at the
             // size the check found (another size: the total moves by the difference; another time only: as it was),
             // and the limit goes on with the next only if that total is still over.
+            const std::lock_guard<std::mutex> lock(m_mutex);
             if (found >= 0) {
                 usage->total += found - candidate.bytes;
+                // Accounted at that size from now on (Settings, the next limit pass); its identity is kept, so the
+                // file there is still not removed as the recording.
+                const auto entry = m_entries.find(candidate.id);
+                if (entry != m_entries.end() && entry->bytes != found) {
+                    entry->bytes = found;
+                    noteQueryChangeLocked(pass);
+                }
             }
-            const std::lock_guard<std::mutex> lock(m_mutex);
             m_deletesSkipped++;
             pass->dirty = true;
             continue;
@@ -2105,9 +2140,8 @@ RecordingStore::compactFolders() {
             return;
         }
         for (auto it = m_folders.cbegin(); it != m_folders.cend(); ++it) {
-            if (it->loaded && m_rootAvailable.value(it->root) && !m_active.contains(it.key())
-                && !m_unproven.contains(it.key()) && it->lines > 0 && it->lines != it->compactFailedAt
-                && it->lines > 2 * live.value(it.key())) {
+            if (compactableLocked(it.key()) && !m_active.contains(it.key()) && !m_unproven.contains(it.key())
+                && it->lines > 0 && it->lines != it->compactFailedAt && it->lines > 2 * live.value(it.key())) {
                 candidates.append(it.key());
             }
         }
@@ -2141,7 +2175,17 @@ RecordingStore::journalRecordOf(const Entry& entry) {
 }
 
 bool
-RecordingStore::rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written) {
+RecordingStore::compactableLocked(const QString& path) const {
+    // Only a folder read and confirmed as it is: on storage that is there, not seen away since (a rescan of it asked
+    // for), and its journal read. A journal a rescan has not read yet may be another owner's.
+    const auto it = m_folders.constFind(path);
+    return it != m_folders.cend() && it->loaded && m_rootAvailable.value(it->root)
+           && !m_rootsSeenAway.contains(it->root);
+}
+
+bool
+RecordingStore::rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written,
+                               const std::function<bool()>& stillDue) {
     bool ok = false;
     QFile current(journalPath);
     if (current.open(QIODevice::ReadOnly)) {
@@ -2163,6 +2207,7 @@ RecordingStore::rewriteJournal(const QString& journalPath, qint64 offset, const 
                 }
                 *written += line.size();
             }
+            ok = ok && stillDue();
             if (ok) {
                 ok = out.commit();
             } else {
@@ -2180,7 +2225,7 @@ RecordingStore::compactFolder(const QString& path) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         // A session that starts now waits in beginSession() until this compaction is over.
-        if (m_allActive || m_active.contains(path) || m_unproven.contains(path) || !m_folders.contains(path)) {
+        if (m_allActive || m_active.contains(path) || m_unproven.contains(path) || !compactableLocked(path)) {
             return false;
         }
         m_compacting = path;
@@ -2194,7 +2239,12 @@ RecordingStore::compactFolder(const QString& path) {
     std::sort(live.begin(), live.end(), [](const Entry& a, const Entry& b) { return a.order < b.order; });
 
     qint64 written = 0;
-    const bool ok = rewriteJournal(path + QLatin1Char('/') + kJournalName, offset, live, &written);
+    // Checked again right before the rewrite is committed: storage seen away since, or the folder unread, leaves the
+    // journal as it is for the read that comes first.
+    const bool ok = rewriteJournal(path + QLatin1Char('/') + kJournalName, offset, live, &written, [this, &path]() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return compactableLocked(path);
+    });
 
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -2702,7 +2752,7 @@ RecordingStore::entryMap(const Entry& entry) const {
         {QStringLiteral("rate"), entry.rate},
         {QStringLiteral("bytes"), entry.bytes},
         {QStringLiteral("failed"), entry.failed},
-        {QStringLiteral("available"), folderAvailableLocked(entry.folder)},
+        {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)},
     };
 }
 

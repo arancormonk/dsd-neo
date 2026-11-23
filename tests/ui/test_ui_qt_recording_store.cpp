@@ -5233,6 +5233,8 @@ test_limit_counts_the_size_its_unlink_check_found(void) {
            QFileInfo::exists(folder + QStringLiteral("/old.wav"))
                && QFileInfo::exists(folder + QStringLiteral("/new.wav")) && s.store.removedByLimit() == 0
                && s.store.deletesSkipped() == 1);
+    // Accounted at the size found from then on (Settings, the next limit pass).
+    expect("limit size found: the usage shows the size found", s.store.usedBytes() == 700000);
 }
 
 /* Issue #902: a recording a save could not open (mode 000 in a folder that can be searched: its size and time still
@@ -5273,6 +5275,120 @@ test_unopenable_recording_leaves_selections(void) {
            !finished.isEmpty() && finished.last().at(1).toInt() == dsd_qt::DecoderHost::TransferChanged);
     expect("unopenable: Export all takes the other, the line kept",
            all.value(QStringLiteral("count")).toInt() == 1 && journalKept);
+}
+
+/* Issue #902: storage back with another owner's folder.json where A's folder was and a journal that cannot be read:
+ * A's recordings are kept, but no path of them is offered (share, play) until the folder is read. */
+void
+test_unread_folder_offers_no_paths(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString x = roots.external + QStringLiteral("/Metro (1a2b3c4d)");
+    expect("unread paths: A's folder", write_owner_json(x, QString(kUidA), QStringLiteral("Metro")));
+    record(x, QStringLiteral("0000000000000963-1"), QStringLiteral("r.wav"), 1754000000, 1);
+    Store s(roots.list());
+    expect("unread paths: indexed", s.store.isIndexedPath(x + QStringLiteral("/r.wav")));
+    expect("unread paths: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    const QString awayX = away + QStringLiteral("/Call recordings/Metro (1a2b3c4d)");
+    expect("unread paths: B's folder.json there", write_owner_json(awayX, QString(kUidB), QStringLiteral("Metro")));
+    if (!take_read_access(awayX + QStringLiteral("/recordings.jsonl"))) {
+        DSD_FPRINTF(stdout, "SKIP unread paths: this process reads any file\n");
+        return;
+    }
+    expect("unread paths: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    s.pass();
+    const bool offered = s.store.isIndexedPath(x + QStringLiteral("/r.wav"));
+    QFile::setPermissions(journal_of(x), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("unread paths: the path is not offered while the folder is unread", !offered);
+}
+
+/* Issue #902: a journal due for compaction is never rewritten while its storage awaits a rescan: a session start saw
+ * it missing, and it came back with a journal of the same length naming b.wav where a.wav was. The rescan reads
+ * b.wav's record; it is never overwritten from the old index. */
+void
+test_compaction_waits_for_a_rescan(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    // The session stays open while the journal grows, so nothing compacts it yet.
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    record(folder, QStringLiteral("0000000000000964-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000964-2"), QStringLiteral("g2.wav"), 1754000001, 2));
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000964-3"), QStringLiteral("g3.wav"), 1754000002, 3));
+    s.pass();
+    s.store.endSession();
+    std::atomic<bool> swapped{false};
+    s.store.setTailHookForTest([&](const QString& path) {
+        if (path == folder && !swapped.exchange(true) && QDir().rename(ext, away)) {
+            (void)s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Other"));
+            s.store.endSession();
+            const QString awayJournal = away + QStringLiteral("/Call recordings/") + QFileInfo(folder).fileName()
+                                        + QStringLiteral("/recordings.jsonl");
+            QByteArray journal = read_all(awayJournal);
+            journal.replace("a.wav", "b.wav");
+            (void)write_private(awayJournal, journal, "wb");
+            make_file(away + QStringLiteral("/Call recordings/") + QFileInfo(folder).fileName()
+                          + QStringLiteral("/b.wav"),
+                      1000);
+            (void)QDir().rename(away, ext);
+        }
+    });
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000964-4"), QStringLiteral("g4.wav"), 1754000003, 4));
+    s.pass();
+    s.store.setTailHookForTest({});
+    s.pass();
+    s.pass();
+    expect("compaction rescan: the swap ran in the pass", swapped.load());
+    expect("compaction rescan: b.wav's record survives",
+           read_all(journal_of(folder)).contains("b.wav") && s.store.isIndexedPath(folder + QStringLiteral("/b.wav")));
+}
+
+/* Issue #902: a recording a transfer could not open (write-only) stays out of the index through a read of its folder
+ * again (storage unplugged and back): its metadata reads, but it still does not open, so a delete never unlinks it. */
+void
+test_unopenable_mark_survives_a_reread(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("0000000000000965-1");
+    record(folder, id, QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const QString file = folder + QStringLiteral("/a.wav");
+    QFile::setPermissions(file, QFileDevice::WriteOwner);
+    QFile probe(file);
+    if (probe.open(QIODevice::ReadOnly)) {
+        probe.close();
+        QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        DSD_FPRINTF(stdout, "SKIP unopenable reread: this process reads any file\n");
+        return;
+    }
+    const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
+    expect("unopenable reread: the save begins",
+           host.saveRecording(s.store.selectRecordings({id}), QUrl::fromLocalFile(dest).toString()));
+    s.pass();
+    s.pass();
+    expect("unopenable reread: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    expect("unopenable reread: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    s.pass();
+    (void)s.store.deleteFolder(QString(kUidA));
+    s.pass();
+    const bool kept = QFileInfo::exists(file);
+    QFile::setPermissions(file, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("unopenable reread: a delete after the read again leaves it", kept);
 }
 
 /* Issue #902: the limit's check right before an unlink finding a link at the name leaves it and tells the removal as
@@ -5849,6 +5965,9 @@ main(int argc, char** argv) {
     test_root_seen_away_by_a_delete_ends_tokens();
     test_limit_counts_the_size_its_unlink_check_found();
     test_unopenable_recording_leaves_selections();
+    test_unread_folder_offers_no_paths();
+    test_compaction_waits_for_a_rescan();
+    test_unopenable_mark_survives_a_reread();
     test_selection_token();
     test_open_recording_input();
     test_selection_goes_stale_as_a_read_starts();

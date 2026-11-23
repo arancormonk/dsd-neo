@@ -564,6 +564,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     static bool rootAvailableNow(const QString& root);
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
     static bool opensToRead(const QString& path);
+    /* False for @p path, read as @p stat, while it is a recording a transfer could not open (m_unopenable) and it still
+     * does not open; true otherwise, and then it is forgotten. Lock held. */
+    bool opensAgainLocked(const QString& path, const FileStat& stat);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
     /* Each file @p records publishes into @p files (one the folder's listing read already is kept). */
     static void statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
@@ -640,6 +643,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * then publish order). */
     QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
+    /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
+    bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
      * applies deletes from start to end), and every folder on available storage has had its read (none adopted by a
      * session start or back with its storage still waiting for it). Exports and delete requests wait for it. */
@@ -739,7 +744,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     static RecordingJournalRecord journalRecordOf(const Entry& entry);
     /* Rewrite the journal at @p journalPath with one publish per @p live recording, when nothing but a torn line lies
      * past @p offset; @p written is the bytes it holds then. */
-    static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written);
+    /* @p stillDue is asked right before the rewrite is committed; false cancels it. */
+    static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written,
+                               const std::function<bool()>& stillDue);
+    /* Whether @p path's journal may be compacted: read, on available storage not seen away since. Lock held. */
+    bool compactableLocked(const QString& path) const;
     /* summarize() for an entry no listed recording: an unfinished one counted as such, one whose name cannot be read
      * not at all. True when @p entry is one of them. */
     static bool tallyUnlisted(const Entry& entry, Summary* summary);
@@ -833,6 +842,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
      * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
     QSet<int> m_rootsSeenAway;
+    /* Paths of recordings a transfer could not open (recheckRegularLocked()): unreadable until an open succeeds. */
+    QSet<QString> m_unopenable;
     /* The roots rebuildRoot() is listing now, each with the folders a session start made, took or relabelled on it since
      * the listing began (keepSessionFoldersLocked()). */
     QHash<int, QSet<QString>> m_listing;
