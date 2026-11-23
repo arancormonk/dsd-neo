@@ -11517,6 +11517,22 @@ command_allowed_during_search(dsd_state* state, const struct dsd_app_command* c)
     return 1;
 }
 
+/* A tagged squelch request refused before its handler runs (command_allowed_during_search()) is answered as refused,
+   as one its handler refuses is (ui_cmd_handle_rtl_set_sql_setting()), so the sender settles it from the state
+   snapshot instead of waiting on a request it cannot tell from one still queued (issue #899). */
+static void
+ui_cmd_answer_refused_squelch_request(dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_squelch_setting_payload payload;
+    if (!state || c->id != DSD_APP_CMD_RTL_SET_SQL_SETTING || c->n != sizeof payload) {
+        return;
+    }
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    if (payload.request_id != 0U) {
+        state->squelch_request_answered = payload.request_id;
+        state->squelch_request_applied = 0U;
+    }
+}
+
 /* How an applied command left the queue, for the recording view (issue #708). A config apply's is its recording's: the
    rest of a config can fail or need a restart while its recording applied, or apply while its recording failed. */
 static int
@@ -11559,6 +11575,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     if (!command_allowed_during_search(state, c)) {
         *scan_list_code = DSD_APP_SCAN_LIST_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
+        ui_cmd_answer_refused_squelch_request(state, c);
         return UI_CMD_APPLY_FAILED;
     }
 

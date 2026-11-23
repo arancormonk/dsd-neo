@@ -12349,6 +12349,50 @@ test_squelch_setting_request_answered(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Issue #899: Signal search refuses a squelch edit before its handler runs, and a tagged one is answered there too, as
+ * refused, in the state publication, so the sender can settle it rather than wait on a request it cannot tell from one
+ * still queued. The setting stays as it was, an untagged refusal leaves the answer, and once the search stops the same
+ * edit is applied. */
+static int
+test_squelch_request_refused_during_signal_search(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("search refusal answered: fixtures", 0);
+    }
+    init_squelch_row_context(opts, state);
+    g_signal_search_active = 1;
+    int rc = expect_true("noise queued under a search",
+                         submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0, 21U) > 0);
+    rc |= expect_int("noise drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("the search's notice", state->ui_msg, "Stop Signal search");
+    rc |= expect_true("the setting stays", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_squelch_db("the level stays", opts->rtl_squelch_level, -80.0);
+    rc |= expect_true("answered, as refused",
+                      state->squelch_request_answered == 21U && state->squelch_request_applied == 0U);
+    rc |= expect_published_answer("the refusal published", 21U, 0);
+    rc |= expect_true("untagged queued under a search", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0) > 0);
+    rc |= expect_int("untagged drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("an untagged refusal leaves the answer",
+                      state->squelch_request_answered == 21U && state->squelch_request_applied == 0U);
+    g_signal_search_active = 0;
+    rc |= expect_true("noise queued after the search",
+                      submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0, 22U) > 0);
+    rc |= expect_int("noise drained after the search", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("applied once the search stops",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts->rtl_squelch_margin_db == 10);
+    rc |= expect_published_answer("and published as applied", 22U, 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+#endif
+
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING (issue #518 follow-up): the whole setting as the configured default. An auto squelch
  * reaches the demod whole, a level as a level, a margin out of range is refused, and under a row's own squelch the
  * edit waits beneath it and the save writes it. */
@@ -32495,6 +32539,9 @@ main(void) {
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_squelch_setting_command();
     rc |= test_squelch_setting_request_answered();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_squelch_request_refused_during_signal_search();
+#endif
     rc |= test_squelch_edit_keeps_live_acquisition();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

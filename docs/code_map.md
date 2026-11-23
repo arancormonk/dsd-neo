@@ -7316,7 +7316,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
   coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land;
   a nonzero `request_id` is written to `dsd_state::squelch_request_answered`, and whether the handler applied or refused
-  it to `dsd_state::squelch_request_applied`, once the handler has run: the state snapshot carries both with the scan
+  it to `dsd_state::squelch_request_applied`, once the handler has run, or as refused when Signal search refuses the
+  request before its handler (`ui_cmd_answer_refused_squelch_request()`): the state snapshot carries both with the scan
   scope's configured squelch, so a frontend confirms an edit of any scope from one publication -- Qt
   `configuredSquelchRequestAnswered`/`configuredSquelchRequestApplied`, issue #899),
   and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
