@@ -358,25 +358,35 @@ resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
     return 0;
 }
 
-/* Whether @p lpcn's channel-map frequency may be acted on: always on the control channel; off it, unless the mapping
-   was learned off the control channel and is still unconfirmed (dmr_lcn_trust 1). A mapping the operator imported or
-   the heuristic filled in (0) or one learned on the control channel (2) is usable anywhere. */
+/* Whether the receiver is on the control channel, as @p ctx knows it: a control channel is known and the receiver
+   either follows no call (trunk_is_tuned 0) or follows one on the control channel's own carrier (a composite control
+   channel's payload, followed in place). */
 static int
-lpcn_is_trusted(const dsd_opts* opts, const dsd_state* state, int lpcn) {
+dmr_sm_ctx_on_control_channel(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || state->trunk_cc_freq == 0) {
+        return 0;
+    }
+    return opts->trunk_is_tuned == 0 || dmr_sm_follows(ctx, state->trunk_cc_freq);
+}
+
+/* Whether @p lpcn's channel-map frequency may be acted on: always on the control channel
+   (dmr_sm_ctx_on_control_channel()); off it, unless the mapping was learned off the control channel and is still
+   unconfirmed (dmr_lcn_trust 1). A mapping the operator imported or the heuristic filled in (0) or one learned or
+   confirmed on the control channel (2) is usable anywhere. */
+static int
+lpcn_is_trusted(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, int lpcn) {
     if (!state || lpcn <= 0 || lpcn >= 0x1000) {
         return 1;
     }
-    uint8_t trust = state->dmr_lcn_trust[lpcn];
-    int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
-    return trust != 1U || on_cc;
+    return state->dmr_lcn_trust[lpcn] != 1U || dmr_sm_ctx_on_control_channel(ctx, opts, state);
 }
 
 /* The carrier grant @p ev names: its explicit frequency, else its LPCN's mapped frequency where that mapping may be
    acted on (lpcn_is_trusted()); 0 when it names none. An untrusted mapping names no carrier, so the grant neither
    tunes (dmr_sm_resolve_tunable_grant()) nor reassigns the followed slot (dmr_sm_end_changed_assignment()). */
 static long
-dmr_sm_grant_freq(const dsd_opts* opts, const dsd_state* state, const dmr_sm_event_t* ev) {
-    if (ev->freq_hz <= 0 && ev->lpcn > 0 && !lpcn_is_trusted(opts, state, ev->lpcn)) {
+dmr_sm_grant_freq(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, const dmr_sm_event_t* ev) {
+    if (ev->freq_hz <= 0 && ev->lpcn > 0 && !lpcn_is_trusted(ctx, opts, state, ev->lpcn)) {
         return 0;
     }
     return resolve_freq(state, ev->freq_hz, ev->lpcn);
@@ -1344,7 +1354,7 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, cons
     if (!dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, ev->slot)) {
         return DMR_SM_RESOLVE_REFUSED;
     }
-    const long freq = dmr_sm_grant_freq(opts, state, ev);
+    const long freq = dmr_sm_grant_freq(ctx, opts, state, ev);
     if (freq <= 0) {
         if (resolve_freq(state, ev->freq_hz, ev->lpcn) > 0 && sm_status_log_enabled(opts)) {
             DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", ev->lpcn);
@@ -2673,7 +2683,7 @@ dmr_sm_adopt_companion_channel(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* rec) 
    force-release latch). Returns 1 when the grant ended the assignment. */
 static int
 dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    if (!dmr_sm_grant_replaces_followed(ctx, ev, dmr_sm_grant_freq(opts, state, ev))) {
+    if (!dmr_sm_grant_replaces_followed(ctx, ev, dmr_sm_grant_freq(ctx, opts, state, ev))) {
         return 0;
     }
     const int s = ctx->vc_slot;
@@ -3088,6 +3098,11 @@ dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz) {
 int
 dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz) {
     return ctx && freq_hz > 0 && ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == freq_hz;
+}
+
+int
+dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state) {
+    return dmr_sm_ctx_on_control_channel(dmr_sm_get_ctx(), opts, state);
 }
 
 long

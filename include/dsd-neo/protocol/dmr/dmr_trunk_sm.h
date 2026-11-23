@@ -410,6 +410,12 @@ dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
+/** @brief Whether the receiver is on the control channel: one is known (dsd_state::trunk_cc_freq) and the receiver
+ *  follows no call, or follows one on the control channel's own carrier (a composite control channel's payload). What
+ *  a checked CSBK teaches the Tier III channel map is confirmed (dsd_state::dmr_lcn_trust 2) only there, and only
+ *  there may a grant act on an unconfirmed mapping. */
+int dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state);
+
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
  *  where the receiver was before the tune (dmr_sm_receiver_frequency(); 0 unknown): a follow that leaves that carrier

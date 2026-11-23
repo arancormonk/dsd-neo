@@ -331,31 +331,35 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
     dmr_heuristic_report_fill(opts, state, &stats, step, filled);
 }
 
-// Conservative auto-learn helper: record LCN -> frequency if empty and announce in event history
+/* A checked CSBK maps Tier III channel @p lpcn to @p freq: the channel map records it with its provenance
+   (dmr_lcn_trust), 2 when heard on the control channel (dmr_sm_on_control_channel(), a composite control channel's
+   payload included), else 1. An empty cell takes the mapping. A mapping learned off the control channel and still
+   unconfirmed (1) is confirmed (2) when the control channel names the same frequency for it. An imported or heuristic
+   mapping (0) and a mapping to another frequency are never changed. Returns 1 when the cell was empty and now holds
+   the mapping. */
+static int
+dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
+    // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
+    if (!dmr_t3_lpcn_is_channel(lpcn) || freq <= 0) {
+        return 0;
+    }
+    const uint8_t trust = dmr_sm_on_control_channel(opts, state) ? 2U : 1U;
+    if (state->trunk_chan_map[lpcn] == 0) {
+        dsd_state_set_trunk_chan_freq(state, lpcn, freq);
+        state->dmr_lcn_trust[lpcn] = trust;
+        return 1;
+    }
+    if (trust == 2U && state->dmr_lcn_trust[lpcn] == 1U && state->trunk_chan_map[lpcn] == freq) {
+        state->dmr_lcn_trust[lpcn] = 2U;
+    }
+    return 0;
+}
+
+// Conservative auto-learn helper: record LCN -> frequency if empty (dmr_chan_map_note()) and announce in event history
 static inline void
 dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
-    if (!state) {
+    if (!state || !dmr_chan_map_note(opts, state, lpcn, freq)) {
         return;
-    }
-    // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
-    if (!dmr_t3_lpcn_is_channel(lpcn)) {
-        return;
-    }
-    if (freq <= 0) {
-        return;
-    }
-    if (state->trunk_chan_map[lpcn] != 0) {
-        return;
-    }
-
-    dsd_state_set_trunk_chan_freq(state, lpcn, freq);
-    // Mark provenance: trusted if learned while on CC for current site, else unconfirmed
-    if (lpcn < 0x1000) {
-        uint8_t trust = 1;
-        if (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0) {
-            trust = 2;
-        }
-        state->dmr_lcn_trust[lpcn] = trust;
     }
 
     // Emit a one-line event so users can see learning progress in ncurses
@@ -1412,10 +1416,9 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
 
 static void
 dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
-    if (a_channel == 0 || a_channel == 0xFFF || freqr == 0 || state->trunk_chan_map[a_channel] != 0) {
+    if (!dmr_chan_map_note(opts, state, a_channel, freqr)) {
         return;
     }
-    dsd_state_set_trunk_chan_freq(state, (uint32_t)a_channel, freqr);
     dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
     const long cand[1] = {freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);

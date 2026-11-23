@@ -236,6 +236,47 @@ grant_op(dsd_opts* opts, dsd_state* st, uint8_t op, uint16_t lpcn, uint8_t slot,
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
 
+/* The CdefParms of an absolute channel (TS 102 361-4 Table 7.103, Cdeftype 0) naming LPCN @p lpcn on receive frequency
+   @p freq_hz (a whole number of 125 Hz steps), as the block appended to an MBC header carries them. */
+static void
+write_abs_channel(uint8_t* bits, uint16_t lpcn, long freq_hz) {
+    write_bits_u32(bits, 112U, 0U, 4U);
+    write_bits_u32(bits, 118U, lpcn, 12U);
+    write_bits_u32(bits, 153U, (uint32_t)(freq_hz / 1000000L), 10U);
+    write_bits_u32(bits, 163U, (uint32_t)((freq_hz % 1000000L) / 125L), 13U);
+}
+
+/* A CRC-valid absolute TV_GRANT (call channel 0xFFF) with its appended block naming LPCN @p lpcn on @p freq_hz. */
+static void
+abs_tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz, uint8_t slot, uint32_t tg, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 49U;
+    write_bits_u32(bits, 16U, 0x0FFFU, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, tg, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    write_abs_channel(bits, lpcn, freq_hz);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+}
+
+/* A CRC-valid C_BCAST Chan_Freq (TS 102 361-4 Table 7.89) with its appended block announcing LPCN @p lpcn on
+   @p freq_hz. */
+static void
+c_bcast_chan_freq(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 40U;
+    write_bits_u32(bits, 16U, 5U, 5U);
+    write_bits_u32(bits, 68U, lpcn, 12U);
+    write_abs_channel(bits, lpcn, freq_hz);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+}
+
 /* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
 static void
 voice(dsd_opts* opts, dsd_state* st, int slot) {
@@ -1335,6 +1376,120 @@ test_untrusted_lpcn_mapping_names_no_carrier(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* TS1 is followed for TG 1100 with live voice, and a Hold grant for TG 2200 names LPCN @p lpcn only: whether the
+   receiver follows it there (off the control channel). */
+static int
+hold_grant_followed_off_cc(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz) {
+    if (sm()->state != DMR_SM_TUNED) {
+        tv_grant(opts, st, LPCN_A, 0, 1100, 1);
+    }
+    clock_at(0.2);
+    voice(opts, st, 0);
+    const int tunes = g_tunes;
+    st->tg_hold = 2200;
+    tv_grant(opts, st, lpcn, 0, 2200, 2);
+    st->tg_hold = 0;
+    return vc(st) == freq_hz && sm()->vc_tg == 2200 && g_tunes == tunes + 1;
+}
+
+/* An LPCN mapping learned off the control channel (trust 1) is confirmed (2) when a checked absolute grant heard on the
+   control channel names the same frequency for it: a later LPCN-only Hold grant heard off the control channel is then
+   followed. An absolute grant naming another frequency for it changes neither its frequency nor its provenance, nor
+   does one heard off the control channel, and an imported mapping (0) is never rewritten. */
+static int
+test_control_channel_confirms_learned_lpcn(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    int rc = 0;
+    for (int variant = 0; variant < 4; variant++) {
+        init_env(opts, st, 2.0);
+        seed_row(st, 2300, "B", 0, 0); // the confirming grant's own call is not followed
+        const uint8_t trust = variant == 2 ? 0U : 1U;
+        st->trunk_chan_map[lpcn_d] = VC_B;
+        st->dmr_lcn_trust[lpcn_d] = trust;
+        if (variant == 3) {
+            tv_grant(opts, st, LPCN_A, 0, 1100, 1);
+            clock_at(0.1);
+            voice(opts, st, 0);
+        }
+        abs_tv_grant(opts, st, lpcn_d, variant == 0 || variant == 3 ? VC_B : VC_C, 1, 2300, 3);
+        const int followed = hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B);
+        if (variant == 0) {
+            rc |= expect_true("the control channel confirms a learned mapping of the same frequency",
+                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 2U);
+            rc |= expect_true("a hold grant on the confirmed mapping is followed off the control channel", followed);
+        } else if (variant == 1) {
+            rc |= expect_true("another frequency on the control channel neither confirms nor rewrites the mapping",
+                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
+            rc |= expect_true("a hold grant on the still unconfirmed mapping is not followed", !followed);
+        } else if (variant == 2) {
+            rc |= expect_true("an imported mapping keeps its frequency and provenance",
+                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 0U);
+        } else {
+            rc |= expect_true("an absolute grant heard off the control channel confirms nothing",
+                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U && !followed);
+        }
+    }
+    return rc;
+}
+
+/* A C_BCAST Chan_Freq records its mapping's provenance as an absolute grant does: heard while a call is followed off
+   the control channel it is unconfirmed (1), so a Hold grant on that LPCN heard there is not followed; heard on the
+   control channel it is confirmed (2) and such a grant is followed. */
+static int
+test_c_bcast_mapping_records_provenance(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 1100, 1);
+    clock_at(0.1);
+    voice(opts, st, 0);
+    c_bcast_chan_freq(opts, st, lpcn_d, VC_B);
+    int rc = expect_true("a channel announced off the control channel is unconfirmed",
+                         st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
+    rc |= expect_true("a hold grant on an off-channel announcement is not followed",
+                      !hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
+
+    init_env(opts, st, 2.0);
+    c_bcast_chan_freq(opts, st, lpcn_d, VC_B);
+    rc |= expect_true("a channel announced on the control channel is confirmed",
+                      st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 2U);
+    rc |= expect_true("a hold grant on a control channel announcement is followed",
+                      hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
+    return rc;
+}
+
+/* A grant followed in place on the composite control channel's own carrier keeps the receiver on the control channel:
+   what a checked CSBK teaches the channel map there is confirmed (absolute grant and C_BCAST alike), and an LPCN-only
+   Hold grant there acts on a mapping still unconfirmed (trust 1), as on the control channel. */
+static int
+test_composite_payload_counts_as_control_channel(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    const uint16_t lpcn_e = 0x0014U;
+    const uint16_t lpcn_f = 0x0015U;
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0020U] = CC_HZ;
+    st->trunk_chan_map[lpcn_d] = VC_B;
+    st->dmr_lcn_trust[lpcn_d] = 1U;
+    seed_row(st, 2300, "B", 0, 0);
+    clock_at(1.0);
+    tv_grant(opts, st, 0x0020U, 1, 100, 1);
+    voice(opts, st, 1);
+    int rc = expect_true("the composite carrier's grant is followed in place",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == CC_HZ && opts->trunk_is_tuned == 1);
+    abs_tv_grant(opts, st, lpcn_e, VC_C, 0, 2300, 3);
+    c_bcast_chan_freq(opts, st, lpcn_f, VC_C + 12500L);
+    rc |= expect_true("an absolute grant on the composite payload teaches a confirmed mapping",
+                      st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+    rc |= expect_true("a C_BCAST on the composite payload teaches a confirmed mapping",
+                      st->trunk_chan_map[lpcn_f] == VC_C + 12500L && st->dmr_lcn_trust[lpcn_f] == 2U);
+    const int tunes = g_tunes;
+    st->tg_hold = 2200;
+    tv_grant(opts, st, lpcn_d, 0, 2200, 2);
+    st->tg_hold = 0;
+    rc |= expect_true("a hold grant on the composite payload acts on an unconfirmed mapping",
+                      vc(st) == VC_B && sm()->vc_tg == 2200 && g_tunes == tunes + 1);
+    return rc;
+}
+
 /* A media change on the followed slot retires that slot's assignment alone: TS1 is followed for TG 300 while TS2 carries
    live voice for TG 100. A data grant for TS1 ends TS1's call and record, while the receiver stays on the carrier for
    the TS2 call, which goes on as the same call. A voice grant repeated for TS1 is then a new assignment of that slot;
@@ -1844,6 +1999,9 @@ main(void) {
     rc |= test_media_change_release_retries(opts, st);
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
     rc |= test_untrusted_lpcn_mapping_names_no_carrier(opts, st);
+    rc |= test_control_channel_confirms_learned_lpcn(opts, st);
+    rc |= test_c_bcast_mapping_records_provenance(opts, st);
+    rc |= test_composite_payload_counts_as_control_channel(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);

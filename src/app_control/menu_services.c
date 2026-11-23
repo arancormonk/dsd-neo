@@ -745,7 +745,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * behind would let a stale "learned off the control channel, unconfirmed" byte
  * refuse an off-CC tune to a frequency the new CSV asserts (lpcn_is_trusted()
  * acts on an imported mapping anywhere). Clearing it matches what -C produces
- * at startup, and dmr_learn_chan_map() records provenance again for any LCN the
+ * at startup, and dmr_chan_map_note() records provenance again for any LCN the
  * new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
  *
