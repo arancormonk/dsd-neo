@@ -3449,8 +3449,10 @@ suite runs under this compiler.
       Location ID after the mandatory part (TS 1-A §6.4.1.17 / §6.4.1.18): the unit it relates to (source or
       destination, Table 6.5-12) gets it as its home, so another system's unit is neither named locally nor merged
       with a unit of the same number elsewhere; an inter-system message whose unit cannot be qualified (no Location
-      ID, a reserved option, a group) marks the subject `subject_nonlocal`. Unit IDs FFF0-FFFF are infrastructure.
-      Test: `NXDN_UNIT_ACTIVITY` (`test_rem_con_inter_system`).
+      ID, a reserved option, a group) marks the subject `subject_nonlocal`. A FACCH1 hands the element decoder its 80
+      message bits only, never its CRC-12 and tail bits (`nxdn_handle_facch1()`), so a Location ID past them is
+      missing, never read from those bits. Unit IDs FFF0-FFFF are infrastructure. Test: `NXDN_UNIT_ACTIVITY`
+      (`test_rem_con_inter_system`, `test_facch1_crc_bits_are_no_location`).
     - TETRA (`tetra_unit_activity.c`; clear or decrypted MM only): LU ACCEPT / REJECT for the MAC-addressed MS (an SMI
       is UNKNOWN; an event label, no address or an encrypted short identity adds no row, since rows of different MSs
       would merge; a USSI, a migrating MS's home-network SSI, is a `subject_nonlocal` subject; the address's

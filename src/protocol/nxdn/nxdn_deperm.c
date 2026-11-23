@@ -1287,7 +1287,9 @@ nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf,
         if (frame == 1U) {
             facch1_confirmed = nxdn_confirm_is_confirmed(state);
         }
-        NXDN_Elements_Content_decode(opts, state, trellis_buf, 96U);
+        /* Its 80 message bits, never the CRC-12 and tail bits after them (NXDN TS 1-A §4.5), so a message's
+           length check sees a field the FACCH1 does not carry as missing (issue #903). */
+        NXDN_Elements_Content_decode(opts, state, trellis_buf, 80U);
     }
 
     nxdn_print_facch1_payload(opts, m_data, crc, check);
