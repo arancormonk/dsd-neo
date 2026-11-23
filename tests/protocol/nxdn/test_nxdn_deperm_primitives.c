@@ -3019,6 +3019,70 @@ test_scan_report_names_only_a_named_source(void) {
     return rc;
 }
 
+/*
+ * The held call's source is the one a checked VCALL named for the transmission (issue #903), learned even before its
+ * target: under trunking, a Type-C VCALL from 291 to the null destination 0 names no target to hold; a Type-C VCALL
+ * naming no source (0) then names group 1111 on the same call. The held call is group 1111 from 291, and is judged
+ * with 291. With @p info3 an INFO3 naming talker 03-0123 comes between them: the live call takes it, the held call
+ * never does.
+ */
+static int
+vcall_source_learned_before_its_target(int info3) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    opts->trunk_enable = 1;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 291U, 0U, 0U, 0U);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    const char* tag = info3 ? "source-before-target-info3" : "source-before-target";
+    char sub[96];
+    DSD_SNPRINTF(sub, sizeof sub, "%s-nothing-held", tag);
+    int rc = expect_int(sub, (int)state->nxdn_call.valid, 0);
+    if (info3) {
+        state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
+        state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+        state->nxdn_frame_type_d = 1U;
+        send_outbound_scch(opts, state, 1U);
+        dsd_call_snapshot live;
+        (void)dsd_call_state_get(state, 0U, &live);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-live-talker", tag);
+        rc |= expect_int(sub, (int)live.ota_source_id, 123);
+        state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+        state->nxdn_frame_type_d = 0U;
+    }
+
+    make_vcall_elements(bits, 0x01U, 0U, 1111U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-held-group", tag);
+    rc |= expect_int(sub, (int)state->nxdn_call.valid && state->nxdn_call.target == 1111U, 1);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-held-source", tag);
+    rc |= expect_int(sub, (int)state->nxdn_call.source, 291);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-judged-by-the-vcall-source", tag);
+    rc |= expect_int(
+        sub, (int)nxdn_held_call_policy_source(opts, state, dsd_call_snapshot_transmission(&call), call.ota_source_id),
+        291);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+static int
+test_vcall_source_learned_before_its_target(void) {
+    return vcall_source_learned_before_its_target(0) | vcall_source_learned_before_its_target(1);
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3071,6 +3135,7 @@ main(void) {
     rc |= test_held_back_vcall_prints_no_key_value();
     rc |= test_scan_report_takes_the_calls_own_encryption();
     rc |= test_scan_report_names_only_a_named_source();
+    rc |= test_vcall_source_learned_before_its_target();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

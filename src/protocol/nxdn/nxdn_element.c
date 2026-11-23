@@ -1921,13 +1921,30 @@ nxdn_reconcile_private(const dsd_state* state, const dsd_call_snapshot* call, in
     return ((id->valid || id->gap) && id->target == call->policy_target_id) ? (int)id->private_call : -1;
 }
 
+/* The live call's transmission (0: none active). */
+static uint64_t
+nxdn_live_call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0U;
+    }
+    return dsd_call_snapshot_transmission(&call);
+}
+
+/* The source a checked VCALL named for @p transmission (dsd_state::nxdn_tx_source), else 0. */
+static uint32_t
+nxdn_tx_source_of(const dsd_state* state, uint64_t transmission) {
+    const dsd_nxdn_tx_source* const named = &state->nxdn_tx_source;
+    return transmission != 0U && named->transmission == transmission ? named->source : 0U;
+}
+
 /* The held call is what the canonical call shows once a verified VCALL or an SCCH identity of the receiver's repeater
  * named it: a new call on the same carrier replaces the one followed there. A call whose classification is not known
- * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. @p type_d: a Type-D call.
- * @p source: the naming message's own source (0: it names none, and the held call keeps the one it has), never the
- * canonical call's, which an INFO3 may have renamed since (issue #903). */
+ * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. @p type_d: a Type-D call. Its
+ * source is the one a checked VCALL named for the transmission (nxdn_tx_source_of(), issue #903), before its target
+ * or after; none leaves the held call's as it was. Never the canonical call's, which an INFO3 may have renamed. */
 static void
-nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private, int type_d, uint32_t source) {
+nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private, int type_d) {
     if (opts->trunk_enable != 1) {
         return;
     }
@@ -1942,7 +1959,8 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
         DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
         return;
     }
-    nxdn_call_identity_set(state, call.policy_target_id, source, private_call, 0, type_d,
+    nxdn_call_identity_set(state, call.policy_target_id,
+                           nxdn_tx_source_of(state, dsd_call_snapshot_transmission(&call)), private_call, 0, type_d,
                            nxdn_receiver_freq(opts, state), dsd_decode_now_mono_s(), 1);
 }
 
@@ -3440,6 +3458,18 @@ nxdn_vcall_message_type_is_release(uint8_t message_type) {
     return message_type == 0x07U || message_type == 0x08U || message_type == 0x11U;
 }
 
+/* A checked VCALL named @p source (nxdn_vcall_source(), 0: none) on the live call's transmission: the held call's source
+ * (nxdn_tx_source_of()). */
+static void
+nxdn_tx_source_note(dsd_state* state, uint32_t source) {
+    const uint64_t transmission = nxdn_live_call_transmission(state);
+    if (source == 0U || transmission == 0U) {
+        return;
+    }
+    state->nxdn_tx_source.transmission = transmission;
+    state->nxdn_tx_source.source = source;
+}
+
 /* A checked VCALL of a confirmed transmission, of a call type that opens a call (nxdn_call_type_opens_call(): 010 is a
  * TX_REL's alone), classified by its call type (nxdn_call_type_kind()). */
 static void
@@ -3461,12 +3491,13 @@ nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vc
             nxdn_vcall_cipher_applied(state, info) && state->nxdn_cipher_type != 0U, 0);
     }
     nxdn_vcall_publish(opts, state, info, loaded);
+    nxdn_tx_source_note(state, nxdn_vcall_source(info));
     // Classified as admission classifies its assignment (nxdn_vcall_assgn_should_tune()); a generic voice call names no
     // class of its own (-1, nxdn_reconcile_private()). A Type-D call is one the VCALL's own layout verdict read as
     // Type-D (info->idas): an RTCH2 frame of a value a composite channel shares, with no Type-D evidence, keeps the
     // Type-C layout's full IDs, and its call is judged by its source as a Type-C one.
     const int msg_private = kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : kind == DSD_CALL_KIND_GROUP_VOICE ? 0 : -1;
-    nxdn_call_identity_reconcile(opts, state, msg_private, info->idas != 0U, nxdn_vcall_source(info));
+    nxdn_call_identity_reconcile(opts, state, msg_private, info->idas != 0U);
 }
 
 static void
@@ -4046,7 +4077,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
         nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
-        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1, 0U);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
@@ -4120,26 +4151,23 @@ nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     }
 }
 
-/* The live call's transmission (0: none active). */
-static uint64_t
-nxdn_live_call_transmission(const dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
-        return 0U;
-    }
-    return dsd_call_snapshot_transmission(&call);
-}
-
 /* An INFO3 source update of the live call (transmission @p before) whose source differs from the call's makes the
  * canonical layer open another epoch for it (dsd_call_state_observe(): a source change), of the same target and class,
  * since the enrichment carries both over. It names the same call, so a held call bound to @p before follows it there,
  * its follow time kept: a source-only update never ends, unknowns or restarts the dwell of a known destination. The
- * source itself stays out of the held call (INFO3 may misname the talker, nxdn_held_policy_source()). */
+ * source itself stays out of the held call (INFO3 may misname the talker, nxdn_held_policy_source()): the source a
+ * VCALL named for @p before moves with the call (nxdn_tx_source_of()), whether or not a held call is bound yet. */
 static void
 nxdn_call_identity_follow_source_update(dsd_state* state, uint64_t before) {
     dsd_nxdn_call_identity* const id = &state->nxdn_call;
     const uint64_t after = nxdn_live_call_transmission(state);
-    if (!id->valid || id->gap || before == 0U || id->call_epoch != before || after == 0U || after == before) {
+    if (before == 0U || after == 0U || after == before) {
+        return;
+    }
+    if (state->nxdn_tx_source.transmission == before) {
+        state->nxdn_tx_source.transmission = after;
+    }
+    if (!id->valid || id->gap || id->call_epoch != before) {
         return;
     }
     id->call_epoch = after;
@@ -4197,7 +4225,7 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
         /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
         nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
-        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1, 0U);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
 }
 

@@ -1132,6 +1132,12 @@ typedef struct {
     uint8_t gap;
 } dsd_nxdn_call_identity;
 
+/* NXDN trunking: the source a checked VCALL named for a transmission (dsd_state::nxdn_tx_source). */
+typedef struct {
+    uint64_t transmission; /**< the canonical call's transmission (dsd_call_snapshot_transmission()); 0 none */
+    uint32_t source;       /**< the source unit the VCALL named there */
+} dsd_nxdn_tx_source;
+
 /* NXDN Type-C: where the channel access parameters (dsd_state::nxdn_rcn, nxdn_base_freq, nxdn_step) came from
    (dsd_state::nxdn_ca). They are a site's, carried only by its SITE_INFO (TS 1-A §6.5.36), so they are kept apart from
    the site identity: <dsd-neo/core/nxdn_channel_access.h> owns every write. */
@@ -3085,6 +3091,11 @@ struct dsd_state {
      * then reconciled from verified VCALLs and SCCH identities that belong to the receiver's repeater. Travels with a
      * trunk scan target. */
     dsd_nxdn_call_identity nxdn_call;
+    /* NXDN trunking: the source the last checked VCALL that named one gave its transmission, the held call's source
+     * (issue #903): a later VCALL of the transmission naming no source keeps it, and an INFO3 that names another
+     * talker never replaces it, its transmission moving with the call the INFO3 continues. Travels with a trunk scan
+     * target. */
+    dsd_nxdn_tx_source nxdn_tx_source;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active
