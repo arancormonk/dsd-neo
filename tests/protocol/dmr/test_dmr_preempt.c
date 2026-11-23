@@ -12,6 +12,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
@@ -1467,6 +1468,61 @@ test_retired_slot_drops_embedded_lc(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A checked grant for slot @p slot of VC_A on channel @p lsn of kind @p kind naming group @p tg. */
+static void
+lsn_grant(dsd_opts* opts, dsd_state* st, int slot, int lsn, uint8_t kind, int tg) {
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, lsn, tg, 3);
+    ev.slot = slot;
+    ev.channel_kind = kind;
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    (void)dmr_sm_submit_grant(opts, st, &ev);
+}
+
+/* The companion adopted for a retired slot takes its own channel, never the retired slot's: on an LSN carrier (Cap+,
+   XPT) TS1 is followed on LSN 3 for TG 300 while TS2 carries voice with no channel record; a grant for TS1 naming TG
+   500 retires TS1 and the receiver stays for TS2, whose first LC then names no channel (the retired LSN 3 is TS1's
+   alone). With TS2's own LSN 4 known (a status named it), TS2's LC carries LSN 4. A Tier III LPCN names the physical
+   channel, both slots: the adopted companion keeps it. */
+static int
+test_companion_adoption_takes_its_own_channel(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        init_env(opts, st, 2.0);
+        const uint8_t kind = variant == 2 ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_LSN;
+        const int channel = variant == 2 ? (int)LPCN_A : 3;
+        lsn_grant(opts, st, 0, channel, kind, 300);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        canonical_call_begins(st, 1, 0U, 0U);
+        voice(opts, st, 1);
+        if (variant == 1) {
+            dmr_sm_status_slot_reconcile(sm(), st, 1, 4, VC_A, 777U, 1); // a status names TS2 on its own LSN 4
+        }
+        clock_at(0.4);
+        voice(opts, st, 1);
+        lsn_grant(opts, st, 0, channel, kind, 500); // another call on TS1
+        rc |= expect_true("the receiver stays for the companion", sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1);
+        dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+        const dmr_sm_slot_ctx_t* rec = &sm()->slots[1];
+        if (variant == 0) {
+            rc |= expect_true("an adopted companion with no channel takes none of the retired slot's LSN",
+                              sm()->vc_lpcn == 0 && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE
+                                  && sm()->vc_crc_flags == 0U && rec->channel == 0
+                                  && rec->channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE);
+        } else if (variant == 1) {
+            rc |= expect_true("an adopted companion keeps its own LSN",
+                              sm()->vc_lpcn == 4 && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                                  && rec->channel == 4 && rec->channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+        } else {
+            rc |=
+                expect_true("an adopted companion keeps the carrier's LPCN",
+                            sm()->vc_lpcn == (int)LPCN_A && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN
+                                && rec->channel == (int)LPCN_A && rec->channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN);
+        }
+    }
+    return rc;
+}
+
 /* A companion slot the receive policy rejects never keeps the receiver, its live voice or hangtime tail alike: TS1 is
    followed for TG 300 while TS2 carries TG 100, and the receive filter then admits TS1 alone. A TD_GRANT for TS1 retires
    TS1 and returns the receiver to the control channel, TS2's live call being one it cannot receive. Likewise on the
@@ -1656,6 +1712,7 @@ main(void) {
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
+    rc |= test_companion_adoption_takes_its_own_channel(opts, st);
     rc |= test_rejected_companion_keeps_nothing(opts, st);
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
 

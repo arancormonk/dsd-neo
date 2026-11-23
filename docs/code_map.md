@@ -13609,7 +13609,10 @@ Private per-protocol modules worth knowing about:
     call's voice or blocks before their own signalling are neither decrypted nor addressed with the retired call's. The
     companion slot's call, crypto and decryption go on untouched. While the companion slot's call still holds the carrier by the
     retention rule (live voice or its hangtime tail, from the companion's activity alone and only while the receive
-    policy admits the companion slot itself; the retired grant's acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the
+    policy admits the companion slot itself; the retired grant's acquisition holds nothing), the receiver stays for it and that slot becomes the followed one, with a channel of its own: a Tier III LPCN or a
+    Connect Plus LCN (the carrier's) stays, an LSN (the retired slot's alone) gives way to the companion's own LSN where
+    its record names one, else to none, so the companion's first LC never takes the retired slot's LSN
+    (`dmr_sm_adopt_companion_channel()`, `test_companion_adoption_takes_its_own_channel()`); a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
     the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
     next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own

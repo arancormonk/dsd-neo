@@ -2623,6 +2623,27 @@ dmr_sm_retire_slot(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int s, d
     dmr_slot_retire(state, (uint8_t)s);
 }
 
+/* The followed call's channel once the companion slot, @p rec its record, is adopted for a retired slot: a Tier III
+   LPCN or a Connect Plus LCN names the carrier, both slots, and stays with its provenance; an LSN (Cap+, XPT) is the
+   retired slot's alone, so the companion's own channel replaces it where its record names one on this carrier, and
+   otherwise none is left, with no provenance (dmr_sm_lc_channel() then gives the companion's LC no channel). */
+static void
+dmr_sm_adopt_companion_channel(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* rec) {
+    if (ctx->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN
+        || ctx->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LCN) {
+        return;
+    }
+    if (rec->carrier_hz == ctx->vc_freq_hz && rec->channel > 0 && rec->channel_kind != (uint8_t)DSD_CALL_CHANNEL_NONE) {
+        ctx->vc_lpcn = rec->channel;
+        ctx->vc_channel_kind = rec->channel_kind;
+        ctx->vc_crc_flags = rec->channel_crc_flags;
+        return;
+    }
+    ctx->vc_lpcn = 0;
+    ctx->vc_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
+    ctx->vc_crc_flags = 0U;
+}
+
 /* A checked grant for the followed slot that names another call (dmr_sm_grant_replaces_followed()) ends that slot's
    assignment, whether the receiver would follow the grant or not (a call-type switch, data following off, a policy or
    receive gate refusing it): the slot's call ends, its record and preemption-ledger entry are cleared and the grant
@@ -2653,6 +2674,7 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_slot = companion;
     ctx->vc_data_call = dmr_sm_slot_identity_known(rec) && rec->data_call;
     ctx->vc_media_heard = 1; // the companion's call is on the air: no acquisition is pending for it
+    dmr_sm_adopt_companion_channel(ctx, rec);
     state->dmr_mono_slot = companion;
     return 1;
 }
