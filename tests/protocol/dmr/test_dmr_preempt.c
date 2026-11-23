@@ -1468,6 +1468,42 @@ test_retired_slot_drops_embedded_lc(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* The grant origins keep the numbers the public header always gave them: a producer built against an earlier header
+   sends 2 for a channel status. The retired C_MOVE value 1 names no origin: an event carrying it, here for the followed
+   slot naming another call and for another carrier, is refused before it can end, reconcile or follow anything. */
+static void
+set_raw_origin(dmr_sm_event_t* ev, int raw) {
+    // As a producer built against another header stores it: the raw integer, no cast to a listed enumerator.
+    if (sizeof(ev->origin) != sizeof(raw)) {
+        abort();
+    }
+    DSD_MEMCPY(&ev->origin, &raw, sizeof(raw));
+}
+
+static int
+test_grant_origin_values(dsd_opts* opts, dsd_state* st) {
+    int rc = expect_true("grant origins keep their values", DMR_SM_ORIGIN_GRANT == 0 && DMR_SM_ORIGIN_STATUS == 2);
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    dmr_sm_event_t same = dmr_sm_ev_group_grant(VC_A, LPCN_A, 500, 3);
+    same.slot = 0;
+    set_raw_origin(&same, 1);
+    rc |= expect_true("an unknown origin ends no assignment", dmr_sm_note_grant_assignment(opts, st, &same) == 0);
+    rc |= expect_true("an unknown origin on the followed slot is refused",
+                      dmr_sm_submit_grant(opts, st, &same) == DMR_SM_GRANT_REFUSED);
+    dmr_sm_event_t other = dmr_sm_ev_group_grant(VC_B, LPCN_B, 500, 3);
+    other.slot = 0;
+    set_raw_origin(&other, 1);
+    rc |= expect_true("an unknown origin elsewhere is refused",
+                      dmr_sm_submit_grant(opts, st, &other) == DMR_SM_GRANT_REFUSED);
+    rc |= expect_true("the followed call is untouched", sm()->state == DMR_SM_TUNED && sm()->vc_slot == 0
+                                                            && sm()->vc_tg == 300 && vc(st) == VC_A && g_tunes == 1
+                                                            && sm()->slots[0].target == 300U);
+    return rc;
+}
+
 /* A checked grant for slot @p slot of VC_A on channel @p lsn of kind @p kind naming group @p tg. */
 static void
 lsn_grant(dsd_opts* opts, dsd_state* st, int slot, int lsn, uint8_t kind, int tg) {
@@ -1767,6 +1803,7 @@ main(void) {
     rc |= test_rejected_companion_keeps_nothing(opts, st);
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
     rc |= test_slotless_follow_binds_on_accepted_voice(opts, st);
+    rc |= test_grant_origin_values(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

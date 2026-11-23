@@ -13802,7 +13802,10 @@ Private per-protocol modules worth knowing about:
     block are never read as a frequency. It names no talkgroup, source or timeslot, so `dmr_cspdu_pf0_handle_move()`
     prints Mask, Reg, Backoff, PCN, MS address and the TSCC frequency and does nothing else: no activity row, no grant
     to the trunk state machine, no slot or burst state change, nothing learned into the channel map. Following a move
-    to a new TSCC is not implemented. Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC` (`test_t3_cmove_appended_block()`, through
+    to a new TSCC is not implemented. The machine's grant origins keep their public values (`DMR_SM_ORIGIN_GRANT` 0,
+    `DMR_SM_ORIGIN_STATUS` 2; 1, the retired move origin, stays unused), and an event of any other origin is refused
+    whole by `dmr_sm_submit_grant()` and `dmr_sm_note_grant_assignment()` (`test_grant_origin_values()` in
+    `DMR_PREEMPT`). Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC` (`test_t3_cmove_appended_block()`, through
     the burst handler), `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`.
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or

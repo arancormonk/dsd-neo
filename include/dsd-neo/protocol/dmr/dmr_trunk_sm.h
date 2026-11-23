@@ -53,10 +53,12 @@ typedef enum {
 } dmr_sm_event_type_e;
 
 /* Where a GRANT event came from: a channel grant, or a channel status the CSBK layer selected (Hytera XPT). A Tier III
- * C_MOVE is no grant (TS 102 361-4 Table 7.17 names only a TSCC and an MS address): it never reaches the machine. */
+ * C_MOVE is no grant (TS 102 361-4 Table 7.17 names only a TSCC and an MS address): it never reaches the machine. The
+ * values are fixed: 1, the retired C_MOVE origin, stays unused, and the machine refuses an event of any origin not
+ * listed here (dmr_sm_submit_grant(), dmr_sm_note_grant_assignment()). */
 typedef enum {
     DMR_SM_ORIGIN_GRANT = 0,
-    DMR_SM_ORIGIN_STATUS = 1,
+    DMR_SM_ORIGIN_STATUS = 2,
 } dmr_sm_origin_e;
 
 /* What dmr_sm_submit_grant() did with a grant. */
@@ -474,7 +476,7 @@ dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_
  * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
  * (IN_PLACE) names the call of its slot. One that names another call on the followed slot (another target, address
  * class or media) ends that slot's assignment before any admission (dmr_sm_note_grant_assignment()) and is REFUSED:
- * its repeat is followed anew.
+ * its repeat is followed anew. An event of an origin dmr_sm_origin_e does not list is REFUSED before anything else.
  */
 dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 
@@ -485,6 +487,7 @@ dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, cons
  * (another target, address class or media; a repeat of the followed grant or of the call the slot names, whatever its
  * caller, is the same call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
  * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.
+ * An event of an origin dmr_sm_origin_e does not list changes nothing (0).
  * Returns 1 when the grant ended the assignment: it is not followed itself (its repeat is). Called inside the grant's
  * CRC scope. Decoder thread only.
  */

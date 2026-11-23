@@ -2690,9 +2690,20 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     return 1;
 }
 
+/* Whether @p ev names an origin the machine knows (dmr_sm_origin_e): an event of any other (the retired C_MOVE value
+   among them) is refused whole, so it never ends, reconciles or follows an assignment. */
+static int
+dmr_sm_event_origin_known(const dmr_sm_event_t* ev) {
+    return ev->origin == DMR_SM_ORIGIN_GRANT || ev->origin == DMR_SM_ORIGIN_STATUS;
+}
+
 static dmr_sm_grant_result_e
 dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     if (!ctx || !ev || !opts || !state) {
+        return DMR_SM_GRANT_REFUSED;
+    }
+    if (!dmr_sm_event_origin_known(ev)) {
+        sm_log(opts, "grant-origin-unknown");
         return DMR_SM_GRANT_REFUSED;
     }
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
@@ -2738,7 +2749,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
 
 int
 dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    if (!opts || !state || !ev || opts->trunk_enable != 1) {
+    if (!opts || !state || !ev || opts->trunk_enable != 1 || !dmr_sm_event_origin_known(ev)) {
         return 0;
     }
     dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
