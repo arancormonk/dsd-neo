@@ -3194,10 +3194,14 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 // nxdn_cipher_observe_keyed()) on the live NXDN call. @p received: the DSD_CALL_CRYPTO_RX_* fields this publication
 // carries from a checked VCALL (0 for a republish). The MI is an IV received over the air (nxdn_published_mi()), never
 // the working register a scrambled call loads from the key. On a DCR call only that call's own scrambler is published
-// (nxdn_applied_cipher_is_live_calls()).
+// (nxdn_applied_cipher_is_live_calls()). @p loaded: whether the message published loaded the applied pair's key (a
+// VCALL whose pair the hysteresis applied, nxdn_vcall_load_key(); a DES or AES VCALL_IV,
+// nxdn_vcall_iv_prepare_cipher()). With the keyloader on, only such a publication reports the loaders' choice as the
+// key that decrypts; one that loaded none (an INFO1, a VCALL held back) reports no key selection, and the call keeps
+// the one its loading message reported.
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, uint8_t contradicted,
-                          uint8_t enc_observed) {
+                          uint8_t enc_observed, int loaded) {
     if (!nxdn_live_call_is_nxdn(state) || !nxdn_applied_cipher_is_live_calls(state)) {
         return; // another protocol's call on slot 0 takes no NXDN cipher, nor a DCR call another source's
     }
@@ -3218,7 +3222,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
     };
     if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &update) > 0) {
         dsd_call_snapshot call;
-        if (dsd_call_state_get(state, 0, &call) > 0) {
+        if ((loaded || state->keyloader != 1) && dsd_call_state_get(state, 0, &call) > 0) {
             dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
             int selected = -1;
             /* A DCR call's scrambler names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the
@@ -3303,7 +3307,8 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     // This checked VCALL's own cipher says whether the call is encrypted, whatever the applied (possibly forced or
     // held back) cipher is.
     nxdn_vcall_publish_crypto(opts, state, received, contradicted,
-                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
+                              info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR,
+                              carries);
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -3531,10 +3536,11 @@ NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     }
     state->nxdn_payload_mi = iv;
     state->nxdn_iv_on_air = 1U;
-    if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
+    const int des_or_aes = state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03;
+    if (des_or_aes) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
-    nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
+    nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE, des_or_aes);
 }
 
 struct nxdn_scch_info {
@@ -4251,7 +4257,7 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
        the working key is the one a VCALL or an assignment loaded (nxdn_vcall_load_key()). */
     state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
                                                         (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
+    nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE, 0);
 }
 
 /* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */

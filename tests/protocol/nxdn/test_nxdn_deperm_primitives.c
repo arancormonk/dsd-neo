@@ -2499,6 +2499,9 @@ test_dcr_publication_carries_no_preceding_iv(void) {
 /*
  * An INFO1 loads no key, as on main (issue #903): with the keyloader on, two INFO1s naming the scrambler under key ID 7
  * on a numbered call apply that cipher and key ID, and the working key stays the one a VCALL or an assignment loaded.
+ * The call is published with the signalled key ID, but the INFO1 reports no key selection of its own: keyring entry 7
+ * (0x2222), which no one loaded, is never named as the key that decrypts; nor by a VCALL held back that republishes the
+ * pair. The call keeps the selection its VCALLs recorded.
  */
 static int
 test_info1_loads_no_key(void) {
@@ -2515,6 +2518,20 @@ test_info1_loads_no_key(void) {
     int rc = expect_int("info1-key-cipher", (int)state->nxdn_cipher_type, 1);
     rc |= expect_int("info1-key-kid", (int)state->nxdn_key, 7);
     rc |= expect_int("info1-key-not-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
+    dsd_call_snapshot call;
+    rc |= expect_int("info1-key-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("info1-key-signalled-kid", (int)call.kid, 7);
+    rc |= expect_int("info1-key-no-effective-selection", call.key_selection.effective_id, -1);
+    rc |= expect_int("info1-key-no-signalled-source", call.key_selection.source == DSD_CALL_KEY_SIGNALED, 0);
+    /* Nor does a VCALL the hysteresis holds back, which loads no key either: a lone clear VCALL republishes the INFO1's
+       pair, and still reports no key selection for it. */
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-key-held-back-vcall-pair", (int)call.kid, 7);
+    rc |= expect_int("info1-key-held-back-vcall-no-effective-selection", call.key_selection.effective_id, -1);
+    rc |= expect_int("info1-key-held-back-vcall-not-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     return rc;
 }
