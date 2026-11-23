@@ -1000,7 +1000,7 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
 
 /**
  * @brief Mark the retune queued for @p target_freq_hz as the decoder's own move to a new channel (issue #899; 0
- * unmarks): where it lands (the controller's finalize, an external backend's landing) on the analog family, the
+ * unmarks): where it lands (the controller's finalize, an external backend's landing) on the analog monitor, the
  * receiver starts closed, every block muted, until the decoder writes the gate (rtl_stream_write_squelch_gate()),
  * whatever the profile's family did there (applied, refused or superseded: the tuner moved). Attach it last:
  * rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile. With nothing queued for
@@ -1012,17 +1012,19 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
 void rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel);
 
 /**
- * @brief Write the squelch gate of the channel the receiver is on now (issue #899): @p gate on the analog family,
- * @p digital (NULL: @p gate) on the digital family, which the receiver also runs at every later landing or switch onto
- * the digital family (the session's own squelch: the analog-only default never outlives its analog channel). The only
- * way a closed start opens. The decoder writes only when none of its own tune or family requests is outstanding. Any
- * thread.
+ * @brief Write the squelch gate of the channel the receiver is on now (issue #899): @p gate on the analog monitor,
+ * @p digital (NULL: @p gate) off it (the digital family, or a typed digital scan row's symbol profile on the analog
+ * family), which the receiver also runs at every later landing or switch off the monitor (the session's own squelch:
+ * no analog gate outlives its analog channel). Which of the two the receiver is on is what its last boundary recorded
+ * under the gate's lock; a write never reads the demodulator. The only way a closed start opens. The decoder writes
+ * only when none of its own tune or family requests is outstanding. Any thread.
  */
 void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
 
 /**
  * @brief 1 while the receiver runs a new analog channel closed, waiting for the decoder's write (issue #899): a stream
- * open, a marked retune's landing, or a family switch into analog. Lock-free; any thread.
+ * open, a marked retune's landing, a family switch into analog or onto another kind, or a return to the monitor from a
+ * symbol profile. Lock-free; any thread.
  */
 int rtl_stream_gate_closed_start(void);
 
@@ -1156,8 +1158,10 @@ typedef struct {
     double window_power; /**< the tracker's last 40 ms window's mean |z|^2 */
     int closed_starts;   /**< new analog channels opened since the stream did, each after a closed start (issue #899) */
     double closed_ms;    /**< how long the last of them ran closed, until the decoder wrote its gate */
-    uint64_t closed_samples;   /**< the FM monitor samples the last of them muted, counted where they were produced */
-    uint64_t unjudged_samples; /**< FM monitor samples produced open with no dynamic squelch since the stream opened */
+    uint64_t closed_samples; /**< the analog monitor samples the latest of them muted, counted where they were produced
+                                  (every block that took its closed gate, one finished after the opening write too) */
+    uint64_t unjudged_samples; /**< analog monitor samples produced open with no dynamic squelch since the stream
+                                    opened */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */

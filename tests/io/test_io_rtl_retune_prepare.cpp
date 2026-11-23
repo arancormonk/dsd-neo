@@ -1332,6 +1332,32 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("analog open: closed", r.open_closed, 1);
     failed |= expect_int_eq("analog open: the decoder's write opens it", r.open_opened, 1);
     failed |= expect_int_eq("analog open: one closed start counted", r.open_counted, 1);
+    failed |=
+        expect_int_eq("typed digital row on -fA: off the monitor, family flag kept", r.typed_landing_off_monitor, 1);
+    failed |= expect_int_eq("typed digital row on -fA: its landing does not start closed", r.typed_landing_open, 1);
+    failed |= expect_int_eq("typed digital row on -fA: runs the digital gate (Off) before its commit",
+                            r.typed_landing_runs_digital, 1);
+    failed |= expect_int_eq("typed row paused in place: the monitor is back", r.typed_pause_monitor, 1);
+    failed |= expect_int_eq("typed row paused in place: a new analog channel, closed", r.typed_pause_closed, 1);
+    failed |= expect_int_eq("typed row paused in place: the closed start reported", r.typed_pause_reported, 1);
+    failed |=
+        expect_int_eq("closed start: a block finished after the opening write is counted", r.in_flight_counted, 1);
+    failed |= expect_int_eq("monitor: an open block without dynamic squelch is counted", r.monitor_unjudged_counted, 1);
+    failed |= expect_int_eq("M17 encoder monitor: no landing telemetry", r.encoder_uncounted, 1);
+    return failed;
+}
+
+/* Issue #899, round 8: the decoder's gate write reads only what the gate keeps under its own lock, never the
+ * demodulator's family, which the controller changes at a landing on its thread. Run under TSan (tsan-debug), a write
+ * that read the family would be reported here. */
+static int
+test_gate_write_during_landings(void) {
+    rtl_stream_test_gate_write_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("gate write race hook", rtl_stream_test_gate_write_during_landings(40, &r), 0);
+    failed |= expect_int_eq("gate write race: every landing ran", r.landings, 40);
+    failed |= expect_int_eq("gate write race: the decoder wrote meanwhile", r.writes > 0 ? 1 : 0, 1);
+    failed |= expect_int_eq("gate write race: the last write opens the analog channel", r.final_open, 1);
     return failed;
 }
 
@@ -3694,6 +3720,7 @@ main(void) {
     failed |= test_external_backend_landing_waits_for_reconfiguration();
     failed |= test_external_backend_landing_filter_state();
     failed |= test_analog_channel_starts_closed();
+    failed |= test_gate_write_during_landings();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();

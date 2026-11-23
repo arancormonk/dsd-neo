@@ -3,9 +3,9 @@
  * A stand-in for a radio receiver's squelch gate (issue #899), for tests that drive the decoder's side without a running
  * stream. It keeps the receiver's rules (rtl_stream_write_squelch_gate() and rtl_stream_gate_boundary() in
  * rtl_sdr_fm.cpp, which IO_RTL_RETUNE_PREPARE checks on the real receiver): a new channel on the analog family starts
- * closed (a level no power reaches) until the decoder writes; a landing or switch on the digital family runs the digital
- * gate the decoder last gave; a write applies to the channel the receiver is on, the analog gate there on the analog
- * family and the digital gate on the digital family. It also says whether a receive request is still unsettled, as the
+ * closed (a level no power reaches) until the decoder writes; a landing or switch off the analog monitor runs the
+ * digital gate the decoder last gave; a write applies to the channel the receiver is on, the analog gate there on the
+ * monitor and the digital gate off it. It also says whether a receive request is still unsettled, as the
  * case sets it.
  *
  * channel_gate_fake_install() fills a hook table's gate fields, so the engine reaches it as it reaches the stream. Every
@@ -27,8 +27,9 @@ typedef void (*channel_gate_fake_apply_fn)(const dsd_squelch_setting* gate);
    does not hear); @p apply (may be NULL) takes each gate the receiver comes to run from here on. No request is
    unsettled. */
 void channel_gate_fake_open(int analog, const dsd_squelch_setting* gate, channel_gate_fake_apply_fn apply);
-/* A retune or family switch landed, the receiver on the family @p analog says: a new channel (@p new_channel: a marked
-   retune, a switch into analog) starts closed on the analog family; the digital family runs the digital gate. */
+/* A retune or family switch landed, the receiver on the analog monitor when @p analog (a typed digital row's symbol
+   profile on the analog family is off it): a new channel (@p new_channel: a marked retune, a switch into analog, a
+   return to the monitor) starts closed on the monitor; off it the receiver runs the digital gate. */
 void channel_gate_fake_land(int new_channel, int analog);
 /* The gate the receiver runs, whether it runs a closed start, and its family. */
 dsd_squelch_setting channel_gate_fake_gate(void);

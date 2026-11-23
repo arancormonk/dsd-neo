@@ -2164,11 +2164,36 @@ typedef struct rtl_stream_test_channel_gate_result {
     int open_closed;                /* an analog stream open: closed */
     int open_opened;                /* ... the decoder's write opens it */
     int open_counted;               /* ... counted as one closed start */
+    /* A typed digital -Y row on an -fA session (its symbol profile, no digital family), landed marked from an analog
+       channel written noise +10 with Off for the digital family: */
+    int typed_landing_off_monitor;  /* 1 when it kept the analog family flag but left the monitor, as by design */
+    int typed_landing_open;         /* ... and did not start closed: the row's samples before its commit pass */
+    int typed_landing_runs_digital; /* ... under the digital gate (Off), not the analog one (noise +10) */
+    int typed_pause_monitor;        /* the scan paused in place there: its FM request put the monitor back */
+    int typed_pause_closed;         /* ... a new analog channel, closed */
+    int typed_pause_reported;       /* ... and reported */
+    /* Where the closed start's samples are counted: */
+    int in_flight_counted;        /* a block that took the closed gate, finished after the opening write: counted */
+    int monitor_unjudged_counted; /* an open monitor block with no dynamic squelch: counted unjudged */
+    int encoder_uncounted;        /* the M17 encoder's monitor block: no landing telemetry */
 } rtl_stream_test_channel_gate_result;
 
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
  * external backend and the demod thread do, reporting what the receiver runs after each (issue #899). */
 int rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out);
+
+/* The decoder's gate writes against landings on another thread (issue #899, round 8). */
+typedef struct rtl_stream_test_gate_write_race_result {
+    int landings;   /* retunes the landing thread landed, alternating analog (marked) and digital */
+    int writes;     /* gate writes the decoder's thread made meanwhile */
+    int final_open; /* 1 when the write after the last (analog) landing opened it under noise +10 */
+} rtl_stream_test_gate_write_race_result;
+
+/* Land @p rounds retunes on one thread, alternating a marked NFM landing and an unmarked landing of the digital family
+ * (each changes the demodulator's family), as the controller does, while this thread writes the gate (noise +10, Off
+ * for the digital family) until they are done; then one more write. Run under TSan, the writes must read nothing the
+ * landings change outside the gate's lock. */
+int rtl_stream_test_gate_write_during_landings(int rounds, rtl_stream_test_gate_write_race_result* out);
 
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
 typedef struct rtl_stream_test_external_landing_race_result {
