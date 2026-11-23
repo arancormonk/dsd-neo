@@ -538,9 +538,9 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
   opens the list. If the system's extra decoder arguments (or the app's) also name a channels file with
   `--dmr-chan-overrides`, the channels you saved with the system are used instead of that file whenever the system
-  has any. Extra decoder arguments that end on an option missing its value (`--profile` or `-C` with nothing after
-  it) take the next argument as that value, as they would on the command line, so the saved channels can be lost that
-  way. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
+  has any. Extra decoder arguments that end on an option missing its value can take the next argument as that value,
+  as they would on the command line: a `--profile` with nothing after it loses the saved channels, and some options
+  (`-C` with nothing after it) stop the start instead. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
   the sheet says so. If DSD-neo can't write your channels when the system starts (the device is out of storage, say),
   the system starts without them and Home says so until a start passes them again.
 - **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
