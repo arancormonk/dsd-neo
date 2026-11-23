@@ -16,6 +16,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -1543,11 +1544,19 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 
 #ifdef USE_RADIO
 /* The row's squelch gate (issue #899; NULL: none) rides the profile the scan tune's preparation queued: attached last,
-   since a store replaces the whole profile. */
+   since a store replaces the whole profile. The channel it lands goes to @p out_gate_channel, or with none is where the
+   on-air channel goes. */
 static void
-dsd_engine_prepare_scan_gate(const dsd_opts* opts, long int freq, const dsd_squelch_setting* gate) {
-    if (gate && opts->audio_in_type == AUDIO_IN_RTL) {
-        rtl_stream_prepare_retune_squelch_for_target((uint32_t)freq, gate);
+dsd_engine_prepare_scan_gate(const dsd_opts* opts, long int freq, const dsd_squelch_setting* gate,
+                             uint32_t* out_gate_channel) {
+    if (!gate || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    const uint32_t channel = rtl_stream_prepare_retune_squelch_for_target((uint32_t)freq, gate);
+    if (out_gate_channel) {
+        *out_gate_channel = channel;
+    } else {
+        dsd_engine_receiver_gate_on_air(channel);
     }
 }
 
@@ -1687,17 +1696,26 @@ dsd_engine_scan_tune_moved(void) {
     return s_scan_tune_moved;
 }
 
+/* A scan tune names no request and no receiver channel until it has them. */
+static void
+dsd_engine_scan_tune_outputs_clear(uint64_t* out_request_id, uint32_t* out_gate_channel) {
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
+    if (out_gate_channel) {
+        *out_gate_channel = 0U;
+    }
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                             const dsd_squelch_setting* gate, uint64_t* out_request_id) {
+                             const dsd_squelch_setting* gate, uint32_t* out_gate_channel, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
     uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
 #endif
-    if (out_request_id) {
-        *out_request_id = 0U;
-    }
+    dsd_engine_scan_tune_outputs_clear(out_request_id, out_gate_channel);
     s_scan_tune_moved = 0;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -1717,6 +1735,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 #ifndef USE_RADIO
     (void)ted_sps;
     (void)gate;
+    (void)out_gate_channel;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
@@ -1728,7 +1747,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    dsd_engine_prepare_scan_gate(opts, freq, gate);
+    dsd_engine_prepare_scan_gate(opts, freq, gate, out_gate_channel);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);

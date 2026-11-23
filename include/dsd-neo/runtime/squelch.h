@@ -234,15 +234,6 @@ dsd_squelch_setting dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_sta
 int dsd_squelch_analog_default_sync(dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief dsd_squelch_analog_default_sync(), and the fields handed to the receiver when they moved and the input is a
- * radio (dsd_rtl_stream_metrics_hook_set_channel_squelch_setting()): the one step every point that is about to run a
- * channel or stream the squelch fields may not match yet takes before its samples flow (issue #899).
- *
- * @return As dsd_squelch_analog_default_sync().
- */
-int dsd_squelch_analog_default_settle(dsd_opts* opts, const dsd_state* state);
-
-/**
  * @brief The squelch fields of a dsd_opts and where the analog default stands, whole: what a step that puts the
  * options back exactly as they were saves and restores (a staged scan row, a restart on the profile that ran). A
  * dsd_scan_settings capture holds the configured squelch instead (dsd_squelch_configured_fields()).

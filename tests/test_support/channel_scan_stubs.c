@@ -10,6 +10,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -153,30 +154,43 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return 0;
 }
 
-/* A push the receiver's gate owes while a gate-carrying retune is outstanding (issue #899), as the engine keeps it. */
-static int g_receiver_gate_owed;
-
-void
-dsd_engine_receiver_gate_owe(void) {
-    g_receiver_gate_owed = 1;
+/* With no -Y tune staged and no retune modelled here, the receiver runs the gate of the channel on air (issue #899): a
+   stream opens on it, and a settle after a change hands it over through the stream hooks, a level as a threshold and a
+   dynamic setting whole. UI_MENU_SERVICES counts those pushes; the engine's own channel tagging is exercised by
+   ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
+dsd_squelch_setting
+dsd_engine_receiver_gate_now(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_scan_mode_channel_squelch(opts, state);
 }
 
-int
-dsd_engine_receiver_gate_take_owed(int outstanding) {
-    if (!g_receiver_gate_owed || outstanding) {
-        return 0;
+void
+dsd_engine_receiver_gate_on_air(uint32_t channel) {
+    (void)channel;
+}
+
+void
+dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed) {
+    if (!changed || !opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
     }
-    g_receiver_gate_owed = 0;
-    return 1;
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    if (dsd_squelch_mode_is_dynamic(gate.mode)) {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&gate);
+    } else {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch(gate.level);
+    }
 }
 
-/* With no -Y tune staged the receiver runs, and an outstanding retune lands, the gate of the channel on air (issue
-   #899). */
+uint32_t
+dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0U;
+}
+
 void
-dsd_engine_receiver_gates(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* now,
-                          dsd_squelch_setting* landing) {
-    *now = dsd_scan_mode_channel_squelch(opts, state);
-    *landing = *now;
+dsd_engine_receiver_gate_family_done(uint32_t channel) {
+    (void)channel;
 }
 
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real

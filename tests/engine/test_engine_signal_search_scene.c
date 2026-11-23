@@ -25,6 +25,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -32,6 +33,8 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <math.h>
 #include <stddef.h>
@@ -142,15 +145,35 @@ void
 rtl_stream_clear_pending_retune_profile(void) {}
 
 /* The squelch gate a retune carries (issue #899), which no scene here reads. */
-void
+uint32_t
 rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
     (void)target_freq_hz;
     (void)gate;
+    return 0U;
+}
+
+/* The engine's channel-tagged receiver gates (issue #899; channel_scan.c, not linked here): the last channel a visit or
+   restore put on air, and a family request's gate staged through the stream hooks, as the engine stages it. */
+static uint32_t g_on_air_channel;
+
+void
+dsd_engine_receiver_gate_on_air(uint32_t channel) {
+    if (channel != 0U) {
+        g_on_air_channel = channel;
+    }
+}
+
+uint32_t
+dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    return dsd_rtl_stream_metrics_hook_stage_family_gate(&gate);
 }
 
 void
-rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate) {
-    (void)gate;
+dsd_engine_receiver_gate_family_done(uint32_t channel) {
+    if (channel != 0U && dsd_rtl_stream_metrics_hook_unstage_family_gate(channel) == 1) {
+        dsd_engine_receiver_gate_on_air(channel);
+    }
 }
 
 int

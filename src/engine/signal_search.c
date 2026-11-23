@@ -18,6 +18,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -437,9 +438,10 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     if (rtl_stream_prepare_retune_analog_profile_for_target(target, &family) != 0) {
         return -1;
     }
-    /* The visit's retune carries the range's squelch gate, which its options now hold (issue #899). */
+    /* The visit's retune carries the range's squelch gate, which its options now hold, and is where the on-air channel
+       goes (issue #899). */
     const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    rtl_stream_prepare_retune_squelch_for_target(target, &gate);
+    dsd_engine_receiver_gate_on_air(rtl_stream_prepare_retune_squelch_for_target(target, &gate));
     return 0;
 }
 
@@ -548,11 +550,10 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_mode_leave(opts, state);
     dsd_scan_settings_restore(&c->saved, opts, state);
-    /* The session's own channel comes back with its gate, the analog default included, before its family request
-       (issue #899). A Stop's restore tune carries the same gate to where it lands, and the search drops every block
-       from before this restore until then (rtl_signal_search_bypass()), so this push reaches no sample there; a search
-       that ends with no restore tune (the session's shutdown, an input lost) has only this push. */
-    (void)dsd_squelch_analog_default_settle(opts, state);
+    /* The session's own channel comes back with its gate, the analog default included, which its family request
+       carries (issue #899); a Stop's restore tune carries the same gate to where it lands. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
     rtl_stream_enforce_tuner_autogain(c->saved_autogain);
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         (void)rtl_stream_airspy_controls(&c->saved_airspy);
@@ -564,6 +565,7 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
         analog
             ? (opts->analog_demod == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz)
             : 0);
+    dsd_engine_receiver_gate_family_done(gate_channel);
     c->restored = 1;
 }
 
@@ -1464,9 +1466,10 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
                                                      analog ? opts->analog_demod : DSD_ANALOG_DEMOD_FM,
                                                      analog ? dsd_opts_analog_width_hz(opts) : 0, 0};
     (void)rtl_stream_prepare_retune_analog_profile_for_target(c->saved_frequency, &family);
-    /* And the session's squelch gate, the analog default where it belongs (issue #899). */
+    /* And the session's squelch gate, the analog default where it belongs, on the channel the on-air channel goes to
+       (issue #899). */
     const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    rtl_stream_prepare_retune_squelch_for_target(c->saved_frequency, &gate);
+    dsd_engine_receiver_gate_on_air(rtl_stream_prepare_retune_squelch_for_target(c->saved_frequency, &gate));
     int rc = rtl_stream_tune_async(c->saved_frequency, c->status.session_id, &c->ticket);
     if (rc < 0) {
         search_error(c, "Unable to restore the previous frequency");

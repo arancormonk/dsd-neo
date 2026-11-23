@@ -1320,15 +1320,42 @@ test_retune_carries_its_squelch_gate(void) {
     failed |= expect_int_eq("retune gate alone: a scan leave supersedes it", r.gate_only_superseded_mode,
                             DSD_SQUELCH_MODE_LEVEL);
     /* Review follow-up: a landing whose request a newer gate-carrying retune replaced runs closed, never the newer
-       request's gate nor the old channel's; the newer lands its own; a newer one dropped before it was taken gives the
-       older its binding back. */
+       request's gate nor the old channel's; the newer lands its own. Each channel keeps its own gate: a newer one
+       dropped before it was taken leaves the older landing the gate it was bound with, or the decoder's later word for
+       that channel. */
     failed |= expect_int_eq("retune gate replaced: the older lands closed", r.replaced_closed, 1);
-    failed |= expect_int_eq("retune gate replaced: the newer still outstanding", r.replaced_outstanding, 1);
     failed |= expect_int_eq("retune gate replaced: the newer lands its own", r.replacing_mode, DSD_SQUELCH_MODE_AUTO);
     failed |= expect_int_eq("retune gate replaced: the newer's margin", r.replacing_margin, 6);
-    failed |= expect_int_eq("retune gate replaced: nothing outstanding once published", r.settled_outstanding, 0);
-    failed |= expect_int_eq("retune gate reinstated: the older's own", r.reinstated_mode, DSD_SQUELCH_MODE_NOISE);
-    failed |= expect_int_eq("retune gate reinstated: the decoder's later word", r.reinstated_margin, 14);
+    failed |= expect_int_eq("retune gate: replacement dropped, the older lands its own gate",
+                            r.dropped_replacement_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |=
+        expect_int_eq("retune gate: replacement dropped, the older's own margin", r.dropped_replacement_margin, 10);
+    failed |=
+        expect_int_eq("retune gate reinstated: the decoder's later word", r.reinstated_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("retune gate reinstated: its margin", r.reinstated_margin, 14);
+    /* Round 5: every write names its channel, and the receiver alone judges it. */
+    failed |=
+        expect_int_eq("gate write for the channel on air: applied", r.write_current_result, RTL_STREAM_GATE_APPLIED);
+    failed |= expect_int_eq("gate write for the channel on air: in force", r.write_current_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("gate write for the channel left: stale", r.write_stale_result, RTL_STREAM_GATE_STALE);
+    failed |= expect_int_eq("gate write for the channel left: dropped", r.write_stale_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("gate write for a channel to land: bound", r.write_bound_result, RTL_STREAM_GATE_BOUND);
+    failed |=
+        expect_int_eq("gate write for a channel to land: not yet in force", r.write_bound_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("gate write for a channel to land: lands with it", r.write_bound_landed_mode,
+                            DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("gate write for a channel to land: its margin", r.write_bound_landed_margin, 14);
+    failed |=
+        expect_int_eq("gate write for an open's channel: applied", r.write_opened_result, RTL_STREAM_GATE_APPLIED);
+    failed |= expect_int_eq("family switch with its gate: switched to analog", r.family_switched, 1);
+    failed |= expect_int_eq("family switch with its gate: a request took it", r.family_taken, 1);
+    failed |= expect_int_eq("family switch with its gate: the first analog block's gate", r.family_first_mode,
+                            DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("family switch with its gate: its margin", r.family_first_margin, 10);
+    failed |= expect_int_eq("family switch with its gate: kept over the superseded retune", r.family_after_retune_mode,
+                            DSD_SQUELCH_MODE_NOISE);
+    failed |=
+        expect_int_eq("family switch refused: its gate lands nothing", r.family_refused_mode, DSD_SQUELCH_MODE_LEVEL);
     return failed;
 }
 

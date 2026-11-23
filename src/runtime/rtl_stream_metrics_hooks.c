@@ -139,20 +139,37 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_settin
 }
 
 int
-dsd_rtl_stream_metrics_hook_update_retune_squelch(const dsd_squelch_setting* setting) {
-    if (!setting || !g_rtl_stream_metrics_hooks.update_retune_squelch) {
+dsd_rtl_stream_metrics_hook_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setting) {
+    if (!setting || !g_rtl_stream_metrics_hooks.write_channel_gate) {
         return -1;
     }
-    g_rtl_stream_metrics_hooks.update_retune_squelch(setting);
-    return 0;
+    return g_rtl_stream_metrics_hooks.write_channel_gate(channel, setting);
+}
+
+uint32_t
+dsd_rtl_stream_metrics_hook_channel_gate_epoch(void) {
+    return g_rtl_stream_metrics_hooks.channel_gate_epoch ? g_rtl_stream_metrics_hooks.channel_gate_epoch() : 0U;
+}
+
+uint32_t
+dsd_rtl_stream_metrics_hook_channel_gate_opened(void) {
+    return g_rtl_stream_metrics_hooks.channel_gate_opened ? g_rtl_stream_metrics_hooks.channel_gate_opened() : 0U;
+}
+
+uint32_t
+dsd_rtl_stream_metrics_hook_stage_family_gate(const dsd_squelch_setting* setting) {
+    if (!setting || !g_rtl_stream_metrics_hooks.stage_family_gate) {
+        return 0U;
+    }
+    return g_rtl_stream_metrics_hooks.stage_family_gate(setting);
 }
 
 int
-dsd_rtl_stream_metrics_hook_retune_squelch_outstanding(void) {
-    if (!g_rtl_stream_metrics_hooks.retune_squelch_outstanding) {
-        return -1;
+dsd_rtl_stream_metrics_hook_unstage_family_gate(uint32_t channel) {
+    if (!g_rtl_stream_metrics_hooks.unstage_family_gate) {
+        return 0;
     }
-    return g_rtl_stream_metrics_hooks.retune_squelch_outstanding() ? 1 : 0;
+    return g_rtl_stream_metrics_hooks.unstage_family_gate(channel);
 }
 
 int

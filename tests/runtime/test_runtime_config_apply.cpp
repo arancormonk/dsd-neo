@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <math.h>
@@ -70,6 +71,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include "../../src/app_control/commands_internal.h"
 
+#include "channel_gate_fake.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
@@ -697,15 +699,65 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 static int g_wrap_fake_ctx = 0;
 static float g_wrap_last_channel_squelch = -1.0f;
 
+/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream
+   opens on a channel of its own under the options' squelch; a retune that carries a gate lands it at once; each gate the
+   receiver comes to run reaches the squelch setter wraps below as the stream would set it. */
+static void wrap_rx_runs(const dsd_squelch_setting* gate);
+static dsd_rtl_stream_metrics_hooks g_wrap_rx_hooks;
+
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    (void)opts;
     if (out_ctx) {
         *out_ctx = (RtlSdrContext*)&g_wrap_fake_ctx;
     }
+    if (opts) {
+        const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
+        channel_gate_fake_open(&opened, wrap_rx_runs);
+    }
     return 0;
+}
+
+uint32_t
+__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+    (void)target_freq_hz;
+    if (!gate) {
+        return 0U;
+    }
+    const uint32_t channel = channel_gate_fake_bind(gate);
+    channel_gate_fake_land(channel);
+    return channel;
+}
+
+void
+__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+    (void)target_freq_hz;
+}
+
+int
+__wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate) {
+    return g_wrap_rx_hooks.write_channel_gate(channel, gate);
+}
+
+uint32_t
+__wrap_rtl_stream_channel_gate_epoch(void) {
+    return g_wrap_rx_hooks.channel_gate_epoch();
+}
+
+uint32_t
+__wrap_rtl_stream_channel_gate_opened(void) {
+    return g_wrap_rx_hooks.channel_gate_opened();
+}
+
+uint32_t
+__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
+    return g_wrap_rx_hooks.stage_family_gate(gate);
+}
+
+int
+__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
+    return g_wrap_rx_hooks.unstage_family_gate(channel);
 }
 
 int
@@ -751,6 +803,28 @@ __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+static void
+wrap_rx_runs(const dsd_squelch_setting* gate) {
+    if (dsd_squelch_mode_is_dynamic(gate->mode)) {
+        __wrap_rtl_stream_set_channel_squelch_setting(gate);
+    } else {
+        (void)__wrap_rtl_stream_set_channel_squelch((float)gate->level);
+    }
+}
+
+/* Install @p hooks (NULL: none of their own) with the receiver's gates in them. */
+static void
+wrap_rx_hooks_set(const dsd_rtl_stream_metrics_hooks* hooks) {
+    static dsd_rtl_stream_metrics_hooks installed;
+    if (hooks) {
+        installed = *hooks;
+    } else {
+        DSD_MEMSET(&installed, 0, sizeof installed);
+    }
+    channel_gate_fake_install(&installed);
+    dsd_rtl_stream_metrics_hooks_set(&installed);
+}
 
 /*
  * A config re-applied mid-run carries rtl_sql in decibels, exactly as the CLI
@@ -1141,7 +1215,7 @@ test_config_reapply_under_row_squelch_keeps_the_row(void) {
     dsd_rtl_stream_metrics_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     hooks.set_channel_squelch = forward_row_squelch_to_demod;
-    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    wrap_rx_hooks_set(&hooks);
     int rc = expect_true("row squelch scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
     dsd_scan_option_values row;
     DSD_MEMSET(&row, 0, sizeof row);
@@ -1175,7 +1249,7 @@ test_config_reapply_under_row_squelch_keeps_the_row(void) {
 
     dsd_scan_mode_leave(opts, state);
     rc |= expect_float_near("leaving the row hands the demod the default", g_wrap_last_channel_squelch, 1e-5f, 1e-11f);
-    dsd_rtl_stream_metrics_hooks_set(NULL);
+    wrap_rx_hooks_set(NULL);
     free_test_runtime(&runtime);
     return rc;
 }
@@ -3852,6 +3926,8 @@ main(void) {
     rc |= test_omitted_rtl_ppm_apply_preserves_live_request();
     rc |= test_ui_rtl_setting_commands_stage_without_live_restart();
 #ifdef DSD_NEO_TEST_RTL_WRAP
+    channel_gate_fake_install(&g_wrap_rx_hooks);
+    wrap_rx_hooks_set(NULL);
     rc |= test_config_reapply_converts_rtl_squelch_from_db();
     rc |= test_config_reapply_under_row_squelch_keeps_the_row();
     rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();

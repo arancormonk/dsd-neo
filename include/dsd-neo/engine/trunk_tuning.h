@@ -92,12 +92,15 @@ void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint3
  * row width the front end refuses at the rate it runs fails the tune before any backend moves.
  *
  * On an RTL-family input the retune carries @p gate (issue #899; NULL: none), the squelch gate of the row it goes to
- * (dsd_squelch_channel_gate()), which the receiver applies at the same boundary as the rest of the profile
- * (rtl_stream_prepare_retune_squelch_for_target()): a tune refused, deferred or failed, or a profile superseded or
- * cleared, leaves the receiver's gate alone.
+ * (dsd_squelch_channel_gate()), and lands the receiver on a channel of its own under it, at the same boundary as the
+ * rest of the profile (rtl_stream_prepare_retune_squelch_for_target()): a tune refused, deferred or failed, or a profile
+ * superseded or cleared, leaves the receiver on the channel it runs. That channel goes to @p out_gate_channel, which
+ * then belongs to the caller (a -Y row staged until it commits); with @p out_gate_channel NULL it is where the on-air
+ * channel goes (dsd_engine_receiver_gate_on_air(): a trunk-scan target, active from its switch).
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                                   const dsd_squelch_setting* gate, uint64_t* out_request_id);
+                                                   const dsd_squelch_setting* gate, uint32_t* out_gate_channel,
+                                                   uint64_t* out_request_id);
 /** @brief Whether the rigctl leg of the last dsd_engine_scan_tune_to_freq() on this thread moved the radio, whatever
  * that tune returned. With rigctl and an RTL front end in a conventional scan, a tune whose RTL leg then failed, or
  * went on asynchronously (PENDING) and later fails, has the receiver on another carrier though its row never lands.

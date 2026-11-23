@@ -544,8 +544,11 @@ dsd_engine_scan_tune_moved(void) {
 
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                             const dsd_squelch_setting* gate, uint64_t* out_request_id) {
+                             const dsd_squelch_setting* gate, uint32_t* out_gate_channel, uint64_t* out_request_id) {
     (void)gate;
+    if (out_gate_channel) {
+        *out_gate_channel = 0U;
+    }
     if (out_request_id) {
         *out_request_id = 0U;
     }

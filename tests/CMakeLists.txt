@@ -10424,6 +10424,7 @@ add_test(
 add_executable(
     dsd-neo_test_engine_channel_scan
     test_support/scan_group_stubs.c
+    test_support/channel_gate_fake.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     # The typed-frequency match, which reads a row's effective width (issue #644).
@@ -11066,6 +11067,7 @@ add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
 add_executable(
     dsd-neo_test_runtime_config_apply
     runtime/test_runtime_config_apply.cpp
+    test_support/channel_gate_fake.c
 )
 set_source_files_properties(
     runtime/test_runtime_config_apply.cpp
@@ -11137,6 +11139,13 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
             "-Wl,--wrap=rtl_stream_set_channel_squelch_setting"
+            "-Wl,--wrap=rtl_stream_prepare_retune_squelch_for_target"
+            "-Wl,--wrap=rtl_stream_drop_untaken_retune_squelch"
+            "-Wl,--wrap=rtl_stream_write_channel_gate"
+            "-Wl,--wrap=rtl_stream_channel_gate_epoch"
+            "-Wl,--wrap=rtl_stream_channel_gate_opened"
+            "-Wl,--wrap=rtl_stream_stage_family_gate"
+            "-Wl,--wrap=rtl_stream_unstage_family_gate"
             "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()
@@ -11402,6 +11411,7 @@ endif()
 add_executable(
     dsd-neo_test_app_command_queue
     ui/test_ui_cmd_queue.c
+    test_support/channel_gate_fake.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_compile_definitions(
@@ -11504,6 +11514,14 @@ if(
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
+            "LINKER:--wrap=rtl_stream_prepare_retune_squelch_for_target"
+            "LINKER:--wrap=rtl_stream_drop_untaken_retune_squelch"
+            "LINKER:--wrap=rtl_stream_write_channel_gate"
+            "LINKER:--wrap=rtl_stream_channel_gate_epoch"
+            "LINKER:--wrap=rtl_stream_channel_gate_opened"
+            "LINKER:--wrap=rtl_stream_stage_family_gate"
+            "LINKER:--wrap=rtl_stream_unstage_family_gate"
+            "LINKER:--wrap=dsd_scan_mode_channel_squelch"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
@@ -28579,6 +28597,7 @@ if(
     add_executable(
         dsd-neo_test_ui_airspy_config_apply
         ui/test_ui_airspy_config_apply.c
+        test_support/channel_gate_fake.c
     )
     target_include_directories(
         dsd-neo_test_ui_airspy_config_apply
@@ -28608,6 +28627,12 @@ if(
             "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
             "LINKER:--wrap=rtl_stream_prepare_retune_squelch_for_target"
+            "LINKER:--wrap=rtl_stream_drop_untaken_retune_squelch"
+            "LINKER:--wrap=rtl_stream_write_channel_gate"
+            "LINKER:--wrap=rtl_stream_channel_gate_epoch"
+            "LINKER:--wrap=rtl_stream_channel_gate_opened"
+            "LINKER:--wrap=rtl_stream_stage_family_gate"
+            "LINKER:--wrap=rtl_stream_unstage_family_gate"
             "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
     )
     add_test(

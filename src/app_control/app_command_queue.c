@@ -6973,15 +6973,32 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
 }
 
 /* The analog default squelch (issue #899) follows what the session runs now: a command's decode switch, input change,
-   scan leave or explicit edit, or a receive request the front end refused. The receiver hears it when it moved, and a
-   retune outstanding lands the gate of its channel as the command left it (svc_rtl_settle_receiver_gate()). */
+   scan leave or explicit edit, or a receive request the front end refused. The receiver's gates, each tagged with its
+   channel, are resolved again when @p changed or the default moved, or when the receiver moved since the last settle
+   (dsd_engine_receiver_gate_settle()); an idle drain, nothing changed and nothing moved, resolves and writes nothing. */
 static void
-ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
+ui_settle_squelch(dsd_opts* opts, const dsd_state* state, int changed) {
     if (!opts) {
         return;
     }
-    const int changed = dsd_squelch_analog_default_sync(opts, state);
-    svc_rtl_settle_receiver_gate(opts, state, changed);
+    const int moved = dsd_squelch_analog_default_sync(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, changed || moved);
+}
+
+/* ui_settle_squelch() after a change: a command ran, or settings were put back. */
+static void
+ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
+    ui_settle_squelch(opts, state, 1);
+}
+
+/* decode_mode_republish(), with the gate of the channel it switches to, resolved now, riding its family request: the
+   first block on the new family runs under it, whatever retune is outstanding (issue #899). */
+static int
+decode_mode_republish_gated(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
+    const int rc = decode_mode_republish(opts, state, mode);
+    dsd_engine_receiver_gate_family_done(gate_channel);
+    return rc;
 }
 
 /* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
@@ -7123,9 +7140,10 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
     opts->pulse_digi_rate_out = audio_rate;
     decode_mode_ensure_output(opts, state);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
-    /* The analog default squelch (issue #899) reaches the receiver before the switch's channel does, so the analog
-       monitor's first block is already gated; a switch put back below gets the session's own again at the drain. */
-    ui_sync_analog_default_squelch(opts, state);
+    /* The analog default squelch (issue #899) follows the switch into the options; the switch's family request carries
+       the gate it resolves to (decode_mode_republish_gated()), so the first block on the new family runs under it and
+       none of the old family's does. A switch put back below gets the session's own again at the drain. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
        timing has to be recomputed at the live rate or the decoder is put on the
@@ -7140,7 +7158,7 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
        above) puts the decoder back as it was; one refused where it lands is
        put back by the next drain. */
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
-    const int put_back = decode_mode_republish(opts, state, mode) != 0
+    const int put_back = decode_mode_republish_gated(opts, state, mode) != 0
                          && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL);
     /* The mode change commits: one that stands leaves TETRA unless it is TETRA, once a switch the front end has still
        to take or refuse has settled, and one put back finds the TETRA session it left whole. */
@@ -10357,10 +10375,10 @@ apply_cfg_analog_profile_change(dsd_opts* opts, dsd_state* state, const cfg_rx_p
         }
         /* The part-collected monitor block holds the old kind's audio, as decode_mode_apply_value() drops it. */
         dsd_symbol_analog_block_reset(state);
-        /* The new kind's gate before its channel (issue #899), as DECODE_MODE_SET hands it. */
-        ui_sync_analog_default_squelch(opts, state);
+        /* The new kind's gate rides its channel's request (issue #899), as DECODE_MODE_SET hands it. */
+        (void)dsd_squelch_analog_default_sync(opts, state);
         ui_arm_analog_entry(opts, state, 1, before->analog_kind);
-        return (decode_mode_republish(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
+        return (decode_mode_republish_gated(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
                 && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL))
                    ? -1
                    : 0;
@@ -10396,13 +10414,13 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        /* The receiver holds the new family's gate before the family's channel is asked for (issue #899), as
-           DECODE_MODE_SET hands it: the analog default onto the monitor, the session's own off it. */
-        ui_sync_analog_default_squelch(opts, state);
+        /* The new family's gate rides the family's request (issue #899), as DECODE_MODE_SET hands it: the analog
+           default onto the monitor, the session's own off it. */
+        (void)dsd_squelch_analog_default_sync(opts, state);
         /* A switch onto the monitor the front end refuses at once goes back to the mode the session had, as
            DECODE_MODE_SET's does, and fails the apply; one refused where it lands is put back by the next drain. */
         ui_arm_analog_entry(opts, state, old_analog_only && opts->m17encoder != 1, before->analog_kind);
-        if (decode_mode_republish(opts, state, cfg->decode_mode) != 0
+        if (decode_mode_republish_gated(opts, state, cfg->decode_mode) != 0
             && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
             rc = -1;
         }
@@ -12212,7 +12230,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed
            only while that one is unsettled (ui_arm_analog_entry()). */
         ui_settle_receive_requests(opts, state);
-        ui_sync_analog_default_squelch(opts, state);
+        ui_settle_squelch(opts, state, 0);
         struct dsd_app_command cmd;
         int have = 0;
         dsd_mutex_lock(&g_mu);

@@ -125,13 +125,3 @@ dsd_squelch_analog_default_sync(dsd_opts* opts, const dsd_state* state) {
     squelch_note_am_auto(opts, state);
     return changed;
 }
-
-int
-dsd_squelch_analog_default_settle(dsd_opts* opts, const dsd_state* state) {
-    const int changed = dsd_squelch_analog_default_sync(opts, state);
-    if (changed && opts->audio_in_type == AUDIO_IN_RTL) {
-        const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
-        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&setting);
-    }
-    return changed;
-}

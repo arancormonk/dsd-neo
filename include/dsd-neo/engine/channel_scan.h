@@ -29,28 +29,32 @@ int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
-/** The squelch gates a radio receiver runs (issue #899), resolved now: @p now for the channel whose samples it produces
- * (a -Y row whose retune landed and waits for its commit or restage, else the channel the scan scope, or the session,
- * has on air: dsd_scan_mode_channel_squelch()), and @p landing for the channel the retune outstanding goes to (the
- * staged -Y row's while its tune is outstanding, else the channel on air's: a trunk-scan target, a signal-search range
- * and a manual tune retune the channel they put on air). Nothing is cached; both point at caller storage. */
-void dsd_engine_receiver_gates(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* now,
-                               dsd_squelch_setting* landing);
-/** On an RTL-family input: hand an outstanding retune that carries a gate the @p landing gate of
- * dsd_engine_receiver_gates() (rtl_stream_update_retune_squelch(), so a command that changed it while the retune was
- * queued or in flight is honoured where it lands), and with @p push_now the receiver the @p now gate, at once unless a
- * gate-carrying retune is outstanding, else once its outcome shows (dsd_engine_receiver_gate_owe()); any push owed
- * before is made then too. Decoder thread. */
-void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int push_now);
-/** A push of the gate the receiver runs now is owed (issue #899): held back while a gate-carrying retune is outstanding
- * (rtl_stream_retune_squelch_outstanding()), whose landing owns the gate until the decoder can see its outcome. */
-void dsd_engine_receiver_gate_owe(void);
-/** 1, and the debt cleared, when a push is owed and nothing is outstanding (@p outstanding 0): the caller pushes the
- * gate dsd_engine_receiver_gates() gives now. Decoder thread. */
-int dsd_engine_receiver_gate_take_owed(int outstanding);
-/** dsd_engine_receiver_gate_settle() with a push: what the scan scope's resume runs through
+/** The squelch gate of the channel whose samples a radio receiver produces (issue #899), resolved now: a -Y row whose
+ * retune landed and waits for its commit or restage, else the channel the scan scope, or the session, has on air
+ * (dsd_scan_mode_channel_squelch()). What a stream about to open runs. */
+dsd_squelch_setting dsd_engine_receiver_gate_now(const dsd_opts* opts, const dsd_state* state);
+/** The receiver's channel @p channel (a retune's or family request's, rtl_stream_prepare_retune_squelch_for_target(),
+ * rtl_stream_stage_family_gate(); 0: none) is where the on-air channel goes (issue #899): a manual tune, a trunk-scan
+ * target, a signal-search visit or restore, a family switch, a -Y row that commits. The decoder writes the on-air gate
+ * for it from here on, bound until it lands; the channel before it gets no more, unless this one fails. Decoder
+ * thread. */
+void dsd_engine_receiver_gate_on_air(uint32_t channel);
+/** On an RTL-family input, write the receiver the gates of the channels it may be producing, each tagged with that
+ * channel (issue #899): the on-air answer for the newest on-air channel it still knows, and a staged -Y row's own for
+ * that row's channel. The receiver applies the one it is on and keeps the others for their landings. Re-resolved when
+ * @p changed (a command ran, the session's squelch moved) or the receiver moved since the last settle (a landing, a
+ * family switch, an open, a channel dropped or failed); otherwise one lock-free load, nothing resolved or written. A
+ * write repeats only on a change. Decoder thread. */
+void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
+/** dsd_engine_receiver_gate_settle() with @p changed: what the scan scope's entry points run through
  * dsd_receiver_gate_settle_hook_set() (issue #899). */
 void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);
+/** Before a live family request (issue #899): bind the on-air gate, resolved now, to the next one
+ * (rtl_stream_stage_family_gate()), so the family switch applies with it. Returns the channel, 0 off a radio input. */
+uint32_t dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state);
+/** After the family requests: the staged gate's channel, if a request took it, is where the on-air channel goes; else
+ * it is dropped. */
+void dsd_engine_receiver_gate_family_done(uint32_t channel);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Service a row transaction before dispatch/next sync search. Returns 1 when ready;

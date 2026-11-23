@@ -2152,15 +2152,35 @@ typedef struct rtl_stream_test_retune_squelch_result {
     int gate_only_superseded_mode; /* one for the gate alone, superseded by a scan leave counted after it */
     /* Two gate-carrying retunes outstanding at once, the older (noise +10) in flight, the newer (auto +6) queued after
        it, landing in that order: the older lands closed (its request was replaced), the newer its own gate. */
-    int replaced_closed;      /* 1 when the older landing left the level gate at a level no power reaches */
-    int replaced_outstanding; /* rtl_stream_retune_squelch_outstanding() between the two landings: 1 */
-    int replacing_mode;       /* the newer landing's gate */
+    int replaced_closed; /* 1 when the older landing left the level gate at a level no power reaches */
+    int replacing_mode;  /* the newer landing's gate */
     int replacing_margin;
-    int settled_outstanding; /* ... and once both outcomes are published: 0 */
-    /* The newer one dropped before it was taken (a go-to refused): the older lands its own gate again, in the word the
-       decoder gave it since. */
+    /* The newer one dropped untaken right after the older was taken (a go-to refused), and the older landing at once,
+       with no word from the decoder in between: the older lands the gate its own channel was bound with (noise +10). */
+    int dropped_replacement_mode;
+    int dropped_replacement_margin;
+    /* The same, with the decoder's word for the older channel after the drop (noise +14): it lands that. */
     int reinstated_mode;
     int reinstated_margin;
+    /* Channel-tagged writes (rtl_stream_write_channel_gate()), with the receiver landed on a channel under noise +10:
+       for that channel (auto +6), for the channel it was on before (off), for a channel still outstanding (noise +14). */
+    int write_current_result;    /* RTL_STREAM_GATE_APPLIED */
+    int write_current_mode;      /* ... and the receiver runs it: auto */
+    int write_stale_result;      /* RTL_STREAM_GATE_STALE */
+    int write_stale_mode;        /* ... and the receiver keeps auto */
+    int write_bound_result;      /* RTL_STREAM_GATE_BOUND */
+    int write_bound_mode;        /* ... the receiver keeps auto until that channel lands */
+    int write_bound_landed_mode; /* ... then runs it: noise */
+    int write_bound_landed_margin;
+    int write_opened_result; /* a write for the channel a stream open started on, right after it: APPLIED */
+    /* A live family switch to the analog monitor that carries a gate (rtl_stream_stage_family_gate(), noise +10), asked
+       for on a digital front end running off while a gate-only retune (off) is taken and in flight: */
+    int family_switched;          /* 1 when the block boundary that took the request switched to the analog family */
+    int family_first_mode;        /* the gate the first analog block runs under: noise */
+    int family_first_margin;      /* 10 */
+    int family_after_retune_mode; /* once the in-flight retune lands (superseded by the analog request): still noise */
+    int family_taken;             /* rtl_stream_unstage_family_gate() after the request: 1, a request took it */
+    int family_refused_mode; /* a staged gate on an analog request the rate refuses lands nothing: the gate before */
 } rtl_stream_test_retune_squelch_result;
 
 /* Open the NFM monitor at 48 kHz with the squelch Off and land retunes that carry a squelch gate, one after another, as

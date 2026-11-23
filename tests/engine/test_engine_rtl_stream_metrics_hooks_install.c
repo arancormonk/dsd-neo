@@ -308,21 +308,41 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     g_last_channel_squelch_setting = *setting;
 }
 
-/* The gate an outstanding retune lands, resolved again (issue #899). */
-static int g_retune_squelch_updates;
-static dsd_squelch_setting g_last_retune_squelch;
-
-void
-rtl_stream_update_retune_squelch(const dsd_squelch_setting* setting) {
-    ++g_retune_squelch_updates;
-    g_last_retune_squelch = *setting;
-}
-
-static int g_retune_squelch_outstanding;
+/* The receiver's channel-tagged gates (issue #899): a write and the channel it named, the epoch and open, and the
+   family-request staging. */
+static int g_channel_gate_writes;
+static uint32_t g_last_channel_gate_channel;
+static dsd_squelch_setting g_last_channel_gate;
 
 int
-rtl_stream_retune_squelch_outstanding(void) {
-    return g_retune_squelch_outstanding;
+rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setting) {
+    ++g_channel_gate_writes;
+    g_last_channel_gate_channel = channel;
+    g_last_channel_gate = *setting;
+    return channel == 7U ? RTL_STREAM_GATE_APPLIED : RTL_STREAM_GATE_STALE;
+}
+
+uint32_t
+rtl_stream_channel_gate_epoch(void) {
+    return 41U;
+}
+
+uint32_t
+rtl_stream_channel_gate_opened(void) {
+    return 5U;
+}
+
+static dsd_squelch_setting g_staged_family_gate;
+
+uint32_t
+rtl_stream_stage_family_gate(const dsd_squelch_setting* setting) {
+    g_staged_family_gate = *setting;
+    return 9U;
+}
+
+int
+rtl_stream_unstage_family_gate(uint32_t channel) {
+    return channel == 9U ? 1 : 0;
 }
 
 static int g_replay_batch_calls;
@@ -549,16 +569,21 @@ main(void) {
     assert(g_last_channel_squelch_setting.mode == DSD_SQUELCH_MODE_AUTO
            && g_last_channel_squelch_setting.margin_db == 6);
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
-    /* The gate an outstanding retune lands goes to the stream whole (issue #899). */
+    /* A gate write reaches the stream whole with the channel it names, and the stream's verdict comes back (issue
+       #899). */
     const dsd_squelch_setting noise10 = {DSD_SQUELCH_MODE_NOISE, 0.0, 10};
-    assert(dsd_rtl_stream_metrics_hook_update_retune_squelch(&noise10) == 0);
-    assert(g_retune_squelch_updates == 1 && g_last_retune_squelch.mode == DSD_SQUELCH_MODE_NOISE
-           && g_last_retune_squelch.margin_db == 10);
-    assert(dsd_rtl_stream_metrics_hook_update_retune_squelch(NULL) == -1 && g_retune_squelch_updates == 1);
-    g_retune_squelch_outstanding = 1;
-    assert(dsd_rtl_stream_metrics_hook_retune_squelch_outstanding() == 1);
-    g_retune_squelch_outstanding = 0;
-    assert(dsd_rtl_stream_metrics_hook_retune_squelch_outstanding() == 0);
+    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(7U, &noise10) == DSD_CHANNEL_GATE_APPLIED);
+    assert(g_channel_gate_writes == 1 && g_last_channel_gate_channel == 7U
+           && g_last_channel_gate.mode == DSD_SQUELCH_MODE_NOISE && g_last_channel_gate.margin_db == 10);
+    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(6U, &noise10) == DSD_CHANNEL_GATE_STALE);
+    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(7U, NULL) == -1 && g_channel_gate_writes == 2);
+    assert(dsd_rtl_stream_metrics_hook_channel_gate_epoch() == 41U);
+    assert(dsd_rtl_stream_metrics_hook_channel_gate_opened() == 5U);
+    assert(dsd_rtl_stream_metrics_hook_stage_family_gate(&noise10) == 9U
+           && g_staged_family_gate.mode == DSD_SQUELCH_MODE_NOISE);
+    assert(dsd_rtl_stream_metrics_hook_stage_family_gate(NULL) == 0U);
+    assert(dsd_rtl_stream_metrics_hook_unstage_family_gate(9U) == 1);
+    assert(dsd_rtl_stream_metrics_hook_unstage_family_gate(8U) == 0);
 
     test_replay_batch_hook();
     /* The stream's discontinuity count reaches DSP through the table (issue #518). */
