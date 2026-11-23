@@ -11,7 +11,8 @@
  * the channel map or the user's overlay, each named by its decimal LPCN. The rows are rebuilt only when the view's
  * body was copied anew (its content_seq) or a name list changed, and a list is published only when its rows differ,
  * so a sheet a screen reader reads sees no churn from repeated grants (#782). While the sheet is closed (active false)
- * nothing is read.
+ * nothing is read. While the carrier names another system (other_system_here) both lists are empty and no channel is
+ * offered for an edit: that map is the other system's.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_DMR_CHANNELS_MODEL_H_
@@ -70,6 +71,11 @@ class DmrChannelsModel : public QObject {
     Q_PROPERTY(QString session READ session NOTIFY stateChanged)
     /** @brief The session runs a trunk scan: every edit is refused (read only). */
     Q_PROPERTY(bool trunkScanActive READ trunkScanActive NOTIFY stateChanged)
+    /** @brief The carrier names another system (dsd_ui_dmr_t3_view::other_system_here): its map is that system's, so
+     *  no Tier III row is listed and no edit is offered until the receiver is back on the Tier III system. */
+    Q_PROPERTY(bool otherSystemHere READ otherSystemHere NOTIFY stateChanged)
+    /** @brief An edit can be sent: no trunk scan, and the carrier names no other system. */
+    Q_PROPERTY(bool editable READ editable NOTIFY stateChanged)
     /** @brief The saved system the session runs, set by QML (empty: Explore, a scan, a search): where edits are
      *  kept. */
     Q_PROPERTY(QString sessionSystemUid READ sessionSystemUid WRITE setSessionSystemUid NOTIFY stateChanged)
@@ -107,7 +113,8 @@ class DmrChannelsModel : public QObject {
 
     /**
      * @brief Channel @p lpcn as an edit expects it: {lpcn, hz (the frequency DMR uses, 0 none or hidden), originCode,
-     * origin, baseHz, hidden, yours, missing, valid (a channel number 1..4094)}. Read from the rows last published.
+     * origin, baseHz, hidden, yours, missing, valid (a channel number 1..4094, and the carrier names no other
+     * system)}. Read from the rows last published.
      */
     Q_INVOKABLE QVariantMap channel(int lpcn) const;
     /** @brief The decode clock the missing rows' lastHeardMs is stamped on, in ms, for their age. */
@@ -180,6 +187,16 @@ class DmrChannelsModel : public QObject {
         return m_state.trunkScan;
     }
 
+    bool
+    otherSystemHere() const {
+        return m_state.otherSystemHere;
+    }
+
+    bool
+    editable() const {
+        return !m_state.trunkScan && !m_state.otherSystemHere;
+    }
+
     QString
     sessionSystemUid() const {
         return m_sessionSystemUid;
@@ -245,6 +262,7 @@ class DmrChannelsModel : public QObject {
         bool tier3Unchecked = false;
         bool ccConfirmedHere = false;
         bool trunkScan = false;
+        bool otherSystemHere = false;
         qint64 ccHz = 0;
         quint32 generation = 0;
         quint32 revision = 0;

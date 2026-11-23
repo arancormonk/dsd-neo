@@ -11,8 +11,11 @@ import "Util.js" as Util
 // decoder refuses it when any of those moved on; after such a refusal the
 // editor reads the channel again and keeps what was typed. The Channels sheet
 // sends the edit (submit) and handles its answer: while it is due nothing
-// more can be sent (pending); a refusal is said here (refused()) and the
-// editor stays open; an applied edit closes it.
+// more can be sent (pending), and once it has waited a while a calm line says
+// when it will be made (waiting); a refusal is said here (refused()) and the
+// editor stays open; an applied edit closes it. While the sheet sends nothing
+// (lockedText: a trunk scan, another system's carrier, a save owed) the editor
+// is read-only and says why.
 ModalSheet {
     id: sheet
     objectName: "channelEditSheet"
@@ -25,6 +28,11 @@ ModalSheet {
     // the request id, 0 when nothing was sent.
     property var submit: null
     property bool pending: false
+    // Why the sheet sends no edit now, "" when it does (ChannelsSheet.lockText).
+    property string lockedText: ""
+    // This editor's edit has waited a while for the decoder (ChannelsSheet).
+    property bool waiting: false
+    property string waitingText: ""
 
     // The channel as it was when the editor opened (DmrChannelsModel::channel()),
     // and the network and session the edit expects.
@@ -46,7 +54,15 @@ ModalSheet {
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
     property int announcements: 0
-    readonly property bool readOnly: channels.trunkScanActive === true
+    readonly property bool readOnly: channels.editable !== true || lockedText.length > 0
+    // Said once when it comes while the editor is open.
+    onLockedTextChanged: {
+        if (visible && lockedText.length > 0)
+            Navigation.announce(sheet, lockedLine, lockedText);
+    }
+    function sayWaiting(text) {
+        Navigation.announce(sheet, waitingLine, text);
+    }
 
     // A frequency typed in MHz to the Hz, without the rounding of a float
     // product: -1 for text that is not one.
@@ -141,6 +157,8 @@ ModalSheet {
             return qsTr("Channels can't be changed while Signal search is running.");
         case "dropped":
             return qsTr("Listening stopped before the change was made.");
+        case "other-system":
+            return qsTr("This channel belongs to another system now, so it can't be changed here.");
         }
         return qsTr("dsd-neo did not make the change. Try again.");
     }
@@ -185,6 +203,16 @@ ModalSheet {
         wrapMode: Text.Wrap
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
+    }
+    ReadableText {
+        id: lockedLine
+        objectName: "channelEditLocked"
+        width: parent.width
+        visible: sheet.readOnly && text.length > 0
+        text: sheet.lockedText
+        wrapMode: Text.Wrap
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
     }
     ReadableText {
         objectName: "channelEditNotKept"
@@ -294,6 +322,18 @@ ModalSheet {
             sheet.removeArmed = false;
             sheet.send(sheet.channels.opRestore, 0);
         }
+    }
+    // The edit sent has waited a while: the decoder makes it when the call it
+    // follows ends.
+    ReadableText {
+        id: waitingLine
+        objectName: "channelEditWaiting"
+        width: parent.width
+        visible: sheet.pending && sheet.waiting
+        text: sheet.waitingText
+        wrapMode: Text.Wrap
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
     }
     ReadableText {
         id: messageLine

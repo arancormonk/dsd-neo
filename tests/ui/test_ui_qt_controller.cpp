@@ -2254,13 +2254,25 @@ test_dmr_channel_bridge() {
     again = bridge.saveDmrChannelEdit(QString(), 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
     check(!again.value("saved").toBool() && again.value("saveError").toString() == "no-system");
 
+    /* The receiver is on another system by the time the decoder applies it: refused, with its own key, and kept
+       nowhere. */
+    state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_P25);
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER,
+                               channels.generation(), siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 6 && answers.value(5).value("result").toString() == "other-system"
+          && !answers.value(5).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_NONE);
+
     /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
     check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));
     dsd_app_frontend_runtime_stop();
     host.setPhase(Host::Idle);
-    check(answers.size() == 6 && answers.value(5).value("result").toString() == "dropped"
-          && answers.value(5).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
-          && !answers.value(5).value("saved").toBool());
+    check(answers.size() == 7 && answers.value(6).value("result").toString() == "dropped"
+          && answers.value(6).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
+          && !answers.value(6).value("saved").toBool());
     check(channels.channels().isEmpty()); // a stopped session lists nothing
     while (systems.count() > 0 && systems.remove(0)) {}
     freeState(&state);

@@ -3166,9 +3166,10 @@ test_block_label_patched_call() {
 }
 
 /* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
-   Channels entry opens on a verified Tier III identity or a session started with the saved system's Tier III channels;
-   a RAS-only identity is display only. The entry also opens while the live list holds channels of the user's, without
-   that making the site Tier III. All ride the control group. */
+   Channels entry opens on a verified Tier III identity or a session the saved system's Tier III channels applied to
+   (overrides_applied, not the path the engine may have skipped); a RAS-only identity is display only. The entry also
+   opens while the live list holds channels of the user's, without that making the site Tier III. All ride the control
+   group. */
 static void
 test_dmr_tier3_readings() {
     const auto optsHolder = std::make_unique<dsd_opts>();
@@ -3200,22 +3201,29 @@ test_dmr_tier3_readings() {
     model.refresh(&opts, &state);
     expect("a verified identity does", model.dmrTier3() && control == before + 2);
     view.tier3 = 0U;
+    /* The engine leaves the path set when it skipped the file (a trunk scan, a session that does not decode DMR): the
+       path alone opens nothing. */
     DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    model.refresh(&opts, &state);
+    expect("a channels file the engine skipped opens no editor", !model.dmrTier3());
+    view.overrides_applied = 1U;
     model.refresh(&opts, &state);
     expect("so does a session started with the saved system's channels", model.dmrTier3());
     opts.dmr_chan_overrides_file[0] = '\0';
+    view.overrides_applied = 0U;
     model.refresh(&opts, &state);
     expect("a RAS-only site with no channels of the user's has no entry",
            !model.dmrTier3() && !model.dmrUserChannels());
     view.overlay_count = 1U;
     view.overlay[0].lpcn = 12U;
     model.refresh(&opts, &state);
-    expect("channels of the user's keep the entry open", model.dmrUserChannels() && control == before + 4);
+    expect("channels of the user's keep the entry open", model.dmrUserChannels() && control == before + 6);
     expect("and do not make the site Tier III", !model.dmrTier3());
     /* A carrier naming another system (Connect Plus, or P25 under Auto) has that system's map: no Channels route
        opens there, the saved system's channels file included. */
     view.tier3 = 1U;
     DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    view.overrides_applied = 1U;
     view.other_system_here = 1U;
     model.refresh(&opts, &state);
     expect("another system on the carrier opens no editor",
@@ -3225,6 +3233,7 @@ test_dmr_tier3_readings() {
     expect("back on the Tier III system, the route is back",
            model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
     view.tier3 = 0U;
+    view.overrides_applied = 0U;
     opts.dmr_chan_overrides_file[0] = '\0';
     view.present = 0U;
     model.refresh(&opts, &state);

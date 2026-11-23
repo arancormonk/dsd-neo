@@ -535,10 +535,11 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     /* A carrier that names another system (another DMR trunking system, or another protocol's) has that system's
        channel map: no Tier III Channels route opens there, the saved system's channels file included. */
     const bool t3_here = t3_present && t3->other_system_here == 0U;
-    const bool t3_elsewhere = t3_present && !t3_here;
     next.no_freq_count = static_cast<int>(dsd_app_dmr_t3_view_missing_shown(t3));
-    const bool saved_channels = opts_snapshot->dmr_chan_overrides_file[0] != '\0';
-    next.dmr_tier3 = (t3_here && t3->tier3 != 0U) || (!t3_elsewhere && saved_channels);
+    /* The saved system's channels file applied to this session: the engine leaves the path set when it skipped the
+       file (a trunk scan, a session that does not decode DMR), so the path alone says nothing. */
+    const bool saved_channels = t3_here && t3->overrides_applied != 0U;
+    next.dmr_tier3 = t3_here && (t3->tier3 != 0U || saved_channels);
     next.dmr_user_channels = t3_here && t3->overlay_count > 0U;
     next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
     next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);

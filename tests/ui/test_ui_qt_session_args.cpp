@@ -2475,7 +2475,16 @@ test_dmr_channels_csv(void) {
            dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
     sys["extraArgs"] = QStringLiteral("--trunk-scan=/data/targets.csv");
     expect("in either form", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    /* A list that starts switched off is a trunk scan too: "off" is the list's, not the scan's. */
+    sys["extraArgs"] = QStringLiteral("--trunk-scan-off /data/targets.csv");
+    expect("nor a list that starts off", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys["extraArgs"] = QStringLiteral("--trunk-scan-off=/data/targets.csv");
+    expect("in either form", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
     sys.remove("extraArgs");
+    SessionArgPrefs scanOffPrefs;
+    scanOffPrefs.extraArgs = QStringLiteral("--trunk-scan-off=/data/targets.csv");
+    expect("a list that starts off among the app's",
+           dsd_qt::session_args_dmr_channels_csv(sys, scanOffPrefs).isEmpty());
     SessionArgPrefs scanPrefs;
     scanPrefs.extraArgs = QStringLiteral("--trunk-scan /data/targets.csv");
     expect("nor among the app's", dsd_qt::session_args_dmr_channels_csv(sys, scanPrefs).isEmpty());

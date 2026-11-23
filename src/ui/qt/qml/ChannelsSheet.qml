@@ -12,7 +12,10 @@ import "Util.js" as Util
 // one, and where it came from, a page at a time. A row opens the channel
 // editor; an edit is kept on the saved system the session runs (the bridge
 // does that once the decoder applied it), and a save that failed can be tried
-// again. Under a trunk scan the channels are read-only.
+// again. Under a trunk scan the channels are read-only; on another system's
+// carrier none is listed or changed; and while a save is owed for the
+// session's system nothing more is changed until Try saving again saves it,
+// so the saved list never takes the edits in another order than the live one.
 ModalSheet {
     id: sheet
     objectName: "channelsSheet"
@@ -57,7 +60,36 @@ ModalSheet {
         visible = true;
     }
 
-    readonly property bool readOnly: channels.trunkScanActive === true
+    // Why no edit can be sent now, "" when one can: the editor shows the same
+    // words (lockText). A save owed for the session's system comes first to
+    // be fixed (fail closed): an edit made after it could be saved before it.
+    readonly property bool otherSystem: channels.otherSystemHere === true
+    readonly property bool saveOwedHere: owedSaveCount > 0 && owedFor(String(channels.sessionSystemUid))
+    readonly property string lockNote: otherSystem
+        ? qsTr("dsd-neo is on another system now, so Tier III channels can't be changed here.")
+        : channels.trunkScanActive === true ? qsTr("Channel editing is available when one system is running.")
+        : ""
+    readonly property string saveFirstText: qsTr("Save the earlier change first: Try saving again.")
+    readonly property string lockText: lockNote.length ? lockNote : saveOwedHere ? saveFirstText : ""
+    readonly property bool readOnly: lockText.length > 0
+    onOtherSystemChanged: {
+        if (otherSystem)
+            Qt.callLater(sheet.otherSystemArrived);
+    }
+    // The carrier now names another system: its rows went. Said once, and the
+    // focus moves to the words that say why when it was on a row that went.
+    function otherSystemArrived() {
+        if (!visible || !otherSystem)
+            return;
+        followLpcn = 0;
+        Navigation.announce(sheet, readOnlyNote, lockNote);
+        var window = sheet.Window.window;
+        var focused = window ? window.activeFocusItem : null;
+        if (editSheet.visible || !focused)
+            return;
+        if (!Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5)
+            readOnlyNote.forceActiveFocus();
+    }
     // What the last edit leaves to say: not kept, not saved, or refused after
     // the editor closed.
     property string status: ""
@@ -92,6 +124,34 @@ ModalSheet {
     // was removed, say) is not kept.
     property var owedSaves: ({})
     property int owedSaveCount: 0
+    function owedFor(uid) {
+        for (var key in owedSaves) {
+            if (owedSaves[key].systemUid === uid)
+                return true;
+        }
+        return false;
+    }
+    // An edit sent and still unanswered after a moment: the decoder applies
+    // an edit made during a DMR voice call when the call ends.
+    property bool requestSlow: false
+    property int slowRequestMs: 2000
+    onRequestChanged: requestSlow = false
+    Timer {
+        interval: sheet.slowRequestMs
+        running: sheet.request > 0
+        onTriggered: {
+            sheet.requestSlow = true;
+            sheet.sayWaiting();
+        }
+    }
+    readonly property string waitingText: qsTr("Saved when the current call ends.")
+    // Said once where it shows: in the editor that sent the edit, else here.
+    function sayWaiting() {
+        if (editSheet.visible && editSheet.sent === request)
+            editSheet.sayWaiting(waitingText);
+        else if (visible)
+            Navigation.announce(sheet, waitingLine, waitingText);
+    }
 
     function named(name) {
         return name ? " (" + Util.oneLine(name) + ")" : "";
@@ -334,6 +394,11 @@ ModalSheet {
     function follow() {
         if (followLpcn <= 0 || !visible)
             return;
+        // Another system's carrier lists no rows to follow.
+        if (otherSystem) {
+            followLpcn = 0;
+            return;
+        }
         // An editor open on another channel has the focus, whether it was
         // open when the answer came or opened since: it stays there (the one
         // that sent the edit closed when it was answered).
@@ -352,12 +417,17 @@ ModalSheet {
             row.forceActiveFocus();
             return;
         }
-        // Listed past the pages shown: show up to the page that holds it,
-        // then focus its row once built.
+        // Listed on the page after the ones shown: show that page, then focus
+        // its row once built. Further on, the focus waits on the Channels
+        // heading: showing every page before it would build thousands of
+        // rows at once on a large channel map.
         var at = channelIndexOf(followLpcn);
         if (at >= 0) {
-            if (at >= channelLimit) {
-                channelLimit = (Math.floor(at / channelPageSize) + 1) * channelPageSize;
+            if (at >= channelLimit + channelPageSize) {
+                followLpcn = 0;
+                channelsLabel.forceActiveFocus();
+            } else if (at >= channelLimit) {
+                channelLimit += channelPageSize;
                 Qt.callLater(sheet.follow);
             }
             return;
@@ -500,10 +570,11 @@ ModalSheet {
         color: Theme.textPrimary
     }
     ReadableText {
+        id: readOnlyNote
         objectName: "channelsReadOnlyNote"
         width: parent.width
-        visible: sheet.readOnly
-        text: qsTr("Channel editing is available when one system is running.")
+        visible: text.length > 0
+        text: sheet.lockNote
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
@@ -521,6 +592,29 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: sheet.statusProblem ? Theme.alert : Theme.textSecondary
     }
+    // An edit sent a while ago and still unanswered, with the editor closed.
+    ReadableText {
+        id: waitingLine
+        objectName: "channelsWaiting"
+        width: parent.width
+        visible: sheet.requestSlow && sheet.request > 0 && !editSheet.visible
+        text: sheet.waitingText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
+    // Nothing more is changed until the save owed is made.
+    ReadableText {
+        objectName: "channelsSaveFirst"
+        width: parent.width
+        visible: sheet.saveOwedHere && sheet.lockNote.length === 0
+        text: sheet.saveFirstText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.textSecondary
+    }
     OutlineButton {
         id: retryButton
         objectName: "channelsRetrySave"
@@ -530,9 +624,11 @@ ModalSheet {
         onClicked: sheet.retrySaves()
     }
 
+    // Another system's carrier has no Tier III channels to list.
     MicroLabel {
         objectName: "channelsMissingLabel"
         topPadding: 6
+        visible: !sheet.otherSystem
         text: qsTr("No frequency")
     }
     ReadableText {
@@ -551,7 +647,7 @@ ModalSheet {
     ReadableText {
         objectName: "channelsMissingEmpty"
         width: parent.width
-        visible: missingRows.live === 0
+        visible: missingRows.live === 0 && !sheet.otherSystem
         text: qsTr("No unresolved grants recorded.")
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -614,7 +710,10 @@ ModalSheet {
         onClicked: sheet.showMoreMissing()
     }
 
+    // Where the focus waits after an edit to a channel listed past the next
+    // page (follow()).
     MicroLabel {
+        id: channelsLabel
         objectName: "channelsChannelsLabel"
         topPadding: 6
         visible: channelRows.live > 0
@@ -690,6 +789,9 @@ ModalSheet {
         parent: sheet
         channels: sheet.channels
         pending: sheet.request > 0
+        lockedText: sheet.lockText
+        waiting: sheet.requestSlow && sent > 0 && sent === sheet.request
+        waitingText: sheet.waitingText
         submit: function (lpcn, op, hz, expected, generation, session) {
             return sheet.submit(lpcn, op, hz, expected, generation, session);
         }

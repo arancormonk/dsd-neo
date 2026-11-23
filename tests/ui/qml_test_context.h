@@ -4673,7 +4673,7 @@ class Setup : public QObject {
      * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz (the
      * frequency DMR uses), hidden, baseHz, sharedHz (the shared map row, when another writer moved it)}], `names`
      * [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`, `session`
-     * (default 1), `trunkScan`. Every call is a new body (content_seq moves), as a
+     * (default 1), `trunkScan`, `otherSystem` (other_system_here). Every call is a new body (content_seq moves), as a
      * snapshot copied anew is.
      */
     Q_INVOKABLE void
@@ -4694,7 +4694,8 @@ class Setup : public QObject {
         DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
         (void)dsd_tg_policy_clear(state);
         view->present = 1U;
-        view->tier3 = spec.value(QStringLiteral("tier3"), true).toBool() ? 1U : 0U;
+        view->other_system_here = spec.value(QStringLiteral("otherSystem")).toBool() ? 1U : 0U;
+        view->tier3 = view->other_system_here == 0U && spec.value(QStringLiteral("tier3"), true).toBool() ? 1U : 0U;
         view->cc_hz = spec.value(QStringLiteral("ccHz"), 0).toLongLong();
         view->cc_confirmed_here = view->cc_hz > 0 ? 1U : 0U;
         view->generation = spec.value(QStringLiteral("generation"), 1).toUInt();

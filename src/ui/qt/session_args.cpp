@@ -1117,8 +1117,11 @@ session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& 
     }
     const QStringList options =
         option_tokens(system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs);
-    if (std::any_of(options.cbegin(), options.cend(),
-                    [](const QString& token) { return long_option_is(token, QLatin1String("--trunk-scan")); })) {
+    if (std::any_of(options.cbegin(), options.cend(), [](const QString& token) {
+            /* A list that starts switched off is a trunk scan too: "off" is the list's. */
+            return long_option_is(token, QLatin1String("--trunk-scan"))
+                   || long_option_is(token, QLatin1String("--trunk-scan-off"));
+        })) {
         return {};
     }
     const QVariantList rows = SavedSystemsModel::validDmrChannels(system.value(QStringLiteral("dmrChannels")));

@@ -115,8 +115,9 @@ DmrChannelsModel::DmrChannelsModel(QObject* parent) : QObject(parent), m_decodeN
 bool
 DmrChannelsModel::State::operator==(const State& other) const {
     return present == other.present && tier3 == other.tier3 && tier3Unchecked == other.tier3Unchecked
-           && ccConfirmedHere == other.ccConfirmedHere && trunkScan == other.trunkScan && ccHz == other.ccHz
-           && generation == other.generation && revision == other.revision && session == other.session;
+           && ccConfirmedHere == other.ccConfirmedHere && trunkScan == other.trunkScan
+           && otherSystemHere == other.otherSystemHere && ccHz == other.ccHz && generation == other.generation
+           && revision == other.revision && session == other.session;
 }
 
 QString
@@ -219,8 +220,14 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     next.revision = view->revision;
     next.session = commandSession != 0U ? QString::number(commandSession) : QString();
     next.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
+    next.otherSystemHere = view->other_system_here != 0U;
     const uint64_t nameKey = dsd_alias_name_key(snapshot);
-    if (!m_built || view->content_seq != m_contentSeq || nameKey != m_nameKey) {
+    if (next.otherSystemHere) {
+        /* Another system's map: no Tier III rows, and nothing to edit. The flag can move without a new body, so the
+           rows are read again once it clears. */
+        m_built = false;
+        publishLists({}, {}, {});
+    } else if (!m_built || view->content_seq != m_contentSeq || nameKey != m_nameKey) {
         rebuild(*view, snapshot);
         m_built = true;
         m_contentSeq = view->content_seq;
@@ -272,7 +279,7 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
 QVariantMap
 DmrChannelsModel::channel(int lpcn) const {
     QVariantMap out{{QStringLiteral("lpcn"), lpcn},
-                    {QStringLiteral("valid"), lpcn >= minChannel() && lpcn <= maxChannel()},
+                    {QStringLiteral("valid"), lpcn >= minChannel() && lpcn <= maxChannel() && !m_state.otherSystemHere},
                     {QStringLiteral("hz"), QVariant::fromValue<qint64>(0)},
                     {QStringLiteral("originCode"), static_cast<int>(DSD_UI_DMR_T3_ORIGIN_NONE)},
                     {QStringLiteral("origin"), QString()},

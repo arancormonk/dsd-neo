@@ -185,7 +185,7 @@ class CommandBridge : public QObject {
     void pollDmrChannelResults();
 
     /** @brief The key of a dsd_app_dmr_channel_set_code: "ok", "stale", "trunk-scan", "invalid", "full", "search",
-     *  "dropped", or "unknown". */
+     *  "dropped", "other-system" (the carrier names another system), or "unknown". */
     static QString dmrChannelResultKey(int code);
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */

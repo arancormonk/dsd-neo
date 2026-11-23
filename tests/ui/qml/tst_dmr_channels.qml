@@ -133,6 +133,7 @@ Item {
                 // A case that leaves its edit unanswered (the decoder always answers one).
                 sheet.request = 0;
                 sheet.setStatus("", false);
+                sheet.slowRequestMs = 2000;
             }
             findChild(monitor, "siteSheet").visible = false;
             findChild(monitor, "channelsSheet").visible = false;
@@ -272,6 +273,7 @@ Item {
                 {result: "trunk-scan", text: "Channel editing is available when one system is running."},
                 {result: "dropped", text: "Listening stopped before the change was made."},
                 {result: "search", text: "Channels can't be changed while Signal search is running."},
+                {result: "other-system", text: "This channel belongs to another system now, so it can't be changed here."},
                 {result: "unknown", text: "dsd-neo did not make the change. Try again."}
             ];
             openSheet(view({}));
@@ -732,7 +734,7 @@ Item {
         // A channel given a frequency from "No frequency" can land past the Channels page shown: the page that holds
         // it is shown, and the focus follows it there.
         function test_follow_reveals_the_page_of_the_channel() {
-            var spec = view({channels: manyChannels(120)});
+            var spec = view({channels: manyChannels(80)});
             spec.missing = [{lpcn: 200, slot: 0, group: true, caller: 5001, recipient: 1234, agoMs: 1000}];
             spec.extra = [];
             openSheet(spec);
@@ -744,14 +746,42 @@ Item {
             tap(findChild(edit, "channelEditSave"));
             commands.answerDmrChannel({result: "ok", revision: 10});
             tryCompare(edit, "visible", false);
-            var moved = view({revision: 10, channels: manyChannels(120).concat([{lpcn: 200, origin: 2, hz: 452500000}])});
+            var moved = view({revision: 10, channels: manyChannels(80).concat([{lpcn: 200, origin: 2, hz: 452500000}])});
             moved.missing = [];
             moved.extra = [];
             testContext.setDmrChannelsView(moved);
             tryVerify(function () { return row("channelsChannelRow", 200) !== null; }, 2000, "its page is shown");
             tryVerify(function () { return row("channelsChannelRow", 200).activeFocus; }, 2000, "the focus follows it");
             compare(sheet.followLpcn, 0);
-            compare(rows("channelsChannelRow").length, 121);
+            compare(rows("channelsChannelRow").length, 81);
+        }
+
+        // R9: a channel listed further on than the next page is not revealed: that would build every row before it at
+        // once on a large map. The focus waits on the Channels heading, and only the pages shown are built.
+        function test_follow_far_channel_stays_on_the_heading() {
+            var spec = view({channels: manyChannels(300)});
+            spec.missing = [{lpcn: 400, slot: 0, group: true, caller: 5001, recipient: 1234, agoMs: 1000}];
+            spec.extra = [];
+            openSheet(spec);
+            var missing = row("channelsMissingRow", 400);
+            missing.forceActiveFocus();
+            tap(missing);
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "452.5");
+            tap(findChild(edit, "channelEditSave"));
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            tryCompare(edit, "visible", false);
+            var moved = view({revision: 10, channels: manyChannels(300).concat([{lpcn: 400, origin: 2, hz: 452500000}])});
+            moved.missing = [];
+            moved.extra = [];
+            testContext.setDmrChannelsView(moved);
+            var heading = item("channelsChannelsLabel");
+            tryVerify(function () { return heading.activeFocus; }, 2000, "the focus waits on the Channels heading");
+            compare(sheet.followLpcn, 0);
+            compare(sheet.channelLimit, 50);
+            wait(50);
+            compare(allRows("channelsChannelRow").length, 50, "no page past the one shown is built");
+            verify(heading.activeFocus);
         }
 
         // An earlier edit's answer is still handled while an editor is open on another channel, but the focus stays
@@ -870,12 +900,17 @@ Item {
             tryCompare(sheet, "visible", true);
             verify(retry.visible, "kept while the sheet was closed");
             compare(item("channelsStatus").text, notSaved);
-            // Another channel's edit, saved: the one owed still is.
+            // R8: while it is owed nothing more is changed (fail closed), so the saved list never takes a later edit
+            // before it.
+            var saveFirst = item("channelsSaveFirst");
+            verify(saveFirst.visible);
+            compare(saveFirst.text, "Save the earlier change first: Try saving again.");
+            verify(!item("channelsAddButton").enabled);
+            compare(row("channelsChannelRow", 22).Accessible.role, Accessible.StaticText);
             tap(row("channelsChannelRow", 22));
-            tryCompare(edit, "visible", true);
-            tap(findChild(edit, "channelEditHide"));
-            commands.answerDmrChannel({result: "ok"});
-            tryCompare(edit, "visible", false);
+            wait(50);
+            verify(!edit.visible, "a row opens no editor");
+            compare(commands.dmrChannelRequests().length, 1);
             compare(item("channelsStatus").text, notSaved);
             verify(retry.visible);
             commands.setDmrChannelSaveResult({saved: false, saveError: "not-saved"});
@@ -896,6 +931,122 @@ Item {
             compare(item("channelsStatus").text, "Saved.");
             compare(sheet.announced, "Saved.");
             verify(item("channelsAddButton").activeFocus, "the focus stays in the sheet");
+            // Saved: edits are made again.
+            verify(!saveFirst.visible);
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            verify(findChild(edit, "channelEditHide").enabled);
+        }
+
+        // R8: an editor opened while an earlier edit was due goes read-only when that edit's save fails, and says why.
+        function test_save_owed_locks_the_open_editor() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            edit.visible = false;
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            var locked = findChild(edit, "channelEditLocked");
+            verify(!locked.visible);
+            commands.answerDmrChannel({result: "ok", saved: false, saveError: "not-saved"});
+            tryCompare(locked, "visible", true);
+            compare(locked.text, "Save the earlier change first: Try saving again.");
+            compare(edit.announced, locked.text);
+            verify(!findChild(edit, "channelEditHide").enabled);
+            verify(!findChild(edit, "channelEditSave").enabled);
+            compare(sheet.submit(22, dmrChannels.opHide, 0, dmrChannels.channel(22), dmrChannels.generation, dmrChannels.session), 0,
+                    "and the sheet sends nothing");
+            compare(commands.dmrChannelRequests().length, 1);
+            // Another system's save owed does not hold this one's edits.
+            dmrChannels.sessionSystemUid = "99999999-2222-3333-4444-555555555555";
+            verify(!locked.visible);
+            verify(findChild(edit, "channelEditHide").enabled);
+        }
+
+        // R7: the carrier names another system (Connect Plus, P25 under Auto): its map is that system's. The open sheet
+        // lists no Tier III rows and the open editor sends nothing, each saying why, until the receiver is back.
+        function test_other_system_is_read_only() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            var text = "dsd-neo is on another system now, so Tier III channels can't be changed here.";
+            testContext.setDmrChannelsView(view({otherSystem: true}));
+            var locked = findChild(edit, "channelEditLocked");
+            tryCompare(locked, "visible", true);
+            compare(locked.text, text);
+            compare(edit.announced, text);
+            verify(!findChild(edit, "channelEditSave").enabled);
+            verify(!findChild(edit, "channelEditHide").enabled);
+            verify(!findChild(edit, "channelEditUseCc").enabled);
+            findChild(edit, "channelEditSave").activate();
+            compare(commands.dmrChannelRequests().length, 0, "the editor sends nothing");
+            edit.visible = false;
+            var note = item("channelsReadOnlyNote");
+            verify(note.visible);
+            compare(note.text, text);
+            tryVerify(function () { return rows("channelsMissingRow").length === 0; }, 2000, "no Tier III rows");
+            compare(rows("channelsChannelRow").length, 0);
+            verify(!item("channelsMissingLabel").visible);
+            verify(!item("channelsMissingEmpty").visible);
+            verify(!item("channelsAddButton").enabled);
+            compare(dmrChannels.channel(18).valid, false);
+            compare(sheet.submit(18, dmrChannels.opHide, 0, dmrChannels.channel(18), dmrChannels.generation, dmrChannels.session), 0);
+            compare(commands.dmrChannelRequests().length, 0);
+            // Back on the Tier III system: the rows and the edits come back.
+            testContext.setDmrChannelsView(view({}));
+            tryVerify(function () { return row("channelsChannelRow", 18) !== null; });
+            verify(!note.visible);
+            verify(item("channelsAddButton").enabled);
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            verify(!findChild(edit, "channelEditLocked").visible);
+        }
+
+        // R7: the focus on a row that went with the other system's carrier moves to the words that say why.
+        function test_other_system_moves_the_focus_to_the_note() {
+            openSheet(view({}));
+            var eighteen = row("channelsChannelRow", 18);
+            eighteen.forceActiveFocus();
+            testContext.setDmrChannelsView(view({otherSystem: true}));
+            var note = item("channelsReadOnlyNote");
+            tryVerify(function () { return note.activeFocus; }, 2000, "the focus moves to the note");
+            compare(sheet.announced, note.text);
+        }
+
+        // An edit the decoder holds (one made during a DMR voice call is applied when the call ends) says so after a
+        // moment, in the editor that sent it or, closed, in the sheet; the answer takes the line away.
+        function test_slow_edit_says_when_it_is_made() {
+            sheet.slowRequestMs = 50;
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            var waiting = findChild(edit, "channelEditWaiting");
+            tap(findChild(edit, "channelEditHide"));
+            verify(!waiting.visible, "not at once");
+            tryCompare(waiting, "visible", true);
+            compare(waiting.text, "Saved when the current call ends.");
+            compare(waiting.Accessible.role, Accessible.StaticText);
+            compare(edit.announced, waiting.text);
+            findChild(edit, "channelEditClose").activate();
+            tryCompare(edit, "visible", false);
+            var sheetWaiting = item("channelsWaiting");
+            verify(sheetWaiting.visible, "the sheet says it once the editor is closed");
+            commands.answerDmrChannel({result: "ok"});
+            tryCompare(sheetWaiting, "visible", false);
+            verify(!sheet.requestSlow);
+            // Closed before the moment passed: the sheet says it, and reads it out.
+            tap(row("channelsChannelRow", 23));
+            tryCompare(edit, "visible", true);
+            tap(findChild(edit, "channelEditHide"));
+            findChild(edit, "channelEditClose").activate();
+            tryCompare(edit, "visible", false);
+            tryCompare(sheetWaiting, "visible", true);
+            compare(sheet.announced, "Saved when the current call ends.");
+            commands.answerDmrChannel({result: "ok"});
+            tryCompare(sheetWaiting, "visible", false);
         }
 
         // The keyboard's action key in the channel number goes on to the frequency, through the field's next-field

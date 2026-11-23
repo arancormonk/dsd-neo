@@ -277,6 +277,39 @@ test_rows_read_the_effective_frequency() {
            listed.size() == 7 && listed.at(0) == 451012500 && listed.at(1) == 451137500 && listed.at(2) == 0);
 }
 
+/* R7: a carrier that names another system (Connect Plus, P25 under Auto) has that system's map. An open sheet lists no
+ * Tier III rows and offers no edits until the receiver is back on the Tier III system, and the flag moves the rows by
+ * itself (the body need not be copied anew). A trunk scan offers no edits either. */
+void
+test_other_system_offers_no_edits() {
+    seed_view();
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a Tier III carrier offers edits",
+           model.editable() && !model.otherSystemHere() && model.channel(20).value("valid").toBool());
+    int stateSignals = 0;
+    QObject::connect(&model, &dsd_qt::DmrChannelsModel::stateChanged, [&]() { ++stateSignals; });
+    g_fixture->view.other_system_here = 1U;
+    g_fixture->view.tier3 = 0U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("another system: no edits", !model.editable() && model.otherSystemHere() && stateSignals == 1);
+    expect("and no Tier III rows", model.missing().isEmpty() && model.missingByChannel().isEmpty()
+                                       && model.missingCount() == 0 && model.channels().isEmpty());
+    expect("and no channel to edit",
+           !model.channel(20).value("valid").toBool() && model.channel(20).value("hz").toLongLong() == 0);
+    g_fixture->view.other_system_here = 0U;
+    g_fixture->view.tier3 = 1U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("back on Tier III: the rows and the edits are back",
+           model.editable() && !model.otherSystemHere() && model.missingCount() == 3 && model.channels().size() == 7
+               && model.channel(20).value("hz").toLongLong() == 451137500);
+    g_fixture->opts->trunk_scan_enabled = 1;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a trunk scan offers no edits", !model.editable() && model.trunkScanActive());
+    g_fixture->opts->trunk_scan_enabled = 0;
+}
+
 void
 test_origin_keys() {
     expect("no origin has no key", dsd_qt::DmrChannelsModel::originKey(DSD_UI_DMR_T3_ORIGIN_NONE, false).isEmpty());
@@ -299,6 +332,7 @@ main(int argc, char** argv) {
     test_rows();
     test_no_churn();
     test_rows_read_the_effective_frequency();
+    test_other_system_offers_no_edits();
     test_origin_keys();
     g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
     dsd_state_ext_free_all(g_fixture->state.get());

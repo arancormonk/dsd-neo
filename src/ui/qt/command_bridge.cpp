@@ -1324,6 +1324,7 @@ CommandBridge::dmrChannelResultKey(int code) {
         case DSD_APP_DMR_CHANNEL_SET_FULL: return QStringLiteral("full");
         case DSD_APP_DMR_CHANNEL_SET_SEARCH: return QStringLiteral("search");
         case DSD_APP_DMR_CHANNEL_SET_DROPPED: return QStringLiteral("dropped");
+        case DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM: return QStringLiteral("other-system");
         default: return QStringLiteral("unknown");
     }
 }
