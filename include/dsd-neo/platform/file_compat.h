@@ -354,6 +354,19 @@ typedef struct {
  */
 int dsd_path_file_identity(const char* path, dsd_file_identity_t* out);
 
+/**
+ * @brief The identity of the file open as @p fp, as dsd_path_file_identity() reads it of a name: what was opened, so a
+ * name replaced after the open does not change it.
+ *
+ * POSIX reads fstat(); Windows the stream's handle (GetFileInformationByHandle()).
+ *
+ * @param fp   An open stream (dsd_fopen_existing_regular_file()).
+ * @param out  Receives the identity; zero-filled on failure.
+ * @return 0 for a regular file; -1 with errno set otherwise, as dsd_path_file_identity() (EINVAL for a NULL stream or
+ *         @p out).
+ */
+int dsd_file_stream_identity(FILE* fp, dsd_file_identity_t* out);
+
 /** @brief Whether @p a and @p b are one regular file unchanged, as far as a read can tell: both read, with the same
  * size and modification time (seconds and nanoseconds). Two zero-filled identities are not equal. */
 int dsd_file_identity_equal(const dsd_file_identity_t* a, const dsd_file_identity_t* b);

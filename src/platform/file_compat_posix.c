@@ -628,50 +628,6 @@ dsd_path_same_file(const char* a, const char* b, int* same) {
     return 0;
 }
 
-int
-dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
-    if (out) {
-        DSD_MEMSET(out, 0, sizeof *out);
-    }
-    if (!path || path[0] == '\0' || !out) {
-        errno = EINVAL;
-        return -1;
-    }
-    struct stat st;
-    if (lstat(path, &st) != 0) {
-        return -1;
-    }
-    if (S_ISDIR(st.st_mode)) {
-        errno = EISDIR;
-        return -1;
-    }
-    if (S_ISLNK(st.st_mode)) {
-        errno = ELOOP;
-        return -1;
-    }
-    if (!S_ISREG(st.st_mode)) {
-        /* Read, and known to be no file: a FIFO, a socket or a device. ENODEV, never EIO, which a failed read gives. */
-        errno = ENODEV;
-        return -1;
-    }
-    out->kind = 1;
-    out->size = (int64_t)st.st_size;
-#ifdef __APPLE__
-    out->mtime_s = (int64_t)st.st_mtimespec.tv_sec;
-    out->mtime_ns = (int32_t)st.st_mtimespec.tv_nsec;
-#else
-    out->mtime_s = (int64_t)st.st_mtim.tv_sec;
-    out->mtime_ns = (int32_t)st.st_mtim.tv_nsec;
-#endif
-    return 0;
-}
-
-int
-dsd_file_identity_equal(const dsd_file_identity_t* a, const dsd_file_identity_t* b) {
-    return a != NULL && b != NULL && a->kind != 0 && b->kind != 0 && a->size == b->size && a->mtime_s == b->mtime_s
-           && a->mtime_ns == b->mtime_ns;
-}
-
 static int
 dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
     int n = DSD_SNPRINTF(out, out_size, "%s", name);

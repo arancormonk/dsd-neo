@@ -1781,6 +1781,136 @@ expect_path_file_identity(void) {
     return ok ? 0 : 1;
 }
 
+/* Issue #902: dsd_file_stream_identity() reads what was opened: the same identity as the name's, and on POSIX still the
+   opened file's once another file takes the name (an export checks the file it copies, not the name again). */
+static int
+expect_file_stream_identity(void) {
+    const char* dir = "dsd_neo_stream_identity";
+    const char* file = "dsd_neo_stream_identity/a.wav";
+    const char* other = "dsd_neo_stream_identity/b.wav";
+    (void)dsd_mkdir(dir, 0700);
+    int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0;
+    dsd_file_identity_t named;
+    dsd_file_identity_t opened;
+    FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
+    ok = ok && fp != NULL && dsd_path_file_identity(file, &named) == 0 && dsd_file_stream_identity(fp, &opened) == 0
+         && dsd_file_identity_equal(&named, &opened);
+#if !DSD_PLATFORM_WIN_NATIVE
+    dsd_file_identity_t after;
+    ok = ok && dsd_replace_file_with_temp(other, file) == 0 && dsd_file_stream_identity(fp, &after) == 0
+         && dsd_file_identity_equal(&opened, &after) && after.size == 4;
+#endif
+    if (fp) {
+        (void)fclose(fp);
+    }
+    dsd_file_identity_t none;
+    errno = 0;
+    ok = ok && dsd_file_stream_identity(NULL, &none) == -1 && errno == EINVAL && none.kind == 0;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "stream identity: the opened file's, or the error case\n");
+    }
+    (void)remove(other);
+    (void)remove(file);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
+/* Issue #902: a recording under an absolute path longer than MAX_PATH (Qt lists those on Windows) has an identity, and
+   opens as a regular file: on Windows both take it in extended-length form. */
+#if DSD_PLATFORM_WIN_NATIVE
+/* "\\?\" + @p path, '/' as '\\': the test makes and removes the deep tree itself, past what plain calls reach. */
+static wchar_t*
+long_path_wide(const char* path) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    wchar_t* out = n > 0 ? (wchar_t*)malloc((size_t)(n + 4) * sizeof(wchar_t)) : NULL;
+    if (!out) {
+        return NULL;
+    }
+    DSD_MEMCPY(out, L"\\\\?\\", 4 * sizeof(wchar_t));
+    (void)MultiByteToWideChar(CP_UTF8, 0, path, -1, out + 4, n);
+    for (wchar_t* c = out + 4; *c != L'\0'; c++) {
+        *c = *c == L'/' ? L'\\' : *c;
+    }
+    return out;
+}
+
+static int
+long_path_op(const char* path, int op) {
+    wchar_t* wide = long_path_wide(path);
+    if (!wide) {
+        return -1;
+    }
+    BOOL done = FALSE;
+    if (op == 0) {
+        done = CreateDirectoryW(wide, NULL);
+    } else if (op == 1) {
+        HANDLE h = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD wrote = 0;
+        done = h != INVALID_HANDLE_VALUE && WriteFile(h, "long", 4, &wrote, NULL) && wrote == 4;
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
+    } else if (op == 2) {
+        done = DeleteFileW(wide);
+    } else {
+        done = RemoveDirectoryW(wide);
+    }
+    free(wide);
+    return done ? 0 : -1;
+}
+#else
+static int
+long_path_op(const char* path, int op) {
+    if (op == 0) {
+        return dsd_mkdir(path, 0700);
+    }
+    if (op == 1) {
+        return write_text_file(path, "long");
+    }
+    return op == 2 ? remove(path) : dsd_test_rmdir(path);
+}
+#endif
+
+static int
+expect_long_path_identity(void) {
+    char cwd[DSD_TEST_PATH_MAX];
+    if (dsd_path_canonical(".", cwd, sizeof cwd) != 0) {
+        DSD_FPRINTF(stderr, "long path identity: . did not resolve\n");
+        return 1;
+    }
+
+    enum { kLevels = 5 };
+
+    char dirs[kLevels][DSD_TEST_PATH_MAX];
+    const char* part = "dsd_neo_long_identity_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    int made = 0;
+    int ok = 1;
+    for (int i = 0; i < kLevels && ok; i++) {
+        DSD_SNPRINTF(dirs[i], sizeof dirs[i], "%s/%s", i == 0 ? cwd : dirs[i - 1], part);
+        ok = long_path_op(dirs[i], 0) == 0;
+        made += ok;
+    }
+    char file[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(file, sizeof file, "%s/r.wav", dirs[kLevels - 1]);
+    ok = ok && strlen(file) > 260 && long_path_op(file, 1) == 0;
+    dsd_file_identity_t id;
+    dsd_file_identity_t opened;
+    ok = ok && dsd_path_file_identity(file, &id) == 0 && id.size == 4;
+    FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
+    ok = ok && fp != NULL && dsd_file_stream_identity(fp, &opened) == 0 && dsd_file_identity_equal(&id, &opened);
+    if (fp) {
+        (void)fclose(fp);
+    }
+    if (!ok) {
+        DSD_FPRINTF(stderr, "long path identity: a file past MAX_PATH has none, or does not open\n");
+    }
+    (void)long_path_op(file, 2);
+    for (int i = made - 1; i >= 0; i--) {
+        ok = long_path_op(dirs[i], 3) == 0 && ok;
+    }
+    return ok ? 0 : 1;
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
 /* The hard-link fallback: EEXIST on a taken name, and a link whose source cannot be unlinked still publishes, reporting
    the source left behind. */
@@ -1922,6 +2052,8 @@ main(void) {
     rc |= expect_path_exists_nofollow();
     rc |= expect_path_same_file();
     rc |= expect_path_file_identity();
+    rc |= expect_file_stream_identity();
+    rc |= expect_long_path_identity();
 #if DSD_PLATFORM_WIN_NATIVE
     rc |= expect_path_type_reparse_point();
     rc |= expect_ansi_dir_helpers();

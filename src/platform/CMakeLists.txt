@@ -22,6 +22,7 @@ else()
             sockets_posix.c
             timing_posix.c
             file_compat_posix.c
+            file_identity_posix.c
             posix_compat_posix.c
     )
     find_package(Threads REQUIRED)
