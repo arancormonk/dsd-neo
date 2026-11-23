@@ -411,7 +411,9 @@ dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
 /** @brief Whether the receiver is on the control channel: one is known (dsd_state::trunk_cc_freq) and the receiver
- *  follows no call, or follows one on the control channel's own carrier (a composite control channel's payload). What
+ *  follows one call on the control channel's own carrier (a composite control channel's payload), or follows no call on
+ *  a carrier that is the control channel's where the receiver's carrier is known (a hunt's probe or an operator's move
+ *  listens elsewhere while the control channel stays the anchor; unknown counts as on it). What
  *  a checked CSBK teaches the Tier III channel map is confirmed (dsd_state::dmr_lcn_trust 2) only there, and only
  *  there may a grant act on an unconfirmed mapping. */
 int dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state);

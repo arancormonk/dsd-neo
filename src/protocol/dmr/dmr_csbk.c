@@ -334,13 +334,14 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
 /* A CSBK maps Tier III channel @p lpcn to @p freq: the channel map records it with its provenance (dmr_lcn_trust), 2
    when heard on the control channel (dmr_sm_on_control_channel(), a composite control channel's payload included),
    else 1. An empty cell takes the mapping, as it always has. A mapping learned off the control channel and still
-   unconfirmed (1) is confirmed (2) only by this site's own channel (@p own_site: a grant or a Chan_Freq announcement,
-   never another site's Vote_Now or Adjacent site announcement) naming the same frequency on the control channel in a
-   CSBK whose own CRC passed (dmr_csbk_crc_checked(): never one -F accepted as RAS, nor an MBC whose header failed). An
+   unconfirmed (1) is confirmed (2) only by this site's own channel (@p may_confirm: a grant or a Chan_Freq
+   announcement whose appended block carries its header's CSBKO, as TS 102 361-4 Tables 7.16 and 7.21 require, never
+   another site's Vote_Now or Adjacent site announcement) naming the same frequency on the control channel in a CSBK
+   whose own CRC passed (dmr_csbk_crc_checked(): never one -F accepted as RAS, nor an MBC whose header failed). An
    imported or heuristic mapping (0) and a mapping to another frequency are never changed. Returns 1 when the cell was
    empty and now holds the mapping. */
 static int
-dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int own_site) {
+dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int may_confirm) {
     // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
     if (!dmr_t3_lpcn_is_channel(lpcn) || freq <= 0) {
         return 0;
@@ -351,7 +352,7 @@ dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long in
         state->dmr_lcn_trust[lpcn] = trust;
         return 1;
     }
-    if (own_site && trust == 2U && dmr_csbk_crc_checked(state) && state->dmr_lcn_trust[lpcn] == 1U
+    if (may_confirm && trust == 2U && dmr_csbk_crc_checked(state) && state->dmr_lcn_trust[lpcn] == 1U
         && state->trunk_chan_map[lpcn] == freq) {
         state->dmr_lcn_trust[lpcn] = 2U;
     }
@@ -360,8 +361,8 @@ dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long in
 
 // Conservative auto-learn helper: record LCN -> frequency if empty (dmr_chan_map_note()) and announce in event history
 static inline void
-dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int own_site) {
-    if (!state || !dmr_chan_map_note(opts, state, lpcn, freq, own_site)) {
+dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int may_confirm) {
+    if (!state || !dmr_chan_map_note(opts, state, lpcn, freq, may_confirm)) {
         return;
     }
 
@@ -419,10 +420,11 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 /* An absolute grant's channel (TS 102 361-4 §7.1.1.1.1.1.1): the CdefParms of the block appended to its MBC header.
    Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over):
    a header heard as a standalone CSBK carries only its own 96 bits, so it names no frequency, is not followed and
-   teaches the channel map nothing (fail closed). */
+   teaches the channel map nothing (fail closed). Only a block carrying the header's CSBKO @p csbk_o (TS 102 361-4
+   Table 7.16) may confirm a learned mapping: the header's and the block's CRCs do not show that they belong together. */
 static uint16_t
-dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t appended_blocks,
-                                   long int* freq) {
+dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
+                                   uint8_t appended_blocks, long int* freq) {
     if (appended_blocks == 0U) {
         DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Absolute Parameters Not Received;");
         return 0;
@@ -440,7 +442,8 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq, 1);
+    const int same_mbc = (int)convert_bits_into_output(&cs_pdu_bits[98], 6) == csbk_o;
+    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq, same_mbc);
     return mbc_lpchannum;
 }
 
@@ -623,7 +626,8 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
 
     uint16_t mbc_lpchannum = 0U;
     if (lpchannum == 0xFFF) {
-        mbc_lpchannum = dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, appended_blocks, &air_freq);
+        mbc_lpchannum =
+            dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, csbk_o, appended_blocks, &air_freq);
     }
     const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
     const long int freq = dmr_cspdu_pf0_named_freq(state, call_channel, air_freq);
@@ -1418,8 +1422,9 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
 }
 
 static void
-dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
-    if (!dmr_chan_map_note(opts, state, a_channel, freqr, 1)) {
+dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr,
+                                          int may_confirm) {
+    if (!dmr_chan_map_note(opts, state, a_channel, freqr, may_confirm)) {
         return;
     }
     dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
@@ -1586,7 +1591,10 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, f->a_channel == 0xFFF);
-    dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, f->a_channel, abs_freqs.freqr);
+    /* The header's channel, or for its absolute escape the one the appended block defines (as an absolute grant's);
+       only a block carrying C_BCAST's CSBKO (TS 102 361-4 Table 7.21) may confirm a learned mapping. */
+    const uint16_t channel = f->a_channel == 0xFFF ? abs_freqs.lpchannum : f->a_channel;
+    dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, channel, abs_freqs.freqr, f->mbc_csbko == 40U);
 }
 
 static void

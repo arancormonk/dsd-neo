@@ -236,19 +236,23 @@ grant_op(dsd_opts* opts, dsd_state* st, uint8_t op, uint16_t lpcn, uint8_t slot,
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
 
-/* The CdefParms of an absolute channel (TS 102 361-4 Table 7.103, Cdeftype 0) naming LPCN @p lpcn on receive frequency
-   @p freq_hz (a whole number of 125 Hz steps), as the block appended to an MBC header carries them. */
+/* The block appended to an MBC header (TS 102 361-4 Tables 7.16, 7.21): CSBKO @p csbko (its header's, in a block that
+   belongs to it) and the CdefParms of an absolute channel (Table 7.103, Cdeftype 0) naming LPCN @p lpcn on receive
+   frequency @p freq_hz (a whole number of 125 Hz steps). */
 static void
-write_abs_channel(uint8_t* bits, uint16_t lpcn, long freq_hz) {
+write_abs_channel(uint8_t* bits, uint8_t csbko, uint16_t lpcn, long freq_hz) {
+    write_bits_u32(bits, 98U, csbko, 6U);
     write_bits_u32(bits, 112U, 0U, 4U);
     write_bits_u32(bits, 118U, lpcn, 12U);
     write_bits_u32(bits, 153U, (uint32_t)(freq_hz / 1000000L), 10U);
     write_bits_u32(bits, 163U, (uint32_t)((freq_hz % 1000000L) / 125L), 13U);
 }
 
-/* A CRC-valid absolute TV_GRANT (call channel 0xFFF) with its appended block naming LPCN @p lpcn on @p freq_hz. */
+/* A CRC-valid absolute TV_GRANT (call channel 0xFFF) with an appended block of CSBKO @p block_op naming LPCN @p lpcn on
+   @p freq_hz. */
 static void
-abs_tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz, uint8_t slot, uint32_t tg, uint32_t src) {
+abs_tv_grant_block(dsd_opts* opts, dsd_state* st, uint8_t block_op, uint16_t lpcn, long freq_hz, uint8_t slot,
+                   uint32_t tg, uint32_t src) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -258,23 +262,36 @@ abs_tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz, uint8_t
     bits[28] = (uint8_t)(slot & 1U);
     write_bits_u32(bits, 32U, tg, 24U);
     write_bits_u32(bits, 56U, src, 24U);
-    write_abs_channel(bits, lpcn, freq_hz);
+    write_abs_channel(bits, block_op, lpcn, freq_hz);
     dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
 }
 
-/* A CRC-valid C_BCAST Chan_Freq (TS 102 361-4 Table 7.89) with its appended block announcing LPCN @p lpcn on
-   @p freq_hz. */
+/* A CRC-valid absolute TV_GRANT with its own appended block naming LPCN @p lpcn on @p freq_hz. */
 static void
-c_bcast_chan_freq(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz) {
+abs_tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz, uint8_t slot, uint32_t tg, uint32_t src) {
+    abs_tv_grant_block(opts, st, 49U, lpcn, freq_hz, slot, tg, src);
+}
+
+/* A CRC-valid C_BCAST Chan_Freq (TS 102 361-4 Table 7.89) naming channel @p channel (0xFFF: absolute) in its header,
+   with an appended block of CSBKO @p block_op announcing LPCN @p lpcn on @p freq_hz. */
+static void
+c_bcast_chan_freq_block(dsd_opts* opts, dsd_state* st, uint16_t channel, uint8_t block_op, uint16_t lpcn,
+                        long freq_hz) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(bytes, 0, sizeof(bytes));
     bytes[0] = 40U;
     write_bits_u32(bits, 16U, 5U, 5U);
-    write_bits_u32(bits, 68U, lpcn, 12U);
-    write_abs_channel(bits, lpcn, freq_hz);
+    write_bits_u32(bits, 68U, channel, 12U);
+    write_abs_channel(bits, block_op, lpcn, freq_hz);
     dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+}
+
+/* A CRC-valid C_BCAST Chan_Freq with its own appended block announcing LPCN @p lpcn on @p freq_hz. */
+static void
+c_bcast_chan_freq(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz) {
+    c_bcast_chan_freq_block(opts, st, lpcn, 40U, lpcn, freq_hz);
 }
 
 /* A CRC-valid C_BCAST of announcement type @p a_type (2 Vote_Now, 6 Adjacent site) with its appended block naming
@@ -290,7 +307,7 @@ c_bcast_other_site(dsd_opts* opts, dsd_state* st, uint8_t a_type, uint16_t apcn,
     write_bits_u32(bits, 16U, a_type, 5U);
     bits[56] = 1U;
     write_bits_u32(bits, 68U, 0x0FFFU, 12U);
-    write_abs_channel(bits, apcn, freq_hz);
+    write_abs_channel(bits, 40U, apcn, freq_hz);
     dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
 }
 
@@ -1569,6 +1586,105 @@ test_composite_payload_counts_as_control_channel(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* The receiver is on the control channel only where it is known to be on its carrier: with no call followed, an
+   absolute grant naming a learned LPCN's frequency confirms it (1 -> 2) and an LPCN-only grant acts on the still
+   unconfirmed mapping only while the receiver is attributed to the control channel's frequency, or nothing says where
+   it is (@p variant 0: RTL on the control channel; 3: no tuner to ask). After an operator's move off it (1: RTL,
+   dmr_sm_cold_start_note_retune()) or on a probe of another frequency the rigctl peer took (2), the control channel
+   stays the anchor to return to, but what is heard there confirms nothing and an unconfirmed mapping is not acted on. */
+static int
+test_off_control_channel_receiver_confirms_nothing(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    int rc = 0;
+    for (int variant = 0; variant < 4; variant++) {
+        init_env(opts, st, 2.0);
+        seed_row(st, 2300, "B", 0, 0); // the confirming grant's own call is not followed
+        st->trunk_chan_map[lpcn_d] = VC_B;
+        st->dmr_lcn_trust[lpcn_d] = 1U;
+        if (variant <= 1) {
+            opts->audio_in_type = AUDIO_IN_RTL;
+            opts->rtlsdr_center_freq = (uint32_t)CC_HZ;
+        }
+        if (variant == 1) {
+            opts->rtlsdr_center_freq = (uint32_t)VC_C;
+            dmr_sm_cold_start_note_retune(sm(), opts, st);
+        } else if (variant == 2) {
+            opts->use_rigctl = 1;
+            opts->rigctl_sent_freq_hz = VC_C;
+        }
+        rc |= expect_true("the control channel stays the anchor",
+                          st->trunk_cc_freq == CC_HZ && opts->trunk_is_tuned == 0);
+        abs_tv_grant(opts, st, lpcn_d, VC_B, 1, 2300, 3);
+        const uint8_t trust = st->dmr_lcn_trust[lpcn_d];
+        st->dmr_lcn_trust[lpcn_d] = 1U;
+        tv_grant(opts, st, lpcn_d, 0, 2200, 2);
+        const int followed = vc(st) == VC_B && sm()->vc_tg == 2200 && g_tunes == 1;
+        if (variant == 0 || variant == 3) {
+            rc |= expect_true("on the control channel an absolute grant confirms the learned mapping", trust == 2U);
+            rc |= expect_true("on the control channel a grant acts on an unconfirmed mapping", followed);
+        } else {
+            rc |= expect_true("off the control channel an absolute grant confirms nothing", trust == 1U);
+            rc |= expect_true("off the control channel a grant does not act on an unconfirmed mapping",
+                              !followed && g_tunes == 0);
+        }
+    }
+    return rc;
+}
+
+/* An MBC's appended block confirms a learned mapping only when it carries its header's CSBKO (TS 102 361-4 Tables 7.16
+   and 7.21): an absolute TV_GRANT header with another MBC's block (a C_BCAST's), or a C_BCAST Chan_Freq header with a
+   grant's block, each naming the learned LPCN's frequency on the control channel, leaves the mapping unconfirmed, and a
+   Hold grant on it heard off the control channel is refused. With its own block each confirms it. */
+static int
+test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    int rc = 0;
+    for (int announce = 0; announce < 2; announce++) {
+        for (int own = 0; own < 2; own++) {
+            init_env(opts, st, 2.0);
+            seed_row(st, 2300, "B", 0, 0);
+            st->trunk_chan_map[lpcn_d] = VC_B;
+            st->dmr_lcn_trust[lpcn_d] = 1U;
+            if (announce) {
+                c_bcast_chan_freq_block(opts, st, lpcn_d, own ? 40U : 49U, lpcn_d, VC_B);
+            } else {
+                abs_tv_grant_block(opts, st, own ? 49U : 40U, lpcn_d, VC_B, 1, 2300, 3);
+            }
+            const int followed = hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B);
+            if (own) {
+                rc |= expect_true("a block of its header's MBC confirms the mapping",
+                                  st->dmr_lcn_trust[lpcn_d] == 2U && followed);
+            } else {
+                rc |= expect_true("another MBC's block confirms no mapping",
+                                  st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
+                rc |=
+                    expect_true("a hold grant on a mapping only another MBC's block named is not followed", !followed);
+            }
+        }
+    }
+    return rc;
+}
+
+/* A C_BCAST Chan_Freq whose header names the absolute escape (0xFFF) announces the LPCN its appended block defines, as
+   an absolute grant does: heard on the control channel it confirms a learned mapping of that LPCN and frequency, so a
+   Hold grant on it heard off the control channel is followed, and teaches an LPCN the map does not hold. */
+static int
+test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    const uint16_t lpcn_e = 0x0014U;
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[lpcn_d] = VC_B;
+    st->dmr_lcn_trust[lpcn_d] = 1U;
+    c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_d, VC_B);
+    c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_e, VC_C);
+    int rc = expect_true("an absolute Chan_Freq confirms its block's LPCN", st->dmr_lcn_trust[lpcn_d] == 2U);
+    rc |= expect_true("an absolute Chan_Freq teaches its block's LPCN",
+                      st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+    rc |= expect_true("a hold grant on the confirmed mapping is followed off the control channel",
+                      hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
+    return rc;
+}
+
 /* An adopted companion's unnamed call takes the identity of the voice grant that first names it: TS1 is followed for
    TG 300 while TS2 carries voice no LC has named. A data grant for TS1 retires TS1 and the receiver stays for TS2. A
    voice grant then names TS2's call (TG 700 from 7), and TS2's next voice sync publishes that identity into it. */
@@ -2110,6 +2226,9 @@ main(void) {
     rc |= test_other_site_announcement_never_confirms(opts, st);
     rc |= test_composite_payload_counts_as_control_channel(opts, st);
     rc |= test_adopted_companion_takes_its_grant_identity(opts, st);
+    rc |= test_off_control_channel_receiver_confirms_nothing(opts, st);
+    rc |= test_foreign_block_never_confirms(opts, st);
+    rc |= test_absolute_chan_freq_names_its_block_channel(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);

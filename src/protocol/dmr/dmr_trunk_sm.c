@@ -323,6 +323,7 @@ dmr_sm_slot_identity_decision(const dsd_opts* opts, const dsd_state* state, cons
 
 static int dmr_sm_grant_identity(const dmr_sm_ctx_t* ctx, dmr_sm_slot_ctx_t* out);
 static int dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves);
+static long dmr_sm_attributed_receiver(const dmr_sm_ctx_t* ctx, const dsd_opts* opts);
 
 /* ============================================================================
  * Internal Helpers
@@ -359,14 +360,20 @@ resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
 }
 
 /* Whether the receiver is on the control channel, as @p ctx knows it: a control channel is known and the receiver
-   either follows no call (trunk_is_tuned 0) or follows one on the control channel's own carrier (a composite control
-   channel's payload, followed in place). */
+   either follows one call on the control channel's own carrier (a composite control channel's payload, followed in
+   place), or follows no call (trunk_is_tuned 0) on a carrier that is the control channel's where it is known
+   (dmr_sm_attributed_receiver()): a hunt's probe and an operator's move keep the control channel as the anchor to
+   return to while the receiver listens elsewhere. */
 static int
 dmr_sm_ctx_on_control_channel(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || state->trunk_cc_freq == 0) {
         return 0;
     }
-    return opts->trunk_is_tuned == 0 || dmr_sm_follows(ctx, state->trunk_cc_freq);
+    if (opts->trunk_is_tuned != 0) {
+        return dmr_sm_follows(ctx, state->trunk_cc_freq);
+    }
+    const long receiver = ctx ? dmr_sm_attributed_receiver(ctx, opts) : 0;
+    return receiver <= 0 || receiver == state->trunk_cc_freq;
 }
 
 /* Whether @p lpcn's channel-map frequency may be acted on: always on the control channel
