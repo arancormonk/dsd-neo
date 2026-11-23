@@ -21,8 +21,8 @@ namespace dsd_qt {
  *   composing control losing the focus disabled under it commits through the closed gate too.
  * - Window leaving: a word composing in the control with the focus is finished first (`finishComposing`), before the
  *   control ends its edit; the control keeps the stored focus.
- * - Stray: the control with the focus turning unreachable, taking the focus while unreachable, or losing the focus
- *   while unreachable or disabled (an ancestor disabled under it), is told to Navigation (`strayed`) at once, which
+ * - Stray: the control with the focus turning unreachable (or disabled while it holds the stored focus of a window
+ *   that is away), taking the focus while unreachable, or losing the focus while unreachable or disabled (an ancestor disabled under it), is told to Navigation (`strayed`) at once, which
  *   commits an editor's word before anything can publish the edit and hands the focus on; a control losing the focus
  *   to anything but the window leaving is told too (`focusLeft`, once the change has settled), for Qt dropping it to
  *   the window root.
@@ -64,6 +64,7 @@ class PressGate : public QObject {
   private:
     explicit PressGate(QObject* parent = nullptr);
     bool focusInReach() const;
+    bool focusHeld() const;
     void setFocusItem(QQuickItem* item, int index);
     void filterFocus(QQuickItem* item, const QEvent* event);
     bool filterClosed(QEvent* event);
@@ -78,6 +79,7 @@ class PressGate : public QObject {
     /* A composing control losing the focus disabled under it: its commit goes through the closed gate. */
     bool m_closing = false;
     QMetaObject::Connection m_watch;
+    QMetaObject::Connection m_watch_enabled;
 };
 } // namespace dsd_qt
 

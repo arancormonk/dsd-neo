@@ -50,6 +50,42 @@ Item {
             callHistory.clearAll();
             testContext.useLifecycleHost(false);
         }
+        // Gives @p control the keyboard once the window's own focus transition has settled: run alone, a case can
+        // start while the window is active but not yet the focus window, and a focus given then does not hold.
+        function focusOnceSettled(control) {
+            tryVerify(function () {
+                if (!control.activeFocus)
+                    control.forceActiveFocus();
+                return control.activeFocus;
+            }, 5000, "the control takes the keyboard");
+        }
+        // Issue #902: Resume scan disabled while the window is away (the scan still paused, so the button stays shown):
+        // the window comes back with the keyboard on the Back owner, not on the Spectrum's loader, and Escape still
+        // closes the Spectrum.
+        function test_resume_disabled_while_away_keeps_back_working() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            verify(resume !== null);
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            focusOnceSettled(resume);
+            testContext.sendWindowFocus(resume, false);
+            try {
+                testContext.setMetric("scanResumable", false);
+                verify(resume.visible && !resume.enabled, "away: Resume scan shown, disabled");
+                wait(50);
+            } finally {
+                testContext.sendWindowFocus(resume, true);
+            }
+            verify(!resume.activeFocus, "back: the disabled button has no keyboard");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+            testContext.setMetric("scanPaused", false);
+        }
         function mapScreen() {
             return findChild(app, "mapScreen");
         }
@@ -147,8 +183,7 @@ Item {
             var rail = findChild(app, "spectrumBandRail");
             verify(rail !== null);
             tryVerify(function () { return rail.visible; }, 1000, "exploring: the tuning rail shows");
-            rail.forceActiveFocus();
-            verify(rail.activeFocus);
+            focusOnceSettled(rail);
             app.exploring = false;
             tryVerify(function () { return !rail.visible && !rail.activeFocus; }, 1000, "view only: the rail hides and gives the keyboard up");
             keyClick(Qt.Key_Escape);
@@ -167,8 +202,7 @@ Item {
             var resume = findChild(app, "spectrumResumeScan");
             verify(resume !== null);
             tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
-            resume.forceActiveFocus();
-            verify(resume.activeFocus);
+            focusOnceSettled(resume);
             testContext.setMetric("scanResumable", false);
             testContext.setMetric("scanPaused", false);
             tryVerify(function () { return !resume.visible && !resume.activeFocus; }, 1000, "Resume scan hides without the keyboard");

@@ -856,6 +856,64 @@ Item {
             compare(combo.currentIndex, 0, "nothing was chosen");
         }
 
+        // Issue #902: the selector is captured as the sheet opens over its focused option: the list's model rebuilt
+        // while the sheet is open destroys the option, and the dismissed sheet still hands the keyboard to the
+        // selector.
+        function test_rebuilt_options_still_return_to_the_selector() {
+            var model = combo.model;
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            var row = comboRow(1);
+            testContext.accessibleDoAction(row, "SetFocus");
+            verify(row.activeFocus);
+            sheet.visible = true;
+            verify(!combo.popup.visible, "the sheet closes the list");
+            combo.model = ["P25", "DMR", "NXDN"];
+            wait(0);
+            verify(sheet.previousFocus === null || sheet.previousFocus === undefined, "the option it opened from is gone");
+            sheet.visible = false;
+            try {
+                tryVerify(function () { return combo.activeFocus; }, 1000, "dismissed, the keyboard is the selector's");
+            } finally {
+                combo.model = model;
+            }
+        }
+
+        // Issue #902: a selector focused and its list opened after a sheet closed, before the sheet's deferred
+        // hand-back runs: the hand-back leaves that newer choice alone, and the list stays open.
+        function test_dismissed_sheet_keeps_a_newly_opened_list() {
+            checkBox.forceActiveFocus();
+            sheet.open();
+            sheet.visible = false;
+            verify(checkBox.activeFocus, "dismissed: the keyboard goes back to the opener");
+            combo.forceActiveFocus();
+            combo.popup.open();
+            verify(combo.popup.visible);
+            wait(50);
+            verify(combo.popup.visible, "the newly opened list stays open");
+            verify(combo.activeFocus, "and the selector keeps the keyboard");
+            combo.popup.close();
+            tryVerify(function () { return !combo.popup.visible; });
+        }
+
+        // Issue #902: a sheet closing while its opener is disabled for the moment hands the keyboard to the sheet
+        // below as a fallback; the opener enabled again before the deferred hand-back takes it back, as the fallback
+        // is no choice of the user's.
+        function test_fallback_gives_way_to_the_opener_enabled_again() {
+            var button = findChild(sheet, "sheetButton");
+            sheet.visible = true;
+            button.forceActiveFocus();
+            verify(button.activeFocus);
+            nextSheet.open();
+            button.enabled = false;
+            nextSheet.visible = false;
+            verify(sheet.activeFocus, "the opener disabled: the sheet below takes the keyboard");
+            button.enabled = true;
+            tryVerify(function () { return button.activeFocus; }, 1000, "enabled again: the opener takes it back");
+            sheet.visible = false;
+        }
+
         // Issue #902: only a real change of navigation closes an open list. A selector destroyed while hidden, its
         // list never opened, takes nothing out of the modals, and the same entries assigned again (a binding
         // re-evaluated) are no change either: the list stays open.

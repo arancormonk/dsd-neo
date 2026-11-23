@@ -21856,7 +21856,9 @@ keyboard when a Signal search detection ends (`tst_signal_search.qml` `test_esca
 window that is away (its root holds no active focus) and would get it back on the window's return hands that stored
 focus to the same key owner, each focus scope above it holding it, with nothing made active
 (`PressGate.passStoredFocus()`), so the window comes back with the keyboard on the Back owner
-(`test_escape_after_the_hold_button_hides_while_away`). So a covered control no longer keeps the keyboard under a sheet (`tst_keypad_enter.qml`), and
+(`test_escape_after_the_hold_button_hides_while_away`). The same goes for a control disabled while it holds that
+stored focus (the gate follows its `enabled` too while the window is away; Spectrum's Resume scan disabled with the
+scan still paused: `tst_main_map.qml` `test_resume_disabled_while_away_keeps_back_working`). So a covered control no longer keeps the keyboard under a sheet (`tst_keypad_enter.qml`), and
 its held Tab stop (`|| activeFocus`) lasts only that turn. Every step a slider or a rail takes (the coarse-tuning
 rail's and the seek bar's `nudge()`, from a screen reader's Increase or Decrease or an arrow key) checks effective
 visibility too, so nothing retunes or seeks unseen. A `PlexComboBox` list's options (`plexComboRow`) have their own
@@ -21882,12 +21884,19 @@ move nowhere and leave the list and the keyboard as they were; Escape or Back cl
 (`test_open_combo_keeps_its_native_keyboard`, `test_back_closes_only_the_list_in_a_sheet`,
 `test_sheet_over_the_open_list_returns_to_the_selector`; an
 option row names its selector as `focusReturnTarget`, which a sheet or the File browser closing with that row gone
-hands the keyboard to: `test_sheet_over_a_focused_option_returns_to_the_selector`; their hand-back, run again a turn
-later, first leaves the keyboard where it is when it already sits on a control in reach, and only then tries the
-opener again (a sheet opened as the first closed, its field given the keyboard:
-`test_next_sheet_keeps_its_fields_keyboard`; a field the user focused meanwhile:
-`test_dismissed_sheet_keeps_a_newer_focus_choice`, `tst_file_browser.qml`
-`test_closed_browser_keeps_a_newer_focus_choice`),
+hands the keyboard to: `test_sheet_over_a_focused_option_returns_to_the_selector`. A sheet and the File browser hand
+the keyboard back by one rule (`Navigation.restoreFocusFrom()`, `retryFocusLater()`). The opener and its stand-in are
+captured as the surface opens, since a combo's model rebuilt while it is open destroys the option
+(`test_rebuilt_options_still_return_to_the_selector`). The first hand-back goes to the opener, else the stand-in, else
+(unless the keyboard already sits on a control in reach, judged by the control's own `inReach` where it has one) to
+`keyOwner()`, which it records as its fallback. The one retry, a turn later, acts only while the keyboard is still on
+that fallback, or dropped to the window root or a scope enclosing the opener, and then gives it to the opener, else the
+stand-in; any other focus is a newer choice and is left alone, so the retry never closes a list (a sheet opened as the
+first closed, its field given the keyboard: `test_next_sheet_keeps_its_fields_keyboard`; a field the user focused
+meanwhile: `test_dismissed_sheet_keeps_a_newer_focus_choice`, `tst_file_browser.qml`
+`test_closed_browser_keeps_a_newer_focus_choice`; a selector whose list opened meanwhile:
+`test_dismissed_sheet_keeps_a_newly_opened_list`; an opener disabled at the close and enabled again before the retry
+takes the keyboard back from the fallback: `test_fallback_gives_way_to_the_opener_enabled_again`),
 `test_empty_list_closes_on_return`). These tests run on the Basic controls style the app pins
 (`QT_QUICK_CONTROLS_STYLE=Basic` on `UI_QT_QML_A11Y_CHURN`): a style whose popups animate their close keeps a closing
 list visible a while. The

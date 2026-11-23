@@ -187,8 +187,11 @@ QtObject {
         for (var item of items)
             letGo(item);
     }
+    // A control disabled while it holds the stored focus of a window that is
+    // away (its root holds no active focus) is let go of too: Qt would hand
+    // the returning window's focus to the scope above it.
     function letGo(item) {
-        if (!item || item.inReach)
+        if (!item || (item.inReach && (item.enabled || windowActive(item))))
             return;
         // Again here for a word composed since (none is let through a closed
         // gate, so this finds nothing as a rule), whatever happened to the
@@ -211,6 +214,10 @@ QtObject {
             item.focus = false;
         if (active && edits)
             Qt.inputMethod.hide();
+    }
+    function windowActive(item) {
+        var root = item.Window.contentItem;
+        return !root || root.activeFocus;
     }
     // Qt itself can drop a control's focus to the window root or to the focus
     // scope that encloses it (the Spectrum's loader), the control or its
@@ -236,6 +243,77 @@ QtObject {
         var owner = keyOwner();
         if (owner && owner !== item && owner.visible && owner.enabled)
             owner.forceActiveFocus();
+    }
+    // Issue #902: where a closing surface (a sheet, the File browser) hands
+    // the keyboard back. Its opener and the opener's stand-in (a combo
+    // option's selector, `focusReturnTarget`) are captured as it opens, as a
+    // delegate can be destroyed while it is open (a model rebuilt). The first
+    // hand-back goes to the opener, else the stand-in, while shown, enabled
+    // and in reach; else, unless the keyboard already sits on a control in
+    // reach outside @p surface, to keyOwner(), which it returns as the
+    // fallback it assigned (null when it assigned none).
+    function restoreFocusFrom(surface, opener, standIn) {
+        for (var target of [opener, standIn]) {
+            if (focusReturnable(surface, target)) {
+                target.forceActiveFocus();
+                return null;
+            }
+        }
+        var window = surface ? surface.Window.window : null;
+        if (holdsReachableFocus(surface, window ? window.activeFocusItem : null))
+            return null;
+        var owner = keyOwner();
+        if (owner && owner !== surface && !contains(surface, owner) && owner.visible && owner.enabled) {
+            owner.forceActiveFocus();
+            return owner;
+        }
+        return null;
+    }
+    function focusReturnable(surface, target) {
+        return !!target && target !== surface && !contains(surface, target) && presented(target) && target.enabled && allows(target);
+    }
+    // A control in reach with the keyboard: judged by its own reach where it
+    // declares one (a combo whose own list is open is no longer allowed by
+    // the navigation, yet in reach), never the window root, @p surface or
+    // what is in it, or the app's Back owner.
+    function holdsReachableFocus(surface, current) {
+        if (!current || current === backTarget || current === surface || contains(surface, current))
+            return false;
+        var window = current.Window.window;
+        if (window && current === window.contentItem)
+            return false;
+        if (!current.enabled)
+            return false;
+        return current.inReach !== undefined ? current.inReach === true : (allows(current) && presented(current));
+    }
+    // The one deferred retry, a turn later (bindings may settle, the opener
+    // shown or enabled again): it acts only while the keyboard is still on
+    // the fallback the first hand-back assigned, or dropped to the window
+    // root or to a scope enclosing the opener; then the opener, else the
+    // stand-in, takes it. Any other focus (a newer choice: a field focused, a
+    // selector whose list opened) is left alone.
+    property var focusRetries: []
+    function retryFocusLater(surface, opener, standIn, fallback) {
+        focusRetries = focusRetries.concat([{surface: surface, opener: opener, standIn: standIn, fallback: fallback}]);
+        Qt.callLater(navigation.runFocusRetries);
+    }
+    function runFocusRetries() {
+        var retries = focusRetries;
+        focusRetries = [];
+        for (var retry of retries) {
+            var anchor = retry.opener || retry.standIn;
+            var window = anchor ? anchor.Window.window : null;
+            var current = window ? window.activeFocusItem : null;
+            var dropped = !current || current === window.contentItem || encloses(current, retry.opener) || encloses(current, retry.standIn);
+            if (!(retry.fallback && current === retry.fallback) && !dropped)
+                continue;
+            for (var target of [retry.opener, retry.standIn]) {
+                if (focusReturnable(retry.surface, target)) {
+                    target.forceActiveFocus();
+                    break;
+                }
+            }
+        }
     }
     function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)

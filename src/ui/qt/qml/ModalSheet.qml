@@ -29,6 +29,14 @@ Rectangle {
     property alias panelObjectName: panelItem.objectName
     property string accessibleName: qsTr("Dialog")
     property var previousFocus: null
+    // Issue #902: what stands for the opener (a combo option's selector,
+    // `focusReturnTarget`), taken as the opener is captured: the option's
+    // delegate may be destroyed while the sheet is open (its model rebuilt).
+    property var previousStandIn: null
+    onPreviousFocusChanged: {
+        if (previousFocus)
+            previousStandIn = previousFocus.focusReturnTarget ? previousFocus.focusReturnTarget : null;
+    }
     property var dismissHandler: null
     /** Whether a tap outside the panel asks to dismiss; false for form sheets. */
     property bool closesOnOutsideTap: true
@@ -62,46 +70,16 @@ Rectangle {
         visible = false;
         dismissed();
     }
-    // The opener while it is still shown and in reach, else the item that
-    // takes Escape and Back (issue #902, Navigation.keyOwner()): never a
-    // surface by itself, which may pass Escape to nothing (a tab Main anchors
-    // but does not parent, a layer's loaded screen). The deferred @p retry
-    // keeps a control in reach that has the keyboard by then first (one the
-    // user or a next sheet gave it since), and hands it on only otherwise.
-    function restoreFocus(opener, retry) {
+    // The opener while it is still shown and in reach, else its stand-in,
+    // else the item that takes Escape and Back (issue #902,
+    // Navigation.restoreFocusFrom()): never a surface by itself, which may
+    // pass Escape to nothing (a tab Main anchors but does not parent, a
+    // layer's loaded screen). Returns the fallback it gave the keyboard to.
+    function restoreFocus(opener, standIn) {
         if (visible)
-            return false;
-        // The keyboard on a control in reach, outside this sheet: not the
-        // window root, nor the app's Back owner, where a closing sheet leaves
-        // it. A local function: the deferred call may outlive the sheet's
-        // context, where another member function cannot be called.
-        var keyboardInReach = function () {
-            var window = sheet.Window.window;
-            var current = window ? window.activeFocusItem : null;
-            return !!current && current !== window.contentItem && current !== sheet && !Navigation.contains(sheet, current) && current !== Navigation.backTarget
-                && Navigation.allows(current) && Navigation.presented(current);
-        };
-        if (retry && keyboardInReach())
-            return true;
-        // An opener that is gone may name what stands for it (a combo option
-        // its selector, `focusReturnTarget`).
-        var standIn = opener && opener.focusReturnTarget ? opener.focusReturnTarget : null;
-        for (var target of [opener, standIn]) {
-            if (target && target !== sheet && Navigation.presented(target) && target.enabled && Navigation.allows(target)) {
-                target.forceActiveFocus();
-                return true;
-            }
-        }
-        // The keyboard already on a control in reach (a sheet opened as this
-        // one closed has given its field the keyboard) stays where it is.
-        if (keyboardInReach())
-            return true;
-        var owner = Navigation.keyOwner();
-        if (owner && owner !== sheet && owner.visible && owner.enabled) {
-            owner.forceActiveFocus();
-            return true;
-        }
-        return false;
+            return null;
+        var standsIn = standIn !== undefined ? standIn : (opener && opener.focusReturnTarget ? opener.focusReturnTarget : null);
+        return Navigation.restoreFocusFrom(sheet, opener, standsIn);
     }
     function focusInside() {
         if (!visible || !isTopModal || adjustingFocus)
@@ -131,10 +109,14 @@ Rectangle {
                 Navigation.removeModal(sheet);
                 Navigation.clearInput(window);
                 var opener = sheet.previousFocus;
+                var standIn = sheet.previousStandIn;
                 sheet.previousFocus = null;
-                sheet.restoreFocus(opener);
-                // Bindings may settle or the confirmed action may hide the opener after dismissal.
-                Qt.callLater(sheet.restoreFocus, opener, true);
+                sheet.previousStandIn = null;
+                var fallback = sheet.restoreFocus(opener, standIn);
+                // Bindings may settle after dismissal (the opener shown or
+                // enabled again): a turn later, while the keyboard is still on
+                // that fallback, the opener takes it back.
+                Navigation.retryFocusLater(sheet, opener, standIn, fallback);
             }
         }
     }

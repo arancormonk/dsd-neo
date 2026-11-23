@@ -53,10 +53,19 @@ PressGate::focusInReach() const {
     return !m_focus || m_focus_index < 0 || m_focus->metaObject()->property(m_focus_index).read(m_focus).toBool();
 }
 
+bool
+PressGate::focusHeld() const {
+    // Disabled counts only while the control holds the window's stored focus (the window away): with the window
+    // active Qt itself takes the focus off a disabled control.
+    return focusInReach() && (!m_focus || m_focus->isEnabled() || m_focus->hasActiveFocus());
+}
+
 void
 PressGate::setFocusItem(QQuickItem* item, int index) {
     disconnect(m_watch);
+    disconnect(m_watch_enabled);
     m_watch = {};
+    m_watch_enabled = {};
     m_focus = item;
     m_focus_index = item != nullptr ? index : -1;
     m_composing = false;
@@ -70,6 +79,7 @@ PressGate::setFocusItem(QQuickItem* item, int index) {
         const QMetaMethod slot = staticMetaObject.method(staticMetaObject.indexOfSlot("recheck()"));
         m_watch = connect(item, property.notifySignal(), this, slot);
     }
+    m_watch_enabled = connect(item, &QQuickItem::enabledChanged, this, &PressGate::recheck);
     m_focus_in_reach = focusInReach();
     if (!m_focus_in_reach) {
         // Taking the focus while unreachable (a deferred hand-off landing on it after it hid): let go.
@@ -80,11 +90,12 @@ PressGate::setFocusItem(QQuickItem* item, int index) {
 
 void
 PressGate::recheck() {
-    // The control with the focus turning unreachable strays.
+    // The control with the focus turning unreachable strays, or disabled while it holds the stored focus of a window
+    // that is away.
     if (!m_focus) {
         return;
     }
-    const bool now = focusInReach();
+    const bool now = focusHeld();
     if (m_focus_in_reach && !now) {
         m_focus_in_reach = false;
         m_composing = isComposing(m_focus);
