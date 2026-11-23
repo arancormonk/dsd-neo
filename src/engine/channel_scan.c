@@ -1793,6 +1793,33 @@ channel_scan_release_entry(dsd_state* state) {
     }
 }
 
+/* channel_scan_release()'s leave of the scan scope, and where a scan was @p active, its return to the session's
+   front end. Returns whether that queued a monitor request. */
+static int
+channel_scan_leave_scope(dsd_opts* opts, dsd_state* state, int active) {
+    /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
+    const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
+    if (!active) {
+        dsd_scan_mode_leave(opts, state);
+        return 0;
+    }
+    /* A family switch the leave makes puts the session on a channel of its own (issue #899): named before the scope
+       leaves, so nothing the session's options resolve to reaches the row's channel; dropped if the leave makes none. */
+    const uint32_t family_channel = dsd_engine_receiver_family_begin(opts);
+    dsd_scan_mode_leave(opts, state);
+    /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause leaves
+       for the manual session, which no target names (issue #671). */
+    dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
+    const int monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
+    dsd_engine_receiver_family_end(family_channel);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured session
+     * asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so the analog
+     * profile request stays the leave's last. */
+    dsd_engine_scan_rigctl_restore(opts, state);
+    return monitor_request;
+}
+
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
    has no scope); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
@@ -1830,26 +1857,7 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     channel_scan_clear_published_row(state);
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
-    /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
-    const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
-    /* A family switch the leave makes puts the session on a channel of its own (issue #899): named before the scope
-       leaves, so nothing the session's options resolve to reaches the row's channel; dropped if the leave makes none. */
-    const uint32_t family_channel = active ? dsd_engine_receiver_family_begin(opts) : 0U;
-    dsd_scan_mode_leave(opts, state);
-    int monitor_request = 0;
-    if (active) {
-        /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
-           leaves for the manual session, which no target names (issue #671). */
-        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
-        monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
-        dsd_engine_receiver_family_end(family_channel);
-        dsd_engine_receiver_gate_settle(opts, state, 0);
-        /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
-         * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
-         * the analog profile request stays the leave's last. */
-        dsd_engine_scan_rigctl_restore(opts, state);
-    }
-    return monitor_request;
+    return channel_scan_leave_scope(opts, state, active);
 }
 
 int

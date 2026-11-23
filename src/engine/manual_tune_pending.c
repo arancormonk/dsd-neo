@@ -457,6 +457,29 @@ manual_tune_rr_report(dsd_state* state, manual_tune_rr_outcome outcome) {
     dsd_state_toast_publish(state, now + DSD_MANUAL_TUNE_FAILED_TOAST_S);
 }
 
+/* manual_tune_poll_noted()'s failure, under its hold: the receiver stayed where it was. */
+static void
+manual_tune_noted_failed(dsd_opts* opts, dsd_state* state) {
+    /* The receiver stayed on the channel before it (issue #899). */
+    if (g_record.id == g_channel_id) {
+        dsd_engine_receiver_channel_abandon(g_channel);
+    }
+    if (opts) {
+        const uint32_t applied_hz = manual_tune_applied_after_failure();
+        if (applied_hz != 0U) {
+            opts->rtlsdr_center_freq = applied_hz;
+        }
+    }
+    /* A scan step that failed retries its row, as one that failed in its wait does, unannounced. */
+    if (state && g_record.kind == DSD_MANUAL_TUNE_ENTRY) {
+        char mhz[16];
+        (void)dsd_freq_hz_mhz_text(g_record.requested_hz, mhz, sizeof mhz);
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: frequency -> %s MHz", mhz);
+        dsd_state_toast_publish(state, dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S);
+    }
+    manual_tune_rr_report(state, MANUAL_TUNE_RR_FAILED);
+}
+
 /* dsd_engine_manual_tune_poll() for a noted record, under the P25 SM tick guard: a watchdog retune (trunking on once
    the scan the tune was for has left) supersedes the record and writes the cached centre under it, so the record's
    state, its completion and the centre a failure puts back are read and written in one hold, never over a newer
@@ -506,24 +529,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
         manual_tune_rr_report(state, MANUAL_TUNE_RR_SUPERSEDED);
         return DSD_MANUAL_TUNE_DROPPED;
     }
-    /* The receiver stayed on the channel before it (issue #899). */
-    if (g_record.id == g_channel_id) {
-        dsd_engine_receiver_channel_abandon(g_channel);
-    }
-    if (opts) {
-        const uint32_t applied_hz = manual_tune_applied_after_failure();
-        if (applied_hz != 0U) {
-            opts->rtlsdr_center_freq = applied_hz;
-        }
-    }
-    /* A scan step that failed retries its row, as one that failed in its wait does, unannounced. */
-    if (state && g_record.kind == DSD_MANUAL_TUNE_ENTRY) {
-        char mhz[16];
-        (void)dsd_freq_hz_mhz_text(g_record.requested_hz, mhz, sizeof mhz);
-        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: frequency -> %s MHz", mhz);
-        dsd_state_toast_publish(state, dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S);
-    }
-    manual_tune_rr_report(state, MANUAL_TUNE_RR_FAILED);
+    manual_tune_noted_failed(opts, state);
     return DSD_MANUAL_TUNE_FAILED;
 }
 

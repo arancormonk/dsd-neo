@@ -3858,6 +3858,31 @@ trunk_scan_leave_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
+/* trunk_scan_switch_to()'s entry into the target it switches to: its scope, state, options, keys and demodulator. */
+static void
+trunk_scan_enter_target(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                        dsd_trunk_scan_target_runtime* rt, dsd_scan_key_change* key_change) {
+    /* The target is on air from its switch (issue #899): committed now, before its settings resolve, on a channel of its
+       own its retune names, so nothing it resolves to reaches the target left, whose channel keeps its gate until the
+       retune lands. */
+    rt->channel = dsd_engine_receiver_channel_begin(opts);
+    /* The scope was reserved by the prepare and every target type maps to a valid mode. */
+    (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type));
+    trunk_scan_restore_target_snapshot(coord, state, rt);
+    trunk_scan_share_peer_idens(coord, state, rt);
+    trunk_scan_apply_target_opts(opts, coord, rt);
+    dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
+    (void)dsd_scan_key_change_commit(state, key_change);
+    dsd_scan_option_values values_scratch;
+    (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
+    dsd_engine_scan_ensure_output(opts, state);
+    dsd_scan_groups_enter(state, rt->profile);
+    (void)dsd_scan_maps_enter(state, rt->profile);
+    trunk_scan_apply_target_demod(opts, state, &rt->target);
+    trunk_scan_sync_active_sm_mode(state, rt);
+    dsd_frame_sync_reset_acquisition(opts, state, 0);
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -3912,25 +3937,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    /* The target is on air from its switch (issue #899): committed now, before its settings resolve, on a channel of its
-       own its retune names, so nothing it resolves to reaches the target left, whose channel keeps its gate until the
-       retune lands. */
-    rt->channel = dsd_engine_receiver_channel_begin(opts);
-    /* The scope was reserved above and every target type maps to a valid mode. */
-    (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type));
-    trunk_scan_restore_target_snapshot(coord, state, rt);
-    trunk_scan_share_peer_idens(coord, state, rt);
-    trunk_scan_apply_target_opts(opts, coord, rt);
-    dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
-    (void)dsd_scan_key_change_commit(state, &key_change);
-    dsd_scan_option_values values_scratch;
-    (void)dsd_scan_mode_options(opts, state, trunk_scan_target_values(rt, &values_scratch));
-    dsd_engine_scan_ensure_output(opts, state);
-    dsd_scan_groups_enter(state, rt->profile);
-    (void)dsd_scan_maps_enter(state, rt->profile);
-    trunk_scan_apply_target_demod(opts, state, &rt->target);
-    trunk_scan_sync_active_sm_mode(state, rt);
-    dsd_frame_sync_reset_acquisition(opts, state, 0);
+    trunk_scan_enter_target(opts, state, coord, rt, &key_change);
 
     double now_m = trunk_scan_now_m();
     /* Every attempt starts disarmed: only a retune that actually lands anchors the visit, so a
