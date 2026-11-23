@@ -66,6 +66,9 @@ class RtlTcpFixtureServer {
     uint64_t programs_started() const;
     /* The frequency of the row whose program plays now, 0 for the noise. */
     uint32_t serving_row_hz() const;
+    /* Wait up to @p timeout_ms for a send to find the client's socket full (the client reads slower than the server
+       sends); false when none did by then. */
+    bool wait_for_backpressure(unsigned int timeout_ms) const;
 
   private:
     struct Program {
@@ -84,6 +87,7 @@ class RtlTcpFixtureServer {
     int m_port = 0;
     std::thread m_thread;
     std::atomic<int> m_quit{0};
+    std::atomic<uint64_t> m_backpressure{0U}; /* sends that found the socket full */
     mutable std::mutex m_lock;
     uint32_t m_tuned_hz = 100000000U;
     uint32_t m_rate_hz = 2048000U;

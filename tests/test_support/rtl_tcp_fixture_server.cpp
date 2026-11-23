@@ -86,9 +86,11 @@ to_cu8(float v) {
     return static_cast<unsigned char>(shifted < 0.0f ? 0.0f : (shifted > 255.0f ? 255.0f : shifted));
 }
 
-/* Send all of @p len bytes; false when the connection ended. */
+/* Send all of @p len bytes; false when the connection ended. Each time the socket is full (the client reads slower than
+   the server sends) @p backpressure counts it. */
 bool
-send_all(dsd_socket_t sock, const unsigned char* buf, size_t len, const std::atomic<int>& quit) {
+send_all(dsd_socket_t sock, const unsigned char* buf, size_t len, const std::atomic<int>& quit,
+         std::atomic<uint64_t>* backpressure) {
     size_t sent = 0U;
     while (sent < len && quit.load() == 0) {
         const int n = dsd_socket_send(sock, buf + sent, len - sent, MSG_NOSIGNAL);
@@ -98,6 +100,9 @@ send_all(dsd_socket_t sock, const unsigned char* buf, size_t len, const std::ato
         }
         const int e = dsd_socket_get_error();
         if (n < 0 && (e == EAGAIN || e == EWOULDBLOCK || e == EINTR)) {
+            if (e != EINTR) {
+                backpressure->fetch_add(1U);
+            }
             (void)dsd_socket_wait(sock, DSD_SOCKET_WAIT_WRITE, 20U);
             continue;
         }
@@ -183,6 +188,18 @@ RtlTcpFixtureServer::programs_started() const {
     return m_programs_started;
 }
 
+bool
+RtlTcpFixtureServer::wait_for_backpressure(unsigned int timeout_ms) const {
+    const uint64_t until_ms = dsd_realtime_mono_ms() + timeout_ms;
+    while (m_backpressure.load() == 0U) {
+        if (dsd_realtime_mono_ms() >= until_ms) {
+            return false;
+        }
+        dsd_sleep_ms(5U);
+    }
+    return true;
+}
+
 uint32_t
 RtlTcpFixtureServer::serving_row_hz() const {
     std::lock_guard<std::mutex> hold(m_lock);
@@ -205,6 +222,12 @@ RtlTcpFixtureServer::serve_main() {
             (void)dsd_socket_close(sock);
             continue;
         }
+#if defined(SO_NOSIGPIPE)
+        /* Where send() has no MSG_NOSIGNAL, a client that closes during a send ends the connection, not the test
+           process, as the rtl_tcp client's own socket does (rtl_device.cpp). */
+        int nosigpipe = 1;
+        (void)dsd_socket_setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof nosigpipe);
+#endif
         serve_connection(sock);
         (void)dsd_socket_shutdown(sock, SHUT_RDWR);
         (void)dsd_socket_close(sock);
@@ -265,7 +288,7 @@ RtlTcpFixtureServer::serve_connection(dsd_socket_t sock) {
         m_carry_len = 0U;
     }
     const unsigned char header[12] = {'R', 'T', 'L', '0', 0, 0, 0, 5, 0, 0, 0, 29};
-    if (!send_all(sock, header, sizeof header, m_quit)) {
+    if (!send_all(sock, header, sizeof header, m_quit, &m_backpressure)) {
         return;
     }
     uint64_t generation = UINT64_MAX;
@@ -324,7 +347,7 @@ RtlTcpFixtureServer::serve_connection(dsd_socket_t sock) {
         }
         /* Keep the rotation on the unit circle over minutes of samples. */
         phasor /= std::abs(phasor);
-        if (!send_all(sock, out.data(), out.size(), m_quit)) {
+        if (!send_all(sock, out.data(), out.size(), m_quit, &m_backpressure)) {
             return;
         }
         sent_samples += chunk;

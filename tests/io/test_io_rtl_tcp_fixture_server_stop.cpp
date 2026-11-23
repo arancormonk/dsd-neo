@@ -3,7 +3,8 @@
  * The in-process rtl_tcp fixture server's stop() returns while a client stays connected and stops reading (issue #899,
  * review round 7): the server's sends fill the socket buffers, and a blocking send would never come back to see the
  * stop, so stop() would wait in its join for good. The accepted socket is nonblocking, so the bounded send wait sees the
- * stop and the connection ends.
+ * stop and the connection ends. stop() is timed only once the server says a send found the socket full (review round
+ * 8), so the case never passes on a server that had not yet stalled.
  */
 
 #include <arpa/inet.h>
@@ -11,7 +12,6 @@
 #include <cstdio>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/sockets.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <netinet/in.h>
 #include <string>
@@ -23,6 +23,8 @@ namespace {
 
 /* How long stop() may take with a client that reads nothing: the send wait is 20 ms, so this is ample. */
 constexpr uint64_t kStopBoundMs = 2000U;
+/* How long the server may take to fill the client's buffers at 2.4 MS/s (about 4.8 MB/s): ample on a loaded host. */
+constexpr unsigned int kBackpressureDeadlineMs = 20000U;
 
 /* Connect to the server on @p port with a small receive buffer, ask for a high sample rate so its sends fill the
    buffers quickly, and read nothing. */
@@ -74,8 +76,15 @@ main(void) {
         dsd_socket_cleanup();
         return 1;
     }
-    /* Long enough for the server to fill both buffers at 2.4 MS/s and block in its send. */
-    dsd_sleep_ms(1500U);
+    /* The server's sends fill both buffers at 2.4 MS/s: stop() is timed once a send has found the socket full. */
+    if (!server.wait_for_backpressure(kBackpressureDeadlineMs)) {
+        DSD_FPRINTF(stderr, "fixture server stop: no send found the socket full within %u ms\n",
+                    kBackpressureDeadlineMs);
+        server.stop();
+        (void)dsd_socket_close(client);
+        dsd_socket_cleanup();
+        return 1;
+    }
     const uint64_t start = dsd_realtime_mono_ms();
     server.stop();
     const uint64_t took = dsd_realtime_mono_ms() - start;
