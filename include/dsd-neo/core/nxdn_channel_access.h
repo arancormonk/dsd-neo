@@ -202,11 +202,12 @@ dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
 }
 
 /**
- * Drop the IDAS identity a composite control channel's SRV_INFO, read with the Type-D layout, named out of a Type-C
- * Location ID: the IDAS System ID and Site Code, and the whole Type-D part of the received identity (its system, the
- * SCCH area and site ID: dsd_rxid_forget_nxdn_type_d()). A local composite frame with checked content disproves that
- * reading before any of its messages acts (nxdn_frame()), and the Type-C note drops it for good
- * (dsd_nxdn_note_type_c()).
+ * Drop the Type-D reading of the carrier: the IDAS identity a composite control channel's SRV_INFO, read with the
+ * Type-D layout, named out of a Type-C Location ID (the IDAS System ID and Site Code, and the whole Type-D part of the
+ * received identity: its system, the SCCH area and site ID, dsd_rxid_forget_nxdn_type_d()), and the "Type-D" category
+ * an SCCH that passed its short CRC on such a frame left, which the VCALL and IV parsers read as an IDAS layout (11-bit
+ * IDs), however little else that SCCH recorded. A local composite frame with checked content disproves that reading
+ * before any of its messages acts (nxdn_frame()), and the Type-C note drops it for good (dsd_nxdn_note_type_c()).
  */
 static inline void
 dsd_nxdn_forget_type_d_identity(dsd_state* state) {
@@ -216,13 +217,15 @@ dsd_nxdn_forget_type_d_identity(dsd_state* state) {
     state->nxdn_idas_system_id = 0U;
     state->nxdn_idas_site_code = 0U;
     dsd_rxid_forget_nxdn_type_d(state);
+    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+    }
 }
 
 /**
  * Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. Until now a
  * composite control channel's SRV_INFO could only have been read with the Type-D layout, which names an IDAS System ID
- * and Site Code out of a Type-C Location ID: whatever IDAS identity the decoder holds is dropped with the Type-D
- * reading (dsd_nxdn_forget_type_d_identity()), and with it the "Type-D" category an SCCH misread on such a frame left.
+ * and Site Code out of a Type-C Location ID: the Type-D reading is dropped (dsd_nxdn_forget_type_d_identity()).
  */
 static inline void
 dsd_nxdn_note_type_c(dsd_state* state) {
@@ -231,11 +234,6 @@ dsd_nxdn_note_type_c(dsd_state* state) {
     }
     state->nxdn_site.type_c = 1U;
     dsd_nxdn_forget_type_d_identity(state);
-    /* So is the "Type-D" category an SCCH that passed its short CRC on such a frame left, which the VCALL and IV
-       parsers read as an IDAS layout (11-bit IDs). */
-    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
-        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
-    }
 }
 
 /**

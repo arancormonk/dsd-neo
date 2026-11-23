@@ -1114,6 +1114,38 @@ test_same_frame_cch_info_cancels_provisional_type_d(dsd_opts* opts, dsd_state* s
     return rc;
 }
 
+/*
+ * A local composite frame with checked FACCH1 content disproves the Type-D layout of the carrier however little of it
+ * was recorded (issue #903): with Type-C already known, one checked SCCH on a 0x63 frame (too short a run to record an
+ * IDAS area) leaves the "Type-D" category fresh, and nothing in the received identity. The next composite frame (LICH
+ * 0x71), whose SACCH fails and whose FACCH1 carries a checked CCH_INFO, drops that category: the carrier reads Type-C
+ * again.
+ */
+static int
+test_composite_frame_drops_a_lone_type_d_category(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t scch[25];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("lone category: Type-C known", dsd_nxdn_type_c(state), 1L);
+    info3_scch(scch);
+    build_frame_scch(0x63U, scch, 0U, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("lone category: the checked SCCH left fresh Type-D evidence", dsd_nxdn_type_d_layout_fresh(state),
+                      1L);
+    rc |= expect_long(
+        "lone category: no IDAS part recorded",
+        (state->rx_id.valid & (DSD_RXID_NXDN_IDAS_AREA | DSD_RXID_NXDN_IDAS_SITE | DSD_RXID_NXDN_TYPED_SYSTEM)) != 0U,
+        0L);
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0x5AU, cch, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("lone category: the composite frame drops it", dsd_nxdn_type_d_layout_fresh(state), 0L);
+    return rc;
+}
+
 /* The live call's source (-1: no call). */
 static long
 live_call_source(const dsd_state* state) {
@@ -1946,6 +1978,7 @@ main(void) {
     rc |= test_known_composite_frame_drops_the_type_d_scope(opts, state);
     rc |= test_known_composite_registration_alone_drops_the_type_d_scope(opts, state);
     rc |= test_checked_facch3_udch2_reads_type_d(opts, state);
+    rc |= test_composite_frame_drops_a_lone_type_d_category(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

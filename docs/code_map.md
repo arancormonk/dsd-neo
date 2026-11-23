@@ -3429,8 +3429,9 @@ suite runs under this compiler.
       the message, issue #903), never Type-D or a traffic channel; a local composite frame with checked FACCH1 content
       (a CCH_INFO that reclassified its LICH, or any checked message, a registration alone included, once Type-C made
       its LICH read as composite at once; no ambiguous LICH is reclassified for it) drops the IDAS identity an SRV_INFO
-      read with the Type-D layout left (`dsd_nxdn_forget_type_d_identity()`; a Type-D-only frame's after Type-C decoded
-      included) before either half acts, so no row of it takes a stale Type-D scope, and its rows take the same
+      read with the Type-D layout left, and the "Type-D" category a lone checked SCCH left even when it recorded no IDAS
+      part (`dsd_nxdn_forget_type_d_identity()`; a Type-D-only frame's after Type-C decoded included) before either half
+      acts, so no row of it takes a stale Type-D scope, and its rows take the same
       reception scope whichever half the CCH_INFO is in; a message shorter than its mandatory part adds no row):
       REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
       carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
