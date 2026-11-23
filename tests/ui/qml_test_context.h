@@ -5691,6 +5691,23 @@ class Setup : public QObject {
         poster.join();
     }
 
+    /**
+     * @brief Discussion #900: withdraw the notice for @p fileName and, when @p episode is 1 or more, post failure
+     *        @p episode of it, both from one thread before `storeNotices` takes either, as a start that passed a saved
+     *        system's channels and a start that failed them again can.
+     */
+    Q_INVOKABLE void
+    repostStoreNotice(const QString& fileName, int episode) {
+        std::thread poster([fileName, episode] {
+            dsd_qt::json_store_withdraw_notice(fileName);
+            if (episode > 0) {
+                dsd_qt::json_store_post_notice(
+                    {fileName, QStringLiteral("test"), QString(), static_cast<quint64>(episode)});
+            }
+        });
+        poster.join();
+    }
+
     /** @brief Issue #828: the Signal search store's files as SignalSearchModel::storeFiles() reports them. */
     Q_INVOKABLE void
     setSignalSearchStoreFiles(const QVariantList& files) {

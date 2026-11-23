@@ -727,6 +727,10 @@ names the option, when Extra decoder arguments contain:
 
 A `-P` in Extra decoder arguments with Record calls off still records, into the session's own folder.
 
+Extra decoder arguments can't end on an option that still needs its value, such as `--profile` or `-C` with nothing
+after it: the option would take the next one DSD-neo adds as its value. The start is refused with the prohibited-option
+message until the value is added.
+
 A scan list also owns its scan settings, so a scan list's start is refused when Extra decoder arguments contain one of
 them: input, decoder and modulation options (`-i`, `-f`, `-m`), trunking and scan modes (`-T`, `-Y`, `-C`,
 `--trunk-scan`, `--p25-bandplan`, `--iq-replay`), and the switches of the list's **Voice only** and **Skip silent

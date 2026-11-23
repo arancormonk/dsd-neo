@@ -278,9 +278,22 @@ test_dmr_channels_unwritten() {
     expect("channels: after an undismissed one, a new episode shows again",
            field(file, "state") == QLatin1String("unwritten") && changes == 2);
     expect("channels: and is read out again", heard());
-    QObject::disconnect(connection);
+    /* Withdrawn and failed again before the list's thread saw either: both syncs read the same
+       final list, and its episode alone tells the new failure from the one read out. */
+    std::thread coalesced([&file] {
+        dsd_qt::json_store_withdraw_notice(file);
+        dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), 3});
+    });
+    coalesced.join();
+    QCoreApplication::processEvents();
+    expect("channels: a withdrawal and a new failure in one sync change the list",
+           changes == 3 && field(file, "episode") == QLatin1String("3"));
+    expect("channels: and the new failure is read out", heard());
     withdraw();
-    expect("channels: withdrawing what is not posted changes nothing", changes == 2 && shown(file).isEmpty());
+    expect("channels: withdrawn while shown", changes == 4 && shown(file).isEmpty());
+    withdraw();
+    expect("channels: withdrawing what is not posted changes nothing", changes == 4 && shown(file).isEmpty());
+    QObject::disconnect(connection);
 }
 
 /* A settings file that could not be kept runs on its scratch copy: this run's changes are not saved. */

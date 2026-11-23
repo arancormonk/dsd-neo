@@ -248,6 +248,25 @@ Item {
             compare(c.announcements, before + 1, "read out once");
         }
 
+        // Discussion #900: a saved system's channels that fail again after a
+        // start passed them are a new failure, read out again even when the
+        // withdrawal and the new notice reach the list together.
+        function test_l_channels_failure_again_is_read_out() {
+            var c = card();
+            var before = c.announcements;
+            var file = "dmr_channels/6f2c1a94-3b7e-4d5a-8c09-1e2f3a4b5c6d.csv";
+            testContext.repostStoreNotice(file, 1);
+            waitForNotices(1);
+            tryCompare(c, "announcements", before + 1);
+            testContext.repostStoreNotice(file, 2);
+            tryCompare(c, "announcements", before + 2);
+            compare(storeNotices.notices.length, 1, "still one notice for the file");
+            wait(20);
+            compare(c.announcements, before + 2, "read out once");
+            testContext.repostStoreNotice(file, 0);
+            waitForNotices(0);
+        }
+
         // Settings that couldn't be kept run on a scratch copy: what is changed now isn't saved, whether or not the
         // file was renamed aside before the write failed. Dismiss reaches the list the card shows.
         function test_i_settings_on_scratch() {

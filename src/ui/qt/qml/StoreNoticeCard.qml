@@ -91,7 +91,9 @@ UiPanel {
         interval: 0
         onTriggered: card.announceNew()
     }
-    onSpeechChanged: announceLater.restart()
+    // The list, not only what it says: a new failure of the same file reads the
+    // same, and only its episode tells it apart.
+    onNoticesChanged: announceLater.restart()
     onVisibleChanged: announceLater.restart()
     onNavigationAllowedChanged: announceLater.restart()
     Component.onCompleted: announceLater.restart()

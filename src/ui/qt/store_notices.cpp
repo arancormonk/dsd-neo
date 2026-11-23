@@ -66,6 +66,7 @@ StoreNotices::toMap(const Notice& notice) {
         {QStringLiteral("state"), notice.state},
         {QStringLiteral("kept"), notice.kept},
         {QStringLiteral("earlierKept"), notice.earlierKept},
+        {QStringLiteral("episode"), notice.episode},
     };
 }
 

@@ -47,7 +47,10 @@ class StoreNotices : public QObject {
      *    default settings), "leftInPlace" (the Signal search history of version 1, which is never moved) or
      *    "unwritten" (a saved system's DMR Tier III channels file a start could not write: its starts go without them);
      *  - kept: the name it was kept as, else "";
-     *  - earlierKept: for "unreadable", the name an earlier copy of the same file was kept as this run, else "".
+     *  - earlierKept: for "unreadable", the name an earlier copy of the same file was kept as this run, else "";
+     *  - episode: JsonStoreNotice::episode, never shown. A new failure of a saved system's DMR channels file changes
+     *    the list by it alone, so the card reads it out even when the one before was withdrawn and this one posted
+     *    before the list's thread saw either.
      */
     Q_PROPERTY(QVariantList notices READ notices NOTIFY noticesChanged)
 
@@ -87,7 +90,7 @@ class StoreNotices : public QObject {
         QString state;
         QString kept;
         QString earlierKept;
-        quint64 episode = 0; // JsonStoreNotice::episode: part of the key, never shown
+        quint64 episode = 0; // JsonStoreNotice::episode: part of the key and the map, never shown
     };
 
     /** Re-read json_store_notices(). GUI thread. */
