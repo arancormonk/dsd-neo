@@ -549,7 +549,9 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
     dsd_scan_mode_leave(opts, state);
     dsd_scan_settings_restore(&c->saved, opts, state);
     /* The session's own channel comes back with its gate, the analog default included, before its family request
-       (issue #899). */
+       (issue #899). A Stop's restore tune carries the same gate to where it lands, and the search drops every block
+       from before this restore until then (rtl_signal_search_bypass()), so this push reaches no sample there; a search
+       that ends with no restore tune (the session's shutdown, an input lost) has only this push. */
     (void)dsd_squelch_analog_default_settle(opts, state);
     rtl_stream_enforce_tuner_autogain(c->saved_autogain);
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {

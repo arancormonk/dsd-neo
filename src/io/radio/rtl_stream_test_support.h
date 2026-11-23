@@ -2150,6 +2150,17 @@ typedef struct rtl_stream_test_retune_squelch_result {
     int gate_only_controller_margin;
     int gate_only_symbols_kept;    /* 1 when that landing left the symbol rate and TED as it found them */
     int gate_only_superseded_mode; /* one for the gate alone, superseded by a scan leave counted after it */
+    /* Two gate-carrying retunes outstanding at once, the older (noise +10) in flight, the newer (auto +6) queued after
+       it, landing in that order: the older lands closed (its request was replaced), the newer its own gate. */
+    int replaced_closed;      /* 1 when the older landing left the level gate at a level no power reaches */
+    int replaced_outstanding; /* rtl_stream_retune_squelch_outstanding() between the two landings: 1 */
+    int replacing_mode;       /* the newer landing's gate */
+    int replacing_margin;
+    int settled_outstanding; /* ... and once both outcomes are published: 0 */
+    /* The newer one dropped before it was taken (a go-to refused): the older lands its own gate again, in the word the
+       decoder gave it since. */
+    int reinstated_mode;
+    int reinstated_margin;
 } rtl_stream_test_retune_squelch_result;
 
 /* Open the NFM monitor at 48 kHz with the squelch Off and land retunes that carry a squelch gate, one after another, as

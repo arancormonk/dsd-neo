@@ -539,16 +539,47 @@ channel_scan_staged_gate(const dsd_opts* opts, const dsd_state* state, const cha
                                     analog && opts->m17encoder != 1);
 }
 
-/* A retune landed for a row that will not commit (out of date, or its restage dropped): the receiver gets the gate of
-   the row on air back, resolved now (issue #899), as does any retune still outstanding. */
+/* A push of the gate the receiver runs now that an outstanding gate-carrying retune held back (issue #899): the
+   landing owns the gate until the decoder can see that retune's outcome, and the push is made once it can. Decoder
+   thread. */
+static int s_receiver_gate_owed;
+
+/* Whether a gate-carrying retune is outstanding, its outcome not yet visible here (no stream: none). */
+static int
+receiver_gate_held(void) {
+    return dsd_rtl_stream_metrics_hook_retune_squelch_outstanding() == 1;
+}
+
+void
+dsd_engine_receiver_gate_owe(void) {
+    s_receiver_gate_owed = 1;
+}
+
+int
+dsd_engine_receiver_gate_take_owed(int outstanding) {
+    if (!s_receiver_gate_owed || outstanding) {
+        return 0;
+    }
+    s_receiver_gate_owed = 0;
+    return 1;
+}
+
+/* The staged row ended without its commit (issue #899): the receiver gets the gate of the channel it is on, resolved
+   now. That is the staged row's when its retune landed all the same (@p landed: out of date, or its restage dropped),
+   else the row on air's, which commands may have changed while the retune held the gate. Owed while another
+   gate-carrying retune is outstanding. */
 static void
-channel_scan_gate_on_air(const dsd_opts* opts, const dsd_state* state) {
+channel_scan_gate_after_end(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan, int landed) {
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
-    const dsd_squelch_setting on_air = dsd_scan_mode_channel_squelch(opts, state);
-    (void)dsd_rtl_stream_metrics_hook_update_retune_squelch(&on_air);
-    (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&on_air);
+    const dsd_squelch_setting gate =
+        landed ? channel_scan_staged_gate(opts, state, scan) : dsd_scan_mode_channel_squelch(opts, state);
+    if (receiver_gate_held()) {
+        dsd_engine_receiver_gate_owe();
+        return;
+    }
+    (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&gate);
 }
 
 void
@@ -581,20 +612,21 @@ dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, in
     dsd_squelch_setting landing;
     dsd_engine_receiver_gates(opts, state, &now, &landing);
     (void)dsd_rtl_stream_metrics_hook_update_retune_squelch(&landing);
+    /* While a gate-carrying retune is outstanding its landing owns the gate: the push waits for its outcome. */
     if (push_now) {
+        dsd_engine_receiver_gate_owe();
+    }
+    if (dsd_engine_receiver_gate_take_owed(receiver_gate_held())) {
         (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&now);
     }
 }
 
-/* The staged row ends without its commit, its move noted (@p moved: channel_scan_note_unlanded_move()). A retune that
-   landed all the same (@p landed: out of date, or its restage dropped) brought its gate with it, so the row on air's
-   comes back, resolved now (issue #899); one that never landed left the receiver's gate alone. */
+/* The staged row ends without its commit, its move noted (@p moved: channel_scan_note_unlanded_move()), and the
+   receiver is handed the gate of the channel it is on (channel_scan_gate_after_end(), issue #899). */
 static void
 channel_scan_end_uncommitted(dsd_opts* opts, dsd_state* state, channel_scan* scan, int moved, int landed) {
     channel_scan_note_unlanded_move(opts, state, scan, moved);
-    if (landed) {
-        channel_scan_gate_on_air(opts, state);
-    }
+    channel_scan_gate_after_end(opts, state, scan, landed);
 }
 
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
@@ -1423,7 +1455,7 @@ channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
     /* A failed second backend may already have moved the first one. Keep the tune
      * ledger's frame gate closed until a subsequent successful request recovers.
      * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
-    channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
+    channel_scan_end_uncommitted(opts, state, scan, dsd_engine_scan_tune_moved(), 0);
     scan->start_failure =
         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
     channel_scan_end_calls(opts, state);

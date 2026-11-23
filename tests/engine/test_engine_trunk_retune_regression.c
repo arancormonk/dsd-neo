@@ -809,6 +809,11 @@ rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate) {
 }
 
 void
+rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+    (void)target_freq_hz;
+}
+
+void
 rtl_stream_clear_pending_retune_profile(void) {
     g_rtl_pending_active = 0;
     g_rtl_pending_target_freq_hz = 0;

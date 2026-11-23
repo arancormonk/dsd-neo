@@ -38,9 +38,16 @@ void dsd_engine_receiver_gates(const dsd_opts* opts, const dsd_state* state, dsd
                                dsd_squelch_setting* landing);
 /** On an RTL-family input: hand an outstanding retune that carries a gate the @p landing gate of
  * dsd_engine_receiver_gates() (rtl_stream_update_retune_squelch(), so a command that changed it while the retune was
- * queued or in flight is honoured where it lands), and with @p push_now the receiver the @p now gate at once. Decoder
- * thread. */
+ * queued or in flight is honoured where it lands), and with @p push_now the receiver the @p now gate, at once unless a
+ * gate-carrying retune is outstanding, else once its outcome shows (dsd_engine_receiver_gate_owe()); any push owed
+ * before is made then too. Decoder thread. */
 void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int push_now);
+/** A push of the gate the receiver runs now is owed (issue #899): held back while a gate-carrying retune is outstanding
+ * (rtl_stream_retune_squelch_outstanding()), whose landing owns the gate until the decoder can see its outcome. */
+void dsd_engine_receiver_gate_owe(void);
+/** 1, and the debt cleared, when a push is owed and nothing is outstanding (@p outstanding 0): the caller pushes the
+ * gate dsd_engine_receiver_gates() gives now. Decoder thread. */
+int dsd_engine_receiver_gate_take_owed(int outstanding);
 /** dsd_engine_receiver_gate_settle() with a push: what the scan scope's resume runs through
  * dsd_receiver_gate_settle_hook_set() (issue #899). */
 void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);

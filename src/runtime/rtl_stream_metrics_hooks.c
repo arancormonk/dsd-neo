@@ -148,6 +148,14 @@ dsd_rtl_stream_metrics_hook_update_retune_squelch(const dsd_squelch_setting* set
 }
 
 int
+dsd_rtl_stream_metrics_hook_retune_squelch_outstanding(void) {
+    if (!g_rtl_stream_metrics_hooks.retune_squelch_outstanding) {
+        return -1;
+    }
+    return g_rtl_stream_metrics_hooks.retune_squelch_outstanding() ? 1 : 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz) {
     if (g_rtl_stream_metrics_hooks.apply_analog_profile) {
         return g_rtl_stream_metrics_hooks.apply_analog_profile(family, kind, width_hz);

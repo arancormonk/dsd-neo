@@ -101,6 +101,7 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
     hooks.set_channel_squelch_setting = rtl_stream_metrics_set_channel_squelch_setting;
     hooks.update_retune_squelch = rtl_stream_update_retune_squelch;
+    hooks.retune_squelch_outstanding = rtl_stream_retune_squelch_outstanding;
     hooks.replay_batch = rtl_stream_metrics_replay_batch;
     hooks.discontinuity_seq = rtl_stream_discontinuity_seq;
     hooks.monitor_deemph_gain = rtl_stream_monitor_deemph_gain;

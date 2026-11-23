@@ -153,6 +153,23 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return 0;
 }
 
+/* A push the receiver's gate owes while a gate-carrying retune is outstanding (issue #899), as the engine keeps it. */
+static int g_receiver_gate_owed;
+
+void
+dsd_engine_receiver_gate_owe(void) {
+    g_receiver_gate_owed = 1;
+}
+
+int
+dsd_engine_receiver_gate_take_owed(int outstanding) {
+    if (!g_receiver_gate_owed || outstanding) {
+        return 0;
+    }
+    g_receiver_gate_owed = 0;
+    return 1;
+}
+
 /* With no -Y tune staged the receiver runs, and an outstanding retune lands, the gate of the channel on air (issue
    #899). */
 void

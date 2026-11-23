@@ -2891,16 +2891,16 @@ svc_rtl_queue_tune_gate(const dsd_opts* opts, const dsd_state* state, uint32_t h
 #endif
 }
 
-/* A tune that was not taken (@p rc) drops the gate svc_rtl_queue_tune_gate() queued, with the receiver's unchanged. */
+/* A tune that did not take the gate svc_rtl_queue_tune_gate() queued for @p hz drops it, with the receiver's unchanged. */
 static void
-svc_rtl_settle_tune_gate(int gated, int rc) {
+svc_rtl_settle_tune_gate(int gated, uint32_t hz) {
 #ifdef USE_RADIO
-    if (gated && rc != RTL_STREAM_TUNE_OK && rc != RTL_STREAM_TUNE_TIMEOUT) {
-        rtl_stream_clear_pending_retune_profile();
+    if (gated) {
+        rtl_stream_drop_untaken_retune_squelch(hz);
     }
 #else
     (void)gated;
-    (void)rc;
+    (void)hz;
 #endif
 }
 
@@ -2916,7 +2916,7 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
     DSD_MEMSET(&mark, 0, sizeof mark);
     const int gated = svc_rtl_queue_tune_gate(opts, state, hz);
     const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id, &mark);
-    svc_rtl_settle_tune_gate(gated, rc);
+    svc_rtl_settle_tune_gate(gated, hz);
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
         dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
@@ -3125,6 +3125,19 @@ svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* An edit's push to the receiver, held back while a gate-carrying retune is outstanding (issue #899): its landing owns
+   the gate until its outcome shows, and the drain's settle pushes then. */
+static void
+svc_rtl_push_squelch_unless_held(const dsd_opts* opts) {
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && rtl_stream_retune_squelch_outstanding()) {
+        dsd_engine_receiver_gate_owe();
+        return;
+    }
+#endif
+    svc_rtl_push_squelch(opts);
+}
+
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */
 int
 svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
@@ -3141,7 +3154,7 @@ svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
      * scanner leaves it. */
     if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
         /* Sync the demod state for channel-based squelching: a level, in place of an auto squelch too. */
-        svc_rtl_push_squelch(opts);
+        svc_rtl_push_squelch_unless_held(opts);
     }
     return 0;
 }
@@ -3173,7 +3186,7 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
                                            ? dsd_squelch_setting_dynamic(setting->mode, setting->margin_db)
                                            : dsd_squelch_setting_of_level(setting->level);
     if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
-        svc_rtl_push_squelch(opts);
+        svc_rtl_push_squelch_unless_held(opts);
     }
     return 0;
 }
@@ -3213,7 +3226,12 @@ svc_rtl_settle_receiver_gate(const dsd_opts* opts, const dsd_state* state, int p
     dsd_squelch_setting landing;
     dsd_engine_receiver_gates(opts, state, &now, &landing);
     rtl_stream_update_retune_squelch(&landing);
+    /* While a gate-carrying retune is outstanding its landing owns the gate: the push waits for its outcome, which the
+       drain's next settle sees. */
     if (push_now) {
+        dsd_engine_receiver_gate_owe();
+    }
+    if (dsd_engine_receiver_gate_take_owed(rtl_stream_retune_squelch_outstanding())) {
         svc_rtl_push_gate(&now);
     }
 #else

@@ -1010,7 +1010,8 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
  * receive request. A profile cleared (rtl_stream_clear_pending_retune_profile()), superseded (a live family request, or
  * for a profile with no family a live analog request or a scan leave, counted after it was queued), refused where it
  * lands (an analog width the rate cannot run), left behind by a coalesced retune to another target, or whose retune
- * fails, drops its gate with it: the receiver keeps the gate of the channel it stays on. Decoder thread.
+ * fails, drops its gate with it: the receiver keeps the gate of the channel it stays on. Each attach binds the gate to
+ * this retune (rtl_stream_retune_squelch_outstanding()). Decoder thread.
  */
 void rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
 
@@ -1021,6 +1022,25 @@ void rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const
  * retune that carries a gate lands. Decoder thread.
  */
 void rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate);
+
+/**
+ * @brief Whether a retune that carries a squelch gate is outstanding (issue #899): queued, in flight, or landed with its
+ * completion not yet published, so the decoder cannot yet see where the receiver is. The landing owns the gate until
+ * then; the decoder hands the receiver no gate of the channel on air meanwhile, only the landing's
+ * (rtl_stream_update_retune_squelch()), and settles once the outcome shows.
+ *
+ * A retune whose request a newer gate-carrying retune replaced while both were outstanding lands the gate closed (every
+ * block muted): the channel it lands is one the scan will never commit. The gate belongs to the newest one outstanding,
+ * and goes back to the one before when the newest is dropped before it was taken (a go-to refused, a profile cleared).
+ */
+int rtl_stream_retune_squelch_outstanding(void);
+
+/**
+ * @brief A tune to @p target_freq_hz has returned: a gate-carrying profile still queued for it was never taken (the
+ * tune was refused, deferred, or went nowhere), so it is dropped with its gate and no longer counts as outstanding
+ * (issue #899). A taken one is the controller's, and nothing changes. Decoder thread.
+ */
+void rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
 
 /**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),

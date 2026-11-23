@@ -253,6 +253,9 @@ struct RtlRetuneProfile {
        target): its landing applies nothing else, and settles no receive request. */
     int carries_squelch = 0;
     int squelch_only = 0;
+    /* With carries_squelch, the binding this profile's gate was attached under (g_retune_squelch_bound): a landing whose
+       binding a newer gate-carrying retune replaced runs the gate closed. */
+    uint32_t squelch_seq = 0U;
     uint32_t request_id = 0U;
     uint32_t target_freq_hz = 0U;
 };
@@ -570,8 +573,19 @@ static std::atomic<double> g_fsk_phase_cfo_hz{0.0};
 static std::mutex g_pending_retune_profile_mutex;
 static RtlRetuneProfile g_pending_retune_profile;
 /* The gate a retune profile that carries one lands (RtlRetuneProfile::carries_squelch, issue #899): the decoder's
-   latest answer for the channel its outstanding retune goes to. Under g_pending_retune_profile_mutex. */
+   latest answer for the channel its outstanding retune goes to, bound to that retune. Every attach takes a new binding
+   (RtlRetuneProfile::squelch_seq), outstanding until the decoder can see the retune's outcome: its completion published
+   (the controller), its landing done (an external backend), or its profile dropped before it was taken (cleared,
+   replaced, a coalesced retune's, a cancelled one's). The gate belongs to the newest binding outstanding; a landing of
+   any other runs the gate closed (kRetuneSquelchClosed), since its request was replaced and the channel it lands will
+   never be committed. All under g_pending_retune_profile_mutex; the count is read without it. */
 static dsd_squelch_setting g_retune_squelch = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
+static constexpr size_t kRetuneSquelchSlots = 8U;
+static uint32_t g_retune_squelch_outstanding[kRetuneSquelchSlots] = {};
+static uint32_t g_retune_squelch_last_seq = 0U;
+static std::atomic<int> g_retune_squelch_outstanding_count{0};
+/* A level no channel power reaches: the level gate mutes every block. */
+static const dsd_squelch_setting kRetuneSquelchClosed = {DSD_SQUELCH_MODE_LEVEL, 3.0e38, DSD_SQUELCH_MARGIN_DEFAULT_DB};
 static std::atomic<uint32_t> g_replay_event_retune_count{0};
 static std::atomic<uint32_t> g_replay_event_mute_count{0};
 static std::atomic<uint32_t> g_replay_event_reset_count{0};
@@ -609,6 +623,8 @@ static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
 static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
+static void rtl_stream_retune_squelch_release(const RtlRetuneProfile* profile);
+static void rtl_stream_retune_squelch_reset_for_open(void);
 static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
@@ -8142,6 +8158,9 @@ controller_finish_manual_retune(struct controller_state* s, const ControllerRetu
         drain_output_on_retune();
     }
     rtl_stream_publish_tune_completion(work->manual_token, result);
+    /* Its outcome is published, before the caller waiting on it wakes: the decoder decides the gate from here (issue
+       #899). */
+    rtl_stream_retune_squelch_release(&work->manual_profile);
     uint64_t answered = work->manual_token;
     (void)s->unanswered_in_flight_token.compare_exchange_strong(answered, 0U);
     controller_signal_manual_retune_complete(s, result);
@@ -8164,6 +8183,7 @@ controller_detach_queued_manual_retune(struct controller_state* s) {
         s->manual_retune_token = 0U;
         s->unanswered_letting_go.fetch_add(1U);
         s->unanswered_queued_token.store(0U);
+        rtl_stream_retune_squelch_release(&s->manual_retune_profile);
         rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     }
     dsd_mutex_unlock(&s->hop_m);
@@ -9662,10 +9682,12 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);
-    /* The squelch the session opens with, whole: a level, or the auto squelch's margin. */
+    /* The squelch the session opens with, whole: a level, or the auto squelch's margin. No retune of a stream before
+       this one is outstanding (issue #899). */
     {
         const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
         rtl_stream_set_channel_squelch_setting(&squelch);
+        rtl_stream_retune_squelch_reset_for_open();
     }
     rtl_demod_select_defaults_for_mode(&demod, opts, &output);
     if (stream_prepare_internals(opts) != 0) {
@@ -13572,6 +13594,80 @@ rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32
     return profile->target_freq_hz == target_freq_hz;
 }
 
+/* The newest gate binding outstanding, or 0 (g_pending_retune_profile_mutex held). */
+static uint32_t
+rtl_stream_retune_squelch_bound_locked(void) {
+    uint32_t bound = 0U;
+    for (size_t i = 0; i < kRetuneSquelchSlots; i++) {
+        if (g_retune_squelch_outstanding[i] > bound) {
+            bound = g_retune_squelch_outstanding[i];
+        }
+    }
+    return bound;
+}
+
+static void
+rtl_stream_retune_squelch_count_locked(void) {
+    int count = 0;
+    for (size_t i = 0; i < kRetuneSquelchSlots; i++) {
+        count += g_retune_squelch_outstanding[i] != 0U ? 1 : 0;
+    }
+    g_retune_squelch_outstanding_count.store(count, std::memory_order_release);
+}
+
+/* A new binding, outstanding (lock held). With every slot taken the oldest goes: its landing then runs closed. */
+static uint32_t
+rtl_stream_retune_squelch_bind_locked(void) {
+    g_retune_squelch_last_seq = g_retune_squelch_last_seq == UINT32_MAX ? 1U : g_retune_squelch_last_seq + 1U;
+    size_t slot = 0;
+    for (size_t i = 0; i < kRetuneSquelchSlots; i++) {
+        if (g_retune_squelch_outstanding[i] == 0U) {
+            slot = i;
+            break;
+        }
+        if (g_retune_squelch_outstanding[i] < g_retune_squelch_outstanding[slot]) {
+            slot = i;
+        }
+    }
+    g_retune_squelch_outstanding[slot] = g_retune_squelch_last_seq;
+    rtl_stream_retune_squelch_count_locked();
+    return g_retune_squelch_last_seq;
+}
+
+/* @p profile's binding is no longer outstanding: the decoder can see its retune's outcome, or the profile was dropped
+   (lock held). */
+static void
+rtl_stream_retune_squelch_release_locked(const RtlRetuneProfile* profile) {
+    if (!profile->carries_squelch || profile->squelch_seq == 0U) {
+        return;
+    }
+    for (size_t i = 0; i < kRetuneSquelchSlots; i++) {
+        if (g_retune_squelch_outstanding[i] == profile->squelch_seq) {
+            g_retune_squelch_outstanding[i] = 0U;
+        }
+    }
+    rtl_stream_retune_squelch_count_locked();
+}
+
+static void
+rtl_stream_retune_squelch_release(const RtlRetuneProfile* profile) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_retune_squelch_release_locked(profile);
+}
+
+/* A stream opens with no retune of the old one outstanding; a gate queued for it before the open stays bound. */
+static void
+rtl_stream_retune_squelch_reset_for_open(void) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    for (size_t i = 0; i < kRetuneSquelchSlots; i++) {
+        if (!(g_pending_retune_profile.carries_squelch
+              && g_retune_squelch_outstanding[i] == g_pending_retune_profile.squelch_seq)) {
+            g_retune_squelch_outstanding[i] = 0U;
+        }
+    }
+    rtl_stream_retune_squelch_count_locked();
+}
+
 static int
 rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id, uint32_t target_freq_hz) {
     if (!out_profile) {
@@ -13582,6 +13678,8 @@ rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t r
         return 0;
     }
 
+    /* A profile the take writes over (a coalesced retune's, queued for the controller) never lands. */
+    rtl_stream_retune_squelch_release_locked(out_profile);
     rtl_stream_clear_retune_profile(out_profile);
     *out_profile = g_pending_retune_profile;
     out_profile->active = 1;
@@ -13618,6 +13716,7 @@ rtl_stream_store_pending_retune_profile(uint32_t target_freq_hz, int cqpsk_enabl
     profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
 
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
     g_pending_retune_profile = profile;
 }
 
@@ -13648,6 +13747,7 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
         profile.cqpsk_enable = -1;
         profile.target_freq_hz = target_freq_hz;
         profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
+        rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
         g_pending_retune_profile = profile;
     }
     g_pending_retune_profile.squelch_only = 0;
@@ -13677,10 +13777,28 @@ rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_
         profile.target_freq_hz = target_freq_hz;
         profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
         profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
+        rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
         g_pending_retune_profile = profile;
     }
+    rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
     g_pending_retune_profile.carries_squelch = 1;
+    g_pending_retune_profile.squelch_seq = rtl_stream_retune_squelch_bind_locked();
     g_retune_squelch = *gate;
+}
+
+extern "C" void
+rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    if (g_pending_retune_profile.active && g_pending_retune_profile.carries_squelch
+        && g_pending_retune_profile.target_freq_hz == target_freq_hz) {
+        rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
+        rtl_stream_clear_retune_profile(&g_pending_retune_profile);
+    }
+}
+
+extern "C" int
+rtl_stream_retune_squelch_outstanding(void) {
+    return g_retune_squelch_outstanding_count.load(std::memory_order_acquire) > 0 ? 1 : 0;
 }
 
 extern "C" void
@@ -13710,6 +13828,7 @@ rtl_stream_supersede_familyless_retunes(void) {
 extern "C" void
 rtl_stream_clear_pending_retune_profile(void) {
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_retune_squelch_release_locked(&g_pending_retune_profile);
     rtl_stream_clear_retune_profile(&g_pending_retune_profile);
 }
 
@@ -14605,7 +14724,8 @@ rtl_stream_land_retune_squelch(const RtlRetuneProfile* profile) {
     dsd_squelch_setting gate;
     {
         std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
-        gate = g_retune_squelch;
+        gate =
+            profile->squelch_seq == rtl_stream_retune_squelch_bound_locked() ? g_retune_squelch : kRetuneSquelchClosed;
     }
     rtl_stream_set_channel_squelch_setting(&gate);
 }
@@ -14746,6 +14866,7 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
             rtl_stream_clear_output_for_external_retune();
         }
         rtl_stream_leave_demod_family_switch_gate(gate);
+        rtl_stream_retune_squelch_release(&profile);
         return;
     }
     /* Under the gate, so a controller retune's finalize cannot forget the record between this read and the clear. */
@@ -14766,6 +14887,8 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     }
     rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate);
+    /* Landed on the decoder's own thread: it sees the outcome as its tune returns (issue #899). */
+    rtl_stream_retune_squelch_release(&profile);
 }
 
 extern "C" int
@@ -20774,7 +20897,53 @@ retune_squelch_test_controller_land(const dsd_opts* opts, uint32_t target_hz, in
     if (out_queued_mode) {
         *out_queued_mode = retune_squelch_test_mode();
     }
-    return family_test_finalize_on_pipeline(&controller, opts, target_hz, taken ? &profile : NULL);
+    const int refused = family_test_finalize_on_pipeline(&controller, opts, target_hz, taken ? &profile : NULL);
+    /* The controller publishes the outcome, and the binding goes with it (controller_process_manual_retune()). */
+    rtl_stream_retune_squelch_release(&profile);
+    return refused;
+}
+
+/* Two gate-carrying retunes outstanding at once (issue #899): the older taken by the controller and in flight, the
+   newer queued after it. */
+static void
+retune_squelch_test_replaced_cases(const dsd_opts* opts, rtl_stream_test_retune_squelch_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting auto6 = dsd_squelch_setting_auto(6);
+    const uint32_t older_hz = kFamilyTestRetuneHz + 400000U;
+    const uint32_t newer_hz = older_hz + 12500U;
+    retune_squelch_test_reset();
+    retune_squelch_test_queue(older_hz, 0, &noise10);
+    RtlRetuneProfile older{};
+    (void)rtl_stream_take_pending_retune_profile(&older, 7U, older_hz);
+    retune_squelch_test_queue(newer_hz, 0, &auto6);
+    RtlRetuneProfile newer{};
+    (void)rtl_stream_take_pending_retune_profile(&newer, 8U, newer_hz);
+    (void)family_test_finalize_on_pipeline(&controller, opts, older_hz, &older);
+    out->replaced_closed = (retune_squelch_test_mode() == DSD_SQUELCH_MODE_LEVEL
+                            && demod.channel_squelch_level.load(std::memory_order_acquire) > 1.0e30f)
+                               ? 1
+                               : 0;
+    rtl_stream_retune_squelch_release(&older);
+    out->replaced_outstanding = rtl_stream_retune_squelch_outstanding();
+    (void)family_test_finalize_on_pipeline(&controller, opts, newer_hz, &newer);
+    out->replacing_mode = retune_squelch_test_mode();
+    out->replacing_margin = retune_squelch_test_margin();
+    rtl_stream_retune_squelch_release(&newer);
+    out->settled_outstanding = rtl_stream_retune_squelch_outstanding();
+
+    /* The newer one cleared before the controller took it: the older is the decoder's again. */
+    retune_squelch_test_reset();
+    retune_squelch_test_queue(older_hz, 0, &noise10);
+    RtlRetuneProfile reinstated{};
+    (void)rtl_stream_take_pending_retune_profile(&reinstated, 9U, older_hz);
+    retune_squelch_test_queue(newer_hz, 0, &auto6);
+    rtl_stream_clear_pending_retune_profile();
+    const dsd_squelch_setting noise14 = dsd_squelch_setting_noise(14);
+    rtl_stream_update_retune_squelch(&noise14);
+    (void)family_test_finalize_on_pipeline(&controller, opts, older_hz, &reinstated);
+    out->reinstated_mode = retune_squelch_test_mode();
+    out->reinstated_margin = retune_squelch_test_margin();
+    rtl_stream_retune_squelch_release(&reinstated);
 }
 
 /* The cases that land through the controller's finalize. */
@@ -20908,8 +21077,10 @@ rtl_stream_test_retune_squelch_landing(rtl_stream_test_retune_squelch_result* ou
         rtl_stream_clear_demod_profile_request();
         retune_squelch_test_controller_cases(&analog_opts, out);
         retune_squelch_test_external_cases(out);
+        retune_squelch_test_replaced_cases(&analog_opts, out);
     }
     rtl_stream_clear_pending_retune_profile();
+    rtl_stream_retune_squelch_reset_for_open();
     family_test_restore(saved);
     family_test_release_buffers();
     demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);

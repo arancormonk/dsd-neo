@@ -318,6 +318,13 @@ rtl_stream_update_retune_squelch(const dsd_squelch_setting* setting) {
     g_last_retune_squelch = *setting;
 }
 
+static int g_retune_squelch_outstanding;
+
+int
+rtl_stream_retune_squelch_outstanding(void) {
+    return g_retune_squelch_outstanding;
+}
+
 static int g_replay_batch_calls;
 static int g_replay_batch_result;
 
@@ -548,6 +555,10 @@ main(void) {
     assert(g_retune_squelch_updates == 1 && g_last_retune_squelch.mode == DSD_SQUELCH_MODE_NOISE
            && g_last_retune_squelch.margin_db == 10);
     assert(dsd_rtl_stream_metrics_hook_update_retune_squelch(NULL) == -1 && g_retune_squelch_updates == 1);
+    g_retune_squelch_outstanding = 1;
+    assert(dsd_rtl_stream_metrics_hook_retune_squelch_outstanding() == 1);
+    g_retune_squelch_outstanding = 0;
+    assert(dsd_rtl_stream_metrics_hook_retune_squelch_outstanding() == 0);
 
     test_replay_batch_hook();
     /* The stream's discontinuity count reaches DSP through the table (issue #518). */

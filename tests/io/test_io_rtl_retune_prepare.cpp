@@ -1319,6 +1319,16 @@ test_retune_carries_its_squelch_gate(void) {
     failed |= expect_int_eq("retune gate alone: symbols and timing stay", r.gate_only_symbols_kept, 1);
     failed |= expect_int_eq("retune gate alone: a scan leave supersedes it", r.gate_only_superseded_mode,
                             DSD_SQUELCH_MODE_LEVEL);
+    /* Review follow-up: a landing whose request a newer gate-carrying retune replaced runs closed, never the newer
+       request's gate nor the old channel's; the newer lands its own; a newer one dropped before it was taken gives the
+       older its binding back. */
+    failed |= expect_int_eq("retune gate replaced: the older lands closed", r.replaced_closed, 1);
+    failed |= expect_int_eq("retune gate replaced: the newer still outstanding", r.replaced_outstanding, 1);
+    failed |= expect_int_eq("retune gate replaced: the newer lands its own", r.replacing_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("retune gate replaced: the newer's margin", r.replacing_margin, 6);
+    failed |= expect_int_eq("retune gate replaced: nothing outstanding once published", r.settled_outstanding, 0);
+    failed |= expect_int_eq("retune gate reinstated: the older's own", r.reinstated_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("retune gate reinstated: the decoder's later word", r.reinstated_margin, 14);
     return failed;
 }
 

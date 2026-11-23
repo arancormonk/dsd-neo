@@ -990,6 +990,16 @@ void
 rtl_stream_clear_pending_retune_profile(void) {}
 
 int
+rtl_stream_retune_squelch_outstanding(void) {
+    return 0;
+}
+
+void
+rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+    (void)target_freq_hz;
+}
+
+int
 rtl_stream_set_bias_tee(int on) {
     (void)on;
     return 0;
