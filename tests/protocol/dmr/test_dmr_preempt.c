@@ -1705,6 +1705,29 @@ test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A C_BCAST Chan_Freq whose header names one concrete channel (CH_ADJ, TS 102 361-4 Table 7.78) and whose appended
+   block defines another (CdefParms CHAN, Table 7.103) names neither: it teaches neither LPCN and confirms no learned
+   mapping of either with the block's frequency. A block naming no concrete channel (0) keeps the header's, as before. */
+static int
+test_chan_freq_conflicting_channels_name_nothing(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x004DU;
+    const uint16_t lpcn_e = 0x004EU;
+    init_env(opts, st, 2.0);
+    c_bcast_chan_freq_block(opts, st, lpcn_d, 40U, lpcn_e, VC_C);
+    int rc = expect_true("a Chan_Freq whose block defines another LPCN teaches neither",
+                         st->trunk_chan_map[lpcn_d] == 0 && st->trunk_chan_map[lpcn_e] == 0);
+    st->trunk_chan_map[lpcn_d] = VC_B;
+    st->dmr_lcn_trust[lpcn_d] = 1U;
+    c_bcast_chan_freq_block(opts, st, lpcn_d, 40U, lpcn_e, VC_B);
+    rc |= expect_true("a Chan_Freq whose block defines another LPCN confirms no mapping",
+                      st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U
+                          && st->trunk_chan_map[lpcn_e] == 0);
+    c_bcast_chan_freq_block(opts, st, lpcn_e, 40U, 0U, VC_C);
+    rc |= expect_true("a block naming no channel keeps the header's",
+                      st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+    return rc;
+}
+
 /* TS1 is followed on VC_A for TG 300 while TS2 carries voice no LC named; a TD_GRANT for TS1 retires it and the
    receiver stays for TS2. TS1's grant is an absolute one whose block names no usable LPCN (@p absolute_first), else a
    TV_GRANT naming LPCN_A, accepted only under -F RAS handling when @p ras_first. */
@@ -2325,6 +2348,7 @@ main(void) {
     rc |= test_off_control_channel_receiver_confirms_nothing(opts, st);
     rc |= test_foreign_block_never_confirms(opts, st);
     rc |= test_absolute_chan_freq_names_its_block_channel(opts, st);
+    rc |= test_chan_freq_conflicting_channels_name_nothing(opts, st);
     rc |= test_adopted_companion_takes_its_grant_channel(opts, st);
     rc |= test_adopted_companion_takes_a_repeated_grant(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);

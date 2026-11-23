@@ -13609,7 +13609,8 @@ Private per-protocol modules worth knowing about:
   its header's CSBKO (TS 102 361-4 Tables 7.16, 7.18 and 7.21, `dmr_cspdu_mbc_own_blocks()`: both CRCs passing does not
   show that the blocks belong together); a header heard as a standalone CSBK (`dmr_cspdu()`), or with another
   message's block (`test_foreign_block_never_confirms()`, both directions), prints its own fields and teaches,
-  publishes or follows no frequency. Tests:
+  publishes or follows no frequency. A Chan_Freq whose header names one channel and whose block's CdefParms define
+  another concrete one names neither (`test_chan_freq_conflicting_channels_name_nothing()`). Tests:
   `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`), `DMR_GRANT_POLICY` (lone
   C_BCAST headers), `DMR_T3_CMOVE`, `DMR_EVENT_CRC`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy

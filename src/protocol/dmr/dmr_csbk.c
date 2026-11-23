@@ -1588,6 +1588,12 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
 
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
+    /* A header naming one channel (CH_ADJ, TS 102 361-4 Table 7.78) whose block defines another (Table 7.103's CHAN)
+       does not show which channel the block's frequency belongs to, so it names neither. */
+    if (f->a_channel != 0xFFF && dmr_t3_lpcn_is_channel(abs_freqs.lpchannum) && abs_freqs.lpchannum != f->a_channel) {
+        DSD_FPRINTF(stderr, " LPCN: %d; Appended Block Defines LPCN %d;", f->a_channel, abs_freqs.lpchannum);
+        return;
+    }
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, f->a_channel == 0xFFF);
     /* The header's channel, or for its absolute escape the one the appended block defines (as an absolute grant's).
        The block is C_BCAST's own (dmr_cspdu_mbc_own_blocks()), so it may confirm a learned mapping. The escape only
