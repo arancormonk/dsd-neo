@@ -14436,6 +14436,8 @@ static int g_analog_req_kind;
 static int g_analog_req_width_hz;
 static int g_analog_req_order;
 static int g_demod_req_calls;
+/* Issue #899: whether the last demod profile request was a digital decode's (rtl_stream_request_decode_demod_profile()). */
+static int g_demod_req_decode;
 static int g_demod_req_order;
 static int g_demod_req_rate;
 static int g_demod_req_ted_sps;
@@ -14559,6 +14561,8 @@ int __wrap_rtl_stream_check_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz);
 int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                             int ted_sps, int ted_sps_is_override);
+int __wrap_rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
+                                                   int channel_profile, int ted_sps, int ted_sps_is_override);
 int __wrap_rtl_stream_analog_family_active(void);
 int __wrap_rtl_stream_family_landing_after_pending(void);
 int __wrap_rtl_stream_request_digital_family_landing(int cqpsk_explicit);
@@ -14766,7 +14770,17 @@ __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, in
     g_demod_req_order = ++g_rx_sequence;
     g_fake_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : __wrap_rtl_stream_requested_cqpsk();
     ++g_fake_rx_seq;
+    g_demod_req_decode = 0;
     return 0;
+}
+
+int
+__wrap_rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                               int ted_sps, int ted_sps_is_override) {
+    const int rc = __wrap_rtl_stream_request_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                           ted_sps, ted_sps_is_override);
+    g_demod_req_decode = 1;
+    return rc;
 }
 
 int
@@ -14885,6 +14899,7 @@ stream_reopens(int cqpsk) {
 static void
 reset_rx_family_wrap(void) {
     reset_config_rtl_wrap();
+    g_demod_req_decode = -1;
     demod_thread_lands(g_fake_cqpsk);
     g_fake_rx_replaced_first = g_fake_rx_replaced_last = 0U;
     g_analog_check_result = 0;
@@ -16373,6 +16388,7 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     rc |= expect_int("family request made", g_analog_req_calls, 1);
     rc |= expect_int("digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int("symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("the symbol profile is a digital decode's", g_demod_req_decode, 1);
     rc |= expect_int("family before profile", g_analog_req_order < g_demod_req_order, 1);
     /* The stream's options are the -fA session's, which name no digital mode: the decoder notes DMR's with it. */
     rc |= expect_int("dmr modes noted", g_modes_note_calls, 1);

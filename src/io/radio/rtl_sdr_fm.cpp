@@ -250,6 +250,10 @@ struct RtlRetuneProfile {
        applies nothing else and settles no receive request. */
     int new_channel_only = 0;
     int new_channel = 0;
+    /* The symbol profile is a digital decode's (a typed digital row's or target's, a trunked channel's), stated by the
+       engine that queued it (rtl_stream_prepare_retune_digital_decode_for_target()): it may take an analog family's
+       front end off the monitor. One nobody marked lands no symbol profile there (issue #899). */
+    int digital_decode = 0;
     uint32_t request_id = 0U;
     uint32_t target_freq_hz = 0U;
 };
@@ -12654,6 +12658,9 @@ static std::mutex g_profile_req_m;
 static std::atomic<int> g_profile_req_pending{0};
 /* Guarded by g_profile_req_m: */
 static int g_profile_req_has_demod = 0; /* a demod (symbol/CQPSK/timing) profile is queued */
+/* The queued demod profile is a digital decode's (rtl_stream_request_decode_demod_profile()), not a frame-sync hunt's
+   or a restore's: only such a profile takes an analog family's front end off the monitor (issue #899). */
+static int g_profile_req_digital_decode = 0;
 /* Receive-family request (rtl_stream_request_analog_profile), applied before the demod profile of the same
  * consume so that a family switch followed by the new family's symbol profile lands in that order. */
 static int g_profile_req_analog_family = -1; /* -1 = none queued */
@@ -12936,15 +12943,14 @@ static int rtl_stream_landing_ted_sps(int ted_sps, int ted_sps_is_override, int 
  * thread with no pipeline running) versus the ungated body (the demod
  * thread applying a consumed request; arming the gate there would deadlock
  * waiting for its own block to finish). */
-/* A digital decode's symbol profile, asked for by a request or carried by a retune (issue #899): applied as
-   rtl_stream_set_symbol_profile() does. On the analog family the session never asks one for its monitor (the analog
-   profile answers for it: app_control/symbol_profile.c, and the frame sync's hunt stands down on an analog session), so
-   one that applies there is a typed digital row's, and the front end is off the monitor whatever channel filter it
-   names. Returns rtl_stream_set_symbol_profile()'s result. */
+/* A requested or retuned symbol profile, applied as rtl_stream_set_symbol_profile() does (issue #899). One its requester
+   marked a digital decode's (@p digital_decode: a typed digital row's or target's, a digital mode switched to) takes an
+   analog family's front end off the monitor whatever channel filter it names; any other (a frame-sync hunt's, a
+   restore's) applies only off the monitor and leaves that as it is. Returns rtl_stream_set_symbol_profile()'s result. */
 static int
-rtl_stream_apply_decode_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+rtl_stream_apply_decode_symbol_profile(int symbol_rate_hz, int levels, int channel_profile, int digital_decode) {
     const int rc = rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
-    if (rc == 0) {
+    if (rc == 0 && digital_decode) {
         demod.symbol_profile_on_analog = demod.analog_family ? 1 : 0;
     }
     return rc;
@@ -12952,7 +12958,12 @@ rtl_stream_apply_decode_symbol_profile(int symbol_rate_hz, int levels, int chann
 
 static void
 rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int chan, int ted_sps,
-                                      int ted_sps_is_override, int use_gate) {
+                                      int ted_sps_is_override, int use_gate, int digital_decode) {
+    if (!digital_decode && dsd_demod_analog_monitor_active(&demod)) {
+        /* A profile no digital decode asked for (a frame-sync hunt's, a restore's) never takes the monitor away: one
+           that lands after the request that put the monitor back is stale, and that request wins (issue #899). */
+        return;
+    }
     if (cqpsk >= 0) {
         if (use_gate) {
             rtl_stream_toggle_cqpsk(cqpsk);
@@ -12974,7 +12985,7 @@ rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int c
         }
     }
     if (sym_rate > 0) {
-        if (rtl_stream_apply_decode_symbol_profile(sym_rate, levels, chan) != 0) {
+        if (rtl_stream_apply_decode_symbol_profile(sym_rate, levels, chan, digital_decode) != 0) {
             LOG_WARN("RTL: requested demod profile rejected (rate=%d levels=%d profile=%d).\n", sym_rate, levels, chan);
         }
     }
@@ -13034,9 +13045,9 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
     return rtl_stream_demod_request_repeats_published(cqpsk, rate, levels, chan, ted, ovr);
 }
 
-extern "C" int
-rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
-                                 int ted_sps_is_override) {
+static int
+rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                               int ted_sps_is_override, int digital_decode) {
     if (symbol_rate_hz > 0 && levels != 2 && levels != 4) {
         return -1;
     }
@@ -13055,7 +13066,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
          * (rtl_stream_clear_demod_profile_request). */
         const int symbol_rate_before_hz = demod.symbol_rate_hz;
         rtl_stream_apply_demod_profile_params(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
-                                              ted_sps_is_override, 1);
+                                              ted_sps_is_override, 1, digital_decode);
         rtl_stream_follow_fsk_resample_decision(symbol_rate_before_hz);
         rtl_stream_settle_all_requests();
         return 0;
@@ -13073,6 +13084,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
         rtl_stream_note_receive_change_locked();
     }
     g_profile_req_has_demod = 1;
+    g_profile_req_digital_decode = digital_decode ? 1 : 0;
     g_profile_req_cqpsk = cqpsk_enable;
     g_profile_req_sym_rate = symbol_rate_hz;
     g_profile_req_levels = levels;
@@ -13081,6 +13093,20 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
+}
+
+extern "C" int
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
+    return rtl_stream_queue_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                          ted_sps_is_override, 0);
+}
+
+extern "C" int
+rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    return rtl_stream_queue_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                          ted_sps_is_override, 1);
 }
 
 /* ---------------- Receive family and analog profile ----------------
@@ -13479,6 +13505,7 @@ namespace {
  * (rtl_stream_take_demod_profile_request()). */
 struct TakenProfileRequest {
     int has_demod;
+    int digital_decode;
     int digital_landing;
     int landing_explicit;
     int analog_family;
@@ -13512,6 +13539,7 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
         return 0;
     }
     out->has_demod = g_profile_req_has_demod;
+    out->digital_decode = g_profile_req_digital_decode;
     out->digital_landing = g_profile_req_digital_landing;
     out->landing_explicit = g_profile_req_landing_explicit;
     out->analog_family = g_profile_req_analog_family;
@@ -13576,7 +13604,7 @@ rtl_stream_consume_demod_profile_request(void) {
     }
     if (req.has_demod) {
         rtl_stream_apply_demod_profile_params(req.cqpsk, req.sym_rate, req.levels, req.chan, req.ted_sps,
-                                              req.ted_sps_is_override, 0);
+                                              req.ted_sps_is_override, 0, req.digital_decode);
     }
     if (lands_on_digital) {
         if (!leaves_analog) {
@@ -13824,6 +13852,14 @@ rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int ne
         g_pending_retune_profile = profile;
     }
     g_pending_retune_profile.new_channel = 1;
+}
+
+extern "C" void
+rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    if (g_pending_retune_profile.active && g_pending_retune_profile.target_freq_hz == target_freq_hz) {
+        g_pending_retune_profile.digital_decode = 1;
+    }
 }
 
 extern "C" void
@@ -14755,6 +14791,27 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile) {
     demod.ted_sps_override = profile->ted_override ? ted_sps : 0;
 }
 
+/* The CQPSK state, symbol profile and TED of a retune profile that applied no family of its own, or the digital one
+   (@p lands_digital_family). One its engine did not mark a digital decode's (RtlRetuneProfile::digital_decode) lands
+   none of them on the analog monitor, which only a digital decode's profile takes away (issue #899). */
+static void
+rtl_stream_apply_retune_symbols(const RtlRetuneProfile* profile, int lands_digital_family) {
+    if (!profile->digital_decode && dsd_demod_analog_monitor_active(&demod)) {
+        return;
+    }
+    int cqpsk = -1;
+    int channel_profile = -1;
+    rtl_stream_retune_symbol_family(profile, lands_digital_family, &cqpsk, &channel_profile);
+    if (cqpsk >= 0) {
+        rtl_stream_toggle_cqpsk(cqpsk);
+    }
+    if (profile->symbol_rate_hz > 0 && (profile->levels == 2 || profile->levels == 4)) {
+        (void)rtl_stream_apply_decode_symbol_profile(profile->symbol_rate_hz, profile->levels, channel_profile,
+                                                     profile->digital_decode);
+    }
+    rtl_stream_apply_retune_ted(profile);
+}
+
 /* The receive part of a retune profile that applies on its target, after its gain profile: the receive-family switch,
  * then the symbol profile and its TED. Returns 1 when the profile asked for an analog channel the demod rate cannot
  * run, as rtl_stream_apply_retune_profile() does, else 0. @p out_lands_digital_family is set to 1 once the symbol
@@ -14794,20 +14851,7 @@ rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* ou
        rtl_stream_apply_pending_retune_profile_for_target()), so a front end already on the digital family lands the
        output rate a switch would too. */
     const int lands_digital_family = rtl_stream_retune_lands_digital_family(profile);
-    int cqpsk = -1;
-    int channel_profile = -1;
-    rtl_stream_retune_symbol_family(profile, lands_digital_family, &cqpsk, &channel_profile);
-    if (cqpsk >= 0) {
-        rtl_stream_toggle_cqpsk(cqpsk);
-    }
-
-    int symbol_rate_hz = profile->symbol_rate_hz;
-    int levels = profile->levels;
-    if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
-        (void)rtl_stream_apply_decode_symbol_profile(symbol_rate_hz, levels, channel_profile);
-    }
-
-    rtl_stream_apply_retune_ted(profile);
+    rtl_stream_apply_retune_symbols(profile, lands_digital_family);
     /* Where the profile left the receiver: on the monitor a marked landing, or a return to it, starts closed; off it (the
        digital family, or a typed digital scan row's symbol profile on the analog family) the digital gate runs. */
     rtl_stream_gate_boundary(profile->new_channel || !was_monitor);
@@ -16205,7 +16249,7 @@ rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out) {
     rtl_stream_publish_demod_profile_snapshot();
 
     /* CQPSK on, queued: pending until the demod thread takes it, even when the output generation moves first. */
-    (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     out->first_seq = rtl_stream_receive_request_seq();
     out->queued_outcome = rtl_stream_receive_request_outcome(out->first_seq);
     out->requested_cqpsk_while_pending = rtl_stream_requested_cqpsk();
@@ -16218,10 +16262,10 @@ rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out) {
     out->published_cqpsk_after_consume = rx_request_test_published_cqpsk();
 
     /* CQPSK off, then replaced by another request before a consume: settled with it. */
-    (void)rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(0, 0, 0, -1, -1, 0);
     const uint32_t replaced_seq = rtl_stream_receive_request_seq();
     out->second_seq_follows = replaced_seq == out->first_seq + 1U ? 1 : 0;
-    (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     rtl_stream_consume_demod_profile_request();
     out->replaced_outcome = rtl_stream_receive_request_outcome(replaced_seq);
 
@@ -18302,7 +18346,7 @@ family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_tes
 /* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
 static int
 family_test_request_dmr_row_profile(void) {
-    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    return rtl_stream_request_decode_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
 }
 
 /* A symbol profile the -fA session applies on its own, with no family request, consumed at a block boundary: the DSP
@@ -18312,7 +18356,7 @@ static void
 family_test_apply_profile_under_analog(int which, rtl_stream_test_family_switch_result* out) {
     if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE
         || which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
-        (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+        (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     } else if (which == RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW) {
         (void)family_test_request_dmr_row_profile();
     } else {
@@ -19010,6 +19054,7 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     row.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
     row.ted_sps = 10;
     row.target_freq_hz = kFamilyTestRetuneHz;
+    row.digital_decode = 1; /* a typed row's, as the engine marks it */
     /* Queued after the live requests above, as the scanner queues it: none supersedes it. */
     row.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
     rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &row);
@@ -19038,7 +19083,7 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
 /* The DSP menu's CQPSK toggle turned on under the analog family and taken at a block boundary. */
 static int
 family_test_cqpsk_on_taken(void) {
-    const int rc = rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    const int rc = rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     family_test_demod_thread_boundary();
     return rc;
 }
@@ -20490,6 +20535,7 @@ rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, i
     if (with_cqpsk_symbol_profile) {
         rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10,
                                                                0, NULL);
+        rtl_stream_prepare_retune_digital_decode_for_target(target_hz);
     }
     const rtl_stream_retune_analog_profile analog = {family, kind, width_hz, 0};
     out->queued_rc = rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
@@ -20637,6 +20683,8 @@ family_test_queue_symbol_profile(uint32_t target_hz, int symbol_profile) {
     }
     rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, family_test_symbol_profile_cqpsk(symbol_profile),
                                                            4800, 4, channel_profile, 10, 0, NULL);
+    /* A typed row's, as the engine marks it (dsd_engine_prepare_retune_profile_for_target()). */
+    rtl_stream_prepare_retune_digital_decode_for_target(target_hz);
 }
 
 /* Whether a retune profile is queued for @p target_hz (rtl_stream_take_pending_retune_profile() would take it). */
@@ -21129,6 +21177,7 @@ channel_gate_test_typed_row_cases(const dsd_opts* analog_opts, rtl_stream_test_c
     rtl_stream_write_squelch_gate(&noise10, &off);
     const uint32_t hz = kFamilyTestRetuneHz + 1100000U;
     rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
     rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
     (void)channel_gate_test_controller_land(analog_opts, hz);
     out->typed_landing_off_monitor = demod.analog_family != 0 && !dsd_demod_analog_monitor_active(&demod);
@@ -21286,13 +21335,14 @@ channel_gate_test_typed_row_body(const dsd_opts* analog_opts, const dsd_opts* di
     rtl_stream_write_squelch_gate(&noise10, &off);
     if (p->by_request) {
         test_stream_set(&g_cqpsk_toggle_test_stream);
-        (void)rtl_stream_request_demod_profile(p->cqpsk, p->symbol_rate_hz, p->levels, p->channel_profile, 0, 0);
+        (void)rtl_stream_request_decode_demod_profile(p->cqpsk, p->symbol_rate_hz, p->levels, p->channel_profile, 0, 0);
         test_stream_set(NULL);
         family_test_demod_thread_boundary();
     } else {
         const uint32_t hz = kFamilyTestRetuneHz + 1300000U;
         rtl_stream_prepare_retune_profile_for_target_with_gain(hz, p->cqpsk, p->symbol_rate_hz, p->levels,
                                                                p->channel_profile, 0, 0, NULL);
+        rtl_stream_prepare_retune_digital_decode_for_target(hz);
         rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
         (void)channel_gate_test_controller_land(analog_opts, hz);
     }
@@ -21322,6 +21372,72 @@ rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
     }
     TypedRowGateCase c = {*profile, {}};
     const int rc = channel_gate_test_fixture(channel_gate_test_typed_row_body, &c);
+    *out = c.out;
+    return rc;
+}
+
+namespace {
+/* rtl_stream_test_pause_against_hunt()'s order and result. */
+struct PauseHuntCase {
+    int order;
+    rtl_stream_test_pause_hunt_result out;
+};
+} // namespace
+
+/* The in-place pause's FM request, or a frame-sync hunt's symbol request (the DMR shape the hunt asks for, no digital
+   decode's), queued for the demod thread. */
+static void
+pause_hunt_test_queue(int hunt) {
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    if (hunt) {
+        (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    } else {
+        (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    test_stream_set(NULL);
+}
+
+/* An -fA session under noise +10 (Off for the digital family) with a typed DMR row landed and committed pauses in place:
+   its FM request and a stale frame-sync hunt request, in @p order (0: FM then hunt, one block boundary; 1: FM, a
+   boundary, hunt, a boundary; 2: hunt then FM, one boundary; 3: hunt, a boundary, FM, a boundary). */
+static void
+pause_hunt_test_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    (void)digital_opts;
+    PauseHuntCase* c = static_cast<PauseHuntCase*>(ctx);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &off);
+    const uint32_t hz = kFamilyTestRetuneHz + 1500000U;
+    rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    c->out.row_off_monitor = !dsd_demod_analog_monitor_active(&demod);
+    rtl_stream_write_squelch_gate(&off, &off);
+    const int hunt_first = c->order >= 2;
+    const int split = (c->order % 2) != 0;
+    pause_hunt_test_queue(hunt_first);
+    if (split) {
+        family_test_demod_thread_boundary();
+    }
+    pause_hunt_test_queue(!hunt_first);
+    family_test_demod_thread_boundary();
+    c->out.monitor = dsd_demod_analog_monitor_active(&demod);
+    c->out.closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    /* The decoder writes the session's gates once the pause's request settled. */
+    rtl_stream_write_squelch_gate(&noise10, &off);
+    c->out.analog_gate = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE
+                         && channel_gate_test_margin() == 10;
+}
+
+extern "C" int
+rtl_stream_test_pause_against_hunt(int order, rtl_stream_test_pause_hunt_result* out) {
+    if (!out || order < 0 || order > 3) {
+        return -1;
+    }
+    PauseHuntCase c = {order, {}};
+    const int rc = channel_gate_test_fixture(pause_hunt_test_body, &c);
     *out = c.out;
     return rc;
 }
@@ -21757,7 +21873,7 @@ family_test_note_front_end(rtl_stream_test_front_end_state* out) {
 /* The DMR session's own symbol profile, timed for the 48 kHz output. */
 static int
 family_test_request_dmr_session_profile(void) {
-    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    return rtl_stream_request_decode_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
 }
 
 /* The -Y leave of a DMR session (channel_scan_restore_frontend()): the family-less retunes outstanding superseded, the

@@ -1413,6 +1413,30 @@ test_typed_digital_rows_are_digital(void) {
     return failed;
 }
 
+/* Issue #899, round 8 follow-up 2: a typed digital row paused in place puts the monitor back with its FM request, and a
+ * frame-sync hunt's symbol request (no digital decode's) never takes it away again, in either order and whether the
+ * demod thread takes the two at one block boundary or at two: the restored monitor starts closed, and the decoder's
+ * write then runs the analog gate (noise +10), not the digital one. */
+static int
+test_pause_against_hunt(void) {
+    static const char* const kOrders[4] = {"FM then hunt, one boundary", "FM, then hunt at the next boundary",
+                                           "hunt then FM, one boundary", "hunt, then FM at the next boundary"};
+    int failed = 0;
+    for (int order = 0; order < 4; order++) {
+        rtl_stream_test_pause_hunt_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        const int rc = rtl_stream_test_pause_against_hunt(order, &r);
+        if (rc != 0 || !r.row_off_monitor || !r.monitor || !r.closed || !r.analog_gate) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: pause against a hunt request (%s): rc %d row off monitor %d monitor %d closed %d "
+                        "analog gate %d\n",
+                        kOrders[order], rc, r.row_off_monitor, r.monitor, r.closed, r.analog_gate);
+            failed = 1;
+        }
+    }
+    return failed;
+}
+
 /* Issue #899, round 8: the decoder's gate write reads only what the gate keeps under its own lock, never the
  * demodulator's family, which the controller changes at a landing on its thread. Run under TSan (tsan-debug), a write
  * that read the family would be reported here. */
@@ -3788,6 +3812,7 @@ main(void) {
     failed |= test_analog_channel_starts_closed();
     failed |= test_gate_write_during_landings();
     failed |= test_typed_digital_rows_are_digital();
+    failed |= test_pause_against_hunt();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();

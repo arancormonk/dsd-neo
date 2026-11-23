@@ -57,9 +57,13 @@ rtl_stream_output_rate(const RtlSdrContext* ctx) {
     return ctx ? 48000U : 0U;
 }
 
+/* Issue #899: whether the last demod profile request was a digital decode's (rtl_stream_request_decode_demod_profile()). */
+static int g_request_decode = -1;
+
 int
 rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                  int ted_sps_is_override) {
+    g_request_decode = 0;
     g_request_calls++;
     g_request_cqpsk = cqpsk_enable;
     g_request_rate = symbol_rate_hz;
@@ -70,6 +74,15 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_lock_at_request = g_profile_opts ? g_profile_opts->mod_cli_lock : -1;
     g_request_order = ++g_sequence;
     return 0;
+}
+
+int
+rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    const int rc = rtl_stream_request_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                                    ted_sps_is_override);
+    g_request_decode = 1;
+    return rc;
 }
 
 int
@@ -208,6 +221,7 @@ reset_profile_capture(const dsd_opts* opts) {
     g_request_channel_profile = -2;
     g_request_ted_sps = -2;
     g_request_ted_override = -1;
+    g_request_decode = -1;
     g_lock_at_request = -1;
     g_sequence = 0;
     g_request_order = 0;
@@ -239,6 +253,7 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
 
     rc |= expect_int("p25p2 qpsk dispatch", dispatch_one(&opts, &state, &cmd), 1);
     rc |= expect_int("p25p2 qpsk request call", g_request_calls, 1);
+    rc |= expect_int("p25p2 qpsk: a digital decode's profile", g_request_decode, 1);
     rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int("p25p2 qpsk: the plain family request, nothing outstanding", g_landing_calls, 0);
     rc |= expect_int("p25p2 qpsk family before profile", g_analog_order > 0 && g_analog_order < g_request_order, 1);

@@ -5351,7 +5351,8 @@ suite runs under this compiler.
     analog family and onto another kind, a width change, the digital gate at a digital switch, write and hunt landing, a
     refusal, a retired request, an analog open and its counts, a typed digital row's landing on `-fA` running the
     digital gate and its pause in place closed, the same for every typed row profile x rf_mod x channel profile by
-    retune and by request (`test_typed_digital_rows_are_digital()`, TETRA 18000/4 on rf_mod 0 included), the closed-start count of a block finished after the write, no
+    retune and by request (`test_typed_digital_rows_are_digital()`, TETRA 18000/4 on rf_mod 0 included), an in-place
+    pause's FM request against a frame-sync hunt request in all four orders (`test_pause_against_hunt()`), the closed-start count of a block finished after the write, no
     telemetry on the M17 encoder; and, under TSan, gate writes against landings on another thread), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
@@ -11267,10 +11268,16 @@ Notes:
     profile), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter, and a typed digital scan row's symbol
     profile on an analog session keeps the monitor output but filters with the row's channel profile and publishes no
     analog profile. Whether a digital decode's profile is in place is what was asked for, not which filter it names
-    (`demod_state::symbol_profile_on_analog`, issue #899 round 8): every symbol profile a request or a retune applies on
-    the analog family sets it (`rtl_stream_apply_decode_symbol_profile()`; an analog session never asks one for its
-    monitor), and applying the analog channel again (`rtl_demod_apply_analog_channel()`, a family switch, an open)
-    clears it. So TETRA's 18000/4 on the FSK discriminator, whose channel profile is WIDE like the monitor's, is a
+    (`demod_state::symbol_profile_on_analog`, issue #899 round 8): only a profile its requester marks a digital decode's
+    sets it (`rtl_stream_request_decode_demod_profile()`: the decoder's digital mode and a republished typed row,
+    `app_control/symbol_profile.c`, and the CQPSK toggle; a retune profile the engine marks with
+    `rtl_stream_prepare_retune_digital_decode_for_target()` in `dsd_engine_prepare_retune_profile_for_target()`: typed
+    digital rows and targets, trunked channels), and applying the analog channel again (`rtl_demod_apply_analog_channel()`,
+    a family switch, an open) clears it. An unmarked profile (the frame sync's hunt, the restore after a failed tune,
+    through `rtl_stream_request_demod_profile()`) applies only off the monitor: on it the demod thread lands none of it
+    (`rtl_stream_apply_demod_profile_params()`, `rtl_stream_apply_retune_symbols()`), so a stale hunt request taken
+    after an in-place pause's FM request, at the same block boundary or a later one, never takes the restored monitor
+    away (the FM request still drops one queued before it), and that monitor starts closed and runs the analog gate. So TETRA's 18000/4 on the FSK discriminator, whose channel profile is WIDE like the monitor's, is a
     digital row too: no width refresh, no analog profile published, no dynamic squelch, and the receiver's gate runs
     the digital one (on main the same predicate took it for the monitor). An IQ replay that decimates
     after the demodulator (`post_downsample` above 1) designs and runs the channel filter at `complex_rate`, ahead of

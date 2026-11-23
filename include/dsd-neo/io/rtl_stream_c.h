@@ -542,6 +542,17 @@ int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int l
                                      int ted_sps_is_override);
 
 /**
+ * @brief rtl_stream_request_demod_profile() for a digital decode (issue #899): a typed digital scan row's or target's
+ * profile, or the digital mode the decoder switched to (a decode mode change, a CQPSK toggle). Only such a profile
+ * takes an analog family's front end off the analog monitor (demod_state::symbol_profile_on_analog), whatever channel
+ * filter it names. A profile requested with rtl_stream_request_demod_profile() (a frame-sync hunt's, a restore after a
+ * failed tune) applies only off the monitor: one the demod thread takes after the request that put the monitor back,
+ * in the same block boundary or a later one, lands nothing, and that request wins.
+ */
+int rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                            int ted_sps, int ted_sps_is_override);
+
+/**
  * @brief Queue a receive-family / analog profile change for the demod thread.
  *
  * Covers a width-only change, an FM<->AM switch and an analog<->digital switch. The request is validated on the
@@ -1010,6 +1021,14 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
  * gate the receiver runs. Decoder thread.
  */
 void rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel);
+
+/**
+ * @brief Mark the symbol profile queued for @p target_freq_hz a digital decode's (issue #899): a typed digital row's or
+ * target's, a trunked channel's. Attach it after the profile, as rtl_stream_prepare_retune_new_channel_for_target().
+ * Only a marked profile lands its symbol profile, CQPSK state and timing on an analog family's monitor, taking the
+ * front end off it; an unmarked one lands none of them there. Decoder thread.
+ */
+void rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz);
 
 /**
  * @brief Write the squelch gate of the channel the receiver is on now (issue #899): @p gate on the analog monitor,

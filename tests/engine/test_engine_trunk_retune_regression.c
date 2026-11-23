@@ -801,6 +801,17 @@ rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int ne
     g_rtl_retune_channel_over_profile = g_rtl_pending_active && g_rtl_pending_target_freq_hz == target_freq_hz;
 }
 
+/* Issue #899: the retunes the engine marked a digital decode's, and whether the last one marked the profile queued for its
+   target. */
+static int g_rtl_retune_digital_marks;
+static int g_rtl_retune_digital_over_profile;
+
+void
+rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz) {
+    g_rtl_retune_digital_marks++;
+    g_rtl_retune_digital_over_profile = g_rtl_pending_active && g_rtl_pending_target_freq_hz == target_freq_hz;
+}
+
 void
 rtl_stream_clear_pending_retune_profile(void) {
     g_rtl_pending_active = 0;
@@ -1638,9 +1649,13 @@ test_backend_tune_updates_center_freq_cache(void) {
        profile its preparation queued and bound to the row's frequency; once the tune returns, a profile it never took is
        marked no more. It carries no gate: the receiver starts an analog channel closed and the decoder opens it. */
     g_rtl_pending_active = 0;
+    g_rtl_retune_digital_marks = 0;
     assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 1, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_retune_channels == 1 && g_rtl_retune_channel_hz == 461556250U);
     assert(g_rtl_retune_channel_over_profile == 1 && g_rtl_retune_channel_unnamed == 1);
+    /* Round 8: the digital row's symbol profile is marked a digital decode's, over the profile its preparation queued, so
+       only it (never a frame-sync hunt's request) may take an analog family's monitor away. */
+    assert(g_rtl_retune_digital_marks == 1 && g_rtl_retune_digital_over_profile == 1);
 
     /* A conventional P25 target selects the P25 chain without enabling a trunk SM. */
     g_trunk_scan_active_p25_class = 1;

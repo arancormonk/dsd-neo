@@ -455,6 +455,12 @@ dsd_engine_prepare_retune_profile_for_target(const dsd_opts* opts, const dsd_sta
     rtl_stream_prepare_retune_profile_for_target_with_gain(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
                                                            channel_profile, ted_sps, persist_ted_override,
                                                            &gain_profile);
+    if (symbol_rate_hz > 0 || cqpsk_enable >= 0) {
+        /* The engine retunes with a symbol profile only for a digital channel (a typed digital row or target, a
+           trunked control or voice channel): one that may take an analog family's monitor away (issue #899). An analog
+           row queues none, and attaches the analog family. */
+        rtl_stream_prepare_retune_digital_decode_for_target(target_freq_hz);
+    }
 }
 
 static void

@@ -2208,6 +2208,17 @@ typedef struct rtl_stream_test_typed_row_gate_result {
 int rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
                                    rtl_stream_test_typed_row_gate_result* out);
 
+/* A typed digital row's in-place pause against a stale frame-sync hunt request (issue #899, round 8). */
+typedef struct rtl_stream_test_pause_hunt_result {
+    int row_off_monitor; /* 1 when the typed DMR row's landing left the monitor, as by design */
+    int monitor;         /* 1 when the pause's FM request put the monitor back, the hunt's request landing nothing */
+    int closed;          /* ... as a new analog channel, closed and reported */
+    int analog_gate;     /* ... and the decoder's write then runs the analog gate (noise +10) */
+} rtl_stream_test_pause_hunt_result;
+
+/* Pause the row in place with its FM request and a hunt's symbol request in @p order (0..3, see the hook). */
+int rtl_stream_test_pause_against_hunt(int order, rtl_stream_test_pause_hunt_result* out);
+
 /* The decoder's gate writes against landings on another thread (issue #899, round 8). */
 typedef struct rtl_stream_test_gate_write_race_result {
     int landings;   /* retunes the landing thread landed, alternating analog (marked) and digital */

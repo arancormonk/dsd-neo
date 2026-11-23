@@ -197,12 +197,13 @@ symbol_profile_row_modulation(const dsd_state* state, int row_cqpsk) {
 }
 
 /* The symbol profile a digital mode runs on: the CQPSK family for @p rf_mod 1, otherwise the FSK discriminator. The
-   clamp mirrors the no-override setter this replaced. */
+   clamp mirrors the no-override setter this replaced. A digital decode's profile (the decoder's mode, or a typed digital
+   row's republished), which may take an analog family's monitor away (issue #899). */
 static void
 symbol_profile_request_symbols(const dsd_opts* opts, const dsd_state* state, dsd_decode_mode_profile profile,
                                int rf_mod) {
     const int ted_sps = state->samplesPerSymbol < 2 ? 2 : state->samplesPerSymbol;
-    (void)rtl_stream_request_demod_profile(
+    (void)rtl_stream_request_decode_demod_profile(
         rf_mod == 1, profile.symbol_rate_hz, profile.levels,
         dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, rf_mod), ted_sps, 0);
 }
@@ -702,7 +703,7 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
         dsd_engine_receiver_gate_due();
         return;
     }
-    (void)rtl_stream_request_demod_profile(cqpsk, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(cqpsk, 0, 0, -1, -1, 0);
 #else
     (void)opts;
 #endif
