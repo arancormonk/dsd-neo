@@ -16952,17 +16952,28 @@ Qt Quick frontend (`src/ui/qt`):
     identity and goes on with the next recording (`test_limit_skip_of_a_link_is_told`): a folder swapped on storage that stayed mounted, storage remounted
     between two passes, a folder a session start adopted while a delete waited (`test_delete_checks_the_file_it_removes`,
     `test_delete_leaves_a_folder_adopted_meanwhile`, `test_delete_of_a_name_now_a_link_is_told`,
-    `test_limit_skips_a_file_not_as_known`, `test_delete_of_an_unreadable_file_skips_it`). A journal there that cannot
-    be opened or read whole leaves its folder unread, with what the index held for it, so the store is not settled and
-    exports and deletes are refused until a later pass reads it (only a name confirmed missing is an empty journal,
-    `readJournal()`; `test_unread_journal_is_not_settled`); so do new journal lines that cannot be read (an open, seek or
-    read that fails in `tailFolder()`, not a last line still being written; `scheduleFolderReadLocked()`,
-    `test_tail_read_failure_unsettles`), and so does a recording the journal names whose name cannot be read
-    (`statPublished()` false: no access, an I/O error, or a listed name whose identity cannot be read): the folder stays
-    unread with its entries, and compaction, which takes only a read folder, leaves its journal as it is
-    (`test_unreadable_recording_keeps_the_folder_unread`). A delete, asked or the limit's, waits while its folder is
-    unread, even one that became unread in the same pass, and the folder's read drops it
-    (`test_held_delete_waits_for_an_unread_tail`). A folder's read, first or again, always publishes, so `indexed` comes back
+    `test_limit_skips_a_file_not_as_known`, `test_delete_of_an_unreadable_file_skips_it`).
+
+    The unread rule (issue #902, simplified): only a journal or a folder.json that cannot be read holds its folder
+    unread. A journal is opened once with the platform regular-file opener (`open_journal()`:
+    `dsd_fopen_existing_regular_file()`, never through a link, never waiting on a FIFO) and read from that file, for a
+    full read and a tail alike; only a name confirmed missing is an empty journal (`readJournal()`). One there that
+    cannot be opened or read whole leaves its folder unread, with what the index held for it, so the store is not
+    settled and exports and deletes are refused until a later pass reads it (`test_unread_journal_is_not_settled`); so
+    do new journal lines that cannot be read (an open, seek or read that fails in `tailFolder()`, not a last line still
+    being written; `scheduleFolderReadLocked()`, `test_tail_read_failure_unsettles`). A folder.json there that cannot
+    be read (`read_folder_marker()`: `FolderMarker::Unreadable`, no access or an I/O error, apart from one missing or
+    not valid, which is no folder of the app's) keeps the folder known, with its owner and recordings, unread and read
+    again each pass; it is never dropped from the folder table, by a folder's read, a root's listing or a session
+    start's lookup (`test_unreadable_marker_keeps_the_folder`). A recording whose own name cannot be read (EACCES, EIO,
+    ENAMETOOLONG, EOVERFLOW: anything but a name confirmed missing or confirmed no regular file) blocks nothing: it is
+    kept (`Entry::unreadable`, `applyPublishLocked()`), its journal line with it, never deleted (no identity matches it;
+    a delete naming it is told as skipped), and never counted, in the limit's usage or anywhere else, exported, played
+    or shared (`readerEntryLocked()`); a later read of its folder that sees the file indexes it as before
+    (`test_unreadable_recording_is_kept`). A delete, asked or the limit's, waits while its folder is unread, checked
+    again under the lock the unlink runs under (the uploader is asked without it), so a folder a session start adopted
+    or a read that failed meanwhile holds the delete for the folder's read, which drops it
+    (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`). A folder's read, first or again, always publishes, so `indexed` comes back
     even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
     as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
     on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one
@@ -16972,7 +16983,8 @@ Qt Quick frontend (`src/ui/qt`):
     `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
     its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
     does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
-    `loading` meanwhile (`test_export_probes_a_root_back`).
+    `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
+    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`).
     A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
     file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 
@@ -17074,7 +17086,10 @@ Qt Quick frontend (`src/ui/qt`):
     never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change,
     and only with the index settled as the refusals have it (`storageReadLocked()`: no pass asked for, no folder on
     storage that is there unread); otherwise it waits (`m_limitPending`) and runs in the pass that reads the folder, so
-    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`):
+    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`). Each removal
+    checks that again under the unlink's lock: a folder unread or a pass asked for since the count (a session start
+    adopting a folder of older recordings) ends the walk (`DeleteResult::Stale`), and the limit runs again once the
+    store is settled (`test_limit_walk_stops_when_its_count_goes_stale`):
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
     the total is at 95%; a file already gone is taken off the total without counting as removed. A total over the
     limit is first checked against the disk: every file it counts is looked at as `recheckRecordings()` looks (on the

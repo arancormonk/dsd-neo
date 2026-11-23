@@ -430,6 +430,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         quint64 order = 0U;
         /* Its file as the read that indexed it saw it (dsd_path_file_identity()): a delete removes only that file. */
         dsd_file_identity_t identity{};
+        /* Its name could not be read (no access, an I/O error) when it was indexed: kept with its journal line, never
+         * deleted, counted, exported, played or shared, until a read of its folder sees the file. */
+        bool unreadable = false;
     };
 
     /* A folder as the index held it before a read of it again (loadFolder() with replace), which drops its entries and
@@ -504,7 +507,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Removed: unlinked. Gone: already gone, now out of the index. Held: waits for a hold. Kept: not the store's to
      * remove (left on disk, out of the index) or this process's temp file. Failed: the unlink failed; still indexed.
      * Changed: the file at its path is not the one the request (or, for the limit, the index) knew; left alone. */
-    enum class DeleteResult { Removed, Gone, Held, Kept, Failed, Changed };
+    /* Stale: a removal for the limit found the index it counted no longer whole (storageReadLocked()). */
+    enum class DeleteResult { Removed, Gone, Held, Kept, Failed, Changed, Stale };
     enum class DeleteCause { Asked, Limit };
     /* What is at a recording's path, without following a link there: nothing; a regular file inside an available root,
      * which the store may remove; anything else, which it leaves alone; or (onDiskAsKnownLocked()) a removable file that
@@ -541,10 +545,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     static bool readJournal(const QString& journalPath, QByteArray* data);
     static bool rootAvailableNow(const QString& root);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
-    /* Each file @p records publishes into @p files (one the folder's listing read already is kept); false when the
-     * name of any of them cannot be read (statOf()'s unreadable: no access, an I/O error), which makes the read
-     * incomplete. */
-    static bool statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
+    /* Each file @p records publishes into @p files (one the folder's listing read already is kept). */
+    static void statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
                               QHash<QString, FileStat>* files);
 
     void run();
@@ -629,9 +631,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p roots as they are now, for a delete request: @p away when one is missing, @p unread when one is back but not
      * read again since (marked away, or found missing by a request); true when a pass must read one (m_rootsSeenAway). */
     bool checkRootsLocked(const QList<int>& roots, bool* away, bool* unread);
-    /* One delete request: refused unless storageSettledLocked(), else the ids @p collect gives (under the lock) are
-     * queued by queueDeletesLocked(). */
-    bool requestDeletes(const std::function<QStringList()>& collect);
+    /* One delete request: refused unless storageSettledLocked() (and, for a @p bulk one, no root held as away is back:
+     * awayRootsBackLocked()), else the ids @p collect gives (under the lock) are queued by queueDeletesLocked(). */
+    bool requestDeletes(bool bulk, const std::function<QStringList()>& collect);
     QString folderUidLocked(const QString& folder) const;
     bool liveTemp(const QString& path) const;
     bool stopping() const;
@@ -671,7 +673,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 
     /* deleteEntry()'s step under the lock: the holds, the check and the unlink. Failed when deleteEntry() still has to
      * settle it from @p attempt (a missing or foreign name, a refused or failed removal). */
-    DeleteResult unlinkEntryLocked(const QString& id, const QString& path, bool uploading,
+    DeleteResult unlinkEntryLocked(const QString& id, const QString& path, bool uploading, DeleteCause cause,
                                    const dsd_file_identity_t* expected, Pass* pass, UnlinkAttempt* attempt);
     /* The player, an export or a save holds @p path. */
     bool heldLocked(const QString& path) const;
@@ -698,6 +700,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Rewrite the journal at @p journalPath with one publish per @p live recording, when nothing but a torn line lies
      * past @p offset; @p written is the bytes it holds then. */
     static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written);
+    /* summarize() for an entry no listed recording: an unfinished one counted as such, one whose name cannot be read
+     * not at all. True when @p entry is one of them. */
+    static bool tallyUnlisted(const Entry& entry, Summary* summary);
     static Summary summarize(const QHash<QString, Entry>& entries, const QHash<QString, Folder>& folders,
                              const QList<bool>& rootAvailable);
     void publish(const Pass& pass);
@@ -708,6 +713,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * and a new folder. */
     QList<bool> usableRootsLocked();
     QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone);
+    /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
+     * for), one no longer the owner's and never read goes to @p gone. Under the store's lock. */
+    bool ownerFolderOnDiskLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone);
     QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
     CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);

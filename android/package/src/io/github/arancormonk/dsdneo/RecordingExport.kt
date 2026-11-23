@@ -150,7 +150,7 @@ object RecordingExport {
                 result = write(resolver, transfer, paths, names, selected, uriText, zip, missing)
             } finally {
                 // Still the current transfer, so a cancel reaches the publication.
-                result = settled(resolver, uriText, result, transfer.signal)
+                result = settled(resolver, transfer, uriText, result)
             }
         } finally {
             synchronized(lock) {
@@ -160,12 +160,18 @@ object RecordingExport {
         return arrayOf(result.toString(), *missing.toTypedArray())
     }
 
-    /** [result] once the document was settled: a written row that does not stand is cancelled or failed. */
-    private fun settled(resolver: ContentResolver, uriText: String, result: Int, signal: CancellationSignal): Int {
-        val stands = DownloadsSave.settle(resolver, uriText, result == DONE, signal)
+    /**
+     * [result] once the document was settled: a written row that does not stand is cancelled or failed, or changed when
+     * the selection stopped standing before its publication (asked on DownloadsSave's worker right before it).
+     */
+    private fun settled(resolver: ContentResolver, transfer: Transfer, uriText: String, result: Int): Int {
+        val stands = DownloadsSave.settle(resolver, uriText, result == DONE, transfer.signal) {
+            selectionCurrent(transfer.id)
+        }
         return when {
             result != DONE || stands -> result
-            signal.isCanceled -> CANCELLED
+            transfer.signal.isCanceled -> CANCELLED
+            !selectionCurrent(transfer.id) -> CHANGED
             else -> FAILED
         }
     }

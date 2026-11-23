@@ -81,9 +81,9 @@ object Os {
 
     private val opened: MutableMap<FileDescriptor, Opened> = Collections.synchronizedMap(HashMap())
 
-    // A read-only open. O_NOFOLLOW refuses a link at the name with ELOOP; a FIFO opens without waiting for a writer
-    // (the JDK never blocks on a FIFO's open with O_NONBLOCK's meaning, so it is read as what it is instead: no
-    // regular file, which fstat() reports). Missing, no access: ENOENT, EACCES.
+    // A read-only open. O_NOFOLLOW refuses a link at the name with ELOOP; a FIFO must be opened with O_NONBLOCK (as
+    // Android's open() returns at once only then), and fstat() then reports it as no regular file. Missing, no access:
+    // ENOENT, EACCES.
     @JvmStatic
     fun open(path: String, flags: Int, mode: Int): FileDescriptor {
         val stat = statOf("open", path)
@@ -93,6 +93,14 @@ object Os {
             throw ErrnoException("open", OsConstants.ELOOP)
         }
         if (!OsConstants.S_ISREG(stat.st_mode)) {
+            // A FIFO: on Android an open without O_NONBLOCK waits for a writer that never comes, so the stub refuses
+            // to stand in for it (the test fails instead of hanging).
+            val other = java.nio.file.Files.readAttributes(
+                java.nio.file.Paths.get(path),
+                java.nio.file.attribute.BasicFileAttributes::class.java,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS,
+            ).isOther
+            check(!other || flags and OsConstants.O_NONBLOCK != 0) { "a FIFO opened without O_NONBLOCK: $path" }
             // Nothing to read here, and nothing waits: a descriptor whose fstat() says what the name is.
             val none = FileDescriptor()
             opened[none] = Opened(null, stat)

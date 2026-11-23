@@ -297,6 +297,17 @@ private fun recordingTransferSettles() {
     val done = row("calls.zip")
     check(transfer(done) == RecordingExport.DONE && publishedOnly(done)) { "an export is saved" }
 
+    // #902: the selection goes stale after the last check of the write and before the row's publication (the fsync and
+    // the settle can wait): the row is deleted, not published, and the export is told as changed.
+    var asked = 0
+    RecordingExport.selectionCurrent = { ++asked < 4 }
+    val stale = row("stale.zip")
+    // Three checks in the write, the fourth at the publication (stale), and the settled result asks once more.
+    check(transfer(stale) == RecordingExport.CHANGED && asked == 5) { "a stale export is changed: asked $asked times" }
+    drainWorker()
+    check(deleted(stale) && "update $stale" !in rows.callsFor(stale)) { "and its row is not published" }
+    RecordingExport.selectionCurrent = { true }
+
     val early = row()
     val earlyId = ++nextId
     RecordingExport.cancel(earlyId)
