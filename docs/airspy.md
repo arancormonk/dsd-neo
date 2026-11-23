@@ -12,8 +12,10 @@ Mini runs through SoapySDR too: `-i soapy:driver=airspy`. Both inputs use the
 same `airspy.dll`, and only one can hold the radio at a time. Through SoapySDR
 it runs the radio's rate nearest what dsd-neo asks for (2.5 MS/s on an R2,
 3 MS/s on a Mini) where the native input runs the highest. Skip silent
-channels checks an Airspy on the native input only, not through SoapySDR
-([trunk-scan.md](trunk-scan.md)).
+channels checks an Airspy on the native input only, at 2.5, 3, 6 and 10 MS/s,
+not through SoapySDR at any rate ([trunk-scan.md](trunk-scan.md)). With
+`airspy_sample_rate` (`--airspy-sample-rate`) set to a rate its firmware lists
+beyond those four, the native input gets no check either.
 
 ## Build and install
 

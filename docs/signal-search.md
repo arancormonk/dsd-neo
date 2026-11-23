@@ -1502,6 +1502,27 @@ is 5.74 to 5.87 dB, as with no neighbour. With neighbours 12.5 kHz away on both 
 and 6 kHz are voided at every level (dPMR at 96% or more), and NFM 8 kHz and AM 8 and 8.333 kHz at the higher
 levels: their sideband blocks hold the neighbours.
 
+### Native Airspy calibration
+
+The native Airspy's centred policy has its own calibration, run with the same driver on the Airspy's centred capture
+(`--geometry centred`) at 2.5, 3, 6 and 10 MS/s. Its signals pass through modelled receiver responses, fixed in
+hardware coordinates: the nominal Airspy passband, a steeper one, the nominal mirrored, a flat one, the nominal with a
+2 dB dip over three channel widths at the channel, and the nominal with flat ADC noise 10 dB under, level with and
+10 dB over the tuner noise's peak density. These are computed shapes, not measured devices, and every capture is
+rendered, not received. The release takes a rate only when every response passes there, since the check cannot tell
+one receiver's response from another's. Each cell also carries the `-8` masks (a digital class beside each analog
+width, and noise alone under each pair), busy neighbours at every native rate, occupied captures for the occupancy
+check, and raised-band captures reported for information only.
+
+The threshold is 3.2 dB, with the 0.5 dB margin over it held at selection everywhere but in the 2 dB dip's occupied
+captures, one unit a rate, where a kept reading from 3.2 up to 3.7 dB is reported rather than failed and that pairing
+rests on its cell's fresh validation at 3.2 dB; a kept reading under 3.2 dB there fails the rate.
+
+> **PLACEHOLDER (campaign 2):** per cell (response by rate): conditions, selection and validation trials, A and where,
+> N95 and where, the dip-occupancy band report, and the one-sided zero-miss bound per condition (zero-miss cells
+> only); the occupancy check's voids per cell; the `-8` masks' and the cross group's lowest kept readings; the raised
+> group's quiet counts by achieved share and contrast; P0's identity with G15 on forge01.
+
 ### Limits
 
 - The conditions are steady signals, with the deterministic power droop inside a DMR burst; propagation fading was
@@ -1524,6 +1545,13 @@ levels: their sideband blocks hold the neighbours.
   channel that much quieter; the threshold leaves 0.67 dB between it and the weakest signal validated. One whose floor
   varies by more than about 8.7 dB across the span voids requests on its high parts.
 - Neighbour scenes were rendered at 1.536 Msps only (the driver renders its neighbour, slope and broad-interferer
-  scenes at that rate) and with a C4FM neighbour only.
+  scenes at that rate) and with a C4FM neighbour only, on the RTL path; the native Airspy's cells carry neighbours at
+  each of its four rates.
+- A native Airspy's figures rest on modelled responses, not measured devices: a front end whose passband dips at the
+  channel by more than the modelled 2 dB, or whose ADC noise share lies outside the modelled range, is not covered.
+- With the `-8` monitor on, a digital class is judged beside the monitor's analog width. The masks were rendered on a
+  plain noise floor at every width, with busy neighbours only beside AM 5 kHz and NFM 25 kHz, and with no sloped
+  floor, broad interferer or occupied capture under a mask.
+- The calibration covers the nine-window reading only.
 - The DMR bound covers an ongoing burst train; a transmission starting late in the measurement, isolated single
   bursts and short data bursts are not covered.

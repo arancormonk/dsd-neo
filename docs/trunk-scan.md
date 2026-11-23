@@ -1245,7 +1245,14 @@ turned it on).
   width was tested with both a narrow-band transmitter (one made for 12.5 kHz channels) and a wide-band one (made for
   25 kHz channels), each with a test tone and with speech-like audio. Noise alone on a flat noise floor read silent in
   every test (1,136 noise conditions, 3.41 million trials). The method and figures are in
-  [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
+  [Quiet-channel calibration](signal-search.md#quiet-channel-calibration). The native Airspy's 3.2 dB threshold has
+  its own calibration, on the Airspy's centred capture at each of its four rates through modelled receiver responses
+  (computed passband shapes, a dip at the channel and ADC noise levels; rendered, not received), with the occupancy
+  check and the `-8` masks below.
+
+  > **PLACEHOLDER (campaign 2):** the native Airspy's figures: conditions and trials per rate, the lowest kept reading,
+  > and the zero-miss bounds per cell, from the forge01 campaign.
+
 
 ### What a skip costs and logs
 
@@ -1338,6 +1345,10 @@ its calibrated nine slices, exactly as without the option. It is session-wide, l
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
   or a loaded config) leaves the channel on air, or the one being tuned, unchecked: calls it carried while the setting
   was off were not counted, so the setting applies from the next tune.
+- A band where more of it stands over the noise than noise alone explains: when the share of the band's noise
+  reading that stands over its noise is more than 5% over the 2% noise alone puts there (strong transmitters or a
+  raised floor over part of the band), the check gives up on that visit (the occupancy check). In a crowded band that
+  means fewer skips; it never adds one.
 - A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
   noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
   That costs speed, never a missed signal.
@@ -1359,6 +1370,9 @@ brackets below), and the log says how to fix it; see
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
 - `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off (`tuner`).
+- A native Airspy (`-i airspy`) at a rate its firmware lists other than 2.5, 3, 6 and 10 MS/s (`rate`): set
+  `--airspy-sample-rate` to one of those, or to 0 for its highest, which is one of them. At those four rates it is
+  checked at 3.2 dB.
 - A sample rate the calibration did not cover (`rate`). Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536,
   1.6, 1.8, 1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream
   runs 1.024, 1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at
@@ -1459,6 +1473,15 @@ Turning the setting on accepts these:
   1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
 - An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
   takes in every carrier.
+- With the `-8` monitor on, a digital row or target is judged in its own width and the monitor's analog width
+  together. The calibration rendered each digital mode under each such pair on a plain noise floor, and with busy
+  neighbours only beside the narrowest and the widest analog width (AM 5 kHz and NFM 25 kHz); it rendered no sloped
+  floor, broad interferer or crowded band under a pair.
+
+  > **PLACEHOLDER (campaign 2):** the `-8` pairs' lowest kept reading and bounds, on the RTL path and per native rate.
+- The occupancy check gives up on a band it reads as crowded, which only withdraws skips, but it reads its level from
+  the band itself: a band raised almost everywhere, the channel's sides included, looks like plain noise to it (the
+  raised-band limit above).
 - Every receiver, input, width, rate and decoder set listed above runs without the check.
 - The check assumes the receiver's noise floor is about level across the band it takes in. A floor that sits lower
   right at the channel than across the rest of the band makes a weak signal there read quieter. Real RTL-SDR noise

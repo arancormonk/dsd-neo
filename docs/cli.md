@@ -2868,7 +2868,9 @@ channel is delayed.
   or very short transmissions can be missed. Only frames whose content passed their protocol's checks end the check,
   so noise that merely matches a sync word does not keep a silent row. It is off by default and is one setting for
   the session, never a row option.
-  While a row is being checked the Scan Timing row reads `Quiet check` instead of `Hangtime`. Some receivers, widths,
+  While a row is being checked the Scan Timing row reads `Quiet check` instead of `Hangtime`. The check runs on radio
+  inputs only (`rtl`, `rtltcp`, `soapy` and `airspy`); an Airspy is checked on the native input (`-i airspy`, at 2.5,
+  3, 6 and 10 MS/s), not through SoapySDR. Some receivers, widths,
   sample rates and decoder sets get no check (an untyped row under Auto among them): the row then reads `No check:`
   and the reason (`input`, `tuner`, `rate`, `width` or `modes`), and the log says once how to fix it. The list, the
   log lines and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
