@@ -15906,7 +15906,8 @@ itself, so the decoder's own handling stays as it was.
   frame 1-18 and a valid A/B channel usage; a presence signal's channel usage and repeater operating modes valid for the
   equipment that sends it (no reserved operating modes 11; 01 or 10 only from a type 2 repeater function). Evidence
   `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's route, or presence only.
-- A latched withdrawal (sent once) on a second BSCH identity, another main carrier (none and one included) or, beside
+- A latched withdrawal (sent once) on a second BSCH identity, another main carrier (none and one included; two that
+  name no frequency by their band, carrier number and offset) or, beside
   a CA main carrier, another location area under the gate seed, sharing seen after the site, or the other mode's
   gate. Every burst of the naming gate's mode content calls
   `dsd_signal_search_note_activity()` (the other mode's never does); evidence and notes go only on change. Test: `TETRA_SEARCH`.

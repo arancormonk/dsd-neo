@@ -316,6 +316,9 @@ static void
 sysinfo_main(const tetra_mac_sysinfo* si, tetra_search_sysinfo* out) {
     out->main_state = DSD_SEARCH_TETRA_MAIN_NONE;
     out->main_hz = 0U;
+    out->main_carrier = si->main_carrier;
+    out->band = si->band;
+    out->offset = si->offset;
     if (si->band == 0u) {
         if (si->main_carrier == 0u) {
             out->main_state = DSD_SEARCH_TETRA_MAIN_NO_CA;
@@ -344,12 +347,17 @@ note_block_sysinfo(tetra_search_t* sr, const uint8_t* bits, int len) {
 }
 
 /* Whether two SYSINFOs under the gate seed name other cells: another main carrier, or a change between none, one this
- * decoder cannot name and one it can; or, beside a CA main carrier, another location area. With no CA main carrier
- * (band 0, carrier 0) the location area is the associated CA cell's, of which there is none (EN 300 392-2 clause
- * 23.6.9), and the site shows none (site_tetra_format()): its bits tell no cell apart. */
+ * decoder cannot name and one it can; or, beside a CA main carrier, another location area. Two main carriers this
+ * decoder cannot name both show none, so their band, carrier number and offset as sent tell them apart. With no CA main
+ * carrier (band 0, carrier 0) the location area is the associated CA cell's, of which there is none (EN 300 392-2
+ * clause 23.6.9), and the site shows none (site_tetra_format()): its bits tell no cell apart. */
 static int
 sysinfo_other_cell(const tetra_search_sysinfo* a, const tetra_search_sysinfo* b) {
     if (a->main_state != b->main_state || a->main_hz != b->main_hz) {
+        return 1;
+    }
+    if (a->main_state == DSD_SEARCH_TETRA_MAIN_NONE
+        && (a->main_carrier != b->main_carrier || a->band != b->band || a->offset != b->offset)) {
         return 1;
     }
     return a->main_state != DSD_SEARCH_TETRA_MAIN_NO_CA && a->la != b->la;

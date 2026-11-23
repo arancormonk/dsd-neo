@@ -46,7 +46,8 @@
  * The first gate to open names the detection. A latched withdrawal (DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW, sent once)
  * takes the hit's site and access back for the rest of the visit when its identity turns ambiguous: a second BSCH
  * identity on the carrier in the visit, a SYSINFO under the gate seed naming another main carrier (a change
- * between none, one this decoder cannot name and a frequency included) or, beside a CA main carrier, another location
+ * between none, one this decoder cannot name and a frequency included; two it cannot name differ by their band,
+ * carrier number or offset) or, beside a CA main carrier, another location
  * area (with no CA main carrier the location area, an associated CA cell's, tells no cell apart: EN 300 392-2 clause
  * 23.6.9), a gate cell's sharing mode turning out not 00 after its site was sent, or the other mode's gate opening. An identity
  * ambiguous before gate A opens (a second BSCH identity observed first) confirms "TETRA" with no access text and sends
@@ -81,10 +82,14 @@ typedef struct {
     uint8_t colour;
 } tetra_search_cell;
 
-/* A SYSINFO decoded under the gate seed: what its site note shows. */
+/* A SYSINFO decoded under the gate seed: what its site note shows, and the main carrier as sent (band, carrier number
+ * and offset), which tells two main carriers no frequency names apart. */
 typedef struct {
     uint32_t main_hz;
     uint16_t la;
+    uint16_t main_carrier;
+    uint8_t band;
+    uint8_t offset;
     uint8_t main_state; /* DSD_SEARCH_TETRA_MAIN_* */
     uint8_t valid;
 } tetra_search_sysinfo;

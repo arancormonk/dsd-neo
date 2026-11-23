@@ -764,7 +764,7 @@ test_gate_a_withdrawals(void) {
     /* The location area names the associated conventional access cell, if any (EN 300 392-2 clause 23.6.9): with no
      * CA main carrier (band 0, carrier 0) it tells no cell apart and withdraws nothing; a change between no CA main
      * carrier and an advertised one does, both ways, and so does another LA beside a main carrier the decoder cannot
-     * name. */
+     * name. Two main carriers no frequency names are told apart by their band, carrier and offset. */
     static const struct {
         uint32_t carrier1, band1, la1, carrier2, band2, la2;
         int withdraws;
@@ -774,6 +774,9 @@ test_gate_a_withdrawals(void) {
         {0u, 0u, LA_A, CARR_MAIN, 4u, LA_A, 1, "LA: no CA main carrier, then an advertised one, withdraws"},
         {CARR_MAIN, 4u, LA_A, 0u, 0u, LA_A, 1, "LA: an advertised main carrier, then none, withdraws"},
         {100u, 12u, LA_A, 100u, 12u, LA_B, 1, "LA: another LA beside a main carrier no frequency names withdraws"},
+        {100u, 12u, LA_A, 101u, 12u, LA_A, 1, "main: another carrier no frequency names, same LA, withdraws"},
+        {5u, 0u, LA_A, 6u, 0u, LA_A, 1, "main: another band 0 carrier, same LA, withdraws"},
+        {100u, 12u, LA_A, 100u, 12u, LA_A, 0, "main: the same carrier no frequency names withdraws nothing"},
     };
 
     for (size_t i = 0; i < sizeof k_la_cases / sizeof k_la_cases[0]; i++) {
