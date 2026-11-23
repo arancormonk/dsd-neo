@@ -17007,8 +17007,8 @@ Qt Quick frontend (`src/ui/qt`):
     by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
     bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
     offers no recording path for save and share once its read is done, and a refreshed History row shows it as away
-    with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); during a read that is cut short by
-    a session start between slices, a share can still take a path from the committed view, and a History call's part
+    with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session
+    start between its slices marked the folder unread, a share can still take a path from the committed view, and a History call's part
     buttons play by path (limits below). A journal is compacted only in a folder read and on
     storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
     `test_compaction_waits_for_a_rescan`).
@@ -17139,7 +17139,8 @@ Qt Quick frontend (`src/ui/qt`):
     `source` and `fragment`). `revision` (a double, so QML reads it exactly) is the worker's `m_generation`, bumped
     under the lock by `noteQueryChangeLocked()` at every change a query can see (an entry inserted or removed, a link
     that changes its fragment, a size a recheck reads again, a root marked away or read again; not a folder
-    turned unread by a failed journal read, a decided limit below); `publish()` copies the
+    turned unread and scheduled for a read again (a failed journal read, a changed file a recheck finds), a
+    decided limit below); `publish()` copies the
     current generation to the outbox with the summary, and `deliver()` emits `revisionChanged()` when it moved. A later
     publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
