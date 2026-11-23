@@ -45,7 +45,7 @@ UiPanel {
         if (notice.state === "leftInPlace")
             return qsTr("It was left in place.");
         if (notice.state === "unwritten")
-            return qsTr("Starts use the decoder's own channel map until they can be written. Check that the device has free storage.");
+            return qsTr("Starts run without this system's saved channels until they can be written. Check that the device has free storage.");
         if (notice.state === "kept")
             return qsTr("Some entries may be missing. The file was kept as %1.").arg(kept);
         // Defaults: nothing the file held is in use, so no entry is "missing".

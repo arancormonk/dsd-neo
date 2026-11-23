@@ -115,6 +115,12 @@ QList<JsonStoreNotice> json_store_notices();
 void json_store_post_notice(const JsonStoreNotice& notice);
 
 /**
+ * @brief Withdraw the notice for @p fileName, posted by json_store_post_notice(), once what it said is over (a saved
+ *        system's DMR channels file a start passed again). Calls the sink when there was one; nothing otherwise.
+ */
+void json_store_withdraw_notice(const QString& fileName);
+
+/**
  * @brief Set the function called after the notice list changes.
  *
  * Called with no json_store lock held, on the thread that loaded or saved (a call history worker among them), so it

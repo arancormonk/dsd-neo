@@ -386,7 +386,7 @@ ModalSheet {
         if (!kept)
             setStatus(qsTr("Not kept: this session is not a saved system."), false);
         else if (result.saved !== true && String(result.saveError) === "session-only")
-            setStatus(qsTr("Changed for this session only. Your own channel file still sets this channel next time."), false);
+            setStatus(qsTr("Changed for this session only: nothing saved with this system set this channel."), false);
         else if (result.saved !== true)
             setStatus(saveErrorText(String(result.saveError || "")), true);
         else if (owedSaveCount > 0)

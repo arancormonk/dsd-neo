@@ -26,7 +26,10 @@
 #include <QString>
 #include <QThread>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <algorithm>
 #include <cstring>
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
@@ -236,17 +239,48 @@ test_dmr_channels_unwritten() {
     expect("channels: their own label", field(file, "store") == QLatin1String("dmr-channels"));
     StoreNotices::instance()->dismiss(file);
     expect("channels: dismissed", shown(file).isEmpty());
-    /* The same failure posted again stays dismissed; a new episode (after a start that passed the
-       channels) shows again. */
-    std::thread again([file] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString()}); });
-    again.join();
-    QCoreApplication::processEvents();
+    /* The same failure posted again stays dismissed. A start that passes the channels withdraws
+       the notice, and the next failure (a new episode) shows again, and is read out again, whether the one before was
+       dismissed or left on the card. */
+    StoreNotices* notices = StoreNotices::instance();
+    const auto post = [&file](quint64 episode) {
+        std::thread worker(
+            [&file, episode] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), episode}); });
+        worker.join();
+        QCoreApplication::processEvents();
+    };
+    const auto withdraw = [&file] {
+        std::thread worker([&file] { dsd_qt::json_store_withdraw_notice(file); });
+        worker.join();
+        QCoreApplication::processEvents();
+    };
+    const auto heard = [notices, &file] {
+        const QVariantList fresh = notices->takeUnheard();
+        return std::any_of(fresh.cbegin(), fresh.cend(), [&file](const QVariant& value) {
+            return value.toMap().value(QStringLiteral("file")).toString() == file;
+        });
+    };
+    post(0);
     expect("channels: the same failure stays dismissed", shown(file).isEmpty());
-    std::thread next([file] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), 1}); });
-    next.join();
-    QCoreApplication::processEvents();
-    expect("channels: a new episode shows again", field(file, "state") == QLatin1String("unwritten"));
-    StoreNotices::instance()->dismiss(file);
+    withdraw();
+    expect("channels: withdrawn", shown(file).isEmpty());
+    post(1);
+    expect("channels: after a dismissed one, a new episode shows again",
+           field(file, "state") == QLatin1String("unwritten"));
+    expect("channels: and is read out", heard());
+    // Left on the card, not dismissed: the withdrawal takes it off, and the next failure comes back.
+    int changes = 0;
+    const QMetaObject::Connection connection =
+        QObject::connect(notices, &StoreNotices::noticesChanged, [&changes] { changes++; });
+    withdraw();
+    expect("channels: an undismissed notice is withdrawn", shown(file).isEmpty() && changes == 1);
+    post(2);
+    expect("channels: after an undismissed one, a new episode shows again",
+           field(file, "state") == QLatin1String("unwritten") && changes == 2);
+    expect("channels: and is read out again", heard());
+    QObject::disconnect(connection);
+    withdraw();
+    expect("channels: withdrawing what is not posted changes nothing", changes == 2 && shown(file).isEmpty());
 }
 
 /* A settings file that could not be kept runs on its scratch copy: this run's changes are not saved. */

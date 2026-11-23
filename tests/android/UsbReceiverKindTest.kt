@@ -111,7 +111,8 @@ private fun anotherOptionsOperandIsNoInput() {
 
 // #782 gate r2 H1: --iq-replay replaces the input after getopt has read -i (args.c sets the replay as the input once
 // the short options are parsed), so a replay start takes no USB receiver, whichever form or order it is given in. The
-// long-option pre-scan reads it, which steps over other options' values but not over the bootstrap's own options.
+// long-option pre-scan reads it, which steps over other options' values, the bootstrap's --profile name included, but
+// not over the values of the bootstrap's --config and --validate-config.
 private fun anIqReplayReplacesTheInput() {
     fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
     check(of("-i", "rtl", "--iq-replay", "capture.iq") == "") { "a replay after -i rtl" }
@@ -122,8 +123,12 @@ private fun anIqReplayReplacesTheInput() {
     check(of("-i", "rtl", "--iq-replay") == "" && of("-i", "rtl", "--iq-replay=") == "") {
         "a replay without a path is a start the engine's parser refuses"
     }
-    check(of("-i", "rtl", "--profile", "--iq-replay", "capture.iq") == "") {
-        "the pre-scan does not step over the bootstrap's --profile value"
+    check(of("-i", "rtl", "--profile", "--iq-replay", "capture.iq") == "usb") {
+        "a profile named --iq-replay is a profile name, as the bootstrap reads it"
+    }
+    check(of("-i", "rtl", "--profile", "--", "--iq-replay", "capture.iq") == "") { "a profile named -- ends nothing" }
+    check(of("-i", "rtl", "--config", "--iq-replay", "capture.iq") == "") {
+        "the pre-scan does not step over a --config value that starts with '-'"
     }
     check(of("-i", "rtl", "--iq-replay-rate", "fast") == "usb" && of("-i", "rtl", "--iq-replay-rate=fast") == "usb") {
         "the replay rate alone replays nothing"

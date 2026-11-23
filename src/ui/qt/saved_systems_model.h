@@ -125,8 +125,8 @@ class SavedSystemsModel : public QAbstractListModel {
      *
      * @return {ok: bool, error: ""} on success; otherwise ok false and error "no-system" (no such uid), "invalid" (no
      *         such channel, frequency or operation), "full" (a 257th channel), "not-saved" (the save failed; nothing
-     *         changed) or "session-only" (a restore of a channel with no entry: nothing of the system's set it, so a
-     *         channel file of the user's did, and still does next start). One dataChanged follows a change. Every start
+     *         changed) or "session-only" (a restore of a channel with no entry: nothing saved with the system set it,
+     *         so there is nothing to keep). One dataChanged follows a change. Every start
      *         of the system passes the entries (SessionArgsBuilder), after every option the user typed, and the decoder
      *         applies them when the session decodes DMR frames and runs no trunk scan.
      */

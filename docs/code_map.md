@@ -4890,7 +4890,10 @@ suite runs under this compiler.
     error. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
     (`--dmr-chan-overrides`, `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`), so every pass over the raw argv --
     bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an
-    option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. The Android receiver's
+    option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. `--profile`'s name is any text
+    too: bootstrap reads it as the next argument, compaction steps over it, and so do `dsd_parse_args()`'s long-option
+    pre-scan and the one-shot check (`cli_option_value_read_by_bootstrap()`), so a profile named `--` ends no options
+    and one named `--print-config` is no one-shot. The Android receiver's
     `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user typed
     walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
     `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
@@ -17804,13 +17807,18 @@ Qt Quick frontend (`src/ui/qt`):
   them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
   win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
   trunk scan (any other starts without it, with a notice). A file that cannot be written, or whose path does not fit
-  the CLI's 1023 bytes (W7), never stops the start: it starts without the option, logs a warning and posts a
+  the CLI's 1023 bytes, never stops the start: it starts without the option, logs a warning and posts a
   `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
-  `dmr-channels`) on Home's notice card. The notice carries the system's failure episode (`JsonStoreNotice::episode`,
-  part of `StoreNotices`' key, W4): a start that passes the channels ends the episode, so a later failure shows again
-  even after an earlier notice was dismissed. A Restore that removes no saved entry (a channel only the user's own
-  channels file set) answers `saved: false`, `saveError: "session-only"` (W2), and the sheet says it lasts for this
-  session only. A backup carries those files as generated
+  `dmr-channels`) on Home's notice card ("Starts run without this system's saved channels until they can be written.",
+  naming no channel map in their place: a `--dmr-chan-overrides` among the extra options still applies). The notice
+  carries the system's failure episode (`JsonStoreNotice::episode`, part of `StoreNotices`' key). The episode ends only
+  when `startSession()` hands the host an argv that passes the channels or has none to pass (`prepareDmrChannels()`
+  answers the uid; a written file whose start is refused after it ends nothing), and then
+  `json_store_withdraw_notice()` takes the notice off, so a later failure is a new notice, announced again, whether
+  or not the earlier one was dismissed. A Restore that removes no saved entry (a channel nothing saved with the system
+  set) answers `saved: false`, `saveError: "session-only"`, and the sheet says "Changed for this session only: nothing
+  saved with this system set this channel.", with no claim about which file sets it at the next start (the decoder
+  reads only the last `--dmr-chan-overrides`). A backup carries those files as generated
   configuration, and removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds;
   50 rows, "Show more
   channels without a frequency" adds 50, the ledger can hold 4094) and "Channels" (tap edits; 50 rows by channel, "Show
@@ -18738,9 +18746,10 @@ Qt Quick frontend (`src/ui/qt`):
   - One mutex guards the marks and the notices, and is held across a marked file's whole save, so two saves of a
     marked file never interleave. Unmarked saves run outside it: each model keeps its own saves of one file apart, as
     before (call history's single save worker, and the destructor's save after `waitForDone()`).
-  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName}` per file, oldest first;
-    `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
-    INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
+  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName, episode}` per file, oldest
+    first; `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the
+    settings INI and a saved system's DMR channels file), `json_store_withdraw_notice()` (takes a posted notice off once
+    what it said is over, which only the DMR channels file's poster does), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
     that loaded or saved. `call_history_seen.json` gets a notice like any store; it is internal, so a frontend
     shows no card for it (`StoreNotices` leaves it out).
   - Test seams (`DSD_NEO_TEST_HOOKS`, `json_store_test_hooks.h`): a read error, and a hook run right after the move.
@@ -20980,7 +20989,8 @@ options and their values out, then getopt's string from `args.c` reads the short
 such as an API token `-irtl`, is never an input; the last `-i` before any `--` wins, and arguments getopt refuses take
 nothing. A `--iq-replay <path>` or `--iq-replay=<path>` that `dsd_parse_args()`'s long-option pre-scan reads takes
 nothing whatever the `-i`, since the replay replaces the input after getopt; the pre-scan takes every long option's
-value except the bootstrap's `--config`, `--validate-config` and `--profile`, so the Kotlin walks it separately. An INI
+value, the bootstrap's `--profile` name included, except the bootstrap's `--config` and `--validate-config`, so the
+Kotlin walks it separately. An INI
 file's input is not read. `ANDROID_USB_RECEIVER_JVM` checks the Kotlin copies against `compact.c`, `args.c`'s getopt
 string and pre-scan, and that the replay is the only input the parse sets besides `-i`) and calls `takeForSession()`. A start
 with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a

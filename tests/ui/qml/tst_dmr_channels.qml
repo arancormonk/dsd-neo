@@ -344,7 +344,7 @@ Item {
             commands.answerDmrChannel({result: "ok", saved: false, saveError: "session-only"});
             tryCompare(edit, "visible", false);
             var status = item("channelsStatus");
-            compare(status.text, "Changed for this session only. Your own channel file still sets this channel next time.");
+            compare(status.text, "Changed for this session only: nothing saved with this system set this channel.");
             verify(status.visible);
             verify(!item("channelsRetrySave").visible, "nothing to save again");
             compare(sheet.owedSaveCount, 0);

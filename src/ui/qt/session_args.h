@@ -407,13 +407,15 @@ class SessionArgsBuilder : public QObject {
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
                           const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
     /* start()'s build: with the session's call recording folder when @p host can record it (@p recording set, the
-       folder's session begun). */
+       folder's session begun). @p channelsUid: prepareDmrChannels()' answer for a saved system's start, else empty. */
     QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
-                              SessionArgsError* error, bool* recording) const;
+                              SessionArgsError* error, bool* recording, QString* channelsUid) const;
     /* A saved system's start: @p input with its DMR Tier III channels' file written and named. Writes nothing, and
        drops a file an earlier start left, when it has none. A file that cannot be written names none: the start goes
-       on without the channels, and a notice (json_store_post_notice()) says so. */
-    void prepareDmrChannels(QVariantMap* input) const;
+       on without the channels, and a notice (json_store_post_notice()) says so.
+       @return the system's uid when the argv passes its channels or has none to pass, else empty. The start withdraws
+       the notice only once that argv goes to the host. */
+    QString prepareDmrChannels(QVariantMap* input) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     /* Both start()s: @p expects says whether the expectations are a roam's. */

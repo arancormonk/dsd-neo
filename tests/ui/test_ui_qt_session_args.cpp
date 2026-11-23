@@ -2495,6 +2495,15 @@ test_dmr_channels_last(void) {
                && ended.value(saved + 1) == QStringLiteral("/data/dmr_channels/a.csv"));
     expect("and after the user's own file", ended.indexOf(QStringLiteral("/data/system.csv")) < saved);
     expect("the operand stays after it", ended.indexOf(QStringLiteral("/data/operand.csv")) > terminator);
+    /* A profile named "--" is a name, as the decoder reads it (RUNTIME_CLI_PARSE), so it ends
+       nothing either: the saved channels still come last, after the user's file. */
+    sys["extraArgs"] = QStringLiteral("--profile -- --dmr-chan-overrides /data/system.csv");
+    const QStringList profiled = session_args_build(sys, prefs, &error);
+    expect("a profile named '--' ends nothing",
+           error == SessionArgsError::None && profiled.size() >= 2
+               && profiled.at(profiled.size() - 2) == QStringLiteral("--dmr-chan-overrides")
+               && profiled.last() == QStringLiteral("/data/dmr_channels/a.csv")
+               && profiled.indexOf(QStringLiteral("/data/system.csv")) < profiled.size() - 2);
     sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides --");
     const QStringList value = session_args_build(sys, prefs, &error);
     expect("a '--' that is an option's value ends nothing",
@@ -2568,7 +2577,15 @@ test_dmr_channels_start(void) {
 
     expect("a channel again", systems.applyDmrChannelEdit(uid, 40, 1, 451137500).value("ok").toBool());
     const QString folder = QFileInfo(path).absolutePath();
-    expect("the folder blocked", QDir(folder).removeRecursively() && QFile(folder).open(QIODevice::WriteOnly));
+    /* A plain file where the folder goes, which only this test reads, closed before the builder runs. */
+    const auto block = [&folder] {
+        if (!QDir(folder).removeRecursively()) {
+            return false;
+        }
+        FILE* blocker = dsd_fopen_private(folder.toUtf8().constData(), "wb");
+        return blocker != nullptr && fclose(blocker) == 0;
+    };
+    expect("the folder blocked", block());
     host.starts = 0;
     result = builder.start(sys, &host, QStringLiteral("saved"));
     /* A file that cannot be written never stops the start: it goes on without the channels, and
@@ -2587,18 +2604,29 @@ test_dmr_channels_start(void) {
     };
     const qint64 first = episode();
     expect("and posts a notice for the file", first >= 0);
-    /* While the file keeps failing the notice stays the same one, so a dismissal holds; once a
-       start passed the channels, the next failure is a new one, which an earlier dismissal does not hide. */
+    /* While the file keeps failing the notice stays the same one, so a dismissal holds. A file
+       written for a start that never reaches the host ends nothing. Once a start hands the host the channels, the notice
+       is withdrawn, and the next failure is a new one, which an earlier dismissal does not hide. */
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("a failure again is the same episode", episode() == first);
     expect("the folder unblocked", QFile::remove(folder));
+    expect("a start with no host is refused",
+           !builder.start(sys, nullptr, QStringLiteral("saved")).value("started").toBool());
+    expect("its file was written", QFileInfo::exists(path));
+    expect("but the notice stays", episode() == first);
+    expect("the folder blocked again", block());
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("so a failure after it is the same episode", episode() == first);
+    expect("the folder unblocked again", QFile::remove(folder));
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("a start with its channels", host.received.contains(QStringLiteral("--dmr-chan-overrides")));
-    expect("does not post", episode() == first);
-    expect("the folder blocked again", QDir(folder).removeRecursively() && QFile(folder).open(QIODevice::WriteOnly));
+    expect("withdraws the notice", episode() == -1);
+    expect("the folder blocked a third time", block());
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("a failure after it is a new episode", episode() == first + 1);
-    expect("the folder unblocked again", QFile::remove(folder));
+    expect("the folder unblocked a third time", QFile::remove(folder));
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a start that passes them withdraws it again", episode() == -1);
 
     /* A saved system whose extra options name a channels file of their own starts with both, the saved channels last,
        which the decoder keeps. */
@@ -2657,6 +2685,9 @@ test_dmr_channels_never_follow_links(void) {
        the builder looks. */
     const QTemporaryDir scratch;
     expect("links: a scratch folder", scratch.isValid());
+    if (!scratch.isValid()) {
+        return; // every path below would start at "/"
+    }
     const QString elsewhere = scratch.path() + QStringLiteral("/elsewhere");
     dsd_qt::SessionArgsBuilder builder(nullptr);
     builder.setSavedSystems(&systems);
@@ -2751,6 +2782,9 @@ test_dmr_channels_path_too_long(void) {
     const QByteArray home = qgetenv("XDG_DATA_HOME");
     const QTemporaryDir scratch;
     expect("long: a scratch folder", scratch.isValid());
+    if (!scratch.isValid()) {
+        return; // the deep folder would be made from "/"
+    }
     QString deep = scratch.path();
     while (deep.toUtf8().size() < 1100) {
         deep += QStringLiteral("/") + QString(100, QLatin1Char('d'));

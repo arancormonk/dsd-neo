@@ -136,7 +136,7 @@ Item {
             compare(texts("storeNoticeTitle"), ["A saved system's DMR channels couldn't be written"]);
             // Posted while the start is prepared, so it
             // claims no session ran.
-            compare(texts("storeNoticeDetail"), ["Starts use the decoder's own channel map until they can be written. Check that the device has free storage."]);
+            compare(texts("storeNoticeDetail"), ["Starts run without this system's saved channels until they can be written. Check that the device has free storage."]);
         }
 
         // The seen store is the app's own bookkeeping: logged, never on the card.

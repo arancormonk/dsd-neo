@@ -384,6 +384,22 @@ json_store_post_notice(const JsonStoreNotice& notice) {
 }
 
 void
+json_store_withdraw_notice(const QString& fileName) {
+    Registry& r = registry();
+    std::function<void()> sink;
+    {
+        const std::lock_guard<std::mutex> locker(r.lock);
+        if (r.notices.removeIf([&fileName](const JsonStoreNotice& notice) { return notice.fileName == fileName; })
+            > 0) {
+            sink = r.sink;
+        }
+    }
+    if (sink) {
+        sink();
+    }
+}
+
+void
 json_store_set_notice_sink(std::function<void()> sink) {
     Registry& r = registry();
     const std::lock_guard<std::mutex> locker(r.lock);

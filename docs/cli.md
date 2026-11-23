@@ -66,6 +66,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for
   that process. See `docs/config-system.md` for details.
+- `--profile` always takes the next argument as the profile name, whatever it starts with: `--profile --` names a
+  profile `[profile.--]` and does not end the options, so an option after it still applies.
 
 ## Inputs (`-i`)
 

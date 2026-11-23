@@ -10295,6 +10295,47 @@ test_dmr_chan_overrides_last_wins(void) {
     return test_rc;
 }
 
+/* --profile's name is the next argument whatever it starts with, as bootstrap reads it before the parser runs: a profile
+   named "--" ends no options, so a --dmr-chan-overrides after it is kept (the app puts the saved system's channels
+   there), and one named "--print-config" is no one-shot, so a hold without a trunk scan is still refused. */
+static int
+test_profile_value_is_a_value(void) {
+    int test_rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--profile";
+    char arg2[] = "--";
+    char arg3[] = "--dmr-chan-overrides";
+    char arg4[] = "dsdneo_profile_overrides.csv";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, arg4) != 0) {
+        DSD_FPRINTF(stderr, "--profile -- --dmr-chan-overrides: rc=%d exit=%d file=\"%s\"\n", rc, exit_rc,
+                    opts->dmr_chan_overrides_file);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+
+    char h1[] = "--profile", h2[] = "--print-config", h3[] = "--trunk-scan-hold", h4[] = "fire";
+    char* hold[] = {h1, h2, h3, h4};
+    test_rc |= expect_trunk_scan_lists_refused(
+        "hold after a profile named --print-config", 4, hold, NULL,
+        "--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with [trunk_scan] lists");
+    return test_rc;
+}
+
 /* A missing value is refused at parse. A missing file is not: only the engine, once it knows the
    session takes the file (it decodes DMR and runs no trunk scan), opens it, so a session that ignores the option starts
    whatever the path names. A trunk scan (in either order) is not refused either: the path is kept, and the
@@ -13699,6 +13740,7 @@ main(void) {
     rc |= test_src_csv_missing_value_returns_error();
     rc |= test_dmr_chan_overrides_long_option_parse();
     rc |= test_dmr_chan_overrides_last_wins();
+    rc |= test_profile_value_is_a_value();
     rc |= test_dmr_chan_overrides_refusals();
     rc |= test_dmr_chan_overrides_value_is_not_an_option();
     rc |= test_file_option_values_are_not_options();

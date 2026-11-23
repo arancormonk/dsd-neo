@@ -952,8 +952,8 @@ SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qin
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
     if (op == DSD_UI_DMR_T3_OP_RESTORE) {
         if (entries.remove(lpcn) == 0) {
-            /* No entry of the system's set the channel; one of the user's own channel files did,
-               and it still does next start. */
+            /* Nothing saved with the system set the channel, so there is nothing to keep. Which file sets it at
+               the next start is not known here: the decoder reads only the last --dmr-chan-overrides. */
             return dmr_channel_edit_result("session-only");
         }
     } else {

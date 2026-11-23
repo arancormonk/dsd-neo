@@ -1440,8 +1440,9 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
 namespace {
 
 /* Saved system @p uid's failure episode for its channels file. @p failed: this start could not
-   pass them (the episode stays, so a dismissed notice stays dismissed while they keep failing); otherwise it could, and
-   a failure before it is over, so the next one is a new episode. For the whole process, as the notice list is. */
+   pass them (the episode stays, so a dismissed notice stays dismissed while they keep failing); otherwise a start handed
+   the host an argv that passes them, or that has none to pass, and a failure before it is over, so the next one is a
+   new episode. For the whole process, as the notice list is. */
 quint64
 dmr_channels_episode(const QString& uid, bool failed) {
     struct Episode {
@@ -1460,11 +1461,17 @@ dmr_channels_episode(const QString& uid, bool failed) {
     return episode.number;
 }
 
+/* The notice list's name for saved system @p uid's channels file. */
+QString
+dmr_channels_notice_name(const QString& uid) {
+    return QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
+}
+
 /* Discussion #900 F3: saved system @p uid's channels file could not be written (@p reason), so its start goes on without
    them. Logged, and posted on the notice list Home's card shows, one per system's file and failure episode. */
 void
 note_dmr_channels_unwritten(const QString& uid, const QString& reason) {
-    const QString name = QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
+    const QString name = dmr_channels_notice_name(uid);
     LOG_WARN("%s could not be written (%s): the saved system starts without its DMR Tier III channels.\n",
              qUtf8Printable(name), qUtf8Printable(reason));
     json_store_post_notice({name, reason, QString(), dmr_channels_episode(uid, true)});
@@ -1476,13 +1483,25 @@ dmr_channels_path_fits(const QString& path) {
     return static_cast<size_t>(path.toUtf8().size()) < sizeof(dsd_opts::dmr_chan_overrides_file);
 }
 
-} // namespace
-
+/* A start handed the host an argv with saved system @p uid's channels, or with none to pass: a failure before it is over.
+   Its notice is withdrawn, so the next failure is a new notice whether or not this one was dismissed. Nothing for an
+   empty @p uid: no saved system's start, or one whose channels could not be passed. */
 void
-SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
-    const QString uid = SavedSystemsModel::canonicalUid(input->value(QStringLiteral("uid")).toString());
+note_dmr_channels_passed(const QString& uid) {
     if (uid.isEmpty()) {
         return;
+    }
+    (void)dmr_channels_episode(uid, false);
+    json_store_withdraw_notice(dmr_channels_notice_name(uid));
+}
+
+} // namespace
+
+QString
+SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
+    QString uid = SavedSystemsModel::canonicalUid(input->value(QStringLiteral("uid")).toString());
+    if (uid.isEmpty()) {
+        return {};
     }
     // The saved system's own entries, not whatever copy of them the map the start was handed carries.
     if (m_systems != nullptr && m_systems->rowForUid(uid) >= 0) {
@@ -1491,31 +1510,31 @@ SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
     const QByteArray csv = session_args_dmr_channels_csv(*input);
     if (csv.isEmpty()) {
         SavedSystemsModel::removeDmrChannelsFile(uid);
-        (void)dmr_channels_episode(uid, false);
-        return;
+        return uid;
     }
     const QString path = SavedSystemsModel::dmrChannelsFilePath(uid);
     QString reason;
     if (!dmr_channels_path_fits(path)) {
         note_dmr_channels_unwritten(uid, QStringLiteral("its path is too long for the decoder"));
-        return;
+        return {};
     }
     if (!SavedSystemsModel::writeDmrChannelsFile(uid, csv, &reason)) {
         note_dmr_channels_unwritten(uid, reason);
-        return;
+        return {};
     }
-    (void)dmr_channels_episode(uid, false);
     input->insert(QStringLiteral("dmrChanOverridesPath"), path);
+    return uid;
 }
 
 QStringList
 SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
-                                  SessionArgsError* error, bool* recording) const {
+                                  SessionArgsError* error, bool* recording, QString* channelsUid) const {
     QStringList args = buildArgs(system, error);
     // Discussion #900 F3: a saved system starts with its own Tier III channels; Explore and a search with none.
     QVariantMap input = system;
+    channelsUid->clear();
     if (*error == SessionArgsError::None && kind == QLatin1String("saved")) {
-        prepareDmrChannels(&input);
+        *channelsUid = prepareDmrChannels(&input);
         args = buildArgs(input, error);
     }
     *recording = *error == SessionArgsError::None && host != nullptr && m_recordingSessions != nullptr;
@@ -1565,13 +1584,16 @@ SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, c
     }
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
-    const QStringList args = buildForStart(system, host, kind, &error, &recording);
+    QString channelsUid;
+    const QStringList args = buildForStart(system, host, kind, &error, &recording, &channelsUid);
     auto result = validationResult(error);
     // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
-    if (error == SessionArgsError::None && host) {
-        host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
-    }
     const bool asked = error == SessionArgsError::None && host;
+    if (asked) {
+        host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
+        // The argv that goes to the host passes the saved channels (or has none to pass): a failure before is over.
+        note_dmr_channels_passed(channelsUid);
+    }
     const bool started =
         asked
         && (expects ? host->startWithStopExpectation(args, expectedStopGeneration, expectedForegroundEpoch)

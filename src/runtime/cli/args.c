@@ -472,6 +472,14 @@ cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, i
     return 1;
 }
 
+/* --profile: bootstrap reads its name (bootstrap_cli_try_profile_option()) before this parser runs, as the next
+   argument whatever it starts with, and dsd_cli_compact_args() steps over it the same way. A pre-scan here steps over it
+   too, so a profile named "--" or "--print-config" is the name it is, never the end of the options or a one-shot. */
+static int
+cli_option_value_read_by_bootstrap(const char* arg) {
+    return strcmp(arg, "--profile") == 0;
+}
+
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
@@ -486,8 +494,8 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
-        if (dsd_cli_option_takes_free_value(arg)) {
-            advance = 2; /* a token is any text, a one-shot option's name included */
+        if (dsd_cli_option_takes_free_value(arg) || cli_option_value_read_by_bootstrap(arg)) {
+            advance = 2; /* a token or a profile name is any text, a one-shot option's name included */
             continue;
         }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
@@ -1429,6 +1437,12 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--profile") == 0) { /* cli_option_value_read_by_bootstrap(): bootstrap reads the name */  \
+            if (i + 1 < argc) {                                                                                        \
+                arg_advance = 2;                                                                                       \
+            }                                                                                                          \
+            continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--airspy-", 9) == 0) {                                                                   \
             arg_advance = cli_parse_airspy_option(argc, argv, i, opts);                                                \

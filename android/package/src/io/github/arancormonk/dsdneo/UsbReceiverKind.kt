@@ -136,10 +136,10 @@ internal object UsbReceiverKind {
      * Long options with a value that dsd_parse_args()'s pre-scan (DSD_PARSE_ARGS_PRESCAN_BLOCK in
      * src/runtime/cli/args.c) leaves alone, because the bootstrap (src/runtime/bootstrap/bootstrap.c) reads them: the
      * pre-scan steps over the option only, so their value is read as an argument of its own. Every other long option
-     * with a value takes it there.
+     * with a value takes it there, the bootstrap's --profile included, whose name is any text.
      */
     private val PRESCAN_BOOTSTRAP_ONLY: Set<String> = setOf(
-        "--config", "--validate-config", "--profile",
+        "--config", "--validate-config",
     )
 
     /** The I/Q replay option, separate or attached; args.c makes the replay the input once getopt has read "-i". */
