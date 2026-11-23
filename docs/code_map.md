@@ -14096,7 +14096,9 @@ Private per-protocol modules worth knowing about:
   own position (an SCCH on an RTCH2 whose LICH names the superframe structure, USC 1x, TS 1-E Table 5.2-1, or a
   superframe SACCH: `nxdn_frame_steps_after_signalling()`) steps its stolen slots after its signalling: a
   CRC-verified, valid SCCH, or a CRC-verified superframe SACCH segment, hands its frame position to the rest of the
-  frame (`nxdn_channel_result::seed_part`, returned by `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()`, kept in
+  frame (`nxdn_channel_result::seed_part`, returned by the commit, `nxdn_scch_commit()`/`nxdn_handle_sacch()`, which
+  `nxdn_frame()` runs on the field it decoded before classifying the frame, and by the public
+  `nxdn_deperm_scch_soft()`/`nxdn_deperm_sacch_soft()` in `nxdn_deperm.h`, which decode and commit in turn; kept in
   `nxdn_frame()`'s own frame context, never in `dsd_state`); `nxdn_frame()`, once the frame's signalling decoded on this
   carrier (not after it retuned the receiver, not on a foreign frame), selects a forced scrambler on every frame of the
   voice superframe (a fully stolen one with no position included: its slots still run the register on), places the

@@ -1494,27 +1494,16 @@ test_facch3_udch2_split_block_storage_and_crc_gate(void) {
 }
 
 /*
- * The 60 soft bits of an SCCH (NXDN TS 1-E Fig 4.5-1) carrying @p payload's 25 bits: CRC-7 over them where the decoder
- * reads its check (bits 25-31), four flush bits, the rate-1/2 K=5 code make_facch1_soft_bits() restates, the 12/5
- * puncture nxdn_depuncture_12_5_rel() undoes (each 12 coded bits lose their 6th and 12th), then PERM_12_5.
+ * The 60 soft bits of an SCCH or SACCH field (NXDN TS 1-E Fig 4.5-1, TS 1-A §4.5.2) from its 32 bits, CRC included, and
+ * four flush bits: the rate-1/2 K=5 code make_facch1_soft_bits() restates, the 12/5 puncture nxdn_depuncture_12_5_rel()
+ * undoes (each 12 coded bits lose their 6th and 12th), then PERM_12_5.
  */
 static void
-make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc) {
+encode_field_soft_bits(uint8_t bits[60], const uint8_t trellis[36]) {
     static const uint8_t PARITY[32] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
                                        1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
-    uint8_t trellis[36];
     uint8_t coded[72];
     uint8_t deperm[60];
-
-    DSD_MEMSET(trellis, 0, sizeof(trellis));
-    for (size_t i = 0U; i < 25U; i++) {
-        trellis[i] = (uint8_t)(payload[i] & 1U);
-    }
-    uint8_t crc = crc7_scch(trellis, 25);
-    if (corrupt_crc) {
-        crc ^= 1U;
-    }
-    write_bits_msb(trellis, 25U, 7U, crc);
 
     unsigned int reg = 0U;
     for (size_t i = 0U; i < sizeof(coded); i += 2U) {
@@ -1534,6 +1523,35 @@ make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc
     for (size_t i = 0U; i < 60U; i++) {
         bits[i] = deperm[PERM_12_5[i]];
     }
+}
+
+/* The 60 soft bits of an SCCH carrying @p payload's 25 bits: CRC-7 over them where the decoder reads its check (bits
+ * 25-31), its last bit flipped when @p corrupt_crc (encode_field_soft_bits()). */
+static void
+make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc) {
+    uint8_t trellis[36];
+
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    for (size_t i = 0U; i < 25U; i++) {
+        trellis[i] = (uint8_t)(payload[i] & 1U);
+    }
+    uint8_t crc = crc7_scch(trellis, 25);
+    if (corrupt_crc) {
+        crc ^= 1U;
+    }
+    write_bits_msb(trellis, 25U, 7U, crc);
+    encode_field_soft_bits(bits, trellis);
+}
+
+/* The 60 soft bits of a SACCH carrying @p sacch's 26 bits (structure, RAN, 18 element bits), its CRC-6 at bits 26-31
+ * (encode_field_soft_bits()). */
+static void
+make_sacch_soft_bits(uint8_t bits[60], const uint8_t sacch[26]) {
+    uint8_t trellis[36];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMCPY(trellis, sacch, 26U);
+    write_bits_msb(trellis, 26U, 6U, crc6(trellis, 26));
+    encode_field_soft_bits(bits, trellis);
 }
 
 /*
@@ -2428,6 +2446,70 @@ test_dcr_reclaim_drops_the_info1_key(void) {
     return rc;
 }
 
+/* No SACCH segment held and no RAN decoded yet. */
+static void
+prepare_sacch_entry_state(dsd_state* state) {
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_last_ran = (unsigned int)-1;
+}
+
+/*
+ * The public SACCH entry point (nxdn_deperm.h) decodes the field and commits it at once: what it leaves, and returns,
+ * is what the frame decoder's split decode and commit leave, for a superframe segment whose CRC-6 passes (the first of
+ * four, RAN 33) and for a field whose CRC fails.
+ */
+static int
+test_sacch_public_entry_decodes_then_commits(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* entry = NULL;
+    dsd_opts* split_opts = NULL;
+    dsd_state* split = NULL;
+    uint8_t bits[60];
+    uint8_t reliab[60];
+    uint8_t sacch[26];
+    int rc = 0;
+    DSD_MEMSET(sacch, 0, sizeof(sacch));
+    write_bits_msb(sacch, 0U, 2U, 3U);    /* the first of four segments */
+    write_bits_msb(sacch, 2U, 6U, 0x21U); /* RAN 33 */
+    write_bits_msb(sacch, 8U, 6U, 0x10U); /* IDLE */
+    for (int pattern = 0; pattern < 2; pattern++) {
+        if (alloc_fixture(&opts, &entry) != 0) {
+            return 1;
+        }
+        if (alloc_fixture(&split_opts, &split) != 0) {
+            free_fixture(opts, entry);
+            return 1;
+        }
+        prepare_sacch_entry_state(entry);
+        prepare_sacch_entry_state(split);
+        make_sacch_soft_bits(bits, sacch);
+        if (pattern == 1) {
+            bits[7] ^= 1U;
+            bits[19] ^= 1U;
+            bits[33] ^= 1U;
+            bits[50] ^= 1U;
+        }
+        DSD_MEMSET(reliab, 200, sizeof(reliab));
+        const nxdn_channel_result got = nxdn_deperm_sacch_soft(opts, entry, bits, reliab);
+        const nxdn_field_decode field = nxdn_sacch_decode_soft(bits, reliab);
+        const nxdn_channel_result want =
+            nxdn_handle_sacch(split_opts, split, field.trellis, field.m_data, field.crc, field.check);
+        rc |= expect_int("sacch-entry-seed-part", got.seed_part, want.seed_part);
+        rc |= expect_int("sacch-entry-ran", (int)entry->nxdn_last_ran, (int)split->nxdn_last_ran);
+        rc |=
+            expect_int("sacch-entry-segment-crc", entry->nxdn_sacch_frame_segcrc[0], split->nxdn_sacch_frame_segcrc[0]);
+        rc |=
+            expect_int("sacch-entry-evidence", entry->nxdn_confirm_frame_evidence, split->nxdn_confirm_frame_evidence);
+        if (pattern == 0) {
+            rc |= expect_int("sacch-entry-checked", field.crc == field.check, 1);
+        }
+        free_fixture(opts, entry);
+        free_fixture(split_opts, split);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2453,6 +2535,7 @@ main(void) {
     rc |= test_confirming_frame_reports_its_ran_to_search();
     rc |= test_facch3_udch2_crc_state_update();
     rc |= test_facch3_udch2_public_entry_decodes_then_commits();
+    rc |= test_sacch_public_entry_decodes_then_commits();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
     rc |= test_scch_crc_gates_scrambler_reload();
     rc |= test_scch_undefined_content_confirms_nothing();

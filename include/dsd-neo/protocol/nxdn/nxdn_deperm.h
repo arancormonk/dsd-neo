@@ -79,6 +79,11 @@ void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144],
 /** @brief Decode a frame's field as a SACCH (FEC and CRC-6) without acting on it (nxdn_handle_sacch() commits it). */
 nxdn_field_decode nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
 
+/** @brief Decode a SACCH and act on it at once (nxdn_sacch_decode_soft(), then the commit the frame decoder runs once
+ * the frame is classified). */
+nxdn_channel_result nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60],
+                                           const uint8_t reliab[60]);
+
 /** @brief Decode a frame's field as an SCCH (FEC and CRC-7) without acting on it (nxdn_scch_commit() commits it). */
 nxdn_field_decode nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
 

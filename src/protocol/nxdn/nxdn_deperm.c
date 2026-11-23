@@ -1374,6 +1374,12 @@ nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]) {
     return out;
 }
 
+nxdn_channel_result
+nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+    const nxdn_field_decode sacch = nxdn_sacch_decode_soft(bits, reliab);
+    return nxdn_handle_sacch(opts, state, sacch.trellis, sacch.m_data, sacch.crc, sacch.check);
+}
+
 void
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     //NOTE: Most Req/Resp (request and respone) share same message type but differ depending on channel type
