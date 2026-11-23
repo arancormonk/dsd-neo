@@ -28174,7 +28174,9 @@ if(NOT WIN32)
     )
     target_include_directories(
         dsd-neo_test_io_rtl_tcp_fixture_server_stop
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/test_support
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
     )
     target_link_libraries(
         dsd-neo_test_io_rtl_tcp_fixture_server_stop
@@ -28182,7 +28184,8 @@ if(NOT WIN32)
     )
     target_compile_definitions(
         dsd-neo_test_io_rtl_tcp_fixture_server_stop
-        PRIVATE "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
     )
     add_test(
         NAME IO_RTL_TCP_FIXTURE_SERVER_STOP
