@@ -8,7 +8,6 @@
 #include <QByteArray>
 #include <QChar>
 #include <QDate>
-#include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -22,7 +21,6 @@
 #include <QMap>
 #include <QPointer>
 #include <QSaveFile>
-#include <QTime>
 #include <QTimeZone>
 #include <QVariant>
 #include <Qt>
@@ -48,6 +46,7 @@
 #include "platform_path.h"
 #include "realtime_clock.h"
 #include "recording_journal.h"
+#include "recording_selection_token.h"
 
 namespace dsd_qt {
 

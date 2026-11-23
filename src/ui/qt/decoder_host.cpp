@@ -33,7 +33,6 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <cerrno>
-#include <cstdio>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
 

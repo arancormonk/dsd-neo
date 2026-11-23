@@ -28,6 +28,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <cstdio>
 #include <dsd-neo/platform/file_compat.h>
 #include <functional>
 #include <memory>

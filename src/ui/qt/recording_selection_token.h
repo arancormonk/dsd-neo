@@ -9,7 +9,8 @@
  * files: RecordingStore::selectionToken() makes one, DecoderHost's transfers check it.
  */
 
-#pragma once
+#ifndef DSD_NEO_SRC_UI_QT_RECORDING_SELECTION_TOKEN_H_
+#define DSD_NEO_SRC_UI_QT_RECORDING_SELECTION_TOKEN_H_
 
 #include <QtGlobal>
 #include <atomic>
@@ -41,3 +42,5 @@ class RecordingSelectionToken {
 };
 
 } // namespace dsd_qt
+
+#endif /* DSD_NEO_SRC_UI_QT_RECORDING_SELECTION_TOKEN_H_ */

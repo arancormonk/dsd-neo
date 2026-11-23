@@ -26,7 +26,6 @@
 #ifndef DSD_NEO_SRC_UI_QT_RECORDING_STORE_H_
 #define DSD_NEO_SRC_UI_QT_RECORDING_STORE_H_
 
-#include <QDate>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -47,10 +46,10 @@
 #include <thread>
 
 #include "call_recording_provider.h"
-#include "recording_selection_token.h"
 #include "recording_sessions.h"
 
 class QByteArray;
+class QDate;
 class QFileInfo;
 class QIODevice;
 
@@ -58,6 +57,7 @@ namespace dsd_qt {
 
 class AppPrefs;
 class DecoderHost;
+class RecordingSelectionToken;
 
 struct RecordingJournalRecord;
 
