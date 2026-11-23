@@ -9449,11 +9449,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   controller retune does). Before the purge, an rtl_tcp reader restarts (`rtl_device_discard_staged_input()`): as for
   the device's own retune it drops its partial slice, and it also drops the I byte it holds and the whole chunk it
   next takes, keeping the pair phase; a chunk it is already writing lands before the flush goes on (the reader marks
-  each chunk's processing, `tcp_chunk_seq`), so the purge takes it. No byte received before the next chunk boundary
-  reaches the ring; the cost is that one chunk of the new channel, a few milliseconds. A landing with no profile also
-  starts the demodulator over as a retune does: filters and their held-back samples, the output resampler, the FSK
-  modem, the discriminator's previous sample, the CQPSK Gardner delay line and differential decoder, and the FSK voice
-  lane's de-emphasis), unless the last external landing was on the same frequency since the last finalize; a
+  each chunk's processing, `tcp_chunk_seq`), so the purge takes it. The device's own retune
+  (`rtl_device_set_frequency()`) restarts the reader the same way short of the chunk drop: the staged slice and the I/Q
+  pair a held byte straddles go, and the controller's purge waits for a chunk in progress too. The wait is bounded;
+  one that runs out poisons that chunk (its remaining writes fail as stale) and moves the ring's discard generation,
+  so none of it survives. No byte received before the next chunk boundary reaches the ring; the cost is that one
+  chunk of the new channel, a few milliseconds. A landing with no profile also starts the demodulator over as a
+  retune does: filters and their held-back samples, the output resampler, the FSK modem, the discriminator's previous
+  sample, the CQPSK Gardner delay line, differential decoder and band-edge FLL delay line, and the FSK voice lane's
+  de-emphasis), unless the last external landing was on the same frequency since the last finalize; a
   repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache, and since it has
   nothing to rewrite it takes the gate without raising its flag, so a block in flight keeps its whole output. The
   engine also says whether the peer moved (`peer_moved`: it was sent another frequency than

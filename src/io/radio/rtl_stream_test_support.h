@@ -2122,13 +2122,19 @@ int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landi
 int rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring);
 /* A bare rtl_tcp stand-in device (no connection, no reader) to stand as the stream's open device, whose reader's
  * pending restart (tcp_restart_pending) rtl_device_test_tcp_take_restart_pending() reads and clears. */
-/* A stand-in rtl_tcp reader that passed its restart check is writing a chunk when an external flush asks it to restart
- * (rtl_device_discard_staged_input(), on a thread of its own): @p out_flush_returned_mid_chunk is 1 when the flush
- * returned while the chunk was still being written (it must wait), @p out_chunk_done_at_return 1 when the chunk had
- * landed by the time it returned, and @p out_next_chunk_dropped 1 when the reader's next chunk (four bytes behind a held
- * I byte) went whole, its pair phase kept. Returns 0 when it ran. */
-int rtl_device_test_tcp_flush_waits_for_chunk(int* out_flush_returned_mid_chunk, int* out_chunk_done_at_return,
-                                              int* out_next_chunk_dropped);
+/* The rtl_tcp reader's real chunk path (one 4-byte slice of the channel left) is held right after its restart check
+ * while an external flush (rtl_device_discard_staged_input(), on a thread of its own) posts its request, then the
+ * stream's purge runs where the flush lets it: @p out_flush_returned_mid_chunk is 1 when the flush returned while the
+ * chunk was held (it must wait, unless @p expire shortens its wait so it runs out), @p out_ring_floats what the ring
+ * holds after the purge (0: none of the chunk survived), @p out_poison_cleared 1 when the chunk's end cleared a
+ * poison the expired wait set. Returns 0 when it ran. */
+int rtl_device_test_tcp_reader_chunk_race(int expire, int* out_flush_returned_mid_chunk, int* out_ring_floats,
+                                          int* out_poison_cleared);
+/* The reader's chunk (four bytes behind the I byte it held) with (@p restart) or without a retune of the device's own
+ * pending (RTL_TCP_RESTART_STAGED): what the ring took, the first byte the reader staged (-1: none) and the held count
+ * after. With the restart the held I and its Q go, so the next pair starts on an I. */
+int rtl_device_test_tcp_staged_restart_held_pair(int restart, int* out_ring_floats, int* out_pending_first,
+                                                 int* out_held);
 struct rtl_device* rtl_device_test_tcp_staging_device(void);
 int rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev);
 void rtl_device_test_tcp_staging_device_free(struct rtl_device* dev);
@@ -2148,12 +2154,16 @@ typedef struct rtl_stream_test_external_profileless_phase {
     int resampler_reset;      /* 1 when the output resampler started over (its phase was seeded) */
     int cqpsk_history_reset;  /* 1 when the CQPSK differential decoder's previous symbol went (seeded off 1+0j) */
     int voice_lane_reset;     /* 1 when the FSK voice lane's de-emphasis started from silence (seeded) */
+    int gardner_reset;        /* 1 when the CQPSK Gardner delay line started over (seeded; cleared on CQPSK only) */
+    int band_edge_reset;      /* 1 when the band-edge FLL's delay line started over (seeded) */
 } rtl_stream_test_external_profileless_phase;
 
 typedef struct rtl_stream_test_external_profileless_block_result {
     rtl_stream_test_external_profileless_phase moved;  /* on a frequency the output does not hold, the peer moved */
     rtl_stream_test_external_profileless_phase repeat; /* then the same frequency again, the peer still there */
-    int gate_open_after;                               /* 1 when the gate was open again once both landings finished */
+    rtl_stream_test_external_profileless_phase cqpsk_moved;  /* as moved, on the CQPSK chain, another frequency */
+    rtl_stream_test_external_profileless_phase cqpsk_repeat; /* then that frequency again */
+    int gate_open_after; /* 1 when the gate was open again once both landings finished */
 } rtl_stream_test_external_profileless_block_result;
 
 /* Stand in for the demod thread inside a block (demod_enter_processing_block()) on a DMR stream, start the landing

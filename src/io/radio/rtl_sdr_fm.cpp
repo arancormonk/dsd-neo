@@ -14642,6 +14642,13 @@ rtl_stream_reset_demod_for_external_move(void) {
     demod_reset_ted_delay_for_retune(&demod);
     demod.cqpsk_diff_prev_r = 1.0f;
     demod.cqpsk_diff_prev_j = 0.0f;
+    /* The band-edge FLL's delay line holds the channel left's samples: its first errors would steer the new carrier's
+       correction by them. It goes as the controller's retune clears it (dsd_fll_band_edge_init_params()), with the
+       phase; the frequency estimate stays, as a same-design retune keeps it. */
+    DSD_MEMSET(demod.fll_band_edge_state.delay_r, 0, sizeof(demod.fll_band_edge_state.delay_r));
+    DSD_MEMSET(demod.fll_band_edge_state.delay_i, 0, sizeof(demod.fll_band_edge_state.delay_i));
+    demod.fll_band_edge_state.delay_idx = 0;
+    demod.fll_band_edge_state.phase = 0.0f;
     demod.voice_lane_deemph_avg = 0.0f;
 }
 
@@ -20938,6 +20945,11 @@ profileless_landing_race_seed_demod(void) {
     demod.cqpsk_diff_prev_r = 0.25f;
     demod.cqpsk_diff_prev_j = 0.75f;
     demod.voice_lane_deemph_avg = 0.5f;
+    demod.ted_state.dl[0] = 0.5f;
+    demod.ted_state.dl_index = 3;
+    demod.fll_band_edge_state.delay_r[0] = 0.5f;
+    demod.fll_band_edge_state.delay_i[0] = -0.5f;
+    demod.fll_band_edge_state.delay_idx = 2;
 }
 
 /* Which of the seeded state (profileless_landing_race_seed_demod()) the landing started over. */
@@ -20949,6 +20961,12 @@ profileless_landing_race_note_demod(rtl_stream_test_external_profileless_phase* 
     out->cqpsk_history_reset =
         (std::fabs(demod.cqpsk_diff_prev_r - 1.0f) < 1e-6f && std::fabs(demod.cqpsk_diff_prev_j) < 1e-6f) ? 1 : 0;
     out->voice_lane_reset = std::fabs(demod.voice_lane_deemph_avg) < 1e-6f ? 1 : 0;
+    out->gardner_reset = (std::fabs(demod.ted_state.dl[0]) < 1e-6f && demod.ted_state.dl_index == 0) ? 1 : 0;
+    out->band_edge_reset =
+        (std::fabs(demod.fll_band_edge_state.delay_r[0]) < 1e-6f
+         && std::fabs(demod.fll_band_edge_state.delay_i[0]) < 1e-6f && demod.fll_band_edge_state.delay_idx == 0)
+            ? 1
+            : 0;
 }
 
 /* One landing on @p target_hz (@p peer_moved as the engine says it) while the stand-in demod thread runs a block, as
@@ -21025,6 +21043,12 @@ rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_exter
     int rc = profileless_landing_race_phase(target_hz, 1, &out->moved);
     /* The peer asked again for the channel it is on: nothing to flush or apply. */
     rc |= profileless_landing_race_phase(target_hz, 0, &out->repeat);
+    /* The same on the CQPSK chain (a TETRA traffic grant tunes with no profile): its Gardner delay line and band-edge
+       FLL history start over on a move and stay on a repeat. */
+    demod.cqpsk_enable = 1;
+    rc |= profileless_landing_race_phase(target_hz + 25000U, 1, &out->cqpsk_moved);
+    rc |= profileless_landing_race_phase(target_hz + 25000U, 0, &out->cqpsk_repeat);
+    demod.cqpsk_enable = 0;
     rtl_device_handle = saved_handle;
     rtl_device_test_tcp_staging_device_free(tcp_dev);
     rtl_demod_clear_filter_histories(&demod);

@@ -1385,23 +1385,49 @@ test_external_profileless_landing_waits_for_block(void) {
     failed |= expect_int_eq("repeated landing during a block: resampler kept", r.repeat.resampler_reset, 0);
     failed |= expect_int_eq("repeated landing during a block: CQPSK history kept", r.repeat.cqpsk_history_reset, 0);
     failed |= expect_int_eq("repeated landing during a block: voice lane kept", r.repeat.voice_lane_reset, 0);
+    /* On the CQPSK chain the Gardner delay line and the band-edge FLL's history start over on a move, and stay on a
+       repeat. */
+    failed |= expect_int_eq("CQPSK move: Gardner delay line starts over", r.cqpsk_moved.gardner_reset, 1);
+    failed |= expect_int_eq("CQPSK move: band-edge history starts over", r.cqpsk_moved.band_edge_reset, 1);
+    failed |= expect_int_eq("CQPSK move: differential symbol starts over", r.cqpsk_moved.cqpsk_history_reset, 1);
+    failed |= expect_int_eq("CQPSK repeat: Gardner delay line kept", r.cqpsk_repeat.gardner_reset, 0);
+    failed |= expect_int_eq("CQPSK repeat: band-edge history kept", r.cqpsk_repeat.band_edge_reset, 0);
     /* The reader's side: half a slice from the channel left never completes a slice with the landed channel's bytes. */
     int old_reached = -1;
     failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(1, &old_reached), 0);
     failed |= expect_int_eq("staged slice across a discard: only the new channel's bytes", old_reached, 0);
     failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(0, &old_reached), 0);
     failed |= expect_int_eq("staged slice with no discard: the old bytes go through", old_reached, 1);
-    /* A chunk the reader received before the flush and is still writing lands before the flush returns, so the
-       purge after it takes it; the reader's next chunk goes whole with the I byte it held. */
-    int returned_mid_chunk = -1;
-    int chunk_done_at_return = -1;
-    int next_dropped = -1;
-    failed |= expect_int_eq(
-        "flush race hook",
-        rtl_device_test_tcp_flush_waits_for_chunk(&returned_mid_chunk, &chunk_done_at_return, &next_dropped), 0);
-    failed |= expect_int_eq("flush during a chunk: waits for it", returned_mid_chunk, 0);
-    failed |= expect_int_eq("flush during a chunk: the chunk landed first", chunk_done_at_return, 1);
-    failed |= expect_int_eq("flush during a chunk: the next chunk and the held byte go", next_dropped, 1);
+    /* The reader's real chunk path, held between its restart check and its writes while a flush posts its request: the
+       flush waits for the chunk to land, so the purge after it takes it; a wait that runs out poisons the chunk, so
+       nothing of it survives the purge either way. */
+    for (int expire = 0; expire <= 1; expire++) {
+        int returned_mid_chunk = -1;
+        int ring_floats = -1;
+        int poison_cleared = -1;
+        failed |= expect_int_eq(
+            "chunk race hook",
+            rtl_device_test_tcp_reader_chunk_race(expire, &returned_mid_chunk, &ring_floats, &poison_cleared), 0);
+        failed |= expect_int_eq(expire ? "flush past its wait: returns while the chunk is held"
+                                       : "flush during a chunk: waits for it",
+                                returned_mid_chunk, expire ? 1 : 0);
+        failed |= expect_int_eq(expire ? "flush past its wait: none of the chunk survives the purge"
+                                       : "flush during a chunk: none of it survives the purge",
+                                ring_floats, 0);
+        failed |= expect_int_eq("chunk race: the chunk's end clears its poison", poison_cleared, 1);
+    }
+    /* A retune of the device's own drops the I byte the reader held and the Q that completes it. */
+    int held_ring = -1;
+    int held_first = -2;
+    int held_after = -1;
+    failed |= expect_int_eq("held pair hook",
+                            rtl_device_test_tcp_staged_restart_held_pair(1, &held_ring, &held_first, &held_after), 0);
+    failed |= expect_int_eq("device retune: no pair straddles the retune", held_ring, 0);
+    failed |= expect_int_eq("device retune: the next pair starts on an I", held_first, 2);
+    failed |= expect_int_eq("device retune: an odd byte held for its Q", held_after, 1);
+    failed |= expect_int_eq("held pair hook",
+                            rtl_device_test_tcp_staged_restart_held_pair(0, &held_ring, &held_first, &held_after), 0);
+    failed |= expect_int_eq("no retune: the held I pairs with its Q", held_ring, 4);
     failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }

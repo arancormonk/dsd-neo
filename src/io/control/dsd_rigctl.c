@@ -422,8 +422,9 @@ rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
  * is 32-bit (issue #671). A request with no complete reply (lost, garbled, cut short) may have moved the peer: where it
  * is is not known until it confirms a request, so the next one goes out whatever it asks for (RigctlConfirmedFreq()).
  * A complete refusal leaves the peer where it was, as known. */
-/* Whether a send that wrote nothing failed for a moment only (interrupted, or the socket's buffer full or its send
- * timeout reached) on a connection that still runs, rather than for its loss or any error not known to be passing. */
+/* Whether a send that wrote nothing failed for a moment only (interrupted, or the socket's buffer full) on a connection
+ * that still runs, rather than for its loss or any error not known to be passing. A Winsock time-out is not one: the
+ * connection sets no send time-out, so WSAETIMEDOUT from send() says TCP gave up on a peer that stopped answering. */
 static int
 rigctl_send_failure_is_transient(int n) {
     if (n == 0) {
@@ -431,7 +432,7 @@ rigctl_send_failure_is_transient(int n) {
     }
 #if DSD_PLATFORM_WIN_NATIVE
     const int error = dsd_socket_get_error();
-    return error == WSAEINTR || error == WSAEWOULDBLOCK || error == WSAETIMEDOUT;
+    return error == WSAEINTR || error == WSAEWOULDBLOCK;
 #else
     const int error = errno;
 #if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN

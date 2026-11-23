@@ -59,7 +59,18 @@ static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
 static int g_send_result;
-static int g_send_errno; /* errno a failed send leaves (EINTR: a moment's failure; EPIPE: the connection lost) */
+/* The error a failed send leaves, errno or the Winsock error (dsd_socket_get_error()): a moment's failure
+   (TEST_SEND_INTERRUPTED) or the connection lost (TEST_SEND_CONNECTION_LOST, TEST_SEND_TIMED_OUT). */
+static int g_send_errno;
+#if DSD_PLATFORM_WIN_NATIVE
+#define TEST_SEND_INTERRUPTED     WSAEINTR
+#define TEST_SEND_CONNECTION_LOST WSAECONNRESET
+#define TEST_SEND_TIMED_OUT       WSAETIMEDOUT
+#else
+#define TEST_SEND_INTERRUPTED     EINTR
+#define TEST_SEND_CONNECTION_LOST EPIPE
+#define TEST_SEND_TIMED_OUT       ETIMEDOUT
+#endif
 static int g_last_send_flags = -1;
 static int g_resolve_result;
 static int g_connect_result;
@@ -345,11 +356,19 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     g_command_count++;
     if (g_send_result != -2) {
         if (g_send_result < 0) {
+#if !DSD_PLATFORM_WIN_NATIVE
             errno = g_send_errno;
+#endif
         }
         return g_send_result;
     }
     return (int)len;
+}
+
+/* The Winsock error a failed send left (the client reads it there; errno elsewhere). */
+int
+dsd_socket_get_error(void) {
+    return g_send_errno;
 }
 
 uint64_t
@@ -607,7 +626,7 @@ test_setfreq_success_failure_and_cache(void) {
 
     reset_stubs();
     g_send_result = -1;
-    g_send_errno = EINTR;
+    g_send_errno = TEST_SEND_INTERRUPTED;
     assert(!SetFreq(111, 851050000L));
     /* Nothing went out: the peer cannot have moved. */
     assert(RigctlFrequencyMoves() == moves + 2U);
@@ -620,7 +639,7 @@ test_setfreq_success_failure_and_cache(void) {
     assert(RigctlConfirmedFreq(113) == 851075000U);
     const uint64_t confirmed_moves = RigctlFrequencyMoves();
     g_send_result = -1;
-    g_send_errno = EINTR;
+    g_send_errno = TEST_SEND_INTERRUPTED;
     assert(!SetFreq(113, 851087500L));
     assert(RigctlConfirmedFreq(113) == 851075000U);
     g_send_result = -2;
@@ -632,7 +651,7 @@ test_setfreq_success_failure_and_cache(void) {
     /* A send that lost the connection wrote nothing too, but this connection confirms nothing any more: the
        confirmation goes and the peer counts as moved, so a repeat of the old frequency goes out again. */
     g_send_result = -1;
-    g_send_errno = EPIPE;
+    g_send_errno = TEST_SEND_CONNECTION_LOST;
     assert(!SetFreq(113, 851087500L));
     assert(RigctlConfirmedFreq(113) == 0U);
     assert(RigctlFrequencyMoves() == confirmed_moves + 1U);
@@ -642,11 +661,22 @@ test_setfreq_success_failure_and_cache(void) {
     assert(SetFreq(113, 851075000L));
     assert(g_command_count == commands_after_loss + 1U);
 
+    /* A send that timed out wrote nothing either, but TCP gave up on the peer: as for a lost connection. */
+    const uint64_t moves_before_timeout = RigctlFrequencyMoves();
+    g_send_result = -1;
+    g_send_errno = TEST_SEND_TIMED_OUT;
+    assert(!SetFreq(113, 851087500L));
+    assert(RigctlConfirmedFreq(113) == 0U);
+    assert(RigctlFrequencyMoves() == moves_before_timeout + 1U);
+    g_send_result = -2;
+    push_response("RPRT 0\n");
+    assert(SetFreq(113, 851075000L));
+
     reset_stubs();
     g_send_result = 2;
     assert(!SetFreq(112, 851062500L));
     /* Part of the request went out: the peer may have taken something. */
-    assert(RigctlFrequencyMoves() == confirmed_moves + 3U);
+    assert(RigctlFrequencyMoves() == confirmed_moves + 5U);
     return 0;
 }
 

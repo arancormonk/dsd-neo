@@ -260,7 +260,8 @@ void rtl_device_destroy(struct rtl_device* dev);
  * retune of the device's own, and also the I byte it holds and the whole chunk it next takes (any byte received
  * before that chunk boundary may be the channel left's). A chunk the reader is already writing lands before this
  * returns (a bounded wait; a chunk's processing never waits on the network), so an input purge requested after it
- * takes that chunk too. Other backends stage nothing: a no-op there.
+ * takes that chunk too; a wait that runs out poisons that chunk instead, so none of its writes survives. Other
+ * backends stage nothing: a no-op there.
  *
  * @param dev Device handle (NULL: no-op).
  */
