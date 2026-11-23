@@ -418,15 +418,20 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 }
 
 /* An absolute grant's channel (TS 102 361-4 §7.1.1.1.1.1.1): the CdefParms of the block appended to its MBC header.
-   Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over):
-   a header heard as a standalone CSBK carries only its own 96 bits, so it names no frequency, is not followed and
-   teaches the channel map nothing (fail closed). Only a block carrying the header's CSBKO @p csbk_o (TS 102 361-4
-   Table 7.16) may confirm a learned mapping: the header's and the block's CRCs do not show that they belong together. */
+   Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over)
+   and carries the header's CSBKO @p csbk_o (TS 102 361-4 Table 7.16): the header's and the block's CRCs do not show
+   that they belong together. A header heard as a standalone CSBK carries only its own 96 bits, and a block of another
+   MBC is not this grant's, so either names no frequency, is not followed, ends no followed call and teaches the channel
+   map nothing (fail closed). */
 static uint16_t
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
                                    uint8_t appended_blocks, long int* freq) {
     if (appended_blocks == 0U) {
         DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Absolute Parameters Not Received;");
+        return 0;
+    }
+    if ((int)convert_bits_into_output(&cs_pdu_bits[98], 6) != csbk_o) {
+        DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Appended Block of Another MBC;");
         return 0;
     }
     uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
@@ -442,8 +447,7 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-    const int same_mbc = (int)convert_bits_into_output(&cs_pdu_bits[98], 6) == csbk_o;
-    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq, same_mbc);
+    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq, 1);
     return mbc_lpchannum;
 }
 

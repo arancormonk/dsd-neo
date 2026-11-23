@@ -13680,7 +13680,8 @@ Private per-protocol modules worth knowing about:
     the mapping in an empty cell with its provenance (`dmr_chan_map_note()` in `dmr_csbk.c`): 2 on the control channel,
     else 1, whatever its CRC verdict, as before. A mapping already held is never rewritten: an unconfirmed one (1) is
     confirmed (2) only when this site's own channel (a grant or a Chan_Freq whose appended block carries its header's
-    CSBKO, TS 102 361-4 Tables 7.16 and 7.21, `test_foreign_block_never_confirms()`; never another site's Vote_Now or
+    CSBKO, TS 102 361-4 Tables 7.16 and 7.21, `test_foreign_block_never_confirms()`: an absolute grant reads nothing
+    from another MBC's block; never another site's Vote_Now or
     Adjacent site announcement) names the same frequency for it on the control channel in a CSBK whose own CRC passed
     (`dmr_csbk_crc_checked()`: never one `-F` accepted as RAS, nor an MBC whose header failed; a mapping learned off the
     control channel of a RAS site therefore stays unconfirmed, a decided limit), and an imported or heuristic one (0),
@@ -13788,7 +13789,9 @@ Private per-protocol modules worth knowing about:
     its assembly, `dmr_block_assembler_reset_type2()`, so later orphan continuations are never taken for its header or
     dispatched, under `-F` included), so an
     absolute grant heard as a standalone CSBK names no frequency, is not followed and teaches the map nothing,
-    `test_t3_absolute_grant_needs_its_block()` in `DMR_T3_CMOVE`), a Connect Plus
+    `test_t3_absolute_grant_needs_its_block()` in `DMR_T3_CMOVE`; so does one whose appended block carries another
+    CSBKO than its header's, another MBC's block, which also ends no followed call,
+    `test_foreign_block_never_confirms()`), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one

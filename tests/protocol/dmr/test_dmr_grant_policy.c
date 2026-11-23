@@ -240,6 +240,7 @@ static void
 build_absolute_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint32_t target, uint32_t source, uint8_t slot,
                      uint16_t mbc_lpcn, uint16_t rx_int, uint16_t rx_step) {
     build_grant(bits, bytes, opcode, 0x0FFFU, target, source, slot);
+    write_bits_u32(bits, 98U, opcode & 0x3FU, 6U); // the appended block's CSBKO: its header's (TS 102 361-4 Table 7.16)
     write_bits_u32(bits, 112U, 0U, 4U);
     write_bits_u32(bits, 118U, mbc_lpcn & 0x0FFFU, 12U);
     write_bits_u32(bits, 153U, rx_int & 0x03FFU, 10U);

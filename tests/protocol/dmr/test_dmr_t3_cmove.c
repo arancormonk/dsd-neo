@@ -202,7 +202,9 @@ csbk_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t a
     bits[28] = (uint8_t)(slot & 1U);
     put_bits(bits, 32U, target, 24U);
     put_bits(bits, 56U, 1234U, 24U);
-    // CdefParms Cdeftype 0 (bits 112..115) stays zero; LPCN 118..129, RX INT 153..162, RX STEP 163..175
+    // The appended block carries its header's CSBKO (bits 98..103, TS 102 361-4 Table 7.16); CdefParms Cdeftype 0
+    // (bits 112..115) stays zero; LPCN 118..129, RX INT 153..162, RX STEP 163..175
+    put_bits(bits, 98U, opcode, 6U);
     put_bits(bits, 118U, apcn, 12U);
     put_bits(bits, 153U, rx_int, 10U);
     put_bits(bits, 163U, rx_step, 13U);
