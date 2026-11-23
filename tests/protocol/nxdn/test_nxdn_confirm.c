@@ -222,6 +222,16 @@ test_foreign_frame_anchors_no_run(dsd_state* state) {
     run_frame(state, NXDN_EVIDENCE_STRONG);
     expect("a frame after a part-way foreign one waits", nxdn_confirm_is_confirmed(state), 0);
 
+    /* NXDN48's corroboration reaches one frame back only: a foreign frame, a followed-channel FSW one frame later whose
+       body was not accepted, then a lone strong check one frame after that, whose sync word that FSW corroborated. The
+       corroborating hit is the followed channel's own, not the foreign frame's: the check holds at once. */
+    nxdn_confirm_reset(state);
+    run_foreign_frame_at(state, 95000U, 0, 0);
+    nxdn_confirm_note_frame_start(state, 95000U + (2U * NXDN_CONFIRM_FRAME_SYMBOLS), 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("an nxdn48 sync word corroborated two frames after a foreign one holds at once",
+           nxdn_confirm_is_confirmed(state), 1);
+
     /* Control: past the frame sync's reach the foreign frame vouches for nothing either way, and a corroborated sync
        word is the followed channel's own. */
     nxdn_confirm_reset(state);
