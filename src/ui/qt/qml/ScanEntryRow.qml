@@ -108,7 +108,7 @@ UiPanel {
             objectName: "scanEntryProtocol"
             width: parent.width
             visible: row.entry.kind === "freq"
-            Accessible.name: qsTr("Entry protocol")
+            accessibleName: qsTr("Entry protocol")
             model: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96"), qsTr("NFM (analog)"), qsTr("AM (analog)")]
             currentIndex: Math.max(0, row.protocolIds.indexOf(row.entry.protocol || "p25"))
             onActivated: row.changed("protocol", row.protocolIds[currentIndex])
@@ -138,7 +138,7 @@ UiPanel {
             objectName: "scanEntryDecryptionScope"
             width: parent.width
             visible: !row.analog
-            Accessible.name: qsTr("Scan entry decryption scope")
+            accessibleName: qsTr("Scan entry decryption scope")
             model: [row.entry.kind === "system" ? qsTr("Inherit saved-system profile") : qsTr("Inherit session defaults"), qsTr("Use a profile"), qsTr("No keys")]
             currentIndex: Math.max(0, ["inherit", "profile", "none"].indexOf(row.entry.decryptionMode || "inherit"))
             onActivated: row.changed("decryptionMode", ["inherit", "profile", "none"][currentIndex])
@@ -206,7 +206,7 @@ UiPanel {
             objectName: "scanEntryModulation"
             width: parent.width
             visible: !row.analog
-            Accessible.name: qsTr("Entry modulation")
+            accessibleName: qsTr("Entry modulation")
             model: [qsTr("Inherit"), qsTr("C4FM"), qsTr("QPSK (simulcast)"), qsTr("GFSK")]
             currentIndex: Math.max(0, row.modulationIds.indexOf(row.entry.modulation || ""))
             onActivated: row.changed("modulation", row.modulationIds[currentIndex])
@@ -222,7 +222,7 @@ UiPanel {
             PlexComboBox {
                 objectName: "scanEntryGainMode"
                 width: parent.width
-                Accessible.name: qsTr("Entry gain")
+                accessibleName: qsTr("Entry gain")
                 model: [qsTr("Inherit"), qsTr("Automatic"), qsTr("Set")]
                 currentIndex: row.gainMode
                 onActivated: function (index) {
@@ -258,14 +258,8 @@ UiPanel {
                 input.validator: RegularExpressionValidator {
                     regularExpression: /^-?[0-9]*$/
                 }
-                // A hidden field keeps no focus or keyboard (see GainEditor);
-                // `visible` follows the hidden gain block too.
-                onVisibleChanged: {
-                    if (!visible && input.activeFocus) {
-                        input.focus = false;
-                        Qt.inputMethod.hide();
-                    }
-                }
+                // A hidden field keeps no focus or keyboard: the field's own
+                // release (see GainEditor).
             }
         }
     }

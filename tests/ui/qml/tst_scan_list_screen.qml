@@ -899,6 +899,9 @@ Item {
         }
 
         function test_tuner_modes_have_accessible_names() {
+            // In Advanced, named only while it is open (issue #902 B9).
+            compare(control("scanGainMode").Accessible.name, "", "collapsed, nameless");
+            screen.advancedOpen = true;
             var names = {
                 scanGainMode: "Gain",
                 scanPpmMode: "Frequency correction",
@@ -918,6 +921,7 @@ Item {
             // B9: the bandwidth is a choice of the widths the radio runs, not a text field.
             var bandwidth = control("scanTuner_bandwidthKhz");
             compare(bandwidth.input, undefined, "bandwidthKhz");
+            screen.advancedOpen = true;
             compare(bandwidth.Accessible.name, "Bandwidth");
         }
 
@@ -1947,9 +1951,10 @@ Item {
             verify(field.input.activeFocus);
             screen.draft = Object.assign({}, screen.draft, {sourceType: "airspy", airspy: {gain_mode: "sensitivity", sensitivity_gain: 9}});
             verify(!field.visible);
-            verify(!field.input.activeFocus, "the hidden gain field gave up the focus");
             keyClick("4");
-            compare(field.text, "23");
+            compare(field.text, "23", "a key after the switch reached nothing");
+            // The field's own release hands the keyboard on once the switch has settled (issue #902).
+            tryVerify(function () { return !field.input.activeFocus; }, 1000, "the hidden gain field gave up the focus");
             compare(screen.gainText, "23");
             compare(screen.draft.gainDb, 23);
         }

@@ -56,6 +56,7 @@
 #include "app_prefs.h"
 #include "decoder_host.h"
 #include "imported_files_model.h"
+#include "key_gate.h"
 #include "location_requests.h"
 #include "qml_gc_policy.h"
 #include "radio_reference_model.h"
@@ -730,6 +731,8 @@ test_mixed_simulcast_qml_plan() {
         }
     }
     expect("fixture has ordinary and simulcast sites", ordinary >= 0 && simulcast >= 0);
+    // The app's own registration (qt_ui.cpp): the screen's controls import DsdNeo for it.
+    qmlRegisterSingletonInstance("DsdNeo", 1, 0, "PressGate", dsd_qt::PressGate::instance());
     QQmlEngine engine;
     engine.rootContext()->setContextProperty("radioReference", &h.model);
     engine.rootContext()->setContextProperty("prefs", &h.prefs);

@@ -39,6 +39,9 @@ Item {
             callHistory.clearAll();
         }
         function cleanup() {
+            app.spectrumOpen = false;
+            app.exploring = false;
+            historyView.filterText = "";
             app.closeMap(false);
             app.sessionDestination = "";
             findChild(app, "sessionMenu").visible = false;
@@ -113,6 +116,43 @@ Item {
             app.requestBack();
             verify(!app.mapOpen);
             compare(app.sessionDestination, "history");
+        }
+
+        // Issue #902: a control that hides with the keyboard on it hands it to Main's one Escape and Back owner (its
+        // safe area, Navigation.backTarget), never to a screen that passes Escape to nothing: neither the idle History
+        // tab (the tab shell is anchored to the safe area, not parented under it) nor the Spectrum's loaded screen.
+        function test_hidden_control_keeps_back_working_on_the_history_tab() {
+            testContext.setLifecyclePhase(0);
+            callHistory.push("TODAY");
+            app.currentTab = 1;
+            var idle = findChild(app, "idleHistoryScreen");
+            historyView.filterText = "no call matches this";
+            var clear = findChild(idle, "historyClearFilters");
+            tryVerify(function () { return clear.visible; }, 1000, "the filters leave nothing: Clear filters shows");
+            clear.forceActiveFocus();
+            tryVerify(function () { return clear.activeFocus; }, 1000, "Clear filters has the keyboard");
+            keyClick(Qt.Key_Space);
+            tryVerify(function () { return !clear.visible && !clear.activeFocus; }, 1000, "Clear filters hides and gives the keyboard up");
+            verify(app.activeFocusItem !== null && app.activeFocusItem.objectName === "safeArea", "to Main's Back owner, not "
+                   + (app.activeFocusItem ? app.activeFocusItem.objectName : "nothing"));
+            keyClick(Qt.Key_Escape);
+            compare(app.currentTab, 0, "Escape goes back to Listen");
+        }
+        function test_hidden_control_keeps_back_working_on_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            app.exploring = true;
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var rail = findChild(app, "spectrumBandRail");
+            verify(rail !== null);
+            tryVerify(function () { return rail.visible; }, 1000, "exploring: the tuning rail shows");
+            rail.forceActiveFocus();
+            verify(rail.activeFocus);
+            app.exploring = false;
+            tryVerify(function () { return !rail.visible && !rail.activeFocus; }, 1000, "view only: the rail hides and gives the keyboard up");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
         }
 
         // "Show on map": the sheet closes first, the map shows the row's pin, and Back opens the sheet again by uid.

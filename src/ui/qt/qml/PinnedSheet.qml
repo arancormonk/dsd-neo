@@ -143,6 +143,7 @@ ModalSheet {
                     anchors.verticalCenter: parent.verticalCenter
                     text: pinRow.parts[0]
                     accessibleName: pinRow.live ? pinRow.parts[1] : ""
+                    Accessible.focusable: navigationAllowed && visible && pinRow.live
                     Accessible.ignored: !navigationAllowed || !visible || !pinRow.live
                     // OutlineButton's own Text.Wrap: whole words where they fit,
                     // and a name word wider than the room beside Unpin (320 px,
@@ -161,6 +162,7 @@ ModalSheet {
                     width: Math.ceil(implicitWidth)
                     text: qsTr("Unpin")
                     accessibleName: pinRow.live ? pinRow.parts[2] : ""
+                    Accessible.focusable: navigationAllowed && visible && pinRow.live
                     Accessible.ignored: !navigationAllowed || !visible || !pinRow.live
                     enabled: pinRow.live
                     onClicked: sheet.unpinRow(pinRow.index, pinRow.key, activeFocus)

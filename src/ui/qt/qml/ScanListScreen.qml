@@ -714,7 +714,7 @@ Rectangle {
                     id: systemPicker
                     objectName: "scanSystemPicker"
                     width: parent.width
-                    Accessible.name: qsTr("Saved system to add")
+                    accessibleName: qsTr("Saved system to add")
                     model: savedSystems
                     textRole: "name"
                 }
@@ -743,7 +743,7 @@ Rectangle {
                     id: protocol
                     objectName: "scanAddProtocol"
                     width: parent.width
-                    Accessible.name: qsTr("Frequency protocol")
+                    accessibleName: qsTr("Frequency protocol")
                     model: screen.protocolLabels
                 }
                 PlexTextField {
@@ -823,7 +823,7 @@ Rectangle {
 
                     objectName: "scanTargetCsvPicker"
                     width: parent.width
-                    Accessible.name: qsTr("Target CSV")
+                    accessibleName: qsTr("Target CSV")
                     model: [{"name": qsTr("Select target CSV"), "path": ""}].concat(files)
                     textRole: "name"
                     currentIndex: {
@@ -981,15 +981,18 @@ Rectangle {
 
                 Item {
                     id: advHeader
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: Navigation.allows(advHeader) && advHeader.visible
                     objectName: "scanAdvancedToggle"
                     width: parent.width
                     height: Math.max(66, advHeading.implicitHeight + 24)
                     // Held while it has the focus (see OutlineButton).
-                    activeFocusOnTab: (Navigation.allows(advHeader) && enabled) || activeFocus
+                    activeFocusOnTab: (Navigation.allows(advHeader) && visible && enabled) || activeFocus
                     Accessible.role: Accessible.Button
-                    Accessible.name: qsTr("Advanced")
+                    Accessible.name: !Navigation.allows(advHeader) || !visible ? "" : qsTr("Advanced")
+                    Accessible.focusable: Navigation.allows(advHeader) && visible
                     // What it holds, as its second line says, then its state.
-                    Accessible.description: advSubtitle.text + ". " + (screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
+                    Accessible.description: !Navigation.allows(advHeader) || !visible ? "" : advSubtitle.text + ". " + (screen.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
                     Accessible.ignored: !Navigation.allows(advHeader) || !visible
                     Accessible.onPressAction: toggle()
                     Keys.onPressed: function (event) {
@@ -1000,7 +1003,7 @@ Rectangle {
                         Navigation.activationRelease(event);
                     }
                     function toggle() {
-                        if (!enabled || !Navigation.allows(advHeader))
+                        if (!enabled || !Navigation.allows(advHeader) || !advHeader.visible)
                             return;
                         // Issue #718: folding hides the field being typed in,
                         // which would drop its composing word; the word is
@@ -1212,7 +1215,7 @@ Rectangle {
                             text: qsTr("Skip silent channels")
                             checked: screen.draft.skipSilent || false
                             onToggled: screen.draft.skipSilent = checked
-                            Accessible.description: skipSilentHelp.text
+                            Accessible.description: !navigationAllowed || !visible ? "" : skipSilentHelp.text
                         }
                         // Read through the checkbox's Accessible.description, so the help is not a second stop for a
                         // screen reader.
@@ -1285,7 +1288,7 @@ Rectangle {
                                 property var files: (importedFiles.revision, importedFiles.entriesForType(modelData.type))
                                 objectName: "scanFile_" + modelData.key
                                 width: parent.width
-                                Accessible.name: modelData.label
+                                accessibleName: modelData.label
                                 model: [{"name": qsTr("None"), "path": ""}].concat(files)
                                 textRole: "name"
                                 currentIndex: {

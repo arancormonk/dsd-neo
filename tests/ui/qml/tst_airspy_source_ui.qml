@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 Item {
     width: 480
@@ -17,6 +18,9 @@ Item {
 
         function cleanup() {
             screenLoader.source = "";
+            // Main's root surfaces outlive it here (the app never unloads it): a screen loaded next would read as
+            // covered, and its controls nameless (issue #902 B9).
+            Ui.Navigation.rootSurfaces = [];
         }
 
         function test_wizard_shared_tuner_visibility() {

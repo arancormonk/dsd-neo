@@ -382,7 +382,7 @@ Item {
                         radius: 2
                         color: Theme.toggleOffTrack
                         Accessible.role: Accessible.ProgressBar
-                        Accessible.name: qsTr("Export progress")
+                        Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Export progress")
                         // Gate first: see OutlineButton. The folder menu can open
                         // over a running export.
                         readonly property bool navigationAllowed: Navigation.allows(exportProgressBar)
@@ -422,7 +422,7 @@ Item {
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
                 color: screen.noticeProblem ? Theme.alert : Theme.textSecondary
-                Accessible.role: screen.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
+                Accessible.role: !reachable ? Accessible.Pane : (screen.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
             }
 
             // What the limit removed and the deletes the store could not do, since this

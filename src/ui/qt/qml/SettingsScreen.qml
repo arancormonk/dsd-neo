@@ -414,7 +414,7 @@ Item {
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
                     color: modelData.problem ? Theme.alert : Theme.textSecondary
-                    Accessible.role: modelData.problem ? Accessible.AlertMessage : Accessible.StaticText
+                    Accessible.role: !reachable ? Accessible.Pane : (modelData.problem ? Accessible.AlertMessage : Accessible.StaticText)
                 }
             }
         }
@@ -1282,7 +1282,7 @@ Item {
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(13)
                             color: screen.backupNoticeProblem ? Theme.alert : Theme.textSecondary
-                            Accessible.role: screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText
+                            Accessible.role: !reachable ? Accessible.Pane : (screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
                         }
                     }
 

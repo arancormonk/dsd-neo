@@ -237,6 +237,45 @@ Item {
         // that the bar drags under the dialog: the thumb, the time and the
         // bar's accessible value follow the finger, though seekTo()'s own
         // gate still refuses the seek on release.
+        // Issue #902 B9: under the delete confirmation the seek bar is nameless,
+        // describes no position (the paced reading is empty, which would read
+        // as 0:00), and a step a screen reader sends the node it holds seeks
+        // nothing.
+        function test_seek_bar_under_a_sheet_offers_nothing() {
+            openWith([rec("t-1", pathA, 60000)]);
+            var bar = item("recordingSeekBar");
+            tap("recordingPlayButton");
+            testContext.publishPlayback(pathA, 2, 31000, 60000, "");
+            verify(bar.Accessible.description.length > 0, "shown, it says where it is");
+            var cover = item("recordingDeleteConfirm");
+            cover.visible = true;
+            try {
+                compare(bar.Accessible.name, "", "covered: nameless");
+                compare(bar.Accessible.description, "", "covered: no position");
+                var seeks = hostCallsNamed("seekPlayback").length;
+                testContext.accessibleDoAction(bar, "Increase");
+                testContext.accessibleDoAction(bar, "Decrease");
+                compare(hostCallsNamed("seekPlayback").length, seeks, "covered: a step seeks nothing");
+            } finally {
+                cover.visible = false;
+            }
+            compare(bar.Accessible.name, "Position");
+            // Hidden but not covered (nothing else refuses the seek then): a step seeks nothing; shown, the same
+            // action seeks.
+            bar.visible = false;
+            try {
+                verify(Ui.Navigation.allows(bar), "nothing covers it");
+                var hiddenSeeks = hostCallsNamed("seekPlayback").length;
+                testContext.accessibleDoAction(bar, "Increase");
+                compare(hostCallsNamed("seekPlayback").length, hiddenSeeks, "hidden: a step seeks nothing");
+            } finally {
+                bar.visible = true;
+            }
+            var shownSeeks = hostCallsNamed("seekPlayback").length;
+            verify(testContext.accessibleDoAction(bar, "Increase"), "shown, it offers the step");
+            compare(hostCallsNamed("seekPlayback").length, shownSeeks + 1, "shown: the same step seeks");
+        }
+
         function test_seek_drag_under_a_sheet_data() {
             return [{tag: "mouse", touch: false}, {tag: "touch", touch: true}];
         }

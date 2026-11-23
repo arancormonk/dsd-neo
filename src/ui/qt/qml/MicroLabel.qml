@@ -7,11 +7,13 @@ import QtQuick
 // tracking, uppercase, subdued.
 Text {
     id: label
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: label.Accessible.focusable
     // A section can be named for a typed or imported name (a RadioReference
     // county, a list section): drawn as written, never as markup.
     textFormat: Text.PlainText
     Accessible.role: Accessible.Heading
-    Accessible.name: text
+    Accessible.name: !navigationAllowed || !visible ? "" : text
     // Issue #782: Qt reports a Heading node focusable only when told to (its
     // text roles are focusable by themselves, Heading is not one), and TalkBack
     // skips a text node that is not focusable: without this a section's lines

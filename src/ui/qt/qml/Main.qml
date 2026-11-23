@@ -902,6 +902,15 @@ Window {
             mainRoot.requestBack();
         }
     }
+    // Issue #902: the safe area takes Escape and Back for the whole app (its
+    // Keys handlers run requestBack()), so it is where a control that turns
+    // unreachable hands the keyboard when nothing on top declares its own
+    // (Navigation.keyOwner()).
+    Binding {
+        target: Navigation
+        property: "backTarget"
+        value: safeArea
+    }
     Binding {
         target: Navigation
         property: "rootSurfaces"

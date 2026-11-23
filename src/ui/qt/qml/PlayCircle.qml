@@ -8,15 +8,18 @@ import QtQuick
 // recording's player (issue #708) shows two bars instead while it plays.
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property bool featured: false
     property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
+    Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()

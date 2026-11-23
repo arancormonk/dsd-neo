@@ -6,6 +6,10 @@ Item {
     id: layer
     property bool active: false
     property var surface: parent
+    // Issue #902: the item that takes this layer's Escape and Back, when it
+    // has one of its own (Navigation.keyOwner()); null leaves them to the
+    // app's one Back owner (Navigation.backTarget), which leaves the layer.
+    property Item keyTarget: null
     signal leave
     onActiveChanged: {
         Navigation.clearInput(layer.Window.window);

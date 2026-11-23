@@ -4,6 +4,8 @@ import QtQuick.Controls
 
 ComboBox {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    property alias inReach: control.reachable
     palette.window: Theme.bg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.panel
@@ -21,15 +23,27 @@ ComboBox {
     font.pixelSize: Theme.fontSize(15)
     implicitHeight: Math.max(Theme.minimumTouchSize, contentItem.implicitHeight + topPadding + bottomPadding)
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !navigationAllowed || !visible
-    // A choice given a name of its own ("Profile application scope") is read
-    // by that name alone; the description adds what it is set to. Unnamed, Qt
-    // names it by that value already, and the description stays empty. Which
-    // one it is is settled once: Qt renames an unnamed choice only after its
-    // value has changed, so comparing the two live would flicker.
-    property bool ownAccessibleName: false
-    Accessible.description: ownAccessibleName ? displayText : ""
-    Component.onCompleted: ownAccessibleName = Accessible.name.length > 0 && Accessible.name !== displayText
+    // Issue #902: its gate. Its own open list is the top modal but no cover:
+    // the selector keeps the keyboard, its name and its stop while that list
+    // is on top, and its own key handling chooses in the list (Up, Down,
+    // Home, End, a letter, Return, Space, Escape, Back, Tab), as Qt's combo
+    // does. Anything else over it gates it.
+    readonly property bool reachable: (navigationAllowed || Navigation.topModal === popupLayer) && visible
+    Accessible.ignored: !reachable
+    // A choice given a name of its own (`accessibleName`, "Profile application
+    // scope") is read by that name alone; the description adds what it is set
+    // to. Unnamed, it is named by that value, and the description stays empty.
+    // Both, and whether it is a stop, come from the gate itself
+    // (docs/code_map.md, issue #830): covered or hidden, the choice is nameless.
+    property string accessibleName: ""
+    readonly property bool ownAccessibleName: accessibleName.length > 0
+    Accessible.name: !reachable ? "" : ownAccessibleName ? accessibleName : displayText
+    Accessible.description: !reachable || !ownAccessibleName ? "" : displayText
+    Accessible.focusable: reachable
+    // Issue #902: the native Tab focus too, which keeps a SetFocus action on
+    // the accessible node of a covered choice. Held while it has the focus
+    // (see OutlineButton).
+    focusPolicy: reachable || activeFocus ? Qt.StrongFocus : Qt.NoFocus
     leftPadding: 14
     rightPadding: 38
     contentItem: Text {
@@ -73,7 +87,7 @@ ComboBox {
         Accessible.name: ""
         /** The row's choice, as a tap makes it, while its list shows. */
         function choose() {
-            if (option.visible && option.enabled && control.popup.visible)
+            if (option.visible && option.enabled && control.popup.visible && Navigation.allows(option))
                 option.click();
         }
         implicitHeight: Math.max(48, optionLabel.implicitHeight + 24)
@@ -94,13 +108,20 @@ ComboBox {
         // the list shows.
         Item {
             id: rowNode
+            // Issue #902: its reach for the keyboard (PressGate).
+            property alias inReach: rowNode.reachable
             objectName: "plexComboRow"
             anchors.fill: parent
+            // Its own gate (issue #902): a sheet over the open list, or the
+            // list closed, leaves the row nameless, out of the tree and no
+            // stop, and its press chooses nothing (choose()).
+            readonly property bool reachable: Navigation.allows(rowNode) && option.visible && control.popup.visible
             Accessible.role: Accessible.RadioButton
-            Accessible.name: option.text
+            Accessible.name: reachable ? option.text : ""
+            Accessible.ignored: !reachable
             Accessible.checkable: true
             Accessible.checked: control.currentIndex === option.index
-            Accessible.focusable: option.visible
+            Accessible.focusable: reachable
             Accessible.onPressAction: option.choose()
             // A radio button is toggled too: a desktop reader may send that.
             Accessible.onToggleAction: option.choose()

@@ -117,7 +117,9 @@ Item {
             var label = labelOf(segment);
             verify(label !== null, where + ": no label");
             var tag = where + " \"" + label.text + "\" at " + label.font.pixelSize + " px in " + label.width.toFixed(1);
-            compare(segment.Accessible.name, segment.modelData, tag + ": the segment does not read its whole label");
+            // Its whole label while in the tree; out of it (a closed sheet's), nothing (issue #902 B9).
+            compare(segment.Accessible.name, segment.Accessible.ignored ? "" : segment.modelData,
+                    tag + ": the segment does not read its whole label");
             var fits = true;
             for (var weight of [Font.Normal, Font.DemiBold]) {
                 var widest = widestWord(label, weight);

@@ -54,7 +54,7 @@ UiPanel {
     height: body.implicitHeight + 2 * Theme.cardPadding
     border.color: problem ? Theme.alertBorder : Theme.panelBorder
     Accessible.role: Accessible.AlertMessage
-    Accessible.name: speech
+    Accessible.name: !navigationAllowed || !visible ? "" : speech
     readonly property bool navigationAllowed: Navigation.allows(card)
     Accessible.ignored: !navigationAllowed || !visible
 

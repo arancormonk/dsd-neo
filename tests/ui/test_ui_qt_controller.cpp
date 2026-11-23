@@ -85,6 +85,7 @@ extern "C" {
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "json_store.h"
+#include "key_gate.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
 #include "position_model.h"
@@ -680,6 +681,8 @@ test_target_change_while_stopped_clears() {
 static void
 test_sheet_policy_edits() {
     dsd_qt::CommandBridge bridge;
+    // The app's own registration (qt_ui.cpp): the sheet's controls import DsdNeo for it.
+    qmlRegisterSingletonInstance("DsdNeo", 1, 0, "PressGate", dsd_qt::PressGate::instance());
     QQmlEngine engine;
     engine.rootContext()->setContextProperty("commands", &bridge);
     engine.rootContext()->setContextProperty("metrics", QVariantMap{{"uiMessage", QString()}});

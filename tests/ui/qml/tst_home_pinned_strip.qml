@@ -522,8 +522,11 @@ Item {
             }
             compare(started.count, 0, "a departing strip pin or sheet start starts nothing");
             compare(listenPins.count, 1, "a departing Unpin unpins nothing more");
-            compare(stripButtons[1].Accessible.name, "Start Bravo", "the staying pin keeps its name");
+            // Under the open sheet the strip is out of the tree and nameless (issue #902 B9); once the sheet closes the
+            // staying pin is named again.
+            compare(stripButtons[1].Accessible.name, "", "under the sheet, the staying pin is nameless");
             sheet.visible = false;
+            compare(stripButtons[1].Accessible.name, "Start Bravo", "the staying pin keeps its name");
         }
 
         // [r1-7] and the strip's layout: a rotation or a text-size change while Home is hidden adds or removes no pin

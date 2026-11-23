@@ -374,17 +374,23 @@ Item {
         function test_history_confirm_restores_focus_data() {
             return [{tag: "idle", session: false}, {tag: "session", session: true}];
         }
+        // Clear history hides its own opener, so the sheet hands the keyboard to Main's one Escape and Back owner (its
+        // safe area, issue #902), never to the History screen itself: the idle tab is anchored to the safe area, not
+        // parented under it, so Escape from it reached nothing. Escape then goes back.
         function test_history_confirm_restores_focus(data) {
             var opened = openHistory(data.session);
-            var screen = item(data.session ? "sessionHistoryScreen" : "idleHistoryScreen");
             tap(item("confirmActionButton", opened.sheet));
             compare(callHistory.count, 0);
             verify(!opened.opener.visible);
             tryCompare(opened.sheet, "visible", false);
             tryVerify(function () {
-                return app.activeFocusItem !== null && Ui.Navigation.contains(screen, app.activeFocusItem)
-                    && Ui.Navigation.presented(app.activeFocusItem) && app.activeFocusItem.enabled;
-            }, 1000, "clearing history keeps focus inside the History screen");
+                return app.activeFocusItem !== null && app.activeFocusItem.objectName === "safeArea";
+            }, 1000, "clearing history hands the keyboard to Main's Back owner");
+            keyClick(Qt.Key_Escape);
+            if (data.session)
+                compare(app.sessionDestination, "", "Escape leaves the session's History");
+            else
+                compare(app.currentTab, 0, "Escape goes back to Listen");
         }
         function test_history_confirm_once_data() {
             return [{tag: "idle", session: false}, {tag: "session", session: true}];

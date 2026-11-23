@@ -646,6 +646,8 @@ Item {
             height: screen.sessionActive ? screen.statusLines * Math.ceil(statusMetrics.lineSpacing) : statusText.height
             Text {
                 id: statusText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: statusText.Accessible.focusable
                 objectName: "searchStatusLine"
                 width: parent.width
                 text: screen.sessionActive ? screen.statusLine : qsTr("Find strong signals across your frequency ranges")
@@ -663,6 +665,7 @@ Item {
                 readonly property bool navigationAllowed: Navigation.allows(statusText)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.name: statusSpeech.spoken
+                Accessible.focusable: navigationAllowed && visible
                 SpeechPacer {
                     id: statusSpeech
                     shown: statusText.navigationAllowed && statusText.visible
@@ -749,6 +752,8 @@ Item {
                     spacing: 6
                     Text {
                         id: searchFrequencyText
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: searchFrequencyText.Accessible.focusable
                         objectName: "searchFrequency"
                         width: parent.width
                         height: Math.ceil(frequencyMetrics.lineSpacing)
@@ -770,6 +775,7 @@ Item {
                         // being lifted over the covered panel (issue #828).
                         readonly property bool navigationAllowed: Navigation.allows(searchFrequencyText)
                         Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.focusable: navigationAllowed && visible
                         Accessible.name: !navigationAllowed || !visible ? "" : text
                     }
                     Item {
@@ -813,6 +819,8 @@ Item {
                         }
                         Text {
                             id: strengthText
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: strengthText.Accessible.focusable
                             objectName: "searchStrength"
                             // The cue's slot is kept for the whole visit, so the
                             // text does not move as a live level comes and goes.
@@ -834,6 +842,10 @@ Item {
                             Accessible.description: spoken.length > 0 ? screen.hit.range || "" : ""
                             readonly property bool navigationAllowed: Navigation.allows(strengthText)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             // The live level moves every tick (issue #782).
                             SpeechPacer {
                                 id: strengthSpeech
@@ -847,6 +859,8 @@ Item {
                     }
                     Text {
                         id: identificationText
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: identificationText.Accessible.focusable
                         objectName: "searchIdentification"
                         width: parent.width
                         height: Math.ceil(identificationMetrics.lineSpacing)
@@ -862,6 +876,10 @@ Item {
                         // short form would read the line twice.
                         readonly property bool navigationAllowed: Navigation.allows(identificationText)
                         Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                        // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                        // flags; unreachable, a plain pane.
+                        Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                        Accessible.focusable: navigationAllowed && visible && text.length > 0
                         Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : screen.identificationFull
                     }
                     Item {
@@ -869,6 +887,8 @@ Item {
                         height: 2 * Math.ceil(detailMetrics.lineSpacing)
                         Text {
                             id: searchDetailText
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: searchDetailText.Accessible.focusable
                             objectName: "searchDetail"
                             width: parent.width
                             // The hint belongs to a search that is running or paused;
@@ -896,6 +916,10 @@ Item {
                             Accessible.name: detailSpeech.spoken
                             readonly property bool navigationAllowed: Navigation.allows(searchDetailText)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             // A monitored call's talkgroup and source change with each call (issue #782).
                             SpeechPacer {
                                 id: detailSpeech
@@ -916,6 +940,8 @@ Item {
                         readonly property int more: screen.receiving ? Math.max(0, screen.knownNames.length - 2) : 0
                         Text {
                             id: savedNames
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: savedNames.Accessible.focusable
                             objectName: "searchSaved"
                             width: Math.min(implicitWidth, parent.width - (savedMore.visible ? savedMore.implicitWidth + 4 : 0))
                             height: parent.height
@@ -930,6 +956,10 @@ Item {
                             readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
                             readonly property bool navigationAllowed: Navigation.allows(savedNames)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : fullText
                         }
                         Text {
@@ -1034,6 +1064,8 @@ Item {
                 visible: screen.sessionActive && searchMessage.text.length > 0
                 Text {
                     id: searchMessage
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: searchMessage.Accessible.focusable
                     objectName: "searchMessage"
                     parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
                     width: parent.width
@@ -1099,9 +1131,10 @@ Item {
                     showCaret: !screen.editable
                     tapEnabled: !screen.editable
                     // Not a control while paused: the heading of the open ranges.
+                    // Either way TalkBack can move to it while it is in the tree
+                    // (DisclosureRow's focusable; a heading, see MicroLabel), and
+                    // as a heading it takes no Tab focus.
                     Accessible.role: screen.editable ? Accessible.Heading : Accessible.Button
-                    // A heading TalkBack can move to (see MicroLabel); it takes no Tab focus then.
-                    Accessible.focusable: screen.editable && rangesToggle.navigationAllowed && rangesToggle.visible
                     accessibleName: screen.editable ? qsTr("Search ranges, %1 enabled").arg(screen.enabledRanges) : screen.rangesExpanded ? qsTr("Hide search ranges") : qsTr("Show search ranges, %1 enabled").arg(screen.enabledRanges)
                     onTapped: screen.rangesExpanded = !screen.rangesExpanded
                 }
@@ -1264,6 +1297,8 @@ Item {
                             ReadableText { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 id: historyDetail
+                                // Issue #902: its reach for the keyboard (PressGate).
+                                readonly property bool inReach: historyDetail.Accessible.focusable
                                 width: parent.width
                                 objectName: "searchHistoryDetail"
                                 // Under its verdict, the site, access code,
@@ -1290,6 +1325,7 @@ Item {
                                 Accessible.role: Accessible.StaticText
                                 readonly property bool navigationAllowed: Navigation.allows(historyDetail)
                                 Accessible.ignored: !navigationAllowed || !visible
+                                Accessible.focusable: navigationAllowed && visible
                                 Accessible.name: !navigationAllowed || !visible ? "" : fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans

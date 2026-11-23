@@ -16,6 +16,8 @@ import "Util.js" as Util
 // receiver's frequency is decided.
 Item {
     id: rail
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: Navigation.allows(rail) && rail.visible
 
     property real tunedHz: 0
     // Full width of the window. One end-to-end drag moves twenty MHz, about
@@ -50,9 +52,9 @@ Item {
 
     implicitHeight: Math.max(48, Theme.fontSize(10) + 24)
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(rail) && enabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(rail) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Slider
-    Accessible.name: qsTr("Coarse tuning: %1 MHz").arg((displayHz / 1e6).toFixed(3))
+    Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Coarse tuning: %1 MHz").arg((displayHz / 1e6).toFixed(3))
     readonly property real value: displayHz / 1e6
     readonly property real minimumValue: Util.TUNER_LOW_HZ / 1e6
     readonly property real maximumValue: Util.TUNER_HIGH_HZ / 1e6
@@ -63,8 +65,10 @@ Item {
     Keys.onRightPressed: nudge(1e6)
     Keys.onLeftPressed: nudge(-1e6)
     FocusFrame {}
+    // A step a screen reader or an arrow key sends a hidden rail (Explore
+    // with no centre yet) retunes nothing.
     function nudge(delta) {
-        if (!enabled || !Navigation.allows(rail))
+        if (!enabled || !Navigation.allows(rail) || !rail.visible)
             return;
         beginDrag();
         pendingHz = Math.max(Util.TUNER_LOW_HZ, Math.min(Util.TUNER_HIGH_HZ, dragStartHz + delta));

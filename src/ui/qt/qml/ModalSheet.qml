@@ -62,19 +62,33 @@ Rectangle {
         visible = false;
         dismissed();
     }
+    // The opener while it is still shown and in reach, else the item that
+    // takes Escape and Back (issue #902, Navigation.keyOwner()): never a
+    // surface by itself, which may pass Escape to nothing (a tab Main anchors
+    // but does not parent, a layer's loaded screen).
     function restoreFocus(opener) {
         if (visible)
             return false;
-        var targets = [opener];
-        for (var surface = sheet.parent; surface; surface = surface.parent)
-            targets.push(surface);
-        if (Navigation.rootSurfaces.length)
-            targets.push(Navigation.rootSurfaces[Navigation.rootSurfaces.length - 1]);
-        for (var target of targets) {
+        // An opener that is gone may name what stands for it (a combo option
+        // its selector, `focusReturnTarget`).
+        var standIn = opener && opener.focusReturnTarget ? opener.focusReturnTarget : null;
+        for (var target of [opener, standIn]) {
             if (target && target !== sheet && Navigation.presented(target) && target.enabled && Navigation.allows(target)) {
                 target.forceActiveFocus();
                 return true;
             }
+        }
+        // The keyboard already on a control in reach (a sheet opened as this
+        // one closed has given its field the keyboard) stays where it is.
+        var window = sheet.Window.window;
+        var current = window ? window.activeFocusItem : null;
+        if (current && current !== window.contentItem && current !== sheet && !Navigation.contains(sheet, current) && current !== Navigation.backTarget
+                && Navigation.allows(current) && Navigation.presented(current))
+            return true;
+        var owner = Navigation.keyOwner();
+        if (owner && owner !== sheet && owner.visible && owner.enabled) {
+            owner.forceActiveFocus();
+            return true;
         }
         return false;
     }
@@ -124,6 +138,8 @@ Rectangle {
     }
     Keys.onEscapePressed: Navigation.back(sheet.Window.window)
     Keys.onBackPressed: Navigation.back(sheet.Window.window)
+    // It takes its own Escape and Back (Navigation.keyOwner()).
+    readonly property Item keyTarget: sheet
 
     // keyboardRectangle is in window coordinates. Mapping it avoids subtracting
     // the keyboard twice when Android has already resized the usable window.

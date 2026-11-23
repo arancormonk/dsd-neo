@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma Singleton
 import QtQuick
+import DsdNeo
 
 QtObject {
     id: navigation
@@ -52,6 +53,22 @@ QtObject {
             return contains(surface, item);
         });
     }
+    // Issue #902: the app's one Escape and Back owner, an item that always
+    // takes both and runs the app's Back (Main registers its safe area).
+    // Null where no app is loaded (a test registers its own).
+    property Item backTarget: null
+    // Where a control that turned unreachable hands its keyboard focus: an
+    // item that takes Escape and Back. The top modal's, else the top layer's,
+    // own handler when it declares one (`keyTarget`: a sheet is its own), else
+    // the app's backTarget. Never a surface by itself: a screen may pass
+    // Escape to nothing (the Spectrum's loaded screen; a tab Main anchors to
+    // its safe area but does not parent under it). Null with neither.
+    function keyOwner() {
+        var top = topModal || (layers.length ? layers[layers.length - 1] : null);
+        if (top && top.keyTarget)
+            return top.keyTarget;
+        return backTarget;
+    }
     // Space, Return and Enter (the keypad's too) act on the focused control
     // on the key's press, the way every control's Keys.onPressed asks here
     // with the item that has the keyboard (@p item). A held key's repeats act
@@ -78,6 +95,92 @@ QtObject {
     // the screen reader's click is the one action.
     property var heldActivationItem: null
     property int heldActivationKey: 0
+    // Issue #902: what the gate between the keyboard and the controls
+    // (PressGate) tells: a control that strayed (turned unreachable with the
+    // focus, or took it while unreachable) or lost the focus is handed on.
+    readonly property Connections pressGate: Connections {
+        target: PressGate
+        function onStrayed(item) {
+            navigation.strayed(item);
+        }
+        function onFocusLeft(item) {
+            navigation.focusDropped(item);
+        }
+    }
+    // Issue #902: a control that turns unreachable gives up the keyboard. Qt
+    // keeps an invisible item's focus, and its own key handling with it: a
+    // hidden check box still toggled on Space, a hidden combo opened on Down,
+    // a hidden field took typing. From the moment it turns unreachable the
+    // control takes no key at all (PressGate, ahead of its Keys handlers and
+    // its own handling), a key already queued included. An editor's word
+    // still composing is committed at once, before anything can publish the
+    // edit (another field taking the keyboard ends this one's edit,
+    // editingFinished, which a form saves on). The focus moves on once the
+    // change that hid the control has settled (Qt.callLater): an edit that
+    // ends inside it can change what hid it (a form that hides on a verdict
+    // reopens for a check), a binding loop. Active focus goes to an item that
+    // takes Escape and Back (keyOwner()), never to the window root or a
+    // screen, where they could reach nothing. Stored focus goes too, or a
+    // window that comes back would hand the focus to the hidden control; a
+    // window that is away and would hand it back to the control hands it to
+    // the same key owner when it returns, nothing made active meanwhile
+    // (PressGate.passStoredFocus()).
+    property var strays: []
+    function editsText(item) {
+        return !!item && item.inputMethodComposing !== undefined && item.readOnly !== true;
+    }
+    function strayed(item) {
+        if (editsText(item))
+            commitComposingOf(item);
+        strays = strays.concat([item]);
+        Qt.callLater(navigation.letGoStrays);
+    }
+    function letGoStrays() {
+        var items = strays;
+        strays = [];
+        for (var item of items)
+            letGo(item);
+    }
+    function letGo(item) {
+        if (!item || item.inReach)
+            return;
+        // Again here for a word composed since (none is let through a closed
+        // gate, so this finds nothing as a rule), whatever happened to the
+        // keyboard meanwhile; only the hand-off below depends on the control
+        // still holding the focus.
+        var edits = editsText(item);
+        if (edits)
+            commitComposingOf(item);
+        if (!item.focus)
+            return;
+        var active = item.activeFocus;
+        var owner = keyOwner();
+        if (owner && owner !== item && owner.visible && owner.enabled) {
+            if (active)
+                owner.forceActiveFocus();
+            else
+                PressGate.passStoredFocus(item, owner);
+        }
+        if (item.focus)
+            item.focus = false;
+        if (active && edits)
+            Qt.inputMethod.hide();
+    }
+    // Qt itself can drop a control's focus to the window root (the control or
+    // its panel disabled as it turns unreachable), where Escape and Back
+    // reach nothing; letGo() never runs then (the control no longer holds the
+    // focus). Handed on to the key owner, unless the focus moved to another
+    // control (it is not at the root) or the window is away.
+    function focusDropped(item) {
+        if (!item || (item.inReach && item.enabled))
+            return;
+        var window = item.Window.window;
+        if (!window || window.activeFocusItem !== window.contentItem)
+            return;
+        var owner = keyOwner();
+        if (owner && owner !== item && owner.visible && owner.enabled)
+            owner.forceActiveFocus();
+    }
     function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
             return false;
@@ -131,6 +234,12 @@ QtObject {
     function commitComposing(finishEditing) {
         if (typeof inputCommit !== "undefined" && inputCommit !== null)
             inputCommit.commitComposing(finishEditing === true);
+    }
+    // Issue #902: @p item's composing word, whether or not it still has the
+    // focus (a field hidden as its window left).
+    function commitComposingOf(item) {
+        if (typeof inputCommit !== "undefined" && inputCommit !== null)
+            inputCommit.commitComposingOf(item);
     }
     // The composing word is committed first (#831): a field that saves on
     // editingFinished would otherwise save what it held without it, when a

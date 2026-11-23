@@ -58,7 +58,7 @@ Item {
                 font.pixelSize: Theme.fontSize(14)
                 color: browser.stateIsProblem ? Theme.alert : Theme.textSubdued
                 wrapMode: Text.Wrap
-                Accessible.role: browser.stateIsProblem ? Accessible.AlertMessage : Accessible.StaticText
+                Accessible.role: !reachable ? Accessible.Pane : (browser.stateIsProblem ? Accessible.AlertMessage : Accessible.StaticText)
             }
             OutlineButton {
                 objectName: "fileBrowserRetry"
@@ -151,7 +151,7 @@ Item {
             // nothing of it; re-laid, it is a bare node offering nothing).
             Accessible.ignored: !navigationAllowed || !visible || !live
             function activate() {
-                if (live && Navigation.allows(entryRow))
+                if (live && Navigation.allows(entryRow) && entryRow.visible)
                     browser.choose(entry);
             }
             Keys.onPressed: function (event) {
@@ -163,6 +163,8 @@ Item {
             }
             Item {
                 id: entryNode
+                // Issue #902: its reach for the keyboard (PressGate).
+                property alias inReach: entryNode.reachable
                 objectName: "fileBrowserEntryNode"
                 // Sized by binding, not anchors: a row the view builds is measured at once.
                 width: entryRow.width

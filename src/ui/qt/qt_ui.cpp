@@ -41,6 +41,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
+#include "key_gate.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
 #include "location_feed.h"
@@ -308,6 +309,8 @@ static void
 register_qml_types() {
     // WP-D4: cancellation observes pointer, keyboard and shortcut input.
     qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+    // Issue #902: the one gate between input and controls that turn unreachable (key_gate.h).
+    qmlRegisterSingletonInstance("DsdNeo", 1, 0, "PressGate", dsd_qt::PressGate::instance());
     // #786: the roaming executor's enums (SiteRoaming.Following, …); its one instance is the siteRoaming property.
     qmlRegisterUncreatableType<dsd_qt::SiteRoaming>("DsdNeo", 1, 0, "SiteRoaming",
                                                     QStringLiteral("siteRoaming is the app's one roaming executor"));

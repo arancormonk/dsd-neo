@@ -5,7 +5,7 @@ Flickable {
     id: viewport
     property string accessibleName: qsTr("Scrollable content")
     Accessible.role: Accessible.Pane
-    Accessible.name: accessibleName
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
     Accessible.focusable: false
     readonly property bool navigationAllowed: Navigation.allows(viewport)
     Accessible.ignored: !navigationAllowed || !visible

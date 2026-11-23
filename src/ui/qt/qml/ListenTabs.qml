@@ -107,6 +107,8 @@ Rectangle {
 
             Item {
                 id: tab
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(tab) && tab.visible
 
                 required property int index
                 required property var modelData
@@ -141,7 +143,7 @@ Rectangle {
                 // Issue #646: a radio button, checked while it is the current
                 // tab (see BottomNav for why not a page tab).
                 Accessible.role: Accessible.RadioButton
-                Accessible.name: modelData.label
+                Accessible.name: !navigationAllowed || !visible ? "" : modelData.label
                 Accessible.checkable: true
                 Accessible.checked: active
                 Accessible.selected: active

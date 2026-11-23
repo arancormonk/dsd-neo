@@ -84,6 +84,7 @@ target_sources(
         pending_export.cpp
         signal_search_export.cpp
         signal_search_model.cpp
+        key_gate.cpp # Issue #902
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
         map_tile_cache.cpp # Issue #800

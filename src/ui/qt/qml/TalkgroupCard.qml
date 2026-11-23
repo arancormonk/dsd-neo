@@ -98,7 +98,7 @@ Rectangle {
                 anchors.rightMargin: 12
                 checked: card.listening
                 accessibleName: Util.fill(qsTr("Listen to %1, talkgroup %2"), [card.name, card.idText])
-                Accessible.description: [card.rank.join(" · "), tagsLine.visible ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
+                accessibleDescription: [card.rank.join(" · "), tagsLine.visible ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
                     return part.length > 0;
                 }).join(", ")
                 onToggled: card.clicked()

@@ -6092,6 +6092,8 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_radio_reference_model
         ui/test_ui_qt_radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/key_gate.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
@@ -6505,6 +6507,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+            # Issue #902: the hidden or covered controls' key gate.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/key_gate.cpp
             # Issue #672: the Monitor's avoid sheet lists the real list model, which a case fills by key.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
@@ -6701,7 +6705,10 @@ if(DSD_ENABLE_QT_UI)
         # Issue #782: accessibility event churn. Its own directory and run,
         # because accessibility has to be on before the first engine exists
         # (DSD_QML_TEST_ACCESSIBILITY=1, see qml_test_context.h), and the other
-        # QML runs must not measure or pay for it.
+        # QML runs must not measure or pay for it. Issue #902: on the Basic
+        # controls style the app pins (ui_apply_style()), so a host's style
+        # (one whose popups animate their close) cannot change what an open
+        # list does under a sheet.
         add_test(
             NAME UI_QT_QML_A11Y_CHURN
             COMMAND
@@ -6713,7 +6720,7 @@ if(DSD_ENABLE_QT_UI)
             PROPERTIES
                 LABELS qml
                 ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1;QT_QUICK_CONTROLS_STYLE=Basic"
         )
         # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
         # an index naming it and a file the folder lacks, as the APK staging writes one.
@@ -26793,6 +26800,8 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/key_gate.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp

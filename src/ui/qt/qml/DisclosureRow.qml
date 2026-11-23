@@ -10,6 +10,8 @@ import QtQuick
 // panel.
 Item {
     id: row
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: row.Accessible.focusable
 
     property string title: ""
     property string subtitle: ""
@@ -42,17 +44,20 @@ Item {
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + verticalPadding)
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(row) && tapEnabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(row) && visible && tapEnabled) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
-    Accessible.description: accessibleDescription
+    // Named, described and a stop only while in the tree, from the gate
+    // itself (see OutlineButton).
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
+    Accessible.description: !navigationAllowed || !visible ? "" : accessibleDescription
+    Accessible.focusable: navigationAllowed && visible
     Accessible.checkable: expandable
     Accessible.checked: expandable && expanded
     readonly property bool navigationAllowed: Navigation.allows(row)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !tapEnabled || !Navigation.allows(row))
+        if (!enabled || !tapEnabled || !Navigation.allows(row) || !row.visible)
             return;
         // Issue #718: a row opened mid-word keeps the word; focus stays put.
         Navigation.commitComposing(false);

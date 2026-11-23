@@ -41,7 +41,7 @@ Item {
     // already reads are left out.
     readonly property string emergencyWords: emergency ? Util.shownText(emergencyTag) : ""
     function activate() {
-        if (interactive && enabled && Navigation.allows(row))
+        if (interactive && enabled && Navigation.allows(row) && row.visible)
             activated();
     }
     Keys.onPressed: function (event) {
@@ -66,11 +66,13 @@ Item {
 
     Item {
         id: rowNode
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: Navigation.allows(rowNode) && rowNode.visible
         // Sized by binding, not anchors: a row the view builds is measured at
         // once (anchored, a list that put its place back found rows 58 high).
         width: row.width
         height: row.height
-        Accessible.role: row.interactive ? Accessible.Button : Accessible.StaticText
+        Accessible.role: !row.reachable ? Accessible.Pane : (row.interactive ? Accessible.Button : Accessible.StaticText)
         Accessible.name: !row.reachable ? "" : row.hasRecording ? qsTr("%1, has a recording").arg(row.accessibleName) : row.accessibleName
         Accessible.description: !row.reachable ? "" : [row.metaText,
             row.emergencyWords.length > 0 && row.metaText.indexOf(row.emergencyWords) < 0 ? row.emergencyWords : "",

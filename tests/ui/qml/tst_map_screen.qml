@@ -695,6 +695,23 @@ Item {
             compare(c.labelObstacles[1].height, status.height);
         }
 
+        // Issue #902 B9: in List view the attribution chip hides; its name, role and description all go with it.
+        function test_hidden_attribution_describes_nothing() {
+            screen.mapShown = true;
+            screen.tilesEnabled = true;
+            var attribution = item("mapAttribution");
+            tryVerify(function () { return attribution.visible; });
+            screen.mapShown = false;
+            try {
+                verify(!attribution.visible, "List view hides it");
+                compare(attribution.Accessible.name, "", "nameless");
+                compare(attribution.Accessible.description, "", "and describes nothing");
+                compare(attribution.Accessible.role, Accessible.Pane, "a plain pane");
+            } finally {
+                screen.mapShown = true;
+            }
+        }
+
         // ---- PR2 review round 1 ----
 
         // A modal over the map owns navigation: a drag or the wheel on the sheet's backdrop moves nothing under it.

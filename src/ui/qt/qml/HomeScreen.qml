@@ -508,9 +508,13 @@ Item {
         systemsFocusOwed = true;
         systemsFocusTimer.restart();
     }
+    // Where the keyboard is when it has no place of its own here: nowhere,
+    // Home itself or a part of it, or (issue #902) the app's Back owner, the
+    // fallback a closing sheet or a control that hid hands it to
+    // (Navigation.keyOwner()); the hand-on still owed goes on from there.
     function focusLost(item) {
         return !item || item === scrollBody || item === content || item === listenSystemsSection
-            || Navigation.contains(item, screen) || !Navigation.presented(item);
+            || item === Navigation.backTarget || Navigation.contains(item, screen) || !Navigation.presented(item);
     }
     function settleSystemsFocus() {
         // Under a sheet it waits: the sheet hands the focus back as it closes, and this checks again then.
@@ -640,6 +644,8 @@ Item {
 
         Rectangle {
             id: dongleStatusPill
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: Navigation.allows(dongleStatusPill) && dongleStatusPill.visible
 
             objectName: "dongleStatusPill"
             // Only where the host brokers USB: the desktop's header holds the title alone.
@@ -647,7 +653,7 @@ Item {
             readonly property bool actionable: deviceStatus.canAct && !screen.managementSheetOpen
             readonly property bool navigationAllowed: Navigation.allows(dongleStatusPill)
             function activate() {
-                if (!actionable || !Navigation.allows(dongleStatusPill))
+                if (!actionable || !Navigation.allows(dongleStatusPill) || !dongleStatusPill.visible)
                     return;
                 decoderHost.requestLocalDeviceAccess();
             }
@@ -656,9 +662,9 @@ Item {
             // as on any control. The role and activate() say whether it acts.
             // Held while it has the focus (see OutlineButton).
             activeFocusOnTab: (visible && navigationAllowed) || activeFocus
-            Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
-            Accessible.name: deviceStatus.accessibleName
-            Accessible.description: deviceStatus.detailText
+            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : (deviceStatus.canAct ? Accessible.Button : Accessible.StaticText)
+            Accessible.name: !navigationAllowed || !visible ? "" : deviceStatus.accessibleName
+            Accessible.description: !navigationAllowed || !visible ? "" : deviceStatus.detailText
             // Issue #782: focusable only while in the tree (see OutlineButton).
             Accessible.focusable: navigationAllowed && visible
             Accessible.ignored: !navigationAllowed || !visible
@@ -1267,7 +1273,7 @@ Item {
                                 topPadding: 6
                                 wrapMode: Text.Wrap
                                 text: entry.section
-                                Accessible.name: entry.held || !shown ? "" : text
+                                Accessible.name: !navigationAllowed || !visible || !shown || entry.held ? "" : text
                                 Accessible.focusable: navigationAllowed && visible && shown && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                             }
@@ -1322,8 +1328,7 @@ Item {
                                 ReadableText {
                                     width: parent.width
                                     objectName: "savedSystemTitle"
-                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
+                                    reachable: navigationAllowed && visible && !entry.held
                                     text: card.name
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
@@ -1335,8 +1340,7 @@ Item {
                                 ReadableText {
                                     width: parent.width
                                     objectName: "savedSystemSource"
-                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
+                                    reachable: navigationAllowed && visible && !entry.held
                                     text: Util.systemMeta(entry)
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
@@ -1357,8 +1361,7 @@ Item {
                                         objectName: "savedSystemReceiver"
                                         readonly property bool shown: entry.receiverLabel.length > 0
                                         opacity: shown ? 1 : 0
-                                        Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
-                                        Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                        reachable: navigationAllowed && visible && shown && !entry.held
                                         text: entry.receiverLabel
                                         wrapMode: Text.Wrap
                                         font.family: Theme.mono
@@ -1377,8 +1380,7 @@ Item {
                                         width: parent.width
                                         objectName: "savedSystemPlace"
                                         readonly property bool shown: card.placeText.length > 0
-                                        Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
-                                        Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                        reachable: navigationAllowed && visible && shown && !entry.held
                                         opacity: shown ? 1 : 0
                                         text: card.placeText
                                         font.family: Theme.sans
@@ -1392,8 +1394,7 @@ Item {
                                     width: parent.width
                                     // heardTick forces the minute-by-minute refresh.
                                     objectName: "savedSystemMeta"
-                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
+                                    reachable: navigationAllowed && visible && !entry.held
                                     text: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(13)
@@ -1406,8 +1407,7 @@ Item {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"
                                 readonly property bool shown: card.refreshHint
-                                Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
-                                Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                reachable: navigationAllowed && visible && shown && !entry.held
                                 x: Theme.cardPadding
                                 y: card.hintTop
                                 width: parent.width - 2 * Theme.cardPadding
@@ -1441,6 +1441,7 @@ Item {
                                 id: play
                                 readonly property bool shown: card.playShown
                                 accessibleName: entry.held || !shown ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                Accessible.focusable: navigationAllowed && visible && shown && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                 objectName: "savedSystemPlay"
                                 visible: shown || entry.positional
@@ -1459,6 +1460,7 @@ Item {
                                 objectName: "savedSystemManageButton"
                                 icon: "more"
                                 accessibleName: entry.held ? "" : qsTr("More options for %1").arg(card.name)
+                                Accessible.focusable: navigationAllowed && visible && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || entry.held
                                 anchors.right: parent.right
                                 anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
@@ -1613,6 +1615,8 @@ Item {
                     // read nothing on their own, so nothing is said twice.
                     Item {
                         id: exploreFace
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: Navigation.allows(exploreFace) && exploreFace.visible
 
                         objectName: "exploreStart"
                         width: exploreMore.x
@@ -1631,7 +1635,7 @@ Item {
                         // Nothing remembered means nothing to start from, so the first
                         // press asks rather than guessing at a radio and a frequency.
                         function activate() {
-                            if (!enabled || !Navigation.allows(exploreFace))
+                            if (!enabled || !Navigation.allows(exploreFace) || !exploreFace.visible)
                                 return;
                             if (exploreCard.configured)
                                 screen.explore();

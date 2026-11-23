@@ -217,7 +217,7 @@ Item {
             compare(draftSpy.signalArguments[0][0], "33", "the composing word was committed as an edit");
             compare(modeSpy.count, 1);
             compare(JSON.stringify(order), JSON.stringify(["draft 33", "mode 1"]), "the word was committed before the choice");
-            verify(!field().input.activeFocus, "the hidden field gave up the focus");
+            tryVerify(function () { return !field().input.activeFocus; }, 1000, "the hidden field gave up the focus");
             compare(prefs.gainDb, 0, "a commit after Automatic writes nothing");
             compare(shownMode(), "Automatic");
             choose("Set");
@@ -229,10 +229,10 @@ Item {
         function test_settingsAutomaticLeavesNoHiddenField() {
             type("2");
             choose("Automatic");
-            verify(!field().input.activeFocus);
             keyClick("4");
             keyClick(Qt.Key_Return);
             compare(prefs.gainDb, 0);
+            tryVerify(function () { return !field().input.activeFocus; }, 1000, "the hidden field gave up the focus");
             compare(shownMode(), "Automatic");
             prefs.gainDb = 17;
             compare(shownMode(), "Set", "applied at once");

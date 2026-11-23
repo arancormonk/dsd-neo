@@ -16,23 +16,35 @@ import QtQuick
 // focusable so TalkBack's swipes reach it.
 Text {
     id: readable
+    // Issue #902: its reach for the keyboard (PressGate).
+    property alias inReach: readable.reachable
     // Its words can be a typed, imported or received name (issue #802):
     // drawn as written, never as markup. A styled text sets its own format.
     textFormat: Text.PlainText
     // A screen or sheet title, which TalkBack can move between as a heading.
     property bool heading: false
-    Accessible.role: heading ? Accessible.Heading : Accessible.StaticText
+    // Whether a screen reader reaches it: its navigation gate and its
+    // effective visibility, and whatever a caller adds (a line kept but not
+    // shown, a held row's). Its name, role, focusability and place in the
+    // tree all follow this one predicate (issue #902): Qt keeps a static
+    // text focusable, with SetFocus, whatever its flags, so an unreachable
+    // one is a plain pane.
+    property bool reachable: navigationAllowed && visible
+    Accessible.role: !reachable ? Accessible.Pane : (heading ? Accessible.Heading : Accessible.StaticText)
     // Qt counts only StaticText and EditableText as text roles that are
     // focusable by themselves: a heading or an alert line is not unless told
     // (see MicroLabel), and TalkBack's swipes skip a text node that is not. So
     // it is told, for every role, only while in the tree (see OutlineButton).
-    Accessible.focusable: navigationAllowed && visible
+    Accessible.focusable: reachable
+    // Issue #902: a screen reader's SetFocus gives a reading the keyboard; when
+    // it turns unreachable (hidden, covered, a caller's own gate) it hands it
+    // back to the screen on top.
     readonly property bool navigationAllowed: Navigation.allows(readable)
     // Gate first: see OutlineButton.
-    Accessible.ignored: !navigationAllowed || !visible
+    Accessible.ignored: !reachable
     // From the gate itself, never from Accessible.ignored read back: a list
     // view sets that flag on each delegate it lays out, with no change signal,
     // so a row made under a sheet came back into the tree with the empty name
     // it had then and kept it (#830).
-    Accessible.name: navigationAllowed && visible ? text : ""
+    Accessible.name: reachable ? text : ""
 }

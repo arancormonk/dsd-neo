@@ -359,10 +359,11 @@ Item {
             verify(testContext.composeText("3"), "the field holds the word as composing text");
             tc.wizard.advancedOpen = false;
             var field = control("systemGainField");
-            verify(!field.input.activeFocus, "the hidden field gave up the focus");
             compare(field.input.preeditText, "");
             compare(field.text, "33");
             compare(tc.wizard.gainText, "33");
+            // The field's own release hands the keyboard on once the fold has settled (issue #902).
+            tryVerify(function () { return !field.input.activeFocus; }, 1000, "the hidden field gave up the focus");
             tc.wizard.step = 2;
             compare(save().gainDb, 33);
         }

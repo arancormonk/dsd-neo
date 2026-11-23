@@ -534,12 +534,15 @@ Item {
                 // focused; the line's own place never moves with them.
                 Row {
                     id: statusLine
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: statusLine.Accessible.focusable
                     objectName: "spectrumStatusLine"
 
-                    Accessible.role: Accessible.StaticText
+                    Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
                     readonly property bool navigationAllowed: Navigation.allows(statusLine)
                     Accessible.ignored: !navigationAllowed || !visible
                     Accessible.name: statusSpeech.spoken
+                    Accessible.focusable: navigationAllowed && visible
                     SpeechPacer {
                         id: statusSpeech
                         group: statusLine
@@ -649,6 +652,8 @@ Item {
                 // "SYS" cut from its value is worse than no "SYS".
                 Text {
                     id: identityLabel
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: identityLabel.Accessible.focusable
 
                     readonly property bool live: metrics.syncedHere && metrics.carrierIdentityLive
                     // Under NO SYNC, or a sync hold that still names another
@@ -675,8 +680,9 @@ Item {
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 1.0
                     color: live ? Theme.textPrimary : Theme.textSubdued
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: metrics.carrierIdentityText.length === 0 ? "" : live ? qsTr("System identity: %1").arg(metrics.carrierIdentityText) : qsTr("System identity, last heard: %1").arg(metrics.carrierIdentityText)
+                    Accessible.role: !Navigation.allows(identityLabel) || !visible || metrics.carrierIdentityText.length === 0 ? Accessible.Pane : Accessible.StaticText
+                    Accessible.name: !Navigation.allows(identityLabel) || !visible || metrics.carrierIdentityText.length === 0 ? "" : live ? qsTr("System identity: %1").arg(metrics.carrierIdentityText) : qsTr("System identity, last heard: %1").arg(metrics.carrierIdentityText)
+                    Accessible.focusable: Navigation.allows(identityLabel) && visible && metrics.carrierIdentityText.length !== 0
                     // Out of the tree with nothing to say (issue #782): a nameless line
                     // was a swipe stop that read nothing. And behind the top layer, as
                     // every reading.
@@ -962,14 +968,17 @@ Item {
 
                         Item {
                             id: spectrumStepDownAction
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(spectrumStepDownAction) && spectrumStepDownAction.visible
                             objectName: "spectrumStepDown"
                             // Held while it has the focus (see OutlineButton).
-                            activeFocusOnTab: (Navigation.allows(spectrumStepDownAction) && spectrum.hasData) || activeFocus
+                            activeFocusOnTab: (Navigation.allows(spectrumStepDownAction) && visible && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             // Gate first: see OutlineButton. Out of the tree under a sheet.
                             readonly property bool navigationAllowed: Navigation.allows(spectrumStepDownAction)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: qsTr("Tune down")
+                            Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Tune down")
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
                                 if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -980,7 +989,7 @@ Item {
                             }
                             FocusFrame {}
                             function activate() {
-                                if (spectrum.hasData && Navigation.allows(spectrumStepDownAction)) {
+                                if (spectrum.hasData && Navigation.allows(spectrumStepDownAction) && spectrumStepDownAction.visible) {
                                     screen.stopSweep();
                                     screen.stepBy(-1);
                                 }
@@ -1005,16 +1014,19 @@ Item {
 
                         Item {
                             id: spectrumSweepToggleAction
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(spectrumSweepToggleAction) && spectrumSweepToggleAction.visible
                             objectName: "spectrumSweepToggle"
                             // Held while it has the focus (see OutlineButton).
-                            activeFocusOnTab: (Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData) || activeFocus
+                            activeFocusOnTab: (Navigation.allows(spectrumSweepToggleAction) && visible && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             // Gate first: see OutlineButton. Out of the tree under a sheet.
                             readonly property bool navigationAllowed: Navigation.allows(spectrumSweepToggleAction)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: qsTr("Start or stop frequency sweep")
+                            Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Start or stop frequency sweep")
+                            Accessible.focusable: navigationAllowed && visible
                             // The step it sweeps by, which its label shows.
-                            Accessible.description: sweepLabel.text
+                            Accessible.description: !navigationAllowed || !visible ? "" : sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
                                 if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -1025,7 +1037,7 @@ Item {
                             }
                             FocusFrame {}
                             function activate() {
-                                if (spectrum.hasData && Navigation.allows(spectrumSweepToggleAction)) {
+                                if (spectrum.hasData && Navigation.allows(spectrumSweepToggleAction) && spectrumSweepToggleAction.visible) {
                                     screen.toggleSweep();
                                 }
                             }
@@ -1095,14 +1107,17 @@ Item {
 
                         Item {
                             id: spectrumStepUpAction
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(spectrumStepUpAction) && spectrumStepUpAction.visible
                             objectName: "spectrumStepUp"
                             // Held while it has the focus (see OutlineButton).
-                            activeFocusOnTab: (Navigation.allows(spectrumStepUpAction) && spectrum.hasData) || activeFocus
+                            activeFocusOnTab: (Navigation.allows(spectrumStepUpAction) && visible && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             // Gate first: see OutlineButton. Out of the tree under a sheet.
                             readonly property bool navigationAllowed: Navigation.allows(spectrumStepUpAction)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: qsTr("Tune up")
+                            Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Tune up")
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
                                 if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -1113,7 +1128,7 @@ Item {
                             }
                             FocusFrame {}
                             function activate() {
-                                if (spectrum.hasData && Navigation.allows(spectrumStepUpAction)) {
+                                if (spectrum.hasData && Navigation.allows(spectrumStepUpAction) && spectrumStepUpAction.visible) {
                                     screen.stopSweep();
                                     screen.stepBy(1);
                                 }
@@ -1154,14 +1169,17 @@ Item {
 
                         Item {
                             id: spectrumSignalDownAction
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(spectrumSignalDownAction) && spectrumSignalDownAction.visible
                             objectName: "spectrumSignalDown"
                             // Held while it has the focus (see OutlineButton).
-                            activeFocusOnTab: (Navigation.allows(spectrumSignalDownAction) && spectrum.hasData) || activeFocus
+                            activeFocusOnTab: (Navigation.allows(spectrumSignalDownAction) && visible && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             // Gate first: see OutlineButton. Out of the tree under a sheet.
                             readonly property bool navigationAllowed: Navigation.allows(spectrumSignalDownAction)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: qsTr("Previous signal")
+                            Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Previous signal")
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
                                 if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -1172,7 +1190,7 @@ Item {
                             }
                             FocusFrame {}
                             function activate() {
-                                if (spectrum.hasData && Navigation.allows(spectrumSignalDownAction)) {
+                                if (spectrum.hasData && Navigation.allows(spectrumSignalDownAction) && spectrumSignalDownAction.visible) {
                                     screen.stopSweep();
                                     screen.hopToSignal(-1);
                                 }
@@ -1209,14 +1227,17 @@ Item {
 
                         Item {
                             id: spectrumSignalUpAction
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(spectrumSignalUpAction) && spectrumSignalUpAction.visible
                             objectName: "spectrumSignalUp"
                             // Held while it has the focus (see OutlineButton).
-                            activeFocusOnTab: (Navigation.allows(spectrumSignalUpAction) && spectrum.hasData) || activeFocus
+                            activeFocusOnTab: (Navigation.allows(spectrumSignalUpAction) && visible && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             // Gate first: see OutlineButton. Out of the tree under a sheet.
                             readonly property bool navigationAllowed: Navigation.allows(spectrumSignalUpAction)
                             Accessible.ignored: !navigationAllowed || !visible
-                            Accessible.name: qsTr("Next signal")
+                            Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Next signal")
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.onPressAction: activate()
                             Keys.onPressed: function (event) {
                                 if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -1227,7 +1248,7 @@ Item {
                             }
                             FocusFrame {}
                             function activate() {
-                                if (spectrum.hasData && Navigation.allows(spectrumSignalUpAction)) {
+                                if (spectrum.hasData && Navigation.allows(spectrumSignalUpAction) && spectrumSignalUpAction.visible) {
                                     screen.stopSweep();
                                     screen.hopToSignal(1);
                                 }

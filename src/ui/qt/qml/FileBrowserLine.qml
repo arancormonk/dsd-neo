@@ -13,5 +13,5 @@ ReadableText {
     font.pixelSize: Theme.fontSize(problem ? 13 : 12)
     color: problem ? Theme.alert : Theme.textSubdued
     wrapMode: Text.Wrap
-    Accessible.role: problem ? Accessible.AlertMessage : Accessible.StaticText
+    Accessible.role: !reachable ? Accessible.Pane : (problem ? Accessible.AlertMessage : Accessible.StaticText)
 }

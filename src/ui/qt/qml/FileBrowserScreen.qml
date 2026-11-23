@@ -97,6 +97,8 @@ Item {
     visible: shown
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
+    // As a modal, it takes its own Escape and Back (Navigation.keyOwner()).
+    readonly property Item keyTarget: screen
 
     onRequestChanged: sync()
     Component.onCompleted: sync()
@@ -199,19 +201,27 @@ Item {
         var top = Navigation.topModal;
         if (top && under.indexOf(top) < 0)
             return;
-        var targets = [opener];
-        if (top)
-            targets.push(top.navigationSurface || top);
-        else if (Navigation.layers.length)
-            targets.push(Navigation.layers[Navigation.layers.length - 1].surface);
-        if (Navigation.rootSurfaces.length)
-            targets.push(Navigation.rootSurfaces[Navigation.rootSurfaces.length - 1]);
-        for (var target of targets) {
+        // An opener that is gone may name what stands for it (a combo option
+        // its selector, `focusReturnTarget`).
+        var standIn = opener && opener.focusReturnTarget ? opener.focusReturnTarget : null;
+        for (var target of [opener, standIn]) {
             if (target && !Navigation.contains(screen, target) && Navigation.allows(target) && Navigation.presented(target) && target.enabled) {
                 target.forceActiveFocus();
                 return;
             }
         }
+        // The keyboard already on a control in reach (a sheet opened as the
+        // browser closed has given its field the keyboard) stays where it is.
+        var window = screen.Window.window;
+        var current = window ? window.activeFocusItem : null;
+        if (current && current !== window.contentItem && !Navigation.contains(screen, current) && current !== Navigation.backTarget && Navigation.allows(current)
+                && Navigation.presented(current))
+            return;
+        // Else the item that takes Escape and Back (issue #902,
+        // Navigation.keyOwner()), never a surface by itself.
+        var owner = Navigation.keyOwner();
+        if (owner && !Navigation.contains(screen, owner) && owner.visible && owner.enabled)
+            owner.forceActiveFocus();
     }
     // One level up: a folder to its parent, a location to the list of
     // locations, which ends the request.
@@ -1064,6 +1074,8 @@ Item {
                         }
                         Item {
                             id: crumb
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(crumb) && crumb.visible
                             objectName: "fileBrowserCrumb" + crumbStep.index
                             // No crumb is wider than the line: a longer name is cut
                             // in its middle on screen, and read whole.
@@ -1076,13 +1088,14 @@ Item {
                             width: Math.min(room, crumbLabel.implicitWidth + leading + trailing)
                             height: crumbList.height
                             readonly property bool navigationAllowed: Navigation.allows(crumb)
-                            activeFocusOnTab: (navigationAllowed && !crumbStep.current) || activeFocus
-                            Accessible.role: crumbStep.current ? Accessible.StaticText : Accessible.Button
-                            Accessible.name: !navigationAllowed ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
+                            activeFocusOnTab: (navigationAllowed && visible && !crumbStep.current) || activeFocus
+                            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : (crumbStep.current ? Accessible.StaticText : Accessible.Button)
+                            Accessible.name: !navigationAllowed || !visible ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.ignored: !navigationAllowed || !visible
                             Accessible.onPressAction: activate()
                             function activate() {
-                                if (!crumbStep.current && Navigation.allows(crumb))
+                                if (!crumbStep.current && Navigation.allows(crumb) && crumb.visible)
                                     screen.openFolder(d.root, crumbStep.modelData.path);
                             }
                             Keys.onPressed: function (event) {

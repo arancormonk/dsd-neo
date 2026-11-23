@@ -41,13 +41,22 @@ Column {
 
         TextInput {
             id: field
+            // Issue #902: its reach for the keyboard (PressGate).
+            property alias inReach: field.reachable
 
             width: Math.max(48, parent.width - frequencyUnit.implicitWidth - 8)
             height: Math.max(Theme.minimumTouchSize, implicitHeight)
             verticalAlignment: TextInput.AlignVCenter
             clip: true
-            Accessible.role: Accessible.EditableText
-            Accessible.name: root.accessibleName
+            // Issue #902: covered or hidden, a plain pane with no Tab stop, so its
+            // accessible node offers no SetFocus (see PlexTextField). Held while
+            // it has the focus (see OutlineButton).
+            activeFocusOnTab: (navigationAllowed && visible) || activeFocus
+            Accessible.role: navigationAllowed && visible ? Accessible.EditableText : Accessible.Pane
+            // Issue #902: hidden or covered, it keeps no focus and takes no key (PressGate).
+            readonly property bool reachable: navigationAllowed && visible
+            Accessible.name: !navigationAllowed || !visible ? "" : root.accessibleName
+            Accessible.focusable: navigationAllowed && visible
             readonly property bool navigationAllowed: Navigation.allows(root)
             Accessible.ignored: !navigationAllowed || !visible
             font.family: Theme.mono

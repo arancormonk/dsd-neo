@@ -60,6 +60,12 @@ Item {
             item.failure = Qt.binding(function () { return root.hostFailure; });
         }
     }
+    // The app's one Escape and Back owner, as Main registers its safe area (Navigation.backTarget).
+    Item {
+        id: appBack
+        property int escapes: 0
+        Keys.onEscapePressed: escapes++
+    }
     SignalSpy { id: saved; target: loader.item; signalName: "saveDetection" }
     SignalSpy { id: back; target: loader.item; signalName: "backRequested" }
     SignalSpy { id: closed; target: loader.item; signalName: "closed" }
@@ -94,6 +100,10 @@ Item {
         function cleanup() {
             // Issue #826: no export, result line or hidden screen outlives its case, even one that failed part way.
             loader.item.visible = true;
+            Ui.Navigation.rootSurfaces = [];
+            // A case that sent the window away brings it back, even one that failed part way.
+            testContext.sendWindowFocus(loader.item, true);
+            Ui.Navigation.backTarget = null;
             var exportPicker = findChild(loader.item, "searchExportPicker");
             if (exportPicker && exportPicker.visible)
                 exportPicker.cancel();
@@ -121,6 +131,8 @@ Item {
         }
         function init() {
             verify(loader.item !== null);
+            Ui.Navigation.backTarget = appBack;
+            appBack.escapes = 0;
             loader.item.sessionActive = true;
             model.actions = [];
             model.lifted = [];
@@ -597,6 +609,53 @@ Item {
             findChild(loader.item, "searchStartPause").clicked();
             compare(model.arms, before + 1);
         }
+        // Issue #902: the Hold button has the keyboard when the detection ends and the button hides. A key queued in
+        // the same turn as the hide does nothing (no Back, no Hold); then the keyboard goes to the app's Back owner
+        // (Main's safe area), never the window root, so Escape still reaches the app's Back.
+        function test_escape_after_the_hold_button_hides() {
+            var screen = loader.item;
+            Ui.Navigation.rootSurfaces = [screen];
+            var hold = findChild(screen, "searchHold");
+            verify(hold.visible, "a detection is received");
+            hold.forceActiveFocus();
+            verify(hold.activeFocus);
+            back.clear();
+            var actions = model.actions.length;
+            model.status = {phase: 1, session: "17", owned: true, pass: 2, range: 0, rangeName: "Local UHF", hit: {}};
+            verify(!hold.visible, "the detection ended");
+            verify(hold.activeFocus, "the focus has not moved on yet");
+            for (var key of [Qt.Key_Escape, Qt.Key_Space]) {
+                testContext.sendKey(hold, key, 0, true, false);
+                testContext.sendKey(hold, key, 0, false, false);
+            }
+            compare(back.count, 0, "the queued Escape did nothing");
+            compare(model.actions.length, actions, "the queued Space held nothing");
+            tryVerify(function () { return !hold.activeFocus && !hold.focus; }, 1000, "the hidden Hold gives the keyboard up");
+            verify(appBack.activeFocus, "the app's Back owner has the keyboard");
+            keyClick(Qt.Key_Escape);
+            compare(appBack.escapes, 1, "Escape reaches the app's Back");
+        }
+        // Issue #902: the same with the window away as the detection ends: the Hold button holds only the window's
+        // stored focus then, which it gives to the app's Back owner without making anything active, so the window
+        // that comes back hands the keyboard to it, not to the window root, and Escape still reaches the app's Back.
+        function test_escape_after_the_hold_button_hides_while_away() {
+            var screen = loader.item;
+            Ui.Navigation.rootSurfaces = [screen];
+            var hold = findChild(screen, "searchHold");
+            verify(hold.visible, "a detection is received");
+            hold.forceActiveFocus();
+            testContext.sendWindowFocus(hold, false);
+            verify(hold.focus && !hold.activeFocus, "away: the Hold button holds the stored focus");
+            back.clear();
+            model.status = {phase: 1, session: "17", owned: true, pass: 2, range: 0, rangeName: "Local UHF", hit: {}};
+            verify(!hold.visible, "the detection ended");
+            tryVerify(function () { return !hold.focus; }, 1000, "the hidden Hold lets the stored focus go");
+            verify(!appBack.activeFocus, "away: nothing is made active");
+            testContext.sendWindowFocus(hold, true);
+            verify(appBack.activeFocus, "back: the app's Back owner has the keyboard");
+            keyClick(Qt.Key_Escape);
+            compare(appBack.escapes, 1, "Escape reaches the app's Back");
+        }
         // Start and Resume must leave Main's failure binding in place: a refused
         // connection, USB access or configuration failure the host reports
         // afterwards has to reach this screen, which covers Home's banner.
@@ -769,6 +828,13 @@ Item {
             verify(ranges.visible, "a status update keeps it open");
             toggle.activate();
             verify(!ranges.visible);
+            // Issue #902: while a search runs the row is a button, a screen reader's stop, and takes its keys.
+            verify(toggle.Accessible.focusable, "searching, the button is a stop");
+            toggle.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            verify(ranges.visible, "Space on the focused row opens the ranges");
+            keyClick(Qt.Key_Space);
+            verify(!ranges.visible, "and closes them");
             // Paused: forced open, with the edit controls, and focus stays put.
             var pause = findChild(screen, "searchStartPause");
             pause.forceActiveFocus();
@@ -1944,6 +2010,27 @@ Item {
             compare(sheet.selectedId, "c");
             compare(findChild(sheet, "detectionRecordingsCount").text, "3 recordings");
             sheet.visible = false;
+            model.history = [];
+        }
+        // Issue #902: a row whose recording left the list (StableRows lets go
+        // of it, still drawn until the end of the turn) takes no key from that
+        // moment: Escape queued on it in the same turn dismisses nothing, and
+        // once the row is gone the sheet takes Escape.
+        function test_departed_recording_row_takes_no_key() {
+            var sheet = openRecordings([rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            var row = recordingRow("a");
+            row.forceActiveFocus();
+            verify(row.activeFocus);
+            recordings.setDetectionRecordings("17:40", [rec("b", 1700000200, 3000)]);
+            verify(!row.live && row.visible, "the row is let go of, not yet removed");
+            testContext.sendKey(row, Qt.Key_Escape, 0, true, false);
+            testContext.sendKey(row, Qt.Key_Escape, 0, false, false);
+            verify(sheet.visible, "a queued Escape on the departed row dismisses nothing");
+            tryVerify(function () { return findChildren(sheet, "detectionRecordingRow").length === 1; }, 1000, "the row goes");
+            tryVerify(function () { return Ui.Navigation.contains(sheet, sheet.Window.activeFocusItem); }, 1000,
+                      "the sheet keeps the keyboard");
+            keyClick(Qt.Key_Escape);
+            tryVerify(function () { return !sheet.visible; }, 1000, "then Escape dismisses the sheet");
             model.history = [];
         }
         // The last recording gone, the sheet closes and its playback stops.

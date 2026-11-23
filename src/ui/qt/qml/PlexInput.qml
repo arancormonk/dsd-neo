@@ -4,6 +4,8 @@ import QtQuick.Controls
 
 TextField {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    property alias inReach: control.reachable
     palette.window: Theme.bg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.panel
@@ -24,7 +26,15 @@ TextField {
     Accessible.ignored: !navigationAllowed || !visible
     FocusFrame {}
     property string label: placeholderText
-    Accessible.name: label
+    Accessible.name: !navigationAllowed || !visible ? "" : label
+    Accessible.focusable: navigationAllowed && visible
+    // Issue #902: covered or hidden, no Tab stop and no editable-text role,
+    // either of which keeps a SetFocus action on its accessible node (see
+    // PlexTextField). Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (navigationAllowed && visible) || activeFocus
+    Accessible.role: navigationAllowed && visible ? Accessible.EditableText : Accessible.Pane
+    // Issue #902: hidden or covered, it keeps no focus and takes no key (PressGate).
+    readonly property bool reachable: navigationAllowed && visible
     color: Theme.textPrimary
     leftPadding: 14
     rightPadding: 14

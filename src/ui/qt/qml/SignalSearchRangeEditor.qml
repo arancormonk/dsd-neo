@@ -109,7 +109,7 @@ ModalSheet {
             id: stepPreset
             objectName: "searchStepPreset"
             width: parent.width
-            Accessible.name: qsTr("Channel step preset")
+            accessibleName: qsTr("Channel step preset")
             model: ["Custom", "5 kHz", "6.25 kHz", "8⅓ kHz (25 kHz / 3)", "12.5 kHz", "25 kHz"]
             currentIndex: sheet.matchingStep(stepNumerator.text, stepDenominator.text)
             onActivated: function (index) {
@@ -129,7 +129,7 @@ ModalSheet {
         PlexComboBox {
             id: modulation
             width: parent.width
-            Accessible.name: qsTr("Analog modulation")
+            accessibleName: qsTr("Analog modulation")
             model: ["NFM", "AM"]
             onActivated: {
                 bandwidthField.text = currentIndex === 1 ? "6000" : "16000";
@@ -144,7 +144,7 @@ ModalSheet {
             id: digital
             width: parent.width
             enabled: modulation.currentIndex === 0
-            Accessible.name: qsTr("Digital identification profile")
+            accessibleName: qsTr("Digital identification profile")
             model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17"]
         }
         ReadableText {
@@ -166,11 +166,11 @@ ModalSheet {
         PlexCheckBox { id: minimumSwitch; text: qsTr("Also require a minimum RF level") }
         PlexTextField { id: minimumField; width: parent.width; visible: minimumSwitch.checked; label: qsTr("Minimum RF level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         ReadableText { heading: true; text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
-        PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
+        PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; accessibleName: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
         PlexTextField { id: marginField; width: parent.width; visible: squelch.currentIndex !== 0; label: qsTr("Squelch margin / quieting · dB"); inputMethodHints: Qt.ImhDigitsOnly }
         PlexTextField { id: levelField; width: parent.width; visible: squelch.currentIndex === 0; label: qsTr("Listening level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         ReadableText { heading: true; text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
-        PlexComboBox { id: gainMode; width: parent.width; visible: sheet.sourceType !== "airspy"; Accessible.name: qsTr("Receiver gain mode"); model: [qsTr("Session setting"), qsTr("Hardware auto"), qsTr("Manual")] }
+        PlexComboBox { id: gainMode; width: parent.width; visible: sheet.sourceType !== "airspy"; accessibleName: qsTr("Receiver gain mode"); model: [qsTr("Session setting"), qsTr("Hardware auto"), qsTr("Manual")] }
         PlexTextField { id: gainField; width: parent.width; visible: sheet.sourceType !== "airspy" && gainMode.currentIndex === 2; label: qsTr("Gain · dB"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         PlexCheckBox { id: airspyOverride; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
         AirspyControls {
