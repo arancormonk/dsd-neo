@@ -9,13 +9,11 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 
 #include <stddef.h>
@@ -83,35 +81,6 @@ nxdn_live_call_is_dcr(const dsd_state* state) {
     return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
            && DSD_SYNC_IS_NXDN(call.protocol)
            && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text);
-}
-
-/* Whether the cipher applied (dsd_state::nxdn_cipher_type) is the live DCR call's own: the one its SACCH-2 named
-   (NXDN_CIPHER_ORIGIN_DCR) while it is the live call. */
-static inline int
-nxdn_applied_cipher_is_dcr_calls(const dsd_state* state) {
-    return state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR && nxdn_live_call_is_dcr(state);
-}
-
-/* What a numbered call's publication of the applied cipher and key (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key)
-   on the live call reads (a VCALL's, a VCALL_IV's, an INFO1's): on a DCR call only the DCR call's own scrambler is that
-   call's (issue #903). A VCALL that names no party continues a DCR call, and its cipher is not the DCR call's. */
-static inline int
-nxdn_applied_cipher_is_live_calls(const dsd_state* state) {
-    return state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR || !nxdn_live_call_is_dcr(state);
-}
-
-/* The applied cipher belongs to the call that applied it (issue #903): at a call boundary, a checked End
-   (nxdn_message_type()'s release, a DCR SACCH-2 End) or a call of the other kind (DCR or numbered) replacing it, the
-   cipher, the key ID that came with it (nxdn_cipher_observe_keyed()) and the classification behind them are forgotten,
-   so the next call is never judged against them. A scrambler the operator forced (-4: state->M with a key) stays. */
-static inline void
-nxdn_cipher_forget(dsd_state* state) {
-    state->nxdn_cipher_type = 0;
-    state->nxdn_key = 0;
-    nxdn_cipher_class_reset(state);
-    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
-        nxdn_cipher_force(state, 0x1);
-    }
 }
 
 /* The MI an NXDN call publishes (call state, snapshots, events, history, the API feed): the IV a CRC-verified VCALL_IV

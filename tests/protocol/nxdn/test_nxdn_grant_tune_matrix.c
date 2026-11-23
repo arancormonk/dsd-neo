@@ -2901,11 +2901,10 @@ nxdn_run_type_d_new_call_case(const char* variant, uint16_t group, uint8_t rep2,
 /* A DCR call ("JPN DCR", no numeric party) with crypto and service metadata, still live when an SCCH names a numbered
  * party (issue #903): an INFO3 talker 03-0123 (@p sf 1) or an INFO2 target 03-0005 (@p sf 2) is another call. Its
  * observation carries neither DCR's text identity nor DCR's service metadata or crypto, and the same message again
- * continues that call. The DCR call's received scrambler (cipher 1, a key loaded) is not the new call's: the decoder
- * forgets it, so the new call's voice is not descrambled before its own signalling names a cipher, unless the operator
- * forced the scrambler (@p forced, -4), which stays. */
+ * continues that call. The DCR call's received scrambler (cipher 1, a key loaded) carries across that boundary
+ * through the classification hysteresis, as on main: the new call's own INFO1 or VCALL replaces it once it repeats. */
 static int
-nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* variant, int forced) {
+nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* variant) {
     static const char* const name = "numbered-scch-after-dcr";
     const nxdn_case busy = {
         "dcr-then-numbered", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
@@ -2938,9 +2937,8 @@ nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* va
                          name, variant, "a live DCR call");
     const uint64_t dcr_epoch = call.epoch;
     g_state.R = 0x1234ULL; /* the DCR call's scrambler key */
-    g_state.M = forced ? 1 : 0;
     /* Received as the DCR call's SACCH-2 names it (nxdn_sacch2_note_cipher()). */
-    g_state.nxdn_cipher_type = nxdn_cipher_observe_keyed(&g_state, 1U, 0U, 1, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    g_state.nxdn_cipher_type = nxdn_cipher_observe_keyed(&g_state, 1U, 0U, 1);
 
     at_seconds(9600.2);
     voice_live();
@@ -2948,15 +2946,9 @@ nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* va
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
                           && call.epoch != dcr_epoch,
                       name, variant, "the numbered party is another call");
-    if (forced) {
-        rc |= nxdn_expect(g_state.nxdn_cipher_type == 1U && nxdn_cipher_established_enc(&g_state)
-                              && g_state.nxdn_cipher_rx_class == 0U,
-                          name, variant, "the forced scrambler stays, nothing received");
-    } else {
-        rc |= nxdn_expect(g_state.nxdn_cipher_type == 0U && g_state.nxdn_cipher_class == 0U
-                              && g_state.nxdn_cipher_rx_class == 0U,
-                          name, variant, "the DCR call's received cipher is forgotten");
-    }
+    rc |= nxdn_expect(g_state.nxdn_cipher_type == 1U && nxdn_cipher_established_enc(&g_state)
+                          && g_state.nxdn_cipher_rx_class == 2U,
+                      name, variant, "the DCR call's scrambler carries over");
     const int info3 = sf == 1U;
     rc |= nxdn_expect(call.ota_source_id == (info3 ? id : 0U) && call.ota_target_id == (info3 ? 0U : id), name, variant,
                       "the message's party");
@@ -2977,10 +2969,8 @@ nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* va
 static int
 nxdn_run_numbered_scch_after_dcr_case(void) {
     int rc = 0;
-    rc |= nxdn_run_numbered_scch_after_dcr_variant(1U, 123U, "info3-source", 0);
-    rc |= nxdn_run_numbered_scch_after_dcr_variant(2U, 5U, "info2-target", 0);
-    rc |= nxdn_run_numbered_scch_after_dcr_variant(1U, 123U, "info3-source-forced", 1);
-    rc |= nxdn_run_numbered_scch_after_dcr_variant(2U, 5U, "info2-target-forced", 1);
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(1U, 123U, "info3-source");
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(2U, 5U, "info2-target");
     return rc;
 }
 

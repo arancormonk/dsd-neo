@@ -3193,8 +3193,9 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 // Publish the applied cipher and key (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key: one pair,
 // nxdn_cipher_observe_keyed()) on the live NXDN call. @p received: the DSD_CALL_CRYPTO_RX_* fields this publication
 // carries from a checked VCALL (0 for a republish). The MI is an IV received over the air (nxdn_published_mi()), never
-// the working register a scrambled call loads from the key. On a DCR call only that call's own scrambler is published
-// (nxdn_applied_cipher_is_live_calls()). @p loaded: whether the message published loaded the applied pair's key (a
+// the working register a scrambled call loads from the key. A numbered call's message (a VCALL, a VCALL_IV, an INFO1)
+// publishes nothing on a DCR call, which a VCALL naming no party continues: only the DCR call's own SACCH-2 describes it
+// (nxdn_publish_sacch2_crypto(), issue #903). @p loaded: whether the message published loaded the applied pair's key (a
 // VCALL whose pair the hysteresis applied, nxdn_vcall_load_key(); a DES or AES VCALL_IV,
 // nxdn_vcall_iv_prepare_cipher()). With the keyloader on, only such a publication reports the loaders' choice as the
 // key that decrypts; one that loaded none (an INFO1, a VCALL held back) reports no key selection, and the call keeps
@@ -3202,8 +3203,8 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, uint8_t contradicted,
                           uint8_t enc_observed, int loaded) {
-    if (!nxdn_live_call_is_nxdn(state) || !nxdn_applied_cipher_is_live_calls(state)) {
-        return; // another protocol's call on slot 0 takes no NXDN cipher, nor a DCR call another source's
+    if (!nxdn_live_call_is_nxdn(state) || nxdn_live_call_is_dcr(state)) {
+        return; // another protocol's call on slot 0 takes no NXDN cipher, nor a DCR call a numbered call's message
     }
     const uint8_t cipher_type = (uint8_t)state->nxdn_cipher_type;
     const uint8_t key_id = (uint8_t)state->nxdn_key;
@@ -3225,9 +3226,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
         if ((loaded || state->keyloader != 1) && dsd_call_state_get(state, 0, &call) > 0) {
             dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
             int selected = -1;
-            /* A DCR call's scrambler names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the
-               working key, which no selection loaded. */
-            if (state->keyloader == 1 && state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
+            if (state->keyloader == 1) {
                 // The loaders' own choice (nxdn_select_key()), so the report names the key that decrypts.
                 const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, call.ota_target_id);
                 source = choice.source;
@@ -3312,20 +3311,6 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     dsd_event_sync_slot(opts, state, 0U);
 }
 
-/* A numbered call's message (a VCALL, an INFO1, an SCCH naming a party in the DCR call's place) is never a DCR call's
- * (DCR carries no SCCH, and its frames no FACCH1): the scrambler a DCR call received is not the numbered call's, whose
- * voice plays clear until its own signalling names a cipher, nor is it judged against it. That call boundary forgets it
- * (nxdn_cipher_forget()) before the message's own cipher is read; a message that neither replaces the live DCR call
- * nor names a cipher (a repeater status, an INFO1 heard while the DCR call is still the live call) forgets nothing.
- * The DCR call's opening forgets any other cipher (nxdn_update_sacch2_identity_state()), so while it is the live call
- * the cipher applied is its own, a forced one or none. */
-static void
-nxdn_forget_dcr_cipher(dsd_state* state) {
-    if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
-        nxdn_cipher_forget(state);
-    }
-}
-
 static void
 nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
@@ -3334,13 +3319,7 @@ nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
-        /* A VCALL of a confirmed transmission is never the DCR call's: a DCR call's scrambler is forgotten before the
-           hysteresis reads it (nxdn_forget_dcr_cipher()). */
-        if (nxdn_confirm_is_confirmed(state)) {
-            nxdn_forget_dcr_cipher(state);
-        }
-        state->nxdn_cipher_type =
-            nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+        state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0);
         /* The key loads for the pair applied, never for one the hysteresis held back: a lone contradiction leaves
            the working key the applied cipher's, as it leaves the cipher and key ID. */
         if (state->nxdn_cipher_type == info->cipher_type) {
@@ -4017,9 +3996,6 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
 
-    if (new_call) {
-        nxdn_forget_dcr_cipher(state); /* another call: a DCR call it replaces is over */
-    }
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
         nxdn_scch_carry_crypto_media(state, &call, new_call);
     }
@@ -4254,15 +4230,12 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     if (!info->acts || info->during_dcr) {
         return;
     }
-    /* The call it names is a numbered one, and the DCR call before it is over: that call's scrambler goes first. */
-    nxdn_forget_dcr_cipher(state);
     // One SCCH observation must not flip the classification the VCALLs established -- in
     // either direction: a corrupt call option could mute a clear call, or silently unmute
     // an encrypted one mid-stream. The hysteresis holds it until it repeats.
     /* The key ID goes with the cipher it came with: a held-back contradiction changes neither. An INFO1 loads no key:
        the working key is the one a VCALL or an assignment loaded (nxdn_vcall_load_key()). */
-    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
-                                                        (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0);
     nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE, 0);
 }
 

@@ -12459,30 +12459,22 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   destination), either way: "JPN DCR" meets no numbered party (`call_state_dcr_meets_numbered_party()`). An IDAS SCCH
   naming a talker or target while a DCR call is live is likewise another call at the source
   (`nxdn_scch_names_new_call()`): its observation carries neither "JPN DCR" nor the DCR call's service metadata or
-  crypto. The cipher applied belongs to the call that applied it, and is forgotten, cipher, key ID and classification,
-  at a confirmed call boundary (`nxdn_cipher_forget()` in `nxdn_internal.h`; a scrambler forced with `-4` stays): a
-  checked End, an NXDN release (`nxdn_message_type()`) or a DCR SACCH-2 End (whose own cipher field is then printed,
-  never applied again), and a call of the other kind replacing it. A DCR Call message (SB0) forgets, before its own
-  cipher field is read, any cipher that is not the live DCR call's own (`nxdn_applied_cipher_is_dcr_calls()`:
-  `dsd_state::nxdn_cipher_origin`, which follows the observation the applied cipher equals and stays when the
-  hysteresis holds a contradiction back, `nxdn_cipher_observe_keyed()`, is `NXDN_CIPHER_ORIGIN_DCR` while the DCR call
-  is live), so the DCR call's scrambler is never held back against an earlier call's cipher (which under
-  `--enc-lockout` locked out the clear call after it) and its checked encryption is recorded. A numbered call's message
-  forgets the DCR call's scrambler (`nxdn_forget_dcr_cipher()`): the first VCALL of a confirmed transmission, which no
-  DCR frame carries, before the hysteresis reads its cipher; an INFO1 once the DCR call is over, before it applies; an
-  SCCH naming another call in the live call's place (`nxdn_scch_enrich_identity()`), so the new call's voice is not
-  descrambled with it nor its VCALL held back against it. A message that neither replaces the live DCR call nor names a
-  cipher forgets nothing: a repeater status message (idle, halt, free repeater, site ID) leaves the DCR call's scrambler
-  applied. An INFO1 heard while the DCR call is still the live call is neither that call's (DCR carries no SCCH) nor
-  yet the next call's, which no SCCH has opened: it is neither applied nor kept (`nxdn_scch_handle_info1()`), and it
-  forgets nothing, so the DCR call's cipher, key ID, origin and working key stay as they were, and the call an SCCH or
-  a VCALL opens next takes its cipher only from its own INFO1 or VCALL. An INFO1's or VCALL's key ID is applied
-  (`dsd_state::nxdn_key`) only with the cipher it came with (`nxdn_cipher_observe_keyed()`), so a contradiction the
-  hysteresis holds back changes neither half; a DCR SACCH-2 names no key ID, so once its scrambler is the cipher applied
-  the key ID applied is none. A DCR SACCH-2's publication carries only the DCR call's own content: the cipher it
-  applied, no key ID and no MI, never an IV a call before it received (`nxdn_publish_sacch2_crypto()`). A numbered
-  call's publication (a VCALL's, a VCALL_IV's, an INFO1's) on a DCR call, which a VCALL naming no party continues,
-  publishes only the DCR call's own scrambler (`nxdn_applied_cipher_is_live_calls()`). A VCALL_IV
+  crypto. The cipher applied (`dsd_state::nxdn_cipher_type`) carries across a DCR/numbered call boundary through the
+  classification hysteresis exactly as on main: only main's resets (an NXDN release in `nxdn_message_type()`, a DISC's
+  control channel return, the engine's) forget it, never a DCR Call, a DCR End (whose cipher field is applied as on
+  main) or a numbered call's VCALL, INFO1 or SCCH party. So for a few frames after a DCR boundary the vocoder may still
+  use the previous call's cipher (a decided limit). An INFO1 heard while the DCR call is still the live call is neither
+  that call's (DCR carries no SCCH) nor yet the next call's, which no SCCH has opened: it is neither applied nor kept
+  (`nxdn_scch_handle_info1()`), so the DCR call's cipher, key ID and working key stay as they were. An INFO1's or
+  VCALL's key ID is applied (`dsd_state::nxdn_key`) only with the cipher it came with (`nxdn_cipher_observe_keyed()`),
+  so a contradiction the hysteresis holds back changes neither half; a DCR SACCH-2 names no key ID, so once its
+  scrambler is the cipher applied the key ID applied is none. Publication keeps provenance: nothing another call
+  signalled is published on a DCR call. A DCR SACCH-2's publication (`nxdn_publish_sacch2_crypto()`) carries only the
+  DCR call's own content: its own cipher field as the ALG ID, no key ID, no MI (never an IV a call before it received),
+  its own key selection (the working key), and it withdraws a received ALG or key ID that VCALLs naming no party left
+  on the epoch before the DCR call took it over; its classification and audio permission describe the decoder, as on
+  main. A numbered call's message (a VCALL, which a VCALL naming no party makes a continuation of the DCR call, a
+  VCALL_IV, an INFO1) publishes nothing on a DCR call (`nxdn_vcall_publish_crypto()`). A VCALL_IV
   heard while a DCR call is the live call is another transmission's (DCR carries no IV): it is printed only, never the
   DCR call's MI, never written into the working register the DCR scrambler runs, and it publishes nothing
   (`NXDN_decode_VCALL_IV()`).

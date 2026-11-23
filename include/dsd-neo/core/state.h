@@ -2060,15 +2060,6 @@ struct dsd_state {
     uint8_t nxdn_cipher_rx_class;
     uint8_t nxdn_cipher_rx_est;
     uint8_t nxdn_cipher_rx_pending;
-    /* Where the cipher the hysteresis applies (nxdn_cipher_class) came from, NXDN_CIPHER_ORIGIN_* (issue #903): the
-     * origin of the observation it equals since the last one that applied, a matching repeat included
-     * (nxdn_cipher_observe_keyed()); a contradiction the hysteresis holds back leaves it. NXDN_CIPHER_ORIGIN_DCR while
-     * it is the one a DCR call's SACCH-2 named (nxdn_sacch2_note_cipher()). The applied cipher is forgotten at a call
-     * boundary (nxdn_cipher_forget()): a checked End, a DCR Call message when the cipher is not the live DCR call's
-     * own, and a numbered call's message (a confirmed VCALL, an INFO1 once the DCR call is over, an SCCH naming another
-     * call) when it is a DCR call's (nxdn_forget_dcr_cipher()). A forced cipher (nxdn_cipher_force()) leaves it; every
-     * reset (nxdn_cipher_class_reset()) clears it. */
-    uint8_t nxdn_cipher_origin;
 
     /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus
      * a LICH is not enough to believe a frame: both are weak enough that receiver noise

@@ -100,18 +100,10 @@ uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* sta
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
 
-/* Where an observed cipher came from (dsd_state::nxdn_cipher_origin): a DCR call's SACCH-2, or anything else. */
-enum {
-    NXDN_CIPHER_ORIGIN_OTHER = 0,
-    NXDN_CIPHER_ORIGIN_DCR = 1,
-};
-
-/* nxdn_cipher_observe() for an observation of @p origin (NXDN_CIPHER_ORIGIN_*) naming the key ID @p key_id (0 for a DCR
- * SACCH-2, which names none): the applied cipher takes that origin when it equals the observation afterwards, and keeps
- * its own when the hysteresis held the observation back; the applied key (dsd_state::nxdn_key) takes @p key_id only
- * when the observation's cipher is the one applied afterwards, so the applied cipher and key stay one pair, and a
- * contradiction the hysteresis held back changes neither. */
-uint8_t nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong, uint8_t origin);
+/* nxdn_cipher_observe() for an observation naming the key ID @p key_id (0 for a DCR SACCH-2, which names none): the
+ * applied key (dsd_state::nxdn_key) takes @p key_id only when the observation's cipher is the one applied afterwards,
+ * so the applied cipher and key stay one pair, and a contradiction the hysteresis held back changes neither. */
+uint8_t nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong);
 void nxdn_cipher_force(dsd_state* state, uint8_t cipher);
 void nxdn_cipher_class_reset(dsd_state* state);
 
