@@ -151,6 +151,9 @@ Item {
                 sheet.owedSaves = {};
                 sheet.owedSaveCount = 0;
             }
+            var monitorChannels = findChild(monitor, "channelsSheet");
+            monitorChannels.owedSaves = {};
+            monitorChannels.owedSaveCount = 0;
         }
         // Every row a list built, held ones included.
         function allRows(name) {
@@ -268,12 +271,15 @@ Item {
 
         function test_refusals_are_said() {
             var cases = [
-                {result: "stale", text: "This channel changed while you were editing it. Check it, then try again."},
+                // Read out with what the channel holds now (review gate b-r4 S9).
+                {result: "stale", text: "This channel changed while you were editing it. Check it, then try again.",
+                 announced: "This channel changed while you were editing it. Check it, then try again. Now: 451.012500 MHz, from file."},
                 {result: "full", text: "You already have 256 channels of your own. Remove one first."},
                 {result: "trunk-scan", text: "Channel editing is available when one system is running."},
                 {result: "dropped", text: "Listening stopped before the change was made."},
                 {result: "search", text: "Channels can't be changed while Signal search is running."},
                 {result: "other-system", text: "This channel belongs to another system now, so it can't be changed here."},
+                {result: "no-dmr", text: "This session isn't decoding DMR now, so channels can't be changed."},
                 {result: "unknown", text: "dsd-neo did not make the change. Try again."}
             ];
             openSheet(view({}));
@@ -292,7 +298,7 @@ Item {
                 verify(edit.visible, "a refused edit keeps the editor open");
                 verify(save.enabled, "and it can be sent again");
                 compare(findChild(edit, "channelEditMessage").Accessible.role, Accessible.AlertMessage);
-                compare(edit.announced, c.text);
+                compare(edit.announced, c.announced || c.text);
                 // Close asks before the typed frequency goes.
                 findChild(edit, "channelEditClose").activate();
                 var discard = findChild(edit, "discardDialogDiscard");
@@ -474,6 +480,18 @@ Item {
             commands.answerDmrChannel({result: "stale"});
             tryCompare(findChild(edit, "channelEditMessage"), "text", "This channel changed while you were editing it. Check it, then try again.");
             compare(freq.text, "451.0250", "what was typed stays");
+            // Review gate b-r4 S9: beside it, what the channel holds now, and read out with the refusal.
+            var current = findChild(edit, "channelEditCurrent");
+            verify(current.visible, "what the channel holds now is shown");
+            compare(current.text, "Now: 451.050000 MHz, yours.");
+            compare(edit.announced, "This channel changed while you were editing it. Check it, then try again. Now: 451.050000 MHz, yours.");
+            // The editor follows the record until the retry: so does the line.
+            var hidden = view({generation: 4, session: 6, revision: 13});
+            hidden.channels[0] = {lpcn: 18, origin: 2, hidden: true, baseHz: 451012500};
+            testContext.setDmrChannelsView(hidden);
+            tryCompare(current, "text", "Now: hidden.");
+            testContext.setDmrChannelsView(moved);
+            tryCompare(current, "text", "Now: 451.050000 MHz, yours.");
             verify(!findChild(edit, "channelEditHide").visible);
             verify(findChild(edit, "channelEditRemove").visible, "the actions follow the new origin");
             tap(findChild(edit, "channelEditSave"));
@@ -484,6 +502,116 @@ Item {
             compare(retry.expectedOrigin, 2);
             compare(retry.generation, 4);
             compare(retry.session, "6");
+            verify(!current.visible, "sent again: the line goes");
+        }
+
+        // Review gate b-r4 S9: a channel added by number that got a frequency meanwhile, or lost one, says so.
+        function test_stale_add_shows_what_the_channel_holds() {
+            openSheet(view({}));
+            tap(item("channelsAddButton"));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditNumber"), "40");
+            type(findChild(edit, "channelEditFrequency"), "451.5000");
+            tap(findChild(edit, "channelEditSave"));
+            var learned = view({revision: 12});
+            learned.extra = [];
+            learned.channels.push({lpcn: 40, origin: 3, hz: 451487500});
+            testContext.setDmrChannelsView(learned);
+            commands.answerDmrChannel({result: "stale"});
+            var current = findChild(edit, "channelEditCurrent");
+            tryCompare(current, "text", "Now: 451.487500 MHz, heard from site.");
+            compare(findChild(edit, "channelEditFrequency").text, "451.5000");
+            testContext.setDmrChannelsView(view({revision: 13}));
+            tryCompare(current, "text", "Now: no frequency.");
+        }
+
+        // Review gate b-r4 S5: while the editor's own edit is due its fields take no typing, so nothing typed after
+        // Apply is lost when the answer closes the editor; Close needs no question then. An editor opened on another
+        // channel while an earlier edit is due takes typing, and Close asks before that goes.
+        function test_fields_read_only_while_the_edit_is_due() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            var freq = findChild(edit, "channelEditFrequency");
+            type(freq, "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            var first = lastRequest().request;
+            verify(edit.pending && edit.sentPending);
+            verify(freq.readOnly, "the frequency sent takes no typing");
+            freq.forceActiveFocus();
+            keyClick(Qt.Key_5);
+            compare(freq.text, "451.0250", "nothing typed after Apply");
+            verify(!findChild(edit, "channelEditUseCc").enabled);
+            findChild(edit, "channelEditClose").activate();
+            tryCompare(edit, "visible", false);
+            verify(!findChild(edit, "discardDialogDiscard").visible, "Close does not ask: the edit is on its way");
+            // Another channel's editor while that edit is due.
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            verify(edit.pending && !edit.sentPending);
+            var other = findChild(edit, "channelEditFrequency");
+            verify(!other.readOnly, "not this editor's edit: typing is kept");
+            type(other, "451.3125");
+            verify(!findChild(edit, "channelEditSave").enabled, "but nothing more is sent");
+            findChild(edit, "channelEditClose").activate();
+            var discard = findChild(edit, "discardDialogDiscard");
+            tryVerify(function () { return discard.visible; }, 2000, "Close asks before what was typed goes");
+            findChild(edit, "discardDialogKeep").activate();
+            tryVerify(function () { return !discard.visible; });
+            verify(edit.visible);
+            commands.answerDmrChannel({result: "ok", request: first});
+            verify(edit.visible, "the earlier edit's answer leaves this editor open");
+            compare(other.text, "451.3125");
+            verify(!other.readOnly && findChild(edit, "channelEditSave").enabled);
+            // Its own edit refused: the fields take typing again.
+            tap(findChild(edit, "channelEditSave"));
+            verify(other.readOnly);
+            commands.answerDmrChannel({result: "full"});
+            tryVerify(function () { return !other.readOnly; });
+            other.forceActiveFocus();
+            other.cursorPosition = other.text.length;
+            keyClick(Qt.Key_0);
+            compare(other.text, "451.31250");
+        }
+
+        // Review gate b-r4 S10: a live mode change left DMR off. The open sheet lists no rows and the open editor
+        // sends nothing, each saying why, until DMR is decoded again.
+        function test_not_decoding_dmr_is_read_only() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            var freq = findChild(edit, "channelEditFrequency");
+            type(freq, "451.0250");
+            var text = "This session isn't decoding DMR now, so channels can't be changed.";
+            testContext.setDmrChannelsView(view({dmrDecoding: false}));
+            var locked = findChild(edit, "channelEditLocked");
+            tryCompare(locked, "visible", true);
+            compare(locked.text, text);
+            compare(edit.announced, text);
+            verify(freq.readOnly, "the fields are read-only too");
+            verify(!findChild(edit, "channelEditSave").enabled);
+            verify(!findChild(edit, "channelEditHide").enabled);
+            findChild(edit, "channelEditSave").activate();
+            compare(commands.dmrChannelRequests().length, 0, "the editor sends nothing");
+            findChild(edit, "channelEditClose").activate();
+            var discard = findChild(edit, "discardDialogDiscard");
+            tryVerify(function () { return discard.visible; });
+            discard.activate();
+            tryCompare(edit, "visible", false);
+            var note = item("channelsReadOnlyNote");
+            verify(note.visible);
+            compare(note.text, text);
+            tryVerify(function () { return rows("channelsMissingRow").length === 0; }, 2000, "no Tier III rows");
+            compare(rows("channelsChannelRow").length, 0);
+            verify(!item("channelsMissingLabel").visible);
+            verify(!item("channelsMissingEmpty").visible);
+            verify(!item("channelsAddButton").enabled);
+            compare(sheet.submit(18, dmrChannels.opHide, 0, dmrChannels.channel(18), dmrChannels.generation, dmrChannels.session), 0);
+            compare(commands.dmrChannelRequests().length, 0);
+            testContext.setDmrChannelsView(view({}));
+            tryVerify(function () { return row("channelsChannelRow", 18) !== null; });
+            verify(!note.visible);
+            verify(item("channelsAddButton").enabled);
         }
 
         // After a stale refusal the editor follows the record, but an armed Remove asks again only when the channel it
@@ -658,12 +786,13 @@ Item {
             compare(allRows("channelsChannelRow").length, 50, "and holding no rows past it");
         }
 
-        // Another protocol's writer can empty or fill the shared map row under one of the user's entries: the sheet
-        // shows the frequency DMR uses, and an edit expects it (the decoder's STALE check compares against it).
+        // The shared map row under one of the user's entries (what Restore shows) is not what DMR uses, and another
+        // protocol's writer can empty or fill it: the sheet shows the frequency DMR uses, and an edit expects it (the
+        // decoder's STALE check compares against it).
         function test_rows_show_the_frequency_dmr_uses() {
             var spec = view({});
-            spec.channels[1] = {lpcn: 20, origin: 2, hz: 451137500, baseHz: 451100000, sharedHz: 0};
-            spec.channels[2] = {lpcn: 21, origin: 2, hidden: true, baseHz: 451200000, sharedHz: 452000000};
+            spec.channels[1] = {lpcn: 20, origin: 2, hz: 451137500, baseHz: 0};
+            spec.channels[2] = {lpcn: 21, origin: 2, hidden: true, baseHz: 452000000};
             openSheet(spec);
             compare(row("channelsChannelRow", 20).words, "Channel 20 · 451.137500 MHz · yours");
             compare(row("channelsChannelRow", 21).words, "Channel 21 · hidden");
@@ -1108,6 +1237,34 @@ Item {
             site.forceActiveFocus();
             keyClick(Qt.Key_Space);
             tryCompare(monitorItem("siteSheet"), "visible", true);
+        }
+
+        // Review gate b-r4 S8: a save owed for the session's system keeps the way to the sheet (its Try saving again)
+        // whatever the live lists hold: the last channel of the user's removed, nothing without a frequency, no site.
+        function test_monitor_route_while_a_save_is_owed() {
+            monitor.visible = true;
+            var entry = monitorItem("monitorChannelsRow");
+            var channels = monitorItem("channelsSheet");
+            verify(!entry.visible, "no channels of the user's, nothing owed");
+            channels.owe({systemUid: dmrChannels.sessionSystemUid, lpcn: 20, op: dmrChannels.opRestore, hz: 0,
+                          saved: false, saveError: "not-saved"});
+            tryCompare(entry, "visible", true);
+            entry.Accessible.pressAction();
+            tryCompare(channels, "visible", true);
+            verify(findChild(channels, "channelsRetrySave").visible, "the sheet it opens can save it");
+            channels.visible = false;
+            // NO FREQ opens the same sheet: one entry at a time.
+            testContext.setMetric("noFreqCount", 1);
+            tryCompare(entry, "visible", false);
+            testContext.setMetric("noFreqCount", 0);
+            tryCompare(entry, "visible", true);
+            // Owed for another saved system, not this session's.
+            dmrChannels.sessionSystemUid = "99999999-2222-3333-4444-555555555555";
+            tryCompare(entry, "visible", false);
+            dmrChannels.sessionSystemUid = "11111111-2222-3333-4444-555555555555";
+            tryCompare(entry, "visible", true);
+            channels.owe({systemUid: dmrChannels.sessionSystemUid, lpcn: 20, saved: true, saveError: ""});
+            tryCompare(entry, "visible", false, 2000, "saved: the route goes with the live lists");
         }
 
         function test_no_freq_row() {

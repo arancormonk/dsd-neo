@@ -203,7 +203,8 @@ class MetricsModel : public QObject {
        III one the Channels sheet edits: an identity checked messages named Tier III (never a RAS-only one), or a
        session a saved system's Tier III channels applied to (--dmr-chan-overrides; the view's overrides_applied, not
        the path, which stays set when the engine skipped the file). All three read none while the carrier names
-       another system (dsd_ui_dmr_t3_view::other_system_here): its channel map is that system's. */
+       another system (dsd_ui_dmr_t3_view::other_system_here): its channel map is that system's; and while the session
+       does not decode DMR (dmr_decoding 0, after a live mode change), when no Tier III lookup reads the channels. */
     Q_PROPERTY(int noFreqCount READ noFreqCount NOTIFY controlChanged)
     Q_PROPERTY(bool dmrTier3 READ dmrTier3 NOTIFY controlChanged)
     /* Discussion #900 F3: the session's live channel list holds channels of the user's (set or hidden), whatever

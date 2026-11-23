@@ -1862,9 +1862,11 @@ Item {
             }
 
             // Discussion #900 F3: the Tier III Channels sheet, while the live
-            // channel list holds channels of the user's (set or hidden) and the
-            // NO FREQ reading, which opens the same sheet, is hidden: one entry
-            // at a time. Before the site names itself there is no Site row, and
+            // channel list holds channels of the user's (set or hidden), or a
+            // save is owed for the session's system whatever the live lists
+            // hold (its Try saving again is in the sheet), and the NO FREQ
+            // reading, which opens the same sheet, is hidden: one entry at a
+            // time. Before the site names itself there is no Site row, and
             // with every grant given a frequency no NO FREQ reading: this stays
             // the way to correct a saved frequency, by tap, key or screen reader.
             UiPanel {
@@ -1872,7 +1874,7 @@ Item {
                 objectName: "monitorChannelsRow"
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
-                visible: metrics.dmrUserChannels === true && metrics.noFreqCount === 0
+                visible: (metrics.dmrUserChannels === true || channelsSheet.saveOwedHere) && metrics.noFreqCount === 0
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button

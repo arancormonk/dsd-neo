@@ -17742,17 +17742,23 @@ Qt Quick frontend (`src/ui/qt`):
   uses, never the shared map row another protocol can empty or fill under an entry), the edit's expectations
   (`generation`, `revision`, `session`, `channel(lpcn)`), `tier3`, `ccHz`/`ccConfirmedHere`, `trunkScanActive`,
   `otherSystemHere` (the view's `other_system_here`: both lists empty and `channel()` not `valid`, since that map is the
-  other system's), `editable` (neither) and `sessionSystemUid` (Main binds the saved system the session runs); rows are
-  rebuilt only when the view's `content_seq` or a name list moved, or `other_system_here` cleared, and a list is
-  published only when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked
-  Tier III identity, or the view's `overrides_applied`: the saved system's channels file applied to this session; the
-  path alone says nothing, since the engine leaves it set when it skipped the file) and `dmrUserChannels` (the live
-  overlay holds rows; never Tier III identity), all three off while the view's `other_system_here` says the carrier
-  names another system (`noFreqCount` is `dsd_app_dmr_t3_view_missing_shown()`, which the terminal's Channels panel
-  reads too). `CommandBridge::setDmrChannel()` sends `DSD_APP_CMD_DMR_CHANNEL_SET` against the row as read, capturing
-  the saved system (result keys `dmrChannelResultKey()`, `OTHER_SYSTEM` as `other-system`); `pollDmrChannelResults()`
-  (each tick, `UiController::pollCommandResults()`) reads the retained results and, for an OK edit, keeps it on that
-  system with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the
+  other system's), `dmrDecoding` (the view's `dmr_decoding`, true while no view is known: off after a live mode change
+  left DMR off, read as `otherSystemHere` is), `editable` (none of those, nor a trunk scan) and `sessionSystemUid` (Main
+  binds the saved system the session runs). Nothing is rebuilt until the view's `content_seq` or a name list moved, or
+  a flag that emptied the lists cleared; then the missing rows are rebuilt, and the Channels rows (up to 4094) only when
+  what they show moved (origins, `channel_hz`, the overlay entries; `channelRowBuilds()` counts those builds), so a
+  grant heard again on a channel with no frequency rebuilds only the missing rows; a list is published only when it
+  differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked Tier III identity, or the
+  view's `overrides_applied`: the saved system's channels file applied to this session; the path alone says nothing,
+  since the engine leaves it set when it skipped the file) and `dmrUserChannels` (the live overlay holds rows; never
+  Tier III identity), all three off while the view's `other_system_here` says the carrier names another system or its
+  `dmr_decoding` says the session no longer decodes DMR (`noFreqCount` is `dsd_app_dmr_t3_view_missing_shown()`, which
+  the terminal's Channels panel reads too). `CommandBridge::setDmrChannel()` sends `DSD_APP_CMD_DMR_CHANNEL_SET`
+  against the row as read, capturing the saved system (result keys `dmrChannelResultKey()`, `OTHER_SYSTEM` as
+  `other-system`, `NO_DMR` as `no-dmr`); `pollDmrChannelResults()` (each tick, `UiController::pollCommandResults()`, and
+  at `QCoreApplication::aboutToQuit`, so an edit applied just before Android's activity teardown exits the loop is kept
+  while the bridge and the saved systems are still alive) reads the retained results and, for an OK edit, keeps it on
+  that system with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the
   RadioReference provenance) before `dmrChannelResultReceived()`; `saveDmrChannelEdit()` runs that save again for a
   captured uid. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number
   entries only, never a bool, text or a fraction, the first per channel, at most 256, by channel). `dmr_channels_args.h`
@@ -17778,16 +17784,23 @@ Qt Quick frontend (`src/ui/qt`):
   (the latest per system and channel) and "Try saving again" saves it; while one is owed for the session's system the
   sheet and editor send nothing more ("Save the earlier change first: Try saving again.", `lockText`), so the saved list
   never takes the edits in another order than the live one. On another system's carrier (`otherSystemHere`) the sheet
-  lists no rows and both say so; the decoder refuses an edit queued before it with `OTHER_SYSTEM`. Hiding the sheet, or
+  lists no rows and both say so; the decoder refuses an edit queued before it with `OTHER_SYSTEM`. A session no longer
+  decoding DMR (`dmrDecoding` false) is locked the same way ("This session isn't decoding DMR now, so channels can't be
+  changed.", also the `no-dmr` refusal). Hiding the sheet, or
   the session ending, closes the editor and its discard question. `qml/ChannelEditSheet.qml` takes a number 1..4094 (its
   action key goes on to the frequency, `nextField`) and a frequency, offers "Use control channel frequency" only with
   `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
-  twice); a STALE refusal rereads the channel and keeps what was typed, disarming Remove only when the opened channel
-  changed. Under a trunk scan, on another system's carrier and while a save is owed both are read-only, the editor
-  saying why (`channelEditLocked`). The Site sheet's "Channels" button (DMR with `dmrTier3` or `dmrUserChannels`) and
+  twice); a STALE refusal rereads the channel and keeps what was typed, shows what the channel holds now under it
+  (`channelEditCurrent`, "Now: 452.000000 MHz, from file.", following the record until the next send, and read out
+  with the refusal), and disarms Remove only when the opened channel changed. While the editor's own edit is
+  unanswered (`sentPending`) its fields are read-only, so its answer closing the editor loses nothing typed, and Close
+  asks first only for what was typed beyond the edit on its way. Under a trunk scan, on another system's carrier, in a
+  session not decoding DMR and while a save is owed both are read-only, fields included, the editor saying why
+  (`channelEditLocked`). The Site sheet's "Channels" button (DMR with `dmrTier3` or `dmrUserChannels`) and
   the Monitor's `NO FREQ n` reading (`noFreqRow`, `Theme.alert`, hidden at 0, also in the collapsed summary) open the
-  sheet, and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels` and NO FREQ is
-  hidden, before any site identity too); it and the Site row take Tab, Space and Enter. Tests:
+  sheet, and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels`, or a save is
+  owed for the session's system whatever the live lists hold, and NO FREQ is hidden, before any site identity too); it
+  and the Site row take Tab, Space and Enter. Tests:
   `UI_QT_DMR_CHANNELS_MODEL`, `UI_QT_CONTROLLER`, `UI_QT_METRICS_MODEL`, `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
   `UI_QT_BACKUP_APPLY`, `UI_QT_QML_DMR_CHANNELS` (`tst_dmr_channels.qml`), `UI_QT_QML_A11Y_CHURN`
   (`tst_a11y_dmr_channels.qml`).

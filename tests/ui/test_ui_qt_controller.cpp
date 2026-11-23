@@ -2267,14 +2267,70 @@ test_dmr_channel_bridge() {
     check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
     state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_NONE);
 
+    /* A live mode change left DMR off by the time the decoder applies it (review gate b-r4 S2/S10): refused with its
+       own key, kept nowhere, and the open sheet lists nothing and offers no edit. */
+    opts.frame_dmr = 0;
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER,
+                               channels.generation(), siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 7 && answers.value(6).value("result").toString() == "no-dmr"
+          && answers.value(6).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_NO_DMR
+          && !answers.value(6).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    check(!channels.dmrDecoding() && !channels.editable() && channels.channels().isEmpty());
+    opts.frame_dmr = 1;
+    tick();
+    check(channels.dmrDecoding() && channels.editable() && !channels.channels().isEmpty());
+
     /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
     check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));
     dsd_app_frontend_runtime_stop();
     host.setPhase(Host::Idle);
-    check(answers.size() == 7 && answers.value(6).value("result").toString() == "dropped"
-          && answers.value(6).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
-          && !answers.value(6).value("saved").toBool());
+    check(answers.size() == 8 && answers.value(7).value("result").toString() == "dropped"
+          && answers.value(7).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
+          && !answers.value(7).value("saved").toBool());
     check(channels.channels().isEmpty()); // a stopped session lists nothing
+    while (systems.count() > 0 && systems.remove(0)) {}
+    freeState(&state);
+}
+
+/* Review gate b-r4 S7: the decoder applied an edit and the app quits before the next tick polls its answer (Android's
+ * activity teardown exits the event loop, and main() then destroys the bridge and the saved systems). The answer is
+ * settled as the loop quits: the edit is kept on the saved system it was sent for. */
+static void
+test_dmr_channel_saved_when_the_app_quits() {
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    check(systems.add({{"name", "Site A"}, {"decodeFlag", "-fs"}}));
+    const QString siteA = systems.get(0).value("uid").toString();
+    {
+        dsd_qt::CommandBridge bridge;
+        bridge.setSavedSystems(&systems);
+        QList<QVariantMap> answers;
+        QObject::connect(&bridge, &dsd_qt::CommandBridge::dmrChannelResultReceived,
+                         [&answers](const QVariantMap& result) { answers.append(result); });
+        check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, 0, DSD_UI_DMR_T3_ORIGIN_NONE,
+                                   dmr_t3_chan_generation(&state), siteA));
+        check(dsd_app_drain_cmds(&opts, &state) == 1); // applied on the decoder thread; no tick polls it
+        check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L);
+        check(answers.isEmpty() && systems.dmrChannels(siteA).isEmpty());
+        QTimer::singleShot(0, QCoreApplication::instance(), []() { QCoreApplication::exit(0); });
+        check(QCoreApplication::exec() == 0);
+        check(answers.size() == 1 && answers.value(0).value("result").toString() == "ok"
+              && answers.value(0).value("saved").toBool());
+        check(systems.dmrChannels(siteA) == QVariantList({QVariantMap{{"lpcn", 12}, {"hz", 451137500}}}));
+    }
+    dsd_app_frontend_runtime_stop();
     while (systems.count() > 0 && systems.remove(0)) {}
     freeState(&state);
 }
@@ -2305,6 +2361,7 @@ main(int argc, char** argv) {
     test_am_bandwidth_bridge();
     test_reload_bridge();
     test_dmr_channel_bridge();
+    test_dmr_channel_saved_when_the_app_quits();
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_scan_step_bridge();

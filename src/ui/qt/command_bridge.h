@@ -179,13 +179,15 @@ class CommandBridge : public QObject {
     }
 
     /**
-     * @brief Take the channel-set answers published since the last call (UiController's tick and its session edges)
-     * and report each of this bridge's requests once, in order. Another caller's answers are passed over.
+     * @brief Take the channel-set answers published since the last call (UiController's tick and its session edges,
+     * and the application's aboutToQuit, so an edit applied just before a teardown is still kept) and report each of
+     * this bridge's requests once, in order. Another caller's answers are passed over.
      */
     void pollDmrChannelResults();
 
     /** @brief The key of a dsd_app_dmr_channel_set_code: "ok", "stale", "trunk-scan", "invalid", "full", "search",
-     *  "dropped", "other-system" (the carrier names another system), or "unknown". */
+     *  "dropped", "other-system" (the carrier names another system), "no-dmr" (the session no longer decodes DMR), or
+     *  "unknown". */
     static QString dmrChannelResultKey(int code);
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */

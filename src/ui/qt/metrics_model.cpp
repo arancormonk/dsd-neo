@@ -533,9 +533,10 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     const dsd_ui_dmr_t3_view* t3 = dsd_app_dmr_t3_view(snapshot);
     const bool t3_present = t3 != nullptr && t3->present != 0U;
     /* A carrier that names another system (another DMR trunking system, or another protocol's) has that system's
-       channel map: no Tier III Channels route opens there, the saved system's channels file included. */
-    const bool t3_here = t3_present && t3->other_system_here == 0U;
-    next.no_freq_count = static_cast<int>(dsd_app_dmr_t3_view_missing_shown(t3));
+       channel map, and a session a live mode change left without DMR reads no Tier III channel: no Tier III Channels
+       route opens there, the saved system's channels file included. */
+    const bool t3_here = t3_present && t3->other_system_here == 0U && t3->dmr_decoding != 0U;
+    next.no_freq_count = t3_here ? static_cast<int>(dsd_app_dmr_t3_view_missing_shown(t3)) : 0;
     /* The saved system's channels file applied to this session: the engine leaves the path set when it skipped the
        file (a trunk scan, a session that does not decode DMR), so the path alone says nothing. */
     const bool saved_channels = t3_here && t3->overrides_applied != 0U;

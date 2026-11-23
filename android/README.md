@@ -522,7 +522,9 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
 - **Adding a frequency.** Tap a row under **No frequency**, or **Add channel**, and type the frequency in MHz. Use the
   channel number DSD-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take
   (number − 1) ÷ 2 and drop the remainder: 603 and 604 are both channel 301. Calls on that channel are followed from
-  the next call; a call already in progress stays where it is.
+  the next call; a call already in progress stays where it is. If the channel changed while you were typing (a
+  reloaded channel map, say), nothing is changed: the editor shows what the channel holds now under your frequency,
+  and **Apply** again replaces it.
 - **Use control channel frequency.** Some systems give the control channel its own channel number too. When DSD-neo
   has checked that it is on the control channel right now, **Use control channel frequency** fills in that frequency.
   Otherwise the button is greyed out.
@@ -533,10 +535,12 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
 - **Kept per saved system.** What you enter is saved with the saved system you are listening to, and applied again
   every time that system starts. It never changes your channel map file. In Explore, or anything that is not a saved
   system, a change lasts only until you stop listening, and the sheet says so. If a change could not be saved, the
-  sheet says so and offers **Try saving again**. If the system's extra decoder arguments (or the app's) already name
+  sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
+  opens the list. If the system's extra decoder arguments (or the app's) already name
   a channels file with `--dmr-chan-overrides`, that file is the one used: changes are not saved, and a start of a
   system that has channels of yours stops and says why.
-- **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed.
+- **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
+  session to a mode that does not decode DMR, the channels can't be changed until DMR is decoded again.
 
 The same channels can be given to the command-line decoder with `--dmr-chan-overrides` (see
 [DMR Tier III](../docs/csv-formats.md#dmr-tier-iii)).

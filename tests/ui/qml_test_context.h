@@ -4671,10 +4671,10 @@ class Setup : public QObject {
      * @p spec: `missing` [{lpcn, slot (0/1, the view's), group, data, caller, recipient, agoMs (heard that long before
      * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the
      * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz (the
-     * frequency DMR uses), hidden, baseHz, sharedHz (the shared map row, when another writer moved it)}], `names`
-     * [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`, `session`
-     * (default 1), `trunkScan`, `otherSystem` (other_system_here). Every call is a new body (content_seq moves), as a
-     * snapshot copied anew is.
+     * frequency DMR uses), hidden, baseHz (a USER row's: the shared map row under the entry, what Restore shows)}],
+     * `names` [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`,
+     * `session` (default 1), `trunkScan`, `otherSystem` (other_system_here), `dmrDecoding` (default true). Every call
+     * is a new body (content_seq moves), as a snapshot copied anew is.
      */
     Q_INVOKABLE void
     setDmrChannelsView(const QVariantMap& spec) {
@@ -4695,6 +4695,7 @@ class Setup : public QObject {
         (void)dsd_tg_policy_clear(state);
         view->present = 1U;
         view->other_system_here = spec.value(QStringLiteral("otherSystem")).toBool() ? 1U : 0U;
+        view->dmr_decoding = spec.value(QStringLiteral("dmrDecoding"), true).toBool() ? 1U : 0U;
         view->tier3 = view->other_system_here == 0U && spec.value(QStringLiteral("tier3"), true).toBool() ? 1U : 0U;
         view->cc_hz = spec.value(QStringLiteral("ccHz"), 0).toLongLong();
         view->cc_confirmed_here = view->cc_hz > 0 ? 1U : 0U;
@@ -8036,18 +8037,19 @@ class Setup : public QObject {
             const int origin = c.value(QStringLiteral("origin"), DSD_UI_DMR_T3_ORIGIN_FILE).toInt();
             const bool hidden = c.value(QStringLiteral("hidden")).toBool();
             const long hz = hidden ? 0L : static_cast<long>(c.value(QStringLiteral("hz")).toLongLong());
+            const bool user = origin == DSD_UI_DMR_T3_ORIGIN_USER;
             view->origin[lpcn] = static_cast<uint8_t>(origin);
             view->channel_hz[lpcn] = hz;
-            /* sharedHz: what another protocol's writer left in the shared map row under the frequency DMR uses. */
-            state->trunk_chan_map[lpcn] = c.contains(QStringLiteral("sharedHz"))
-                                              ? static_cast<long>(c.value(QStringLiteral("sharedHz")).toLongLong())
-                                              : hz;
-            if (origin == DSD_UI_DMR_T3_ORIGIN_USER && view->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
+            /* The user's entry lies beside the shared map row, which keeps what Restore shows (base_hz); any other row
+               is the shared one. */
+            const long shared = user ? static_cast<long>(c.value(QStringLiteral("baseHz")).toLongLong()) : hz;
+            state->trunk_chan_map[lpcn] = shared;
+            if (user && view->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
                 dsd_ui_dmr_t3_overlay_row& row = view->overlay[view->overlay_count++];
                 row.lpcn = static_cast<uint16_t>(lpcn);
                 row.hidden = hidden ? 1U : 0U;
                 row.hz = hz;
-                row.base_hz = static_cast<long>(c.value(QStringLiteral("baseHz")).toLongLong());
+                row.base_hz = shared;
             }
         }
     }

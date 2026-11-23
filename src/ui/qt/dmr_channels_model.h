@@ -8,11 +8,14 @@
  * @brief The DMR Tier III Channels sheet's rows, from UiController's held snapshot (discussion #900 F3).
  *
  * Two lists: the channels granted without a frequency (the missing-channel ledger) and the channels with an entry in
- * the channel map or the user's overlay, each named by its decimal LPCN. The rows are rebuilt only when the view's
- * body was copied anew (its content_seq) or a name list changed, and a list is published only when its rows differ,
- * so a sheet a screen reader reads sees no churn from repeated grants (#782). While the sheet is closed (active false)
- * nothing is read. While the carrier names another system (other_system_here) both lists are empty and no channel is
- * offered for an edit: that map is the other system's.
+ * the channel map or the user's overlay, each named by its decimal LPCN. Nothing is rebuilt until the view's body was
+ * copied anew (its content_seq) or a name list changed, and a list is published only when its rows differ, so a sheet
+ * a screen reader reads sees no churn from repeated grants (#782). The two lists are read apart: a new body or a name
+ * change rebuilds the missing rows, and the mapped channels (up to 4094 rows) are rebuilt only when what they show
+ * moved (the origins, the frequencies DMR uses, the user's entries), so a grant heard again on a channel with no
+ * frequency costs one ledger walk. While the sheet is closed (active false) nothing is read. While the carrier names
+ * another system (other_system_here), or the session does not decode DMR now (dmr_decoding 0), both lists are empty
+ * and no channel is offered for an edit: no Tier III lookup reads them there.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_DMR_CHANNELS_MODEL_H_
@@ -29,6 +32,7 @@
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <memory>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -74,7 +78,11 @@ class DmrChannelsModel : public QObject {
     /** @brief The carrier names another system (dsd_ui_dmr_t3_view::other_system_here): its map is that system's, so
      *  no Tier III row is listed and no edit is offered until the receiver is back on the Tier III system. */
     Q_PROPERTY(bool otherSystemHere READ otherSystemHere NOTIFY stateChanged)
-    /** @brief An edit can be sent: no trunk scan, and the carrier names no other system. */
+    /** @brief The session decodes DMR now (dsd_ui_dmr_t3_view::dmr_decoding; true while no view is known): false
+     *  after a live mode change left DMR off, when no Tier III row is listed and no edit is offered, as for
+     *  otherSystemHere. */
+    Q_PROPERTY(bool dmrDecoding READ dmrDecoding NOTIFY stateChanged)
+    /** @brief An edit can be sent: no trunk scan, the carrier names no other system, and the session decodes DMR. */
     Q_PROPERTY(bool editable READ editable NOTIFY stateChanged)
     /** @brief The saved system the session runs, set by QML (empty: Explore, a scan, a search): where edits are
      *  kept. */
@@ -92,6 +100,7 @@ class DmrChannelsModel : public QObject {
 
   public:
     explicit DmrChannelsModel(QObject* parent = nullptr);
+    ~DmrChannelsModel() override;
 
     bool
     active() const {
@@ -113,8 +122,8 @@ class DmrChannelsModel : public QObject {
 
     /**
      * @brief Channel @p lpcn as an edit expects it: {lpcn, hz (the frequency DMR uses, 0 none or hidden), originCode,
-     * origin, baseHz, hidden, yours, missing, valid (a channel number 1..4094, and the carrier names no other
-     * system)}. Read from the rows last published.
+     * origin, baseHz, hidden, yours, missing, valid (a channel number 1..4094, the carrier names no other
+     * system, and the session decodes DMR)}. Read from the rows last published.
      */
     Q_INVOKABLE QVariantMap channel(int lpcn) const;
     /** @brief The decode clock the missing rows' lastHeardMs is stamped on, in ms, for their age. */
@@ -193,8 +202,19 @@ class DmrChannelsModel : public QObject {
     }
 
     bool
+    dmrDecoding() const {
+        return m_state.dmrDecoding;
+    }
+
+    bool
     editable() const {
-        return !m_state.trunkScan && !m_state.otherSystemHere;
+        return !m_state.trunkScan && !m_state.otherSystemHere && m_state.dmrDecoding;
+    }
+
+    /** @brief How many times the Channels list's rows were built (tests read it: a grant heard again builds none). */
+    quint64
+    channelRowBuilds() const {
+        return m_channelRowBuilds;
     }
 
     QString
@@ -263,6 +283,7 @@ class DmrChannelsModel : public QObject {
         bool ccConfirmedHere = false;
         bool trunkScan = false;
         bool otherSystemHere = false;
+        bool dmrDecoding = true;
         qint64 ccHz = 0;
         quint32 generation = 0;
         quint32 revision = 0;
@@ -271,8 +292,15 @@ class DmrChannelsModel : public QObject {
         bool operator==(const State& other) const;
     };
 
-    void rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
+    /* What the Channels list's rows are made of: the origins, the frequencies DMR uses and the user's entries. */
+    struct ChannelInputs;
+
+    void rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
+    /* The Channels rows, built again only when @p force or their inputs moved since the last build. */
+    void rebuildChannels(const dsd_ui_dmr_t3_view& view, bool force);
     void publishState(const State& next);
+    void publishMissing(const QVariantList& recentRows, const QVariantList& byChannelRows);
+    void publishChannels(const QVariantList& channelRows);
     void publishLists(const QVariantList& recentRows, const QVariantList& byChannelRows,
                       const QVariantList& channelRows);
 
@@ -287,6 +315,9 @@ class DmrChannelsModel : public QObject {
     QVariantList m_missing;
     QVariantList m_missingByChannel;
     QVariantList m_channels;
+    /* The inputs m_channels was last built from (none before a build, or after clear()). */
+    std::unique_ptr<ChannelInputs> m_channelInputs;
+    quint64 m_channelRowBuilds = 0;
 };
 
 } // namespace dsd_qt

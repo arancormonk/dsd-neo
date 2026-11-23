@@ -4,6 +4,7 @@
  */
 
 #include <QChar>
+#include <QCoreApplication>
 #include <QFile>
 #include <QLatin1String>
 #include <QMap>
@@ -84,6 +85,12 @@ CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {
     /* Answers published before this bridge existed were never its own. */
     dsd_app_dmr_channel_set_result latest = {};
     m_dmrChannelCursor = dsd_app_dmr_channel_set_result_get(&latest) ? latest.sequence : 0U;
+    /* Discussion #900 F3: an edit the decoder applied just before the app quits (Android's activity teardown exits the
+       event loop with a poll still due) is kept on its saved system here, while this bridge, the saved systems and the
+       QML that says the outcome are all still alive: main() destroys them once the loop returned. */
+    if (QCoreApplication* app = QCoreApplication::instance()) {
+        connect(app, &QCoreApplication::aboutToQuit, this, &CommandBridge::pollDmrChannelResults);
+    }
 }
 
 CommandBridge::~CommandBridge() = default;
@@ -1325,6 +1332,7 @@ CommandBridge::dmrChannelResultKey(int code) {
         case DSD_APP_DMR_CHANNEL_SET_SEARCH: return QStringLiteral("search");
         case DSD_APP_DMR_CHANNEL_SET_DROPPED: return QStringLiteral("dropped");
         case DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM: return QStringLiteral("other-system");
+        case DSD_APP_DMR_CHANNEL_SET_NO_DMR: return QStringLiteral("no-dmr");
         default: return QStringLiteral("unknown");
     }
 }

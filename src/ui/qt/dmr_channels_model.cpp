@@ -10,6 +10,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <algorithm>
+#include <array>
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
@@ -20,11 +21,50 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <memory>
 #include <stddef.h>
 #include <string.h>
 #include <utility>
+#include <vector>
 
 namespace dsd_qt {
+
+/* Every field a Channels row reads from the view: rows are built again only when one of these moved. */
+struct DmrChannelsModel::ChannelInputs {
+    struct Entry {
+        uint16_t lpcn = 0;
+        uint8_t hidden = 0;
+        long base_hz = 0;
+
+        bool
+        operator==(const Entry& other) const {
+            return lpcn == other.lpcn && hidden == other.hidden && base_hz == other.base_hz;
+        }
+    };
+
+    std::array<uint8_t, DSD_UI_DMR_T3_ROWS> origin{};
+    std::array<long, DSD_UI_DMR_T3_ROWS> hz{};
+    std::vector<Entry> overlay;
+
+    explicit ChannelInputs(const dsd_ui_dmr_t3_view& view) {
+        std::copy(view.origin, view.origin + DSD_UI_DMR_T3_ROWS, origin.begin());
+        std::copy(view.channel_hz, view.channel_hz + DSD_UI_DMR_T3_ROWS, hz.begin());
+        const uint16_t count = view.overlay_count <= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS ? view.overlay_count : 0U;
+        overlay.reserve(count);
+        for (uint16_t i = 0; i < count; ++i) {
+            Entry e;
+            e.lpcn = view.overlay[i].lpcn;
+            e.hidden = view.overlay[i].hidden;
+            e.base_hz = view.overlay[i].base_hz;
+            overlay.push_back(e);
+        }
+    }
+
+    bool
+    operator==(const ChannelInputs& other) const {
+        return origin == other.origin && hz == other.hz && overlay == other.overlay;
+    }
+};
 
 namespace {
 
@@ -112,12 +152,14 @@ missing_row(const dsd_ui_dmr_t3_view& view, uint16_t lpcn, const dsd_state* snap
 
 DmrChannelsModel::DmrChannelsModel(QObject* parent) : QObject(parent), m_decodeNowMs(&dsd_decode_now_mono_ms) {}
 
+DmrChannelsModel::~DmrChannelsModel() = default;
+
 bool
 DmrChannelsModel::State::operator==(const State& other) const {
     return present == other.present && tier3 == other.tier3 && tier3Unchecked == other.tier3Unchecked
            && ccConfirmedHere == other.ccConfirmedHere && trunkScan == other.trunkScan
-           && otherSystemHere == other.otherSystemHere && ccHz == other.ccHz && generation == other.generation
-           && revision == other.revision && session == other.session;
+           && otherSystemHere == other.otherSystemHere && dmrDecoding == other.dmrDecoding && ccHz == other.ccHz
+           && generation == other.generation && revision == other.revision && session == other.session;
 }
 
 QString
@@ -164,13 +206,16 @@ DmrChannelsModel::publishState(const State& next) {
 }
 
 void
-DmrChannelsModel::publishLists(const QVariantList& recentRows, const QVariantList& byChannelRows,
-                               const QVariantList& channelRows) {
+DmrChannelsModel::publishMissing(const QVariantList& recentRows, const QVariantList& byChannelRows) {
     if (recentRows != m_missing || byChannelRows != m_missingByChannel) {
         m_missing = recentRows;
         m_missingByChannel = byChannelRows;
         Q_EMIT missingChanged();
     }
+}
+
+void
+DmrChannelsModel::publishChannels(const QVariantList& channelRows) {
     if (channelRows != m_channels) {
         m_channels = channelRows;
         Q_EMIT channelsChanged();
@@ -178,10 +223,18 @@ DmrChannelsModel::publishLists(const QVariantList& recentRows, const QVariantLis
 }
 
 void
+DmrChannelsModel::publishLists(const QVariantList& recentRows, const QVariantList& byChannelRows,
+                               const QVariantList& channelRows) {
+    publishMissing(recentRows, byChannelRows);
+    publishChannels(channelRows);
+}
+
+void
 DmrChannelsModel::clear() {
     m_built = false;
     m_contentSeq = 0;
     m_nameKey = 0;
+    m_channelInputs.reset();
     publishLists({}, {}, {});
     publishState(State());
 }
@@ -207,6 +260,7 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
         publishLists({}, {}, {});
         State none;
         none.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
+        none.dmrDecoding = view == nullptr || view->dmr_decoding != 0U;
         publishState(none);
         return;
     }
@@ -221,14 +275,21 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     next.session = commandSession != 0U ? QString::number(commandSession) : QString();
     next.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
     next.otherSystemHere = view->other_system_here != 0U;
+    next.dmrDecoding = view->dmr_decoding != 0U;
     const uint64_t nameKey = dsd_alias_name_key(snapshot);
-    if (next.otherSystemHere) {
-        /* Another system's map: no Tier III rows, and nothing to edit. The flag can move without a new body, so the
-           rows are read again once it clears. */
+    if (next.otherSystemHere || !next.dmrDecoding) {
+        /* Another system's map, or a session that no longer decodes DMR: no Tier III rows, and nothing to edit. The
+           flags can move without a new body, so the rows are read again once they clear. */
         m_built = false;
         publishLists({}, {}, {});
-    } else if (!m_built || view->content_seq != m_contentSeq || nameKey != m_nameKey) {
-        rebuild(*view, snapshot);
+    } else {
+        const bool bodyMoved = !m_built || view->content_seq != m_contentSeq;
+        if (bodyMoved || nameKey != m_nameKey) {
+            rebuildMissing(*view, snapshot); // only these rows carry names
+        }
+        if (bodyMoved) {
+            rebuildChannels(*view, !m_built);
+        }
         m_built = true;
         m_contentSeq = view->content_seq;
         m_nameKey = nameKey;
@@ -237,8 +298,8 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
 }
 
 void
-DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot) {
-    QVariantList recent, byChannel, rows;
+DmrChannelsModel::rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot) {
+    QVariantList recent, byChannel;
     /* The details first, newest first, then every other ledger channel by LPCN. */
     const uint8_t details = view.missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view.missing.detail_count : 0U;
     for (uint8_t i = 0; i < details; ++i) {
@@ -247,7 +308,6 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
             recent.append(missing_row(view, lpcn, snapshot));
         }
     }
-    OverlayCursor overlay(view);
     for (uint16_t lpcn = 1U; lpcn <= static_cast<uint16_t>(maxChannel()); ++lpcn) {
         if (dsd_app_dmr_t3_view_missing_has(&view, lpcn)) {
             const QVariantMap row = missing_row(view, lpcn, snapshot);
@@ -256,6 +316,21 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
                 recent.append(row);
             }
         }
+    }
+    publishMissing(recent, byChannel);
+}
+
+void
+DmrChannelsModel::rebuildChannels(const dsd_ui_dmr_t3_view& view, bool force) {
+    auto inputs = std::make_unique<ChannelInputs>(view);
+    if (!force && m_channelInputs && *m_channelInputs == *inputs) {
+        return; // a grant heard again, a name learned: nothing a Channels row shows moved
+    }
+    m_channelInputs = std::move(inputs);
+    ++m_channelRowBuilds;
+    QVariantList rows;
+    OverlayCursor overlay(view);
+    for (uint16_t lpcn = 1U; lpcn <= static_cast<uint16_t>(maxChannel()); ++lpcn) {
         const int origin = view.origin[lpcn];
         if (origin == DSD_UI_DMR_T3_ORIGIN_NONE) {
             continue;
@@ -273,13 +348,14 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
                         {QStringLiteral("hidden"), hidden},
                         {QStringLiteral("yours"), entry != nullptr}});
     }
-    publishLists(recent, byChannel, rows);
+    publishChannels(rows);
 }
 
 QVariantMap
 DmrChannelsModel::channel(int lpcn) const {
     QVariantMap out{{QStringLiteral("lpcn"), lpcn},
-                    {QStringLiteral("valid"), lpcn >= minChannel() && lpcn <= maxChannel() && !m_state.otherSystemHere},
+                    {QStringLiteral("valid"),
+                     lpcn >= minChannel() && lpcn <= maxChannel() && !m_state.otherSystemHere && m_state.dmrDecoding},
                     {QStringLiteral("hz"), QVariant::fromValue<qint64>(0)},
                     {QStringLiteral("originCode"), static_cast<int>(DSD_UI_DMR_T3_ORIGIN_NONE)},
                     {QStringLiteral("origin"), QString()},

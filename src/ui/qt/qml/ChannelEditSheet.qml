@@ -9,13 +9,16 @@ import "Util.js" as Util
 // 1..4094. The edit is sent against the channel as the editor read it (its
 // frequency and where that came from, the network and the session), so the
 // decoder refuses it when any of those moved on; after such a refusal the
-// editor reads the channel again and keeps what was typed. The Channels sheet
-// sends the edit (submit) and handles its answer: while it is due nothing
-// more can be sent (pending), and once it has waited a while a calm line says
-// when it will be made (waiting); a refusal is said here (refused()) and the
-// editor stays open; an applied edit closes it. While the sheet sends nothing
-// (lockedText: a trunk scan, another system's carrier, a save owed) the editor
-// is read-only and says why.
+// editor reads the channel again, keeps what was typed and shows what the
+// channel holds now beside it. The Channels sheet sends the edit (submit) and
+// handles its answer: while it is due nothing more can be sent (pending), the
+// fields of the editor that sent it are read-only (sentPending), so nothing
+// typed after it can be lost when its answer closes the editor, and once it
+// has waited a while a calm line says when it will be made (waiting); a
+// refusal is said here (refused()) and the editor stays open; an applied edit
+// closes it. While the sheet sends nothing (lockedText: a session not
+// decoding DMR, another system's carrier, a trunk scan, a save owed) the
+// editor is read-only and says why.
 ModalSheet {
     id: sheet
     objectName: "channelEditSheet"
@@ -28,6 +31,11 @@ ModalSheet {
     // the request id, 0 when nothing was sent.
     property var submit: null
     property bool pending: false
+    // This editor's own edit is the one due (ChannelsSheet): its fields hold
+    // what was sent until the answer comes.
+    property bool sentPending: false
+    // A channel's origin key ("file", "user", ...) in words (ChannelsSheet).
+    property var originText: null
     // Why the sheet sends no edit now, "" when it does (ChannelsSheet.lockText).
     property string lockedText: ""
     // This editor's edit has waited a while for the decoder (ChannelsSheet).
@@ -55,6 +63,7 @@ ModalSheet {
     property string announced: ""
     property int announcements: 0
     readonly property bool readOnly: channels.editable !== true || lockedText.length > 0
+    readonly property bool fieldsLocked: sentPending || readOnly
     // Said once when it comes while the editor is open.
     onLockedTextChanged: {
         if (visible && lockedText.length > 0)
@@ -129,8 +138,9 @@ ModalSheet {
             sheet.reread();
         }
     }
+    // What was typed asks before it goes, unless it is the edit on its way.
     function requestClose() {
-        if (!pending && (numberField.text !== initialNumber || frequencyField.text !== initialFrequency)) {
+        if (!sentPending && (numberField.text !== initialNumber || frequencyField.text !== initialFrequency)) {
             discard.ask(function () {
                 sheet.visible = false;
             });
@@ -159,6 +169,8 @@ ModalSheet {
             return qsTr("Listening stopped before the change was made.");
         case "other-system":
             return qsTr("This channel belongs to another system now, so it can't be changed here.");
+        case "no-dmr":
+            return qsTr("This session isn't decoding DMR now, so channels can't be changed.");
         }
         return qsTr("dsd-neo did not make the change. Try again.");
     }
@@ -184,14 +196,30 @@ ModalSheet {
         }
         Qt.inputMethod.hide();
     }
+    // What the channel holds now, shown beside what was typed after a stale
+    // refusal: its frequency and where that came from.
+    function currentText() {
+        if (opened.hidden === true)
+            return qsTr("Now: hidden.");
+        if (!(Number(opened.hz) > 0))
+            return qsTr("Now: no frequency.");
+        var mhz = (Number(opened.hz) / 1000000).toFixed(6);
+        var from = originText ? String(originText(String(opened.origin || ""))) : "";
+        return from.length ? qsTr("Now: %1 MHz, %2.").arg(mhz).arg(from) : qsTr("Now: %1 MHz.").arg(mhz);
+    }
     // The Channels sheet's call for a refusal of this editor's edit.
     function refused(result) {
         var key = String(result.result);
-        if (key === "stale") {
-            reread();
-            stale = true;
+        if (key !== "stale") {
+            say(refusalText(key));
+            return;
         }
-        say(refusalText(key));
+        reread();
+        stale = true;
+        // Read out with what the channel holds now, which shows under the
+        // frequency typed.
+        message = refusalText(key);
+        Navigation.announce(sheet, messageLine, message + " " + currentText());
     }
 
     ReadableText {
@@ -229,6 +257,7 @@ ModalSheet {
         width: parent.width
         // The number of a row is the row's.
         visible: sheet.adding
+        input.readOnly: sheet.fieldsLocked
         label: qsTr("Channel number")
         mono: true
         inputMethodHints: Qt.ImhDigitsOnly
@@ -260,6 +289,7 @@ ModalSheet {
         id: frequencyField
         width: parent.width
         fieldObjectName: "channelEditFrequency"
+        input.readOnly: sheet.fieldsLocked
         pixelSize: 26
         accepts: function (text) {
             return sheet.hzInRange(sheet.hzOf(text));
@@ -269,6 +299,18 @@ ModalSheet {
             if (saveButton.enabled && saveButton.inputValid)
                 saveButton.activate();
         }
+    }
+    // After a stale refusal: what the channel holds now, next to the value
+    // typed, so a retry is made knowing what it replaces.
+    ReadableText {
+        id: currentLine
+        objectName: "channelEditCurrent"
+        width: parent.width
+        visible: sheet.stale
+        text: sheet.stale ? sheet.currentText() : ""
+        wrapMode: Text.Wrap
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
     }
     // Only checked evidence that this carrier is the site's control channel
     // (a checked C_ALOHA or C_SYS_Parms while no call is followed) offers it.

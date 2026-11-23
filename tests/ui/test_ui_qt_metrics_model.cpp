@@ -3187,6 +3187,7 @@ test_dmr_tier3_readings() {
     expect("no view: no Tier III, nothing missing", !model.dmrTier3() && model.noFreqCount() == 0);
     state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
     view.present = 1U;
+    view.dmr_decoding = 1U;
     view.tier3_unchecked = 1U;
     for (uint16_t lpcn : {12U, 40U, 900U}) {
         view.missing.missing[lpcn >> 3] = static_cast<uint8_t>(view.missing.missing[lpcn >> 3] | (1U << (lpcn & 7U)));
@@ -3231,6 +3232,16 @@ test_dmr_tier3_readings() {
     view.other_system_here = 0U;
     model.refresh(&opts, &state);
     expect("back on the Tier III system, the route is back",
+           model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
+    /* Review gate b-r4 S10: a live mode change left DMR off. No Tier III lookup reads the channels and the decoder
+       refuses every edit: no route opens, and nothing reads as missing. */
+    view.dmr_decoding = 0U;
+    model.refresh(&opts, &state);
+    expect("a session not decoding DMR opens no editor",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
+    view.dmr_decoding = 1U;
+    model.refresh(&opts, &state);
+    expect("decoding DMR again, the route is back",
            model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
     view.tier3 = 0U;
     view.overrides_applied = 0U;

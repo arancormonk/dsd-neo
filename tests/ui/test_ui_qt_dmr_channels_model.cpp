@@ -91,6 +91,7 @@ void
 seed_view() {
     DSD_MEMSET(&g_fixture->view, 0, sizeof g_fixture->view);
     g_fixture->view.present = 1U;
+    g_fixture->view.dmr_decoding = 1U;
     g_fixture->view.tier3 = 1U;
     g_fixture->view.cc_confirmed_here = 1U;
     g_fixture->view.cc_hz = 451000000L;
@@ -312,6 +313,94 @@ test_other_system_offers_no_edits() {
     g_fixture->opts->trunk_scan_enabled = 0;
 }
 
+/* Review gate b-r4 S6: a grant heard again on a channel with no frequency moves the ledger, so the view's body is
+ * copied anew; only the missing rows are built again, not one row per mapped channel (a map can hold 4094). A name
+ * learned builds none either. What a Channels row shows (a frequency DMR uses, an origin, one of the user's entries)
+ * builds them again. */
+void
+test_repeated_grant_builds_only_the_missing_rows() {
+    seed_view();
+    for (uint16_t lpcn = 100U; lpcn <= 4094U; ++lpcn) {
+        g_fixture->view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_FILE;
+        set_row(lpcn, 460000000L + 12500L * (lpcn - 100L));
+    }
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("the first read builds the Channels rows once", model.channelRowBuilds() == 1U);
+    int missingSignals = 0, channelSignals = 0;
+    QObject::connect(&model, &dsd_qt::DmrChannelsModel::missingChanged, [&]() { ++missingSignals; });
+    QObject::connect(&model, &dsd_qt::DmrChannelsModel::channelsChanged, [&]() { ++channelSignals; });
+    for (int grant = 1; grant <= 5; ++grant) {
+        g_fixture->view.missing.details[0].last_heard_ms += 1000U; // channel 12 granted again
+        g_fixture->view.missing.revision++;
+        g_fixture->view.content_seq++;
+        model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    }
+    expect("repeated grants build no Channels row", model.channelRowBuilds() == 1U && channelSignals == 0);
+    expect("and refresh the missing rows",
+           missingSignals == 5 && model.missing().at(0).toMap().value("lastHeardMs").toLongLong() == 7000);
+    dsd_tg_policy_entry entry = {};
+    expect("a talkgroup name",
+           dsd_tg_policy_make_exact_entry(1234U, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0
+               && dsd_tg_policy_append_exact(g_fixture->state.get(), &entry) == 0);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a name learned renames a missing row and builds no Channels row",
+           model.channelRowBuilds() == 1U && missingSignals == 6
+               && model.missing().at(0).toMap().value("recipientName").toString() == QStringLiteral("Dispatch"));
+    set_row(18U, 451025000L);
+    g_fixture->view.revision++;
+    g_fixture->view.content_seq++;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a frequency DMR uses moved: built again", model.channelRowBuilds() == 2U && channelSignals == 1
+                                                          && model.channel(18).value("hz").toLongLong() == 451025000);
+    g_fixture->view.overlay[0].base_hz = 451112500L;
+    g_fixture->view.content_seq++;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("what Restore shows moved: built again",
+           model.channelRowBuilds() == 3U && model.channel(20).value("baseHz").toLongLong() == 451112500);
+    g_fixture->view.origin[22] = DSD_UI_DMR_T3_ORIGIN_UNVERIFIED;
+    g_fixture->view.content_seq++;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("an origin moved: built again",
+           model.channelRowBuilds() == 4U
+               && model.channel(22).value("origin").toString() == QStringLiteral("unchecked"));
+    g_fixture->view.other_system_here = 1U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    g_fixture->view.other_system_here = 0U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("rows dropped for another system are built again on the way back",
+           model.channelRowBuilds() == 5U && model.channels().size() == 4002);
+    dsd_state_ext_free_all(g_fixture->state.get());
+    g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
+    DSD_MEMSET(g_fixture->state->trunk_chan_map, 0, sizeof g_fixture->state->trunk_chan_map);
+}
+
+/* Review gate b-r4 S10: a live mode change left DMR off (dmr_decoding 0). No Tier III lookup reads the channels, and
+ * the decoder refuses every edit, so an open sheet lists no rows and offers no edit, as for another system, until DMR
+ * is decoded again; the flag moves the rows by itself. */
+void
+test_not_decoding_dmr_offers_no_edits() {
+    seed_view();
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("decoding DMR offers edits", model.editable() && model.dmrDecoding());
+    g_fixture->view.dmr_decoding = 0U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("not decoding DMR: no edits", !model.editable() && !model.dmrDecoding() && !model.otherSystemHere());
+    expect("and no Tier III rows",
+           model.missing().isEmpty() && model.missingCount() == 0 && model.channels().isEmpty());
+    expect("and no channel to edit", !model.channel(20).value("valid").toBool());
+    g_fixture->view.dmr_decoding = 1U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("decoding DMR again: the rows and the edits are back", model.editable() && model.missingCount() == 3
+                                                                      && model.channels().size() == 7
+                                                                      && model.channel(20).value("valid").toBool());
+    model.clear();
+    expect("no session is not read as DMR off", model.dmrDecoding());
+}
+
 void
 test_origin_keys() {
     expect("no origin has no key", dsd_qt::DmrChannelsModel::originKey(DSD_UI_DMR_T3_ORIGIN_NONE, false).isEmpty());
@@ -335,6 +424,8 @@ main(int argc, char** argv) {
     test_no_churn();
     test_rows_read_the_effective_frequency();
     test_other_system_offers_no_edits();
+    test_repeated_grant_builds_only_the_missing_rows();
+    test_not_decoding_dmr_offers_no_edits();
     test_origin_keys();
     g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
     dsd_state_ext_free_all(g_fixture->state.get());

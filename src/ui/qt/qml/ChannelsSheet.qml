@@ -13,9 +13,10 @@ import "Util.js" as Util
 // editor; an edit is kept on the saved system the session runs (the bridge
 // does that once the decoder applied it), and a save that failed can be tried
 // again. Under a trunk scan the channels are read-only; on another system's
-// carrier none is listed or changed; and while a save is owed for the
-// session's system nothing more is changed until Try saving again saves it,
-// so the saved list never takes the edits in another order than the live one.
+// carrier, or in a session no longer decoding DMR, none is listed or changed;
+// and while a save is owed for the session's system nothing more is changed
+// until Try saving again saves it, so the saved list never takes the edits in
+// another order than the live one.
 ModalSheet {
     id: sheet
     objectName: "channelsSheet"
@@ -64,22 +65,28 @@ ModalSheet {
     // words (lockText). A save owed for the session's system comes first to
     // be fixed (fail closed): an edit made after it could be saved before it.
     readonly property bool otherSystem: channels.otherSystemHere === true
+    // A live mode change left DMR off: no Tier III lookup reads the channels.
+    readonly property bool notDecoding: channels.dmrDecoding === false
+    // Either way no Tier III row is listed.
+    readonly property bool noTier3Here: otherSystem || notDecoding
     readonly property bool saveOwedHere: owedSaveCount > 0 && owedFor(String(channels.sessionSystemUid))
-    readonly property string lockNote: otherSystem
-        ? qsTr("dsd-neo is on another system now, so Tier III channels can't be changed here.")
+    readonly property string lockNote: notDecoding
+        ? qsTr("This session isn't decoding DMR now, so channels can't be changed.")
+        : otherSystem ? qsTr("dsd-neo is on another system now, so Tier III channels can't be changed here.")
         : channels.trunkScanActive === true ? qsTr("Channel editing is available when one system is running.")
         : ""
     readonly property string saveFirstText: qsTr("Save the earlier change first: Try saving again.")
     readonly property string lockText: lockNote.length ? lockNote : saveOwedHere ? saveFirstText : ""
     readonly property bool readOnly: lockText.length > 0
-    onOtherSystemChanged: {
-        if (otherSystem)
-            Qt.callLater(sheet.otherSystemArrived);
+    onNoTier3HereChanged: {
+        if (noTier3Here)
+            Qt.callLater(sheet.noTier3Arrived);
     }
-    // The carrier now names another system: its rows went. Said once, and the
-    // focus moves to the words that say why when it was on a row that went.
-    function otherSystemArrived() {
-        if (!visible || !otherSystem)
+    // The carrier now names another system, or DMR is no longer decoded: the
+    // rows went. Said once, and the focus moves to the words that say why
+    // when it was on a row that went.
+    function noTier3Arrived() {
+        if (!visible || !noTier3Here)
             return;
         followLpcn = 0;
         Navigation.announce(sheet, readOnlyNote, lockNote);
@@ -394,8 +401,9 @@ ModalSheet {
     function follow() {
         if (followLpcn <= 0 || !visible)
             return;
-        // Another system's carrier lists no rows to follow.
-        if (otherSystem) {
+        // Another system's carrier lists no rows to follow, nor does a session
+        // not decoding DMR.
+        if (noTier3Here) {
             followLpcn = 0;
             return;
         }
@@ -624,11 +632,12 @@ ModalSheet {
         onClicked: sheet.retrySaves()
     }
 
-    // Another system's carrier has no Tier III channels to list.
+    // Another system's carrier, or a session not decoding DMR, has no Tier
+    // III channels to list.
     MicroLabel {
         objectName: "channelsMissingLabel"
         topPadding: 6
-        visible: !sheet.otherSystem
+        visible: !sheet.noTier3Here
         text: qsTr("No frequency")
     }
     ReadableText {
@@ -647,7 +656,7 @@ ModalSheet {
     ReadableText {
         objectName: "channelsMissingEmpty"
         width: parent.width
-        visible: missingRows.live === 0 && !sheet.otherSystem
+        visible: missingRows.live === 0 && !sheet.noTier3Here
         text: qsTr("No unresolved grants recorded.")
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -789,6 +798,10 @@ ModalSheet {
         parent: sheet
         channels: sheet.channels
         pending: sheet.request > 0
+        sentPending: sent > 0 && sent === sheet.request
+        originText: function (origin) {
+            return sheet.originText(origin);
+        }
         lockedText: sheet.lockText
         waiting: sheet.requestSlow && sent > 0 && sent === sheet.request
         waitingText: sheet.waitingText
