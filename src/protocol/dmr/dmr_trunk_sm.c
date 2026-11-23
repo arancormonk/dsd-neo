@@ -358,6 +358,9 @@ resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
     return 0;
 }
 
+/* Whether @p lpcn's channel-map frequency may be acted on: always on the control channel; off it, unless the mapping
+   was learned off the control channel and is still unconfirmed (dmr_lcn_trust 1). A mapping the operator imported or
+   the heuristic filled in (0) or one learned on the control channel (2) is usable anywhere. */
 static int
 lpcn_is_trusted(const dsd_opts* opts, const dsd_state* state, int lpcn) {
     if (!state || lpcn <= 0 || lpcn >= 0x1000) {
@@ -365,7 +368,7 @@ lpcn_is_trusted(const dsd_opts* opts, const dsd_state* state, int lpcn) {
     }
     uint8_t trust = state->dmr_lcn_trust[lpcn];
     int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
-    return trust >= 2 || on_cc;
+    return trust != 1U || on_cc;
 }
 
 /* The carrier grant @p ev names: its explicit frequency, else its LPCN's mapped frequency where that mapping may be

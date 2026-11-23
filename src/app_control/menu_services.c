@@ -742,10 +742,11 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * svc_clear_channel_map()'s job, so nothing needs the merge to express it.
  *
  * dmr_lcn_trust is provenance for the map, not a separate table: leaving it
- * behind would let a stale "learned on the control channel" byte authorize an
- * off-CC tune to a frequency that only the new CSV asserts. Clearing it matches
- * what -C produces at startup, and dmr_learn_chan_map() re-earns trust for any
- * LCN the new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
+ * behind would let a stale "learned off the control channel, unconfirmed" byte
+ * refuse an off-CC tune to a frequency the new CSV asserts (lpcn_is_trusted()
+ * acts on an imported mapping anywhere). Clearing it matches what -C produces
+ * at startup, and dmr_learn_chan_map() records provenance again for any LCN the
+ * new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
  *
  * The per-row name store is part of the map for the same reason: names are
@@ -966,8 +967,8 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     state->scan_visit_roll_seen = 0;
     state->scan_visit_rearm_pending = 0U;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
-    // "learned on the control channel" byte would authorize an off-CC tune to a
-    // frequency no longer in the map.
+    // "learned off the control channel, unconfirmed" byte would refuse an off-CC
+    // tune to whatever frequency is mapped there next.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
     dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;

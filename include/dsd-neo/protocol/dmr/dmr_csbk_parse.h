@@ -39,7 +39,8 @@ struct dmr_csbk_result {
     uint32_t target;
     uint32_t source;
 
-    /* Optional resolved frequency in Hz when known (0 if unknown). */
+    /* The frequency in Hz the grant states on air, 0 when it states none: a logical grant's LPCN is resolved, and its
+       mapping trusted or not, by the trunk state machine (never looked up here). */
     long freq_hz;
 
     /* The grant's classification and talkgroup policy verdict, as the CSBK layer judged it (dmr_csbk_handle() hands

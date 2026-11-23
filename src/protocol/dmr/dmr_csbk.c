@@ -470,18 +470,6 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
     }
 }
 
-static uint16_t
-dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
-                                uint8_t appended_blocks, long int* freq) {
-    if (lpchannum == 0xFFF) {
-        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, appended_blocks, freq);
-    }
-    if (lpchannum != 0) {
-        *freq = state->trunk_chan_map[lpchannum];
-    }
-    return 0;
-}
-
 /* The grant's call channel, the one value the trunk state machine, the call and the policy route all name: its LPCN, or
    for the absolute escape the LPCN its MBC's CdefParms define; 0 when that names no channel (TS 102 361-4
    §7.1.1.1.1.1.1, §7.2.42 Table 7.103). */
@@ -489,6 +477,18 @@ static uint16_t
 dmr_cspdu_pf0_call_channel(uint16_t lpchannum, uint16_t mbc_lpchannum) {
     const uint16_t channel = lpchannum == 0xFFF ? mbc_lpchannum : lpchannum;
     return dmr_t3_lpcn_is_channel(channel) ? channel : 0U;
+}
+
+/* The carrier a grant names for its printout, activity row and dispatch check: the frequency it states on air
+   (@p air_freq, the absolute escape's), else its call channel's channel-map frequency, trusted or not; 0 when neither
+   names one. Only @p air_freq goes to the trunk state machine, which resolves and trusts a mapping itself
+   (dmr_sm_grant_freq()). */
+static long int
+dmr_cspdu_pf0_named_freq(const dsd_state* state, uint16_t call_channel, long int air_freq) {
+    if (air_freq != 0 || call_channel == 0U) {
+        return air_freq;
+    }
+    return state->trunk_chan_map[call_channel];
 }
 
 static void
@@ -515,11 +515,11 @@ dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpcha
    1 when it did: the grant itself is not followed. */
 static int
 dmr_cspdu_pf0_note_assignment(dsd_opts* opts, dsd_state* state, int csbk_o, uint8_t lcn, uint16_t call_channel,
-                              long int freq, uint32_t target, uint32_t source) {
+                              long int air_freq, uint32_t target, uint32_t source) {
     const int lpcn = (int)call_channel;
     dmr_sm_event_t ev = dmr_cspdu_pf0_is_group_grant_opcode(csbk_o)
-                            ? dmr_sm_ev_group_grant(freq, lpcn, (int)target, (int)source)
-                            : dmr_sm_ev_indiv_grant(freq, lpcn, (int)target, (int)source);
+                            ? dmr_sm_ev_group_grant(air_freq, lpcn, (int)target, (int)source)
+                            : dmr_sm_ev_indiv_grant(air_freq, lpcn, (int)target, (int)source);
     ev.slot = (int)(lcn & 1U);
     ev.channel_kind = call_channel != 0U ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
     if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
@@ -545,9 +545,10 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
 
 static void
 dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
-                                 int data_call, uint16_t call_channel, long int freq, uint32_t target,
+                                 int data_call, uint16_t call_channel, long int air_freq, uint32_t target,
                                  uint32_t source) {
-    if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
+    if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1
+        || dmr_cspdu_pf0_named_freq(state, call_channel, air_freq) == 0) {
         return;
     }
 
@@ -568,7 +569,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
         return;
     }
-    res.freq_hz = freq;
+    res.freq_hz = air_freq;
     res.lpcn = call_channel;
     res.opcode = (uint8_t)csbk_o;
     res.target = target;
@@ -593,7 +594,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     }
 
     DSD_FPRINTF(stderr, "\n");
-    long int freq = 0;
+    long int air_freq = 0; // the frequency the grant states on air: only the absolute escape's
     DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
 
     uint16_t lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
@@ -613,21 +614,24 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     }
     dmr_gateway_identifier(source, target);
 
-    uint16_t mbc_lpchannum =
-        dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, appended_blocks, &freq);
+    uint16_t mbc_lpchannum = 0U;
+    if (lpchannum == 0xFFF) {
+        mbc_lpchannum = dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, appended_blocks, &air_freq);
+    }
+    const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
+    const long int freq = dmr_cspdu_pf0_named_freq(state, call_channel, air_freq);
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
 
-    const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
     int data_call = 0;
-    if (dmr_cspdu_pf0_note_assignment(opts, state, csbk_o, lcn, call_channel, freq, target, source)
+    if (dmr_cspdu_pf0_note_assignment(opts, state, csbk_o, lcn, call_channel, air_freq, target, source)
         || !dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq)) {
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, call_channel, freq, target,
-                                     source);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, call_channel, air_freq,
+                                     target, source);
 }
 
 /* The absolute escape of a C_MOVE: the TSCC's frequency is in the MV_AP block appended to the MBC header (TS 102 361-4

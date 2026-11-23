@@ -1288,6 +1288,53 @@ test_unfollowed_reassignment_ends_the_assignment(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* A grant's carrier from the channel map counts off the control channel unless lpcn_is_trusted() refuses the mapping:
+   one learned off the control channel and still unconfirmed (trust 1). TS1 is followed for TG 1100; a TV_GRANT for
+   TG 2200 on TS1 names an LPCN mapped to the followed carrier. Learned off the control channel, the mapping is refused
+   and the follow stands; imported (trust 0) or learned on the control channel (trust 2), the grant ends the
+   assignment. Likewise a Hold grant for TG 2200 on an LPCN mapped to another carrier is refused at trust 1 and followed
+   at trust 0 or 2. */
+static int
+test_untrusted_lpcn_mapping_names_no_carrier(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    int rc = 0;
+    for (uint8_t trust = 0U; trust <= 2U; trust++) {
+        init_env(opts, st, 2.0);
+        tv_grant(opts, st, LPCN_A, 0, 1100, 1);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        st->trunk_chan_map[lpcn_d] = VC_A;
+        st->dmr_lcn_trust[lpcn_d] = trust;
+        clock_at(0.3);
+        tv_grant(opts, st, lpcn_d, 0, 2200, 2);
+        const int kept = sm()->state == DMR_SM_TUNED && sm()->vc_tg == 1100 && opts->trunk_is_tuned == 1;
+        const int ended = sm()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0;
+        if (trust == 1U) {
+            rc |= expect_true("an unconfirmed learned mapping to the followed carrier keeps the follow", kept);
+        } else {
+            rc |= expect_true("an imported or confirmed mapping to the followed carrier ends the assignment", ended);
+        }
+
+        init_env(opts, st, 2.0);
+        tv_grant(opts, st, LPCN_A, 0, 1100, 1);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        st->trunk_chan_map[lpcn_d] = VC_B;
+        st->dmr_lcn_trust[lpcn_d] = trust;
+        st->tg_hold = 2200;
+        tv_grant(opts, st, lpcn_d, 0, 2200, 2);
+        if (trust == 1U) {
+            rc |= expect_true("a hold grant with an unconfirmed learned mapping is not followed",
+                              vc(st) == VC_A && sm()->vc_tg == 1100 && g_tunes == 1);
+        } else {
+            rc |= expect_true("a hold grant with an imported or confirmed mapping is followed",
+                              vc(st) == VC_B && sm()->vc_tg == 2200 && g_tunes == 2);
+        }
+        st->tg_hold = 0;
+    }
+    return rc;
+}
+
 /* A media change on the followed slot retires that slot's assignment alone: TS1 is followed for TG 300 while TS2 carries
    live voice for TG 100. A data grant for TS1 ends TS1's call and record, while the receiver stays on the carrier for
    the TS2 call, which goes on as the same call. A voice grant repeated for TS1 is then a new assignment of that slot;
@@ -1796,6 +1843,7 @@ main(void) {
     rc |= test_media_change_keeps_a_live_companion(opts, st);
     rc |= test_media_change_release_retries(opts, st);
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
+    rc |= test_untrusted_lpcn_mapping_names_no_carrier(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);

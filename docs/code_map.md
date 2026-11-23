@@ -13638,10 +13638,15 @@ Private per-protocol modules worth knowing about:
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
     slot names, or of the grant followed there, keeps record and follow time. A grant's carrier is its explicit
-    frequency, else its LPCN's mapping only where that mapping is trusted (`dmr_sm_grant_freq()`, `lpcn_is_trusted()`:
-    confirmed, or heard on the control channel): an LPCN-only grant whose mapping is unconfirmed off the control channel
-    names no carrier, so it neither tunes nor ends the followed assignment, whatever frequency the mapping holds
-    (`test_untrusted_lpcn_grant_keeps_followed_slot()`). A checked grant (not a channel status)
+    frequency, else its LPCN's mapping unless `lpcn_is_trusted()` refuses it (`dmr_sm_grant_freq()`): off the control
+    channel, a mapping learned off the control channel and still unconfirmed (`dmr_lcn_trust` 1) names no carrier, so
+    the grant neither tunes nor ends the followed assignment, whatever frequency the mapping holds; one imported from a
+    channel map CSV or filled in by the heuristic (0), or learned on the control channel (2), is acted on anywhere, as
+    is any mapping for a grant heard on the control channel. The Tier III CSBK layer therefore hands the machine only
+    the frequency a grant states on air (the absolute escape's) and a logical grant's LPCN, never a channel-map lookup
+    of its own; its printout, activity row and dispatch check still show the mapping (`dmr_cspdu_pf0_named_freq()`;
+    `test_untrusted_lpcn_mapping_names_no_carrier()` in `test_dmr_preempt.c`, through `dmr_cspdu()`, and
+    `test_untrusted_lpcn_grant_keeps_followed_slot()`). A checked grant (not a channel status)
     for the followed slot of the followed carrier that names another call than the slot is followed for
     (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
