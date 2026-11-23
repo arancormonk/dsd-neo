@@ -1942,116 +1942,6 @@ send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
 }
 
 /*
- * An IDAS call's own scrambler survives its numbered party (issue #903): a confirmed DCR call is received with the
- * scrambler (its SB0 messages' cipher field), then an IDAS call's INFO1 names the scrambler under key ID 5 and its
- * INFO3 the numbered source. The DCR call's received cipher is not the new call's, but the INFO1's is: the call keeps
- * the scrambler. The INFO1 is the new call's, not the DCR call's: the DCR call's crypto stays its own, and the
- * numbered call's names the INFO1's cipher and key.
- */
-static int
-test_info1_cipher_survives_the_numbered_party(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    init_sacch2_state(state, histories);
-    dsd_decode_clock_test_set_ns(1000000000000ULL);
-    state->R = 0x1234ULL;
-    static const uint8_t m_data[5] = {0U};
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
-    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
-    for (int i = 0; i < 2; i++) {
-        nxdn_confirm_begin_frame(state);
-        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    }
-    dsd_call_snapshot call;
-    int rc = expect_int("info1-after-dcr-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_str("info1-after-dcr-dcr-text", call.target_text, "JPN DCR");
-    rc |= expect_int("info1-after-dcr-dcr-scrambler", (int)state->nxdn_cipher_type, 1);
-    const dsd_call_snapshot dcr = call;
-
-    state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
-    send_outbound_scch(opts, state, 3U);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("info1-after-dcr-still-the-dcr-call", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("info1-after-dcr-dcr-crypto", (int)call.crypto, (int)dcr.crypto);
-    rc |= expect_int("info1-after-dcr-dcr-algid", (int)call.algid, (int)dcr.algid);
-    rc |= expect_int("info1-after-dcr-dcr-kid", (int)call.kid, (int)dcr.kid);
-    send_outbound_scch(opts, state, 1U);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("info1-after-dcr-numbered-source", (int)call.ota_source_id, 123);
-    rc |= expect_int("info1-after-dcr-numbered-call", call.epoch != dcr.epoch, 1);
-    rc |= expect_int("info1-after-dcr-numbered-crypto", call.crypto != DSD_CALL_CRYPTO_UNKNOWN, 1);
-    rc |= expect_int("info1-after-dcr-numbered-algid", (int)call.algid, 1);
-    rc |= expect_int("info1-after-dcr-numbered-kid", (int)call.kid, 5);
-    rc |= expect_int("info1-after-dcr-cipher-kept", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("info1-after-dcr-received-scrambler", (int)state->nxdn_cipher_rx_class, 2);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
- * A held INFO1 cipher belongs to the transmission that was starting (issue #903): a confirmed DCR call A is received
- * with the scrambler, an IDAS INFO1 names the scrambler under key ID 5, and no numbered SCCH follows. A ends, and a
- * clear DCR call B (its SB0 cipher field clear: no cipher observation) starts on the carrier; B's numbered INFO3 opens
- * another call. Neither the INFO1's key nor its scrambler is that call's: it is published with no crypto, and the
- * decoder does not descramble it.
- */
-static int
-test_held_info1_cipher_never_lands_on_a_later_call(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    init_sacch2_state(state, histories);
-    dsd_decode_clock_test_set_ns(1000000000000ULL);
-    state->R = 0x1234ULL;
-    static const uint8_t m_data[5] = {0U};
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
-    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
-    for (int i = 0; i < 3; i++) {
-        nxdn_confirm_begin_frame(state);
-        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    }
-    dsd_call_snapshot call;
-    int rc = expect_int("held-info1-dcr-a", dsd_call_state_get(state, 0U, &call), 1);
-    const uint64_t dcr_a = call.epoch;
-    state->last_vc_sync_time = dsd_decode_time();
-    send_outbound_scch(opts, state, 3U);
-    rc |= expect_int("held-info1-scrambler-applied", (int)state->nxdn_cipher_type, 1);
-
-    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
-    dsd_decode_clock_test_set_ns(1010000000000ULL);
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U); // cipher field clear
-    for (int i = 0; i < 2; i++) {
-        nxdn_confirm_begin_frame(state);
-        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    }
-    rc |= expect_int("held-info1-dcr-b", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_int("held-info1-dcr-b-is-another-call", call.epoch != dcr_a, 1);
-    rc |= expect_str("held-info1-dcr-b-text", call.target_text, "JPN DCR");
-    const uint64_t dcr_b = call.epoch;
-
-    state->last_vc_sync_time = dsd_decode_time();
-    send_outbound_scch(opts, state, 1U);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("held-info1-numbered-call", call.epoch != dcr_b && call.ota_source_id == 123U, 1);
-    rc |= expect_int("held-info1-numbered-no-crypto", (int)call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
-    rc |= expect_int("held-info1-numbered-no-kid", (int)call.kid, 0);
-    rc |= expect_int("held-info1-scrambler-forgotten", (int)state->nxdn_cipher_type, 0);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
  * The DCR provenance stays with the cipher that stays applied (issue #903): a confirmed DCR call is received with the
  * scrambler, then a clear VCALL (an IDAS frame's, whose SCCH failed) contradicts it once: the hysteresis keeps the
  * scrambler. The cipher still applied is the DCR call's, so the next valid INFO3, another call's, forgets it.
@@ -2110,33 +2000,42 @@ establish_scrambled_dcr_call(dsd_opts* opts, dsd_state* state, Event_History_I* 
     return rc;
 }
 
+/* A confirmed transmission's numbered call 0x0123 -> 0x0456 opened by two clear VCALLs, the clear cipher established. */
+static void
+open_clear_numbered_call(dsd_opts* opts, dsd_state* state, Event_History_I* histories) {
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+}
+
 /*
- * A held INFO1 key stays paired with the cipher the hysteresis keeps (issue #903): during a scrambled DCR call two
- * INFO1s name the scrambler under key ID 5, then one clear INFO1 under key ID 0 contradicts them once and is held back.
- * The applied pair stays the scrambler under key 5, and the numbered call an INFO3 opens is published with that pair,
- * never the scrambler under key 0 that no INFO1 sent.
+ * An INFO1 key stays paired with the cipher the hysteresis keeps (issue #903): on a numbered call two INFO1s name the
+ * scrambler under key ID 5, then one clear INFO1 under key ID 0 contradicts them once and is held back. The applied pair
+ * stays the scrambler under key 5, and the call is published with that pair, never the scrambler under key 0 that no
+ * INFO1 sent. The same for a VCALL's cipher and key.
  */
 static int
-test_quarantined_info1_keeps_the_held_key(void) {
+test_quarantined_info1_keeps_the_applied_key(void) {
     static Event_History_I histories[2];
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (alloc_fixture(&opts, &state) != 0) {
         return 1;
     }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    open_clear_numbered_call(opts, state, histories);
     send_outbound_info1(opts, state, 1U, 5U);
     send_outbound_info1(opts, state, 1U, 5U);
     send_outbound_info1(opts, state, 0U, 0U);
-    rc |= expect_int("held-key-cipher-kept", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("held-key-kept", (int)state->nxdn_key, 5);
-    send_outbound_scch(opts, state, 1U);
+    int rc = expect_int("applied-key-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("applied-key-kept", (int)state->nxdn_key, 5);
     dsd_call_snapshot call;
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("held-key-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
-    rc |= expect_int("held-key-numbered-algid", (int)call.algid, 1);
-    rc |= expect_int("held-key-numbered-kid", (int)call.kid, 5);
+    rc |= expect_int("applied-key-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("applied-key-algid", (int)call.algid, 1);
+    rc |= expect_int("applied-key-kid", (int)call.kid, 5);
 
     /* The same pairing for a VCALL's cipher and key: two scrambled VCALLs under key 5 establish them, a lone clear VCALL
        under key 0 is held back, and the call keeps the scrambler under key 5. */
@@ -2147,97 +2046,10 @@ test_quarantined_info1_keeps_the_held_key(void) {
     make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 0U, 0U);
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("held-key-vcall-cipher-kept", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("held-key-vcall-key-kept", (int)state->nxdn_key, 5);
-    rc |= expect_int("held-key-vcall-kid", (int)call.kid, 5);
+    rc |= expect_int("applied-key-vcall-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("applied-key-vcall-key-kept", (int)state->nxdn_key, 5);
+    rc |= expect_int("applied-key-vcall-kid", (int)call.kid, 5);
     free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
- * No republication gives the DCR call the INFO1's cipher while it is held (issue #903): during a scrambled DCR call an
- * INFO1 names the scrambler under key ID 5, then a checked VCALL_IV comes before any numbered SCCH, and the DCR call
- * keeps its own crypto. Likewise when two INFO1s replaced the applied cipher with another (cipher 2 under key ID 6) and
- * the DCR call's next SACCH-2 scrambler is held back as a lone contradiction: the DCR call keeps its own algorithm.
- */
-static int
-test_held_info1_cipher_is_never_republished_on_the_dcr_call(void) {
-    static Event_History_I histories[2];
-    static const uint8_t m_data[5] = {0U};
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 1U, 5U);
-    uint8_t bits[96];
-    DSD_MEMSET(bits, 0, sizeof(bits));
-    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
-    write_bits_msb(bits, 8U, 32U, 0x11223344U);
-    write_bits_msb(bits, 40U, 32U, 0x55667788U);
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    dsd_call_snapshot call;
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("held-republish-iv-still-the-dcr-call", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("held-republish-iv-dcr-algid", (int)call.algid, (int)dcr.algid);
-    rc |= expect_int("held-republish-iv-dcr-kid", (int)call.kid, (int)dcr.kid);
-    free_fixture(opts, state);
-
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    rc |= establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 2U, 6U);
-    send_outbound_info1(opts, state, 2U, 6U);
-    rc |= expect_int("held-republish-info1-applied", (int)state->nxdn_cipher_type, 2);
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
-    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
-    nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("held-republish-sacch2-still-the-dcr-call", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("held-republish-sacch2-dcr-algid", (int)call.algid, (int)dcr.algid);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
- * A held INFO1 cipher is forgotten as soon as the next call's identity is, before that frame's voice (issue #903): DCR
- * call A is received with the scrambler and an INFO1 names the scrambler under key ID 5; A ends, and clear DCR call B's
- * first frame is the first segment of a multi-frame SB0 message, checked, which opens B though the message is not
- * complete. The INFO1's cipher is not B's: it is gone once that frame's SACCH-2 is read.
- */
-static int
-test_held_info1_cipher_expires_at_the_next_calls_first_segment(void) {
-    static Event_History_I histories[2];
-    static const uint8_t m_data[5] = {0U};
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 1U, 5U);
-    rc |= expect_int("held-expiry-scrambler-applied", (int)state->nxdn_cipher_type, 1);
-    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
-    dsd_decode_clock_test_set_ns(1010000000000ULL);
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 3U, 0x01U); /* the first of four segments, cipher field clear */
-    nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    dsd_call_snapshot call;
-    rc |= expect_int("held-expiry-dcr-b", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_int("held-expiry-dcr-b-is-another-call", call.epoch != dcr.epoch, 1);
-    rc |= expect_int("held-expiry-scrambler-forgotten", (int)state->nxdn_cipher_type, 0);
-    rc |= expect_int("held-expiry-key-forgotten", (int)state->nxdn_key, 0);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
     return rc;
 }
 
@@ -2279,82 +2091,6 @@ test_held_back_vcall_loads_no_key(void) {
     return rc;
 }
 
-/*
- * An INFO1 cipher held for a DCR transmission that has ended is forgotten before the next call's VCALL is classified
- * (issue #903): DCR call A is received with the scrambler and two INFO1s name the scrambler under key ID 5; A ends
- * between frames, and a checked VCALL of the next call names DES under key ID 7. The hysteresis starts from nothing,
- * not from A's held scrambler: DES under key 7 is applied and published, never the clear that forgetting the hold
- * after the VCALL left.
- */
-static int
-test_stale_info1_hold_expires_before_the_next_vcall(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 1U, 5U);
-    send_outbound_info1(opts, state, 1U, 5U);
-    rc |= expect_int("stale-vcall-held-scrambler", (int)state->nxdn_cipher_type, 1);
-    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
-    dsd_decode_clock_test_set_ns(1010000000000ULL);
-    uint8_t bits[96];
-    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    dsd_call_snapshot call;
-    rc |= expect_int("stale-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_int("stale-vcall-another-call", call.epoch != dcr.epoch && call.ota_target_id == 0x0456U, 1);
-    rc |= expect_int("stale-vcall-des-applied", (int)state->nxdn_cipher_type, 2);
-    rc |= expect_int("stale-vcall-key-applied", (int)state->nxdn_key, 7);
-    rc |= expect_int("stale-vcall-algid", (int)call.algid, 2);
-    rc |= expect_int("stale-vcall-kid", (int)call.kid, 7);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
- * A VCALL that opens the next call from the DCR transmission an INFO1 cipher is held for hands that call the hold, as
- * the SCCH opening it would (issue #903): during scrambled DCR call A, two INFO1s name the scrambler under key ID 5,
- * then a checked VCALL of the next call names DES under key ID 7 while A is still the live call. The lone VCALL is
- * held back against the INFO1s, and the call it opens is published with the INFO1s' scrambler under key 5, never as
- * clear; the VCALL's repeat applies DES under key 7.
- */
-static int
-test_vcall_opening_the_next_call_takes_the_held_info1_cipher(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 1U, 5U);
-    send_outbound_info1(opts, state, 1U, 5U);
-    uint8_t bits[96];
-    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    dsd_call_snapshot call;
-    rc |= expect_int("vcall-handoff-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_int("vcall-handoff-another-call", call.epoch != dcr.epoch && call.ota_target_id == 0x0456U, 1);
-    rc |= expect_int("vcall-handoff-scrambler-kept", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("vcall-handoff-algid", (int)call.algid, 1);
-    rc |= expect_int("vcall-handoff-kid", (int)call.kid, 5);
-    rc |= expect_int("vcall-handoff-not-clear", call.crypto != DSD_CALL_CRYPTO_CLEAR, 1);
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("vcall-handoff-repeat-des", (int)state->nxdn_cipher_type, 2);
-    rc |= expect_int("vcall-handoff-repeat-algid", (int)call.algid, 2);
-    rc |= expect_int("vcall-handoff-repeat-kid", (int)call.kid, 7);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
 /* NXDN48 with the keyloader on, keys 5 = 0x7777 and 7 = 0x2222, and the working key 0x1234 a previous call left. */
 static void
 use_nxdn48_keyloader(dsd_opts* opts, dsd_state* state) {
@@ -2368,17 +2104,16 @@ use_nxdn48_keyloader(dsd_opts* opts, dsd_state* state) {
 }
 
 /*
- * The key an accepted INFO1 selects is the working key, as a VCALL's is, once the INFO1 has taken effect (issue #903).
- * During a scrambled DCR call an INFO1 names the scrambler under key ID 5: held for the call an SCCH opens from that
- * transmission, it has not taken effect, so R stays the DCR call's while the DCR call keeps transmitting (a checked SB0
- * that names no cipher). The numbered call an INFO3 then opens takes the held pair: it reports key 5 with key 5 in R.
- * The same for an INFO1 on an IDAS call of its own: two INFO1s naming the scrambler under key ID 7 load key 7. A lone
- * INFO1 naming DES under key ID 5 then is held back and loads nothing.
+ * An INFO1 heard during a DCR call is neither applied nor kept (issue #903): it is not the DCR call's, and names a call
+ * no SCCH has opened yet. A confirmed DCR call is received with the scrambler, the keyloader on NXDN48 holding keys 5
+ * and 7. Two INFO1s naming the scrambler under key ID 5, then two naming DES under key ID 7, leave the DCR call's
+ * cipher, key ID, origin and working key as they were, and its published crypto too, a VCALL_IV's republication
+ * included. The numbered call an INFO3 then opens inherits none of them: it is published with no crypto, with no key
+ * loaded, and the DCR call's scrambler is forgotten. Its own INFO1s then apply as on any call, with their key.
  */
 static int
-test_accepted_info1_loads_its_key(void) {
+test_info1_during_a_dcr_call_is_neither_applied_nor_held(void) {
     static Event_History_I histories[2];
-    static const uint8_t m_data[5] = {0U};
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (alloc_fixture(&opts, &state) != 0) {
@@ -2388,72 +2123,75 @@ test_accepted_info1_loads_its_key(void) {
     int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
     use_nxdn48_keyloader(opts, state);
     send_outbound_info1(opts, state, 1U, 5U);
-    rc |= expect_int("info1-key-held-keeps-dcr-key", state->R == 0x1234ULL ? 1 : 0, 1);
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U); /* the DCR call goes on: an SB0 naming no cipher */
-    nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 2U, 7U);
+    send_outbound_info1(opts, state, 2U, 7U);
     dsd_call_snapshot call;
     (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("info1-key-dcr-goes-on", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("info1-key-still-held", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR);
-    rc |= expect_int("info1-key-dcr-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
-    send_outbound_scch(opts, state, 1U);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("info1-key-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
-    rc |= expect_int("info1-key-numbered-kid", (int)call.kid, 5);
-    rc |= expect_int("info1-key-handed-over-loaded", state->R == 0x7777ULL ? 1 : 0, 1);
+    rc |= expect_int("info1-during-dcr-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("info1-during-dcr-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-during-dcr-key-id-kept", (int)state->nxdn_key, 0);
+    rc |= expect_int("info1-during-dcr-origin-kept", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    rc |= expect_int("info1-during-dcr-working-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
+    rc |= expect_int("info1-during-dcr-crypto", (int)call.crypto, (int)dcr.crypto);
+    rc |= expect_int("info1-during-dcr-algid", (int)call.algid, (int)dcr.algid);
+    rc |= expect_int("info1-during-dcr-kid", (int)call.kid, (int)dcr.kid);
 
-    send_outbound_info1(opts, state, 1U, 7U);
-    send_outbound_info1(opts, state, 1U, 7U);
-    rc |= expect_int("info1-key-idas-kid", (int)state->nxdn_key, 7);
-    rc |= expect_int("info1-key-idas-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
-    send_outbound_info1(opts, state, 2U, 5U);
-    rc |= expect_int("info1-key-held-back-cipher", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("info1-key-held-back-loads-nothing", state->R == 0x2222ULL ? 1 : 0, 1);
-    free_fixture(opts, state);
-    dsd_decode_clock_use_system();
-    return rc;
-}
-
-/*
- * A DCR SACCH-2 whose scrambler matches a held INFO1's makes the applied cipher the DCR call's again, with DCR's own key
- * ID, which it carries none of (issue #903): during a scrambled DCR call an INFO1 names the scrambler under key ID 5,
- * then the DCR call's next SB0 names the scrambler. The applied key ID is no longer the INFO1's, and a VCALL_IV after
- * it publishes no key ID on the DCR call.
- */
-static int
-test_dcr_reclaim_drops_the_info1_key(void) {
-    static Event_History_I histories[2];
-    static const uint8_t m_data[5] = {0U};
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (alloc_fixture(&opts, &state) != 0) {
-        return 1;
-    }
-    dsd_call_snapshot dcr;
-    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
-    send_outbound_info1(opts, state, 1U, 5U);
-    rc |= expect_int("dcr-reclaim-info1-key", (int)state->nxdn_key, 5);
-    uint8_t trellis[32];
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
-    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
-    nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    rc |= expect_int("dcr-reclaim-origin", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
-    rc |= expect_int("dcr-reclaim-key-id", (int)state->nxdn_key, 0);
     uint8_t bits[96];
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
     write_bits_msb(bits, 8U, 32U, 0x11223344U);
     write_bits_msb(bits, 40U, 32U, 0x55667788U);
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    dsd_call_snapshot call;
     (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("dcr-reclaim-still-the-dcr-call", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("dcr-reclaim-iv-kid", (int)call.kid, 0);
+    rc |= expect_int("info1-during-dcr-iv-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("info1-during-dcr-iv-algid", (int)call.algid, (int)dcr.algid);
+    rc |= expect_int("info1-during-dcr-iv-kid", (int)call.kid, (int)dcr.kid);
+    rc |= expect_int("info1-during-dcr-iv-working-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
+
+    send_outbound_scch(opts, state, 1U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-during-dcr-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
+    rc |= expect_int("info1-during-dcr-numbered-no-crypto", (int)call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
+    rc |= expect_int("info1-during-dcr-numbered-no-algid", (int)call.algid, 0);
+    rc |= expect_int("info1-during-dcr-numbered-no-kid", (int)call.kid, 0);
+    rc |= expect_int("info1-during-dcr-dcr-scrambler-forgotten", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("info1-during-dcr-numbered-no-key-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
+
+    send_outbound_info1(opts, state, 1U, 7U);
+    send_outbound_info1(opts, state, 1U, 7U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-during-dcr-own-info1-cipher", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-during-dcr-own-info1-kid", (int)call.kid, 7);
+    rc |= expect_int("info1-during-dcr-own-info1-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
+ * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
+ * held back and loads nothing.
+ */
+static int
+test_accepted_info1_loads_its_key(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    use_nxdn48_keyloader(opts, state);
+    send_outbound_info1(opts, state, 1U, 7U);
+    send_outbound_info1(opts, state, 1U, 7U);
+    int rc = expect_int("info1-key-kid", (int)state->nxdn_key, 7);
+    rc |= expect_int("info1-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
+    send_outbound_info1(opts, state, 2U, 5U);
+    rc |= expect_int("info1-key-held-back-cipher", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-key-held-back-loads-nothing", state->R == 0x2222ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
     return rc;
 }
 
@@ -2603,17 +2341,11 @@ main(void) {
     rc |= test_nxdn_history_mi_only_from_received_iv();
     rc |= test_sacch_superframe_position_stays_with_the_frame();
     rc |= test_nxdn_keeps_the_shared_register();
-    rc |= test_info1_cipher_survives_the_numbered_party();
     rc |= test_quarantined_contradiction_keeps_the_dcr_provenance();
-    rc |= test_held_info1_cipher_never_lands_on_a_later_call();
-    rc |= test_quarantined_info1_keeps_the_held_key();
-    rc |= test_held_info1_cipher_is_never_republished_on_the_dcr_call();
-    rc |= test_held_info1_cipher_expires_at_the_next_calls_first_segment();
+    rc |= test_quarantined_info1_keeps_the_applied_key();
     rc |= test_held_back_vcall_loads_no_key();
-    rc |= test_stale_info1_hold_expires_before_the_next_vcall();
-    rc |= test_vcall_opening_the_next_call_takes_the_held_info1_cipher();
+    rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
     rc |= test_accepted_info1_loads_its_key();
-    rc |= test_dcr_reclaim_drops_the_info1_key();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {

@@ -860,8 +860,7 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
                            uint8_t ota_cipher) {
-    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)
-        || nxdn_cipher_publication_held(state)) {
+    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
         return;
     }
     const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
@@ -893,7 +892,7 @@ nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, 
         // established: hold a contradicting observation until it repeats.
         if (acts) {
             /* The DCR call's: an SCCH's call forgets it while it is the cipher applied (NXDN_decode_scch()). It names no
-               key ID, so once it is the cipher applied the key ID applied is none, never a held INFO1's. */
+               key ID, so once it is the cipher applied the key ID applied is none. */
             state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
         }
         if (dsd_key_scalar_present(state, 0)) {
@@ -978,9 +977,6 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
     nxdn_store_sacch2_frame(state, trellis_buf, &fields);
     nxdn_update_sacch2_identity_state(opts, state, &fields);
-    /* Once the segment named the live call, a first one of an incomplete message included, an INFO1 cipher held for
-       another transmission is gone, before the message's own cipher or the frame's voice reads it. */
-    nxdn_cipher_drop_stale_hold(state);
     nxdn_print_sacch2_complete_message(opts, state, &fields, crc_sf_check);
     nxdn_print_sacch2_payload(opts, state, &fields, m_data);
     nxdn_reset_sacch2_if_done(state, &fields);

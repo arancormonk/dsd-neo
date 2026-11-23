@@ -2036,10 +2036,8 @@ suite runs under this compiler.
   full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
   cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
-  (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none. An
-  INFO1 held during a DCR call has not taken effect: the DCR call keeps its working key in R while the hold binds, so
-  nothing needs restoring when its own SACCH-2 reclaims the cipher, and the held pair's key is loaded only for the
-  call it is handed to (`nxdn_cipher_hand_hold_to_call()`), before that call is published or its voice decoded. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
+  (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
+  does one heard during a DCR call, which is neither applied nor kept: the DCR call keeps its working key in R. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
   applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
@@ -12453,29 +12451,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   crypto. The scrambler the DCR call received (its SACCH-2's cipher, while it is the cipher applied:
   `dsd_state::nxdn_cipher_origin`, which follows the observation the applied cipher equals and stays when the
   hysteresis holds a contradiction back, `nxdn_cipher_observe_keyed()`) is forgotten, cipher and classification, at the
-  first SCCH that acts, which no DCR call carries, before that SCCH's message acts, so the
-  new call's voice is not descrambled with it, while an INFO1 naming the new call's own cipher ahead of its numbered
-  party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). Such an INFO1, heard while the
-  DCR call is still the live call, is the next call's: its cipher and key ID are not published on the DCR call but
-  held as one pair (an INFO1's or VCALL's key ID is applied, `dsd_state::nxdn_key`, only with the cipher it came with,
-  `nxdn_cipher_observe_keyed()`, so a contradiction the hysteresis holds back changes neither half; a DCR SACCH-2
-  names no key ID, so once its scrambler wins the hysteresis back the key ID applied is none, never the INFO1's)
-  (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
-  `dsd_state::nxdn_cipher_held_transmission`) and handed to the call an SCCH or a VCALL opens from that very
-  transmission (`nxdn_cipher_hand_hold_to_call()`), the call the INFO1 named: there the cipher and key stay applied and
-  are published, the SCCH's at once (`nxdn_scch_publish_held_cipher()`), and a VCALL is judged against them as any
-  later cipher observation is, so a lone contradicting VCALL is held back rather than leaving the new call clear. Every other crypto publication on the live call (a VCALL's, a VCALL_IV's, an
-  INFO1's, a DCR SACCH-2's) reads one rule, `nxdn_cipher_publication_held()`: while the hold binds the DCR call still
-  live it publishes nothing, so no republication gives that call the INFO1's cipher or key, and a publication always
-  names the applied pair, read at that boundary. The hold fails closed: any cipher observation since makes it another source's;
-  a carrier loss, retune or release resets it with the classification; and once the live call is anything but that
-  DCR transmission (the call ended, another DCR call, any identity change), the INFO1's cipher and key are forgotten,
-  decoder and classification alike (`nxdn_cipher_drop_stale_hold()`), so they never reach a later call: at the next
-  SCCH, before it acts; at every checked DCR SACCH-2 segment, a first one of an incomplete message included, once it
-  named the live call; before the hysteresis reads any VCALL's cipher, so the next call's cipher is never judged
-  against the forgotten one; at every crypto publication; and on every frame both before its channels, so none of its
-  cipher steps or messages reads a hold already stale, and after them, before its cipher steps and voice
-  (`nxdn_frame()`). A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
+  first SCCH that acts, which no DCR call carries, other than an INFO1 heard while the DCR call is still the live call,
+  before that SCCH's message acts, so the new call's voice is not descrambled with it, while an INFO1 naming the new
+  call's own cipher once the DCR call is over and ahead of its numbered party keeps it (`nxdn_scch_forget_dcr_cipher()`;
+  a scrambler forced with `-4` stays). An INFO1 heard while the DCR
+  call is still the live call is neither that call's (DCR carries no SCCH) nor yet the next call's, which no SCCH has
+  opened: it is neither applied nor kept (`nxdn_scch_handle_info1()`), and it forgets nothing, so the DCR call's
+  cipher, key ID, origin and working key stay as they were, and the call an SCCH or a VCALL opens next takes its
+  cipher only from its own INFO1 or VCALL. An INFO1's or VCALL's key ID is applied (`dsd_state::nxdn_key`) only with
+  the cipher it came with (`nxdn_cipher_observe_keyed()`), so a contradiction the hysteresis holds back changes
+  neither half; a DCR SACCH-2 names no key ID, so once its scrambler is the cipher applied the key ID applied is none.
+  A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,

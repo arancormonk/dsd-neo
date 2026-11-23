@@ -114,8 +114,6 @@ static void nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uin
 static void nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits);
-static uint64_t nxdn_live_call_transmission(const dsd_state* state);
-static int nxdn_cipher_hand_hold_to_call(const dsd_opts* opts, dsd_state* state, uint64_t before);
 static void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_VCALL_ARIB(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
@@ -3143,8 +3141,8 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
 
 /* The working key for the applied cipher and key ID (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key), loaded as a
    VCALL loads its own (nxdn_load_selected_key()), the live call's target being the destination the NXDN48 fallback
-   reads: an INFO1 whose pair took effect on the live call, and the call a held INFO1 cipher is handed to (never the
-   DCR call it is held during), so the voice and the key report read the key the applied pair names. */
+   reads: an INFO1 whose pair took effect on the live call, so the voice and the key report read the key the applied
+   pair names. */
 static void
 nxdn_load_applied_key(const dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot call;
@@ -3207,16 +3205,12 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 // Publish the applied cipher and key (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key: one pair,
 // nxdn_cipher_observe_keyed()) on the live NXDN call. @p received: the DSD_CALL_CRYPTO_RX_* fields this publication
 // carries from a checked VCALL (0 for a republish). The MI is an IV received over the air (nxdn_published_mi()), never
-// the working register a scrambled call loads from the key. An INFO1's cipher held for the DCR call still live is not
-// that call's: nothing is published (nxdn_cipher_publication_held()).
+// the working register a scrambled call loads from the key.
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, uint8_t contradicted,
                           uint8_t enc_observed) {
     if (!nxdn_live_call_is_nxdn(state)) {
         return; // another protocol's call on slot 0 takes no NXDN cipher
-    }
-    if (nxdn_cipher_publication_held(state)) {
-        return;
     }
     const uint8_t cipher_type = (uint8_t)state->nxdn_cipher_type;
     const uint8_t key_id = (uint8_t)state->nxdn_key;
@@ -3293,11 +3287,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .has_service_metadata = 1U,
     };
     nxdn_vcall_name_type_d(&observation, info);
-    const uint64_t before = nxdn_live_call_transmission(state);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-    /* A call this VCALL opened from the DCR transmission an INFO1's cipher is held for is the call that INFO1 named,
-       as one an SCCH opens: it takes the held cipher, against which the hysteresis already judged this VCALL. */
-    (void)nxdn_cipher_hand_hold_to_call(opts, state, before);
     // Publish the applied classification, not the raw observation: a quarantined contradiction
     // must not flap the published crypto any more than it may flap the audio gate. The cipher and
     // key id are received only once the air itself has corroborated the applied encrypted
@@ -3320,7 +3310,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         }
     }
     // This checked VCALL's own cipher says whether the call is encrypted, whatever the applied (possibly forced or
-    // held) cipher is.
+    // held back) cipher is.
     nxdn_vcall_publish_crypto(opts, state, received, contradicted,
                               info->cipher_type != 0U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
     dsd_event_sync_slot(opts, state, 0U);
@@ -3334,9 +3324,6 @@ nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
-        /* An INFO1 cipher held for a transmission no longer the live call is forgotten before the hysteresis reads
-           this VCALL, as before every cipher observation: the next call's cipher is never judged against it. */
-        nxdn_cipher_drop_stale_hold(state);
         state->nxdn_cipher_type =
             nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
         /* The key loads for the pair applied, never for one the hysteresis held back: a lone contradiction leaves
@@ -3562,6 +3549,8 @@ struct nxdn_scch_info {
     uint8_t diagnostic_only;
     /* The field at fault when diagnostic_only (nxdn_scch_content_problem()), else NULL. */
     const char* problem;
+    /* Whether the live call was a DCR call ("JPN DCR", nxdn_live_call_is_dcr()) when the SCCH arrived. */
+    uint8_t during_dcr;
 };
 
 /*
@@ -3964,7 +3953,8 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
  * cipher and the classification behind it, while the cipher applied is the DCR call's: dsd_state::nxdn_cipher_origin,
  * a contradiction the hysteresis held back notwithstanding) is not that call's, whose voice plays clear until its own
  * signalling names a cipher. It is forgotten once, before the SCCH's own message acts, so an INFO1 naming the
- * new call's cipher ahead of its numbered party keeps it. A scrambler the operator forced (-4: state->M with a key)
+ * new call's cipher ahead of its numbered party keeps it; an INFO1 heard while the DCR call is still the live call
+ * forgets nothing, as it applies nothing (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a key)
  * stays, as at a release. */
 static void
 nxdn_forget_applied_cipher(dsd_state* state) {
@@ -4134,35 +4124,6 @@ nxdn_live_call_transmission(const dsd_state* state) {
     return dsd_call_snapshot_transmission(&call);
 }
 
-/*
- * The lifetime of an INFO1 cipher held for the call a DCR call's transmission is turning into
- * (NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR, dsd_state::nxdn_cipher_held_transmission): it lasts only while the live call is
- * still that DCR transmission. Any other live call (the DCR call ended, another DCR call, any identity change) makes the
- * INFO1 another transmission's, so its cipher is forgotten, decoder and classification alike (a scrambler forced with
- * -4 stays). A carrier loss, retune or release already resets the classification, the hold with it.
- */
-void
-nxdn_cipher_drop_stale_hold(dsd_state* state) {
-    if (state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
-        || nxdn_live_call_transmission(state) == state->nxdn_cipher_held_transmission) {
-        return;
-    }
-    nxdn_forget_applied_cipher(state);
-}
-
-/*
- * The one rule every NXDN crypto publication on the live call reads (a VCALL's, a VCALL_IV's, an INFO1's, a DCR
- * SACCH-2's): the applied cipher is an INFO1's held for the DCR transmission that is still the live call, so it is the
- * next call's, never that DCR call's, and nothing may publish it there. Only a call an SCCH or a VCALL opens from that
- * transmission takes it (nxdn_cipher_hand_hold_to_call()), and it is published there once it is that call's. A stale
- * hold is forgotten first (nxdn_cipher_drop_stale_hold()), so what is published then is what stays applied.
- */
-int
-nxdn_cipher_publication_held(dsd_state* state) {
-    nxdn_cipher_drop_stale_hold(state);
-    return state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR;
-}
-
 /* An INFO3 source update of the live call (transmission @p before) whose source differs from the call's makes the
  * canonical layer open another epoch for it (dsd_call_state_observe(): a source change), of the same target and class,
  * since the enrichment carries both over. It names the same call, so a held call bound to @p before follows it there,
@@ -4288,65 +4249,23 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
         DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
         DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
     }
-    if (!info->acts) {
+    /* While a DCR call is the live call, the INFO1 is not that call's (DCR carries no SCCH) and names a call no SCCH
+       has opened yet: it is neither applied nor kept (issue #903). The DCR call's cipher, key ID and working key stay
+       as they were, and the call an SCCH or a VCALL opens next takes its cipher from its own INFO1 or VCALL. */
+    if (!info->acts || info->during_dcr) {
         return;
     }
     // One SCCH observation must not flip the classification the VCALLs established -- in
     // either direction: a corrupt call option could mute a clear call, or silently unmute
     // an encrypted one mid-stream. The hysteresis holds it until it repeats.
-    /* While a DCR call is the live call, the INFO1 is the next call's, which no SCCH has opened yet: the decoder takes
-       its cipher at once, held for that DCR call's transmission (nxdn_cipher_drop_stale_hold()), and it is published
-       on the call an SCCH or a VCALL opens from it (nxdn_cipher_hand_hold_to_call()), never on the DCR call. */
     /* The key ID goes with the cipher it came with: a held-back contradiction changes neither. */
-    const int after_dcr = nxdn_live_call_is_dcr(state);
     state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
-                                                        after_dcr ? (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
-                                                                  : (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    /* The pair took effect: its key is the working key at once, as a VCALL's is; a held-back INFO1 loads nothing. One
-       held for the DCR call still live has not taken effect: the DCR call keeps its working key, and the call the hold
-       is handed to loads the pair's (nxdn_cipher_hand_hold_to_call()). */
-    if (!after_dcr && state->nxdn_cipher_type == info->cipher) {
+                                                        (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    /* The pair took effect: its key is the working key at once, as a VCALL's is; a held-back INFO1 loads nothing. */
+    if (state->nxdn_cipher_type == info->cipher) {
         nxdn_load_applied_key(opts, state);
     }
-    if (after_dcr) {
-        if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR) {
-            state->nxdn_cipher_held_transmission = nxdn_live_call_transmission(state);
-        }
-        return;
-    }
     nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
-}
-
-/* The cipher and key an INFO1 named while a DCR call was the live call (NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR, still the
-   cipher applied) become the call's that an SCCH or a VCALL opened from that very DCR transmission (@p before, the live
-   call's transmission before the message acted): the IDAS call the INFO1 belongs to. They stay applied, the key they
-   select for that call is loaded (nxdn_load_applied_key()), and they are the next publication's. A cipher observation
-   since (a VCALL's, a DCR SACCH-2's), every reset and any other live call (nxdn_cipher_drop_stale_hold()) end the
-   hold, and nothing is handed over. Returns 1 when the call took them. */
-static int
-nxdn_cipher_hand_hold_to_call(const dsd_opts* opts, dsd_state* state, uint64_t before) {
-    if (state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR || before == 0U
-        || before != state->nxdn_cipher_held_transmission || nxdn_live_call_transmission(state) == before) {
-        return 0;
-    }
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol)
-        || dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
-        return 0;
-    }
-    state->nxdn_cipher_origin = (uint8_t)NXDN_CIPHER_ORIGIN_OTHER;
-    nxdn_load_applied_key(opts, state);
-    return 1;
-}
-
-/* The held INFO1 cipher, published once on the call this SCCH opened from its DCR transmission
-   (nxdn_cipher_hand_hold_to_call()). */
-static void
-nxdn_scch_publish_held_cipher(dsd_opts* opts, dsd_state* state, uint64_t before) {
-    if (nxdn_cipher_hand_hold_to_call(opts, state, before)) {
-        nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
-    }
 }
 
 /* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
@@ -4362,9 +4281,10 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);
-    nxdn_cipher_drop_stale_hold(state);
-    const uint64_t before = nxdn_live_call_transmission(state);
-    if (info.acts && !info.diagnostic_only) {
+    info.during_dcr = (uint8_t)nxdn_live_call_is_dcr(state);
+    /* An INFO1 heard during a DCR call leaves that call's cipher as it is (nxdn_scch_handle_info1()). */
+    const int info1 = info.opcode == 0x07U || info.opcode == 0x03U;
+    if (info.acts && !info.diagnostic_only && !(info1 && info.during_dcr)) {
         nxdn_scch_forget_dcr_cipher(state);
     }
     nxdn_scch_prepare_type_d(opts, state, &info);
@@ -4378,10 +4298,9 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     if (info.opcode == 0x06U || info.opcode == 0x02U) {
         nxdn_scch_handle_info2(opts, state, &info);
     }
-    if (info.opcode == 0x07U || info.opcode == 0x03U) {
+    if (info1) {
         nxdn_scch_handle_info1(opts, state, &info);
     }
-    nxdn_scch_publish_held_cipher(opts, state, before);
 }
 
 /* The Call Type's label (TS 1-A Table 6.5-8; on Type-D, @p type_d, TS 1-E Table 6.6-15, where 011 is a Session Call). */

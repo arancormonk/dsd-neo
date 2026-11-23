@@ -1021,13 +1021,10 @@ nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
     }
 }
 
-/* What the frame does before its channels are committed: an INFO1 cipher held for a transmission that is no longer the
-   live call (it ended since the last frame) is forgotten before anything of the frame reads the cipher, the VCALL its
-   channels may carry included (nxdn_cipher_drop_stale_hold()); then the SACCH mode its LICH names, the voice/data
-   banner and the cipher slots of a frame that carries no position (nxdn_step_cipher_before_signalling()). */
+/* What the frame does before its channels are committed: the SACCH mode its LICH names, the voice/data banner and the
+   cipher slots of a frame that carries no position (nxdn_step_cipher_before_signalling()). */
 static void
 nxdn_frame_before_channels(dsd_state* state, const nxdn_frame_ctx* ctx) {
-    nxdn_cipher_drop_stale_hold(state);
     nxdn_update_sacch_mode(state, ctx->lich);
     nxdn_print_voice_or_data(ctx);
     nxdn_step_cipher_before_signalling(state, ctx);
@@ -1110,9 +1107,6 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_frame_before_channels(state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
-    /* Whatever the frame's channels did to the live call, or whatever ended it since the last frame, an INFO1 cipher
-       held for another transmission is forgotten before the frame's cipher steps and voice read it. */
-    nxdn_cipher_drop_stale_hold(state);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
     state->nxdn_frame_type_d = 0U;

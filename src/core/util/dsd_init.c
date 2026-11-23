@@ -952,7 +952,6 @@ init_state_nxdn_defaults(dsd_state* state) {
     state->nxdn_cipher_rx_est = 0;
     state->nxdn_cipher_rx_pending = 0;
     state->nxdn_cipher_origin = 0;
-    state->nxdn_cipher_held_transmission = 0U;
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
     state->payload_miN = 0;
