@@ -687,11 +687,26 @@ void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* se
 void __wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel);
 static int cmd_rx_analog_family(void);
 
+/* With g_cmd_rx_hold_retune set, a marked retune lands only where a case lands it (cmd_rx_land_held_retune()). */
+static int g_cmd_rx_hold_retune;
+static int g_cmd_rx_held_retune;
+
 void
 __wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
     (void)target_freq_hz;
-    if (new_channel) {
+    if (new_channel && g_cmd_rx_hold_retune) {
+        g_cmd_rx_held_retune = 1;
+    } else if (new_channel) {
         channel_gate_fake_land(1, cmd_rx_analog_family());
+    }
+}
+
+/* The held retune lands, on the family the receiver runs now. */
+static void
+cmd_rx_land_held_retune(void) {
+    if (g_cmd_rx_held_retune) {
+        g_cmd_rx_held_retune = 0;
+        channel_gate_fake_land(1, channel_gate_fake_analog());
     }
 }
 
@@ -21648,6 +21663,191 @@ test_family_refused_where_it_lands_keeps_the_surviving_channel(void) {
     return rc;
 }
 
+/* The DMR session's own squelch (a level) in the overlap cases. */
+static dsd_squelch_setting g_overlap_session;
+
+/* A DMR session (its own level) on a running RTL-SDR with --squelch-analog-default noise+10, an NFM width its DSP rate
+   runs, its receiver open on the digital family and written once; the receiver watched for the session's level on the
+   analog family. */
+static int
+start_overlap_session(dsd_opts* opts, dsd_state* state, void** fake_ctx) {
+    init_dmr_session_with_nfm_width(opts, state, (RtlSdrContext*)fake_ctx, 12500);
+    int rc = expect_int("overlap: option", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    const dsd_squelch_setting session = dsd_squelch_setting_of_opts(opts);
+    g_overlap_session = session;
+    channel_gate_fake_open(0, &session, cmd_rx_runs);
+    dsd_engine_receiver_gate_due();
+    (void)dsd_app_drain_cmds(opts, state);
+    g_cmd_rx_watch_family = 1;
+    g_cmd_rx_watch_gate = session;
+    g_cmd_rx_watch_runs = 0;
+    g_io_control_tune_result = RTL_STREAM_TUNE_OK;
+    return rc;
+}
+
+static void
+end_overlap_session(dsd_opts* opts, dsd_state* state) {
+    g_fake_hold_family_channel = 0;
+    g_fake_held_family = 0;
+    g_cmd_rx_hold_retune = 0;
+    g_cmd_rx_held_retune = 0;
+    g_cmd_rx_watch_family = -1;
+    g_io_control_tune_result = RTL_STREAM_TUNE_OK;
+    channel_gate_fake_requests_pending(0);
+    reset_rx_family_wrap();
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/* The receiver runs @p want opened on the family @p analog says, and never ran the watched gate on the watched family. */
+static int
+expect_overlap_gate(const char* label, int analog, const dsd_squelch_setting* want) {
+    const dsd_squelch_setting rx = channel_gate_fake_gate();
+    if (channel_gate_fake_closed() || channel_gate_fake_analog() != analog || !dsd_squelch_setting_equal(&rx, want)
+        || g_cmd_rx_watch_runs != 0) {
+        DSD_FPRINTF(stderr,
+                    "%s: the receiver runs closed %d, analog %d, mode %d margin %d level %g, and ran the watched gate "
+                    "%d times; want analog %d on mode %d margin %d level %g, the watched gate never\n",
+                    label, channel_gate_fake_closed(), channel_gate_fake_analog(), rx.mode, rx.margin_db, rx.level,
+                    g_cmd_rx_watch_runs, analog, want->mode, want->margin_db, want->level);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Issue #899 (review round 7, P1 and P2): overlapping tune and family requests end on the right gate for the channel
+ * the receiver produces, and never mute it for good. The decoder writes nothing while any of its requests is
+ * outstanding and writes the gate resolved then once none is. On a DMR session (its own level) with the analog
+ * default (noise +10):
+ *  - NFM is selected, then a tune before the demod thread takes the family: the retune lands first (on the digital
+ *    family), then NFM (closed); or NFM lands first and the retune after it (closed again). Either way the receiver
+ *    ends on noise +10, opened, and never ran the DMR session's level on the analog family.
+ *  - NFM is selected (B pending), then a tune to C the receiver refuses at once: B lands closed and opens on noise +10.
+ *  - DMR -> NFM -> DMR with the NFM request taken (landed closed) while the DMR one is still queued: nothing is written
+ *    meanwhile (the NFM channel never runs the DMR session's level), and the DMR landing runs that level.
+ *  - A control-channel hunt retires a queued NFM -> P25 request: the hunt's digital landing runs the digital gate (the
+ *    session's own level, never the noise default), and with the request settled the decoder writes and a later edit
+ *    reaches the receiver.
+ * These cases need the round-7 receiver model (no channel identities), so they have no form that runs on a514b5d45.
+ */
+static int
+test_overlapping_requests_end_on_the_right_gate(void) {
+    static void* fake_ctx[2];
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
+    int rc = 0;
+    for (int order = 0; order < 2; order++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return expect_true("overlap: fixtures", 0);
+        }
+        rc |= start_overlap_session(opts, state, fake_ctx);
+        g_fake_hold_family_channel = 1;
+        g_cmd_rx_hold_retune = 1;
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+        (void)dsd_app_drain_cmds(opts, state);
+        rc |= expect_true("overlap: NFM pending", opts->analog_only == 1 && g_fake_held_family == 1);
+        (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
+        (void)dsd_app_drain_cmds(opts, state);
+        if (order == 0) {
+            cmd_rx_land_held_retune(); /* on the digital family: the NFM request is not taken yet */
+            (void)dsd_app_drain_cmds(opts, state);
+            demod_thread_lands(0);
+        } else {
+            demod_thread_lands(0);
+            (void)dsd_app_drain_cmds(opts, state);
+            cmd_rx_land_held_retune(); /* on the analog family: closed again */
+        }
+        (void)dsd_app_drain_cmds(opts, state);
+        rc |= expect_overlap_gate(order == 0 ? "overlap: retune lands first" : "overlap: NFM lands first", 1, &noise10);
+        end_overlap_session(opts, state);
+    }
+
+    /* B pending, then C refused at once. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("overlap: fixtures", 0);
+    }
+    rc |= start_overlap_session(opts, state, fake_ctx);
+    g_fake_hold_family_channel = 1;
+    g_cmd_rx_hold_retune = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(opts, state);
+    g_io_control_tune_result = RTL_STREAM_TUNE_FAILED;
+    (void)dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U);
+    (void)dsd_app_drain_cmds(opts, state);
+    g_cmd_rx_held_retune = 0; /* refused: it never lands */
+    rc |= expect_true("overlap: refused tune, B still pending", g_fake_held_family == 1);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_overlap_gate("overlap: B lands after a refused tune", 1, &noise10);
+    end_overlap_session(opts, state);
+
+    /* DMR -> NFM -> DMR, NFM taken while DMR is queued. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("overlap: fixtures", 0);
+    }
+    rc |= start_overlap_session(opts, state, fake_ctx);
+    g_fake_hold_family_channel = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(opts, state);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR);
+    (void)dsd_app_drain_cmds(opts, state);
+    channel_gate_fake_land(1, 1); /* the demod thread took NFM; the DMR request is still queued */
+    const int writes_before = channel_gate_fake_writes();
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("overlap: nothing written while DMR is queued",
+                      channel_gate_fake_closed() && channel_gate_fake_writes() == writes_before);
+    demod_thread_lands(0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_overlap_gate("overlap: DMR -> NFM -> DMR", 0, &g_overlap_session);
+    end_overlap_session(opts, state);
+
+    /* A hunt retires a queued NFM -> P25 request. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("overlap: fixtures", 0);
+    }
+    rc |= start_overlap_session(opts, state, fake_ctx);
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_overlap_gate("overlap: the NFM monitor", 1, &noise10);
+    g_fake_hold_family_channel = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_P25P1);
+    (void)dsd_app_drain_cmds(opts, state);
+    g_cmd_rx_watch_family = 0;
+    g_cmd_rx_watch_gate = noise10;
+    channel_gate_fake_land(0, 0); /* the hunt's retune lands the digital family */
+    g_fake_held_family = 0;
+    channel_gate_fake_requests_pending(0); /* and retired the queued request, settled with it */
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_overlap_gate("overlap: a hunt retired the P25 request", 0, &g_overlap_session);
+    g_fake_hold_family_channel = 0;
+    rc |= expect_int("overlap: an edit after the hunt", submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, 0.0001),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)dsd_app_drain_cmds(opts, state);
+    const dsd_squelch_setting edited = channel_gate_fake_gate();
+    rc |= expect_true("overlap: the edit reaches the receiver",
+                      edited.mode == DSD_SQUELCH_MODE_LEVEL && fabs(edited.level - 0.0001) < 1e-12);
+    end_overlap_session(opts, state);
+    return rc;
+}
+
 /*
  * A switch to Analog whose explicit NFM width the front end took when asked, then refused: by the request itself, when
  * a retune moved the rate between the check and the request, or by the demod thread where the request landed, when it
@@ -33156,6 +33356,7 @@ main(void) {
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
     rc |= test_family_refused_where_it_lands_keeps_the_surviving_channel();
+    rc |= test_overlapping_requests_end_on_the_right_gate();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_refused_switch_onto_analog_keeps_edacs_addressing();
     rc |= test_queued_switch_off_tetra_commits_once_taken();
