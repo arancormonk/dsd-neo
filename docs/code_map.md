@@ -13564,7 +13564,9 @@ Private per-protocol modules worth knowing about:
     an ordinary grant elsewhere is followed; once there is voice, each slot the receive policy admits whose voice
     is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included), and the followed
     grant's slot until its own media since the follow (`vc_media_heard`: the first voice for a voice grant, a slotless
-    grant's being the accepted voice that binds its slot, the first data for a data grant; a data burst on a voice
+    grant's being the accepted voice that binds its slot, since only a burst whose voice passed its gate
+    (`dmr_sm_voice_evidence_m()`) binds a slotless follow and publishes its grant's call there, a sync alone binding
+    nothing (`test_slotless_follow_binds_on_accepted_voice()`), the first data for a data grant; a data burst on a voice
     grant's slot is not its first voice), within its acquisition window
     (`dmr_sm_followed_slot_acquiring()`: voice on the companion slot ends the carrier's acquisition, not the grant's,
     so a candidate must outrank the call still to come as well). ON_CC: calls

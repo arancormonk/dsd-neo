@@ -501,6 +501,7 @@ test_receive_vc_code_differs_from_cc(dsd_opts* opts, dsd_state* state) {
         "names parsed",
         dsd_receive_names_parse("--dcc-name '4=Control' --dcc-name '7=Voice'", &opts->receive.names, NULL, 0) == 0);
     dmr_sm_event_t grant = dmr_sm_ev_group_grant(852000000, 0, 100, 200);
+    grant.slot = 0; // a slotless grant's call opens only with accepted voice, after its first EMB
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &grant);
     state->dmr_color_code = 16U; /* As the engine's voice-channel tune leaves it. */
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;

@@ -1614,6 +1614,32 @@ test_slotless_follow_first_voice_is_heard(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A slotless follow binds only to a slot whose voice passed its gate: a slotless grant for TG 900 is followed, and a
+   voice sync on TS1 whose burst supplied no accepted voice (its gate closed) neither binds the grant to TS1 nor
+   publishes the grant's call there. The first accepted voice, on TS2, binds the grant and is its first voice, and the
+   grant's call is published on TS2 alone. */
+static int
+test_slotless_follow_binds_on_accepted_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    dmr_sm_emit_group_grant(opts, st, VC_A, 0, 900, 1); // slotless
+    int rc = expect_true("the slotless grant is followed", vc(st) == VC_A && sm()->vc_slot == -1);
+    clock_at(0.1);
+    dmr_sm_emit_voice_sync(opts, st, 0); // TS1's gate closed: no accepted voice
+    rc |= expect_true("a voice sync with no accepted voice does not bind the follow",
+                      sm()->vc_slot == -1 && sm()->vc_media_heard == 0 && st->dmr_mono_slot != 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("a voice sync with no accepted voice does not publish the grant's call",
+                      dsd_call_state_get(st, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    clock_at(0.2);
+    voice(opts, st, 1);
+    rc |= expect_true("the first accepted voice binds the follow and is its first voice",
+                      sm()->vc_slot == 1 && sm()->vc_media_heard == 1 && st->dmr_mono_slot == 1);
+    rc |= expect_true("the grant's call is published on the bound slot", dsd_call_state_get(st, 1U, &call) > 0
+                                                                             && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                                             && call.ota_target_id == 900U);
+    return rc;
+}
+
 /* A media change's release survives a return the tuner refused: the next tick asks again, though the followed slot's
    voice tail would otherwise keep the carrier. */
 static int
@@ -1740,6 +1766,7 @@ main(void) {
     rc |= test_adopted_companion_media_stays_unknown(opts, st);
     rc |= test_rejected_companion_keeps_nothing(opts, st);
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
+    rc |= test_slotless_follow_binds_on_accepted_voice(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

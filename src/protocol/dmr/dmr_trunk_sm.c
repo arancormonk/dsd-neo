@@ -1364,14 +1364,16 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
  * Event Handlers
  * ============================================================================ */
 
+/* A voice sync on @p slot; @p accepted: its burst supplied accepted voice (dmr_sm_voice_evidence_m()), which alone
+   binds a slotless follow to the slot. */
 static void
-update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, double now_m) {
+update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, int accepted, double now_m) {
     if (!state) {
         return;
     }
 
     state->last_vc_sync_time_m = now_m;
-    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0) {
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0 && accepted) {
         ctx->vc_slot = slot;
         state->dmr_mono_slot = slot;
         /* A slotless grant's call is the one its first accepted voice is on: its identity, followed since the tune. */
@@ -1736,15 +1738,15 @@ dmr_sm_publish_slot_channel(const dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     state->event_crc_invalid[slot] = saved_crc_invalid;
 }
 
-/* Whether a voice sync on slot @p s opens the followed grant's call: a voice grant's, not yet published, on its slot,
-   while the slot's call names nothing yet (dmr_sm_grant_publishable()). A call a voice LC named since the grant (its
+/* Whether a voice sync on slot @p s opens the followed grant's call: a voice grant's, not yet published, on its slot
+   (a slotless grant's once accepted voice bound it there, update_voice_sync_state(); before that on no slot), while
+   the slot's call names nothing yet (dmr_sm_grant_publishable()). A call a voice LC named since the grant (its
    header comes before the first voice sync) is published already as itself: the grant is spent, and its identity never
    renames or splits that call. A data grant's is no voice call: voice on its channel is some other transmission, which
    its own LC names. */
 static int
 dmr_sm_voice_sync_publishes_grant(dmr_sm_ctx_t* ctx, const dsd_state* state, int s) {
-    if (ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0 || ctx->vc_data_call != 0
-        || !(ctx->vc_slot < 0 || ctx->vc_slot == s)) {
+    if (ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0 || ctx->vc_data_call != 0 || ctx->vc_slot != s) {
         return 0;
     }
     if (!dmr_sm_grant_publishable(state, s, 0)) {
@@ -1766,9 +1768,10 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
         return;
     }
-    // A slotless follow binds to this voice's slot first, so the accepted voice that binds it is the grant's first voice
-    // (vc_media_heard), not only the next one.
-    update_voice_sync_state(ctx, state, s, now_m);
+    /* A slotless follow binds to this voice's slot only when the burst supplied accepted voice (a sync alone, before or
+       without its EMB's colour-code check, binds nothing), and binds first, so that same voice is the grant's first
+       voice (vc_media_heard), not only the next one. */
+    update_voice_sync_state(ctx, state, s, dmr_sm_voice_evidence_m(ctx, state, s, now_m) > 0.0, now_m);
     dmr_sm_note_voice_evidence(ctx, state, s, now_m);
 
     if (state && dmr_sm_voice_sync_publishes_grant(ctx, state, s)) {
