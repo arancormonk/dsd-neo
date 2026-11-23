@@ -21268,7 +21268,7 @@ namespace {
 /* The typed digital row of rtl_stream_test_typed_row_gate() and what it found. */
 struct TypedRowGateCase {
     rtl_stream_test_typed_row_profile profile;
-    rtl_stream_test_typed_row_gate_result* out;
+    rtl_stream_test_typed_row_gate_result out;
 };
 } // namespace
 
@@ -21277,9 +21277,9 @@ struct TypedRowGateCase {
 static void
 channel_gate_test_typed_row_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
     (void)digital_opts;
-    const TypedRowGateCase* c = static_cast<const TypedRowGateCase*>(ctx);
+    TypedRowGateCase* c = static_cast<TypedRowGateCase*>(ctx);
     const rtl_stream_test_typed_row_profile* p = &c->profile;
-    rtl_stream_test_typed_row_gate_result* out = c->out;
+    rtl_stream_test_typed_row_gate_result* out = &c->out;
     const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
     const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
     channel_gate_test_open(analog_opts);
@@ -21320,9 +21320,10 @@ rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
     if (!profile || !out) {
         return -1;
     }
-    *out = {};
-    TypedRowGateCase c = {*profile, out};
-    return channel_gate_test_fixture(channel_gate_test_typed_row_body, &c);
+    TypedRowGateCase c = {*profile, {}};
+    const int rc = channel_gate_test_fixture(channel_gate_test_typed_row_body, &c);
+    *out = c.out;
+    return rc;
 }
 
 namespace {
