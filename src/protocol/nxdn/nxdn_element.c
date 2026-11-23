@@ -3233,7 +3233,9 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
         if (dsd_call_state_get(state, 0, &call) > 0) {
             dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
             int selected = -1;
-            if (state->keyloader == 1) {
+            /* A DCR call's scrambler names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the
+               working key, which no selection loaded. */
+            if (state->keyloader == 1 && state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
                 // The loaders' own choice (nxdn_select_key()), so the report names the key that decrypts.
                 const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, call.ota_target_id);
                 source = choice.source;

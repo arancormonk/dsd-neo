@@ -2224,6 +2224,44 @@ test_no_other_cipher_is_published_on_a_dcr_call(void) {
 }
 
 /*
+ * A DCR call's working key is reported as the key it decodes with, never as a signalled one (issue #903): DCR names no
+ * key ID, and the key ID 0 its scrambler applies with is no keyring entry. With the keyloader on NXDN48, a scalar
+ * imported under key 0 and another scalar in R, a VCALL_IV on the scrambled DCR call republishes its crypto, and the
+ * key choice it records is the working key (direct, no effective ID), not keyring entry 0.
+ */
+static int
+test_dcr_key_is_reported_as_the_working_key(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    use_nxdn48_keyloader(opts, state);
+    state->rkey_array[0] = 0x5555ULL;
+    state->rkey_array_loaded[0] = 1U;
+    state->scalar_key_present[0] = 1U;
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("dcr-key-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("dcr-key-choice-recorded", call.key_selection.valid, 1);
+    rc |= expect_int("dcr-key-source-direct", call.key_selection.source, DSD_CALL_KEY_DIRECT);
+    rc |= expect_int("dcr-key-no-effective-id", call.key_selection.effective_id, -1);
+    rc |= expect_int("dcr-key-working-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2401,6 +2439,7 @@ main(void) {
     rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
     rc |= test_accepted_info1_loads_its_key();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
+    rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {

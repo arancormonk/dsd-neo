@@ -2037,7 +2037,9 @@ suite runs under this compiler.
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
   cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
   (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
-  does one heard during a DCR call, which is neither applied nor kept: the DCR call keeps its working key in R. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
+  does one heard during a DCR call, which is neither applied nor kept: the DCR call keeps its working key in R. A DCR
+  call's scrambler names no key ID, so its key is reported as the working key (direct, no effective ID), never as the
+  signalled key 0 a selection would read as keyring entry 0 (`nxdn_vcall_publish_crypto()`). A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
   applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
