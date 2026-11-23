@@ -3108,26 +3108,26 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
    with its trust and the session's baseline with it. */
 enum { LEARNED_CHANNEL = 9, USER_CHANNEL = 10, OVERLAID_CHANNEL = 11 };
 
-/* The user's entry is still there over the session's row: no restore takes the live overlay away. */
+/* The user's entry is still there: no restore takes the live overlay away, and it never reached the shared map. */
 static int
 user_dmr_row_kept(const dsd_state* s) {
     long hz = 0;
-    return s->trunk_chan_map[USER_CHANNEL] == 852112500 && dmr_t3_chan_origin(s, USER_CHANNEL) == DMR_CHAN_ORIGIN_USER
-           && dmr_t3_overlay_count(s) == 2U && dmr_t3_overlay_get(s, USER_CHANNEL, &hz, NULL) == DMR_T3_OVERLAY_SET
-           && hz == 852112500;
+    return s->trunk_chan_map[USER_CHANNEL] == 0 && dmr_t3_chan_effective_hz(s, USER_CHANNEL) == 852112500
+           && dmr_t3_chan_origin(s, USER_CHANNEL) == DMR_CHAN_ORIGIN_USER && dmr_t3_overlay_count(s) == 2U
+           && dmr_t3_overlay_get(s, USER_CHANNEL, &hz) == DMR_T3_OVERLAY_SET && hz == 852112500;
 }
 
-/* The user's entry over a row the session's site taught keeps that row as its base (review gate b-r1 E4): a visit
-   that heard another network dropped it, and the return to the session puts it back. */
+/* The shared row under the user's entry is the session's (review gate b-r4 S1): the site's SITE row, which a visit that
+   heard another network dropped, comes back with the session's rows, while DMR goes on using the user's frequency. */
 static int
-overlaid_dmr_base_back(const dsd_state* s) {
+overlaid_dmr_row_back(const dsd_state* s) {
     const dmr_ext_t* ext = dmr_ext_get(s);
     long hz = 0;
-    long base_hz = 0;
-    return dmr_t3_overlay_get(s, OVERLAID_CHANNEL, &hz, &base_hz) == DMR_T3_OVERLAY_SET && hz == 852137500
-           && base_hz == 852025000 && s->trunk_chan_map[OVERLAID_CHANNEL] == 852137500 && ext != NULL
-           && ext->overlay.base_origin[OVERLAID_CHANNEL] == (uint8_t)DMR_CHAN_ORIGIN_SITE
-           && ext->overlay.base_trust[OVERLAID_CHANNEL] == 2U;
+    return dmr_t3_overlay_get(s, OVERLAID_CHANNEL, &hz) == DMR_T3_OVERLAY_SET && hz == 852137500
+           && dmr_t3_chan_effective_hz(s, OVERLAID_CHANNEL) == 852137500
+           && s->trunk_chan_map[OVERLAID_CHANNEL] == 852025000 && ext != NULL
+           && ext->origin[OVERLAID_CHANNEL] == (uint8_t)DMR_CHAN_ORIGIN_SITE
+           && dsd_state_dmr_lcn_ota_get(s, OVERLAID_CHANNEL) && s->dmr_lcn_trust[OVERLAID_CHANNEL] == 2U;
 }
 
 static int
@@ -3157,44 +3157,39 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     dsd_state_dmr_lcn_ota_set(s, LEARNED_CHANNEL, 1);
     ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
-    /* And the user's own entry for another channel, as dmr_t3_overlay_apply() lays it: the session's restore keeps it. */
+    /* And the user's own entry for another channel, as dmr_t3_overlay_apply() makes it: the session's restore keeps it.
+       And an entry over a row the site taught, which the shared map keeps under it. */
     ext->overlay.op[USER_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
     ext->overlay.hz[USER_CHANNEL] = 852112500;
-    ext->overlay.count = 1U;
-    dmr_t3_overlay_write_live(s, ext, USER_CHANNEL);
-    /* And an entry over a row the site taught, laid as dmr_t3_overlay_apply() lays a new one: its base is that SITE
-       row, which RESTORE returns. */
     dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 852025000);
     dsd_state_dmr_lcn_ota_set(s, OVERLAID_CHANNEL, 1);
     ext->origin[OVERLAID_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
     s->dmr_lcn_trust[OVERLAID_CHANNEL] = 2U;
-    dmr_t3_overlay_take_base(s, ext, OVERLAID_CHANNEL);
     ext->overlay.op[OVERLAID_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
     ext->overlay.hz[OVERLAID_CHANNEL] = 852137500;
     ext->overlay.count = 2U;
-    dmr_t3_overlay_write_live(s, ext, OVERLAID_CHANNEL);
-    assert(overlaid_dmr_base_back(s));
+    assert(user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
     const uint32_t session_generation = dmr_t3_chan_generation(s);
     start_tag_session(o, s, &one);
     visit_strongest(o, s);
     assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
     visit_hears_network_b(s, session_generation);
-    long dropped_base = 1;
-    assert(dmr_t3_overlay_get(s, OVERLAID_CHANNEL, NULL, &dropped_base) == DMR_T3_OVERLAY_SET && dropped_base == 0);
+    /* The visit's network change dropped the SITE row under the entry; DMR still uses the user's frequency. */
+    assert(s->trunk_chan_map[OVERLAID_CHANNEL] == 0 && dmr_t3_chan_effective_hz(s, OVERLAID_CHANNEL) == 852137500);
     next_visit(o, s);
     assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
-    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s) && overlaid_dmr_base_back(s));
+    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
     /* Back on the session's network baseline: its own code is no network change. */
     dmr_t3_chan_note_checked_syscode(s, 0x1223U);
     assert(learned_dmr_row_back(s, session_generation));
     visit_hears_network_b(s, session_generation);
     stop_tag_session(o, s);
     assert(learned_dmr_row_back(s, session_generation));
-    assert(user_dmr_row_kept(s) && overlaid_dmr_base_back(s));
+    assert(user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    s->dmr_lcn_trust[OVERLAID_CHANNEL] = 0U;
     dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 0);
     dmr_t3_overlay_discard(s);
-    dsd_state_set_trunk_chan_freq(s, USER_CHANNEL, 0);
     dmr_t3_chan_note_map_cleared(s);
     ext->syscode_valid = 0U;
     session_site(s, 0, 0, 0);

@@ -1287,12 +1287,14 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
     return 0;
 }
 
-/* --dmr-chan-overrides (discussion #900 F3): only checked and kept here; the decoder applies the file over the channel
-   map before the first frame (dmr_t3_overlay_load_csv()). */
+/* --dmr-chan-overrides (discussion #900 F3): only kept here. The engine decides at start whether the session takes it
+   (one that decodes DMR and runs no trunk scan) and only then opens it, so a session that ignores the option never
+   needs the file; one that takes it refuses a file it cannot open (dmr_t3_overlay_load_csv()). */
 static int
-cli_set_dmr_chan_overrides(dsd_opts* opts, const char* requested, int* out_exit_rc) {
-    char path[DSD_CLI_LOCAL_PATH_MAX];
-    if (!cli_resolve_existing_local_file_option("--dmr-chan-overrides", requested, path, sizeof path, out_exit_rc)) {
+cli_set_dmr_chan_overrides(dsd_opts* opts, const char* path, int* out_exit_rc) {
+    if (path == NULL || path[0] == '\0') {
+        LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");
+        cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
     if (strlen(path) >= sizeof opts->dmr_chan_overrides_file) {

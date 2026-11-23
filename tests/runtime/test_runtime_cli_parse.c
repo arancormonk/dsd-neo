@@ -10247,9 +10247,10 @@ test_dmr_chan_overrides_long_option_parse(void) {
     return test_rc;
 }
 
-/* A missing file and a missing value are refused at parse. A trunk scan (in either order) is not (review gate b-r2 C1):
-   the path is kept, and the decoder starts without the file, with a notice, as it does for a session that does not
-   decode DMR. */
+/* A missing value is refused at parse. A missing file is not (review gate b-r4 S4): only the engine, once it knows the
+   session takes the file (it decodes DMR and runs no trunk scan), opens it, so a session that ignores the option starts
+   whatever the path names. A trunk scan (in either order) is not refused either (b-r2 C1): the path is kept, and the
+   decoder starts without the file, with a notice, as it does for a session that does not decode DMR. */
 static int
 test_dmr_chan_overrides_refusals(void) {
     char csv_path[1024];
@@ -10260,23 +10261,27 @@ test_dmr_chan_overrides_refusals(void) {
     DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--dmr-chan-overrides=%s", csv_path);
     char arg0[] = "dsd-neo";
     char arg_missing[] = "--dmr-chan-overrides=dsdneo_missing_overrides_file.csv";
+    char arg_empty[] = "--dmr-chan-overrides=";
     char arg_bare[] = "--dmr-chan-overrides";
     char arg_scan[] = "--trunk-scan=targets.csv";
     char* argv_missing[] = {arg0, arg_missing, NULL};
     char* argv_bare[] = {arg0, arg_bare, NULL};
+    char* argv_empty[] = {arg0, arg_empty, NULL};
     char* argv_scan_a[] = {arg0, arg_scan, arg_eq, NULL};
     char* argv_scan_b[] = {arg0, arg_eq, arg_scan, NULL};
 
     struct {
         char** argv;
         const char* name;
+        const char* kept; /* the path kept, NULL for a refusal */
         int argc;
-        int refused;
+        int scan;
     } cases[] = {
-        {argv_missing, "a missing file", 2, 1},
-        {argv_bare, "no value", 2, 1},
-        {argv_scan_a, "after --trunk-scan", 3, 0},
-        {argv_scan_b, "before --trunk-scan", 3, 0},
+        {argv_missing, "a missing file", "dsdneo_missing_overrides_file.csv", 2, 0},
+        {argv_bare, "no value", NULL, 2, 0},
+        {argv_empty, "an empty value", NULL, 2, 0},
+        {argv_scan_a, "after --trunk-scan", csv_path, 3, 1},
+        {argv_scan_b, "before --trunk-scan", csv_path, 3, 1},
     };
 
     int test_rc = 0;
@@ -10294,14 +10299,14 @@ test_dmr_chan_overrides_refusals(void) {
         int argc_effective = 0;
         int exit_rc = -1;
         const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
-        if (cases[i].refused && (rc != DSD_PARSE_ERROR || exit_rc != 1)) {
+        if (cases[i].kept == NULL && (rc != DSD_PARSE_ERROR || exit_rc != 1)) {
             DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected a refusal, rc=%d exit=%d\n", cases[i].name, rc,
                         exit_rc);
             test_rc = 1;
         }
-        if (!cases[i].refused
-            && (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1
-                || strcmp(opts->dmr_chan_overrides_file, csv_path) != 0)) {
+        if (cases[i].kept != NULL
+            && (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != cases[i].scan
+                || strcmp(opts->dmr_chan_overrides_file, cases[i].kept) != 0)) {
             DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected it kept, rc=%d exit=%d file=\"%s\"\n",
                         cases[i].name, rc, exit_rc, opts->dmr_chan_overrides_file);
             test_rc = 1;

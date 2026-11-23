@@ -186,10 +186,9 @@ Generated (do not edit/commit):
     map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds, the network baseline, the missing-channel
     ledger and the Tier III flags), and every restore puts it back with the rows: a visit that hears another network's
     checked system code drops the session's learned rows, and the departure brings them back as they were (discussion
-    #900). The user's Tier III channels are not part of it: a search refuses every edit, and the overlay stays over the
-    session's rows throughout; only the rows its entries replaced (`dmr_t3_overlay_bases`, saved at Start) come back
-    with every restore, since a visit that heard another network dropped the ones the air taught from them. The P25 patch table is not part of the
-    site: Start
+    #900). The user's Tier III channels are not part of it: they lie beside the shared map, never in it, and a search
+    refuses every edit, so the overlay stays the session's throughout while the session's rows under it come back with
+    every restore. The P25 patch table is not part of the site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -13472,65 +13471,62 @@ Private per-protocol modules worth knowing about:
   follow their calls: 7, 9 (unchecked), 12`, at most the detail count listed and then `(+n more)`, ending `...` when a
   long target id cut it. Tests: `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`, `ENGINE_TRUNK_SCAN`.
 - Tier III "your channels" overlay (`dmr_t3_overlay.c`, the overlay helpers in `dmr_t3_channels.c`,
-  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries lie over the one global channel
-  map in the same extension (`dmr_t3_overlay`, at most `DMR_T3_OVERLAY_MAX_ROWS` = 256 entries; a new one past them is
-  FULL). A trunk scan refuses every edit and the engine skips the start-up file under one, so no target has an
-  overlay: the target snapshot does not carry one and the target switch empties it (`dmr_t3_overlay_discard()`).
-  `dmr_t3_chan_restore()` itself leaves the overlay, so a Signal search session's entries stay over the session's rows
-  (their bases are kept with the session: `dmr_t3_overlay_bases_save()`/`_restore()`). SET puts the user's frequency in
-  the live row, HIDE empties it (no grant for it is followed, and none is recorded as missing), both as USER with trust 0, which
-  nothing over the air replaces (`dmr_t3_chan_origin()` reads an empty row with an entry as USER, a hidden one or a set
-  one another writer emptied). A grant's channel is resolved through the overlay first (`dmr_t3_overlay_resolve()`, one
-  extension lookup and the per-LPCN op byte, the only overlay read on the grant path): a logical grant and an absolute
-  grant's CdefParms LPCN alike follow the entry's frequency for SET and are not followed for HIDE, and only a channel
-  with no entry reads the shared map (or the absolute grant's own frequency), so another writer of the map (a P25 IDEN
-  invalidation empties rows 0..4095) never decides a channel the user set or hid. The same SET or HIDE again writes the
-  live row once more when another writer changed it, so the editor's repeat repairs it; the row they replaced (its
-  frequency, the origin it read as and its trust) is kept as the entry's base, and RESTORE puts it back, a row the air
-  taught with its `dmr_lcn_ota` bit. The overlay writes rows as DMR's own writer, so no takeover is counted, and a USER
-  row is protected as a FILE row is: no over-the-air origin replaces it and a network change keeps it.
-  `chan_map_adopt()` and `svc_clear_channel_map()` call `dmr_t3_overlay_reapply()` after the origin notes, so an import,
-  a reload (what an RR refresh posts), an RR apply and a clear take the new row as the base and lay the entry over it
-  again; a row still USER keeps its base, so a second re-apply changes nothing; like the origin note, it redoes no
-  heuristic estimate. A network change drops what the air taught from the bases too, and the entries stay.
-  `dmr_t3_overlay_apply()` refuses an unknown channel, operation or frequency (INVALID), a trunk scan (TRUNK_SCAN), and
-  with `check` an edit whose expected frequency, origin or network generation is not the live one (STALE); the
-  frequency is the one DMR uses (`dmr_t3_chan_effective_hz()`: the entry's for a channel with one, 0 when hidden, else
-  the shared row), so another writer emptying or filling a row under an entry never makes an editor's edit stale, and
-  the view gives frontends that value (`channel_hz`, below); an applied edit
-  bumps the revision, reconciles the ledger and redoes the heuristic estimates. A followed call keeps its carrier: an
-  edit takes effect from the next grant. Every Tier III lookup of an LPCN's frequency reads that one value: the grant
-  resolver (`dmr_t3_overlay_resolve()`, the O(1) overlay read of the mapped-grant fast path), and
-  `dmr_t3_chan_effective_hz()` for Ann_WD_TSCC's logical channels (the hunt candidates and the TSCC switch), a logical
-  P_CLEAR's TSCC, a logical Move TSCC's printed frequency and the heuristic anchors; app-control's
-  `dsd_app_dmr_t3_channel_hz()` (`dmr_t3_effective.c`) gives the call view the same value on a snapshot (the view's
-  `channel_hz`) and on the live state, and the terminal panel reads `channel_hz`. Capacity Plus, Connect Plus and XPT
-  lookups (rest LSNs, LCNs, the trunk machine's `resolve_freq()`, which a Tier III grant reaches only with its frequency
-  resolved) and P25/NXDN read the shared map. Frontends edit through `DSD_APP_CMD_DMR_CHANNEL_SET`
-  (`src/app_control/dmr_channel_commands.c`): the payload carries the row as the editor read it plus the command session
-  generation (another session is STALE) and a request id from `dsd_app_dmr_channel_request_next()`; every request the
-  queue took gets a retained result `{sequence, session_seq, request, code, revision, lpcn, op}`, the code
-  `dmr_t3_set_result` (OK, STALE, TRUNK_SCAN, INVALID, FULL) plus app-control's `SEARCH`, `DROPPED` and
-  `OTHER_SYSTEM` (7: the carrier names another system, `dsd_app_dmr_t3_other_system_here()`, judged on the decoder
-  thread as the edit is applied, so an edit queued before the identity arrived is refused too and the other system's
-  map is never edited); `hz` is checked only for SET, handed back along `apply_cmd()` in `ui_cmd_result_codes`. The
-  command is in `k_deferred_commands`: it changes only the map, so a DMR BS voice loop keeps its call and the edit
-  applies once the carrier ends. Not in the control API. At start,
-  `--dmr-chan-overrides <csv>` (`lpcn,frequency_hz`, 0 hides; read by `<dsd-neo/core/dmr_chan_overrides_csv.h>`, bad
-  rows and rows past 256 channels skipped with a warning; Tier III sessions only, the map being shared with the other
-  trunking protocols) is applied unchecked by the engine after the map loads and before the first frame
-  (`import_dmr_chan_overrides_if_needed()`). The file is one change (`dmr_t3_overlay_load_csv()`): every row is laid
-  over the map first, then the ledger is reconciled and the heuristic estimates are redone once, so a long file with
-  the fill on rebuilds once, not per row; once read, `dmr_t3_overrides_applied()` is 1 for the session. The engine
-  decides on the options as the config file (its `[mode] decode`), `--profile` and the command line left them: it
-  applies the file only while DMR decoding is on (`frame_dmr`) and no trunk scan runs, and otherwise starts without it
-  after one `NOTICE: DMR Tier III channels in <file> not applied: ...` (no start failure; the parser refuses no
-  combination, so a profile's trunk scan starts).
-  The parser only checks and keeps the path, and the bootstrap pre-scan steps over its separate value
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries live in the same extension
+  (`dmr_t3_overlay`: per LPCN an op, SET or HIDE, and the SET frequency; at most `DMR_T3_OVERLAY_MAX_ROWS` = 256
+  entries, a new one past them is FULL), beside the shared `trunk_chan_map` and never written into it: only DMR Tier
+  III's own lookups read them (review gate b-r4 S1), so P25, NXDN and the other trunking protocols, which share the
+  map's channel numbers, never see a user's entry (an Auto session's P25 grant for channel `0x000c` resolves by P25's
+  rules, not at the user's frequency for LPCN 12). A channel with an entry reads as USER (`dmr_t3_chan_origin()`), so
+  nothing over the air writes the shared row under it; that row stays what the map file, a reload, a network change or
+  another writer made it, and RESTORE drops the entry so the row decides again. Nothing has to keep the map in step:
+  an import, a reload (what an RR refresh posts), an RR apply, a clear, a network change and a Signal search visit
+  change only the shared rows and leave the entries as they are. A trunk scan refuses every edit and the engine skips
+  the start-up file under one, so no target has an overlay: the target snapshot does not carry one and the target
+  switch empties it (`dmr_t3_overlay_discard()`). The overlay is the session's; `dmr_t3_chan_restore()` leaves it.
+  Every Tier III lookup of an LPCN's frequency reads one value: the grant resolver (`dmr_t3_overlay_resolve()`, one
+  extension lookup and the per-LPCN op byte, the only overlay read on the mapped-grant fast path: a logical grant and
+  an absolute grant's CdefParms LPCN alike follow the entry's frequency for SET and are not followed for HIDE, and only
+  a channel with no entry reads the shared map or the absolute grant's own frequency), and
+  `dmr_t3_chan_effective_hz()` (the entry's frequency, 0 when hidden, else the shared row) for Ann_WD_TSCC's logical
+  channels (the hunt candidates and the TSCC switch), a logical P_CLEAR's TSCC, a logical Move TSCC's printed
+  frequency and the heuristic anchors; app-control's `dsd_app_dmr_t3_channel_hz()` (`dmr_t3_effective.c`) gives the
+  call view the same value on a snapshot (the view's `channel_hz`) and on the live state, and the terminal panel reads
+  `channel_hz`. Capacity Plus, Connect Plus and XPT lookups (rest LSNs, LCNs, the trunk machine's `resolve_freq()`,
+  which a Tier III grant reaches only with its frequency resolved) and P25/NXDN read the shared map. A hidden channel's
+  grants are not followed and never recorded as missing, and the ledger is reconciled against the same value (a
+  channel with an entry, or a shared row with a frequency, leaves it). `dmr_t3_overlay_apply()` refuses an unknown
+  channel, operation or frequency (INVALID), a trunk scan (TRUNK_SCAN), and with `check` an edit whose expected
+  frequency, origin or network generation is not the live one (STALE); the frequency is the effective one, so another
+  writer emptying or filling a row under an entry never makes an editor's edit stale, and the view gives frontends
+  that value (`channel_hz`, below); the same SET or HIDE again changes nothing; an applied edit bumps the revision,
+  reconciles the ledger and redoes the heuristic estimates. A followed call keeps its carrier: an edit takes effect
+  from the next grant. Frontends edit through `DSD_APP_CMD_DMR_CHANNEL_SET` (`src/app_control/dmr_channel_commands.c`):
+  the payload carries the channel as the editor read it plus the command session generation (another session is
+  STALE) and a request id from `dsd_app_dmr_channel_request_next()`; every request the queue took gets a retained
+  result `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` (OK, STALE,
+  TRUNK_SCAN, INVALID, FULL) plus app-control's `SEARCH`, `DROPPED`, `OTHER_SYSTEM` (7: the carrier names another
+  system, `dsd_app_dmr_t3_other_system_here()`) and `NO_DMR` (8: the options no longer decode DMR, `frame_dmr` off after
+  a live mode change, `dsd_app_dmr_t3_dmr_decoding()`, review gate b-r4 S2). Both are judged on the decoder thread as
+  the edit is applied, so an edit queued before the identity arrived or before the mode change is refused too; `hz` is
+  checked only for SET, handed back along `apply_cmd()` in `ui_cmd_result_codes`. The command is in
+  `k_deferred_commands`: it changes only the overlay, so a DMR BS voice loop keeps its call and the edit applies once
+  the carrier ends. Not in the control API. At start, `--dmr-chan-overrides <csv>` (`lpcn,frequency_hz`, 0 hides; read
+  by `<dsd-neo/core/dmr_chan_overrides_csv.h>`, bad rows and rows past 256 channels skipped with a warning) is applied
+  unchecked by the engine before the first frame (`import_dmr_chan_overrides_if_needed()`). The file is one change
+  (`dmr_t3_overlay_load_csv()`): every row becomes its entry first, then the ledger is reconciled and the heuristic
+  estimates are redone once, so a long file with the fill on rebuilds once, not per row; once read,
+  `dmr_t3_overrides_applied()` is 1 for the session. The engine decides on the options as the config file (its
+  `[mode] decode`), `--profile` and the command line left them: it applies the file only while DMR decoding is on
+  (`frame_dmr`) and no trunk scan runs, and otherwise starts without it after one `NOTICE: DMR Tier III channels in
+  <file> not applied: ...` and never opens it (no start failure; the parser refuses no combination, so a profile's trunk
+  scan starts). The parser only keeps the path (an empty one or one past the field is refused) and checks no file: a
+  session that takes it opens it at start and stops on a missing or unreadable one, while a P25-only session or a
+  trunk scan starts whatever the path names (review gate b-r4 S4). The bootstrap pre-scan steps over its separate value
   (`dsd_cli_option_takes_free_value()`), so a file named like a one-shot option is the file. No INI key. Tests:
-  `DMR_T3_CHANNELS`, `DMR_T3_ANN_WD_TSCC`, `DMR_T3_FORCE_RELEASE`, `DMR_T3_CMOVE`, `APP_COMMAND_QUEUE`,
-  `APP_CONTROL_CALL_VIEW`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `ENGINE_SIGNAL_SEARCH`,
-  `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`, `CORE_INIT_STATE` (`initOpts()` clears the path).
+  `DMR_T3_CHANNELS`, `DMR_T3_ANN_WD_TSCC`, `DMR_T3_FORCE_RELEASE`, `DMR_T3_CMOVE`, `APP_COMMAND_QUEUE` (the P25
+  `0x000c` Auto session, a restore after a map reload), `APP_CONTROL_CALL_VIEW`, `ENGINE_TRUNK_SCAN`,
+  `ENGINE_DMR_CHAN_OVERRIDES`, `ENGINE_SIGNAL_SEARCH`, `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`,
+  `FUZZ_CORE_CSV_IMPORT`, `CORE_INIT_STATE` (`initOpts()` clears the path).
 - Tier III identity and control channel evidence (`dmr_t3_channels.c`, discussion #900 F3). `dmr_t3_note_tier3()`
   records that a message named the site Tier III: a C_ALOHA (any FID), an SLC C_SYS_Parms/P_SYS_Parms, or a standard
   (FID 0, BS-sourced) grant or C_BCAST (`dmr_csbk_note_tier3()`). A checked one sets `tier3`, the identity; one -F
@@ -13538,27 +13534,31 @@ Private per-protocol modules worth knowing about:
   when the DMR record already exists (`dmr_t3_note_tier3_if_recorded()`), so the grant path allocates nothing. Both
   flags ride the target snapshot. `dmr_t3_cc_note_evidence()`, from the checked C_ALOHA and C_SYS_Parms handlers,
   records the tuned frequency (`dsd_opts_tuned_freq_hz()`) as this carrier's TSCC while no call is followed, with
-  `dsd_state::carrier_seq` and the runtime trunk-tuning generation (`dsd_trunk_tuning_generation()`);
-  `dmr_t3_cc_confirmed_hz()` returns it only while both hold and no tune is pending
-  (`dsd_trunk_tuning_frame_is_current()`), so a carrier boundary or a trunk retune (a grant's voice channel, the return,
-  a hunt's next candidate: these move the generation, not always the carrier count) makes it stale, and a network
-  change or target restore drops it. A checked P_SYS_Parms on the carrier names it a payload channel
-  (`dmr_t3_cc_note_payload_channel()`): unless its Comp_CC bit says composite control channel, the evidence ends, since
-  the site can move its TSCC while the receiver stays. Tier III grant activity notices name the
+  `dsd_state::carrier_seq`, the received identity's epoch (`dsd_state::rx_id.epoch`) and the runtime trunk-tuning
+  generation (`dsd_trunk_tuning_generation()`); `dmr_t3_cc_confirmed_hz()` returns it only while all three hold and no
+  tune is pending (`dsd_trunk_tuning_frame_is_current()`), so a carrier boundary, another identity on the same carrier
+  (a colour-code change: two DMR systems can share a frequency; the DMR reset; review gate b-r4 S3) or a trunk retune
+  (a grant's voice channel, the return, a hunt's next candidate: these move the generation, not always the carrier
+  count) makes it stale, and a network change or target restore drops it. A checked P_SYS_Parms on the carrier names
+  it a payload channel (`dmr_t3_cc_note_payload_channel()`): unless its Comp_CC bit says composite control channel, the
+  evidence ends, since the site can move its TSCC while the receiver stays. Tier III grant activity notices name the
   channel in decimal (`Active Group Ch: 12 (TDMA S1) TG: 1234;`, B11); Connect Plus and P25 keep hex. Tests:
   `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`.
 - Tier III channel record in the UI snapshots (`<dsd-neo/app_control/dmr_t3_view.h>`, `src/app_control/dmr_t3_view.c`,
   `dmr_t3_view_copy.c`, `dmr_t3_view_internal.h`, discussion #900 F3). `dsd_ui_dmr_t3_view` holds owned copies of the
   ledger (details included), `dmr_t3_chan_origin()` per LPCN (`dmr_t3_chan_origins_copy()`), the overlay rows by LPCN
-  (hidden ones too, with their base), the frequency DMR uses per LPCN (`channel_hz`, `dmr_t3_chan_effective_copy()`:
-  the entry's over the shared row, 0 when hidden; what a frontend shows and sends as the edit's expected frequency,
-  the snapshot's `trunk_chan_map` row being the shared one), `tier3`/`tier3_unchecked` (0 while `other_system_here`),
+  (hidden ones too, each with `base_hz`, the shared map row under it, what RESTORE shows), the frequency DMR uses per
+  LPCN (`channel_hz`, `dmr_t3_chan_effective_copy()`: the entry's over the shared row, 0 when hidden; what a frontend
+  shows and sends as the edit's expected frequency, the snapshot's `trunk_chan_map` row being the shared one), `tier3`/`tier3_unchecked` (0 while `other_system_here`),
   `other_system_here` (the carrier's `rx_id` names another protocol's system or another DMR trunking system,
   `dsd_rxid_dmr_trunk_named()`: Capacity Plus, Connect Plus, XPT; 0 while it names nothing yet; a scalar, copied every
   publish; `dsd_app_dmr_t3_other_system_here()` in `dmr_t3_effective.c`, which also refuses edits),
   `overrides_applied` (the `--dmr-chan-overrides` file applied to this session, `dmr_t3_overrides_applied()`: 0 when the
-  engine skipped it, whatever the options' path holds; a scalar), `cc_hz`/`cc_confirmed_here`, the state instance, a
-  target id (moves whenever `trunk_scan_active_id` changes), the channel revision and network generation (what
+  engine skipped it, whatever the options' path holds; a scalar), `dmr_decoding` (the options last published decode
+  DMR, `dsd_app_dmr_t3_dmr_decoding()`: each options snapshot notes it, `dsd_app_dmr_t3_note_opts()` in
+  `ui_opts_snapshot.c`, and the next publish copies it; 0 after a mode change left DMR off, when the decoder refuses
+  every edit `NO_DMR`, so a frontend offers no editor, as for `other_system_here`; a scalar),
+  `cc_hz`/`cc_confirmed_here`, the state instance, a target id (moves whenever `trunk_scan_active_id` changes), the channel revision and network generation (what
   `DSD_APP_CMD_DMR_CHANNEL_SET` expects), and `content_seq`. `ui_snapshot.c` fills it at both hops
   (`dsd_app_dmr_t3_view_publish()`, `dsd_app_dmr_t3_view_consume()`) and points slot 18 of each snapshot at it; the body
   is copied only when the state instance, target, channel revision, ledger revision or channel map sequence moved

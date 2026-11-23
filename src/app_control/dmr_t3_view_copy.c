@@ -79,8 +79,7 @@ dmr_t3_view_copy_overlay(dsd_ui_dmr_t3_view* dst, const dsd_state* src) {
     for (uint16_t l = 1U; l < (uint16_t)(DSD_UI_DMR_T3_ROWS - 1) && dst->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS;
          l++) {
         long hz = 0;
-        long base_hz = 0;
-        const int op = dmr_t3_overlay_get(src, l, &hz, &base_hz);
+        const int op = dmr_t3_overlay_get(src, l, &hz);
         if (op == 0) {
             continue;
         }
@@ -88,7 +87,7 @@ dmr_t3_view_copy_overlay(dsd_ui_dmr_t3_view* dst, const dsd_state* src) {
         row->lpcn = l;
         row->hidden = op == (int)DMR_T3_OVERLAY_HIDE ? 1U : 0U;
         row->hz = row->hidden ? 0 : hz;
-        row->base_hz = base_hz;
+        row->base_hz = src->trunk_chan_map[l]; /* the shared row: what RESTORE shows */
     }
 }
 
@@ -125,6 +124,7 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     const long cc_hz = dmr_t3_cc_confirmed_hz(src);
     const uint8_t other = dsd_app_dmr_t3_other_system_here(src);
     dst->present = present;
+    dst->dmr_decoding = dsd_app_dmr_t3_dmr_decoding_noted();
     dst->other_system_here = other;
     dst->overrides_applied = dmr_t3_overrides_applied(src) ? 1U : 0U;
     dst->tier3 = !other && dmr_t3_tier3_seen(src) ? 1U : 0U;
@@ -171,6 +171,7 @@ dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* s
         return 1;
     }
     dst->present = src->present;
+    dst->dmr_decoding = src->dmr_decoding;
     dst->other_system_here = src->other_system_here;
     dst->overrides_applied = src->overrides_applied;
     dst->tier3 = src->tier3;

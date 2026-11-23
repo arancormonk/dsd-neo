@@ -76,11 +76,6 @@ dmr_t3_chan_origin_of_byte(uint8_t origin) {
 }
 
 int
-dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn) {
-    return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] == (uint8_t)DMR_T3_OVERLAY_HIDE;
-}
-
-int
 dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn) {
     return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] != 0U;
 }
@@ -88,10 +83,13 @@ dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn) {
 /* dmr_t3_chan_origin() with the extension @p ext (NULL for none) already looked up; @p lpcn is below DMR_T3_ROWS. */
 static dmr_chan_origin_e
 dmr_t3_chan_row_origin(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
+    /* A channel with the user's entry is theirs, whatever the shared row under it holds: nothing over the air writes
+       it. */
+    if (dmr_t3_overlay_has_entry(ext, lpcn)) {
+        return DMR_CHAN_ORIGIN_USER;
+    }
     if (state->trunk_chan_map[lpcn] == 0) {
-        /* A hidden row is the user's, and so is a set one another writer emptied (a P25 IDEN invalidation): nothing over
-           the air fills either. */
-        return dmr_t3_overlay_has_entry(ext, lpcn) ? DMR_CHAN_ORIGIN_USER : DMR_CHAN_ORIGIN_NONE;
+        return DMR_CHAN_ORIGIN_NONE;
     }
     const uint8_t origin = ext != NULL ? ext->origin[lpcn] : (uint8_t)DMR_CHAN_ORIGIN_NONE;
     /* A row another writer set after the air is that writer's, as a file's is. */
@@ -128,22 +126,10 @@ dmr_t3_chan_origins_copy(const dsd_state* state, uint8_t* out, size_t count) {
     }
 }
 
-/* The row an overlay entry on @p l replaced came from what @p drop accepts: it goes too, so RESTORE returns none. */
-static void
-dmr_t3_overlay_drop_base(dmr_ext_t* ext, uint16_t l, int (*drop)(unsigned origin)) {
-    dmr_t3_overlay* o = &ext->overlay;
-    if (o->op[l] != 0U && drop(o->base_origin[l])) {
-        o->base_hz[l] = 0;
-        o->base_origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
-        o->base_trust[l] = 0U;
-    }
-}
-
 int
 dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin)) {
     int dropped = 0;
     for (unsigned l = 1U; l <= DMR_T3_MAX_LCN; l++) {
-        dmr_t3_overlay_drop_base(ext, (uint16_t)l, drop);
         if (!drop(ext->origin[l])) {
             continue;
         }
@@ -190,64 +176,17 @@ dmr_t3_chan_note_map_cleared(dsd_state* state) {
 
 /* ---- The user's channels (the overlay; its edits are dmr_t3_overlay.c's) ---- */
 
-/* Lay entry @p l over the live row: the user's frequency, or none for a hidden channel, as USER with no trust. The
-   overlay is DMR's own writer, so the air's bit goes first (dsd_state_set_trunk_chan_freq() would count a takeover). */
-void
-dmr_t3_overlay_write_live(dsd_state* state, dmr_ext_t* ext, uint16_t l) {
-    const dmr_t3_overlay* o = &ext->overlay;
-    dsd_state_dmr_lcn_ota_set(state, l, 0);
-    dsd_state_set_trunk_chan_freq(state, l, o->op[l] == (uint8_t)DMR_T3_OVERLAY_SET ? o->hz[l] : 0);
-    ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_USER;
-    state->dmr_lcn_trust[l] = 0U;
-}
-
-/* Keep the live row as entry @p l's base; called with the row not yet overlaid. The base keeps the origin the row reads
-   as (dmr_t3_chan_origin()), so a row another writer took from the air stays FILE, and RESTORE gives an over-the-air
-   origin back its dsd_state::dmr_lcn_ota bit. */
-void
-dmr_t3_overlay_take_base(const dsd_state* state, dmr_ext_t* ext, uint16_t l) {
-    dmr_t3_overlay* o = &ext->overlay;
-    o->base_hz[l] = state->trunk_chan_map[l];
-    o->base_origin[l] = (uint8_t)(state->trunk_chan_map[l] != 0 ? dmr_t3_chan_origin(state, l) : DMR_CHAN_ORIGIN_NONE);
-    o->base_trust[l] = state->dmr_lcn_trust[l];
-}
-
-void
-dmr_t3_overlay_reapply(dsd_state* state) {
-    dmr_ext_t* ext = dmr_ext_get(state);
-    if (ext == NULL || ext->overlay.count == 0U) {
-        return;
-    }
-    for (uint16_t l = 1U; l <= (uint16_t)DMR_T3_MAX_LCN; l++) {
-        if (ext->overlay.op[l] == 0U) {
-            continue;
-        }
-        if (ext->origin[l] != (uint8_t)DMR_CHAN_ORIGIN_USER) {
-            dmr_t3_overlay_take_base(state, ext, l); /* the row the new map put there */
-        }
-        dmr_t3_overlay_write_live(state, ext, l);
-    }
-    /* As dmr_t3_chan_note_map_loaded(), no heuristic estimate is redone here: the fill runs at the next learned row. */
-    ext->revision++;
-    dmr_t3_missing_reconcile(state);
-}
-
 int
-dmr_t3_overlay_get(const dsd_state* state, uint16_t lpcn, long* hz, long* base_hz) {
+dmr_t3_overlay_get(const dsd_state* state, uint16_t lpcn, long* hz) {
     const dmr_ext_t* ext = dmr_ext_get(state);
     int op = 0;
     long user_hz = 0;
-    long row_hz = 0;
     if (ext != NULL && dmr_t3_lpcn_is_channel(lpcn) && ext->overlay.op[lpcn] != 0U) {
         op = (int)ext->overlay.op[lpcn];
         user_hz = ext->overlay.hz[lpcn];
-        row_hz = ext->overlay.base_hz[lpcn];
     }
     if (hz != NULL) {
         *hz = user_hz;
-    }
-    if (base_hz != NULL) {
-        *base_hz = row_hz;
     }
     return op;
 }
@@ -309,38 +248,6 @@ dmr_t3_chan_effective_copy(const dsd_state* state, long* out, size_t count) {
     for (size_t l = 1U; l < count; l++) {
         out[l] = dmr_t3_chan_row_effective_hz(state, ext, (uint16_t)l);
     }
-}
-
-void
-dmr_t3_overlay_bases_save(const dsd_state* state, dmr_t3_overlay_bases* out) {
-    if (out == NULL) {
-        return;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    const dmr_ext_t* ext = dmr_ext_get(state);
-    if (ext == NULL) {
-        return;
-    }
-    DSD_MEMCPY(out->base_hz, ext->overlay.base_hz, sizeof(out->base_hz));
-    DSD_MEMCPY(out->base_origin, ext->overlay.base_origin, sizeof(out->base_origin));
-    DSD_MEMCPY(out->base_trust, ext->overlay.base_trust, sizeof(out->base_trust));
-}
-
-void
-dmr_t3_overlay_bases_restore(const dsd_state* state, const dmr_t3_overlay_bases* in) {
-    dmr_ext_t* ext = dmr_ext_get(state);
-    if (ext == NULL || in == NULL || ext->overlay.count == 0U) {
-        return;
-    }
-    dmr_t3_overlay* o = &ext->overlay;
-    for (unsigned l = 1U; l <= DMR_T3_MAX_LCN; l++) {
-        if (o->op[l] != 0U) {
-            o->base_hz[l] = in->base_hz[l];
-            o->base_origin[l] = in->base_origin[l];
-            o->base_trust[l] = in->base_trust[l];
-        }
-    }
-    ext->revision++;
 }
 
 void
@@ -700,6 +607,7 @@ dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state) {
     }
     ext->cc_evidence = 1U;
     ext->cc_evidence_carrier = state->carrier_seq;
+    ext->cc_evidence_rx_epoch = state->rx_id.epoch;
     ext->cc_evidence_tune_gen = dsd_trunk_tuning_generation();
     ext->cc_evidence_hz = hz;
 }
@@ -716,6 +624,11 @@ long
 dmr_t3_cc_confirmed_hz(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
     if (ext == NULL || ext->cc_evidence == 0U || ext->cc_evidence_carrier != state->carrier_seq) {
+        return 0;
+    }
+    /* Another identity on the same carrier (a colour-code change: two systems can share a frequency; a DMR reset)
+       moves the epoch: what the old one's control channel said names no TSCC for the new one. */
+    if (ext->cc_evidence_rx_epoch != state->rx_id.epoch) {
         return 0;
     }
     /* A trunk retune (to a voice channel, back, or a hunt's next candidate) moves the tuning generation, not always the

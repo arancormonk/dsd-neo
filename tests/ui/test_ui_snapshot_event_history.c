@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/app_control/dmr_t3_view_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 #include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 #include "dsd-neo/core/safe_api.h"
@@ -630,7 +631,7 @@ test_dmr_t3_view_carries_the_record(void) {
     dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
     ext->tier3 = 1U;
     ext->overlay.op[13] = (uint8_t)DMR_T3_OVERLAY_HIDE;
-    ext->overlay.base_hz[13] = 451162500L;
+    dsd_state_set_trunk_chan_freq(st, 13U, 451162500L); /* the shared row under the hidden entry */
     ext->overlay.op[14] = (uint8_t)DMR_T3_OVERLAY_SET;
     ext->overlay.hz[14] = 451175000L;
     ext->overlay.count = 2U;
@@ -647,7 +648,7 @@ test_dmr_t3_view_carries_the_record(void) {
     assert(view->origin[13] == (uint8_t)DMR_CHAN_ORIGIN_USER); /* hidden: no frequency, the user's row */
     assert(view->overlay_count == 2U);
     assert(view->overlay[0].lpcn == 13U && view->overlay[0].hidden == 1U && view->overlay[0].hz == 0);
-    assert(view->overlay[0].base_hz == 451162500L);
+    assert(view->overlay[0].base_hz == 451162500L && view->channel_hz[13] == 0L);
     assert(view->overlay[1].lpcn == 14U && view->overlay[1].hidden == 0U && view->overlay[1].hz == 451175000L);
     assert(view->cc_confirmed_here == 1U && view->cc_hz == 451000000L);
     assert(dsd_app_dmr_t3_view_shows_lpcns(view));
@@ -715,7 +716,6 @@ test_dmr_t3_view_carries_the_effective_frequency(void) {
     ext->overlay.hz[14] = 451175000L;
     ext->overlay.op[13] = (uint8_t)DMR_T3_OVERLAY_HIDE;
     ext->overlay.count = 2U;
-    ext->origin[13] = ext->origin[14] = (uint8_t)DMR_CHAN_ORIGIN_USER;
     dsd_state_set_trunk_chan_freq(st, 14U, 0L);
     dsd_state_set_trunk_chan_freq(st, 13U, 451162500L);
     const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
@@ -727,16 +727,14 @@ test_dmr_t3_view_carries_the_effective_frequency(void) {
     free_session_state(st);
 }
 
-/* The user's entry for @p lpcn as dmr_t3_overlay_apply() lays it over the row as it is: SET at @p hz, or HIDE for 0. */
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
 static void
 user_entry(dsd_state* state, uint16_t lpcn, long hz) {
     dmr_ext_t* ext = dmr_ext_get_or_create(state);
     assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
-    dmr_t3_overlay_take_base(state, ext, lpcn);
     ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
     ext->overlay.hz[lpcn] = hz;
     ext->overlay.count++;
-    dmr_t3_overlay_write_live(state, ext, lpcn);
 }
 
 /* Review gate b-r3 R6: the view says whether the overrides file applied to this session, in both hops, whatever the
@@ -750,6 +748,33 @@ test_dmr_t3_view_carries_overrides_applied(void) {
     ext->overrides_applied = 1U;
     view = dmr_t3_view_after_publish(st);
     assert(view->overrides_applied == 1U && dmr_t3_overrides_applied(st));
+    free_session_state(st);
+}
+
+/* Review gate b-r4 S2: the view says whether the options last published decode DMR (what the options snapshot notes,
+   dsd_app_dmr_t3_note_opts()), at every publish and in both hops (the body is not copied again): a live mode change to
+   P25 only reads 0, and back on DMR 1. */
+static void
+test_dmr_t3_view_carries_dmr_decoding(void) {
+    dsd_state* st = new_session_state();
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    opts->frame_dmr = 1;
+    dsd_app_dmr_t3_note_opts(opts);
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->dmr_decoding == 1U);
+    const uint64_t content = view->content_seq;
+    opts->frame_dmr = 0;
+    opts->frame_p25p1 = 1;
+    dsd_app_dmr_t3_note_opts(opts);
+    view = dmr_t3_view_after_publish(st);
+    assert(view->dmr_decoding == 0U && view->content_seq == content);
+    opts->frame_dmr = 1;
+    dsd_app_dmr_t3_note_opts(opts);
+    view = dmr_t3_view_after_publish(st);
+    assert(view->dmr_decoding == 1U);
+    free(opts);
     free_session_state(st);
 }
 
@@ -1419,6 +1444,7 @@ main(void) {
     test_dmr_t3_view_follows_the_current_system();
     test_dmr_t3_view_keys_on_target_and_session();
     test_dmr_t3_view_carries_overrides_applied();
+    test_dmr_t3_view_carries_dmr_decoding();
     test_vc_freq_reads_the_tier3_channel_dmr_uses();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");

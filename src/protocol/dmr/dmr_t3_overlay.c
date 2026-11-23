@@ -5,13 +5,12 @@
 
 /*
  * The user's Tier III channels over the channel map (<dsd-neo/protocol/dmr/dmr_t3_channels.h>, discussion #900 F3):
- * the edits a frontend sends (DSD_APP_CMD_DMR_CHANNEL_SET), the --dmr-chan-overrides file, and the re-apply after the
- * map underneath changed. The overlay lives in the DMR state extension beside the origins (dmr_t3_channels_internal.h).
+ * the edits a frontend sends (DSD_APP_CMD_DMR_CHANNEL_SET) and the --dmr-chan-overrides file. The overlay lives in the
+ * DMR state extension beside the origins (dmr_t3_channels_internal.h) and never writes the shared channel map.
  */
 
 #include <dsd-neo/core/dmr_chan_overrides_csv.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/log.h>
 #include <stddef.h>
@@ -45,49 +44,34 @@ dmr_t3_overlay_expected(const dsd_state* state, uint16_t lpcn, long expected_hz,
 }
 
 /* SET or HIDE @p l; returns 1 when it changed, 0 when it already was so, -1 for a new entry the overlay has no room
-   for. A new entry keeps the row it replaces. The same entry again lays it over the live row once more when another
-   writer changed that row (a P25 IDEN invalidation empties it), so the editor's repeat repairs it. */
+   for. */
 static int
-dmr_t3_overlay_put(dsd_state* state, dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_op op, long hz) {
+dmr_t3_overlay_put(dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_op op, long hz) {
     dmr_t3_overlay* o = &ext->overlay;
     const long want_hz = op == DMR_T3_OVERLAY_SET ? hz : 0;
     if (o->op[l] == (uint8_t)op && o->hz[l] == want_hz) {
-        if (state->trunk_chan_map[l] == want_hz && ext->origin[l] == (uint8_t)DMR_CHAN_ORIGIN_USER) {
-            return 0;
-        }
-        dmr_t3_overlay_write_live(state, ext, l);
-        return 1;
+        return 0;
     }
     if (o->op[l] == 0U) {
         if (o->count >= (uint16_t)DMR_T3_OVERLAY_MAX_ROWS) {
             return -1; /* full: the caller refuses it */
         }
-        dmr_t3_overlay_take_base(state, ext, l);
         o->count++;
     }
     o->op[l] = (uint8_t)op;
     o->hz[l] = want_hz;
-    dmr_t3_overlay_write_live(state, ext, l);
     return 1;
 }
 
-/* Drop @p l's entry and put back the row it replaced; returns whether there was one. */
+/* Drop @p l's entry, so the shared map row under it decides again; returns whether there was one. */
 static int
-dmr_t3_overlay_drop(dsd_state* state, dmr_ext_t* ext, uint16_t l) {
+dmr_t3_overlay_drop(dmr_ext_t* ext, uint16_t l) {
     dmr_t3_overlay* o = &ext->overlay;
     if (o->op[l] == 0U) {
         return 0;
     }
-    dsd_state_set_trunk_chan_freq(state, l, o->base_hz[l]);
-    ext->origin[l] = o->base_origin[l];
-    /* A row the air taught is the air's again (dmr_t3_overlay_take_base() kept the origin it read as). */
-    dsd_state_dmr_lcn_ota_set(state, l, o->base_hz[l] != 0 && dmr_t3_chan_origin_is_ota(o->base_origin[l]));
-    state->dmr_lcn_trust[l] = o->base_trust[l];
     o->op[l] = 0U;
     o->hz[l] = 0;
-    o->base_hz[l] = 0;
-    o->base_origin[l] = 0U;
-    o->base_trust[l] = 0U;
     o->count--;
     return 1;
 }
@@ -95,9 +79,8 @@ dmr_t3_overlay_drop(dsd_state* state, dmr_ext_t* ext, uint16_t l) {
 /* Make the edit of @p lpcn the overlay holds: SET or HIDE it (dmr_t3_overlay_put()), or RESTORE it
    (dmr_t3_overlay_drop()). Returns 1 when it changed, 0 when nothing did, -1 for a new entry past the cap. */
 static int
-dmr_t3_overlay_change(dsd_state* state, dmr_ext_t* ext, uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
-    return op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(state, ext, lpcn)
-                                        : dmr_t3_overlay_put(state, ext, lpcn, op, hz);
+dmr_t3_overlay_change(dmr_ext_t* ext, uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
+    return op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(ext, lpcn) : dmr_t3_overlay_put(ext, lpcn, op, hz);
 }
 
 /* After the overlay changed: the revision moves, the ledger is reconciled and the heuristic estimates are redone. */
@@ -124,7 +107,7 @@ dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_ove
     if (ext == NULL) {
         return DMR_T3_SET_INVALID; /* out of memory: nothing could hold the entry */
     }
-    const int changed = dmr_t3_overlay_change(state, ext, lpcn, op, hz);
+    const int changed = dmr_t3_overlay_change(ext, lpcn, op, hz);
     if (changed < 0) {
         return DMR_T3_SET_FULL;
     }
@@ -135,7 +118,6 @@ dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_ove
 }
 
 typedef struct {
-    dsd_state* state;
     dmr_ext_t* ext;
     int applied;
     int changed;
@@ -149,7 +131,7 @@ dmr_t3_overlay_load_row(uint16_t lpcn, long hz, void* ctx) {
     if (!dmr_t3_overlay_args_valid(lpcn, op, hz)) {
         return -1;
     }
-    const int changed = dmr_t3_overlay_change(c->state, c->ext, lpcn, op, hz);
+    const int changed = dmr_t3_overlay_change(c->ext, lpcn, op, hz);
     if (changed < 0) {
         return -1;
     }
@@ -174,7 +156,7 @@ dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path) {
     if (ext == NULL) {
         return -1; /* out of memory: nothing could hold the entries */
     }
-    dmr_t3_overlay_load_ctx ctx = {state, ext, 0, 0};
+    dmr_t3_overlay_load_ctx ctx = {ext, 0, 0};
     const int taken = dsd_csv_dmr_chan_overrides_read(path, dmr_t3_overlay_load_row, &ctx);
     /* The whole file is one change: the ledger reconciled and the estimates redone once, not per row (rows a failed
        read already took included). */

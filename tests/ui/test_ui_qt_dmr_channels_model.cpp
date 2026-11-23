@@ -80,7 +80,9 @@ add_overlay(uint16_t lpcn, bool hidden, long hz, long base) {
     row.hz = hz;
     row.base_hz = base;
     g_fixture->view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_USER;
-    set_row(lpcn, hidden ? 0 : hz);
+    /* The entry lies beside the shared row, which keeps the frequency RESTORE shows (review gate b-r4 S1). */
+    g_fixture->state->trunk_chan_map[lpcn] = base;
+    g_fixture->view.channel_hz[lpcn] = hidden ? 0 : hz;
 }
 
 /* A Tier III site: three channels granted without a frequency (12 heard last, 7 before it, 40 past the details and

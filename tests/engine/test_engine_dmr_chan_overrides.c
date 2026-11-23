@@ -4,12 +4,12 @@
  */
 
 /*
- * --dmr-chan-overrides at start (discussion #900 F3): the decoder applies the user's Tier III channels over the -C map
- * after the map loaded and before the first frame, so a grant in the first dispatched frame resolves to the user's
- * frequency, a hidden channel's grant is not followed, and RESTORE has the file's row to return to. A file that cannot
- * be read stops the start. Only a session that decodes DMR and runs no trunk scan takes it (review gate b-r2 C1): any
- * other starts without it, with one notice. Real engine run; the frame sync is wrapped and dispatches the grants
- * itself.
+ * --dmr-chan-overrides at start (discussion #900 F3): the decoder applies the user's Tier III channels before the first
+ * frame, beside the -C map, which keeps the file's rows: a grant in the first dispatched frame resolves to the user's
+ * frequency, and a hidden channel's grant is not followed. A file that cannot be read stops the start. Only a session
+ * that decodes DMR and runs no trunk scan takes it (review gate b-r2 C1): any other starts without it, with one
+ * notice, and never opens it, so a missing file stops nothing there (b-r4 S4). Real engine run; the frame sync is
+ * wrapped and dispatches the grants itself.
  */
 
 #include <assert.h>
@@ -141,13 +141,15 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
         dsd_exitflag_store(1);
         return DSD_SYNC_NONE;
     }
-    /* The first frame: the user's rows already lie over the file's, and the record says the file applied. */
+    /* The first frame: the user's channels already decide, the map keeps the file's rows, and the record says the
+       file applied. */
     assert(dmr_t3_overrides_applied(state));
-    assert(state->trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
-    assert(state->trunk_chan_map[13] == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_effective_hz(state, 12U) == 451137500L
+           && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_effective_hz(state, 13U) == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER);
     assert(state->trunk_chan_map[14] == 451037500L && dmr_t3_chan_origin(state, 14U) == DMR_CHAN_ORIGIN_FILE);
-    long base_hz = 0;
-    assert(dmr_t3_overlay_get(state, 12U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 451012500L);
+    assert(state->trunk_chan_map[12] == 451012500L && state->trunk_chan_map[13] == 451025000L);
+    assert(dmr_t3_overlay_get(state, 12U, NULL) == DMR_T3_OVERLAY_SET);
 
     /* Grants in that frame: hidden 13 is not followed (nor recorded as missing), 12 resolves to the user's
      * frequency. */
@@ -275,6 +277,10 @@ main(void) {
     test_overrides_skipped_without_dmr(map, overrides);
     test_overrides_skipped_under_trunk_scan(overrides);
     (void)remove(overrides);
+    /* Review gate b-r4 S4: the file is opened only by a session that takes it. A P25-only session and a trunk scan
+       start (or reach their own checks) with the missing file as with a readable one; a DMR session refuses it. */
+    test_overrides_skipped_without_dmr(map, overrides);
+    test_overrides_skipped_under_trunk_scan(overrides);
     test_unreadable_overrides_stop_the_start(map, overrides);
     (void)remove(map);
     printf("ENGINE_DMR_CHAN_OVERRIDES: OK\n");

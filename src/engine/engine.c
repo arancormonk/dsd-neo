@@ -430,12 +430,13 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3) lie over the channel map: applied here, after
- * the map loaded (by -C while parsing, or by import_global_channel_map_if_needed()) and before the first frame. A file
- * that cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. Only a session that
- * decodes DMR and runs no trunk scan takes it, judged on the options as the config file (its [mode] decode), the
- * profile and the command line left them: the map is shared with the other trunking protocols, and a trunk scan has no
- * global map. Any other session starts without it, with one notice. */
+/* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3), which DMR's lookups read over the channel
+ * map: applied here, before the first frame. Only a session that decodes DMR and runs no trunk scan takes them, judged
+ * on the options as the config file (its [mode] decode), the profile and the command line left them: no Tier III
+ * lookup runs in a session without DMR, and a trunk scan keeps each target's own channels. Any other session starts
+ * without the file, with one notice, and never opens it (the command line only keeps the path), so a missing file
+ * stops nothing there. A session that takes it opens it here: a file that is missing or cannot be read stops the
+ * start, as a channel map does; a bad row is skipped with a warning. */
 static int
 import_dmr_chan_overrides_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_chan_overrides_file[0] == '\0') {

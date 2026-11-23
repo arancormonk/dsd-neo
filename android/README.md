@@ -528,8 +528,8 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   Otherwise the button is greyed out.
 - **Hide, Restore, Remove.** Tap a row under **Channels** to change it. **Hide** stops DSD-neo following calls on a
   channel (for example one whose frequency is wrong); the channel stays listed as hidden. **Restore** brings a hidden
-  channel back. **Remove** (tap twice) takes away a frequency you entered; the channel goes back to the frequency it
-  had before, if any.
+  channel back. **Remove** (tap twice) takes away a frequency you entered; the channel goes back to the frequency the
+  channel map or the site gives it, if any.
 - **Kept per saved system.** What you enter is saved with the saved system you are listening to, and applied again
   every time that system starts. It never changes your channel map file. In Explore, or anything that is not a saved
   system, a change lasts only until you stop listening, and the sheet says so. If a change could not be saved, the

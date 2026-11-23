@@ -2171,7 +2171,8 @@ test_dmr_channel_bridge() {
     const quint32 request = bridge.lastDmrChannelRequest();
     check(request != 0U);
     check(dsd_app_drain_cmds(&opts, &state) == 1);
-    check(state.trunk_chan_map[12] == 451137500L);
+    /* DMR uses the user's frequency; the shared map row under it is untouched (review gate b-r4 S1). */
+    check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L && state.trunk_chan_map[12] == rowHz);
     const uint32_t revisionAfter = dmr_t3_chan_revision(&state);
     /* Another caller's request is not this bridge's to report. */
     dsd_app_dmr_channel_set_payload other = {};
@@ -2206,7 +2207,7 @@ test_dmr_channel_bridge() {
     check(answers.size() == 2 && answers.value(1).value("result").toString() == "stale"
           && answers.value(1).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_STALE);
     check(!answers.value(1).value("saved").toBool() && answers.value(1).value("saveError").toString().isEmpty());
-    check(state.trunk_chan_map[12] == 451137500L);
+    check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L && state.trunk_chan_map[12] == rowHz);
     check(systems.dmrChannels(siteA).size() == 1); // a refusal keeps nothing
     tick();
     check(answers.size() == 2); // each answer once

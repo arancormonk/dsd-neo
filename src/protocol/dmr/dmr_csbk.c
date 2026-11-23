@@ -340,7 +340,7 @@ static void
 dmr_cspdu_pf0_print_frequency(const dsd_state* state, uint16_t lpchannum, uint16_t channel, long int freq) {
     if (freq != 0) {
         DSD_FPRINTF(stderr, "\n  Frequency: %.6lf MHz", (double)freq / 1000000.0);
-    } else if (dmr_t3_overlay_get(state, channel, NULL, NULL) == DMR_T3_OVERLAY_HIDE) {
+    } else if (dmr_t3_overlay_get(state, channel, NULL) == DMR_T3_OVERLAY_HIDE) {
         DSD_FPRINTF(stderr, "\n  Channel Hidden in Your Channel List;");
     } else if (lpchannum != 0 && lpchannum != 0xFFF) {
         DSD_FPRINTF(stderr, "\n  Frequency Not Found in Channel Map;");

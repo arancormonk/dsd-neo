@@ -91,7 +91,7 @@ typedef struct {
     uint16_t lpcn;  /**< 1..4094 */
     uint8_t hidden; /**< 1 for a hidden channel (no frequency, listed "hidden"), 0 for one the user set */
     long hz;        /**< the user's frequency; 0 when hidden */
-    long base_hz;   /**< the frequency RESTORE returns to (0 for none) */
+    long base_hz;   /**< the shared channel map row under the entry, what RESTORE shows (0 for none) */
 } dsd_ui_dmr_t3_overlay_row;
 
 /** The DMR Tier III channel record a snapshot carries. */
@@ -112,13 +112,17 @@ typedef struct {
     uint8_t overrides_applied; /**< the --dmr-chan-overrides file applied to this session (dmr_t3_overrides_applied()):
                                     0 with no file, and when the engine skipped it (a session that does not decode
                                     DMR, or a trunk scan), whatever dsd_opts::dmr_chan_overrides_file holds */
+    uint8_t dmr_decoding;      /**< the options last published decode DMR (dsd_opts::frame_dmr): 0 after a mode change
+                                    left DMR off, when no Tier III lookup reads the user's channels and the decoder
+                                    refuses every channel edit (DSD_APP_DMR_CHANNEL_SET_NO_DMR), so a frontend offers
+                                    no editor, as for other_system_here. Set at every publish */
     uint64_t state_id;         /**< dsd_state::state_instance of the source */
     uint32_t target_id;        /**< moves whenever the parked trunk-scan target changes; never repeats in a process */
     uint32_t revision;         /**< dmr_t3_chan_revision(): bumps on any row, origin or overlay change */
     uint32_t generation;       /**< dmr_t3_chan_generation(): the network generation the channel-set command expects */
     uint64_t content_seq;      /**< moves whenever the body below was copied anew; never repeats in a process */
     dsd_ui_dmr_t3_missing missing;      /**< the ledger */
-    uint8_t origin[DSD_UI_DMR_T3_ROWS]; /**< dmr_t3_chan_origin() per LPCN (a dmr_chan_origin_e; USER when hidden) */
+    uint8_t origin[DSD_UI_DMR_T3_ROWS]; /**< dmr_t3_chan_origin() per LPCN (a dmr_chan_origin_e; USER with an entry) */
     uint16_t overlay_count;             /**< overlay rows in use, by LPCN ascending */
     dsd_ui_dmr_t3_overlay_row overlay[DSD_UI_DMR_T3_OVERLAY_MAX_ROWS];
     /** The frequency DMR uses per LPCN (dmr_t3_chan_effective_hz()): the user's entry over the shared map row (a set

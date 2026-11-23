@@ -13,6 +13,7 @@
 #define DSD_NEO_SRC_APP_CONTROL_DMR_T3_VIEW_INTERNAL_H_
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -46,6 +47,17 @@ int dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_vie
 
 /* Point @p snapshot's slot at @p view (storage the snapshot module owns; no cleanup). */
 void dsd_app_dmr_t3_view_attach(dsd_state* snapshot, dsd_ui_dmr_t3_view* view);
+
+/* 1 while @p opts decode DMR (dsd_opts::frame_dmr): what refuses a channel edit (DSD_APP_DMR_CHANNEL_SET_NO_DMR) on
+ * the decoder thread, and the view's dmr_decoding. 0 for NULL. */
+uint8_t dsd_app_dmr_t3_dmr_decoding(const dsd_opts* opts);
+
+/* The options were published (ui_opts_snapshot.c, on the thread that publishes them, the decoder's): keep their
+ * dsd_app_dmr_t3_dmr_decoding() for the record's next publish, which has the decoder state only. */
+void dsd_app_dmr_t3_note_opts(const dsd_opts* opts);
+
+/* dsd_app_dmr_t3_dmr_decoding() of the options dsd_app_dmr_t3_note_opts() last saw; 0 before any. */
+uint8_t dsd_app_dmr_t3_dmr_decoding_noted(void);
 
 /* 1 while the carrier's received identity (dsd_state::rx_id of the live decoder state @p state) names a system that is
  * not Tier III: another protocol's, or another DMR trunking system (Capacity Plus, Connect Plus, XPT;

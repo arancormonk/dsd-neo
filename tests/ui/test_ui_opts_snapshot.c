@@ -22,6 +22,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <sndfile.h>
+#include "dmr_t3_view_internal.h"
 #include "p25_tick_guard_stub.h"
 #include "recording_view_internal.h"
 #include "snapshot_internal.h"
@@ -172,6 +173,22 @@ test_publish_carries_the_recording_view(void) {
     assert(dsd_app_recording_view_get(NULL) == -1);
 }
 
+/* Review gate b-r4 S2: each options snapshot notes whether the options decode DMR, for the DMR Tier III record's next
+   publish (its dmr_decoding), which has the decoder state only. */
+static void
+test_publish_notes_dmr_decoding(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_dmr = 1;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_dmr_t3_dmr_decoding_noted() == 1U);
+    opts.frame_dmr = 0;
+    opts.frame_p25p1 = 1;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    assert(dsd_app_dmr_t3_dmr_decoding_noted() == 0U);
+    assert(dsd_app_dmr_t3_dmr_decoding(NULL) == 0U);
+}
+
 /* Issue #708: the view carries the recording journal's state: none without a journal, on while it is written, failed
    when it did not open (or a write failed), until the next run's journal opens. */
 static void
@@ -273,6 +290,7 @@ main(void) {
     test_publish_also_feeds_the_notification_record();
     test_publish_carries_the_recording_view();
     test_publish_carries_the_journal_state();
+    test_publish_notes_dmr_decoding();
     test_publish_holds_the_tick_guard();
     test_publish_puts_off_while_a_tick_holds_the_guard();
     printf("UI_OPTS_SNAPSHOT: OK\n");

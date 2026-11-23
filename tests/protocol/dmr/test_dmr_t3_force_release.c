@@ -558,16 +558,14 @@ test_p_clear_named_tscc_becomes_candidate(void) {
 }
 
 /* The clear the encryption lockout synthesizes names no address and always applies. */
-/* The user's entry for @p lpcn as dmr_t3_overlay_apply() lays it over the row as it is: SET at @p hz, or HIDE for 0. */
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
 static void
 user_entry(dsd_state* state, uint16_t lpcn, long hz) {
     dmr_ext_t* ext = dmr_ext_get_or_create(state);
     assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
-    dmr_t3_overlay_take_base(state, ext, lpcn);
     ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
     ext->overlay.hz[lpcn] = hz;
     ext->overlay.count++;
-    dmr_t3_overlay_write_live(state, ext, lpcn);
 }
 
 /* Review gate b-r3 R2: a logical P_CLEAR TSCC reads the frequency DMR uses for it (the user's entry over the shared

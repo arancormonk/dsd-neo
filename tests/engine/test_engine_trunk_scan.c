@@ -2326,7 +2326,7 @@ test_dmr_overlay_never_crosses_targets(void) {
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(opts, state);
     if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_overlay_count(state) != 0U
-        || state->trunk_chan_map[12] != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+        || dmr_t3_chan_effective_hz(state, 12U) != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
         DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
         test_rc = 1;
     }
@@ -2334,7 +2334,7 @@ test_dmr_overlay_never_crosses_targets(void) {
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(opts, state);
     if (dsd_engine_trunk_scan_active_index(state) != 0 || dmr_t3_overlay_count(state) != 0U
-        || dmr_t3_overlay_get(state, 12U, NULL, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL, NULL) != 0) {
+        || dmr_t3_overlay_get(state, 12U, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL) != 0) {
         DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
         test_rc = 1;
     }

@@ -295,8 +295,9 @@ the app's Channels sheet); Tier III numbers are never shown in hex.
 
 #### Your channels file (`--dmr-chan-overrides <file>`)
 
-Your own Tier III channels, laid over the channel map. Use it only on DMR Tier III systems: the channel numbers
-share the one channel map that P25, NXDN and the other trunking protocols use.
+Your own Tier III channels. DMR Tier III uses them in place of the channel map's rows for those channels; the channel
+map itself is not changed, so P25, NXDN and the other trunking protocols, which share its channel numbers, never see
+them.
 
 1. `lpcn` (decimal, `1..4094`): the channel number dsd-neo shows.
 2. `frequency_hz` (decimal Hz, `100000..2147483647`), or `0` to hide the channel: its calls are not followed, and it
@@ -313,14 +314,15 @@ lpcn,frequency_hz
 - A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows. A channel
   given twice keeps its later row.
 - At most 256 channels; a row naming one more is skipped with a warning.
-- The rows are applied after `-C` loads, before the first frame, and stay in force when the map is imported again,
-  reloaded, cleared or refreshed from RadioReference. Nothing heard over the air replaces them. Take a row out and,
-  from the next start, the channel's frequency from the map or the air is used again.
+- The rows are applied before the first frame and stay in force when the map is imported again, reloaded, cleared or
+  refreshed from RadioReference. Nothing heard over the air replaces them. Take a row out and, from the next start,
+  the channel's frequency from the map or the air is used again; Remove in the app does the same at once.
 - dsd-neo never writes the file and never changes the channel map file. The Android app writes one into its private
   folder for each start of a saved system that has channels of yours.
 - Applied only when the session decodes DMR and runs no trunk scan, judged after the config file (its
-  `[mode] decode`), `--profile` and the command line. Any other session starts without it and logs one notice
-  (`DMR Tier III channels in <file> not applied: ...`). There is no INI key.
+  `[mode] decode`), `--profile` and the command line. Any other session starts without it, logs one notice
+  (`DMR Tier III channels in <file> not applied: ...`) and never opens the file, so a missing file does not stop it.
+  A session that applies it stops at start when the file is missing or cannot be read. There is no INI key.
 
 ### Scoped row options
 

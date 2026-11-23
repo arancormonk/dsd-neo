@@ -787,8 +787,9 @@ typedef struct {
 } dsd_app_dmr_channel_set_payload;
 
 /** What one DSD_APP_CMD_DMR_CHANNEL_SET did. 0 to 4 are dmr_t3_overlay_apply()'s answers (dmr_t3_set_result); the
- * rest are app-control's, for a request that never reached it. OTHER_SYSTEM is judged on the decoder thread as the edit
- * is applied, so an edit queued before the carrier named another system is refused too. */
+ * rest are app-control's, for a request that never reached it. OTHER_SYSTEM and NO_DMR are judged on the decoder
+ * thread as the edit is applied, so an edit queued before the carrier named another system, or before a mode change
+ * stopped DMR decoding, is refused too. */
 typedef enum {
     DSD_APP_DMR_CHANNEL_SET_OK = 0,         /**< Applied, or the row already was so */
     DSD_APP_DMR_CHANNEL_SET_STALE = 1,      /**< The session, the network or the row is not the one the editor read */
@@ -800,6 +801,9 @@ typedef enum {
     /** The carrier names another system now (the view's other_system_here): its channel map is that system's, so no
         Tier III edit applies */
     DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM = 7,
+    /** The session no longer decodes DMR (dsd_opts::frame_dmr off after a mode change; the view's dmr_decoding 0): no
+        Tier III lookup reads the user's channels, so no edit applies */
+    DSD_APP_DMR_CHANNEL_SET_NO_DMR = 8,
 } dsd_app_dmr_channel_set_code;
 
 /** The retained outcome of one DSD_APP_CMD_DMR_CHANNEL_SET: the request as submitted and what it did. @c sequence is

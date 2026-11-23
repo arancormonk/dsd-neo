@@ -4,19 +4,42 @@
  */
 
 /*
- * Which system the receiver is on, as the DMR Tier III channel record reads it, and the frequency DMR Tier III uses for
- * a channel (dmr_t3_view_internal.h): the snapshot's view and the live decoder state give the same answer, so the
- * call view, the editor's command and the published record agree.
+ * Whether the session decodes DMR and which system the receiver is on, as the DMR Tier III channel record reads them,
+ * and the frequency DMR Tier III uses for a channel (dmr_t3_view_internal.h): the snapshot's view and the live decoder
+ * state give the same answer, so the call view, the editor's command and the published record agree.
  */
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "dmr_t3_view_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+
+/* dsd_app_dmr_t3_dmr_decoding() of the options last published (dsd_app_dmr_t3_note_opts()). */
+static atomic_int g_dmr_decoding = 0;
+
+uint8_t
+dsd_app_dmr_t3_dmr_decoding(const dsd_opts* opts) {
+    return opts != NULL && opts->frame_dmr == 1 ? 1U : 0U;
+}
+
+void
+dsd_app_dmr_t3_note_opts(const dsd_opts* opts) {
+    if (opts != NULL) {
+        atomic_store(&g_dmr_decoding, (int)dsd_app_dmr_t3_dmr_decoding(opts));
+    }
+}
+
+uint8_t
+dsd_app_dmr_t3_dmr_decoding_noted(void) {
+    return atomic_load(&g_dmr_decoding) != 0 ? 1U : 0U;
+}
 
 uint8_t
 dsd_app_dmr_t3_other_system_here(const dsd_state* state) {

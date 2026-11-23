@@ -154,9 +154,12 @@ dsd_app_apply_dmr_channel_set(dsd_opts* opts, dsd_state* state, const struct dsd
     if (p.session_seq == 0U || p.session_seq != dsd_app_command_session_generation()) {
         return DSD_APP_DMR_CHANNEL_SET_STALE;
     }
-    /* The carrier names another system (a Connect Plus or P25 site, say): the shared map is that system's, and an edit
-       of an unchanged row would retune its grants. Judged here, on the decoder thread, so an edit the editor sent
-       before the identity arrived cannot slip through. */
+    /* The session no longer decodes DMR (a live mode change to P25 only, say), or the carrier names another system (a
+       Connect Plus or P25 site): no Tier III channel is in use, so no edit of one applies. Judged here, on the decoder
+       thread, so an edit the editor sent before the mode change or the identity cannot slip through. */
+    if (!dsd_app_dmr_t3_dmr_decoding(opts)) {
+        return DSD_APP_DMR_CHANNEL_SET_NO_DMR;
+    }
     if (dsd_app_dmr_t3_other_system_here(state)) {
         return DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM;
     }

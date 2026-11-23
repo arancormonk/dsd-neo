@@ -10,6 +10,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <stddef.h>
+#include "dmr_t3_view_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "recording_view_internal.h"
@@ -79,6 +80,8 @@ ui_opts_snapshot_publish(const dsd_opts* opts) {
     /* The recording view goes out with each options snapshot, so a command reads as applied together with the mode it
        left (issue #708). */
     dsd_app_recording_view_publish(opts);
+    /* And whether they decode DMR, which the DMR Tier III record's next publish carries (dmr_decoding). */
+    dsd_app_dmr_t3_note_opts(opts);
     dsd_app_telemetry_notify_opts(opts);
 }
 

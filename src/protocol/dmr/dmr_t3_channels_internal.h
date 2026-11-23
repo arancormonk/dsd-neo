@@ -47,8 +47,9 @@ typedef struct {
        was last reconciled with the map (dmr_t3_missing_sync()): another writer moving the map moves the sequence. */
     dmr_t3_missing_ledger missing;
     uint64_t missing_map_seq;
-    /* The user's channels over the map (dmr_t3_overlay.c), and whether the --dmr-chan-overrides file applied to this
-       session (dmr_t3_overlay_load_csv() read it). */
+    /* The user's channels, which DMR's own lookups read over the shared map (dmr_t3_overlay.c; the map itself is never
+       written), and whether the --dmr-chan-overrides file applied to this session (dmr_t3_overlay_load_csv() read
+       it). */
     dmr_t3_overlay overlay;
     uint8_t overrides_applied;
     /* A message named the site Tier III this session (dmr_t3_note_tier3()): a checked one (tier3), or one -F accepted
@@ -56,10 +57,11 @@ typedef struct {
     uint8_t tier3;
     uint8_t tier3_unchecked;
     /* The last checked TSCC evidence on the carrier the receiver was on (dmr_t3_cc_note_evidence()): its frequency,
-       dsd_state::carrier_seq and the runtime trunk-tuning generation then. Valid only while both hold and no tune is
-       pending; never saved per target. */
+       dsd_state::carrier_seq, the received identity's epoch (dsd_state::rx_id) and the runtime trunk-tuning generation
+       then. Valid only while all three hold and no tune is pending; never saved per target. */
     uint8_t cc_evidence;
     uint32_t cc_evidence_carrier;
+    uint32_t cc_evidence_rx_epoch;
     uint64_t cc_evidence_tune_gen;
     long cc_evidence_hz;
 } dmr_ext_t;
@@ -74,8 +76,8 @@ dmr_ext_t* dmr_ext_get_or_create(dsd_state* state);
  * the writer takes and a network change drops. */
 int dmr_t3_chan_origin_is_ota(unsigned origin);
 
-/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins, and the
- * overlay bases of that origin (RESTORE then returns no frequency). Returns whether any row went. */
+/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns
+ * whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
 
 /* Who moved an anchor of the heuristic fill: a received burst (its notice is received data, on that burst's slot with
@@ -86,18 +88,9 @@ typedef enum { DMR_T3_ANCHORS_FROM_AIR = 0, DMR_T3_ANCHORS_FROM_USER = 1 } dmr_t
  * dsd_opts::dmr_t3_heuristic_fill on; @p opts may be NULL). @p cause says how the fill's notice is posted. */
 void dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext, dmr_t3_anchors_cause cause);
 
-/* Whether @p lpcn is hidden by the user (an overlay HIDE entry). */
-int dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn);
-
-/* Whether @p lpcn has an overlay entry (SET or HIDE): the row is the user's, whatever another writer left in it. */
+/* Whether @p lpcn has an overlay entry (SET or HIDE): the channel is the user's, whatever the shared row under it
+ * holds. */
 int dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn);
-
-/* Keep the live row as overlay entry @p l's base (its frequency, origin and trust); called with the row not
- * overlaid. */
-void dmr_t3_overlay_take_base(const dsd_state* state, dmr_ext_t* ext, uint16_t l);
-
-/* Lay overlay entry @p l over the live row: the user's frequency, or none for a hidden channel, as USER, trust 0. */
-void dmr_t3_overlay_write_live(dsd_state* state, dmr_ext_t* ext, uint16_t l);
 
 /* DMR's own writer just wrote row @p lpcn, dsd_state::trunk_chan_map_seq being @p seq_before until then: a row that
  * now has a frequency leaves the ledger, and when another writer moved the map since the last reconcile the whole
