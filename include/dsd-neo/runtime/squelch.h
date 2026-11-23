@@ -32,6 +32,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -208,17 +209,16 @@ dsd_squelch_setting dsd_squelch_analog_default_setting(const dsd_opts* opts);
 int dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state);
 
 /**
- * @brief Whether the analog default belongs in force on the channel @p opts describes, with a scan row on it that sets
- * its own squelch (@p row_has_own) or not: dsd_squelch_analog_default_wanted() for a row that is not on air yet, such as
- * one a -Y scan stages for its next retune (the options hold that row's decoder). 0 for NULL @p opts.
+ * @brief The squelch gate a receiver runs on a channel (issue #899), the one resolver every stream open, retune and push
+ * goes by: @p row's own squelch option (DSD_SCAN_OPT_SQUELCH, a scan row's, target's or signal-search range's) when it
+ * has one; else the session's configured squelch (a scan scope's configured settings while one is in force on @p state,
+ * else dsd_squelch_configured_fields()), with the analog default in its
+ * place when the channel is the analog monitor (@p analog: its decode mode and family, from the profile being opened or
+ * landed) on a radio input and the session still owns the default (dsd_squelch_analog_default_pending()). Nothing is
+ * cached: each call resolves from @p opts as they stand. @p row may be NULL (no row); off for NULL @p opts.
  */
-int dsd_squelch_analog_default_wanted_on(const dsd_opts* opts, int row_has_own);
-
-/**
- * @brief The squelch the channel @p opts describes runs, its row setting its own (@p row_has_own) or not: the analog
- * default where dsd_squelch_analog_default_wanted_on() says it belongs, else the setting the squelch fields hold.
- */
-dsd_squelch_setting dsd_squelch_analog_default_effective_on(const dsd_opts* opts, int row_has_own);
+dsd_squelch_setting dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_state* state,
+                                             const dsd_scan_option_values* row, int analog);
 
 /**
  * @brief Put the analog default in or out of @p opts's squelch fields as dsd_squelch_analog_default_wanted() says, on

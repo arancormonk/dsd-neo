@@ -1364,12 +1364,26 @@ int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_sq
 void svc_rtl_push_squelch(const dsd_opts* opts);
 
 /**
- * @brief Hand a running radio receiver the squelch of the channel it produces (issue #899): the analog default where it
- * belongs (dsd_squelch_analog_default_sync()), and under a scan scope a command suspended the row's, resolved over the
- * squelch the command left (dsd_scan_mode_suspended_row_squelch()), never the configured squelch the options hold
- * meanwhile. Always pushes; nothing off a radio input. Decoder thread.
+ * @brief Hand a running radio receiver the squelch gate of the channel it produces (issue #899): the analog default put
+ * where it belongs first (dsd_squelch_analog_default_sync()), then svc_rtl_settle_receiver_gate() with a push. Under a
+ * scan scope a command suspended, the row's gate, resolved from what the command left, never the configured squelch the
+ * options hold meanwhile. Always pushes; nothing off a radio input. Decoder thread.
  */
 void svc_rtl_push_channel_squelch(dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief On a radio input: hand an outstanding retune that carries a gate the gate of the channel it goes to, resolved
+ * now (dsd_engine_receiver_gates()' landing; rtl_stream_update_retune_squelch()), and with @p push_now the receiver the
+ * gate of the channel whose samples it produces now (issue #899). Decoder thread.
+ */
+void svc_rtl_settle_receiver_gate(const dsd_opts* opts, const dsd_state* state, int push_now);
+
+/**
+ * @brief Say whether the streams opened from here on open on the session's channel (@p on 1) rather than the scan row a
+ * command holds suspended (issue #899): a config apply that turns the conventional scanner off reopens the input for
+ * the session it leaves, never for the row it stops. 0 again once that apply has opened its input. Decoder thread.
+ */
+void svc_rtl_open_for_session(int on);
 
 #ifdef __cplusplus
 }

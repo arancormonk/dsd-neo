@@ -1541,6 +1541,15 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 #ifdef USE_RADIO
+/* The row's squelch gate (issue #899; NULL: none) rides the profile the scan tune's preparation queued: attached last,
+   since a store replaces the whole profile. */
+static void
+dsd_engine_prepare_scan_gate(const dsd_opts* opts, long int freq, const dsd_squelch_setting* gate) {
+    if (gate && opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_stream_prepare_retune_squelch_for_target((uint32_t)freq, gate);
+    }
+}
+
 /* Queue the receive profile a scanner row runs on. Returns -1 when the front end refuses it. */
 static int
 dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
@@ -1669,7 +1678,8 @@ dsd_engine_scan_tune_moved(void) {
 }
 
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                             const dsd_squelch_setting* gate, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
     uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
@@ -1696,6 +1706,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
 #ifndef USE_RADIO
     (void)ted_sps;
+    (void)gate;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
@@ -1707,6 +1718,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    dsd_engine_prepare_scan_gate(opts, freq, gate);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);

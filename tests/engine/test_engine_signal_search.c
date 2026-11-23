@@ -255,6 +255,26 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
+/* The squelch gate a retune carries (issue #899): the receiver applies it where the retune lands. */
+static dsd_squelch_setting g_retune_gate;
+static int g_retune_gates;
+
+void
+rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+    (void)target_freq_hz;
+    if (gate) {
+        g_retune_gate = *gate;
+        g_retune_gates++;
+    }
+}
+
+void
+rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate) {
+    if (gate) {
+        g_retune_gate = *gate;
+    }
+}
+
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
     (void)cfg;
@@ -779,6 +799,8 @@ test_restore_hands_back_the_analog_default_first(dsd_opts* o, dsd_state* s, dsd_
     assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && squelch_pushes_at_family > 0);
     assert(dsd_squelch_setting_equal(&squelch_at_family, &noise10) == 1);
     assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    /* The restore's retune carries the session's gate too (review round 4), which the receiver applies where it lands. */
+    assert(g_retune_gates > 0 && dsd_squelch_setting_equal(&g_retune_gate, &noise10) == 1);
     land(o, s); // the restore tune
     assert(status.phase == DSD_SEARCH_STOPPED && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
     assert(dsd_squelch_setting_equal(&squelch_pushed, &noise10) == 1);

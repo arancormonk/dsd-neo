@@ -16959,6 +16959,106 @@ test_config_apply_under_a_row_keeps_its_gate(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * Issue #899 (review round 4): a config apply's reopen opens the stream on the squelch gate of the channel it opens,
+ * resolved from the profile being opened. (P1) A -Y row that declares no mode inherits the configured decoder: on a
+ * DMR session the analog default stays out, and a config that sets [mode] decode = analog and reopens the SoapySDR
+ * device (the scanner kept) opens the new stream on noise +10, the analog row's gate, before any sample of it flows;
+ * before the fix it opened on Off and noise +10 came only with the resume. (P2) A config that reopens the device and
+ * turns the -Y scanner off ([trunking] with neither scanner nor trunking) opens it for the session it leaves (DMR,
+ * Off), never on the outgoing nfm row's own -40 dB threshold; before the fix the suspended row's threshold opened the
+ * stream that starts the configured DMR session.
+ */
+static int
+test_config_reopen_opens_on_the_gate_of_what_it_opens(void) {
+    static void* fake_ctx[2];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("reopen gate: fixtures", 0);
+    }
+    /* (P1) The inherited row on a DMR session, a config to analog that reopens the device. */
+    init_stream_replan_context(opts, state, fake_ctx, "soapy", 48, 48000);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    dsd_squelch_setting_store(opts, &off);
+    int rc = expect_int("reopen gate: inherited", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_DMR, "reopen gate: inherited");
+    opts->scanner_mode = 1;
+    rc |= expect_int("reopen gate: inherited", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT), 0);
+    rc |= expect_int("reopen gate: inherited", dsd_scan_mode_options(opts, state, NULL), 0);
+    rc |= expect_true("reopen gate: the dmr row runs off", opts->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED
+                                                               && dsd_squelch_is_off(opts->rtl_squelch_level));
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_ANALOG;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspyhf");
+    rc |= submit_config(opts, state, &cfg, "reopen gate: inherited");
+    rc |= expect_int("reopen gate: inherited, one open", g_config_rtl_creates, 1);
+    rc |= expect_int("reopen gate: inherited, the scanner kept", opts->scanner_mode, 1);
+    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_NOISE || g_config_rtl_create_squelch_margin != 10
+        || g_config_rtl_create_analog_only != 1) {
+        DSD_FPRINTF(stderr,
+                    "reopen gate: inherited row onto analog, the device opened analog %d on squelch mode %d margin %d, "
+                    "want the analog monitor on noise +10\n",
+                    g_config_rtl_create_analog_only, g_config_rtl_create_squelch_mode,
+                    g_config_rtl_create_squelch_margin);
+        rc |= 1;
+    }
+    rc |= expect_true("reopen gate: inherited, the row runs it",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts->rtl_squelch_margin_db == 10);
+    free_inherited_nfm_row(opts, state);
+
+    /* (P2) An nfm row with its own -40 dB on a DMR session, a config that reopens the device and stops the scanner. */
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("reopen gate: fixtures", 0);
+    }
+    init_stream_replan_context(opts, state, fake_ctx, "soapy", 48, 48000);
+    dsd_squelch_setting_store(opts, &off);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_DMR, "reopen gate: scanner off");
+    opts->scanner_mode = 1;
+    dsd_scan_option_values own;
+    DSD_MEMSET(&own, 0, sizeof own);
+    own.present = DSD_SCAN_OPT_SQUELCH;
+    own.squelch_db = -40;
+    rc |= expect_int("reopen gate: scanner off", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int("reopen gate: scanner off", dsd_scan_mode_options(opts, state, &own), 0);
+    rc |= expect_squelch_db("reopen gate: the nfm row runs its own", opts->rtl_squelch_level, -40.0);
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspyhf");
+    cfg.has_trunking = 1;
+    rc |= submit_config(opts, state, &cfg, "reopen gate: scanner off");
+    rc |= expect_int("reopen gate: scanner off, one open", g_config_rtl_creates, 1);
+    rc |= expect_int("reopen gate: scanner off, the scanner off", opts->scanner_mode, 0);
+    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_LEVEL || !dsd_squelch_is_off(g_config_rtl_create_squelch)
+        || g_config_rtl_create_analog_only != 0) {
+        DSD_FPRINTF(stderr,
+                    "reopen gate: a config that stops the scanner, the device opened analog %d on squelch mode %d "
+                    "level %g, want the DMR session on Off\n",
+                    g_config_rtl_create_analog_only, g_config_rtl_create_squelch_mode, g_config_rtl_create_squelch);
+        rc |= 1;
+    }
+    rc |= expect_true("reopen gate: scanner off, the session runs Off", dsd_squelch_is_off(opts->rtl_squelch_level));
+    free_inherited_nfm_row(opts, state);
+    return rc;
+}
+#endif
+
 /*
  * A live switch from the FM monitor to AM (issue #524) is a decode-mode change like any other: it forgets a received
  * CTCSS tone or DCS code (issues #522, #523) through the acquisition reset, so the AM monitor, which detects neither,
@@ -32570,6 +32670,7 @@ main(void) {
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_streams_and_channels_open_on_the_analog_default();
     rc |= test_config_apply_under_a_row_keeps_its_gate();
+    rc |= test_config_reopen_opens_on_the_gate_of_what_it_opens();
 #endif
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();

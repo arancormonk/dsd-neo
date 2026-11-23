@@ -150,25 +150,13 @@ dsd_scan_mode dsd_scan_mode_row(const dsd_state* state);
  * dsd_scan_mode_resume() puts back when the row compares unchanged. NULL unless the scope is suspended. Decoder thread
  * only. */
 const dsd_scan_settings* dsd_scan_mode_suspended_effective(const dsd_state* state);
-/** The squelch the row a suspended scope holds runs over @p opts as they stand now (issue #899), as fields and the
- * analog default's standing, into @p out: the row's own option, else the analog default where it ran on the row when
- * the scope was suspended and is still pending (a command's squelch keys or edit ended it) on a radio input, over the
- * configured squelch, else that configured squelch. What a stream opened, or a receiver told, while the command runs
- * must hold, since dsd_squelch_analog_default_sync() leaves the options alone then; the resume puts it in the options.
- * 1, or 0 when no scope is suspended (the options then hold what the channel runs once synced). Decoder thread only. */
-int dsd_scan_mode_suspended_row_squelch(const dsd_opts* opts, const dsd_state* state, dsd_squelch_standing* out);
-/** Hand the receiver @p setting on a radio input, ahead of the row it belongs to (a -Y row's retune, so its samples
- * never run under the gate of the row before, issue #899), or back after a retune that did not move: only when it
- * differs from what the receiver holds (a transition's origin, else @p on_air, what the row on air runs), and the
- * scope's next settle (the row's commit, a leave) judges against it, so a commit onto the same gate hands it nothing
- * again. Decoder thread only. */
-void dsd_scan_mode_push_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* on_air,
-                                const dsd_squelch_setting* setting);
-/** The receiver was handed @p setting outside the scope's own entry points (issue #899): a stream opened on it, or a
- * command pushed it. The scope's next push or settle (a row's retune or commit, a leave) judges against it, so a row
- * whose gate differs from it is told, even when the gate handed over ahead of a pending tune was the same. Nothing while
- * the scope is suspended (its resume tells the receiver whatever it holds) or with no scope. Decoder thread only. */
-void dsd_scan_mode_note_receiver_squelch(const dsd_state* state, const dsd_squelch_setting* setting);
+/** The squelch gate of the channel the scan scope on @p state has on air (issue #899), resolved now
+ * (dsd_squelch_channel_gate()): the row's own squelch option, else the session's configured squelch with the analog
+ * default where the row runs the analog monitor on a radio input and the session owns the default. A typed row runs its
+ * class (nfm, am) and an inherited row the configured decoder, the one the options hold while a command holds the scope
+ * suspended, as that command left it. With no scope, the session's channel from @p opts. Nothing is recorded: every
+ * stream open, push and resume resolves it again. Decoder thread only. */
+dsd_squelch_setting dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
 /** Capture the configured squelch (never an analog default in its place) with the rest of the settings, and restore
  * them, for a staged tune; no pointers or audio sink fields are changed. A step that must put the squelch the receiver
  * runs back too saves it apart (dsd_squelch_standing_capture()). */

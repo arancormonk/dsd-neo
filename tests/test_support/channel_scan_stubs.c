@@ -152,6 +152,15 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return 0;
 }
 
+/* With no -Y tune staged the receiver runs, and an outstanding retune lands, the gate of the channel on air (issue
+   #899). */
+void
+dsd_engine_receiver_gates(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* now,
+                          dsd_squelch_setting* landing) {
+    *now = dsd_scan_mode_channel_squelch(opts, state);
+    *landing = *now;
+}
+
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real
    list through the engine. */
 int

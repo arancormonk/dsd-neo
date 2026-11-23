@@ -140,6 +140,18 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
+/* The squelch gate a retune carries (issue #899), which no scene here reads. */
+void
+rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+    (void)target_freq_hz;
+    (void)gate;
+}
+
+void
+rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate) {
+    (void)gate;
+}
+
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
     (void)cfg;

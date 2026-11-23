@@ -26,22 +26,46 @@ squelch_default_row_has_own(const dsd_state* state) {
     return row && (row->present & DSD_SCAN_OPT_SQUELCH);
 }
 
-int
-dsd_squelch_analog_default_wanted_on(const dsd_opts* opts, int row_has_own) {
+dsd_squelch_setting
+dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row, int analog) {
+    if (row && (row->present & DSD_SCAN_OPT_SQUELCH) != 0U) {
+        /* As dsd_scan_mode_options() stores it: a dynamic mode by its margin, a level by its whole dB (0 is off). */
+        return dsd_squelch_mode_is_dynamic(row->squelch_mode)
+                   ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
+                   : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
+    }
+    if (!opts) {
+        return dsd_squelch_setting_of_level(0.0);
+    }
+    if (analog && dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts)) {
+        return dsd_squelch_analog_default_setting(opts);
+    }
+    /* The session's own: a scan scope in force keeps it apart from the row on air's options; otherwise the options
+       hold it, beneath an analog default they run. */
+    double level = 0.0;
+    int mode = DSD_SQUELCH_MODE_LEVEL;
+    int margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (configured) {
+        level = configured->rtl_squelch_level;
+        mode = configured->rtl_squelch_mode;
+        margin_db = configured->rtl_squelch_margin_db;
+    } else {
+        dsd_squelch_configured_fields(opts, &level, &mode, &margin_db);
+    }
+    return dsd_squelch_mode_is_dynamic(mode) ? dsd_squelch_setting_dynamic(mode, margin_db)
+                                             : dsd_squelch_setting_of_level(level);
+}
+
+static int
+squelch_default_wanted_on(const dsd_opts* opts, int row_has_own) {
     return dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts) && dsd_opts_is_analog_family(opts)
            && !row_has_own;
 }
 
-dsd_squelch_setting
-dsd_squelch_analog_default_effective_on(const dsd_opts* opts, int row_has_own) {
-    return dsd_squelch_analog_default_wanted_on(opts, row_has_own) ? dsd_squelch_analog_default_setting(opts)
-                                                                   : dsd_squelch_setting_of_opts(opts);
-}
-
 int
 dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state) {
-    return dsd_squelch_analog_default_wanted_on(opts, squelch_default_row_has_own(state))
-           && !dsd_scan_mode_updating(state);
+    return squelch_default_wanted_on(opts, squelch_default_row_has_own(state)) && !dsd_scan_mode_updating(state);
 }
 
 /* Bring the default in: the fields' own setting becomes the base. 1 when the fields changed. */

@@ -71,7 +71,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 dsd_trunk_tune_result __wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps,
-                                                          uint64_t* request);
+                                                          const dsd_squelch_setting* gate, uint64_t* request);
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long freq);
 
@@ -83,10 +83,12 @@ __wrap_SetFreq(dsd_socket_t sockfd, long freq) {
 }
 
 dsd_trunk_tune_result
-__wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* request) {
+__wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps,
+                                    const dsd_squelch_setting* gate, uint64_t* request) {
     (void)opts;
     (void)state;
     (void)sps;
+    (void)gate;
     assert(freq > 0);
     ++g_tune_calls;
     *request = dsd_trunk_tuning_request_begin();

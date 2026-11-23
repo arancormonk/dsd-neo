@@ -434,7 +434,13 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     family.kind = r->am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
     family.width_hz = (int)r->bandwidth_hz;
     family.cqpsk_explicit = 1;
-    return rtl_stream_prepare_retune_analog_profile_for_target(target, &family);
+    if (rtl_stream_prepare_retune_analog_profile_for_target(target, &family) != 0) {
+        return -1;
+    }
+    /* The visit's retune carries the range's squelch gate, which its options now hold (issue #899). */
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    rtl_stream_prepare_retune_squelch_for_target(target, &gate);
+    return 0;
 }
 
 /* Right after the carrier boundary that ended a reception: the session's own P25 site comes back whole (issue #804).
@@ -1456,6 +1462,9 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
                                                      analog ? opts->analog_demod : DSD_ANALOG_DEMOD_FM,
                                                      analog ? dsd_opts_analog_width_hz(opts) : 0, 0};
     (void)rtl_stream_prepare_retune_analog_profile_for_target(c->saved_frequency, &family);
+    /* And the session's squelch gate, the analog default where it belongs (issue #899). */
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    rtl_stream_prepare_retune_squelch_for_target(c->saved_frequency, &gate);
     int rc = rtl_stream_tune_async(c->saved_frequency, c->status.session_id, &c->ticket);
     if (rc < 0) {
         search_error(c, "Unable to restore the previous frequency");

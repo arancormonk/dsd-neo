@@ -5228,6 +5228,8 @@ dsd_engine_run_install_hooks(void) {
     dsd_engine_udp_audio_hooks_install();
     dsd_engine_m17_udp_hooks_install();
     dsd_engine_p25_optional_hooks_install();
+    /* The scan scope's resume settles the receiver's squelch gate through the engine (issue #899). */
+    dsd_receiver_gate_settle_hook_set(dsd_engine_receiver_gate_settle_now);
 }
 
 /* Embedded in a host process (Android service, GUI shell), the library must not steal the process signal dispositions;

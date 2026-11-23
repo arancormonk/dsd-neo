@@ -1665,7 +1665,7 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
-static void apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts);
+static void apply_squelch_keys_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts);
 
 /* A raw I/Q stream [input] (issue #743): the spec it builds is the input, rtl_bw_khz the DSP bandwidth request its rate
    is planned to, and the squelch and monitor volume act on it as on any radio input. Gain, PPM, auto-PPM and rtl_freq
@@ -1683,7 +1683,7 @@ apply_input_source_iq_stream(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     apply_input_rtl_bw_request(cfg, opts);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
     opts->rtltcp_enabled = 0;
-    apply_pcm_squelch_from_config(cfg, opts);
+    apply_squelch_keys_from_config(cfg, opts);
     if (cfg->rtl_volume) {
         opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
     }
@@ -1748,9 +1748,11 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 /* A PCM source's squelch keys (issue #628), when the config names them: the noise squelch runs on audio input, and a
-   level always did. --squelch wins; a config without them leaves the session's squelch as it is. */
+   level always did. An [input] that names no source sets the squelch of the input running the same way (issue #899):
+   its keys are a squelch someone chose, whichever input it is. --squelch wins; a config without them leaves the
+   session's squelch as it is. */
 static void
-apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+apply_squelch_keys_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg->rtl_sql_is_set || opts->rtl_squelch_cli_set) {
         return;
     }
@@ -1764,14 +1766,17 @@ apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The sources whose squelch keys apply_squelch_keys_from_config() sets: the PCM ones, and an [input] that names none. */
+static int
+input_source_takes_squelch_keys(dsdneoUserInputSource source) {
+    return source == DSDCFG_INPUT_PULSE || source == DSDCFG_INPUT_FILE || source == DSDCFG_INPUT_TCP
+           || source == DSDCFG_INPUT_UDP || source == DSDCFG_INPUT_UNSET;
+}
+
 static void
 apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
-    switch (cfg->input_source) {
-        case DSDCFG_INPUT_PULSE:
-        case DSDCFG_INPUT_FILE:
-        case DSDCFG_INPUT_TCP:
-        case DSDCFG_INPUT_UDP: apply_pcm_squelch_from_config(cfg, opts); break;
-        default: break;
+    if (input_source_takes_squelch_keys(cfg->input_source)) {
+        apply_squelch_keys_from_config(cfg, opts);
     }
     switch (cfg->input_source) {
         case DSDCFG_INPUT_PULSE: apply_input_source_pulse(cfg, opts); break;

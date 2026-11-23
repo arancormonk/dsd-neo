@@ -973,6 +973,22 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     g_squelch_setting_pushed = *setting;
 }
 
+/* The gate a retune carries, and the one it lands as the decoder resolves it again (issue #899), which no case here
+   reads: these services retune through the stubs above. */
+void
+rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+    (void)target_freq_hz;
+    (void)gate;
+}
+
+void
+rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate) {
+    (void)gate;
+}
+
+void
+rtl_stream_clear_pending_retune_profile(void) {}
+
 int
 rtl_stream_set_bias_tee(int on) {
     (void)on;
@@ -1626,15 +1642,17 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     return rc;
 }
 
-/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream on the squelch the row ran, not
- * the configured one the suspend put back: an nfm row with no squelch of its own on a DMR session opens on the analog
- * default it ran (Noise +10), one with its own level on that level. Once the stream opened the configured standing is
- * back, for the resume to put the row over. A change that ended the default while the scope was suspended (@p
- * end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the inheriting row on the
- * session's Off beneath it, not on the default the row ran before the change. */
+/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream on the squelch gate of the row,
+ * resolved from the profile restored, not the configured one the suspend put back: an nfm row with no squelch of its
+ * own on a DMR session opens on the analog default (Noise +10), one with its own level on that level. Once the stream
+ * opened the configured standing is back, for the resume to put the row over. A change that ended the default while the
+ * scope was suspended (@p end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the
+ * inheriting row on the session's Off beneath it, not on the default the row ran before the change. The stream opens
+ * on the resolved gate itself (svc_rtl_open_on_the_channel_squelch_locked()); the default's standing in the options is
+ * the session's throughout, so no stream open can carry a row's standing out of the scope. */
 static int
 recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_values* row, dsd_squelch_setting want,
-                                  int want_default, int end_default) {
+                                  int end_default) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -1658,15 +1676,17 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
     g_rtl_create_squelch_default = -1;
+    const int default_state_before = opts->squelch_default_state;
     rc |= expect_int(label, svc_rtl_restart_recovery_locked(opts, state, 1, 0, NULL, NULL), 0);
-    if (!dsd_squelch_setting_equal(&g_rtl_create_squelch, &want) || g_rtl_create_squelch_default != want_default) {
+    if (!dsd_squelch_setting_equal(&g_rtl_create_squelch, &want) || g_rtl_create_squelch_default != 0) {
         DSD_FPRINTF(stderr,
-                    "%s: opened on mode %d margin %d level %g default %d, want mode %d margin %d level %g "
-                    "default %d\n",
+                    "%s: opened on mode %d margin %d level %g (the default applied in the options: %d), want mode %d "
+                    "margin %d level %g with the session's standing\n",
                     label, g_rtl_create_squelch.mode, g_rtl_create_squelch.margin_db, g_rtl_create_squelch.level,
-                    g_rtl_create_squelch_default, want.mode, want.margin_db, want.level, want_default);
+                    g_rtl_create_squelch_default, want.mode, want.margin_db, want.level);
         rc |= 1;
     }
+    rc |= expect_int(label, opts->squelch_default_state, default_state_before);
     const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
     rc |= expect_int(label, dsd_squelch_setting_equal(&after, &configured), 1);
     rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED, 0);
@@ -1684,15 +1704,15 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
 static int
 test_recovery_under_a_suspended_scope_opens_on_the_row_squelch(void) {
     int rc = recovery_opens_on_the_row_squelch("inheriting nfm row", NULL,
-                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 1, 0);
+                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 0);
     dsd_scan_option_values own = {0};
     own.present = DSD_SCAN_OPT_SQUELCH;
     own.squelch_db = -60;
     const dsd_squelch_setting own_level = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-60.0));
-    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own, own_level, 0, 0);
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own, own_level, 0);
     rc |= recovery_opens_on_the_row_squelch("inheriting nfm row, the default ended", NULL,
-                                            dsd_squelch_setting_of_level(0.0), 0, 1);
-    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level, the default ended", &own, own_level, 0, 1);
+                                            dsd_squelch_setting_of_level(0.0), 1);
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level, the default ended", &own, own_level, 1);
     return rc;
 }
 

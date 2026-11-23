@@ -54,9 +54,11 @@ dsd_engine_scan_tune_moved(void) {
 
 /* The tune always lands: the scanner commits the row as it would after a real retune. */
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, const dsd_squelch_setting* gate,
+                             uint64_t* out) {
     (void)sps;
     (void)state;
+    (void)gate;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     g_tunes++;
     const uint64_t request = dsd_trunk_tuning_request_begin();

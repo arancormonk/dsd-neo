@@ -3306,17 +3306,20 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         *out_request_id = 0U;
     }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
+    /* The target's scope is in force (trunk_scan_switch_to()): its retune carries the target's squelch gate, resolved
+       from it (issue #899). */
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
     if (trunk_scan_type_is_analog(rt->target.type)) {
         /* No symbol clock: the tune queues the target's analog receive profile (its options already hold
          * the width), and no symbol rate ever reaches the SPS arithmetic. */
         rt->tune_analog_kind = opts->analog_demod;
         rt->tune_analog_width_hz = dsd_opts_analog_width_hz(opts);
-        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, out_request_id);
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, &gate, out_request_id);
     }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
         const int ted_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
-        return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, out_request_id);
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, &gate, out_request_id);
     }
     /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
        for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or

@@ -5,6 +5,7 @@
 #ifndef DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #define DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -28,6 +29,21 @@ int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
+/** The squelch gates a radio receiver runs (issue #899), resolved now: @p now for the channel whose samples it produces
+ * (a -Y row whose retune landed and waits for its commit or restage, else the channel the scan scope, or the session,
+ * has on air: dsd_scan_mode_channel_squelch()), and @p landing for the channel the retune outstanding goes to (the
+ * staged -Y row's while its tune is outstanding, else the channel on air's: a trunk-scan target, a signal-search range
+ * and a manual tune retune the channel they put on air). Nothing is cached; both point at caller storage. */
+void dsd_engine_receiver_gates(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* now,
+                               dsd_squelch_setting* landing);
+/** On an RTL-family input: hand an outstanding retune that carries a gate the @p landing gate of
+ * dsd_engine_receiver_gates() (rtl_stream_update_retune_squelch(), so a command that changed it while the retune was
+ * queued or in flight is honoured where it lands), and with @p push_now the receiver the @p now gate at once. Decoder
+ * thread. */
+void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int push_now);
+/** dsd_engine_receiver_gate_settle() with a push: what the scan scope's resume runs through
+ * dsd_receiver_gate_settle_hook_set() (issue #899). */
+void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Service a row transaction before dispatch/next sync search. Returns 1 when ready;

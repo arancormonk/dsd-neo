@@ -1880,6 +1880,9 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     if (config_ended) {
         dsd_squelch_analog_default_end(opts);
     }
+    /* The input that ran comes back for the scan row it ran, resolved from the profile restored, whatever the config
+       would have done to the scanner. */
+    svc_rtl_open_for_session(0);
     int capture_stopped = 0;
     if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, before->input.iq_capture_requested,
                                         &before->input.failure, &capture_stopped)
@@ -4557,6 +4560,16 @@ apply_cfg_rtl_receive(dsd_opts* opts, const dsd_state* state, const dsdneoUserCo
     }
 }
 
+/* An [input] that names no source set the running input's squelch from its keys (issue #899): a radio receiver that
+   keeps running hears the gate of its channel now, not at its next start. */
+static void
+apply_cfg_push_sourceless_squelch(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_UNSET && cfg->rtl_sql_is_set
+        && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        apply_cfg_push_squelch(opts, state);
+    }
+}
+
 static void
 apply_cfg_rtl_common(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_freq[0]) {
@@ -4648,6 +4661,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
+        apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }
     if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
@@ -5127,6 +5141,24 @@ apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
         return ui_cfg_settle_reopen(opts, state, -1, before);
     }
     return 0;
+}
+#endif
+
+#ifdef USE_RADIO
+/* apply_cfg_radio_input(), then the replay re-plan when that worked. A config that stops the scanner reopens the input
+   for the session it leaves, on that session's squelch gate, not the outgoing row's (issue #899), as the analog monitor
+   it asks the stream for is the session's (ui_scan_row_resumed_monitor()). */
+static int
+apply_cfg_radio_input_and_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
+                                 const ui_cfg_rollback* rollback) {
+    svc_rtl_open_for_session(
+        ui_cmd_leaves_scanner_scope_with(opts, state, rollback->was_scanner, rollback->scanner_after));
+    int rc = apply_cfg_radio_input(opts, state, cfg, rollback);
+    if (rc == 0) {
+        rc = apply_cfg_replay_replan(opts, state, cfg, rollback);
+    }
+    svc_rtl_open_for_session(0);
+    return rc;
 }
 #endif
 
@@ -6941,12 +6973,15 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
 }
 
 /* The analog default squelch (issue #899) follows what the session runs now: a command's decode switch, input change,
-   scan leave or explicit edit, or a receive request the front end refused. The receiver hears it when it moved. */
+   scan leave or explicit edit, or a receive request the front end refused. The receiver hears it when it moved, and a
+   retune outstanding lands the gate of its channel as the command left it (svc_rtl_settle_receiver_gate()). */
 static void
 ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
-    if (opts && dsd_squelch_analog_default_sync(opts, state) && opts->audio_in_type == AUDIO_IN_RTL) {
-        svc_rtl_push_channel_squelch(opts, state);
+    if (!opts) {
+        return;
     }
+    const int changed = dsd_squelch_analog_default_sync(opts, state);
+    svc_rtl_settle_receiver_gate(opts, state, changed);
 }
 
 /* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
@@ -10619,10 +10654,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
-    int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
-    if (radio_rc == 0) {
-        radio_rc = apply_cfg_replay_replan(opts, state, &cfg, &rollback);
-    }
+    int radio_rc = apply_cfg_radio_input_and_replan(opts, state, &cfg, &rollback);
 #endif
     const cfg_input_before input_before = {old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
                                            old_effective_input_rate, old_staged_file_sample_rate};

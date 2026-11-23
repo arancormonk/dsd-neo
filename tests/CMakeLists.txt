@@ -28607,6 +28607,8 @@ if(
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "LINKER:--wrap=rtl_stream_prepare_retune_squelch_for_target"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
     )
     add_test(
         NAME UI_MENU_AIRSPY_CONFIG_FAILURE
