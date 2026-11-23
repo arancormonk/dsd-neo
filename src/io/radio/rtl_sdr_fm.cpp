@@ -13510,6 +13510,17 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     return 1;
 }
 
+/* The gate where the demod thread applied a family request of @p family (negative: none) that it found the stream on the
+   analog family (@p was_analog) of @p kind_before for (issue #899): a switch into the analog family, or onto another
+   analog kind, starts a new channel closed; one into the digital family runs the digital gate. A width change on the
+   same kind, or a refused request (@p refused_seq), moves nothing. */
+static void
+rtl_stream_family_request_boundary(int family, uint32_t refused_seq, bool was_analog, int kind_before) {
+    if (refused_seq == 0U && family >= 0) {
+        rtl_stream_gate_boundary(!was_analog || demod.analog_demod != kind_before);
+    }
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
@@ -13551,11 +13562,7 @@ rtl_stream_consume_demod_profile_request(void) {
     } else if (req.has_demod) {
         rtl_stream_follow_fsk_resample_decision(symbol_rate_before_hz);
     }
-    /* A switch into the analog family, or onto another analog kind, starts a new channel closed; one into the digital
-       family runs the digital gate (issue #899). A width change on the same kind, or a refused request, moves nothing. */
-    if (refused_seq == 0U && req.analog_family >= 0) {
-        rtl_stream_gate_boundary(!leaves_analog || demod.analog_demod != kind_before);
-    }
+    rtl_stream_family_request_boundary(req.analog_family, refused_seq, leaves_analog, kind_before);
     rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
 }
 
