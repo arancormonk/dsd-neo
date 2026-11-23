@@ -1733,11 +1733,20 @@ default.
 - A new analog channel stays muted until the squelch for it is set: every stream open on an analog channel (the
   start, an input change back to a radio, a restart, a replay re-plan, a config that reopens the input), a live decode
   switch or a config's `[mode]` onto the analog monitor or between FM and AM, each `-Y` row's retune and each
-  trunk-scan target's, a tune and a signal search's visit or restore start the receiver muted on the new channel, and
-  the decoder sets that channel's squelch, the default included, once it has taken the channel over (a `-Y` row at its
-  commit). That adds a short mute at each landing, the decoder's time to reach the new channel: a few ms, about
-  100 ms behind a retune over rtl_tcp, which is over before the new channel's first samples arrive. So no analog block
-  runs with the squelch off or under another channel's squelch, and no digital row runs under an analog row's default.
+  trunk-scan target's, a tune and a signal search's visit or restore start the receiver muted on the new channel. The
+  decoder sets the squelch, the default included, only once none of its own tunes or receive-mode switches is still
+  outstanding (a `-Y` row at its commit), so it always lands on the channel it was worked out for; it sets it again
+  after every landing it sees, and whenever the receiver still runs a new channel muted with nothing outstanding, so no
+  channel stays muted. That adds a short mute at each landing, the decoder's time to reach the new channel: a few ms,
+  about 100 ms behind a retune over rtl_tcp, which is over before the new channel's first samples are produced (0 ms of
+  produced audio muted, measured). A landing on, or a switch to, a digital channel runs the session's own squelch at
+  once, never the default. So no analog block runs with the squelch off, and no digital row runs under an analog row's
+  default.
+- Limits of that: while a tune or receive-mode switch is outstanding the receiver runs what it ran (a new analog channel
+  muted), and the squelch is set when the decoder takes the channel over. A tune that timed out and lands after the
+  decoder gave up on it gets the squelch of the channel the decoder has on air then. Trunking grants and control-channel
+  hunts run as without the option: they set no channel muted, and keep the squelch the receiver runs (on a digital
+  channel, the session's own).
 - What it shows: the readout names the default as the configured setting, marked `(default)` (`SQL: noise +10 dB
   (default; quieting 23 dB)`), and so does the RTL-SDR and SoapySDR startup tuning notice, which is printed once the
   squelch the receiver opens with is known (`SQ=noise+10dB (default)`); after an explicit edit it reads as any other

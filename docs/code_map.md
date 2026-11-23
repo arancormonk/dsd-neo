@@ -5273,49 +5273,44 @@ suite runs under this compiler.
     resolves it again from the options as they stand. `dsd_scan_mode_channel_squelch()` resolves the channel the scope
     has on air (a typed row's class, an inherited row's configured decoder, the one the options hold while a command
     has the scope suspended, as that command left it; a suspended scope's leave takes the configured settings the
-    command left first). Analog starts closed (review round 6): the receiver numbers the channel it produces
-    (`g_gate_channel` in `rtl_sdr_fm.cpp`, read lock-free with `rtl_stream_current_channel()`); a stream open
-    (`rtl_stream_gate_open()`), and a retune or live family request that names a channel the decoder numbered
-    (`rtl_stream_new_channel()`), put it on a new one where they land (`rtl_stream_gate_enter()`: the controller's
-    finalize and an external backend's landing, whatever the profile's family did there, and the demod thread's take of
-    a family request; a refused request moves it nowhere, and records its channel, `rtl_stream_refused_channel()`). A
-    new channel on the analog family starts closed (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches,
-    and every sample flagged closed, so a decoder reading the flags neither plays nor learns from it); one on the
-    digital family keeps the gate the decoder last wrote, as before #899. The only way a closed channel opens is a write
-    tagged with it (`rtl_stream_write_channel_gate()`, under `g_pending_retune_profile_mutex` like every channel move);
-    a write tagged with any other channel is dropped. Requests carry no gate: a retune names its channel on the profile
-    queued for its target (`rtl_stream_prepare_retune_channel_for_target()`, attached last since a store replaces the
-    whole profile; a profile for the channel alone, `RtlRetuneProfile::channel_only`, when nothing else is queued; with
-    channel 0 once a tune returned without taking it, the profile names none any more), and a live family request names
-    the one staged before it (`rtl_stream_stage_family_channel()`, `rtl_stream_unstage_family_channel()`), which a
-    request that replaces it without a channel of its own takes on and a retune that retires it drops. The decoder's
-    side (`channel_scan.c`, decoder thread) writes only for the channel it has committed (`s_rx_channel`), resolved at
-    write time and tagged with it: a stream's open (`dsd_engine_receiver_channel_opened()`, from
-    `svc_rtl_open_on_the_channel_squelch_locked()` and the engine's own open; not while a -Y row whose retune landed
-    waits for its commit, whose samples no committed row owns), a -Y row's at its commit (the staged row's channel,
-    `channel_scan::gate_channel`, numbered for its tune), the session's on a -Y release (the staged row's channel, else
-    the one on air), and an on-air transition's, committed when it begins, before its settings resolve
-    (`dsd_engine_receiver_channel_begin()`): a manual tune, walk or Airspy config retune (`svc_rtl_begin_tune_channel()`
-    in `svc_io_control_tune()`), a trunk-scan target at its switch (`trunk_scan_switch_to()`, named on the target's
-    retune, or on a trunk system's control-channel park, `dsd_engine_trunk_park_names_channel()`), a signal search's
-    visit and restore, and every family switch (`dsd_engine_receiver_family_begin()`/`_end()`: the monitor and digital
-    requests of `svc_publish_symbol_profile()` and the CQPSK toggle's return to the monitor, the -Y leave's request,
-    named before the scope leaves, and the search restore's; one begun while a retune of the same move has not landed
-    joins its channel). The write is made once the receiver is seen on that channel (`dsd_engine_receiver_gate_settle()`
-    reads `rtl_stream_current_channel()` only while it is not), and again on every change after it; while the drain
-    applies a command (`dsd_engine_receiver_gate_command()`) nothing is written, and the drain's settle after the
-    command writes the gate the command's options resolve to. A transition whose request the receiver never took or
-    refused goes back to the channel before it (`dsd_engine_receiver_channel_abandon()`: a tune refused at once, a family
-    request no request took, a timed-out manual tune that fails late, `dsd_engine_manual_tune_note_channel()`, and a
-    family request refused where it lands, once the drain has reconciled the refusal,
-    `dsd_engine_receiver_channel_refused()`). The settle runs at the drain (before and after each command,
-    `ui_settle_squelch()`, `ui_sync_analog_default_squelch()`), at each analog block the decoder takes (the engine's
+    command left first). Closed start, no IDs (review round 7): a new channel on the analog family starts closed in the
+    receiver (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches, and every sample flagged closed, so a
+    decoder reading the flags neither plays nor learns from it): a stream open (`rtl_stream_gate_open()`), a retune the
+    decoder marks as a new channel (`rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
+    attached last since a store replaces the whole profile, a profile for the mark alone, `new_channel_only`, when
+    nothing else is queued, unmarked once a tune returned without taking it) landing on the analog family (the
+    controller's finalize and an external backend's landing, whatever the profile's family did there), and a family
+    switch into the analog family or onto another analog kind (the demod thread's take, or a retune profile's family;
+    a width change on the same kind keeps the gate) all go through `rtl_stream_gate_boundary()`. The receiver numbers
+    nothing and checks no tags: a write (`rtl_stream_write_squelch_gate()`, under `g_pending_retune_profile_mutex`)
+    applies to the channel it is on, the analog gate on the analog family and the digital gate it carries on the digital
+    family. A landing or switch onto the digital family runs that digital gate (`g_gate_digital`: the session's own
+    squelch, `dsd_scan_mode_digital_squelch()`, never the analog-only default), so no default outlives its analog
+    channel; a retune nobody marks (a trunking grant or hunt) keeps the gate the receiver runs, as before #899.
+    `rtl_stream_gate_closed_start()` reports a closed start lock-free. The decoder's side (`channel_scan.c`, decoder
+    thread, `dsd_engine_receiver_gate_settle()`) writes the gate resolved at write time
+    (`dsd_scan_mode_channel_squelch()`) only when none of its own requests is outstanding
+    (`receiver_gate_outstanding()`): a -Y row's (requested, retrying, or landed and waiting for its commit,
+    `dsd_engine_channel_scan_waiting()`), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
+    tune (`dsd_engine_signal_search_tune_pending()`), and any receive request the demod thread has not settled (the
+    newest's `rtl_stream_receive_request_outcome()`, through the stream hooks). It writes when one is due
+    (`dsd_engine_receiver_gate_due()`: a stream open, a family request, a -Y commit or release, a trunk-scan landing, a
+    settled manual tune; a command or a change, `changed`), and whenever the receiver reports a closed start on an
+    analog session with nothing outstanding, so no channel stays muted for good. While the drain applies a command, or a
+    coordinator switches (the trunk scan's target switch, the -Y staging and leave, a signal search's visit and restore),
+    `dsd_engine_receiver_gate_hold()` holds every write, and one is due once the outermost hold ends. The settle runs at
+    the drain (before and after each command, `ui_settle_squelch()`; the analog default's policy,
+    `dsd_squelch_analog_default_sync()`, only on a change), at each analog block the decoder takes (the engine's
     `analog_call_block` hook) and in the engine's main pass, at a -Y row's commit and release, and when the trunk scan
-    sees its retune land; with nothing due it reads, resolves and writes nothing, so an idle digital drain does no gate
-    work. A wrong order can only lengthen a closed start by a decoder settle, never run an analog block ungated for a
-    channel the decoder has not committed. The landing's mute is the decoder's time to its next settle (about 100 ms of
-    wall time behind a trunk-scan retune on rtl_tcp, ENGINE_TRUNK_SCAN_RUNNING_RECEIVER, over before the new channel's
-    first samples reach the decoder). An `[input]` that names no source applies its squelch keys to the input running
+    sees its retune land; with nothing due on a digital session it reads, resolves and writes nothing, so an idle
+    digital drain does no gate work. Limits: while a request is outstanding the receiver runs what it ran (closed for a
+    new analog channel), set right at the commit; a timed-out tune that lands after the decoder gave up on it gets the
+    gate of the channel the decoder has on air then; trunking grants and hunts behave as before #899. The landing's
+    mute is the decoder's time to its next settle (about 100 ms of wall time behind a trunk-scan retune on rtl_tcp,
+    ENGINE_TRUNK_SCAN_RUNNING_RECEIVER, over before the new channel's first samples are produced: the receiver counts the
+    monitor samples a closed start mutes where they are produced, `rtl_stream_squelch_status::closed_samples`, 0 there).
+    An `[input]` that names no source applies its squelch keys to the input running
     (`apply_squelch_keys_from_config()`), and a radio receiver that keeps running hears them
     (`apply_cfg_rtl_hot_restart()`). It also logs the AM notice each time a NOISE setting starts running as
     AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
@@ -5328,22 +5323,25 @@ suite runs under this compiler.
     notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
     change, a stream reopened by the RTL-SDR row, a config's [mode] alone, a config under an inheriting -Y row in
     place, with keys and reopened, a reopen onto an inherited analog row, a reopen that stops the scanner, an FM-to-AM
-    refusal's publication, a family switch's channel closed until the decoder writes it, an idle digital drain reading
-    and resolving nothing, a same-input config from NFM to DMR, a family switch refused where it lands),
-    `ENGINE_CHANNEL_SCAN` (each -Y row's channel closed from its landing until its commit, pending and failed tunes,
-    late failures, a refused go-to over a pending one, a dropped retry, a restarted stream before and after a landing,
-    an unrelated command's resume, a live Off edit over a pending go-to then reinstated, a landing between the decoder's
-    resolve and its write, edits between a landing and its commit, a leave to a digital session, nine stalled family
-    switches, an idle settle), `ENGINE_TRUNK_SCAN` (an NFM-to-DMR rotation writing nothing on the NFM channel),
-    `ENGINE_TRUNK_SCAN_RUNNING_RECEIVER` (no NFM sample ungated on a running receiver, and the closed start measured),
-    `IO_RTL_RETUNE_PREPARE` (the receiver's channels: controller and external landings closed whatever the profile's
-    family did, the channel alone, an unnamed retune, tagged writes applied and stale, family switches into and out of
-    the analog family, a refusal, a retired request, nine stalled requests, an analog open), `RUNTIME_SCAN_MODE` (a
-    suspended leave resolving the edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune names its channel over
-    its profile), `UI_MENU_SERVICES` (a suspended scope's recovery committing the open, the default ended or not, a
-    shadowed edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running
-    receiver told, a live retune's channel closed then written, source-less squelch keys, the config's squelch reaching
-    the receiver under rigctl and over a native retune that lands or fails late),
+    refusal's publication, a family switch closed until the decoder writes it, an idle digital drain reading and
+    resolving nothing and running no default policy, a same-input config from NFM to DMR, a family switch refused where
+    it lands, overlapping tune and family requests in every round-7 order), `ENGINE_CHANNEL_SCAN` (each -Y row closed
+    from its landing until its commit, pending and failed tunes, late failures, a refused go-to over a pending one, a
+    dropped retry, a restarted stream over a pending go-to to a digital or an analog row, an unrelated command's resume,
+    a live Off edit over a pending go-to then reinstated, edits while a tune is outstanding and between a landing and its
+    commit, a leave to a digital session, nine stalled family switches, an idle settle, a late landing's closed start),
+    `ENGINE_TRUNK_SCAN` (an NFM-to-DMR rotation writing nothing on the NFM channel), `ENGINE_TRUNK_SCAN_RUNNING_RECEIVER`
+    (no FM monitor sample produced open without the noise squelch on a running receiver, and each landing's mute in
+    produced samples), `IO_RTL_RETUNE_PREPARE` (the receiver's closed starts: controller and external landings closed
+    whatever the profile's family did, the mark alone, an unmarked retune, a write opening it, family switches into the
+    analog family and onto another kind, a width change, the digital gate at a digital switch, write and hunt landing, a
+    refusal, a retired request, an analog open and its counts), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
+    edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
+    `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
+    `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
+    edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running receiver
+    told, a live retune closed then written, source-less squelch keys, the config's squelch reaching the receiver under
+    rigctl and over a native retune that lands or fails late, or lands late after a refused tune),
     `UI_MENU_AIRSPY_CONFIG_TUNING`, `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the
     monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
@@ -9890,12 +9888,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target),
-  `rtl_stream_new_channel()`, `rtl_stream_current_channel()` and `rtl_stream_prepare_retune_channel_for_target()`
-  (issue #899: a receiver channel the decoder numbers, the one the receiver produces, and the channel a retune's
-  landing starts), `rtl_stream_write_channel_gate()` (a gate write tagged with its channel: applied or stale),
-  `rtl_stream_channel_gate_opened()` and `rtl_stream_refused_channel()` (the channel the last open started, and the one
-  the last refused family request named), `rtl_stream_stage_family_channel()` and
-  `rtl_stream_unstage_family_channel()` (the channel the next live family request names), and
+  `rtl_stream_prepare_retune_new_channel_for_target()` (issue #899: a retune the decoder marks as a new channel, whose
+  landing on the analog family starts closed), `rtl_stream_write_squelch_gate()` (the gate of the channel the receiver
+  is on, with the digital gate a digital landing runs) and `rtl_stream_gate_closed_start()` (a closed start waits for
+  that write), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
@@ -11557,7 +11553,8 @@ Notes:
     and every other spec, counts as before, so a floor is never shared more widely than the spec text allows (a
     different dongle at the same index still shares it). After the block it publishes the tracker's status
     (`rtl_stream_get_squelch_status()`, which also counts the closed starts of new analog channels since the stream
-    opened and how long the last one lasted, issue #899). Tests: `IO_RTL_SQUELCH_PLUMBING`,
+    opened, how long the last one lasted and the FM monitor samples it muted, and the FM monitor samples produced open
+    with no dynamic squelch judging them, counted where each block is produced, issue #899). Tests: `IO_RTL_SQUELCH_PLUMBING`,
     `IO_RTL_SQUELCH_DEVICE_KEY`.
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
