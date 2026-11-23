@@ -2365,13 +2365,22 @@ test_host_surface(void) {
     dsd_qt::recording_store_serve_host(&s.store, &host);
     const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
     s.store.endSession();
-    for (int i = 1; i <= 4; i++) {
-        record(folder, QStringLiteral("0000000000000099-%1").arg(i), QStringLiteral("h%1.wav").arg(i), 1754714000 + i,
-               900 + i);
-    }
-    s.pass();
     const auto path = [&folder](int i) { return folder + QStringLiteral("/h%1.wav").arg(i); };
     const auto id = [](int i) { return QStringLiteral("0000000000000099-%1").arg(i); };
+    // Journaled as the decoder does, inside a session: no compaction rewrites a journal a session holds, and a session
+    // waits for one already rewriting it. Appended outside one, a line could land after a compaction's last read and
+    // go with the old file at its rename (the worker compacts on passes the test does not wait for, after a delete).
+    const auto journal = [&s, &folder](int i) {
+        expect("the session journals in the test's folder",
+               s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County")) == folder);
+        record(folder, QStringLiteral("0000000000000099-%1").arg(i), QStringLiteral("h%1.wav").arg(i), 1754714000 + i,
+               900 + i);
+        s.store.endSession();
+    };
+    for (int i = 1; i <= 4; i++) {
+        journal(i);
+    }
+    s.pass();
     const auto waitGone = [&s](const QString& file) {
         const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
         while (QFileInfo::exists(file) && dsd_realtime_mono_ms() < deadline) {
@@ -2395,7 +2404,7 @@ test_host_surface(void) {
 
     // A file gone behind the store's back, played while another plays: the player stops first (the store holding
     // that file until then), the play fails as missing, and the store looks again.
-    record(folder, id(8), QStringLiteral("h8.wav"), 1754714008, 908);
+    journal(8);
     s.pass();
     host.playRecording(path(8));
     host.playing(path(8));
@@ -2434,7 +2443,7 @@ test_host_surface(void) {
     expect("the save wrote the file, which outlives the original", !original.isEmpty() && read_all(dest) == original);
 
     // An export runs on the host's own time; a second one meanwhile is refused as busy, releasing its own selection.
-    record(folder, id(5), QStringLiteral("h5.wav"), 1754714005, 905);
+    journal(5);
     s.pass();
     finished.clear();
     const QVariantMap all = s.store.selectForExport(kUidA, QStringLiteral("all"));
@@ -2465,7 +2474,7 @@ test_host_surface(void) {
 
     // A save whose file is already gone: the host is handed it unlooked (no stat on the GUI thread), and the save
     // finds it gone on its own path, finishes as missing and has the store look again.
-    record(folder, id(9), QStringLiteral("h9.wav"), 1754714009, 909);
+    journal(9);
     s.pass();
     finished.clear();
     const QVariantMap gone = s.store.selectRecordings({id(9)});
@@ -2479,7 +2488,7 @@ test_host_surface(void) {
 
     // A host with no zip refuses an export, and the selection is still released.
     host.zipTransfers = false;
-    record(folder, id(6), QStringLiteral("h6.wav"), 1754714006, 906);
+    journal(6);
     s.pass();
     finished.clear();
     expect("no zip here", !host.exportRecordings(s.store.selectForExport(kUidA, QStringLiteral("all")),
@@ -2491,7 +2500,7 @@ test_host_surface(void) {
     expect("and released", waitGone(path(6)));
 
     // Share: indexed recordings only; a missing one is looked at again.
-    record(folder, id(7), QStringLiteral("h7.wav"), 1754714007, 907);
+    journal(7);
     s.pass();
     const QString stray = folder + QStringLiteral("/stray.wav");
     make_file(stray, 100);
