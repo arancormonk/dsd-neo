@@ -269,7 +269,9 @@ Generated (do not edit/commit):
     itself (`dsd_signal_search_note_access_code()`, a `dsd_signal_search_access_note` of sync type, kind and value;
     issue #748 B14): a CRC-checked M17 LSF does, since one of stream data type 0 opens no call whose service options
     hold the CAN. While a visit receives and the policy admits the carried value (`search_note_rejected()`), it becomes
-    the visit's noted code, cleared at each landing, which the hit carries (`access_noted`, `access_kind`,
+    the visit's noted code, cleared at each landing and when the hit's protocol changes to another family (so a later
+    transmission of the note's family that carries none shows none; one noted for the incoming family stays), which
+    the hit carries (`access_noted`, `access_kind`,
     `access_value`, not persisted) while it is confirmed as a protocol of the note's family, publishing when that
     changes; a note before confirmation waits for it, as a site note does. The observer formats a carried code into
     `access` at every publication, live and ended, over the access it copied back and over an older call record's CAN;

@@ -100,7 +100,7 @@ void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
  * With @p note, the producer carried the code itself (an M17 call-free LSF's CAN, issue #748 B14): while a visit
  * receives and the receive policy admits that code, it is the visit's noted code, which the hit carries
  * (dsd_signal_search_hit::access_noted) while it is confirmed as a protocol of the note's sync type's family, publishing
- * when that changes. Either way it confirms nothing and changes no phase or activity. Anything else it drops. */
+ * when that changes; the hit's protocol changing to another family forgets it. Either way it confirms nothing and changes no phase or activity. Anything else it drops. */
 void dsd_engine_signal_search_access(const dsd_state* state, const dsd_signal_search_access_note* note);
 /** Runtime activity hook (issue #748): content of a transmission the decoder already reported as evidence keeps the
  * visit listening. While a visit receives a confirmed hit, it refreshes the visit's activity time on the decode clock;

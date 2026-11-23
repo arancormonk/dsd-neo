@@ -4294,6 +4294,44 @@ test_m17_call_free_lsf_can(dsd_opts* o, dsd_state* s, const dsd_signal_search_co
     stop_refusal_session(o, s);
 }
 
+/* Issue #748 B14: a carried code belongs to the family that sent it. An Auto visit that confirms M17 (CAN 3), then DMR,
+   then an M17 transmission that names no CAN (a BERT stream) shows no CAN: the first transmission's went when the
+   visit left M17. A code noted for the incoming family before it confirms still shows once it does. */
+static void
+test_access_note_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    m17_checked_lsf(s, 3U);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 3") == 0);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0 && strcmp(store_status.hit.access, "CC 7") == 0);
+    s->synctype = DSD_SYNC_M17_BRT_POS;
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0);
+    assert(!store_status.hit.access_noted && strstr(store_status.hit.access, "CAN 3") == NULL);
+    // A CAN noted while the hit is still DMR waits for M17, and shows once M17 confirms.
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0);
+    s->synctype = DSD_SYNC_M17_LSF_POS;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, 9U);
+    assert(strcmp(store_status.hit.access, "CC 7") == 0);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 9") == 0);
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 9") == 0);
+    stop_refusal_session(o, s);
+}
+
 static void
 test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_avoid_lists_room(o, s, config);
@@ -5310,6 +5348,7 @@ main(void) {
     test_refusal_then_resume_reaches_frontend(o, s, &config);
     test_failed_start_changes_nothing(o, s, &config);
     test_m17_call_free_lsf_can(o, s, &config);
+    test_access_note_left_family(o, s, &config);
     test_stop_queues_restored_profile(o, s, &config);
     test_tetra_protocol_latched(o, s, &config);
     test_tetra_visit_lands_tetra_profile(o, s, &config);

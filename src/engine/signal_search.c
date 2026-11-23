@@ -135,7 +135,8 @@ typedef struct {
     /* The visit's call tuple, from call notes alone; cleared at each landing and when the protocol changes. */
     search_call call;
     /* The access code the visit's latest admitted carried access note named (issue #748 B14), shown on the hit while
-       the note's sync type is of the hit's protocol; cleared at each landing. */
+       the note's sync type is of the hit's protocol; cleared at each landing and when the hit's protocol leaves the
+       note's family. */
     dsd_signal_search_access_note access_note;
     int access_noted;
     /* The session's own P25 site as Start found it, put back whole after every departure (issue #804). */
@@ -1154,6 +1155,11 @@ search_identified_protocol(search_coord* c, const dsd_state* state, const char* 
         }
         if (hit->protocol[0] && !search_call_is(c, identified)) {
             DSD_MEMSET(&c->call, 0, sizeof(c->call));
+        }
+        /* A carried code is its family's: leaving that family takes it, so a later transmission of the family that
+           names none shows none. One noted for the incoming family stays. */
+        if (hit->protocol[0] && !dsd_engine_signal_search_family_matches(identified, c->access_note.sync)) {
+            c->access_noted = 0;
         }
     }
     DSD_SNPRINTF(hit->protocol, sizeof(hit->protocol), "%s", identified);
