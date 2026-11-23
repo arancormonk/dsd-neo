@@ -17006,9 +17006,10 @@ Qt Quick frontend (`src/ui/qt`):
     the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
     by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
     bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
-    offers no recording path for save and share, and History shows its rows as away with Play refused
-    (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); a History call's part buttons still play by path
-    (limits below). A journal is compacted only in a folder read and on
+    offers no recording path for save and share once its read is done, and a refreshed History row shows it as away
+    with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); during a read that is cut short by
+    a session start between slices, a share can still take a path from the committed view, and a History call's part
+    buttons play by path (limits below). A journal is compacted only in a folder read and on
     storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
     `test_compaction_waits_for_a_rescan`).
     A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
@@ -17061,8 +17062,9 @@ Qt Quick frontend (`src/ui/qt`):
       takes the new size and time without trying to open the file, so it is selected for export and offered for
       playback again (both then fail to open it) and the storage limit can remove it.
     - A loaded folder whose journal's new lines cannot be read turns its recordings unavailable without telling an
-      open recordings sheet. A History call's part buttons play by path whatever the recording's availability, so a
-      part in a folder not read (whose audio still opens) can be played even after a refresh.
+      open recordings sheet (no `revision` change), so its Play button can still play readable audio until the sheet
+      refreshes. A History call's part buttons play by path whatever the recording's availability, so a part in a
+      folder not read (whose audio still opens) can be played even after a refresh.
 
     In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
@@ -17136,7 +17138,8 @@ Qt Quick frontend (`src/ui/qt`):
     `recordingsForDetection(key)` (newest first: start, then publish order; the History maps plus `system`, `target`,
     `source` and `fragment`). `revision` (a double, so QML reads it exactly) is the worker's `m_generation`, bumped
     under the lock by `noteQueryChangeLocked()` at every change a query can see (an entry inserted or removed, a link
-    that changes its fragment, a size a recheck reads again, a root marked away or read again); `publish()` copies the
+    that changes its fragment, a size a recheck reads again, a root marked away or read again; not a folder
+    turned unread by a failed journal read, a decided limit below); `publish()` copies the
     current generation to the outbox with the summary, and `deliver()` emits `revisionChanged()` when it moved. A later
     publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
