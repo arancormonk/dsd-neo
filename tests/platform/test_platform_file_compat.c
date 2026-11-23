@@ -1751,6 +1751,14 @@ expect_path_file_identity(void) {
     ok = ok && dsd_path_file_identity(missing, &none) == -1 && errno == ENOENT && none.kind == 0;
     errno = 0;
     ok = ok && dsd_path_file_identity(dir, &none) == -1 && errno == EISDIR && none.kind == 0;
+    // A name under a regular file, or under a folder that is not there, was never looked up: ENOTDIR, never the
+    // ENOENT of a name missing from a folder that is there.
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/a.wav/r.wav", &none) == -1 && errno == ENOTDIR;
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/none/r.wav", &none) == -1 && errno == ENOTDIR;
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/none.wav", &none) == -1 && errno == ENOENT;
 #if !DSD_PLATFORM_WIN_NATIVE
     const char* soft = "dsd_neo_file_identity/soft.wav";
     errno = 0;
@@ -1758,6 +1766,12 @@ expect_path_file_identity(void) {
     /* Read, and no file: ENODEV, never EIO (which a failed read gives, and says nothing about the name). */
     // A parent that does not resolve (a link to itself: too many links on the way) is a lookup that failed (EMLINK),
     // never read as a link at the name (ELOOP).
+    // ENOENT only for a name not in a folder that is there: under a dangling link the name was never looked up
+    // (ENOTDIR), as under a regular file.
+    const char* dangling = "dsd_neo_file_identity/dangling";
+    errno = 0;
+    ok = ok && symlink("nowhere", dangling) == 0
+         && dsd_path_file_identity("dsd_neo_file_identity/dangling/r.wav", &none) == -1 && errno == ENOTDIR;
     const char* loop = "dsd_neo_file_identity/loop";
     errno = 0;
     ok = ok && symlink("loop", loop) == 0 && dsd_path_file_identity("dsd_neo_file_identity/loop/r.wav", &none) == -1
@@ -1783,6 +1797,7 @@ expect_path_file_identity(void) {
 #if !DSD_PLATFORM_WIN_NATIVE
     (void)remove(fifo);
     (void)remove(loop);
+    (void)remove(dangling);
     (void)remove(soft);
 #endif
     (void)remove(twin);

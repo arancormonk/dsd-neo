@@ -831,8 +831,9 @@ dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
         errno = EINVAL;
         return -1;
     }
+    /* A long absolute name in extended-length form, as the openers take it: its answer is the name's, never "too long". */
     wchar_t* wide = NULL;
-    const int kind = dsd_win32_path_wide(path, &wide);
+    const int kind = dsd_win32_path_wide_long(path, &wide);
     if (kind <= 0) {
         return kind < 0 ? -1 : dsd_path_type_answer(GetFileAttributesA(path), out_type);
     }
@@ -1024,6 +1025,50 @@ dsd_handle_file_identity(HANDLE h, dsd_file_identity_t* out) {
     return 0;
 }
 
+/* Whether the folder @p path (wide when @p kind > 0, else ANSI) names is in is a plain folder, not a reparse point. A
+   bare name's folder is the current one. */
+static int
+dsd_win32_parent_is_folder(int kind, const wchar_t* wide, const char* path) {
+    DWORD attrs = INVALID_FILE_ATTRIBUTES;
+    if (kind > 0) {
+        const size_t len = wcslen(wide);
+        size_t cut = len;
+        while (cut > 0 && wide[cut - 1] != L'\\' && wide[cut - 1] != L'/') {
+            cut--;
+        }
+        if (cut == 0) {
+            return 1;
+        }
+        wchar_t* parent = (wchar_t*)malloc((cut + 1) * sizeof(wchar_t));
+        if (!parent) {
+            return 0;
+        }
+        DSD_MEMCPY(parent, wide, cut * sizeof(wchar_t));
+        parent[cut] = L'\0';
+        attrs = GetFileAttributesW(parent);
+        free(parent);
+    } else {
+        const size_t len = strlen(path);
+        size_t cut = len;
+        while (cut > 0 && path[cut - 1] != '\\' && path[cut - 1] != '/') {
+            cut--;
+        }
+        if (cut == 0) {
+            return 1;
+        }
+        char* parent = (char*)malloc(cut + 1);
+        if (!parent) {
+            return 0;
+        }
+        DSD_MEMCPY(parent, path, cut);
+        parent[cut] = '\0';
+        attrs = GetFileAttributesA(parent);
+        free(parent);
+    }
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0
+           && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+}
+
 int
 dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
     if (out) {
@@ -1045,11 +1090,16 @@ dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
     HANDLE h = kind > 0 ? CreateFileW(wide, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL)
                         : CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
     const DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-    free(wide);
     if (h == INVALID_HANDLE_VALUE) {
-        errno = dsd_path_errno(err);
+        /* Only the name itself not found in a folder that is there is a missing name: a parent missing, a file or a
+           reparse point (ERROR_PATH_NOT_FOUND, or a parent that is no plain folder) never looked the name up. */
+        errno = err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND
+                    ? (err == ERROR_FILE_NOT_FOUND && dsd_win32_parent_is_folder(kind, wide, path) ? ENOENT : ENOTDIR)
+                    : dsd_path_errno(err);
+        free(wide);
         return -1;
     }
+    free(wide);
     const int rc = dsd_handle_file_identity(h, out);
     const int saved_errno = errno;
     CloseHandle(h);

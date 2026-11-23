@@ -22,6 +22,8 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 
@@ -35,6 +37,27 @@ _Static_assert(sizeof(off_t) >= 8, "file identities need 64-bit file offsets: a 
 #if __SIZEOF_POINTER__ >= 8 || (defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34)))
 _Static_assert(sizeof(time_t) >= 8, "file identities need 64-bit time where the C library offers it");
 #endif
+
+/* Whether the folder @p path names is in is there and a folder itself, never followed if a link (lstat()). A bare
+   name's folder is the current one. */
+static int
+dsd_parent_is_folder(const char* path) {
+    const char* slash = strrchr(path, '/');
+    if (slash == NULL) {
+        return 1;
+    }
+    const size_t cut = slash == path ? 1U : (size_t)(slash - path);
+    char* parent = (char*)malloc(cut + 1U);
+    if (parent == NULL) {
+        return 0;
+    }
+    DSD_MEMCPY(parent, path, cut);
+    parent[cut] = '\0';
+    struct stat st;
+    const int folder = lstat(parent, &st) == 0 && S_ISDIR(st.st_mode);
+    free(parent);
+    return folder;
+}
 
 /* The identity in @p st, a regular file's; -1 with errno for anything else (a folder, a link, a FIFO, a socket, a
    device). */
@@ -77,10 +100,11 @@ dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
     struct stat st;
     if (lstat(path, &st) != 0) {
         // lstat()'s own ELOOP comes from resolving a parent (too many links on the way): the name's type was never
-        // read, so it is reported apart from a link at the name itself (ELOOP below), as a lookup that failed.
-        if (errno == ELOOP) {
-            errno = EMLINK;
-        }
+        // read, so it is reported apart from a link at the name itself (ELOOP below), as a lookup that failed. ENOENT
+        // is a missing name only when its folder is there and a folder: a parent that is a dangling link, or missing,
+        // never looked the name up (ENOTDIR).
+        const int err = errno;
+        errno = err == ELOOP ? EMLINK : (err == ENOENT && !dsd_parent_is_folder(path) ? ENOTDIR : err);
         return -1;
     }
     return dsd_stat_file_identity(&st, out);
