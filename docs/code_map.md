@@ -12723,7 +12723,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     synthesized DISC), and its endpoint takes a session-long lockout entry in its class's namespace
     (`nxdn_call_type_locks_endpoint()`, `nxdn_vcall_suppress_encrypted_call()`): 000/001 the talkgroup, 100, 110 and
     111 the called number as a radio, so for the session the lockout also skips other private calls through that
-    number (as before the call types were classified). 011/101 have no class and lock nothing out. CC Option bit 6 is
+    number (as before the call types were classified). The lockout judges a call only by its own checked encryption
+    indication (`nxdn_vcall_run_enc_lockout()`, issue #903): the VCALL's own cipher, once it is the cipher applied. A
+    cipher the hysteresis still carries from an earlier call (a DCR call's scrambler, or DES that VCALLs naming no party
+    established during it), holding the VCALL's back, neither locks the call out nor releases its entry. 011/101 have no class and lock nothing out. CC Option bit 6 is
     Intra/Inter and prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the

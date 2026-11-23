@@ -3382,6 +3382,12 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         || info->destination_id == 0 || !nxdn_call_type_opens_call(info->call_type)) {
         return;
     }
+    /* The lockout judges a call by its own checked encryption indication, this VCALL's cipher, and only once that is
+       the cipher applied (issue #903): a cipher the hysteresis still carries from an earlier call, held against this
+       VCALL's, neither locks the call out nor releases its entry. */
+    if ((uint32_t)info->cipher_type != state->nxdn_cipher_type) {
+        return;
+    }
     if (state->dmr_encL != 1) {
         // Corroborated clear -- or encrypted-but-decryptable -- voice on this
         // target releases any retained lockout entry so a talkgroup that

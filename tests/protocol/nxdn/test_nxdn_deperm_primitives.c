@@ -2346,6 +2346,99 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
     return rc;
 }
 
+/* Trunking with --enc-lockout, and no key at all. */
+static void
+use_enc_lockout(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    opts->trunk_tune_enc_calls = 0;
+    state->R = 0ULL;
+    state->scalar_key_present[0] = 0U;
+}
+
+/* The call to group @p target is the live call, still active, and not locked out: no session lockout entry, and no
+   synthesized disconnect ended it. */
+static int
+expect_group_not_locked_out(const char* tag, dsd_state* state, uint32_t target) {
+    dsd_call_snapshot call;
+    char sub[96];
+    DSD_SNPRINTF(sub, sizeof sub, "%s-call", tag);
+    int rc = expect_int(sub, dsd_call_state_get(state, 0U, &call), 1);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-target", tag);
+    rc |= expect_int(sub, (int)call.ota_target_id, (int)target);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-still-active", tag);
+    rc |= expect_int(sub, call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-no-lockout-entry", tag);
+    rc |= expect_int(sub, dsd_enc_lockout_entry_active(state, target, 1), 0);
+    return rc;
+}
+
+/*
+ * --enc-lockout locks a call out only on that call's own checked encryption indication (issue #903), never on a cipher
+ * the hysteresis carries from an earlier call. During a scrambled DCR call, with no DES key, two checked VCALLs that
+ * name neither party (they continue the DCR call) name DES under key ID 7, and establish it. A clear VCALL of group
+ * 311 then opens the next call: its clear cipher is held back against the DES, as on main, but the call said clear, so
+ * it is neither locked out nor disconnected.
+ */
+static int
+test_party_less_vcalls_lock_out_no_next_call(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    use_enc_lockout(opts, state);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0U, 0U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("party-less-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("party-less-des-established", nxdn_cipher_established_enc(state), 1);
+    rc |= expect_int("party-less-des-applied", (int)state->nxdn_cipher_type, 2);
+
+    make_vcall_elements(bits, 0x01U, 0x0123U, 311U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_group_not_locked_out("party-less-clear-group", state, 311U);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * The same for a clear numbered call after a scrambled DCR call with no key (issue #903): the scrambler the hysteresis
+ * carries holds the clear VCALL of group 0x0789 back, as on main, but that call said clear, so it is neither locked out
+ * nor disconnected. A keyless call whose own VCALLs say encrypted is still locked out.
+ */
+static int
+test_clear_call_after_a_dcr_call_is_not_locked_out(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    rc |= expect_int("dcr-then-clear-scrambler-established", nxdn_cipher_established_enc(state), 1);
+    use_enc_lockout(opts, state);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0789U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_group_not_locked_out("dcr-then-clear", state, 0x0789U);
+
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("dcr-then-keyless-des-locked-out", dsd_enc_lockout_entry_active(state, 0x0456U, 1), 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 /*
  * A checked DCR End is a call boundary, as an NXDN release is (issue #903): the cipher the ended call applied is
  * forgotten there, while the decoder still knows which call ended. Trunking with --enc-lockout and no key: on a
@@ -2748,6 +2841,8 @@ main(void) {
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_iv_during_a_dcr_call_is_not_the_dcr_calls();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
+    rc |= test_party_less_vcalls_lock_out_no_next_call();
+    rc |= test_clear_call_after_a_dcr_call_is_not_locked_out();
     rc |= test_dcr_end_resets_the_cipher();
     rc |= test_repeater_status_keeps_the_dcr_cipher();
     rc |= test_dcr_publication_carries_no_preceding_iv();
