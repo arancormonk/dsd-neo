@@ -72,8 +72,10 @@ nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint6
     if (!state || source > UINT32_MAX) {
         return 0U;
     }
+    /* The call the held identity is bound to carries its own layout verdict, which the receiver's route or live frame
+       never overrides; only a transmission with no verdict of its own is judged by where the receiver is. */
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
-    const int held_type_d =
-        id->type_d && (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
-    return held_type_d || nxdn_receiver_on_type_d(opts, state) ? 0U : (uint32_t)source;
+    const int bound = (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
+    const int type_d = bound ? id->type_d != 0U : nxdn_receiver_on_type_d(opts, state);
+    return type_d ? 0U : (uint32_t)source;
 }

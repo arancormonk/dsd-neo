@@ -87,9 +87,10 @@ int nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief The source a group call's admission is judged with, as NXDN's grant and held-call paths judge it
  * (dsd_tg_policy_evaluate_group_source_fallback()): @p source for a Type-C call, whose target with no row is judged by
- * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone, which is one the held call
- * (dsd_state::nxdn_call) names as Type-D (bound to @p transmission, dsd_call_snapshot_transmission()) or one heard while
- * the receiver is on a Type-D channel (nxdn_receiver_on_type_d()). 0 also for a source that is no 32-bit ID.
+ * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone. The held call (dsd_state::nxdn_call) bound
+ * to @p transmission (dsd_call_snapshot_transmission()) gives its own layout verdict, Type-D or not, whatever the
+ * receiver's route or live frame; a transmission with no such verdict is Type-D while the receiver is on a Type-D
+ * channel (nxdn_receiver_on_type_d()). 0 also for a source that is no 32-bit ID.
  */
 uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint64_t transmission,
                                       uint64_t source);

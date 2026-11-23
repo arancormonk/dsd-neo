@@ -964,15 +964,31 @@ test_late_entry_policy_source_follows_the_vcall_layout(dsd_opts* opts, dsd_state
     const uint64_t transmission = dsd_call_state_get(state, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
     rc |= expect_long("late entry policy: held call judged by its source",
                       (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+    /* A transmission the held call is not bound to has no verdict of its own: the live frame's layout decides. */
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D; /* a frame read as RTCH2, Type-C layout */
     state->nxdn_frame_type_d = 0U;
     rc |= expect_long("late entry policy: live lookup keeps the source in the Type-C layout",
-                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+                      (long)nxdn_held_call_policy_source(opts, state, 0U, 0x1864U), 0x1864L);
     state->nxdn_frame_type_d = 1U;
     rc |= expect_long("late entry policy: live lookup drops it in the Type-D layout",
-                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0L);
+                      (long)nxdn_held_call_policy_source(opts, state, 0U, 0x1864U), 0L);
+    rc |= expect_long("late entry policy: the bound call keeps its own verdict over the live frame",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_type_d = 0U;
+    /* The receiver followed a Type-D repeater's route and is still there: the call bound to this transmission was read
+       in the Type-C layout, so it keeps its source; a transmission with no verdict of its own is judged by the route. */
+    state->nxdn_follow.repeater = 3U;
+    state->nxdn_follow.freq_hz = 451000000L;
+    state->trunk_vc_freq[0] = 451000000L;
+    opts->trunk_is_tuned = 1;
+    rc |= expect_long("late entry policy: the bound call keeps its own verdict over the followed repeater",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+    rc |= expect_long("late entry policy: the followed repeater judges a transmission with no verdict",
+                      (long)nxdn_held_call_policy_source(opts, state, 0U, 0x1864U), 0L);
+    DSD_MEMSET(&state->nxdn_follow, 0, sizeof(state->nxdn_follow));
+    state->trunk_vc_freq[0] = 0;
+    opts->trunk_is_tuned = 0;
     return rc;
 }
 
