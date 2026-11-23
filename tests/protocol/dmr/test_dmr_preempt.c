@@ -1490,6 +1490,32 @@ test_composite_payload_counts_as_control_channel(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* An adopted companion's unnamed call takes the identity of the voice grant that first names it: TS1 is followed for
+   TG 300 while TS2 carries voice no LC has named. A data grant for TS1 retires TS1 and the receiver stays for TS2. A
+   voice grant then names TS2's call (TG 700 from 7), and TS2's next voice sync publishes that identity into it. */
+static int
+test_adopted_companion_takes_its_grant_identity(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    int rc = expect_true("the receiver stays for the unnamed companion",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && g_tunes == 1);
+    clock_at(0.5);
+    tv_grant(opts, st, LPCN_A, 1, 700, 7); // the voice grant naming TS2's call
+    voice(opts, st, 1);
+    dsd_call_snapshot call;
+    rc |= expect_true("the companion's next voice sync publishes the grant's identity",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 700U && call.ota_source_id == 7U);
+    return rc;
+}
+
 /* A media change on the followed slot retires that slot's assignment alone: TS1 is followed for TG 300 while TS2 carries
    live voice for TG 100. A data grant for TS1 ends TS1's call and record, while the receiver stays on the carrier for
    the TS2 call, which goes on as the same call. A voice grant repeated for TS1 is then a new assignment of that slot;
@@ -2002,6 +2028,7 @@ main(void) {
     rc |= test_control_channel_confirms_learned_lpcn(opts, st);
     rc |= test_c_bcast_mapping_records_provenance(opts, st);
     rc |= test_composite_payload_counts_as_control_channel(opts, st);
+    rc |= test_adopted_companion_takes_its_grant_identity(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);

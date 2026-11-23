@@ -2589,6 +2589,12 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
         // The new identity's provenance is this announcement's (dispatched inside its CSBK/MBC burst's CRC scope, as
         // dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes it with these flags.
         ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
+        /* A grant naming the followed slot anew (an adopted companion's unnamed call) is published into that call at
+           its next voice sync while the call still names nothing, as a grant followed in place is
+           (dmr_sm_take_grant()). */
+        if (ev->origin == DMR_SM_ORIGIN_GRANT) {
+            ctx->vc_identity_published = dmr_sm_grant_publishable(state, ev->slot, 0) ? 0 : 1;
+        }
     }
 }
 
