@@ -5272,58 +5272,63 @@ suite runs under this compiler.
     channel is the analog monitor on a radio input and the session still owns it. Nothing caches a gate: every open,
     retune and push resolves it again from the options as they stand. `dsd_scan_mode_channel_squelch()` resolves the
     channel the scope has on air (a typed row's class, an inherited row's configured decoder, the one the options hold
-    while a command has the scope suspended, as that command left it), and `dsd_engine_receiver_gates()` adds the -Y
-    coordinator's staged row (`channel_scan_staged_gate()`): `now`, the channel whose samples the receiver produces (the
-    staged row once its retune landed and it waits for its commit or restage, else the channel on air), and `landing`,
-    the channel an outstanding retune goes to. The retune carries its gate: `rtl_stream_prepare_retune_squelch_for_target()`
-    attaches it to the profile queued for the target (a profile for the gate alone, `RtlRetuneProfile::squelch_only`,
-    when nothing else is queued; attached last, since a store replaces the whole profile), and the receiver applies it
-    at the boundary where family, width and gain land (`rtl_stream_land_retune_squelch()`, from the controller's
-    finalize and the external backend's landing `rtl_stream_apply_pending_retune_profile_for_target()`), in the
-    decoder's latest word on it (`g_retune_squelch`, which `rtl_stream_update_retune_squelch()` replaces while the
-    retune is outstanding). Each attach binds the gate to its retune (`RtlRetuneProfile::squelch_seq`), outstanding
-    until the decoder can see the outcome: the controller's completion published (`controller_finish_manual_retune()`,
-    before the waiting caller wakes), the external landing done, or the profile dropped untaken (cleared, replaced, a
-    coalesced or cancelled retune's, or one a tune returned without taking, `rtl_stream_drop_untaken_retune_squelch()`).
-    The gate belongs to the newest binding outstanding: a landing of an older one, whose request was replaced, runs the
-    gate closed (`kRetuneSquelchClosed`, a level no power reaches) until the newer lands or the decoder pushes, and a
-    newest one dropped untaken gives the one before its binding back (a refused go-to's reinstated request). A profile
-    superseded (a live family request, or for one with no family a live analog request or a scan leave counted after
-    it), cleared, refused where it lands, left behind by a coalesced retune, or whose tune fails, applies no gate.
-    While any binding is outstanding (`rtl_stream_retune_squelch_outstanding()`) the landing owns the gate: no settle,
-    resume or edit hands the receiver the channel on air's gate (`dsd_engine_receiver_gate_owe()`,
-    `svc_rtl_push_squelch_unless_held()`), and the push owed is made once the outcome shows (the drain's next
-    `svc_rtl_settle_receiver_gate()`, `dsd_engine_receiver_gate_take_owed()`), with the gate of the channel the
-    receiver is on. The -Y step and go-to
-    (`channel_scan_tune_staged()`), trunk-scan conventional and analog targets (`trunk_scan_retune_active()`, the target
-    active from its switch), every app-control tune (`svc_io_control_tune()`: a manual tune, a walk, the live Airspy
-    config retune of `svc_airspy_apply_live()`, which pushes no gate of its own when it retunes) and signal search's
-    visits and restore (`search_prepare_profile()`, `search_restore_tune()`) queue it so; a trunk system's control
-    channel park and a protocol's voice-channel tunes carry none (the family is digital, and a target's switch pushes
-    its gate). Pushes: `svc_rtl_settle_receiver_gate()` (app-control) and `dsd_engine_receiver_gate_settle()` (engine,
-    through the metrics hooks) hand an outstanding retune its `landing` gate and, asked to, the receiver its `now`
-    gate. `svc_rtl_push_channel_squelch()` syncs and pushes so (a config's squelch push, a live Airspy apply that keeps
-    its frequency, the in-place Airspy failure); `ui_sync_analog_default_squelch()` runs after each drained command and
-    receive-request settle, refreshing the landing gate always and pushing when the sync moved the fields; the scope's
-    resume pushes through the engine (`dsd_receiver_gate_settle_hook_run()`, which `dsd_engine_run_install_hooks()`
-    installs; without one, tests, it pushes the row on air's), so a command that leaves a -Y retune outstanding never
-    hands the receiver the outgoing row's gate over a landing it took, and one that changed the configuration (a squelch
-    edit, a config, a decode switch) is honoured where that retune lands. A go-to refused before anything moved
-    reinstates the earlier request and refreshes the gate it lands; a staged row that ends without its commit hands the
-    receiver the gate of the channel it is on (`channel_scan_gate_after_end()`): the staged row's when its retune landed
-    all the same (out of date, or a dropped restage), else the row on air's, which an edit held back meanwhile may have
-    changed. Every stream
-    open resolves the gate of the channel it opens (`svc_rtl_open_on_the_channel_squelch_locked()`, the body of
-    `svc_rtl_start_locked()`): `now` above, so under a suspended scope the row's, from the profile being opened (a
-    config that turns an inherited row analog opens it on the default; a rollback's restart on the profile that ran
-    resolves from the profile restored), or the session's when the open is a config's that turns the -Y scanner off
-    (`svc_rtl_open_for_session()`, set from the transaction's `scanner_after` as `ui_scan_row_resumed_monitor()` decides
-    the width). A signal search's restore keeps its push before the restore tune: the search drops every block until
-    that tune lands, and a search that ends with no restore tune has only that push. The open installs the gate's
-    fields alone while the stream reads them and puts the options' standing
-    back. A stream that reopens while a -Y tune is pending opens on the row on air's gate, and the reopen's restage
-    lands the row's own. An `[input]` that names no source applies its squelch keys to the input running
-    (`apply_squelch_keys_from_config()`), and a radio receiver that keeps running hears them
+    while a command has the scope suspended, as that command left it), and `channel_scan_staged_gate()` the -Y
+    coordinator's staged row. The receiver is the only judge of which gate applies (review round 5, channel-tagged
+    gates): it numbers the channel it produces (`g_gate_channel` in `rtl_sdr_fm.cpp`), which moves when a gate-carrying
+    retune lands, a live family request that carries a gate applies, or a stream opens (`rtl_stream_gate_open()`), and
+    every gate write names the channel it was resolved for (`rtl_stream_write_channel_gate()`): applied at once,
+    atomically with every landing (both under `g_pending_retune_profile_mutex`), when that is the channel the receiver
+    is on; kept as the gate a channel still outstanding (a binding, `g_gate_bindings`) lands with; dropped as stale
+    otherwise. Each binding keeps its own gate, so dropping one (a refused go-to's replacement) never changes what
+    another lands. The retune carries its gate: `rtl_stream_prepare_retune_squelch_for_target()` binds it to the
+    profile queued for the target (a profile for the gate alone, `RtlRetuneProfile::squelch_only`, when nothing else is
+    queued; attached last, since a store replaces the whole profile) and returns the channel it lands
+    (`RtlRetuneProfile::gate_channel`); the receiver lands it at the boundary where family, width and gain land
+    (`rtl_stream_gate_land()`, from the controller's finalize and the external backend's landing
+    `rtl_stream_apply_pending_retune_profile_for_target()`). A landing whose channel a newer binding replaced (one
+    outstanding, or landed already) runs the gate closed (`kGateClosed`, a level no power reaches) until the decoder
+    writes for that channel or the newer one lands. A profile superseded (a live family request, or for one with no
+    family a live analog request or a scan leave counted after it), cleared, refused where it lands, left behind by a
+    coalesced retune, or whose tune fails, lands no channel (`rtl_stream_drop_untaken_retune_squelch()` for one a tune
+    returned without taking). A live family request carries its gate too (`rtl_stream_stage_family_gate()` before the
+    request, `rtl_stream_unstage_family_gate()` after; `dsd_engine_receiver_gate_stage_family()` and
+    `dsd_engine_receiver_gate_family_done()` on the decoder's side): it lands where the demod thread takes the request
+    (`rtl_stream_consume_demod_profile_request()`), so the first block on the new family runs under it whatever retune
+    is outstanding (a decode switch, `decode_mode_republish_gated()`; a -Y leave; a signal search's restore); a request
+    refused, or made with no stream, lands none, and one that replaces a queued request without a gate of its own
+    takes that one's on. `g_gate_epoch` moves with every change of the channel or of the bindings, read lock-free
+    (`rtl_stream_channel_gate_epoch()`). The decoder's side (`channel_scan.c`, decoder thread): the channels the on-air
+    answer is for, oldest first (`s_gate_on_air`: the stream's open, then every transition that puts the on-air channel
+    elsewhere, `dsd_engine_receiver_gate_on_air()`: a manual tune's, walk's or Airspy config's retune
+    (`svc_rtl_queue_tune_gate()`), a trunk-scan target's (`dsd_engine_scan_tune_to_freq()` with no channel of its
+    caller's), a signal search's visit and restore, a family request's, a -Y row once it commits or once its scan is
+    left), and a staged -Y row's channel (`channel_scan::gate_channel`, which the staging swap of a refused go-to puts
+    back). `dsd_engine_receiver_gate_settle()` writes the on-air answer for the newest of those channels the receiver
+    still knows (bound while its transition is outstanding, applied once on air; an older one is left alone while a
+    newer is outstanding, and dropped once the receiver no longer knows it, so a transition that fails falls back to the
+    channel still on air) and the staged row's own answer for its channel. A write racing a landing is dropped by the
+    receiver, and the decoder re-resolves once it sees the receiver moved: the settle runs when a command ran or the
+    session's squelch moved (`changed`) or the epoch moved since the last settle, which also adopts a stream that
+    opened since (`receiver_gate_observe()`); an idle settle (the drain's, nothing changed and nothing moved) is one
+    lock-free load, resolving and writing nothing, and a write repeats only on a change (the last write per kind
+    stands while the epoch does; the receiver does not re-apply the gate it runs). Callers: the drain before each
+    command (`ui_settle_squelch(…, 0)`) and after it, and every receive settle and refused row edit
+    (`ui_sync_analog_default_squelch()`); `svc_rtl_push_channel_squelch()` (a squelch edit, by level or setting,
+    whether or not the row on air shadows it; a config's squelch push; a live Airspy apply whose squelch changed,
+    however its frequency was tuned; the in-place Airspy failure); the scan scope's entry points (options, leave,
+    resume) through `dsd_receiver_gate_settle_hook_run()`, which `dsd_engine_run_install_hooks()` installs (a runtime
+    with no engine hands the fields over as they are). A staged row that ends without its commit after its retune landed
+    (out of date, or a dropped restage) gets the staged row's gate written for its channel
+    (`channel_scan_gate_after_end()`). Every stream open resolves the gate of the channel it opens
+    (`svc_rtl_open_on_the_channel_squelch_locked()`, the body of `svc_rtl_start_locked()`):
+    `dsd_engine_receiver_gate_now()`, the staged row's once its retune landed, else the row on air's (from the profile
+    being opened under a suspended scope: a config that turns an inherited row analog opens it on the default; a
+    rollback's restart on the profile that ran resolves from the profile restored), or the session's when the open is a
+    config's that turns the -Y scanner off (`svc_rtl_open_for_session()`, set from the transaction's `scanner_after` as
+    `ui_scan_row_resumed_monitor()` decides the width). The open installs the gate's fields alone while the stream reads
+    them and puts the options' standing back. A stream that reopens while a -Y tune is pending opens on the row on air's
+    gate, and the reopen's restage lands the row's own. An `[input]` that names no source applies its squelch keys to
+    the input running (`apply_squelch_keys_from_config()`), and a radio receiver that keeps running hears them
     (`apply_cfg_rtl_hot_restart()`). It also logs the AM notice each time a NOISE setting starts running as
     AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
     `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
@@ -5335,14 +5340,19 @@ suite runs under this compiler.
     notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
     change, a stream reopened by the RTL-SDR row, a config's [mode] alone, a config under an inheriting -Y row in
     place, with keys and reopened, a reopen onto an inherited analog row, a reopen that stops the scanner, an FM-to-AM
-    refusal's publication), `ENGINE_CHANNEL_SCAN` (the gate each -Y retune carries and where it lands, pending and
-    failed tunes, late failures, a refused go-to over a pending one, a dropped retry, a restarted stream, an unrelated
-    command's resume over a pending or landed tune, a live Off edit over a pending go-to then reinstated),
-    `IO_RTL_RETUNE_PREPARE` (the receiver's landing of a carried gate: controller and external, updated, superseded,
-    cleared, refused, the gate alone), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune attaches it over its profile),
-    `UI_MENU_SERVICES` (a suspended scope's recovery, the default ended or not), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT`
+    refusal's publication, the family request carrying the switch's gate, an idle digital drain resolving nothing),
+    `ENGINE_CHANNEL_SCAN` (the gate each -Y retune carries and where it lands, pending and failed tunes, late failures, a
+    refused go-to over a pending one, a dropped retry, a restarted stream, an unrelated command's resume over a pending
+    or landed tune, a live Off edit over a pending go-to then reinstated, a landing between the decoder's resolve and
+    its write, an outgoing row's edit and configured edits between a landing and its commit, an idle settle),
+    `IO_RTL_RETUNE_PREPARE` (the receiver's landing of a carried gate: controller and external, written for, superseded,
+    cleared, refused, the gate alone, replaced, a dropped replacement's older landing, tagged writes applied, bound and
+    stale, a live family switch's gate at its first block over an in-flight retune), `ENGINE_TRUNK_RETUNE_REGRESSION`
+    (the scan tune attaches it over its profile, and whose channel it is), `UI_MENU_SERVICES` (a suspended scope's
+    recovery, the default ended or not, a shadowed edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT`
     (failed Airspy applies, the running receiver told, a live retune carrying the config's gate, source-less squelch
-    keys), `UI_MENU_AIRSPY_CONFIG_TUNING`, `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the
+    keys, the config's squelch reaching the receiver under rigctl and over a native retune that lands or fails late),
+    `UI_MENU_AIRSPY_CONFIG_TUNING`, `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the
     monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
@@ -7368,8 +7378,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `SQUELCH` row reads `squelchReadout` and opens `SquelchSheet.qml` (`dB | Noise`, no Auto; "This channel" under a
   row that takes the edit), and the terminal's Input > `Squelch...` row (offered on radio and audio input,
   `io_squelch_offered()`) and the SQL field on every PCM input line read it too. The squelch commands and
-  `svc_rtl_set_sql_db()`/`svc_rtl_set_sql_setting()` run in every build and on every input; only
-  `svc_rtl_push_squelch()`'s body is radio-only. Tests: `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE` (the PCM
+  `svc_rtl_set_sql_db()`/`svc_rtl_set_sql_setting()` run in every build and on every input; only a radio input's
+  receiver is handed the gates (`svc_rtl_push_channel_squelch()`). Tests: `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE` (the PCM
   case runs in radio-off builds), `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`, `tst_monitor_squelch.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
@@ -9889,8 +9899,11 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target),
   `rtl_stream_prepare_retune_squelch_for_target()` (the squelch gate the retune lands with them, issue #899, a profile
-  for the gate alone when nothing else is queued) and `rtl_stream_update_retune_squelch()` (the decoder's later word on
-  it while the retune is outstanding), and
+  for the gate alone when nothing else is queued; returns the channel it lands), `rtl_stream_write_channel_gate()`
+  (a gate write tagged with the channel it is for: applied, bound or stale), `rtl_stream_channel_gate_epoch()` and
+  `rtl_stream_channel_gate_opened()` (what the decoder's idle check and an open's adoption read),
+  `rtl_stream_stage_family_gate()` and `rtl_stream_unstage_family_gate()` (the gate the next live family request
+  carries), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
@@ -20222,9 +20235,9 @@ External dependencies (resolved via CMake):
   the `options` call that completes the row pushes unconditionally for the same reason. `dsd_scan_mode_prepare` and
   `scan_scope_apply` never push.
   `RTL_SET_SQL_DB` is not a scoped command, nor is `RTL_SET_SQL_SETTING` (the auto squelch's whole setting,
-  `svc_rtl_set_sql_setting()` through `dsd_scan_mode_set_configured_squelch_setting()`; `svc_rtl_push_squelch()`
-  hands the demod a level through `rtl_stream_set_channel_squelch()` and an AUTO setting whole, and does nothing in a
-  build without radio support, where both commands still set the configured default for audio input):
+  `svc_rtl_set_sql_setting()` through `dsd_scan_mode_set_configured_squelch_setting()`; on a radio input
+  `svc_rtl_push_channel_squelch()` then has the engine write each channel's gate (issue #899), and without one, or in a
+  build without radio support, both commands still set the configured default for audio input):
   `svc_rtl_set_sql_db()` edits the configured default through
   `dsd_scan_mode_set_configured_squelch()`, which touches no acquisition setting (so a squelch nudge can never read
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row
