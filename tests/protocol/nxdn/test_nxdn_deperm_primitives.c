@@ -2588,15 +2588,20 @@ test_sacch_public_entry_breaks_the_superframe_at_a_foreign_segment(void) {
     return rc;
 }
 
-/* What decoding the VCALL @p bits printed, into @p out. */
+/* What decoding the VCALL @p bits printed, into @p out (empty when nothing was captured). Returns 1, saying so, when
+   stderr could not be captured or read back: the caller then inspects nothing. */
 static int
 capture_vcall_print(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], char* out, size_t out_size) {
+    out[0] = '\0';
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_vcall_key") != 0) {
+        DSD_FPRINTF(stderr, "vcall-print: stderr capture failed\n");
         return 1;
     }
     NXDN_Elements_Content_decode(opts, state, bits, 96U);
     if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, out, out_size) != 0) {
+        out[0] = '\0';
+        DSD_FPRINTF(stderr, "vcall-print: stderr capture failed\n");
         return 1;
     }
     return 0;
@@ -2628,11 +2633,17 @@ test_held_back_vcall_prints_no_key_value(void) {
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     int rc = expect_int("vcall-print-key-5-loaded", state->R == 0x1111ULL ? 1 : 0, 1);
     make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
-    rc |= capture_vcall_print(opts, state, bits, out, sizeof(out));
+    if (capture_vcall_print(opts, state, bits, out, sizeof(out)) != 0) {
+        free_fixture(opts, state);
+        return 1;
+    }
     rc |= expect_int("vcall-print-held-back-names-des-7", strstr(out, "DES - Key ID 7") != NULL, 1);
     rc |= expect_int("vcall-print-held-back-no-value", strstr(out, "Value:") != NULL, 0);
     rc |= expect_int("vcall-print-held-back-no-key-5", strstr(out, "0000000000001111") != NULL, 0);
-    rc |= capture_vcall_print(opts, state, bits, out, sizeof(out));
+    if (capture_vcall_print(opts, state, bits, out, sizeof(out)) != 0) {
+        free_fixture(opts, state);
+        return 1;
+    }
     rc |= expect_int("vcall-print-applied-value", strstr(out, "Value: 0000000000002222") != NULL, 1);
     free_fixture(opts, state);
     return rc;
