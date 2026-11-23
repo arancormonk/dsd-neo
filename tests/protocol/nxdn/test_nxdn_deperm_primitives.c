@@ -2349,8 +2349,8 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
  * A VCALL ends a DCR call's classification even when the DCR scrambler never became the cipher applied (issue #903).
  * Trunking with --enc-lockout and no key: on a numbered call two INFO1s apply DES under key ID 6, and that call ends.
  * A DCR call's single SB0 naming the scrambler is held back against the established DES, so DES, another call's, is
- * still the cipher applied. A checked VCALL of group 0x0789 then says clear: it is not judged against that DES, so it is
- * applied at once, its call is published clear, and the group is not locked out.
+ * still the cipher applied. A checked VCALL of group 0x0789 then says clear: it is not judged against that DES, so it
+ * is applied at once, its call is published clear, and the group is not locked out.
  */
 static int
 test_vcall_after_a_dcr_call_resets_a_held_cipher(void) {

@@ -3312,10 +3312,10 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
  * applied is the DCR call's: dsd_state::nxdn_cipher_origin, a contradiction the hysteresis held back notwithstanding)
  * is not that call's, whose voice plays clear until its own signalling names a cipher, nor is a VCALL judged against
  * it. Nor is a cipher still applied while a DCR call is the live call because the hysteresis held the DCR call's
- * scrambler back: that one is an earlier call's, older still. Either is forgotten once, before the SCCH's own message acts or the hysteresis reads the VCALL, so an INFO1 naming
- * the new call's cipher ahead of its numbered party keeps it; an INFO1 heard while the DCR call is still the live call
- * forgets nothing, as it applies nothing (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a
- * key) stays, as at a release. */
+ * scrambler back: that one is an earlier call's, older still. Either is forgotten once, before the SCCH's own message
+ * acts or the hysteresis reads the VCALL, so an INFO1 naming the new call's cipher ahead of its numbered party keeps
+ * it; an INFO1 heard while the DCR call is still the live call forgets nothing, as it applies nothing
+ * (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a key) stays, as at a release. */
 static void
 nxdn_forget_applied_cipher(dsd_state* state) {
     state->nxdn_cipher_type = 0;

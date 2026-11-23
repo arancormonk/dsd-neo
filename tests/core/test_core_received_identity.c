@@ -330,8 +330,8 @@ test_nxdn_idas_site_reconcile(void) {
 }
 
 /* A local frame that disproves the Type-D reading of the carrier (issue #903) drops the whole Type-D part of the
-   record: the SCCH area and site ID as well as the SRV_INFO system, and the control channel noted with them. A record of
-   another family, or an NXDN one with no Type-D part, keeps what it holds. */
+   record: the SCCH area and site ID as well as the SRV_INFO system, and the control channel noted with them. A record
+   of another family, or an NXDN one with no Type-D part, keeps what it holds. */
 static void
 test_nxdn_forget_type_d(void) {
     dsd_state* state = new_state();

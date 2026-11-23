@@ -977,7 +977,8 @@ test_late_entry_policy_source_follows_the_vcall_layout(dsd_opts* opts, dsd_state
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_type_d = 0U;
     /* The receiver followed a Type-D repeater's route and is still there: the call bound to this transmission was read
-       in the Type-C layout, so it keeps its source; a transmission with no verdict of its own is judged by the route. */
+       in the Type-C layout, so it keeps its source; a transmission with no verdict of its own is judged by the
+       route. */
     state->nxdn_follow.repeater = 3U;
     state->nxdn_follow.freq_hz = 451000000L;
     state->trunk_vc_freq[0] = 451000000L;

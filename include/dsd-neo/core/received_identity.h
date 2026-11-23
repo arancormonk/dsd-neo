@@ -343,9 +343,9 @@ void dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t s
  * the control-channel frequency; another site code than the SCCH site ID's drops that site ID. */
 void dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site);
 /** Drops the whole Type-D part of the record (the SCCH area and site ID, the Type-D SRV_INFO system ID) and the
- * control-channel frequency noted with it: the session turned out to decode Type-C, or a local composite frame disproved
- * the Type-D reading of the carrier, so what that reading named was a misreading of a composite control channel. A
- * record that held a Type-D part moves its epoch; one that held none keeps everything. */
+ * control-channel frequency noted with it: the session turned out to decode Type-C, or a local composite frame
+ * disproved the Type-D reading of the carrier, so what that reading named was a misreading of a composite control
+ * channel. A record that held a Type-D part moves its epoch; one that held none keeps everything. */
 void dsd_rxid_forget_nxdn_type_d(dsd_state* state);
 
 void dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site);

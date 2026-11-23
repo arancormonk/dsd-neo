@@ -2064,8 +2064,9 @@ struct dsd_state {
      * origin of the observation it equals since the last one that applied, a matching repeat included
      * (nxdn_cipher_observe_keyed()); a contradiction the hysteresis holds back leaves it. NXDN_CIPHER_ORIGIN_DCR while
      * it is the one a DCR call's SACCH-2 named (nxdn_sacch2_note_cipher()): the first SCCH that acts or VCALL of a
-     * confirmed transmission, neither of which a DCR call carries, starts another call and forgets it, an INFO1 heard
-     * while the DCR call is still the live call excepted (nxdn_forget_dcr_cipher()). A forced cipher (nxdn_cipher_force()) leaves it; every reset
+     * confirmed transmission, neither of which a DCR call carries, starts another call and forgets it, as it forgets
+     * any cipher still applied while a DCR call is the live call, an INFO1 heard while the DCR call is still the live
+     * call excepted (nxdn_forget_dcr_cipher()). A forced cipher (nxdn_cipher_force()) leaves it; every reset
      * (nxdn_cipher_class_reset()) clears it. */
     uint8_t nxdn_cipher_origin;
 
