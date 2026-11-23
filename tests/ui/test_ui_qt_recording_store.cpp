@@ -5314,15 +5314,10 @@ test_compaction_waits_for_a_rescan(void) {
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
-    // The session stays open while the journal grows, so nothing compacts it yet.
     const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
-    record(folder, QStringLiteral("0000000000000964-1"), QStringLiteral("a.wav"), 1754000000, 1);
-    append(journal_of(folder),
-           publish_line(QStringLiteral("0000000000000964-2"), QStringLiteral("g2.wav"), 1754000001, 2));
-    append(journal_of(folder),
-           publish_line(QStringLiteral("0000000000000964-3"), QStringLiteral("g3.wav"), 1754000002, 3));
-    s.pass();
     s.store.endSession();
+    record(folder, QStringLiteral("0000000000000964-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
     std::atomic<bool> swapped{false};
     s.store.setTailHookForTest([&](const QString& path) {
         if (path == folder && !swapped.exchange(true) && QDir().rename(ext, away)) {
@@ -5339,8 +5334,11 @@ test_compaction_waits_for_a_rescan(void) {
             (void)QDir().rename(away, ext);
         }
     });
+    // Two lines naming files that are not there: three lines for one recording, due for compaction in the pass that
+    // tails them, the one the swap runs in.
     append(journal_of(folder),
-           publish_line(QStringLiteral("0000000000000964-4"), QStringLiteral("g4.wav"), 1754000003, 4));
+           publish_line(QStringLiteral("0000000000000964-2"), QStringLiteral("g2.wav"), 1754000001, 2)
+               + publish_line(QStringLiteral("0000000000000964-3"), QStringLiteral("g3.wav"), 1754000002, 3));
     s.pass();
     s.store.setTailHookForTest({});
     s.pass();
