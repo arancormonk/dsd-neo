@@ -2094,7 +2094,8 @@ struct dsd_state {
      * (nxdn_confirm_note_frame_start()); nxdn_confirm_begin_frame() hands it to nxdn_confirm_frame_spaced, this frame's
      * spacing proof, counted once as proof of the frame before's content (nxdn_confirm_frame_content_counted()).
      * nxdn_confirm_last_frame_valid / nxdn_confirm_last_frame_symbol: where the last frame read began
-     * (dsd_state::symbolcnt), the run's measure. */
+     * (dsd_state::symbolcnt), the run's measure; nxdn_confirm_last_frame_foreign: that frame was another channel's
+     * (dsd_state::nxdn_frame_foreign), no frame to run on from, whose sync word vouches for none after it. */
     uint8_t nxdn_confirmed;
     uint8_t nxdn_confirm_weak_streak;
     uint8_t nxdn_confirm_frame_evidence;
@@ -2107,6 +2108,7 @@ struct dsd_state {
     uint8_t nxdn_confirm_spacing_due;
     uint8_t nxdn_confirm_frame_spaced;
     uint8_t nxdn_confirm_last_frame_valid;
+    uint8_t nxdn_confirm_last_frame_foreign;
     uint32_t nxdn_confirm_last_frame_symbol;
     uint64_t nxdn_confirm_scch_generation;
 

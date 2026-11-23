@@ -1537,6 +1537,41 @@ test_foreign_frame_completes_no_spacing_proof(dsd_opts* opts, dsd_state* state) 
 }
 
 /*
+ * Nor is another channel's frame a spacing witness for the frame after it (issue #903): on NXDN48 a foreign CAC frame,
+ * then exactly one frame later a followed-channel 0x63 frame whose one passing check is its FACCH1, its sync word
+ * corroborated by the CAC frame's. The lone check waits for the followed channel's own next frame.
+ */
+static int
+test_foreign_frame_anchors_no_spacing(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t cac[147];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 0;
+    nxdn_confirm_reset(state);
+    state->nxdn48_accept_corroborated = 0;
+    state->symbolcnt = 6000;
+    idle_cac(cac);
+    send_cac_frame(opts, state, 0x22U, cac, sizeof(cac));
+    rc |= expect_long("foreign anchor: the CAC is heard as foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+    info3_scch(scch);
+    state->symbolcnt = 6000 + (int)NXDN_CONFIRM_FRAME_SYMBOLS;
+    state->nxdn48_accept_corroborated = 1;
+    build_frame_scch(0x63U, scch, 0x5AU, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("foreign anchor: the lone check waits", nxdn_confirm_is_confirmed(state), 0L);
+    state->symbolcnt = 6000 + (int)(2U * NXDN_CONFIRM_FRAME_SYMBOLS);
+    state->nxdn48_accept_corroborated = 1;
+    build_frame_scch(0x63U, scch, 0x5AU, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("foreign anchor: the followed channel's next frame confirms it", nxdn_confirm_is_confirmed(state),
+                      1L);
+    state->nxdn48_accept_corroborated = 0;
+    return rc;
+}
+
+/*
  * A CCH_INFO on a frame read as Type-D moves no control channel (issue #903): the receiver follows a call to F from
  * site A, whose DFA channel access parameters it took, and a frame of LICH 0x63 (a value only Type-D has) carries a
  * checked DFA CCH_INFO naming site A's current control channel at another OFN. The frame is Type-D's: the return
@@ -1699,6 +1734,7 @@ main(void) {
     rc |= test_foreign_frame_without_sacch_breaks_the_superframe(opts, state);
     rc |= test_foreign_frame_keeps_the_followed_cipher(opts, state);
     rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
+    rc |= test_foreign_frame_anchors_no_spacing(opts, state);
     rc |= test_type_d_frame_cch_info_keeps_the_control_channel(opts, state);
     rc |= test_first_half_unit_activity_reads_the_frame_verdict(opts, state);
     rc |= test_checked_facch3_udch2_reads_type_d(opts, state);

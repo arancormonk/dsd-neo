@@ -12585,8 +12585,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_state::nxdn_frame_foreign`, committed before anything of the frame acts (`nxdn_frame_commit_classification()`),
   its confirmation included: the one gate every effect on the followed call reads. Its checks confirm nothing and stamp
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
-  `dsd_nxdn_foreign_control_last_m()`, decode clock), and its start completes no spacing proof a strong check of the
-  frame before left waiting (`nxdn_confirm_note_frame_start()`); no RAN, received control channel, CC hunt note or Type-C
+  `dsd_nxdn_foreign_control_last_m()`, decode clock); it is no part of the followed channel's run either way
+  (`nxdn_confirm_note_frame_start()`): its start completes no spacing proof a strong check of the frame before left
+  waiting, and the frame after it neither runs on from it nor takes a sync word the frame sync corroborated or ran on
+  from within its reach of it (one frame for NXDN48, the NXDN96 flywheel's six), since that sync word is the foreign
+  frame's, so that frame's lone strong check waits for the followed channel's own next frame (a frame its CAC showed
+  foreign part way through counts the same); no RAN, received control channel, CC hunt note or Type-C
   note is written; its site broadcasts are printed only, every other message prints its type only (no grant, call,
   release or control-sync effect); it never touches the followed call's cipher (no stolen-slot step or forced cipher
   before its signalling, `nxdn_step_cipher_before_signalling()`, no key reload at its non-superframe SACCH, none of the
