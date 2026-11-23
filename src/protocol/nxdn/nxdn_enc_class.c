@@ -84,6 +84,18 @@ nxdn_cipher_observe_from(dsd_state* state, uint8_t cipher, int strong, uint8_t o
     return (uint8_t)(state->nxdn_cipher_class - 1U);
 }
 
+/* nxdn_cipher_observe_from() for an observation that names its key ID too (a VCALL, an INFO1): the applied key
+ * (dsd_state::nxdn_key) is the one that came with the applied cipher, so it takes @p key_id only when the observation's
+ * cipher is the one applied afterwards. A contradiction held back changes neither half of the pair. */
+uint8_t
+nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong, uint8_t origin) {
+    const uint8_t applied = nxdn_cipher_observe_from(state, cipher, strong, origin);
+    if (applied == (uint8_t)(cipher & 0x03U)) {
+        state->nxdn_key = key_id;
+    }
+    return applied;
+}
+
 uint8_t
 nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
     return nxdn_cipher_observe_from(state, cipher, strong, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);

@@ -1855,21 +1855,33 @@ test_sacch_superframe_position_stays_with_the_frame(void) {
     return rc;
 }
 
-/* An outbound SCCH (direction 1) from free repeaters 6 and 3: INFO1 (@p sf 3) naming the scrambler, else an INFO3 (@p sf
- * 1) naming source 03-0123. */
+/* An outbound INFO1 (direction 1) from free repeaters 6 and 3 naming @p cipher under key ID @p key_id. */
+static void
+send_outbound_info1(dsd_opts* opts, dsd_state* state, uint8_t cipher, uint8_t key_id) {
+    uint8_t message[32];
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_msb(message, 0U, 2U, 3U);
+    write_bits_msb(message, 3U, 5U, 6U);
+    write_bits_msb(message, 8U, 5U, 3U);
+    write_bits_msb(message, 16U, 2U, cipher);
+    write_bits_msb(message, 18U, 6U, key_id);
+    NXDN_decode_scch(opts, state, message, 1U);
+}
+
+/* An outbound SCCH (direction 1) from free repeaters 6 and 3: INFO1 (@p sf 3) naming the scrambler under key ID 5, else
+ * an INFO3 (@p sf 1) naming source 03-0123. */
 static void
 send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
+    if (sf == 3U) {
+        send_outbound_info1(opts, state, 1U, 5U);
+        return;
+    }
     uint8_t message[32];
     DSD_MEMSET(message, 0, sizeof(message));
     write_bits_msb(message, 0U, 2U, sf);
     write_bits_msb(message, 3U, 5U, 6U);
     write_bits_msb(message, 8U, 5U, 3U);
-    if (sf == 3U) {
-        write_bits_msb(message, 16U, 2U, 1U); // cipher type: scrambler
-        write_bits_msb(message, 18U, 6U, 5U); // key ID 5
-    } else {
-        write_bits_msb(message, 13U, 11U, 123U);
-    }
+    write_bits_msb(message, 13U, 11U, 123U);
     NXDN_decode_scch(opts, state, message, 1U);
 }
 
@@ -2021,6 +2033,72 @@ test_quarantined_contradiction_keeps_the_dcr_provenance(void) {
     return rc;
 }
 
+/* A confirmed DCR call received with the scrambler (three SB0 frames), its carrier's voice live: the DCR call's
+ * snapshot in @p dcr. */
+static int
+establish_scrambled_dcr_call(dsd_opts* opts, dsd_state* state, Event_History_I* histories, dsd_call_snapshot* dcr) {
+    static const uint8_t m_data[5] = {0U};
+    uint8_t trellis[32];
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->R = 0x1234ULL;
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    for (int i = 0; i < 3; i++) {
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
+    int rc = expect_int("dcr-call", dsd_call_state_get(state, 0U, dcr), 1);
+    rc |= expect_str("dcr-call-text", dcr->target_text, "JPN DCR");
+    return rc;
+}
+
+/*
+ * A held INFO1 key stays paired with the cipher the hysteresis keeps (issue #903): during a scrambled DCR call two
+ * INFO1s name the scrambler under key ID 5, then one clear INFO1 under key ID 0 contradicts them once and is held back.
+ * The applied pair stays the scrambler under key 5, and the numbered call an INFO3 opens is published with that pair,
+ * never the scrambler under key 0 that no INFO1 sent.
+ */
+static int
+test_quarantined_info1_keeps_the_held_key(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 0U, 0U);
+    rc |= expect_int("held-key-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("held-key-kept", (int)state->nxdn_key, 5);
+    send_outbound_scch(opts, state, 1U);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-key-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
+    rc |= expect_int("held-key-numbered-algid", (int)call.algid, 1);
+    rc |= expect_int("held-key-numbered-kid", (int)call.kid, 5);
+
+    /* The same pairing for a VCALL's cipher and key: two scrambled VCALLs under key 5 establish them, a lone clear VCALL
+       under key 0 is held back, and the call keeps the scrambler under key 5. */
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 5U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-key-vcall-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("held-key-vcall-key-kept", (int)state->nxdn_key, 5);
+    rc |= expect_int("held-key-vcall-kid", (int)call.kid, 5);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2054,6 +2132,7 @@ main(void) {
     rc |= test_info1_cipher_survives_the_numbered_party();
     rc |= test_quarantined_contradiction_keeps_the_dcr_provenance();
     rc |= test_held_info1_cipher_never_lands_on_a_later_call();
+    rc |= test_quarantined_info1_keeps_the_held_key();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

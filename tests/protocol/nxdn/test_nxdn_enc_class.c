@@ -266,6 +266,29 @@ test_origin_follows_the_applied_cipher(void) {
     assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
 }
 
+/* The applied key goes with the applied cipher: an observation naming its key ID sets it only when its cipher is the
+ * one applied afterwards, so a held contradiction changes neither half of the pair (issue #903). */
+static void
+test_key_stays_paired_with_the_applied_cipher(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(state != NULL);
+
+    (void)nxdn_cipher_observe_keyed(state, 1U, 5U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    assert(nxdn_cipher_observe_keyed(state, 1U, 5U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER) == 1U);
+    assert(state->nxdn_key == 5U);
+    // A lone contradiction is held: the scrambler and its key 5 stay.
+    assert(nxdn_cipher_observe_keyed(state, 0U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER) == 1U);
+    assert(state->nxdn_key == 5U);
+    // A matching repeat under another key ID applies that key with the cipher it came with.
+    assert(nxdn_cipher_observe_keyed(state, 1U, 7U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER) == 1U);
+    assert(state->nxdn_key == 7U);
+    // The contradiction's repeat applies: its cipher and its key, together.
+    (void)nxdn_cipher_observe_keyed(state, 0U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    assert(nxdn_cipher_observe_keyed(state, 0U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER) == 0U);
+    assert(state->nxdn_key == 0U);
+    free(state);
+}
+
 static void
 test_force_and_reset(void) {
     static dsd_state state;
@@ -560,6 +583,7 @@ main(void) {
     test_lone_contradiction_is_quarantined_both_directions();
     test_contradiction_of_tentative_replaces();
     test_origin_follows_the_applied_cipher();
+    test_key_stays_paired_with_the_applied_cipher();
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
     test_vcall_lockout_endpoint_by_call_type();

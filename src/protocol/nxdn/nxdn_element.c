@@ -3303,9 +3303,9 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
         // decoder is never handed unverified content -- and even then mutates the live cipher only
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
-        // one -- and, under lockout, permanently blocking the talkgroup.
-        state->nxdn_key = info->key_id;
-        state->nxdn_cipher_type = nxdn_cipher_observe(state, info->cipher_type, 0);
+        // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
+        state->nxdn_cipher_type =
+            nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
     } else {
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         state->generic_talker_alias_epoch[0] = 0U; /* not bound to a call (P25 keeps only its own) */
@@ -4246,18 +4246,18 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     /* While a DCR call is the live call, the INFO1 is the next call's, which no SCCH has opened yet: the decoder takes
        its cipher at once, held for that DCR call's transmission (nxdn_cipher_drop_stale_hold()), and it is published
        on the call an SCCH opens from it (nxdn_scch_publish_held_cipher()), never on the DCR call. */
+    /* The key ID goes with the cipher it came with: a held-back contradiction changes neither. */
     const int after_dcr = nxdn_live_call_is_dcr(state);
-    state->nxdn_cipher_type = nxdn_cipher_observe_from(state, (uint8_t)info->cipher, 0,
-                                                       after_dcr ? (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
-                                                                 : (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    state->nxdn_key = info->key_id;
+    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
+                                                        after_dcr ? (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
+                                                                  : (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
     if (after_dcr) {
         if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR) {
             state->nxdn_cipher_held_transmission = nxdn_live_call_transmission(state);
         }
         return;
     }
-    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id, 0U, 0U,
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key, 0U, 0U,
                               DSD_CALL_ENC_OBSERVED_NONE);
 }
 

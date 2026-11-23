@@ -12445,7 +12445,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   new call's voice is not descrambled with it, while an INFO1 naming the new call's own cipher ahead of its numbered
   party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). Such an INFO1, heard while the
   DCR call is still the live call, is the next call's: its cipher and key ID are not published on the DCR call but
-  held (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
+  held as one pair (an INFO1's or VCALL's key ID is applied, `dsd_state::nxdn_key`, only with the cipher it came with,
+  `nxdn_cipher_observe_keyed()`, so a contradiction the hysteresis holds back changes neither half)
+  (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
   `dsd_state::nxdn_cipher_held_transmission`) and published once on the call an SCCH opens from that very transmission
   (`nxdn_scch_publish_held_cipher()`). The hold fails closed: any cipher observation since makes it another source's;
   a carrier loss, retune or release resets it with the classification; and once the live call is anything but that
