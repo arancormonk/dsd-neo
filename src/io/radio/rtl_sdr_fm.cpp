@@ -583,6 +583,12 @@ static std::atomic<int> g_gate_closed{0};
 static uint64_t g_gate_closed_since_ns = 0U;
 static std::atomic<int> g_gate_closed_starts{0};
 static std::atomic<double> g_gate_closed_ms{0.0};
+/* Counted where the FM monitor's output is produced (demod_count_monitor_gate()): the samples the closed start now
+   running muted, those the last one muted (taken at its opening write), and those produced open with no dynamic
+   squelch judging them since the stream opened (rtl_stream_squelch_status). */
+static std::atomic<uint64_t> g_gate_closed_run_samples{0U};
+static std::atomic<uint64_t> g_gate_closed_samples{0U};
+static std::atomic<uint64_t> g_gate_unjudged_samples{0U};
 /* A level no channel power reaches: the level gate mutes every block. */
 static const dsd_squelch_setting kGateClosed = {DSD_SQUELCH_MODE_LEVEL, DSD_SQUELCH_LEVEL_CLOSED,
                                                 DSD_SQUELCH_MARGIN_DEFAULT_DB};
@@ -5173,6 +5179,19 @@ demod_finish_voice_lane(struct demod_state* d, int resample, int phase, size_t c
     return voice;
 }
 
+/* The FM monitor's @p n output samples of a block (issue #899): muted by a closed start (closed outright, so flagged),
+   or produced open with no dynamic squelch judging them (no flags, and no level gate that closed the block). */
+static void
+demod_count_monitor_gate(const struct demod_state* d, int flagged, size_t n) {
+    if (d->channel_squelched) {
+        if (flagged) {
+            g_gate_closed_run_samples.fetch_add(n, std::memory_order_relaxed);
+        }
+    } else if (!flagged) {
+        g_gate_unjudged_samples.fetch_add(n, std::memory_order_relaxed);
+    }
+}
+
 /* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
  * and points @p out_data at the samples, @p out_voice at the voice lane's beside them (NULL: the block has none) and
  * @p out_flags at their flags (NULL: the block has none). */
@@ -5203,6 +5222,7 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
         }
         if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
+            demod_count_monitor_gate(d, flagged, (size_t)out_n);
         }
         *out_data = d->resamp_outbuf;
         *out_flags = flagged ? d->resamp_outflags : NULL;
@@ -5211,6 +5231,7 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
+        demod_count_monitor_gate(d, flagged, (size_t)d->result_len);
     }
     *out_data = d->result;
     *out_flags = flagged ? d->result_flags : NULL;
@@ -13623,6 +13644,7 @@ rtl_stream_gate_boundary(int new_channel) {
         if (new_channel) {
             g_gate_closed.store(1, std::memory_order_release);
             g_gate_closed_since_ns = dsd_realtime_mono_ns();
+            g_gate_closed_run_samples.store(0U, std::memory_order_relaxed);
             rtl_stream_gate_apply_locked(&kGateClosed);
         }
         return;
@@ -13645,6 +13667,9 @@ rtl_stream_gate_open(const dsd_squelch_setting* gate, const dsd_squelch_setting*
     g_gate_closed_since_ns = dsd_realtime_mono_ns();
     g_gate_closed_starts.store(0, std::memory_order_relaxed);
     g_gate_closed_ms.store(0.0, std::memory_order_relaxed);
+    g_gate_closed_run_samples.store(0U, std::memory_order_relaxed);
+    g_gate_closed_samples.store(0U, std::memory_order_relaxed);
+    g_gate_unjudged_samples.store(0U, std::memory_order_relaxed);
     rtl_stream_gate_apply_locked(demod.analog_family ? &kGateClosed : &g_gate_running);
 }
 
@@ -13778,6 +13803,8 @@ rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch
     if (closed) {
         g_gate_closed_ms.store((double)(dsd_realtime_mono_ns() - g_gate_closed_since_ns) / 1.0e6,
                                std::memory_order_relaxed);
+        g_gate_closed_samples.store(g_gate_closed_run_samples.exchange(0U, std::memory_order_relaxed),
+                                    std::memory_order_relaxed);
         g_gate_closed_starts.fetch_add(1, std::memory_order_relaxed);
     }
     if (closed || !dsd_squelch_setting_equal(&g_gate_running, runs)) {
@@ -22004,6 +22031,8 @@ rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->window_power = (double)g_squelch_status_window_power.load(std::memory_order_relaxed);
     out->closed_starts = g_gate_closed_starts.load(std::memory_order_relaxed);
     out->closed_ms = g_gate_closed_ms.load(std::memory_order_relaxed);
+    out->closed_samples = g_gate_closed_samples.load(std::memory_order_relaxed);
+    out->unjudged_samples = g_gate_unjudged_samples.load(std::memory_order_relaxed);
     return 0;
 }
 

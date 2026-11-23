@@ -1156,6 +1156,8 @@ typedef struct {
     double window_power; /**< the tracker's last 40 ms window's mean |z|^2 */
     int closed_starts;   /**< new analog channels opened since the stream did, each after a closed start (issue #899) */
     double closed_ms;    /**< how long the last of them ran closed, until the decoder wrote its gate */
+    uint64_t closed_samples;   /**< the FM monitor samples the last of them muted, counted where they were produced */
+    uint64_t unjudged_samples; /**< FM monitor samples produced open with no dynamic squelch since the stream opened */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */
