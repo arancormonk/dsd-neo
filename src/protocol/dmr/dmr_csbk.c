@@ -1592,8 +1592,12 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, f->a_channel == 0xFFF);
     /* The header's channel, or for its absolute escape the one the appended block defines (as an absolute grant's);
-       only a block carrying C_BCAST's CSBKO (TS 102 361-4 Table 7.21) may confirm a learned mapping. */
+       only a block carrying C_BCAST's CSBKO (TS 102 361-4 Table 7.21) may confirm a learned mapping. The escape only
+       confirms: it teaches no LPCN the map does not hold, as it never has. */
     const uint16_t channel = f->a_channel == 0xFFF ? abs_freqs.lpchannum : f->a_channel;
+    if (f->a_channel == 0xFFF && (!dmr_t3_lpcn_is_channel(channel) || state->trunk_chan_map[channel] == 0)) {
+        return;
+    }
     dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, channel, abs_freqs.freqr, f->mbc_csbko == 40U);
 }
 

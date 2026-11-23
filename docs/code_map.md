@@ -13665,8 +13665,7 @@ Private per-protocol modules worth knowing about:
     tune of this generation, the rigctl peer's last confirmed frequency or the RTL centre; unknown counts as on it, as
     before): a hunt's probe or an operator's move keeps the control channel as the anchor to return to while the
     receiver listens elsewhere (`test_off_control_channel_receiver_confirms_nothing()`). A CSBK that
-    maps an LPCN (an absolute grant's CdefParms, a C_BCAST Chan_Freq, whose absolute escape names its appended block's
-    LPCN as an absolute grant does, Vote_Now or Adjacent site announcement) records
+    maps an LPCN (an absolute grant's CdefParms, a C_BCAST Chan_Freq, Vote_Now or Adjacent site announcement) records
     the mapping in an empty cell with its provenance (`dmr_chan_map_note()` in `dmr_csbk.c`): 2 on the control channel,
     else 1, whatever its CRC verdict, as before. A mapping already held is never rewritten: an unconfirmed one (1) is
     confirmed (2) only when this site's own channel (a grant or a Chan_Freq whose appended block carries its header's
@@ -13677,7 +13676,9 @@ Private per-protocol modules worth knowing about:
     or one naming another frequency, stays as it is (`test_control_channel_confirms_learned_lpcn()`,
     `test_unchecked_message_never_confirms()`, `test_other_site_announcement_never_confirms()`,
     `test_c_bcast_mapping_records_provenance()`, `test_composite_payload_counts_as_control_channel()`,
-    `test_absolute_chan_freq_names_its_block_channel()`). The Tier III
+    `test_absolute_chan_freq_names_its_block_channel()`: a Chan_Freq naming the absolute escape names its appended
+    block's LPCN, as an absolute grant does, but only to confirm a mapping already held; it teaches no empty LPCN,
+    as on main). The Tier III
     CSBK layer therefore hands the machine only
     the frequency a grant states on air (the absolute escape's) and a logical grant's LPCN, never a channel-map lookup
     of its own; its printout, activity row and dispatch check still show the mapping (`dmr_cspdu_pf0_named_freq()`;

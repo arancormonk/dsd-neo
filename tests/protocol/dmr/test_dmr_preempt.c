@@ -1665,9 +1665,10 @@ test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-/* A C_BCAST Chan_Freq whose header names the absolute escape (0xFFF) announces the LPCN its appended block defines, as
-   an absolute grant does: heard on the control channel it confirms a learned mapping of that LPCN and frequency, so a
-   Hold grant on it heard off the control channel is followed, and teaches an LPCN the map does not hold. */
+/* A C_BCAST Chan_Freq whose header names the absolute escape (0xFFF) names the LPCN its appended block defines, as an
+   absolute grant does, but only to confirm: heard on the control channel it confirms a learned mapping of that LPCN and
+   frequency, so a Hold grant on it heard off the control channel is followed, while an LPCN the map does not hold stays
+   empty (first learning as it always was). */
 static int
 test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
     const uint16_t lpcn_d = 0x0013U;
@@ -1678,8 +1679,8 @@ test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
     c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_d, VC_B);
     c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_e, VC_C);
     int rc = expect_true("an absolute Chan_Freq confirms its block's LPCN", st->dmr_lcn_trust[lpcn_d] == 2U);
-    rc |= expect_true("an absolute Chan_Freq teaches its block's LPCN",
-                      st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+    rc |= expect_true("an absolute Chan_Freq teaches no empty LPCN",
+                      st->trunk_chan_map[lpcn_e] == 0 && st->dmr_lcn_trust[lpcn_e] == 0U);
     rc |= expect_true("a hold grant on the confirmed mapping is followed off the control channel",
                       hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
     return rc;
