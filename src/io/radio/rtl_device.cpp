@@ -13949,12 +13949,19 @@ rtl_device_test_tcp_reader_chunk_race(int expire, int* out_flush_returned_mid_ch
     if (!out_flush_returned_mid_chunk || !out_ring_floats || !out_poison_cleared) {
         return -1;
     }
-    input_ring_state ring{};
+    /* Static: the device and the race state keep pointers to the ring and the buffer while the reader thread runs,
+       so neither lives on this stack. input_ring_init() resets every position and counter. */
+    static input_ring_state ring;
+    static unsigned char u8[64];
+    DSD_MEMSET(u8, 0, sizeof u8);
+    u8[0] = 10U;
+    u8[1] = 20U;
+    u8[2] = 30U;
+    u8[3] = 40U;
     if (input_ring_init(&ring, 64U) != 0) {
         return -2;
     }
     struct rtl_device* dev = rtl_device_test_tcp_staging_device();
-    unsigned char u8[64] = {10U, 20U, 30U, 40U};
     if (!dev) {
         input_ring_destroy(&ring);
         return -2;
@@ -13980,6 +13987,8 @@ rtl_device_test_tcp_reader_chunk_race(int expire, int* out_flush_returned_mid_ch
     *out_poison_cleared = poison_cleared;
     free(dev->tcp_pending);
     dev->tcp_pending = nullptr;
+    dev->input_ring = nullptr;
+    r->st.u8 = nullptr;
     rtl_device_test_tcp_staging_device_free(dev);
     input_ring_destroy(&ring);
     return rc;
