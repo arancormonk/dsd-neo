@@ -1094,6 +1094,9 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_frame_before_channels(state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
+    /* Whatever the frame's channels did to the live call, or whatever ended it since the last frame, an INFO1 cipher
+       held for another transmission is forgotten before the frame's cipher steps and voice read it. */
+    nxdn_cipher_drop_stale_hold(state);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
     state->nxdn_frame_type_d = 0U;

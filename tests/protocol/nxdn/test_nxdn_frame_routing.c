@@ -527,6 +527,11 @@ nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
 }
 
 void
+nxdn_cipher_drop_stale_hold(dsd_state* state) {
+    (void)state;
+}
+
+void
 nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab) {
     (void)opts;
     (void)state;

@@ -920,7 +920,6 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
        once the transmission is confirmed (nxdn_update_sacch2_identity_state() noted this frame's check). */
     const int acts = nxdn_confirm_is_confirmed(state);
     DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
-    nxdn_cipher_drop_stale_hold(state);
     nxdn_sacch2_note_cipher(opts, state, cipher, acts);
 
     if (acts) {
@@ -978,6 +977,9 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
     nxdn_store_sacch2_frame(state, trellis_buf, &fields);
     nxdn_update_sacch2_identity_state(opts, state, &fields);
+    /* Once the segment named the live call, a first one of an incomplete message included, an INFO1 cipher held for
+       another transmission is gone, before the message's own cipher or the frame's voice reads it. */
+    nxdn_cipher_drop_stale_hold(state);
     nxdn_print_sacch2_complete_message(opts, state, &fields, crc_sf_check);
     nxdn_print_sacch2_payload(opts, state, &fields, m_data);
     nxdn_reset_sacch2_if_done(state, &fields);

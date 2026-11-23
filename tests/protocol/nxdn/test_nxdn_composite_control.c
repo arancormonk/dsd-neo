@@ -1572,6 +1572,25 @@ test_foreign_frame_anchors_no_spacing(dsd_opts* opts, dsd_state* state) {
 }
 
 /*
+ * An INFO1 cipher held for a DCR transmission that is no longer the live call (it ended between frames) is forgotten
+ * by the next frame, before its voice, even when nothing of that frame names a call (issue #903): here an RTCH frame
+ * whose SACCH names nothing.
+ */
+static int
+test_stale_info1_hold_expires_before_the_frames_voice(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->nxdn_confirmed = 1;
+    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 5U, 1, (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR);
+    state->nxdn_cipher_held_transmission = 0x1234U; /* the DCR call it was held for, ended */
+    rc |= expect_long("stale hold: the scrambler applied", (long)state->nxdn_cipher_type, 1L);
+    send_frame(opts, state, LICH_RTCH_IDLE, 0x21U, NULL, NULL);
+    rc |= expect_long("stale hold: the scrambler forgotten", (long)state->nxdn_cipher_type, 0L);
+    rc |= expect_long("stale hold: its key forgotten", (long)state->nxdn_key, 0L);
+    return rc;
+}
+
+/*
  * A CCH_INFO on a frame read as Type-D moves no control channel (issue #903): the receiver follows a call to F from
  * site A, whose DFA channel access parameters it took, and a frame of LICH 0x63 (a value only Type-D has) carries a
  * checked DFA CCH_INFO naming site A's current control channel at another OFN. The frame is Type-D's: the return
@@ -1735,6 +1754,7 @@ main(void) {
     rc |= test_foreign_frame_keeps_the_followed_cipher(opts, state);
     rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
     rc |= test_foreign_frame_anchors_no_spacing(opts, state);
+    rc |= test_stale_info1_hold_expires_before_the_frames_voice(opts, state);
     rc |= test_type_d_frame_cch_info_keeps_the_control_channel(opts, state);
     rc |= test_first_half_unit_activity_reads_the_frame_verdict(opts, state);
     rc |= test_checked_facch3_udch2_reads_type_d(opts, state);

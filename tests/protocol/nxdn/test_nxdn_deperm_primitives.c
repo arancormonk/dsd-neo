@@ -2150,6 +2150,41 @@ test_held_info1_cipher_is_never_republished_on_the_dcr_call(void) {
     return rc;
 }
 
+/*
+ * A held INFO1 cipher is forgotten as soon as the next call's identity is, before that frame's voice (issue #903): DCR
+ * call A is received with the scrambler and an INFO1 names the scrambler under key ID 5; A ends, and clear DCR call B's
+ * first frame is the first segment of a multi-frame SB0 message, checked, which opens B though the message is not
+ * complete. The INFO1's cipher is not B's: it is gone once that frame's SACCH-2 is read.
+ */
+static int
+test_held_info1_cipher_expires_at_the_next_calls_first_segment(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    rc |= expect_int("held-expiry-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+    dsd_decode_clock_test_set_ns(1010000000000ULL);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 3U, 0x01U); /* the first of four segments, cipher field clear */
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot call;
+    rc |= expect_int("held-expiry-dcr-b", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("held-expiry-dcr-b-is-another-call", call.epoch != dcr.epoch, 1);
+    rc |= expect_int("held-expiry-scrambler-forgotten", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("held-expiry-key-forgotten", (int)state->nxdn_key, 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2185,6 +2220,7 @@ main(void) {
     rc |= test_held_info1_cipher_never_lands_on_a_later_call();
     rc |= test_quarantined_info1_keeps_the_held_key();
     rc |= test_held_info1_cipher_is_never_republished_on_the_dcr_call();
+    rc |= test_held_info1_cipher_expires_at_the_next_calls_first_segment();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
