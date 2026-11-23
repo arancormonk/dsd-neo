@@ -13,8 +13,10 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileNotFoundException
+import java.io.FilterInputStream
 import java.io.FilterOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -49,6 +51,9 @@ object RecordingExport {
     /** Thrown by [openSelected] at a recording that is not the file selected: the whole transfer is abandoned. */
     internal class RecordingChangedException(val path: String) : IOException("not the recording selected: $path")
 
+    /** The store read storage again since the selection ([selectionCurrent]): the whole transfer is abandoned. */
+    private class SelectionStaleException : IOException("the recordings were read again since they were selected")
+
     /** A recording as the store selected it: its size and modification time. */
     internal data class Selected(val size: Long, val seconds: Long, val nanos: Long)
 
@@ -67,6 +72,14 @@ object RecordingExport {
      */
     @Volatile
     internal var inputOpener: (String, Selected) -> InputStream? = ::openSelected
+
+    /**
+     * Whether transfer [id]'s selection still stands: the store has not started reading storage again since it was
+     * selected (DecoderHostAndroid's token). Asked before the first recording is read and before the document is kept.
+     * A test swaps it.
+     */
+    @Volatile
+    internal var selectionCurrent: (Long) -> Boolean = { DsdNative.nativeRecordingSelectionCurrent(it) }
 
     /** One transfer: its id (DecoderHostAndroid's, rising), signal and the source bytes it has copied. */
     private class Transfer(val id: Long, val signal: CancellationSignal) {
@@ -105,7 +118,8 @@ object RecordingExport {
      * does one a discard took before this transfer began (never written).
      *
      * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]) and, for
-     * [CHANGED], the one found changed, as text: the store looks at each again.
+     * [CHANGED], the one found changed, as text: the store looks at each again. A selection that stopped standing
+     * ([selectionCurrent]) is [CHANGED] with none named.
      */
     @JvmStatic
     fun transfer(
@@ -193,6 +207,7 @@ object RecordingExport {
             return if (transfer.signal.isCanceled) CANCELLED else FAILED
         }
         return try {
+            if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
             val counted = CountingOutputStream(write.output)
             val written = if (zip) {
                 writeZip(counted, paths.toList(), names.toList(), steps, open, missing)
@@ -204,8 +219,14 @@ object RecordingExport {
                 write.fail(FileNotFoundException("every recording is gone"))
                 return MISSING
             }
+            // Read again while it was written: the store may have given a path it named to another recording.
+            if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
             write.finish(counted.count)
             DONE
+        } catch (e: SelectionStaleException) {
+            Log.w(TAG, "call recordings were read again since they were selected; nothing is kept", e)
+            write.fail(e)
+            CHANGED
         } catch (e: RecordingChangedException) {
             Log.w(TAG, "a call recording changed since it was selected; nothing is kept", e)
             write.fail(e)
@@ -223,31 +244,52 @@ object RecordingExport {
     }
 
     /**
-     * The recording at [path] opened to read once it is checked to be the file [selected] names (a regular file, never
-     * a link, with that size and modification time), or null when it is gone; [RecordingChangedException] otherwise,
-     * a name that cannot be read included.
+     * The recording at [path] opened once to read, never through a link at its name (O_NOFOLLOW; O_NONBLOCK, so a FIFO
+     * never holds the open), and the file opened checked to be the one [selected] names (a regular file with that size
+     * and modification time, read on the descriptor): what is read is what was checked. Null when it is gone;
+     * [RecordingChangedException] otherwise, a link and a name that cannot be read included.
      */
     internal fun openSelected(path: String, selected: Selected): InputStream? {
-        val stat = try {
-            Os.lstat(path)
+        val fd = try {
+            val flags = OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK or OsConstants.O_CLOEXEC
+            Os.open(path, flags, 0)
         } catch (e: ErrnoException) {
             if (e.errno == OsConstants.ENOENT || e.errno == OsConstants.ENOTDIR) return null
-            // No access to it, an I/O error: not the file selected as far as can be told, and the store looks again.
+            // A link (ELOOP), no access to it, an I/O error: not the file selected as far as can be told, and the store
+            // looks again.
             throw RecordingChangedException(path)
         }
-        if (!OsConstants.S_ISREG(stat.st_mode) || stat.st_size != selected.size ||
-            stat.st_mtim.tv_sec != selected.seconds || stat.st_mtim.tv_nsec != selected.nanos
-        ) {
+        val same = try {
+            val stat = Os.fstat(fd)
+            OsConstants.S_ISREG(stat.st_mode) && stat.st_size == selected.size &&
+                stat.st_mtim.tv_sec == selected.seconds && stat.st_mtim.tv_nsec == selected.nanos
+        } catch (e: ErrnoException) {
+            false
+        }
+        if (!same) {
+            closeQuietly(fd)
             throw RecordingChangedException(path)
         }
-        return openRecording(path)
+        return DescriptorInputStream(fd)
     }
 
-    /** A recording opened to read, or null when it is gone. */
-    internal fun openRecording(path: String): InputStream? = try {
-        FileInputStream(path)
-    } catch (e: FileNotFoundException) {
-        if (File(path).exists()) throw e else null
+    /** Reads [fd] and closes it with the stream: a FileInputStream made on a descriptor does not own it. */
+    private class DescriptorInputStream(private val fd: FileDescriptor) : FilterInputStream(FileInputStream(fd)) {
+        override fun close() {
+            try {
+                super.close()
+            } finally {
+                closeQuietly(fd)
+            }
+        }
+    }
+
+    private fun closeQuietly(fd: FileDescriptor) {
+        try {
+            Os.close(fd)
+        } catch (e: ErrnoException) {
+            // Already closed, or the close failed: a read-only descriptor has nothing to lose.
+        }
     }
 
     /**

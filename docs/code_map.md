@@ -16938,15 +16938,23 @@ Qt Quick frontend (`src/ui/qt`):
     a link), an accepted delete queues that identity with its id (`m_deleteQueue`), and `deleteEntry()` reads the path
     again right before the unlink (`onDiskAsKnownLocked()`) and skips a file whose size or time differs, or whose name
     cannot be read (never taken as missing), leaving it on disk and indexed (`DeleteResult::Changed`); a link or
-    anything else not a regular file at the name is left on disk and leaves the index. Either is told as a delete not
-    done (`deletesCancelled`), for a user's delete and for the limit's removal, which compares with the index's
-    identity and goes on with the next recording: a folder swapped on storage that stayed mounted, storage remounted
+    anything else not a regular file at the name is left on disk and leaves the index (and the limit's usage). Either is
+    told as a delete not done because the file was not the recording (`deletesSkipped`, apart from `deletesCancelled`,
+    a delete a read again dropped), for a user's delete and for the limit's removal, which compares with the index's
+    identity and goes on with the next recording (`test_limit_skip_of_a_link_is_told`): a folder swapped on storage that stayed mounted, storage remounted
     between two passes, a folder a session start adopted while a delete waited (`test_delete_checks_the_file_it_removes`,
     `test_delete_leaves_a_folder_adopted_meanwhile`, `test_delete_of_a_name_now_a_link_is_told`,
     `test_limit_skips_a_file_not_as_known`, `test_delete_of_an_unreadable_file_skips_it`). A journal there that cannot
     be opened or read whole leaves its folder unread, with what the index held for it, so the store is not settled and
     exports and deletes are refused until a later pass reads it (only a name confirmed missing is an empty journal,
-    `readJournal()`; `test_unread_journal_is_not_settled`).
+    `readJournal()`; `test_unread_journal_is_not_settled`); so do new journal lines that cannot be read (an open, seek or
+    read that fails in `tailFolder()`, not a last line still being written; `scheduleFolderReadLocked()`,
+    `test_tail_read_failure_unsettles`). A folder's read, first or again, always publishes, so `indexed` comes back
+    even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
+    as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
+    on it during the listing (`m_listing`, `noteFolderAddedLocked()`; `test_rescan_keeps_a_session_folder_made_meanwhile`).
+    A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
+    file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 
     Decided limit (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
@@ -16958,22 +16966,43 @@ Qt Quick frontend (`src/ui/qt`):
     An export's or a save's selection carries each file as the index knows it (`sizes`, `mtimeSecs`, `mtimeNanos`, in
     `selectLocked()`) and the reads of storage again started before it (`Selection::storageReads`, `m_storageReads`,
     moved as a pass starts reading storage again, `noteRereadStart()`, so a transfer begun while that read is still
-    going on is refused too, `test_selection_goes_stale_as_a_read_starts`): `DecoderHost::beginTransfer()` refuses a
-    selection the store has read storage again since (`RecordingStore::selectionCurrent()`, set by
-    `recording_store_serve_host()`), and one without its files, and every transfer checks each file right before it
-    reads it (`DecoderHost::recordingInputCheck()`: the base host's save, the Android worker's count and its local save,
-    and RecordingExport's `openSelected()` with `Os.lstat()` before each ZIP entry or save, a name it cannot read
-    included). A file gone is left out as before (issue #708); any other difference (another size or time, a link, a
-    FIFO, a name that cannot be read) abandons the whole transfer with nothing kept, as `TransferChanged` (6), and the
-    file is reported so the store looks at it again: a recheck the host asks for takes the file as it is now, so the
-    next selection exports it as it is (`test_transfer_reads_only_the_files_selected`, `UI_QT_ANDROID_HOST`
+    going on is refused too, `test_selection_goes_stale_as_a_read_starts`). Only a selection made with the store
+    settled is transferable: a save, as an export, is refused as `loading` while it is not (`selectRecordings()`; a
+    share's hold, `selectPath()`, is taken whenever and never transferred), so a selection never carries a generation
+    newer than the view it came from (`test_queries_between_rebuild_slices`). `DecoderHost::beginTransfer()` refuses a
+    selection the store has read storage again since (`RecordingStore::selectionToken()`, set by
+    `recording_store_serve_host()`), and one without its files, and hands the transfer a `RecordingSelectionToken`
+    (`recording_selection_token.h`: the store's shared read count and the selection's, never the store; one more read
+    is counted as the store goes, so a token outlives it stale; `test_selection_token`). The transfer checks it before
+    it reads the first file and before it keeps the document: the base host's save
+    (`saveRecordingToLocalDocument()`), the Android worker, and RecordingExport over JNI
+    (`DsdNative.nativeRecordingSelectionCurrent()`, answered from the running transfer's token by
+    `DecoderHostAndroid::recordingSelectionCurrent()`; `aSelectionReadAgainKeepsNothing`), so a read again that
+    finishes while the Android worker is still busy with another transfer abandons the export, `TransferChanged` naming
+    no file. Every transfer opens each file once, never through a link at its final name, and checks what it opened
+    before it copies from it: `DecoderHost::openRecordingInput()` (`dsd_fopen_existing_regular_file()`, then
+    `dsd_file_stream_identity()`) for the base host's save and the Android worker's local save, and RecordingExport's
+    `openSelected()` (`Os.open()` with `O_NOFOLLOW | O_NONBLOCK`, then `Os.fstat()` on that descriptor) before each ZIP
+    entry or save, a name it cannot read included (`test_open_recording_input`). Decided limit: on Windows the regular
+    file opener checks the name's attributes and then opens it, following a reparse point made in between; the identity
+    then read is the opened file's, so that file is checked, not the link. The Android worker's count still reads each
+    name (`recordingInputCheck()`) to leave out the ones gone. A file gone is left out as before (issue #708); any other
+    difference (another size or time, a link, a FIFO, a name that cannot be read) abandons the whole transfer with
+    nothing kept, as `TransferChanged` (6), and the file is reported so the store looks at it again: a recheck the host
+    asks for that finds another file than the index knew reads its folder again whole at the next pass (folder.json,
+    journal and files, as storage that came back is read; `scheduleFolderReadLocked()`), so the entry's owner and file
+    come from what is on disk, never taken onto the entry the index held, and a folder swapped for another owner's
+    becomes that owner's (`test_changed_file_reads_its_folder_again`: A's delete then removes nothing of B's). The next
+    selection exports the file as that read found it (`test_transfer_reads_only_the_files_selected`, `UI_QT_ANDROID_HOST`
     `check_recording_transfers`, `ANDROID_RECORDING_EXPORT_JVM` `aRecordingNotTheOneSelectedAbandonsTheExport`, the QML
     result rows); the screens say "Those recordings changed. Export again." and "This recording changed. Save it
     again.". The limit's own look at what it counts reads sizes only, so its check before each unlink still finds a file
     not as the index knew it. A delete that a read again drops or that finds another file is told, never silently
-    dropped: `deletesCancelled` (acknowledged with the
-    other notices) puts "Some recordings weren't deleted because their storage changed. Delete them again." on the
-    Call recordings screen and in Settings (`test_cancelled_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
+    dropped, each with what to do: `deletesCancelled` (a read again dropped it; acknowledged with the other notices)
+    puts "Some recordings weren't deleted because their storage changed. Delete them again." on the Call recordings
+    screen and in Settings, and `deletesSkipped` (the file was not the recording: nothing to ask again) "Some files
+    weren't deleted because they changed after they were recorded. They were left as they are."
+    (`test_cancelled_deletes_notice`, `test_skipped_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
     false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen
     and the player say "Recordings are still loading. Try again in a moment." or "That storage isn't connected. Delete
     again once it's back." and keep nothing of the request (`test_delete_refused_while_storage_away` in both QML
@@ -17020,7 +17049,10 @@ Qt Quick frontend (`src/ui/qt`):
     store assumes one app process per set of roots (the Qt UI ships only on Android): another live instance's temp
     files carry another token and would read as unfinished.
   - Limit (D2): `limitMb` (decimal MB, 0 none) applies only once the app has set it (`setLimitMb()`; a first pass
-    never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change:
+    never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change,
+    and only with the index settled as the refusals have it (`storageReadLocked()`: no pass asked for, no folder on
+    storage that is there unread); otherwise it waits (`m_limitPending`) and runs in the pass that reads the folder, so
+    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`):
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
     the total is at 95%; a file already gone is taken off the total without counting as removed. A total over the
     limit is first checked against the disk: every file it counts is looked at as `recheckRecordings()` looks (on the

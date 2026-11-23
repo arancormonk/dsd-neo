@@ -1525,6 +1525,17 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeQuitUi(JNIEnv* env, jclass cla
     QMetaObject::invokeMethod(app, []() { QCoreApplication::exit(0); }, Qt::QueuedConnection);
 }
 
+/** @brief Whether call recording transfer @p transfer_id's selection still stands (#902): RecordingExport asks before it
+ * reads the first recording and before it keeps the document. */
+JNIEXPORT jboolean JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeRecordingSelectionCurrent(JNIEnv* env, jclass clazz,
+                                                                            jlong transfer_id) {
+    (void)env;
+    (void)clazz;
+    return dsd_android::DecoderHostAndroid::recordingSelectionCurrent(static_cast<qint64>(transfer_id)) ? JNI_TRUE
+                                                                                                        : JNI_FALSE;
+}
+
 } // extern "C"
 
 namespace dsd_android {

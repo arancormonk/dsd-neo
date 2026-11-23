@@ -84,6 +84,9 @@ private fun recordings(vararg sizes: Int): Pair<Array<String>, Array<String>> {
 
 private fun result(answer: Array<String>) = answer[0].toInt()
 
+/** A file opened as it is, unchecked, or null when it is gone: the ZIP writer's cases that are not about the check. */
+private fun openPlain(path: String): java.io.InputStream? = if (File(path).exists()) java.io.FileInputStream(path) else null
+
 /** [paths] as the store selects them: three numbers each, size and modification time (seconds, nanoseconds); zeros
  * for one already gone. */
 private fun selected(paths: Array<String>): LongArray = paths.flatMap { path ->
@@ -202,7 +205,7 @@ private fun aShortWriteFailsTheZipWithoutClosingTheSink() {
         val sink = ShortSink(limit)
         val missing = mutableListOf<String>()
         val failed = try {
-            RecordingExport.writeZip(sink, paths.toList(), names.toList(), noSteps, RecordingExport::openRecording, missing)
+            RecordingExport.writeZip(sink, paths.toList(), names.toList(), noSteps, ::openPlain, missing)
             false
         } catch (_: IOException) {
             true
@@ -213,10 +216,10 @@ private fun aShortWriteFailsTheZipWithoutClosingTheSink() {
     }
     // The last bytes fail: the central directory, written as the ZIP closes.
     val whole = ShortSink(Long.MAX_VALUE)
-    RecordingExport.writeZip(whole, paths.toList(), names.toList(), noSteps, RecordingExport::openRecording, mutableListOf())
+    RecordingExport.writeZip(whole, paths.toList(), names.toList(), noSteps, ::openPlain, mutableListOf())
     val atTheEnd = ShortSink(whole.taken - 1)
     val failed = try {
-        RecordingExport.writeZip(atTheEnd, paths.toList(), names.toList(), noSteps, RecordingExport::openRecording, mutableListOf())
+        RecordingExport.writeZip(atTheEnd, paths.toList(), names.toList(), noSteps, ::openPlain, mutableListOf())
         false
     } catch (_: IOException) {
         true
@@ -260,7 +263,7 @@ private fun cancellingOneExportLeavesTheNextAlone() {
         val midwayId = ++nextId
         var midwayAnswer = emptyArray<String>()
         // A FIFO is no recording, so the check before a read would refuse it: this case opens it as it is.
-        RecordingExport.inputOpener = { path, _ -> RecordingExport.openRecording(path) }
+        RecordingExport.inputOpener = { path, _ -> java.io.FileInputStream(path) }
         val copying = Thread {
             midwayAnswer = RecordingExport.transfer(provider, midwayId, arrayOf(fifo.path), arrayOf("feed.wav"), selected(arrayOf(fifo.path)), midway, true)
         }
@@ -386,6 +389,36 @@ private fun aRecordingNotTheOneSelectedAbandonsTheExport() {
     }
 }
 
+/**
+ * Issue #902: a transfer whose selection stopped standing (the store started reading storage again) keeps nothing:
+ * asked before the first recording is read, none is opened; asked again before the document is kept, a ZIP written
+ * whole is still not kept. Both are CHANGED naming no file.
+ */
+private fun aSelectionReadAgainKeepsNothing() {
+    val provider = Provider()
+    val (paths, names) = recordings(100, 200)
+    var opens = 0
+    RecordingExport.inputOpener = { path, chosen -> opens++; RecordingExport.openSelected(path, chosen) }
+    RecordingExport.selectionCurrent = { false }
+    val before = provider.add()
+    val stale = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), before, true)
+    check(stale.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 0) {
+        "read again before the first read: nothing opened, changed: ${stale.toList()}, $opens opened"
+    }
+    check(before in provider.deleted) { "and the document is not kept" }
+
+    var asked = 0
+    RecordingExport.selectionCurrent = { ++asked == 1 }
+    val during = provider.add()
+    val late = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), during, true)
+    check(late.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 2 && asked == 2) {
+        "read again while it was written: changed: ${late.toList()}, $opens opened, asked $asked times"
+    }
+    check(during in provider.deleted) { "and the ZIP written is not kept" }
+    RecordingExport.selectionCurrent = { true }
+    RecordingExport.inputOpener = RecordingExport::openSelected
+}
+
 private fun aSaveCopiesOneRecordingAsItIs() {
     val provider = Provider()
     val (paths, _) = recordings(2 * DocumentTransfer.CHUNK_BYTES + 9)
@@ -472,7 +505,7 @@ private fun anErrorStillFailsTheDocument() {
     val sink = ShortSink(Long.MAX_VALUE)
     val zipped = try {
         RecordingExport.writeZip(sink, paths.toList(), names.toList(), noSteps, { path ->
-            if (path == paths[1]) throw injected else RecordingExport.openRecording(path)
+            if (path == paths[1]) throw injected else openPlain(path)
         }, mutableListOf())
         null
     } catch (e: Throwable) {
@@ -523,11 +556,13 @@ fun main() {
         recordingsGoneAreLeftOutAndReported()
         aSaveCopiesOneRecordingAsItIs()
         aRecordingNotTheOneSelectedAbandonsTheExport()
+        aSelectionReadAgainKeepsNothing()
         repeatedNamesStayApart()
         moreThan65535EntriesWriteZip64()
         anErrorStillFailsTheDocument()
         anAbortStopsExportsForGood()
         check(ParcelFileDescriptor.openCount() == 0) { "every descriptor is closed: ${ParcelFileDescriptor.openCount()} open" }
+        check(Os.openCount() == 0) { "every recording opened is closed: ${Os.openCount()} open" }
     }
     println("PASS: call recording exports stream a ZIP into the document, fail, cancel and report gone files as specified")
 }

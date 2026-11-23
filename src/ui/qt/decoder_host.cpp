@@ -19,6 +19,7 @@
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QLatin1Char>
+#include <QSaveFile>
 #include <QString>
 #include <QStringList>
 
@@ -32,6 +33,7 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
 
@@ -336,8 +338,10 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
         || !selected_files(selection, paths.size(), &expected)) {
         return refuse(TransferFailed);
     }
-    // The store read storage again since the selection: a path it names may now be another recording's.
-    if (m_recordingSelectionCurrent && !m_recordingSelectionCurrent(id)) {
+    // The store read storage again since the selection: a path it names may now be another recording's. The token
+    // goes with the transfer, which checks it again before it reads a file and before it keeps the document.
+    RecordingSelectionToken token;
+    if (m_recordingSelectionCurrent && !m_recordingSelectionCurrent(id, &token)) {
         return refuse(TransferChanged);
     }
     // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
@@ -346,7 +350,7 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     m_transferBytes = 0;
     m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
     Q_EMIT recordingTransferChanged();
-    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), expected, reference, zip)) {
+    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), expected, reference, zip, token)) {
         discardPendingDownload(reference);
         finishRecordingTransfer(TransferFailed, {});
         return false;
@@ -356,27 +360,55 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
 
 bool
 DecoderHost::beginRecordingTransfer(const QStringList& paths, const QStringList& names,
-                                    const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip) {
+                                    const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                                    const RecordingSelectionToken& token) {
     (void)names;
     if (zip || paths.size() != 1 || expected.size() != 1) {
         return false;
     }
-    // Right before it is read: the file selected, or nothing written.
-    const RecordingInput input = recordingInputCheck(paths.first(), expected.first());
-    if (input != RecordingInput::Selected) {
-        publishRecordingTransferProgress(0, 0);
-        // Either is looked at again by the store: gone, or another file the next selection must not name as it.
-        finishRecordingTransfer(input == RecordingInput::Missing ? TransferMissing : TransferChanged, paths);
-        return true;
+    const qint64 size = expected.first().size;
+    publishRecordingTransferProgress(0, size);
+    QStringList missing;
+    const int result = saveRecordingToLocalDocument(paths.first(), expected.first(), reference, token,
+                                                    &m_documentTransfersAborted, missing);
+    if (result == TransferDone) {
+        publishRecordingTransferProgress(size, size);
     }
-    const QFileInfo file(paths.first());
-    publishRecordingTransferProgress(0, file.size());
-    const bool saved = copyFileToDocument(paths.first(), reference);
-    if (saved) {
-        publishRecordingTransferProgress(file.size(), file.size());
-    }
-    finishRecordingTransfer(saved ? TransferDone : TransferFailed, {});
+    // Gone, or another file the next selection must not name as it: either is looked at again by the store.
+    finishRecordingTransfer(result, missing);
     return true;
+}
+
+int
+DecoderHost::saveRecordingToLocalDocument(const QString& path, const dsd_file_identity_t& expected,
+                                          const QString& reference, const RecordingSelectionToken& token,
+                                          const std::atomic<bool>* aborted, QStringList& missing) {
+    if (!token.current()) {
+        return TransferChanged; // the store read storage again: nothing read, nothing written
+    }
+    FILE* fp = nullptr;
+    const RecordingInput input = openRecordingInput(path, expected, &fp);
+    if (input != RecordingInput::Selected) {
+        missing.append(path);
+        return input == RecordingInput::Missing ? TransferMissing : TransferChanged;
+    }
+    QFile source;
+    const QString target = local_document_path(reference);
+    QSaveFile out(target);
+    int result = TransferFailed;
+    if (!target.isEmpty() && source.open(fp, QIODevice::ReadOnly) && open_private(out)
+        && copy_stream_capped(source, out, -1, [aborted](qint64) { return aborted == nullptr || !aborted->load(); })
+               == DocumentCopied) {
+        if (!token.current()) {
+            out.cancelWriting(); // read again while it was copied: the document is not kept
+            result = TransferChanged;
+        } else if (out.commit()) {
+            result = TransferDone;
+        }
+    }
+    source.close();
+    (void)fclose(fp);
+    return result;
 }
 
 void
@@ -692,7 +724,7 @@ DecoderHost::setRecordingIndex(std::function<bool(const QString&)> indexed) {
 }
 
 void
-DecoderHost::setRecordingSelectionCheck(std::function<bool(int)> current) {
+DecoderHost::setRecordingSelectionCheck(std::function<bool(int, RecordingSelectionToken*)> current) {
     m_recordingSelectionCurrent = std::move(current);
 }
 
@@ -704,6 +736,23 @@ DecoderHost::recordingInputCheck(const QString& path, const dsd_file_identity_t&
         return err == ENOENT || err == ENOTDIR ? RecordingInput::Missing : RecordingInput::Changed;
     }
     return dsd_file_identity_equal(&expected, &now) != 0 ? RecordingInput::Selected : RecordingInput::Changed;
+}
+
+DecoderHost::RecordingInput
+DecoderHost::openRecordingInput(const QString& path, const dsd_file_identity_t& expected, FILE** out) {
+    *out = nullptr;
+    FILE* fp = dsd_fopen_existing_regular_file(platform_path(path).constData(), "rb");
+    if (fp == nullptr) {
+        const int err = errno;
+        return err == ENOENT || err == ENOTDIR ? RecordingInput::Missing : RecordingInput::Changed;
+    }
+    dsd_file_identity_t opened{};
+    if (dsd_file_stream_identity(fp, &opened) != 0 || dsd_file_identity_equal(&expected, &opened) == 0) {
+        (void)fclose(fp);
+        return RecordingInput::Changed;
+    }
+    *out = fp;
+    return RecordingInput::Selected;
 }
 
 void

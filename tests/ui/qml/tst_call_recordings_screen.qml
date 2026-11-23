@@ -562,6 +562,22 @@ Item {
             verify(!item("callRecordingsDeletesCancelled").visible, "the next visit shows only what came since");
         }
 
+        // Issue #902: deletes not done because the file was not the one
+        // recorded are told apart: left as they are, nothing to ask again.
+        function test_skipped_deletes_notice() {
+            fill();
+            verify(!item("callRecordingsDeletesSkipped").visible);
+            recordings.deletesSkipped = 1;
+            tryCompare(recordings, "deletesSkipped", 0);
+            compare(lastStoreCall().name, "acknowledgeNotices");
+            verify(item("callRecordingsDeletesSkipped").visible);
+            verify(!item("callRecordingsDeletesCancelled").visible, "not the storage-changed notice");
+            compare(item("callRecordingsDeletesSkipped").text, "Some files weren't deleted because they changed after they were recorded. They were left as they are.");
+            screen().visible = false;
+            screen().visible = true;
+            verify(!item("callRecordingsDeletesSkipped").visible, "the next visit shows only what came since");
+        }
+
         function test_deletes_waiting() {
             fill();
             verify(!item("callRecordingsDeletesWaiting").visible);

@@ -312,6 +312,8 @@ Item {
             // Issue #902: deletes the store cancelled because their storage changed.
             recordings.deletesCancelled = 1;
             compare(storeNotices()[2], "Some recordings weren't deleted because their storage changed. Delete them again.");
+            recordings.deletesSkipped = 1;
+            compare(storeNotices()[3], "Some files weren't deleted because they changed after they were recorded. They were left as they are.");
             compare(notices().length, 0);
             // Seen on the Call recordings screen, they are gone from here.
             recordings.acknowledgeNotices();

@@ -230,6 +230,12 @@ Column {
         if (!part || saveSelection > 0)
             return;
         var selection = recordings.selectRecordings([part.id]);
+        if (selection.loading) {
+            // Issue #902: refused, as an export is, while storage is read
+            // again; nothing is selected or held.
+            say(qsTr("Recordings are still loading. Try again in a moment."), true);
+            return;
+        }
         if (!selection.selection) {
             say(qsTr("This recording is gone."), true);
             return;

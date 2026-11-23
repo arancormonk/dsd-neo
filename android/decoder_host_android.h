@@ -414,6 +414,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     static void postSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
 
+    /** @brief Whether running transfer @p id's selection still stands (its token): RecordingExport asks over JNI
+     * (DsdNative.nativeRecordingSelectionCurrent()) before it reads the first recording and before it keeps the
+     * document. False for an id no transfer runs under. Any thread. */
+    static bool recordingSelectionCurrent(qint64 id);
+
   protected:
     /**
      * @brief A cancel, a session close or a newer listing retired @p requestId: FileBrowser cancels it too, once, if it
@@ -434,8 +439,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * queued.
      */
     bool beginRecordingTransfer(const QStringList& paths, const QStringList& names,
-                                const QList<dsd_file_identity_t>& expected, const QString& reference,
-                                bool zip) override;
+                                const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                                const RecordingSelectionToken& token) override;
 
     /**
      * @brief RecordingShare: only a .wav inside a recording root is offered, read-only, through the app's chooser, as a
@@ -496,19 +501,16 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
                                      const QStringList& names, const QList<dsd_file_identity_t>& expected,
-                                     const QString& reference, bool zip);
-    /** @brief The one recording at @p path, checked against @p expected right before it is read, copied into the local
-     * document @p reference: its result, a missing file added to @p missing. */
-    static int saveToLocalDocument(const std::shared_ptr<TransferLink>& link, const QString& path,
-                                   const dsd_file_identity_t& expected, const QString& reference, QStringList& missing);
+                                     const QString& reference, bool zip, const RecordingSelectionToken& token);
     /**
      * @brief RecordingExport's transfer of @p paths into the platform document @p reference, each checked against
-     * @p expected right before it is read: its result, with the paths it found gone added to @p missing. A call that
-     * gave no answer discards a Download-folder row (#829).
+     * @p expected right before it is read, and @p token before the first is read and before the document is kept
+     * (recordingSelectionCurrent() answers for it while the call runs): its result, with the paths it found gone added
+     * to @p missing. A call that gave no answer discards a Download-folder row (#829).
      */
     static int transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
                                   const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
-                                  QStringList& missing);
+                                  const RecordingSelectionToken& token, QStringList& missing);
     void noteRecordingTransferTotal(qint64 id, qint64 total);
     void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
     /**

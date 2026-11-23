@@ -754,6 +754,22 @@ Item {
             compare(calls[calls.length - 1].id, "t-2");
         }
 
+        // Issue #902: a save the store refuses (storage is read again) says so,
+        // as an export does, and opens no picker.
+        function test_save_refused_while_loading() {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            recordings.setLoading(true);
+            var requests = testContext.lastDocumentRequest();
+            tap("recordingSave");
+            compare(lastStoreCall().name, "selectRecordings");
+            compare(item("historyRecording").saveSelection, 0, "nothing is held");
+            compare(item("recordingNotice").text, "Recordings are still loading. Try again in a moment.");
+            verify(!findChild(item("historyRecording"), "recordingSavePicker").visible, "no picker opens");
+            compare(testContext.lastDocumentRequest(), requests, "nothing is asked of the platform");
+            recordings.setLoading(false);
+        }
+
         // Issue #902: a delete the store refuses (storage that came back is read
         // again) says so and leaves the recording playing.
         function test_delete_refused_while_loading() {

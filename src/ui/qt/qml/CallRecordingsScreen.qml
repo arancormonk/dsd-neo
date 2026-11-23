@@ -37,9 +37,11 @@ Item {
     property int failuresShown: 0
     property string failureReason: ""
     property int cancelledShown: 0
+    property int skippedShown: 0
     readonly property int unseenRemoved: recordings.removedByLimit
     readonly property int unseenFailures: recordings.deleteFailures
     readonly property int unseenCancelled: recordings.deletesCancelled
+    readonly property int unseenSkipped: recordings.deletesSkipped
 
     readonly property var folders: {
         var list = [];
@@ -70,6 +72,7 @@ Item {
         failuresShown = 0;
         failureReason = "";
         cancelledShown = 0;
+        skippedShown = 0;
         takeNotices();
         Qt.callLater(function () {
             if (screen.visible && Navigation.allows(screen))
@@ -81,12 +84,14 @@ Item {
     onUnseenRemovedChanged: Qt.callLater(takeNotices)
     onUnseenFailuresChanged: Qt.callLater(takeNotices)
     onUnseenCancelledChanged: Qt.callLater(takeNotices)
+    onUnseenSkippedChanged: Qt.callLater(takeNotices)
 
     function takeNotices() {
-        if (!visible || (unseenRemoved <= 0 && unseenFailures <= 0 && unseenCancelled <= 0))
+        if (!visible || (unseenRemoved <= 0 && unseenFailures <= 0 && unseenCancelled <= 0 && unseenSkipped <= 0))
             return;
         removedShown += Math.max(0, unseenRemoved);
         cancelledShown += Math.max(0, unseenCancelled);
+        skippedShown += Math.max(0, unseenSkipped);
         if (unseenFailures > 0) {
             failuresShown += unseenFailures;
             failureReason = recordings.lastDeleteError;
@@ -485,6 +490,18 @@ Item {
                 width: parent.width
                 visible: screen.cancelledShown > 0
                 text: Util.deletesCancelledText()
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.alert
+                Accessible.role: Accessible.AlertMessage
+            }
+
+            ReadableText {
+                objectName: "callRecordingsDeletesSkipped"
+                width: parent.width
+                visible: screen.skippedShown > 0
+                text: Util.deletesSkippedText()
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)

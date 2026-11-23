@@ -583,8 +583,10 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
   protected:
     bool
     beginRecordingTransfer(const QStringList& paths, const QStringList& names,
-                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip) override {
-        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip);
+                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                           const RecordingSelectionToken& token) override {
+        return holdTransfers
+               || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip, token);
     }
 
     /* The project's LICENSE and the index naming it and a file the package lacks, compiled in by tests/CMakeLists.txt;
@@ -3740,8 +3742,8 @@ class RecordingsFake : public QQmlPropertyMap {
                 {QStringLiteral("freeBytes"), -1},       {QStringLiteral("lowSpace"), false},
                 {QStringLiteral("removedByLimit"), 0},   {QStringLiteral("deletesWaiting"), 0},
                 {QStringLiteral("deleteFailures"), 0},   {QStringLiteral("lastDeleteError"), QString()},
-                {QStringLiteral("deletesCancelled"), 0}, {QStringLiteral("limitMb"), 1000},
-                {QStringLiteral("revision"), 0.0}};
+                {QStringLiteral("deletesCancelled"), 0}, {QStringLiteral("deletesSkipped"), 0},
+                {QStringLiteral("limitMb"), 1000},       {QStringLiteral("revision"), 0.0}};
     }
 
     /** @brief A recordingsForDetection() map with every key the store gives, each at a blank value. */
@@ -3854,6 +3856,14 @@ class RecordingsFake : public QQmlPropertyMap {
     Q_INVOKABLE QVariantMap
     selectRecordings(const QStringList& ids) {
         note(QStringLiteral("selectRecordings"), {{QStringLiteral("ids"), ids}});
+        if (m_loading) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("loading"), true}};
+        }
         return selection();
     }
 
@@ -3874,6 +3884,7 @@ class RecordingsFake : public QQmlPropertyMap {
         insert(QStringLiteral("removedByLimit"), 0);
         insert(QStringLiteral("deleteFailures"), 0);
         insert(QStringLiteral("deletesCancelled"), 0);
+        insert(QStringLiteral("deletesSkipped"), 0);
         insert(QStringLiteral("lastDeleteError"), QString());
     }
 

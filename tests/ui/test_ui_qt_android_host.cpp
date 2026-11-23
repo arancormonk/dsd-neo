@@ -2750,6 +2750,45 @@ check_recording_transfers() {
                      return seen.expected.size() == 1 && seen.expected.first().size == 100;
                  }),
           "the platform's changed answer passes through, and it was handed the file as selected");
+    // #902: the selection's token goes with the transfer. Stale before the worker reads a file (the store read storage
+    // again meanwhile): changed, the platform never asked. While RecordingExport runs, the JNI check answers from the
+    // running transfer's token, and nothing once it ended.
+    auto reads = std::make_shared<std::atomic<quint64>>(0U);
+    host.setRecordingSelectionCheck([reads](int, DecoderHost::RecordingSelectionToken* token) {
+        *token = DecoderHost::RecordingSelectionToken(reads, reads->load());
+        return true;
+    });
+    r.hold = true;
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
+    finished.clear();
+    while (r.entered.tryAcquire(1, 0)) {} // earlier transfers' entries, not waited on
+    check(
+        host.exportRecordings(
+            selected({{"selection", 14}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document),
+        "an export with a token begins");
+    check(r.entered.tryAcquire(1, 5000), "it reaches the platform");
+    const qint64 running = r.transferId.load();
+    const bool standsWhileRunning = DecoderHostAndroid::recordingSelectionCurrent(running);
+    reads->fetch_add(1U);
+    const bool staleOnceRead = !DecoderHostAndroid::recordingSelectionCurrent(running);
+    r.released.release();
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "it ends");
+    r.hold = false;
+    check(standsWhileRunning && staleOnceRead && !DecoderHostAndroid::recordingSelectionCurrent(running),
+          "the JNI check answers from the running transfer's token, and for nothing once it ended");
+    finished.clear();
+    const int beforeStale = r.transfers.load();
+    host.setRecordingSelectionCheck([reads](int, DecoderHost::RecordingSelectionToken* token) {
+        *token = DecoderHost::RecordingSelectionToken(reads, reads->load() - 1U); // read again since
+        return true;
+    });
+    host.exportRecordings(
+        selected({{"selection", 15}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document);
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "an export whose token went stale ends");
+    check(finished.value(0) == QList<int>({15, DecoderHost::TransferChanged, 0}) && r.transfers.load() == beforeStale,
+          "as changed, naming no file, without the platform");
+    host.setRecordingSelectionCheck({});
+
     with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
     finished.clear();
     host.exportRecordings({{"selection", 13}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},

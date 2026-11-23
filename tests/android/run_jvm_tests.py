@@ -1414,6 +1414,7 @@ DOWNLOADS_SAVE_STUBS = (
     "Provider.kt",
     "ShareEnvironment.kt",
     "SystemOs.kt",
+    "RecordingNative.kt",
     "Uri.kt",
 )
 
