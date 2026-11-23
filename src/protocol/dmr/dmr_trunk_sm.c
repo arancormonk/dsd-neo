@@ -2613,33 +2613,36 @@ dmr_sm_grant_for_followed_slot(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev
 }
 
 /* Whether grant @p ev, for the followed slot of the followed carrier @p freq, names another call than the one that
-   slot is followed for: another media (a data grant for a slot followed for voice, or the reverse; an adopted
-   companion's unknown media is none, vc_media_known), or, where the
-   slot's record or the followed grant names a call, another target or address class than both
-   (dmr_sm_grant_names_call(): a repeat of either, whatever its caller, is the same call). A channel status (it
+   slot carries or is followed for. A grant naming the call the slot's record names (dmr_sm_grant_names_call(): its
+   target, address class and media, whatever its caller) names that call, whatever the followed grant's media was: a
+   call a checked LC opened there since the follow (a voice call on a slot followed for data) goes on. Otherwise another
+   media than the followed assignment's (a data grant for a slot followed for voice, or the reverse; an adopted
+   companion's unknown media is none, vc_media_known), or, where the slot's record or the followed grant names a call,
+   another target or address class than both (a repeat of the followed grant is the same call). A channel status (it
    reconciles the slot instead), a slotless grant and a placeholder name no other call. */
 static int
 dmr_sm_grant_replaces_followed(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
-    if (!dmr_sm_grant_for_followed_slot(ctx, ev, freq)) {
+    if (!dmr_sm_grant_for_followed_slot(ctx, ev, freq) || ctx->vc_slot > 1) {
+        return 0;
+    }
+    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[ctx->vc_slot];
+    const int rec_known = dmr_sm_slot_identity_known(rec) && rec->carrier_hz == freq;
+    if (rec_known && target != 0U && dmr_sm_grant_names_call(ev, target, rec, freq)) {
         return 0;
     }
     if (ctx->vc_media_known && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0)) {
         return 1;
     }
-    const int s = ctx->vc_slot;
-    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
-    if (s > 1 || target == 0U) {
+    if (target == 0U) {
         return 0;
     }
-    const dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
-    const int rec_known = dmr_sm_slot_identity_known(rec) && rec->carrier_hz == freq;
     dmr_sm_slot_ctx_t grant;
     const int grant_known = dmr_sm_grant_identity(ctx, &grant);
     if (!rec_known && !grant_known) {
         return 0;
     }
-    return !(rec_known && dmr_sm_grant_names_call(ev, target, rec, freq))
-           && !(grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq));
+    return !(grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq));
 }
 
 /* The followed slot @p s's assignment ended (dmr_sm_end_changed_assignment()): the slot is left as a fresh call there

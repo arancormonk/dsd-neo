@@ -13622,7 +13622,9 @@ Private per-protocol modules worth knowing about:
     for the followed slot of the followed carrier that names another call than the slot is followed for
     (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
-    either being the same call whatever its caller) ends that assignment before any admission, whether the receiver
+    either being the same call whatever its caller; a grant naming the call the slot's record names is checked first,
+    so a voice call a checked LC opened on a slot followed for data survives its voice grant's repeat,
+    `test_con_plus_voice_grant_repeat_keeps_lc_call()`) ends that assignment before any admission, whether the receiver
     would follow it or not: the Tier III and Connect Plus CSBK layers hand every decoded grant (Connect Plus: its voice
     grants, group and private, and its data grants, opcode 0x06, through `dmr_cspdu_con_plus_grant_event()`, the data
     grant it follows then going through `dmr_sm_submit_grant()` too, so the machine tracks that assignment,

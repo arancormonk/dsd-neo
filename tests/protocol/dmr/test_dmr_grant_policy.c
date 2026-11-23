@@ -1277,6 +1277,45 @@ test_con_plus_data_follow_is_tracked(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A data grant is followed on LCN 4 TS1, then a checked voice LC opens and names a voice call for TG 200 there. A
+   repeat of that call's voice grant names the slot's live call, so it is no media change: the call goes on and the
+   receiver stays (variant 0). A voice grant for another talkgroup still ends the assignment (variant 1). */
+static int
+test_con_plus_voice_grant_repeat_keeps_lc_call(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        con_plus_env(opts, st);
+        opts->trunk_tune_data_calls = 1;
+        st->trunk_chan_map[4] = 856250000L;
+        status_window_closed(st);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        rc |= expect_true("con+ data grant followed before the voice LC",
+                          ctx->state == DMR_SM_TUNED && ctx->vc_slot == 0 && ctx->vc_data_call == 1);
+        status_clock_at(1.0);
+        seed_voice_call(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+        accepted_voice_now(opts, st, 0);
+        dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+        status_clock_at(1.1);
+        accepted_voice_now(opts, st, 0);
+        st->last_vc_sync_time = dsd_decode_time();
+        con_plus_voice(opts, st, 2U, variant == 0 ? 200U : 300U, 4U, 0U, 2U);
+        if (variant == 0) {
+            rc |= expect_true("con+ voice grant repeat for the LC's call keeps it on the air",
+                              ctx->state == DMR_SM_TUNED && opts->trunk_is_tuned == 1
+                                  && active_call_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U));
+        } else {
+            rc |= expect_true("con+ voice grant for another talkgroup still ends the assignment",
+                              ctx->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0);
+        }
+        status_env_done(st);
+    }
+    return rc;
+}
+
 /* A Connect Plus slot termination ends the assignment it names, never the whole carrier: with a data grant followed on
    TS1 and a TS1 data burst heard, a TS2 termination naming another target leaves TS1's transfer live (zero hangtime:
    the next tick would otherwise return to the control channel before the next TS1 block); a termination naming the
@@ -3454,6 +3493,7 @@ main(void) {
     rc |= test_con_plus_blocked_reassignment_ends_follow(opts, st);
     rc |= test_con_plus_unfollowed_reassignment_ends_follow(opts, st);
     rc |= test_con_plus_data_follow_is_tracked(opts, st);
+    rc |= test_con_plus_voice_grant_repeat_keeps_lc_call(opts, st);
     rc |= test_con_plus_termination_scoped_to_its_assignment(opts, st);
     rc |= test_p_clear_scoped_to_its_slot(opts, st);
     rc |= test_slot_release_retires_its_grant(opts, st);
