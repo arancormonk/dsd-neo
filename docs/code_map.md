@@ -12448,13 +12448,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`nxdn_scch_names_new_call()`): its observation carries neither "JPN DCR" nor the DCR call's service metadata or
   crypto. The scrambler the DCR call received (its SACCH-2's cipher, while it is the cipher applied:
   `dsd_state::nxdn_cipher_origin`, which follows the observation the applied cipher equals and stays when the
-  hysteresis holds a contradiction back, `nxdn_cipher_observe_from()`) is forgotten, cipher and classification, at the
+  hysteresis holds a contradiction back, `nxdn_cipher_observe_keyed()`) is forgotten, cipher and classification, at the
   first SCCH that acts, which no DCR call carries, before that SCCH's message acts, so the
   new call's voice is not descrambled with it, while an INFO1 naming the new call's own cipher ahead of its numbered
   party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). Such an INFO1, heard while the
   DCR call is still the live call, is the next call's: its cipher and key ID are not published on the DCR call but
   held as one pair (an INFO1's or VCALL's key ID is applied, `dsd_state::nxdn_key`, only with the cipher it came with,
-  `nxdn_cipher_observe_keyed()`, so a contradiction the hysteresis holds back changes neither half)
+  `nxdn_cipher_observe_keyed()`, so a contradiction the hysteresis holds back changes neither half; a DCR SACCH-2
+  names no key ID, so once its scrambler wins the hysteresis back the key ID applied is none, never the INFO1's)
   (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
   `dsd_state::nxdn_cipher_held_transmission`) and handed to the call an SCCH or a VCALL opens from that very
   transmission (`nxdn_cipher_hand_hold_to_call()`), the call the INFO1 named: there the cipher and key stay applied and

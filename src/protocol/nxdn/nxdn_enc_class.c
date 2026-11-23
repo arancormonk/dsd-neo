@@ -70,8 +70,9 @@ nxdn_cipher_class_step(uint8_t* cls, uint8_t* est, uint8_t* pending, uint8_t obs
  * The applied cipher's origin (dsd_state::nxdn_cipher_origin) is the
  * observation's once the applied cipher equals it, a matching repeat
  * included; a contradiction held back leaves the applied cipher, and so its
- * origin, as they were. */
-uint8_t
+ * origin, as they were. Every caller outside this file names the observation's key ID too
+ * (nxdn_cipher_observe_keyed()). */
+static uint8_t
 nxdn_cipher_observe_from(dsd_state* state, uint8_t cipher, int strong, uint8_t origin) {
     const uint8_t obs = (uint8_t)((cipher & 0x03U) + 1U);
     nxdn_cipher_class_step(&state->nxdn_cipher_class, &state->nxdn_cipher_class_est, &state->nxdn_cipher_class_pending,
@@ -84,9 +85,10 @@ nxdn_cipher_observe_from(dsd_state* state, uint8_t cipher, int strong, uint8_t o
     return (uint8_t)(state->nxdn_cipher_class - 1U);
 }
 
-/* nxdn_cipher_observe_from() for an observation that names its key ID too (a VCALL, an INFO1): the applied key
- * (dsd_state::nxdn_key) is the one that came with the applied cipher, so it takes @p key_id only when the observation's
- * cipher is the one applied afterwards. A contradiction held back changes neither half of the pair. */
+/* nxdn_cipher_observe_from() for an observation that names its key ID (a VCALL, an INFO1; a DCR SACCH-2 names none,
+ * 0): the applied key (dsd_state::nxdn_key) is the one that came with the applied cipher, so it takes @p key_id only
+ * when the observation's cipher is the one applied afterwards. A contradiction held back changes neither half of the
+ * pair. */
 uint8_t
 nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong, uint8_t origin) {
     const uint8_t applied = nxdn_cipher_observe_from(state, cipher, strong, origin);

@@ -2387,6 +2387,47 @@ test_accepted_info1_loads_its_key(void) {
     return rc;
 }
 
+/*
+ * A DCR SACCH-2 whose scrambler matches a held INFO1's makes the applied cipher the DCR call's again, with DCR's own key
+ * ID, which it carries none of (issue #903): during a scrambled DCR call an INFO1 names the scrambler under key ID 5,
+ * then the DCR call's next SB0 names the scrambler. The applied key ID is no longer the INFO1's, and a VCALL_IV after
+ * it publishes no key ID on the DCR call.
+ */
+static int
+test_dcr_reclaim_drops_the_info1_key(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    rc |= expect_int("dcr-reclaim-info1-key", (int)state->nxdn_key, 5);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-reclaim-origin", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    rc |= expect_int("dcr-reclaim-key-id", (int)state->nxdn_key, 0);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("dcr-reclaim-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("dcr-reclaim-iv-kid", (int)call.kid, 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2428,6 +2469,7 @@ main(void) {
     rc |= test_stale_info1_hold_expires_before_the_next_vcall();
     rc |= test_vcall_opening_the_next_call_takes_the_held_info1_cipher();
     rc |= test_accepted_info1_loads_its_key();
+    rc |= test_dcr_reclaim_drops_the_info1_key();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

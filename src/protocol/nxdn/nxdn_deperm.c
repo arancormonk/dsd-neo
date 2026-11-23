@@ -892,8 +892,9 @@ nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, 
         // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
         // established: hold a contradicting observation until it repeats.
         if (acts) {
-            /* The DCR call's: an SCCH's call forgets it while it is the cipher applied (NXDN_decode_scch()). */
-            state->nxdn_cipher_type = nxdn_cipher_observe_from(state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+            /* The DCR call's: an SCCH's call forgets it while it is the cipher applied (NXDN_decode_scch()). It names no
+               key ID, so once it is the cipher applied the key ID applied is none, never a held INFO1's. */
+            state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
         }
         if (dsd_key_scalar_present(state, 0)) {
             char key_text[24];
