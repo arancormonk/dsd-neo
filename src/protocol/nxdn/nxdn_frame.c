@@ -1015,9 +1015,7 @@ nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
         dsd_nxdn_forget_type_d_identity(state);
     }
     if (ctx->foreign || ctx->reclassified) {
-        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-        state->nxdn_part_of_frame = 0;
+        nxdn_sacch_break_superframe(state);
     }
 }
 

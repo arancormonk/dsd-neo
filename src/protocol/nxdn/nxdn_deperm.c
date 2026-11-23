@@ -299,12 +299,14 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
 
 /*
  * A superframe SACCH segment of another channel's control traffic (dsd_state::nxdn_frame_foreign): its check says that
- * channel is heard, and nothing of it enters the superframe being assembled. The frame that carries it already broke
- * that assembly (nxdn_frame_commit_classification()), as every frame classified foreign does: the followed channel's
- * segments before it and after it belong to no one superframe with it.
+ * channel is heard, and nothing of it enters the superframe being assembled, which it breaks
+ * (nxdn_sacch_break_superframe()), as every frame classified foreign does (nxdn_frame_commit_classification()): the
+ * followed channel's segments before it and after it belong to no one superframe with it. The rule holds for a
+ * segment the public entry point (nxdn_deperm_sacch_soft()) decodes outside any frame too.
  */
 static void
 nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_t crc, uint8_t check) {
+    nxdn_sacch_break_superframe(state);
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     }

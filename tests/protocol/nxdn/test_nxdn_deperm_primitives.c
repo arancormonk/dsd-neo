@@ -2543,6 +2543,51 @@ test_sacch_public_entry_decodes_then_commits(void) {
     return rc;
 }
 
+/*
+ * The public SACCH entry point breaks the superframe being assembled at a foreign segment, as the frame decoder does
+ * (issue #903): three local segments (1/4 to 3/4) are held, then a CRC-valid superframe segment of another channel's
+ * control traffic (dsd_state::nxdn_frame_foreign) arrives. None of the held segments, nor their part index, survives
+ * it, so a later local 4/4 can splice no message across the interruption.
+ */
+static int
+test_sacch_public_entry_breaks_the_superframe_at_a_foreign_segment(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    uint8_t bits[60];
+    uint8_t reliab[60];
+    uint8_t sacch[26];
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    prepare_sacch_entry_state(state);
+    state->nxdn_sacch_non_superframe = 0;
+    DSD_MEMSET(reliab, 200, sizeof(reliab));
+    static const uint8_t k_structure[3] = {3U, 2U, 1U}; /* 1/4 .. 3/4 (TS 1-D) */
+    for (int i = 0; i < 3; i++) {
+        DSD_MEMSET(sacch, 0, sizeof(sacch));
+        write_bits_msb(sacch, 0U, 2U, k_structure[i]);
+        write_bits_msb(sacch, 2U, 6U, 0x21U); /* RAN 33 */
+        write_bits_msb(sacch, 8U, 18U, 0x2AAAAU);
+        make_sacch_soft_bits(bits, sacch);
+        (void)nxdn_deperm_sacch_soft(opts, state, bits, reliab);
+    }
+    int rc = expect_int("sacch-foreign-local-segments-held", state->nxdn_sacch_frame_segcrc[2], 0);
+    rc |= expect_int("sacch-foreign-local-part-index", state->nxdn_part_of_frame, 2);
+    DSD_MEMSET(sacch, 0, sizeof(sacch));
+    write_bits_msb(sacch, 0U, 2U, 0U); /* 4/4 of the other channel */
+    write_bits_msb(sacch, 2U, 6U, 0x05U);
+    make_sacch_soft_bits(bits, sacch);
+    state->nxdn_frame_foreign = 1U;
+    (void)nxdn_deperm_sacch_soft(opts, state, bits, reliab);
+    state->nxdn_frame_foreign = 0U;
+    for (int i = 0; i < 4; i++) {
+        rc |= expect_int("sacch-foreign-segment-dropped", state->nxdn_sacch_frame_segcrc[i], 1);
+    }
+    rc |= expect_int("sacch-foreign-part-index-reset", state->nxdn_part_of_frame, 0);
+    free_fixture(opts, state);
+    return rc;
+}
+
 /* What decoding the VCALL @p bits printed, into @p out. */
 static int
 capture_vcall_print(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], char* out, size_t out_size) {
@@ -2619,6 +2664,7 @@ main(void) {
     rc |= test_facch3_udch2_crc_state_update();
     rc |= test_facch3_udch2_public_entry_decodes_then_commits();
     rc |= test_sacch_public_entry_decodes_then_commits();
+    rc |= test_sacch_public_entry_breaks_the_superframe_at_a_foreign_segment();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
     rc |= test_scch_crc_gates_scrambler_reload();
     rc |= test_scch_undefined_content_confirms_nothing();

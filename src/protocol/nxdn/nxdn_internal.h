@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -60,6 +61,18 @@ static inline int
 nxdn_live_call_is_nxdn(const dsd_state* state) {
     dsd_call_snapshot call;
     return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
+}
+
+/* Break the SACCH superframe being assembled: no segment held, and the part index back to the first. The segments
+   before and after a frame of another channel's control traffic (dsd_state::nxdn_frame_foreign), or one its own
+   FACCH1 reclassified, belong to no one superframe, so no message is ever spliced across it. The one rule the frame
+   decoder's classification (nxdn_frame()) and the SACCH decoder's foreign segment, the public entry point's included,
+   both apply. */
+static inline void
+nxdn_sacch_break_superframe(dsd_state* state) {
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_part_of_frame = 0;
 }
 
 /* Whether the live call on slot 0 is an active NXDN DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()). */

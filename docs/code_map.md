@@ -12622,8 +12622,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   release or control-sync effect); it never touches the followed call's cipher (no stolen-slot step or forced cipher
   before its signalling, `nxdn_step_cipher_before_signalling()`, no key reload at its non-superframe SACCH, none of the
   positioning after it); it breaks the SACCH superframe being assembled whatever channels it carries, a CAC frame
-  included, and its own superframe segment never enters the assembly, so no superframe mixes the two channels'
-  segments; and the frame skips the decoder's own carrier-sync stamp
+  included, and its own superframe segment never enters the assembly and breaks it again
+  (`nxdn_sacch_break_superframe()`, the one rule the frame's classification and the SACCH decoder share, so a foreign
+  segment the public `nxdn_deperm_sacch_soft()` decodes outside any frame breaks it too), so no superframe mixes the
+  two channels' segments; and the frame skips the decoder's own carrier-sync stamp
   (`nxdn_mark_carrier_sync_active()`) and plays no voice (the frame-sync accept stamps no sync clock for any NXDN
   sync). A call on this site's control channel itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is
   the site's own.
