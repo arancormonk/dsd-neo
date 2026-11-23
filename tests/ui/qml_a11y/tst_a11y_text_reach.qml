@@ -338,7 +338,9 @@ Item {
             {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
                 reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
             {file: "MonitorScreen.qml", name: /^(liveLabelProbe|rowNameProbe|rowMetaProbe)$/,
-                reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
+                reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."},
+            {file: "SignalSearchScreen.qml", name: "lineMeasure",
+                reason: "wrappedLines()'s layout, never shown (visible: false); only the every-branch pass shows it."}
         ]
         property var used: ({})
 
@@ -664,6 +666,35 @@ Item {
         // (descriptionForInterface), so a description that repeats the name reads the words twice ("Tuning…,
         // Tuning…"). And with a detection's menu open from its history row, nothing of the screen under it is in the
         // tree: each part has its own navigation gate, so none is lifted over the covered panel.
+        // Issue #902: a Diagnostics row is read only while Pause holds the log. Streaming again (Resume), Qt's own
+        // interface for it is no stop and offers no SetFocus, not only nameless and out of the tree.
+        function test_diagnostics_rows_streaming_are_no_stop() {
+            diagnosticsLog.paused = false;
+            testContext.pushDiagnostic("reach stream line");
+            diagnosticsLog.refresh();
+            var screen = build({file: "DiagnosticsScreen"});
+            open(screen, {});
+            diagnosticsLog.paused = true;
+            waitForRendering(host);
+            var rows = [];
+            (function walk(item) {
+                for (var child of item.children) {
+                    if (typeof child.line === "string" && child.line.indexOf("reach stream line") >= 0)
+                        rows.push(child);
+                    walk(child);
+                }
+            })(screen);
+            verify(rows.length > 0, "the line is a row");
+            var row = rows[0];
+            var paused = testContext.accessibleNode(row);
+            verify(paused.inTree && paused.focusable, "paused: a stop in the tree");
+            diagnosticsLog.paused = false;
+            var streaming = testContext.accessibleNode(row);
+            var stop = streaming.focusable || streaming.actions.indexOf("SetFocus") >= 0;
+            dispose(screen);
+            verify(!streaming.inTree && streaming.name === "", "streaming: out of the tree, nameless");
+            verify(!stop, "streaming: no stop, " + JSON.stringify(streaming.actions));
+        }
         function test_3c_signal_search_now_panel_data() {
             var hit = {id: "41", freqMHz: "451.012500", frequency: 451012500, power: -32.1, range: "Local UHF"};
             return [
@@ -701,9 +732,29 @@ Item {
             verify(nodes.some(function (node) { return node.name === data.heard; }),
                    data.tag + ": \"" + data.heard + "\" is heard: " + JSON.stringify(nodes.map(function (n) { return n.name; })));
 
+            // Each reading's node made while it is a stop (a screen reader holds it from before the menu opened).
+            var readings = ["searchStrength", "searchIdentification", "searchDetail", "searchSaved"];
+            for (var shown of readings)
+                testContext.accessibleNode(findChild(screen, shown));
+            // Issue #902: a reading a screen reader's SetFocus gave the keyboard gives it back once it is covered.
+            var focused = null;
+            for (var candidate of readings) {
+                var reading = findChild(screen, candidate);
+                if (reading.text.length > 0 && testContext.accessibleNode(reading).focusable) {
+                    focused = reading;
+                    break;
+                }
+            }
+            if (focused !== null) {
+                testContext.accessibleDoAction(focused, "SetFocus");
+                verify(focused.activeFocus, data.tag + ": SetFocus gives the reading the keyboard");
+            }
             findChild(screen, "searchHistoryActions").activate();
             var menu = findChild(screen, "searchDetectionMenu");
             verify(menu.visible, "the row's menu is open");
+            if (focused !== null)
+                tryVerify(function () { return !focused.activeFocus && !focused.focus; }, 1000,
+                          data.tag + ": covered, the reading gives the keyboard back");
             waitForRendering(host);
             wait(20);
             var left = testContext.accessibleNodesUnder(screen).filter(function (node) {
@@ -712,10 +763,33 @@ Item {
                 return node.file + "#" + node.objectName + " " + JSON.stringify(node.name);
             });
             menu.cancel();
+            // Issue #902: Qt's own interface for each Now reading, not only its role. Qt makes a text a stop each time
+            // its role turns StaticText (the menu closing) and keeps that as the role turns Pane again, so under a
+            // sheet that leaves the panel enabled (unlike this menu) none may be a stop or offer SetFocus, and a
+            // cached node's SetFocus takes no keyboard.
+            tryVerify(function () { return !menu.visible; });
+            var sheet = Qt.createQmlObject("import QtQuick; Item {}", host);
+            var modals = Ui.Navigation.modals;
+            Ui.Navigation.modals = modals.concat([sheet]);
+            // The menu handed the keyboard back to the reading that had it; covered again, the reading lets it go.
+            tryVerify(function () {
+                return readings.every(function (name) { return !findChild(screen, name).activeFocus; });
+            }, 1000, data.tag + ": covered, no reading keeps the keyboard");
+            var stops = [];
+            for (var reading of readings) {
+                var line = findChild(screen, reading);
+                var native = testContext.accessibleNode(line);
+                testContext.accessibleDoAction(line, "SetFocus");
+                if (native.focusable || native.actions.indexOf("SetFocus") >= 0 || line.activeFocus)
+                    stops.push(reading + " " + JSON.stringify(native.actions));
+            }
+            Ui.Navigation.modals = modals;
+            sheet.destroy();
             dispose(screen);
             searchFake.status = {phase: 0};
             searchFake.history = [];
             compare(left.length, 0, data.tag + ": under the menu, still in the tree: " + JSON.stringify(left));
+            compare(stops.length, 0, data.tag + ": under a sheet, a reading is still a stop: " + JSON.stringify(stops));
         }
 
         // Each screen and card (every component test_3b leaves out), open with every branch shown, then covered by a
