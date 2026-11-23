@@ -1841,6 +1841,32 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
 }
 
 static void
+handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->state != DMR_SM_TUNED) {
+        return;
+    }
+
+    if (state && state->trunk_sm_force_release != 0) {
+        do_release(ctx, opts, state, "release-forced");
+        return;
+    }
+
+    if (slot < 0 || slot > 1) {
+        // Clear both slots for channel-wide release
+        ctx->slots[0].voice_active = 0;
+        ctx->slots[1].voice_active = 0;
+    } else {
+        ctx->slots[slot].voice_active = 0;
+    }
+
+    sm_log(opts, "release-requested");
+}
+
+static void
 tick_on_cc(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m) {
     if (!ctx->cc_acquiring && ctx->t_cc_sync_m <= 0.0) {
         ctx->t_cc_sync_m = now_m; // a carrier left without one (an abandoned call) still gets a window
@@ -2031,62 +2057,6 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
 
     if (dmr_sm_tuned_retention(ctx, opts, state, now_m, hangtime, grant_timeout, grant_timeout) == DMR_SM_HOLD_NONE) {
         do_release(ctx, opts, state, ctx->t_voice_m > 0.0 ? "hangtime-expired" : "grant-timeout");
-    }
-}
-
-/* A release of slot @p s alone (a Connect Plus slot termination, a P_CLEAR that forces nothing): the system ended that
-   slot's call, not the carrier's. Its liveness ends (its own hangtime tail stays, under the retention rule), and so
-   does everything that would still name a later transmission there: its record, its Capacity Plus seed and its share
-   of a status acquisition, and on the followed slot the followed grant's identity (never published into a later call
-   there, dmr_sm_voice_sync_publishes_grant()) and its acquisition (vc_media_heard: it no longer holds the slot in the
-   busy view). The companion slot's call, activity and hangtime are not touched. */
-static void
-dmr_sm_release_slot(dmr_sm_ctx_t* ctx, int s) {
-    ctx->slots[s].voice_active = 0;
-    dmr_sm_slot_identity_clear(&ctx->slots[s]);
-    dmr_sm_capplus_seed_clear(ctx, s);
-    ctx->vc_acquire_slots &= ~(1 << s);
-    if (s == ctx->vc_slot) {
-        dmr_sm_drop_grant_identity(ctx, s);
-        ctx->vc_media_heard = 1;
-    }
-}
-
-static void
-handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
-    if (!ctx) {
-        return;
-    }
-
-    if (ctx->state != DMR_SM_TUNED) {
-        return;
-    }
-
-    if (state && state->trunk_sm_force_release != 0) {
-        do_release(ctx, opts, state, "release-forced");
-        return;
-    }
-
-    if (slot < 0 || slot > 1) {
-        // Clear both slots for channel-wide release
-        ctx->slots[0].voice_active = 0;
-        ctx->slots[1].voice_active = 0;
-        sm_log(opts, "release-requested");
-        return;
-    }
-    dmr_sm_release_slot(ctx, slot);
-    sm_log(opts, "release-requested");
-    /* The followed slot's acquisition is over: with nothing else holding the carrier (the companion's live call or the
-       hangtime tail, as dmr_sm_end_changed_assignment() judges it), the follow ends now rather than at the grant
-       timeout. A return the tuner refuses is asked again at the next tick (the force-release latch). */
-    if (!opts || !state || slot != ctx->vc_slot) {
-        return;
-    }
-    const double now_m = dsd_decode_now_mono_s();
-    if (dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0)
-        == DMR_SM_HOLD_NONE) {
-        state->trunk_sm_force_release = 1;
-        do_release(ctx, opts, state, "release-slot");
     }
 }
 

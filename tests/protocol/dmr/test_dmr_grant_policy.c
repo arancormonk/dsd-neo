@@ -1401,78 +1401,6 @@ test_p_clear_scoped_to_its_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-/* Whether slot @p slot's call names talkgroup @p tg. */
-static int
-slot_call_names(const dsd_state* st, uint8_t slot, uint64_t tg) {
-    dsd_call_snapshot call;
-    return dsd_call_state_get(st, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == tg;
-}
-
-/* A release of the followed slot alone retires its grant: TG 100 (caller 88) is followed on TS1 before any TS1 voice.
-   Variant 0: a Tier III P_CLEAR on TS1 while TS2 carries voice (it forces nothing). Variant 1: a Connect Plus
-   termination naming TG 100 arriving on TS2 while TS2 carries voice. Either way TS2 keeps the carrier, its activity
-   untouched, the cleared slot no longer holds an acquisition, and the next TS1 voice sync, its header missed, is a new
-   transmission the old grant does not name. Variant 2: the Connect Plus termination with nothing else on the carrier
-   ends the acquisition, so the receiver returns to the control channel at once rather than waiting out the grant
-   timeout. */
-static int
-test_slot_release_retires_its_grant(dsd_opts* opts, dsd_state* st) {
-    int rc = 0;
-    for (int variant = 0; variant < 3; variant++) {
-        uint8_t bits[256];
-        uint8_t bytes[48];
-        if (variant == 0) {
-            status_env(opts, st);
-            status_window_closed(st);
-            build_grant(bits, bytes, 49U, 4U, 100U, 88U, 0U); // TV_GRANT on TS1
-            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-        } else {
-            con_plus_env(opts, st);
-            status_window_closed(st);
-            con_plus_voice(opts, st, 88U, 100U, 5U, 0U, 2U);
-        }
-        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-        rc |= expect_true("slot release: TG 100 followed on TS1",
-                          ctx->state == DMR_SM_TUNED && ctx->vc_slot == 0 && ctx->vc_tg == 100);
-        status_clock_at(1.0);
-        if (variant < 2) {
-            accepted_voice_now(opts, st, 1);
-            st->dmrburstR = 16U; // TS2 is voice
-            st->dmrburstL = 9U;
-        }
-        const double ts2_active_m = ctx->slots[1].last_active_m;
-        if (variant == 0) {
-            st->currentslot = 0;
-            build_p_clear(bits, bytes, 0U);
-        } else {
-            st->currentslot = variant == 1 ? 1 : 0;
-            build_con_plus_termination(bits, bytes, 100U);
-        }
-        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-        st->currentslot = 0;
-        if (variant == 2) {
-            rc |= expect_true("slot release: a termination ending the only acquisition returns to the control channel",
-                              ctx->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0);
-            status_env_done(st);
-            continue;
-        }
-        status_clock_at(1.05);
-        dmr_sm_busy_view_t view;
-        (void)dmr_sm_describe_held_calls(ctx, opts, st, dsd_decode_now_mono_s(), &view);
-        rc |= expect_true("slot release: the companion's call keeps the carrier, its activity untouched",
-                          ctx->state == DMR_SM_TUNED && opts->trunk_is_tuned == 1 && ctx->slots[1].voice_active == 1
-                              && fabs(ctx->slots[1].last_active_m - ts2_active_m) < 1e-9);
-        rc |= expect_true("slot release: the cleared slot holds no acquisition", view.held && view.members == 0x2);
-        accepted_voice_now(opts, st, 1);
-        accepted_voice_now(opts, st, 0);
-        rc |= expect_true(variant == 0 ? "slot release: a TS1 P_CLEAR retires the grant's identity"
-                                       : "slot release: a con+ termination retires the grant's identity",
-                          !slot_call_names(st, 0U, 100U));
-        status_env_done(st);
-    }
-    return rc;
-}
-
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -3496,7 +3424,6 @@ main(void) {
     rc |= test_con_plus_voice_grant_repeat_keeps_lc_call(opts, st);
     rc |= test_con_plus_termination_scoped_to_its_assignment(opts, st);
     rc |= test_p_clear_scoped_to_its_slot(opts, st);
-    rc |= test_slot_release_retires_its_grant(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

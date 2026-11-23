@@ -13848,13 +13848,7 @@ Private per-protocol modules worth knowing about:
     synthesizes) clears the payload channel it is sent on, a timeslot (TS 102 361-4 §7.1.1.3.2), so its release
     (`dmr_cspdu_pf0_p_clear_emit_release()`) names that slot alone: a live call on the other slot keeps the carrier,
     zero hangtime included, while the forced cases (the other slot free, the Hold talkgroup's call cleared) still
-    return to the control channel at once (`test_p_clear_scoped_to_its_slot()`). Either slot release
-    (`dmr_sm_release_slot()`) also retires what would name a later transmission on that slot: its record, its Cap+
-    seed and status-acquisition bit, and on the followed slot the followed grant's identity (never published into the
-    next call there, whose header may be missed) and its acquisition (it no longer holds the slot in the busy view).
-    With nothing else holding the carrier (the companion's live call or the hangtime tail), the release of the
-    followed slot returns to the control channel at once instead of at the grant timeout. The companion's call,
-    activity and hangtime are untouched (`test_slot_release_retires_its_grant()`).
+    return to the control channel at once (`test_p_clear_scoped_to_its_slot()`).
   - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;
     a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
     Hold; a followed Connect Plus data call is held as any followed call is (Hold, or a preempt past its dwell, takes
