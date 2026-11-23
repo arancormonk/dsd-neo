@@ -33,6 +33,7 @@
 #include "nxdn_confirm.h"
 #include "nxdn_const_reinclude.h" // IWYU pragma: keep
 #include "nxdn_internal.h"
+#include "test_support.h"
 
 static int
 expect_u8_at(const char* tag, size_t index, uint8_t got, uint8_t want) {
@@ -2510,6 +2511,56 @@ test_sacch_public_entry_decodes_then_commits(void) {
     return rc;
 }
 
+/* What decoding the VCALL @p bits printed, into @p out. */
+static int
+capture_vcall_print(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_vcall_key") != 0) {
+        return 1;
+    }
+    NXDN_Elements_Content_decode(opts, state, bits, 96U);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, out, out_size) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * With --show-keys, a VCALL whose cipher and key ID the hysteresis held back is printed with them, but not with a key
+ * value: the working key stays the applied pair's, which is not the key the VCALL named (issue #903). Two VCALLs naming
+ * the scrambler under key ID 5 load key 5; a lone VCALL naming DES under key ID 7 prints DES and key ID 7 and no value;
+ * its repeat, applied, prints key 7's value.
+ */
+static int
+test_held_back_vcall_prints_no_key_value(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    char out[2048];
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    use_nxdn48_keyloader(opts, state);
+    state->rkey_array[5] = 0x1111ULL;
+    opts->show_keys = 1;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 5U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("vcall-print-key-5-loaded", state->R == 0x1111ULL ? 1 : 0, 1);
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    rc |= capture_vcall_print(opts, state, bits, out, sizeof(out));
+    rc |= expect_int("vcall-print-held-back-names-des-7", strstr(out, "DES - Key ID 7") != NULL, 1);
+    rc |= expect_int("vcall-print-held-back-no-value", strstr(out, "Value:") != NULL, 0);
+    rc |= expect_int("vcall-print-held-back-no-key-5", strstr(out, "0000000000001111") != NULL, 0);
+    rc |= capture_vcall_print(opts, state, bits, out, sizeof(out));
+    rc |= expect_int("vcall-print-applied-value", strstr(out, "Value: 0000000000002222") != NULL, 1);
+    free_fixture(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2553,6 +2604,7 @@ main(void) {
     rc |= test_vcall_opening_the_next_call_takes_the_held_info1_cipher();
     rc |= test_accepted_info1_loads_its_key();
     rc |= test_dcr_reclaim_drops_the_info1_key();
+    rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

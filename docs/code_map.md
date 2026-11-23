@@ -2038,7 +2038,9 @@ suite runs under this compiler.
   cipher's. An IDAS INFO1 whose cipher and key ID take effect loads its key the same way (`nxdn_load_applied_key()`,
   the live call's target as the destination), at once, and again for the call a held INFO1 cipher is handed to
   (`nxdn_cipher_hand_hold_to_call()`), before that call is published or its voice decoded; a held-back INFO1 loads
-  none. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
+  none. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
+  redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
+  applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
   Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
   AES, and falls back to the direct key only when nothing usable was imported, judging that one by

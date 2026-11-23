@@ -3153,6 +3153,9 @@ nxdn_load_applied_key(const dsd_opts* opts, dsd_state* state) {
     nxdn_load_selected_key(opts, state, (uint8_t)state->nxdn_cipher_type, (int)state->nxdn_key, destination);
 }
 
+/* The VCALL's own cipher and key ID, as received, then the working key (through the key redaction) only when that pair
+   is the one applied (nxdn_vcall_apply_state()): a pair the hysteresis held back left the applied pair's key loaded,
+   which is not the key this VCALL named. */
 static void
 nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->cipher_type != 0U && info->message_type == 0x01U) {
@@ -3160,6 +3163,9 @@ nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const stru
         DSD_FPRINTF(stderr, "%s - ", NXDN_Cipher_Type_To_Str(info->cipher_type));
         DSD_FPRINTF(stderr, "Key ID %u - ", info->key_id & 0xFFU);
         DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+    if (state->nxdn_cipher_type != info->cipher_type || state->nxdn_key != info->key_id) {
+        return;
     }
     if (info->cipher_type == 0x01U && dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);

@@ -2694,6 +2694,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_proto_p25
             dsd-neo_core
             "-Wl,--end-group"
+            dsd-neo_test_support
             ${LIBS}
     )
 else()
@@ -2704,6 +2705,7 @@ else()
             dsd-neo_proto_dmr
             dsd-neo_proto_p25
             dsd-neo_core
+            dsd-neo_test_support
             ${LIBS}
     )
 endif()
