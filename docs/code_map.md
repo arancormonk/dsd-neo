@@ -12692,7 +12692,7 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     canonical call it names (`call_epoch`: that call's `dsd_call_snapshot_transmission()`; a VCALL's or SCCH's identity
     binds to the call on the air, and so does a follow's that found the announced call in place
     (`nxdn_on_air_call_is()`: its target, or none yet, as a late-entry call before its VCALL, never another target a
-    message named; and its kind when it has one; a follow that left the carrier ended the call
+    message named nor a DCR call, which its own Call message named; and its kind when it has one; a follow that left the carrier ended the call
     there, so an active one is on the followed carrier), whose release then ends the held call, so the next
     transmission never inherits its identity; any other follow's binds to the first call to begin after the tune, except
     the same call named again while its call is faded but may still be reacquired, `dsd_call_snapshot_may_reacquire()`,

@@ -1723,11 +1723,43 @@ nxdn_run_lapsed_call_same_carrier_duplicate_case(void) {
     return rc;
 }
 
+/* A confirmed DCR call opens on the receiver's channel, as a checked Call segment observes it
+ * (nxdn_update_sacch2_identity_state()): identity-less voice named "JPN DCR", no numeric party (issue #903). */
+static void
+dcr_call(void) {
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+}
+
+/* The held call for talkgroup 1400 awaits its call after the DCR call (epoch @p dcr_epoch) on the air when it was
+ * followed: a VCALL naming 1400 begins the announced call's own transmission, the call the held call binds to. */
+static int
+expect_awaited_call_binds(const char* name, uint64_t dcr_epoch) {
+    at_seconds(9802.0);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                             && call.epoch != dcr_epoch && call.policy_target_id == 1400U,
+                         name, "awaited", "the announced call's own transmission begins");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.gap == 0U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "awaited", "the held call binds to it, the call it awaited");
+    return rc;
+}
+
 /* What is on the air when the in-place follow of talkgroup 1400 arrives. */
 typedef enum {
     NXDN_ON_AIR_NAMED = 0, /* a call a VCALL named 1400 */
     NXDN_ON_AIR_ANONYMOUS, /* a late-entry call nothing has named yet */
     NXDN_ON_AIR_OTHER,     /* a call a VCALL named another talkgroup, 1600 */
+    NXDN_ON_AIR_DCR,       /* a DCR call ("JPN DCR"), which names no numeric party */
 } nxdn_on_air_kind;
 
 /* The receiver sits on a carrier (no grant tune) decoding a call (@p on_air), and follows an announcement of talkgroup
@@ -1736,10 +1768,11 @@ typedef enum {
  * has named, instead of awaiting a later one: the call's TX_REL ends it, and the next, anonymous transmission (past the
  * hangtime, or within it when @p within) inherits neither its identity nor its priority, so an outranking preempting
  * call on another channel never takes the receiver from it. A call on the air another message named is not the
- * announced one: the held call awaits the next call. */
+ * announced one, nor is a DCR call (issue #903): the held call awaits the next call, and the announced call's own
+ * transmission, when it begins, is the one it binds to. */
 static int
 nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air, int within) {
-    static const char* const on_air_names[] = {"named", "anonymous", "other"};
+    static const char* const on_air_names[] = {"named", "anonymous", "other", "dcr"};
     char name[96];
     DSD_SNPRINTF(name, sizeof name, "%s-in-place-follow-%s-%s", type_c ? "type-c" : "type-d", on_air_names[on_air],
                  within ? "within-hangtime" : "past-hangtime");
@@ -1760,6 +1793,8 @@ nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air,
     voice_live();
     if (on_air == NXDN_ON_AIR_ANONYMOUS) {
         late_entry_call();
+    } else if (on_air == NXDN_ON_AIR_DCR) {
+        dcr_call();
     } else {
         send_vcall(2200U, on_air == NXDN_ON_AIR_OTHER ? 1600U : 1400U);
     }
@@ -1779,10 +1814,13 @@ nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air,
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
                           && call.epoch == a_epoch,
                       name, "follow", "the call on the air stays");
-    if (on_air == NXDN_ON_AIR_OTHER) {
+    if (on_air == NXDN_ON_AIR_OTHER || on_air == NXDN_ON_AIR_DCR) {
         rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
                               && g_state.nxdn_call.call_epoch == 0U && g_state.nxdn_call.call_floor == a_epoch,
                           name, "follow", "a call another message named is not bound: the held call awaits the next");
+        if (on_air == NXDN_ON_AIR_DCR) {
+            rc |= expect_awaited_call_binds(name, a_epoch);
+        }
         return rc;
     }
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
@@ -1826,6 +1864,7 @@ nxdn_run_in_place_follow_binds_call_case(void) {
             rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_ANONYMOUS, within);
         }
         rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_OTHER, 0);
+        rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_DCR, 0);
     }
     return rc;
 }

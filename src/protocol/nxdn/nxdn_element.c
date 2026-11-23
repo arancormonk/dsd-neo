@@ -2074,13 +2074,16 @@ nxdn_end_left_call(dsd_opts* opts, dsd_state* state) {
 
 /* Whether the call on the air (slot 0's canonical call, active) is the one an announcement names: an NXDN call of
  * @p target, or one nothing has named yet (no target: late entry before its VCALL), whose kind, when it has one, is the
- * announcement's (a generic voice call is of either class). A call another message named is not it. */
+ * announcement's (a generic voice call is of either class). A call another message named is not it, and neither is a
+ * DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()): it names no numeric party, but its own Call message named it, never
+ * the announced one (issue #903). */
 static int
 nxdn_on_air_call_is(const dsd_state* state, uint32_t target, int private_call, int data_call) {
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof(call));
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol) || (call.policy_target_id != 0U && call.policy_target_id != target)) {
+        || !DSD_SYNC_IS_NXDN(call.protocol) || (call.policy_target_id != 0U && call.policy_target_id != target)
+        || dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
         return 0;
     }
     switch (call.kind) {
