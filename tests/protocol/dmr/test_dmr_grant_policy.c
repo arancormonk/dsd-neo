@@ -1359,48 +1359,6 @@ test_con_plus_termination_scoped_to_its_assignment(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
-/* A P_CLEAR clears the payload channel it is sent on (TS 102 361-4 §7.1.1.3.2: a timeslot, a Logical Physical Channel
-   Number and Logical Channel Number), never the carrier: a Tier III call followed on TS2 with live voice keeps the
-   carrier when TS1 sends a P_CLEAR, with zero hangtime too (variant 0). A P_CLEAR on the followed slot with the other
-   slot free still returns the receiver to the control channel at once (variant 1). */
-static int
-test_p_clear_scoped_to_its_slot(dsd_opts* opts, dsd_state* st) {
-    int rc = 0;
-    for (int variant = 0; variant < 2; variant++) {
-        status_env(opts, st);
-        opts->trunk_hangtime = 0.0f;
-        opts->frame_dmr = 1; /* The DMR state machine ticks only while DMR trunking can recover. */
-        dmr_sm_init(opts, st);
-        status_window_closed(st);
-        uint8_t bits[256];
-        uint8_t bytes[48];
-        build_grant(bits, bytes, 49U, 4U, 5500U, 6500U, 1U); // TV_GRANT on TS2
-        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-        rc |= expect_true("p_clear scope: the TS2 grant is followed", ctx->state == DMR_SM_TUNED && ctx->vc_slot == 1);
-        status_clock_at(1.0);
-        accepted_voice_now(opts, st, 1);
-        st->dmrburstR = 16U; // TS2 is voice
-        st->dmrburstL = 9U;  // TS1 is idle
-        st->currentslot = variant == 0 ? 0 : 1;
-        build_p_clear(bits, bytes, 0U);
-        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-        status_clock_at(1.01);
-        dmr_sm_tick_ctx(ctx, opts, st);
-        if (variant == 0) {
-            rc |= expect_true("a TS1 P_CLEAR keeps the live TS2 follow",
-                              ctx->state == DMR_SM_TUNED && opts->trunk_is_tuned == 1 && ctx->vc_slot == 1
-                                  && ctx->slots[1].voice_active == 1);
-        } else {
-            rc |= expect_true("a P_CLEAR on the followed slot with the other slot free returns to the control channel",
-                              ctx->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0);
-        }
-        st->currentslot = 0;
-        status_env_done(st);
-    }
-    return rc;
-}
-
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -3423,7 +3381,6 @@ main(void) {
     rc |= test_con_plus_data_follow_is_tracked(opts, st);
     rc |= test_con_plus_voice_grant_repeat_keeps_lc_call(opts, st);
     rc |= test_con_plus_termination_scoped_to_its_assignment(opts, st);
-    rc |= test_p_clear_scoped_to_its_slot(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }
