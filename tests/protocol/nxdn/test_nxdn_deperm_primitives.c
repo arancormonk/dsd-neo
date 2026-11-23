@@ -2368,14 +2368,17 @@ use_nxdn48_keyloader(dsd_opts* opts, dsd_state* state) {
 }
 
 /*
- * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903). During a scrambled DCR call an
- * INFO1 names the scrambler under key ID 5: key 5 is loaded, and the numbered call an INFO3 then opens reports key 5
- * with key 5 in R. The same for an INFO1 on an IDAS call of its own: two INFO1s naming the scrambler under key ID 7
- * load key 7. A lone INFO1 naming DES under key ID 5 then is held back and loads nothing.
+ * The key an accepted INFO1 selects is the working key, as a VCALL's is, once the INFO1 has taken effect (issue #903).
+ * During a scrambled DCR call an INFO1 names the scrambler under key ID 5: held for the call an SCCH opens from that
+ * transmission, it has not taken effect, so R stays the DCR call's while the DCR call keeps transmitting (a checked SB0
+ * that names no cipher). The numbered call an INFO3 then opens takes the held pair: it reports key 5 with key 5 in R.
+ * The same for an INFO1 on an IDAS call of its own: two INFO1s naming the scrambler under key ID 7 load key 7. A lone
+ * INFO1 naming DES under key ID 5 then is held back and loads nothing.
  */
 static int
 test_accepted_info1_loads_its_key(void) {
     static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (alloc_fixture(&opts, &state) != 0) {
@@ -2385,10 +2388,17 @@ test_accepted_info1_loads_its_key(void) {
     int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
     use_nxdn48_keyloader(opts, state);
     send_outbound_info1(opts, state, 1U, 5U);
-    rc |= expect_int("info1-key-loaded-at-once", state->R == 0x7777ULL ? 1 : 0, 1);
-    state->R = 0x1234ULL; /* whatever happened to the working key since, the hand-over loads the call's */
-    send_outbound_scch(opts, state, 1U);
+    rc |= expect_int("info1-key-held-keeps-dcr-key", state->R == 0x1234ULL ? 1 : 0, 1);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U); /* the DCR call goes on: an SB0 naming no cipher */
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
     dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-key-dcr-goes-on", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("info1-key-still-held", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR);
+    rc |= expect_int("info1-key-dcr-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
+    send_outbound_scch(opts, state, 1U);
     (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("info1-key-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
     rc |= expect_int("info1-key-numbered-kid", (int)call.kid, 5);

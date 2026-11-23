@@ -2035,10 +2035,11 @@ suite runs under this compiler.
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
   full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
-  cipher's. An IDAS INFO1 whose cipher and key ID take effect loads its key the same way (`nxdn_load_applied_key()`,
-  the live call's target as the destination), at once, and again for the call a held INFO1 cipher is handed to
-  (`nxdn_cipher_hand_hold_to_call()`), before that call is published or its voice decoded; a held-back INFO1 loads
-  none. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
+  cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
+  (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none. An
+  INFO1 held during a DCR call has not taken effect: the DCR call keeps its working key in R while the hold binds, so
+  nothing needs restoring when its own SACCH-2 reclaims the cipher, and the held pair's key is loaded only for the
+  call it is handed to (`nxdn_cipher_hand_hold_to_call()`), before that call is published or its voice decoded. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
   applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.

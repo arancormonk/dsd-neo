@@ -3143,8 +3143,8 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
 
 /* The working key for the applied cipher and key ID (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key), loaded as a
    VCALL loads its own (nxdn_load_selected_key()), the live call's target being the destination the NXDN48 fallback
-   reads: an INFO1 whose pair took effect, and the call a held INFO1 cipher is handed to, so the voice and the key
-   report read the key the applied pair names. */
+   reads: an INFO1 whose pair took effect on the live call, and the call a held INFO1 cipher is handed to (never the
+   DCR call it is held during), so the voice and the key report read the key the applied pair names. */
 static void
 nxdn_load_applied_key(const dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot call;
@@ -4302,8 +4302,10 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
                                                         after_dcr ? (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
                                                                   : (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    /* The pair took effect: its key is the working key at once, as a VCALL's is; a held-back INFO1 loads nothing. */
-    if (state->nxdn_cipher_type == info->cipher) {
+    /* The pair took effect: its key is the working key at once, as a VCALL's is; a held-back INFO1 loads nothing. One
+       held for the DCR call still live has not taken effect: the DCR call keeps its working key, and the call the hold
+       is handed to loads the pair's (nxdn_cipher_hand_hold_to_call()). */
+    if (!after_dcr && state->nxdn_cipher_type == info->cipher) {
         nxdn_load_applied_key(opts, state);
     }
     if (after_dcr) {
