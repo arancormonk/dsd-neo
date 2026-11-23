@@ -1517,9 +1517,13 @@ test_ratio_refusals(void) {
 
 /* What the polyphase sum makes of @p n inputs behind a history of taps_per_phase - 1 copies of (@p hi, @p hq), in
    double, from phase 0: the resampler's own outputs, at the same positions, for a history that held that value.
-   Returns the outputs written to @p out (room for max_out(@p n)), or (size_t)-1 when the work buffer fails. */
+   Returns the outputs written to @p out (room for max_out(@p n)), or (size_t)-1 when @p r holds no filter or the
+   work buffer fails. */
 static size_t
 reference_run(const dsd_iq_resampler* r, const float* in, size_t n, double hi, double hq, double* out) {
+    if (!r->configured || r->bank == NULL || r->taps_per_phase < 1 || r->L < 1 || r->M < 1) {
+        return (size_t)-1;
+    }
     const size_t T = (size_t)r->taps_per_phase;
     const size_t hist = T - 1U;
     double* ext = (double*)malloc((hist + n) * 2U * sizeof(double));
@@ -1530,8 +1534,9 @@ reference_run(const dsd_iq_resampler* r, const float* in, size_t n, double hi, d
         ext[2U * k] = hi;
         ext[2U * k + 1U] = hq;
     }
-    for (size_t k = 0; k < 2U * n; k++) {
-        ext[2U * hist + k] = (double)in[k];
+    for (size_t k = 0; k < n; k++) {
+        ext[2U * (hist + k)] = (double)in[2U * k];
+        ext[2U * (hist + k) + 1U] = (double)in[2U * k + 1U];
     }
     size_t produced = 0;
     int ph = 0;
