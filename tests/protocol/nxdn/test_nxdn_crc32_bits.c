@@ -21,7 +21,6 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "nxdn_crc.h"
-#include "nxdn_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
