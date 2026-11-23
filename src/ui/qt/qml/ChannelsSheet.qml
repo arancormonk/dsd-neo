@@ -119,13 +119,19 @@ ModalSheet {
     // map can list thousands, and each row is built when it is listed. Show
     // more channels adds the next page; the sheet opens on the first again,
     // and holds no rows past it. The channels with no frequency are paged the
-    // same way: the ledger can hold every channel number (4094).
+    // same way: the ledger can hold every channel number (4094), and the
+    // model builds only the rows of the pages shown (missingLimit).
     readonly property int channelPageSize: 50
     property int channelLimit: channelPageSize
     readonly property var allChannels: channels.channels
     readonly property var channelPage: allChannels.length > channelLimit ? allChannels.slice(0, channelLimit) : allChannels
     property int missingLimit: channelPageSize
-    readonly property var missingPage: missingEntries.length > missingLimit ? missingEntries.slice(0, missingLimit) : missingEntries
+    readonly property var missingPage: channels.missingPage
+    Binding {
+        target: sheet.channels
+        property: "missingLimit"
+        value: sheet.missingLimit
+    }
     // Edits the decoder made whose save failed (the saved system could not be
     // written), the latest for each system and channel: Try saving again saves
     // them. Kept while the sheet is closed; a save that cannot work (the system
@@ -234,7 +240,11 @@ ModalSheet {
     // Issue #782: with a screen reader on, the channels without a frequency
     // in channel order; most recently heard first moves a row with each grant
     // heard again, and Qt's bridge tells Android nothing of a move.
-    readonly property var missingEntries: screenReader.active ? channels.missingByChannel : channels.missing
+    Binding {
+        target: sheet.channels
+        property: "missingInChannelOrder"
+        value: screenReader.active
+    }
 
     function openEditor(lpcn, listed) {
         if (readOnly)
@@ -261,7 +271,7 @@ ModalSheet {
         var first = missingLimit;
         var focusHere = moreMissingButton.activeFocus;
         missingLimit += channelPageSize;
-        if (focusHere && missingEntries.length <= missingLimit)
+        if (focusHere && channels.missingCount <= missingLimit)
             Qt.callLater(sheet.focusMissingAt, first);
     }
     function focusMissingAt(at) {
@@ -722,7 +732,7 @@ ModalSheet {
         id: moreMissingButton
         objectName: "channelsMissingShowMore"
         width: parent.width
-        visible: sheet.missingEntries.length > sheet.missingLimit
+        visible: sheet.channels.missingCount > sheet.missingLimit
         text: qsTr("Show more channels without a frequency")
         onClicked: sheet.showMoreMissing()
     }

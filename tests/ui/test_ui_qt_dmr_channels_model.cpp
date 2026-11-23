@@ -136,25 +136,28 @@ test_rows() {
                && dsd_tg_policy_append_exact(g_fixture->state.get(), &entry) == 0);
     dsd_qt::DmrChannelsModel model;
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
-    expect("closed, nothing is read", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
+    expect("closed, nothing is read", model.missingPage().isEmpty() && model.channels().isEmpty() && !model.present());
     model.setActive(true);
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("the most recently heard first, then the rest by channel",
-           lpcns(model.missing()) == QList<int>({12, 7, 40}));
-    expect("the reading order is by channel", lpcns(model.missingByChannel()) == QList<int>({7, 12, 40}));
+           lpcns(model.missingPage()) == QList<int>({12, 7, 40}));
     expect("the count holds every ledger channel", model.missingCount() == 3);
-    const QVariantMap twelve = model.missing().at(0).toMap();
+    const QVariantList recent = model.missingPage();
+    model.setMissingInChannelOrder(true);
+    expect("the reading order is by channel", lpcns(model.missingPage()) == QList<int>({7, 12, 40}));
+    model.setMissingInChannelOrder(false);
+    const QVariantMap twelve = recent.at(0).toMap();
     expect("a group grant's row",
            twelve.value("detailed").toBool() && twelve.value("slot").toInt() == 1 && twelve.value("group").toBool()
                && !twelve.value("data").toBool() && twelve.value("recipient").toUInt() == 1234U
                && twelve.value("caller").toUInt() == 5001U && twelve.value("lastHeardMs").toLongLong() == 2000
                && !twelve.value("unverified").toBool());
     expect("names the talkgroup", twelve.value("recipientName").toString() == QStringLiteral("Dispatch"));
-    const QVariantMap seven = model.missing().at(1).toMap();
+    const QVariantMap seven = recent.at(1).toMap();
     expect("a private grant's row: slot 2, caller and called radio",
            seven.value("slot").toInt() == 2 && !seven.value("group").toBool()
                && seven.value("recipient").toUInt() == 5003U && seven.value("caller").toUInt() == 5002U);
-    const QVariantMap forty = model.missing().at(2).toMap();
+    const QVariantMap forty = recent.at(2).toMap();
     expect("past the details only the channel is known, unchecked without a checked grant",
            !forty.value("detailed").toBool() && forty.value("unverified").toBool() && forty.value("slot").toInt() == 0);
 
@@ -244,7 +247,7 @@ test_no_churn() {
     expect("the session's saved system", model.sessionHasSavedSystem() && stateSignals == 5);
 
     model.replaceForTarget(g_fixture->opts.get(), nullptr);
-    expect("no live session: no rows", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
+    expect("no live session: no rows", model.missingPage().isEmpty() && model.channels().isEmpty() && !model.present());
     model.replaceForTarget(g_fixture->opts.get(), g_fixture->state.get());
     expect("a new target's rows in one replacement", model.missingCount() == 4 && model.channels().size() == 7);
     model.setActive(false);
@@ -300,8 +303,8 @@ test_other_system_offers_no_edits() {
     g_fixture->view.tier3 = 0U;
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("another system: no edits", !model.editable() && model.otherSystemHere() && stateSignals == 1);
-    expect("and no Tier III rows", model.missing().isEmpty() && model.missingByChannel().isEmpty()
-                                       && model.missingCount() == 0 && model.channels().isEmpty());
+    expect("and no Tier III rows",
+           model.missingPage().isEmpty() && model.missingCount() == 0 && model.channels().isEmpty());
     expect("and no channel to edit",
            !model.channel(20).value("valid").toBool() && model.channel(20).value("hz").toLongLong() == 0);
     g_fixture->view.other_system_here = 0U;
@@ -342,7 +345,7 @@ test_repeated_grant_builds_only_the_missing_rows() {
     }
     expect("repeated grants build no Channels row", model.channelRowBuilds() == 1U && channelSignals == 0);
     expect("and refresh the missing rows",
-           missingSignals == 5 && model.missing().at(0).toMap().value("lastHeardMs").toLongLong() == 7000);
+           missingSignals == 5 && model.missingPage().at(0).toMap().value("lastHeardMs").toLongLong() == 7000);
     dsd_tg_policy_entry entry = {};
     expect("a talkgroup name",
            dsd_tg_policy_make_exact_entry(1234U, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0
@@ -350,7 +353,7 @@ test_repeated_grant_builds_only_the_missing_rows() {
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("a name learned renames a missing row and builds no Channels row",
            model.channelRowBuilds() == 1U && missingSignals == 6
-               && model.missing().at(0).toMap().value("recipientName").toString() == QStringLiteral("Dispatch"));
+               && model.missingPage().at(0).toMap().value("recipientName").toString() == QStringLiteral("Dispatch"));
     set_row(18U, 451025000L);
     g_fixture->view.revision++;
     g_fixture->view.content_seq++;
@@ -379,6 +382,38 @@ test_repeated_grant_builds_only_the_missing_rows() {
     DSD_MEMSET(g_fixture->state->trunk_chan_map, 0, sizeof g_fixture->state->trunk_chan_map);
 }
 
+/* Review gate b-r7 V2: the ledger can hold every channel number, and only the page the sheet shows is built as rows.
+ * A grant heard again builds at most that page again; a larger limit or the other order builds the new page. */
+void
+test_missing_rows_are_built_a_page_at_a_time() {
+    seed_view();
+    for (uint16_t lpcn = 1U; lpcn <= 4094U; ++lpcn) {
+        set_bit(g_fixture->view.missing.missing, lpcn);
+    }
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("the count is every channel", model.missingCount() == 4094);
+    expect("the page is the first 50, the details first",
+           model.missingPage().size() == 50 && lpcns(model.missingPage()).mid(0, 3) == QList<int>({12, 7, 1}));
+    expect("and only it was built", model.missingRowBuilds() <= 50U);
+    const quint64 before = model.missingRowBuilds();
+    g_fixture->view.missing.details[0].last_heard_ms += 1000U; // channel 12 granted again
+    g_fixture->view.missing.revision++;
+    g_fixture->view.missing_seq++;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("a grant heard again builds at most one page", model.missingRowBuilds() - before <= 50U);
+    expect("and shows it", model.missingPage().at(0).toMap().value("lastHeardMs").toLongLong() == 3000);
+    model.setMissingLimit(100);
+    expect("the next page: 100 rows", model.missingPage().size() == 100 && model.missingRowBuilds() - before <= 150U);
+    model.setMissingInChannelOrder(true);
+    expect("by channel: 1..100", lpcns(model.missingPage()).first() == 1 && lpcns(model.missingPage()).last() == 100);
+    expect("an edit's channel past the page is still missing", model.channel(4000).value("missing").toBool());
+    model.setMissingLimit(0);
+    expect("a page holds one row at least", model.missingLimit() == 1 && model.missingPage().size() == 1);
+    DSD_MEMSET(g_fixture->view.missing.missing, 0, sizeof g_fixture->view.missing.missing);
+}
+
 /* Review gate b-r4 S10: a live mode change left DMR off (dmr_decoding 0). No Tier III lookup reads the channels, and
  * the decoder refuses every edit, so an open sheet lists no rows and offers no edit, as for another system, until DMR
  * is decoded again; the flag moves the rows by itself. */
@@ -393,7 +428,7 @@ test_not_decoding_dmr_offers_no_edits() {
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("not decoding DMR: no edits", !model.editable() && !model.dmrDecoding() && !model.otherSystemHere());
     expect("and no Tier III rows",
-           model.missing().isEmpty() && model.missingCount() == 0 && model.channels().isEmpty());
+           model.missingPage().isEmpty() && model.missingCount() == 0 && model.channels().isEmpty());
     expect("and no channel to edit", !model.channel(20).value("valid").toBool());
     g_fixture->view.dmr_decoding = 1U;
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
@@ -428,6 +463,7 @@ main(int argc, char** argv) {
     test_rows_read_the_effective_frequency();
     test_other_system_offers_no_edits();
     test_repeated_grant_builds_only_the_missing_rows();
+    test_missing_rows_are_built_a_page_at_a_time();
     test_not_decoding_dmr_offers_no_edits();
     test_origin_keys();
     g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;

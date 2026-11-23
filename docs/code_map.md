@@ -17757,10 +17757,12 @@ Qt Quick frontend (`src/ui/qt`):
 - DMR Tier III channels (discussion #900 F3). `DmrChannelsModel` (`dmr_channels_model.{h,cpp}`, the QML context property
   `dmrChannels`) reads the snapshot's Tier III view (`dsd_app_dmr_t3_view()`) only while a sheet holds it `active`;
   opening reads the held snapshot at once (`UiController::onDmrChannelsActiveChanged()`), a tick refreshes it, and a new
-  trunk-scan target replaces its rows in one go (`replaceForTarget()`). It publishes `missing` (newest first, then the
-  rest by channel), `missingByChannel` (the fixed order a screen reader gets), `channels` (by channel, each with its
-  origin key: file, user, hidden, site, unchecked, neighbour, estimated, and the view's `channel_hz`, the frequency DMR
-  uses, never the shared map row another protocol can empty or fill under an entry), the edit's expectations
+  trunk-scan target replaces its rows in one go (`replaceForTarget()`). It publishes `missingPage` (the first
+  `missingLimit` ledger channels, newest first then the rest by channel, or by channel when `missingInChannelOrder`,
+  the fixed order a screen reader gets; the sheet binds both), `missingCount` (every ledger channel), `channels` (by
+  channel, each with its origin key: file, user, hidden, site, unchecked, neighbour, estimated, and the view's
+  `channel_hz`, the frequency DMR uses, never the shared map row another protocol can empty or fill under an entry),
+  the edit's expectations
   (`generation`, `revision`, `session`, `channel(lpcn)`), `tier3`, `ccHz`/`ccConfirmedHere`, `trunkScanActive`,
   `otherSystemHere` (the view's `other_system_here`: both lists empty and `channel()` not `valid`, since that map is the
   other system's), `dmrDecoding` (the view's `dmr_decoding`, true while no view is known: off after a live mode change
@@ -17768,9 +17770,12 @@ Qt Quick frontend (`src/ui/qt`):
   binds the saved system the session runs). The two lists are rebuilt apart, each from its part of the view: the
   missing rows when the view's `missing_seq` or a name list moved, the Channels rows (up to 4094) when its
   `content_seq` did (`channelRowBuilds()` counts those builds), and both when a flag that emptied the lists cleared,
-  so a grant heard again on a channel with no frequency rebuilds only the missing rows; a list is published only when
-  it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked Tier III identity, or
-  the view's `overrides_applied`: the saved system's channels file applied to this session; the path alone says nothing,
+  so a grant heard again on a channel with no frequency rebuilds only the missing rows, and of those only the page
+  shown (review gate b-r7 V2: the model keeps the ledger's sets and its named details, and builds `missingPage` from
+  them, also when the limit or the order moves; `missingRowBuilds()` counts the rows built); a list is published only
+  when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked Tier III
+  identity, or the view's `overrides_applied`: the saved system's channels file applied to this session; the path
+  alone says nothing,
   since the engine leaves it set when it skipped the file) and `dmrUserChannels` (the live overlay holds rows; never
   Tier III identity), all three off while the view's `other_system_here` says the carrier names another system or its
   `dmr_decoding` says the session no longer decodes DMR (`noFreqCount` is `dsd_app_dmr_t3_view_missing_shown()`, which
@@ -17791,8 +17796,9 @@ Qt Quick frontend (`src/ui/qt`):
   named, and the engine applies the file only to a session that decodes DMR frames and runs no trunk scan (any other
   starts without it, with a notice). A file that cannot be written never stops the start: it starts without the
   option, logs a warning and posts a `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists
-  as `unwritten` (store `dmr-channels`) on Home's notice card. A backup carries those files as generated configuration, and
-  removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds; 50 rows, "Show more
+  as `unwritten` (store `dmr-channels`) on Home's notice card. A backup carries those files as generated
+  configuration, and removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds;
+  50 rows, "Show more
   channels without a frequency" adds 50, the ledger can hold 4094) and "Channels" (tap edits; 50 rows by channel, "Show
   more channels" adds 50), each holding rows only up to the pages shown and back to the first page on close, with an
   "Add channel" button; it owns the request in flight, so an answer that comes while the editor or the sheet is closed

@@ -11,8 +11,10 @@
  * the channel map or the user's overlay, each named by its decimal LPCN. The two are read apart, each from its own part
  * of the view: the missing rows are rebuilt when the ledger was copied anew (missing_seq) or a name list changed, the
  * mapped channels (up to 4094 rows) only when the channel rows were (content_seq), so a grant heard again on a channel
- * with no frequency costs one ledger walk. A list is published only when its rows differ, so a sheet a screen reader
- * reads sees no churn from repeated grants (#782). While the sheet is closed (active false) nothing is read. While the carrier names
+ * with no frequency costs one ledger walk. Of the missing channels (the ledger can hold 4094) only the page the sheet
+ * shows is built as rows (missingPage: the first missingLimit, in the order missingInChannelOrder picks), so a grant
+ * heard again builds at most one page (review gate b-r7 V2). A list is published only when its rows differ, so a sheet
+ * a screen reader reads sees no churn from repeated grants (#782). While the sheet is closed (active false) nothing is read. While the carrier names
  * another system (other_system_here), or the session does not decode DMR now (dmr_decoding 0), both lists are empty
  * and no channel is offered for an edit: no Tier III lookup reads them there.
  */
@@ -41,13 +43,19 @@ class DmrChannelsModel : public QObject {
      *  (UiController, on activeChanged), so the sheet never shows the rows of an earlier opening. */
     Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
     /**
-     * @brief The channels granted without a frequency, the most recently heard first and then the rest by channel:
-     * {lpcn, slot (1 or 2, 0 unknown), group, data, caller, recipient, callerName, recipientName, lastHeardMs
-     * (dsd_decode_now_mono_ms() stamp, 0 unknown), unverified, detailed (false: only the channel is known)}.
+     * @brief The first missingLimit channels granted without a frequency, the most recently heard first and then the
+     * rest by channel, or (missingInChannelOrder) all by channel: {lpcn, slot (1 or 2, 0 unknown), group, data, caller,
+     * recipient, callerName, recipientName, lastHeardMs (dsd_decode_now_mono_ms() stamp, 0 unknown), unverified (the
+     * latest grant's, or for a channel past the details whether no checked grant named it), detailed (false: only the
+     * channel is known)}.
      */
-    Q_PROPERTY(QVariantList missing READ missing NOTIFY missingChanged)
-    /** @brief The same rows by channel number ascending: the fixed reading order under a screen reader. */
-    Q_PROPERTY(QVariantList missingByChannel READ missingByChannel NOTIFY missingChanged)
+    Q_PROPERTY(QVariantList missingPage READ missingPage NOTIFY missingChanged)
+    /** @brief How many missing channels missingPage holds at most (the sheet's pages shown); 1 or more. */
+    Q_PROPERTY(int missingLimit READ missingLimit WRITE setMissingLimit NOTIFY missingChanged)
+    /** @brief missingPage by channel number ascending: the fixed reading order under a screen reader. */
+    Q_PROPERTY(
+        bool missingInChannelOrder READ missingInChannelOrder WRITE setMissingInChannelOrder NOTIFY missingChanged)
+    /** @brief Every channel in the ledger, the ones past missingPage included. */
     Q_PROPERTY(int missingCount READ missingCount NOTIFY missingChanged)
     /**
      * @brief The channels with a frequency or an entry of the user's, by channel number ascending: {lpcn, hz (the
@@ -130,18 +138,27 @@ class DmrChannelsModel : public QObject {
     static QString originKey(int originCode, bool hidden);
 
     QVariantList
-    missing() const {
-        return m_missing;
-    }
-
-    QVariantList
-    missingByChannel() const {
-        return m_missingByChannel;
+    missingPage() const {
+        return m_missingPage;
     }
 
     int
+    missingLimit() const {
+        return m_missingLimit;
+    }
+
+    void setMissingLimit(int limit);
+
+    bool
+    missingInChannelOrder() const {
+        return m_missingInChannelOrder;
+    }
+
+    void setMissingInChannelOrder(bool byChannel);
+
+    int
     missingCount() const {
-        return static_cast<int>(m_missingByChannel.size());
+        return m_missingCount;
     }
 
     QVariantList
@@ -213,6 +230,12 @@ class DmrChannelsModel : public QObject {
     quint64
     channelRowBuilds() const {
         return m_channelRowBuilds;
+    }
+
+    /** @brief How many missing-channel rows were built in all (tests read it: a grant heard again builds one page). */
+    quint64
+    missingRowBuilds() const {
+        return m_missingRowBuilds;
     }
 
     QString
@@ -290,15 +313,27 @@ class DmrChannelsModel : public QObject {
         bool operator==(const State& other) const;
     };
 
+    /* A ledger detail (the latest grant that named the channel) with the names the lists gave its parties. */
+    struct MissingDetail {
+        dsd_ui_dmr_t3_missing_detail grant;
+        QString callerName;
+        QString recipientName;
+    };
+
     /* Each list whose part of @p view moved since the last build (all of them before the first). */
     void rebuildMoved(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
     void rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
     void rebuildChannels(const dsd_ui_dmr_t3_view& view);
     void publishState(const State& next);
-    void publishMissing(const QVariantList& recentRows, const QVariantList& byChannelRows);
+    /* Build missingPage from the ledger kept, and publish it with the count when either differs (true: published). */
+    bool publishMissingPage();
+    /* Channel @p lpcn's missing row: from @p detail when the ledger details it (nullptr: only the channel). */
+    QVariantMap missingRow(uint16_t lpcn, const MissingDetail* detail);
+    const MissingDetail* missingDetail(uint16_t lpcn) const;
+    bool missingHas(uint16_t lpcn) const;
     void publishChannels(const QVariantList& channelRows);
-    void publishLists(const QVariantList& recentRows, const QVariantList& byChannelRows,
-                      const QVariantList& channelRows);
+    /* No Tier III rows: the ledger kept and both lists emptied. */
+    void dropLists();
 
     bool m_active = false;
     bool m_built = false;
@@ -309,10 +344,18 @@ class DmrChannelsModel : public QObject {
     QString m_sessionSystemUid;
     /* The decode clock decodeNowMs() reads (dsd_decode_now_mono_ms()). */
     uint64_t (*m_decodeNowMs)(void);
-    QVariantList m_missing;
-    QVariantList m_missingByChannel;
+    /* The ledger as last read (its sets; details holds no names), the details still missing with their names, newest
+       first, and how many channels it holds. */
+    dsd_ui_dmr_t3_missing m_ledger{};
+    QList<MissingDetail> m_details;
+    int m_missingCount = 0;
+    int m_missingLimit = 50;
+    bool m_missingInChannelOrder = false;
+    QVariantList m_missingPage;
+    int m_publishedMissingCount = 0;
     QVariantList m_channels;
     quint64 m_channelRowBuilds = 0;
+    quint64 m_missingRowBuilds = 0;
 };
 
 } // namespace dsd_qt

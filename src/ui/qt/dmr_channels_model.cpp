@@ -70,42 +70,6 @@ class OverlayCursor {
     uint16_t m_next = 0;
 };
 
-/* Ledger channel @p lpcn as a row: with the latest grant that named it while the ledger details it. */
-QVariantMap
-missing_row(const dsd_ui_dmr_t3_view& view, uint16_t lpcn, const dsd_state* snapshot) {
-    const uint8_t details = view.missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view.missing.detail_count : 0U;
-    for (uint8_t i = 0; i < details; ++i) {
-        const dsd_ui_dmr_t3_missing_detail& d = view.missing.details[i];
-        if (d.lpcn != lpcn) {
-            continue;
-        }
-        return {{QStringLiteral("lpcn"), lpcn},
-                {QStringLiteral("detailed"), true},
-                {QStringLiteral("slot"), (d.slot & 1U) + 1},
-                {QStringLiteral("group"), d.group != 0U},
-                {QStringLiteral("data"), d.data != 0U},
-                {QStringLiteral("unverified"), d.unverified != 0U},
-                {QStringLiteral("caller"), QVariant::fromValue<quint32>(d.caller)},
-                {QStringLiteral("recipient"), QVariant::fromValue<quint32>(d.recipient)},
-                {QStringLiteral("callerName"), radio_name(snapshot, d.caller)},
-                {QStringLiteral("recipientName"),
-                 d.group != 0U ? group_name(snapshot, d.recipient) : radio_name(snapshot, d.recipient)},
-                {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(static_cast<qint64>(d.last_heard_ms))}};
-    }
-    /* Past the ledger's details only the channel is known. */
-    return {{QStringLiteral("lpcn"), lpcn},
-            {QStringLiteral("detailed"), false},
-            {QStringLiteral("slot"), 0},
-            {QStringLiteral("group"), false},
-            {QStringLiteral("data"), false},
-            {QStringLiteral("unverified"), ((view.missing.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U) == 0U},
-            {QStringLiteral("caller"), QVariant::fromValue<quint32>(0U)},
-            {QStringLiteral("recipient"), QVariant::fromValue<quint32>(0U)},
-            {QStringLiteral("callerName"), QString()},
-            {QStringLiteral("recipientName"), QString()},
-            {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(0)}};
-}
-
 } // namespace
 
 DmrChannelsModel::DmrChannelsModel(QObject* parent) : QObject(parent), m_decodeNowMs(&dsd_decode_now_mono_ms) {}
@@ -164,12 +128,98 @@ DmrChannelsModel::publishState(const State& next) {
 }
 
 void
-DmrChannelsModel::publishMissing(const QVariantList& recentRows, const QVariantList& byChannelRows) {
-    if (recentRows != m_missing || byChannelRows != m_missingByChannel) {
-        m_missing = recentRows;
-        m_missingByChannel = byChannelRows;
-        Q_EMIT missingChanged();
+DmrChannelsModel::setMissingLimit(int limit) {
+    const int next = std::max(limit, 1);
+    if (next == m_missingLimit) {
+        return;
     }
+    m_missingLimit = next;
+    if (!publishMissingPage()) {
+        Q_EMIT missingChanged(); // the limit itself
+    }
+}
+
+void
+DmrChannelsModel::setMissingInChannelOrder(bool byChannel) {
+    if (byChannel == m_missingInChannelOrder) {
+        return;
+    }
+    m_missingInChannelOrder = byChannel;
+    if (!publishMissingPage()) {
+        Q_EMIT missingChanged(); // the order itself
+    }
+}
+
+bool
+DmrChannelsModel::missingHas(uint16_t lpcn) const {
+    return lpcn > 0U && lpcn < static_cast<uint16_t>(DSD_UI_DMR_T3_ROWS)
+           && ((m_ledger.missing[lpcn >> 3] >> (lpcn & 7U)) & 1U) != 0U;
+}
+
+const DmrChannelsModel::MissingDetail*
+DmrChannelsModel::missingDetail(uint16_t lpcn) const {
+    const auto it = std::find_if(m_details.cbegin(), m_details.cend(),
+                                 [lpcn](const MissingDetail& d) { return d.grant.lpcn == lpcn; });
+    return it != m_details.cend() ? &*it : nullptr;
+}
+
+QVariantMap
+DmrChannelsModel::missingRow(uint16_t lpcn, const MissingDetail* detail) {
+    ++m_missingRowBuilds;
+    if (detail != nullptr) {
+        const dsd_ui_dmr_t3_missing_detail& d = detail->grant;
+        return {{QStringLiteral("lpcn"), lpcn},
+                {QStringLiteral("detailed"), true},
+                {QStringLiteral("slot"), (d.slot & 1U) + 1},
+                {QStringLiteral("group"), d.group != 0U},
+                {QStringLiteral("data"), d.data != 0U},
+                {QStringLiteral("unverified"), d.unverified != 0U},
+                {QStringLiteral("caller"), QVariant::fromValue<quint32>(d.caller)},
+                {QStringLiteral("recipient"), QVariant::fromValue<quint32>(d.recipient)},
+                {QStringLiteral("callerName"), detail->callerName},
+                {QStringLiteral("recipientName"), detail->recipientName},
+                {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(static_cast<qint64>(d.last_heard_ms))}};
+    }
+    /* Past the ledger's details only the channel is known, and whether a checked grant ever named it. */
+    return {{QStringLiteral("lpcn"), lpcn},
+            {QStringLiteral("detailed"), false},
+            {QStringLiteral("slot"), 0},
+            {QStringLiteral("group"), false},
+            {QStringLiteral("data"), false},
+            {QStringLiteral("unverified"), ((m_ledger.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U) == 0U},
+            {QStringLiteral("caller"), QVariant::fromValue<quint32>(0U)},
+            {QStringLiteral("recipient"), QVariant::fromValue<quint32>(0U)},
+            {QStringLiteral("callerName"), QString()},
+            {QStringLiteral("recipientName"), QString()},
+            {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(0)}};
+}
+
+bool
+DmrChannelsModel::publishMissingPage() {
+    QVariantList page;
+    const qsizetype limit = m_missingLimit;
+    /* Most recently heard first: the details, newest first, then every other ledger channel by LPCN. */
+    if (!m_missingInChannelOrder) {
+        for (qsizetype i = 0; i < m_details.size() && page.size() < limit; ++i) {
+            page.append(missingRow(m_details.at(i).grant.lpcn, &m_details.at(i)));
+        }
+    }
+    for (uint16_t lpcn = 1U; lpcn <= static_cast<uint16_t>(maxChannel()) && page.size() < limit; ++lpcn) {
+        if (!missingHas(lpcn)) {
+            continue;
+        }
+        const MissingDetail* detail = missingDetail(lpcn);
+        if (detail == nullptr || m_missingInChannelOrder) {
+            page.append(missingRow(lpcn, detail));
+        }
+    }
+    if (page != m_missingPage || m_missingCount != m_publishedMissingCount) {
+        m_missingPage = std::move(page);
+        m_publishedMissingCount = m_missingCount;
+        Q_EMIT missingChanged();
+        return true;
+    }
+    return false;
 }
 
 void
@@ -181,10 +231,12 @@ DmrChannelsModel::publishChannels(const QVariantList& channelRows) {
 }
 
 void
-DmrChannelsModel::publishLists(const QVariantList& recentRows, const QVariantList& byChannelRows,
-                               const QVariantList& channelRows) {
-    publishMissing(recentRows, byChannelRows);
-    publishChannels(channelRows);
+DmrChannelsModel::dropLists() {
+    m_ledger = dsd_ui_dmr_t3_missing{};
+    m_details.clear();
+    m_missingCount = 0;
+    publishMissingPage();
+    publishChannels({});
 }
 
 void
@@ -193,7 +245,7 @@ DmrChannelsModel::clear() {
     m_contentSeq = 0;
     m_missingSeq = 0;
     m_nameKey = 0;
-    publishLists({}, {}, {});
+    dropLists();
     publishState(State());
 }
 
@@ -215,7 +267,7 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     const dsd_ui_dmr_t3_view* view = dsd_app_dmr_t3_view(snapshot);
     if (view == nullptr || view->present == 0U) {
         m_built = false;
-        publishLists({}, {}, {});
+        dropLists();
         State none;
         none.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
         none.dmrDecoding = view == nullptr || view->dmr_decoding != 0U;
@@ -238,7 +290,7 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
         /* Another system's map, or a session that no longer decodes DMR: no Tier III rows, and nothing to edit. The
            flags can move without a new body, so the rows are read again once they clear. */
         m_built = false;
-        publishLists({}, {}, {});
+        dropLists();
     } else {
         rebuildMoved(*view, snapshot);
     }
@@ -263,25 +315,19 @@ DmrChannelsModel::rebuildMoved(const dsd_ui_dmr_t3_view& view, const dsd_state* 
 
 void
 DmrChannelsModel::rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot) {
-    QVariantList recent, byChannel;
-    /* The details first, newest first, then every other ledger channel by LPCN. */
+    m_ledger = view.missing;
+    m_details.clear();
+    /* The details still missing, newest first, with the names their parties have now. */
     const uint8_t details = view.missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view.missing.detail_count : 0U;
     for (uint8_t i = 0; i < details; ++i) {
-        const uint16_t lpcn = view.missing.details[i].lpcn;
-        if (dsd_app_dmr_t3_view_missing_has(&view, lpcn)) {
-            recent.append(missing_row(view, lpcn, snapshot));
+        const dsd_ui_dmr_t3_missing_detail& d = view.missing.details[i];
+        if (dsd_app_dmr_t3_view_missing_has(&view, d.lpcn) && missingDetail(d.lpcn) == nullptr) {
+            m_details.append({d, radio_name(snapshot, d.caller),
+                              d.group != 0U ? group_name(snapshot, d.recipient) : radio_name(snapshot, d.recipient)});
         }
     }
-    for (uint16_t lpcn = 1U; lpcn <= static_cast<uint16_t>(maxChannel()); ++lpcn) {
-        if (dsd_app_dmr_t3_view_missing_has(&view, lpcn)) {
-            const QVariantMap row = missing_row(view, lpcn, snapshot);
-            byChannel.append(row);
-            if (!row.value(QStringLiteral("detailed")).toBool()) {
-                recent.append(row);
-            }
-        }
-    }
-    publishMissing(recent, byChannel);
+    m_missingCount = static_cast<int>(dsd_app_dmr_t3_view_missing_count(&view));
+    publishMissingPage();
 }
 
 void
@@ -332,9 +378,7 @@ DmrChannelsModel::channel(int lpcn) const {
         }
     }
     out.insert(QStringLiteral("missing"),
-               std::any_of(m_missingByChannel.cbegin(), m_missingByChannel.cend(), [lpcn](const QVariant& value) {
-                   return value.toMap().value(QStringLiteral("lpcn")).toInt() == lpcn;
-               }));
+               lpcn >= minChannel() && lpcn <= maxChannel() && missingHas(static_cast<uint16_t>(lpcn)));
     return out;
 }
 
