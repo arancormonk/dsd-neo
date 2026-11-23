@@ -13714,9 +13714,12 @@ Private per-protocol modules worth knowing about:
     media: a companion whose call nothing identified (data or voice activity alone) has an unknown media
     (`dmr_sm_ctx_t::vc_media_known` 0), which no grant's media contradicts, so a grant there describing the call already
     on the air is adopted in place and names it (`test_adopted_companion_media_stays_unknown()`), and a voice grant
-    naming it is published into its call at the next voice sync while that call still names nothing
+    naming it is published into its call at the next voice sync while that call still names nothing, with the
+    grant's own channel and provenance (none where the grant names no channel, never the retired follow's)
     (`vc_identity_published` rearmed by `dmr_sm_grant_reconcile_in_place()`,
-    `test_adopted_companion_takes_its_grant_identity()`); a repeat for the
+    `test_adopted_companion_takes_its_grant_identity()`, `test_adopted_companion_takes_its_grant_channel()`), a grant
+    heard for the companion before its adoption included once it is repeated
+    (`test_adopted_companion_takes_a_repeated_grant()`: the record and its follow time stay); a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
     the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
     next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own

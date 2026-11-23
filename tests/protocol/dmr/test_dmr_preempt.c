@@ -1685,6 +1685,82 @@ test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* TS1 is followed on VC_A for TG 300 while TS2 carries voice no LC named; a TD_GRANT for TS1 retires it and the
+   receiver stays for TS2. TS1's grant is an absolute one whose block names no usable LPCN (@p absolute_first), else a
+   TV_GRANT naming LPCN_A, accepted only under -F RAS handling when @p ras_first. */
+static void
+adopt_unnamed_companion(dsd_opts* opts, dsd_state* st, int absolute_first, int ras_first) {
+    init_env(opts, st, 2.0);
+    st->event_crc_invalid[0] = ras_first ? (uint8_t)DSD_CRC_RAS_UNVERIFIED : 0U;
+    if (absolute_first) {
+        abs_tv_grant(opts, st, 0U, VC_A, 0, 300, 3); // the block names no usable LPCN: followed by frequency alone
+    } else {
+        tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    }
+    st->event_crc_invalid[0] = 0U;
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+}
+
+/* The grant that names an adopted companion's call names its channel with its provenance: followed first by absolute
+   frequency alone, the companion's call takes the LPCN a checked grant names for it; followed first under a
+   RAS-accepted grant naming LPCN_A, a checked absolute grant naming the carrier but no LPCN leaves the call no channel,
+   never LPCN_A as if the checked grant had named it. */
+static int
+test_adopted_companion_takes_its_grant_channel(dsd_opts* opts, dsd_state* st) {
+    adopt_unnamed_companion(opts, st, 1, 0);
+    int rc = expect_true("the receiver stays for the unnamed companion (absolute follow)",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && vc(st) == VC_A && g_tunes == 1);
+    clock_at(0.5);
+    tv_grant(opts, st, LPCN_A, 1, 700, 7);
+    voice(opts, st, 1);
+    dsd_call_snapshot call;
+    rc |= expect_true("the companion's call takes the naming grant's channel",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 700U && call.channel == LPCN_A
+                          && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN);
+
+    adopt_unnamed_companion(opts, st, 0, 1);
+    rc |= expect_true("the receiver stays for the unnamed companion (RAS follow)",
+                      sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && vc(st) == VC_A && g_tunes == 1);
+    clock_at(0.5);
+    abs_tv_grant(opts, st, 0U, VC_A, 1, 700, 7);
+    voice(opts, st, 1);
+    rc |= expect_true("a checked grant naming no channel publishes none",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 700U && call.channel == 0U);
+    return rc;
+}
+
+/* A voice grant for TS2 heard while TS1 is still followed names TS2's record only; once TS1 is retired and TS2 adopted,
+   a repeat of that grant names the adopted call, and TS2's next voice sync publishes its identity. */
+static int
+test_adopted_companion_takes_a_repeated_grant(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_A, 1, 700, 7); // TS2's grant, heard while TS1 is followed
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    int rc = expect_true("the receiver stays for the companion",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && g_tunes == 1);
+    clock_at(0.5);
+    tv_grant(opts, st, LPCN_A, 1, 700, 7); // its repeat
+    voice(opts, st, 1);
+    dsd_call_snapshot call;
+    rc |= expect_true("the repeated grant's identity is published into the adopted call",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 700U && call.ota_source_id == 7U);
+    return rc;
+}
+
 /* An adopted companion's unnamed call takes the identity of the voice grant that first names it: TS1 is followed for
    TG 300 while TS2 carries voice no LC has named. A data grant for TS1 retires TS1 and the receiver stays for TS2. A
    voice grant then names TS2's call (TG 700 from 7), and TS2's next voice sync publishes that identity into it. */
@@ -2229,6 +2305,8 @@ main(void) {
     rc |= test_off_control_channel_receiver_confirms_nothing(opts, st);
     rc |= test_foreign_block_never_confirms(opts, st);
     rc |= test_absolute_chan_freq_names_its_block_channel(opts, st);
+    rc |= test_adopted_companion_takes_its_grant_channel(opts, st);
+    rc |= test_adopted_companion_takes_a_repeated_grant(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);

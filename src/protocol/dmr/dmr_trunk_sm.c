@@ -2550,19 +2550,51 @@ dmr_sm_grant_displacement(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* st
     return 1;
 }
 
+/* The followed slot's grant identity becomes in-place grant @p ev's (dmr_sm_grant_reconcile_in_place()). */
+static void
+dmr_sm_followed_slot_take_grant(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev, int data_call) {
+    ctx->vc_tg = ev->tg;
+    ctx->vc_dst = ev->dst;
+    ctx->vc_src = ev->src;
+    ctx->vc_is_group = ev->is_group != 0;
+    ctx->vc_data_call = data_call;
+    ctx->vc_media_known = 1;
+    ctx->vc_identity_known = 1;
+    /* The new identity's channel and provenance are this announcement's (dispatched inside its CSBK/MBC burst's CRC
+       scope, as dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes them together,
+       with these flags, and a channel the announcement does not name is published as none. */
+    ctx->vc_lpcn = ev->lpcn;
+    ctx->vc_channel_kind = ev->channel_kind;
+    ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
+    /* A grant naming the followed slot anew (an adopted companion's unnamed call) is published into that call at its
+       next voice sync while the call still names nothing, as a grant followed in place is (dmr_sm_take_grant()). */
+    if (ev->origin == DMR_SM_ORIGIN_GRANT) {
+        ctx->vc_identity_published = dmr_sm_grant_publishable(state, ev->slot, 0) ? 0 : 1;
+    }
+}
+
+/* Whether in-place grant @p ev, naming @p target, names a slot's call: a slotted grant whose target is no
+   placeholder. */
+static int
+dmr_sm_in_place_grant_names_slot(const dmr_sm_event_t* ev, uint32_t target) {
+    return ev->slot >= 0 && ev->slot <= 1 && target != 0U && dmr_sm_event_identity_known(ev);
+}
+
 /* A grant for the carrier already followed (IN_PLACE) names the call its slot carries now. Another call there (a new
    assignment of the slot: another target, policy class or media, dmr_sm_grant_names_call()) takes the slot's record
    with its follow time now, so preemption compares a candidate with it and its dwell runs from the assignment; on the
    followed slot only a channel status, or a grant while neither the slot's record nor the followed grant names a call,
    names the grant identity anew (any other grant naming another call there ends the assignment instead,
    dmr_sm_end_changed_assignment()). A repeat of the call the slot names, or of the grant the machine followed there, keeps the record and its follow time.
-   A slotless grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces
+   On the followed slot while the followed grant names no call (an adopted companion), a grant repeating the call the
+   slot's record names names the grant identity too, as a first naming does. The grant identity named anew takes the
+   announcement's channel and provenance with it. A slotless grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces
    only a seed or grant identity, never the call a checked LC named on that carrier (as
    dmr_sm_status_slot_reconcile()). */
 static void
 dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev, long freq) {
     const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
-    if (ev->slot < 0 || ev->slot > 1 || target == 0U || !dmr_sm_event_identity_known(ev)) {
+    if (!dmr_sm_in_place_grant_names_slot(ev, target)) {
         return;
     }
     const dmr_sm_slot_ctx_t* rec = &ctx->slots[ev->slot];
@@ -2571,37 +2603,31 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
     }
     dmr_sm_slot_ctx_t grant;
     const int followed_slot = ev->slot == ctx->vc_slot;
-    if (dmr_sm_grant_names_call(ev, target, rec, freq)
-        || (followed_slot && dmr_sm_grant_identity(ctx, &grant) && dmr_sm_grant_names_call(ev, target, &grant, freq))) {
+    const int grant_known = followed_slot && dmr_sm_grant_identity(ctx, &grant);
+    if (grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq)) {
         return;
     }
     const dsd_call_kind kind = dmr_sm_event_kind(ev);
     const int data_call = kind == DSD_CALL_KIND_DATA;
-    const double now_m = dsd_decode_now_mono_s();
-    dmr_sm_slot_ctx_t named;
-    dmr_sm_slot_identity_set(&named, kind, target, (uint32_t)ev->src, ev->is_group, data_call, DMR_SM_ID_GRANT,
-                             ev->lpcn, freq, now_m);
-    named.channel_kind = ev->channel_kind;
-    named.channel_crc_flags = state->event_crc_invalid[state->currentslot & 1]; // this announcement's burst scope
-    named.crc_flags = named.channel_crc_flags;
-    dmr_sm_slot_name(ctx, state, ev->slot, &named, 0, now_m);
-    if (followed_slot) {
-        ctx->vc_tg = ev->tg;
-        ctx->vc_dst = ev->dst;
-        ctx->vc_src = ev->src;
-        ctx->vc_is_group = ev->is_group != 0;
-        ctx->vc_data_call = data_call;
-        ctx->vc_media_known = 1;
-        ctx->vc_identity_known = 1;
-        // The new identity's provenance is this announcement's (dispatched inside its CSBK/MBC burst's CRC scope, as
-        // dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes it with these flags.
-        ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
-        /* A grant naming the followed slot anew (an adopted companion's unnamed call) is published into that call at
-           its next voice sync while the call still names nothing, as a grant followed in place is
-           (dmr_sm_take_grant()). */
-        if (ev->origin == DMR_SM_ORIGIN_GRANT) {
-            ctx->vc_identity_published = dmr_sm_grant_publishable(state, ev->slot, 0) ? 0 : 1;
+    if (dmr_sm_grant_names_call(ev, target, rec, freq)) {
+        /* The slot's record names this call already (a grant heard there before the slot was adopted for a retired
+           one): the record and its follow time stay, and only a grant naming the followed slot while the followed
+           grant names no call goes on to name it below. */
+        if (!followed_slot || grant_known || ev->origin != DMR_SM_ORIGIN_GRANT) {
+            return;
         }
+    } else {
+        const double now_m = dsd_decode_now_mono_s();
+        dmr_sm_slot_ctx_t named;
+        dmr_sm_slot_identity_set(&named, kind, target, (uint32_t)ev->src, ev->is_group, data_call, DMR_SM_ID_GRANT,
+                                 ev->lpcn, freq, now_m);
+        named.channel_kind = ev->channel_kind;
+        named.channel_crc_flags = state->event_crc_invalid[state->currentslot & 1]; // this announcement's burst scope
+        named.crc_flags = named.channel_crc_flags;
+        dmr_sm_slot_name(ctx, state, ev->slot, &named, 0, now_m);
+    }
+    if (followed_slot) {
+        dmr_sm_followed_slot_take_grant(ctx, state, ev, data_call);
     }
 }
 
