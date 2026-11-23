@@ -2110,7 +2110,7 @@ use_nxdn48_keyloader(dsd_opts* opts, dsd_state* state) {
  * and 7. Two INFO1s naming the scrambler under key ID 5, then two naming DES under key ID 7, leave the DCR call's
  * cipher, key ID, origin and working key as they were, and its published crypto too, a VCALL_IV's republication
  * included. The numbered call an INFO3 then opens inherits none of them: it is published with no crypto, with no key
- * loaded, and the DCR call's scrambler is forgotten. Its own INFO1s then apply as on any call, with their key.
+ * loaded, and the DCR call's scrambler is forgotten. Its own INFO1s then apply as on any call, loading no key.
  */
 static int
 test_info1_during_a_dcr_call_is_neither_applied_nor_held(void) {
@@ -2164,7 +2164,7 @@ test_info1_during_a_dcr_call_is_neither_applied_nor_held(void) {
     (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("info1-during-dcr-own-info1-cipher", (int)state->nxdn_cipher_type, 1);
     rc |= expect_int("info1-during-dcr-own-info1-kid", (int)call.kid, 7);
-    rc |= expect_int("info1-during-dcr-own-info1-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
+    rc |= expect_int("info1-during-dcr-own-info1-no-key-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     dsd_decode_clock_use_system();
     return rc;
@@ -2306,12 +2306,11 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
 }
 
 /*
- * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
- * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
- * held back and loads nothing.
+ * An INFO1 loads no key, as on main (issue #903): with the keyloader on, two INFO1s naming the scrambler under key ID 7
+ * on a numbered call apply that cipher and key ID, and the working key stays the one a VCALL or an assignment loaded.
  */
 static int
-test_accepted_info1_loads_its_key(void) {
+test_info1_loads_no_key(void) {
     static Event_History_I histories[2];
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -2322,11 +2321,9 @@ test_accepted_info1_loads_its_key(void) {
     use_nxdn48_keyloader(opts, state);
     send_outbound_info1(opts, state, 1U, 7U);
     send_outbound_info1(opts, state, 1U, 7U);
-    int rc = expect_int("info1-key-kid", (int)state->nxdn_key, 7);
-    rc |= expect_int("info1-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
-    send_outbound_info1(opts, state, 2U, 5U);
-    rc |= expect_int("info1-key-held-back-cipher", (int)state->nxdn_cipher_type, 1);
-    rc |= expect_int("info1-key-held-back-loads-nothing", state->R == 0x2222ULL ? 1 : 0, 1);
+    int rc = expect_int("info1-key-cipher", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-key-kid", (int)state->nxdn_key, 7);
+    rc |= expect_int("info1-key-not-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     return rc;
 }
@@ -2538,7 +2535,7 @@ main(void) {
     rc |= test_quarantined_info1_keeps_the_applied_key();
     rc |= test_held_back_vcall_loads_no_key();
     rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
-    rc |= test_accepted_info1_loads_its_key();
+    rc |= test_info1_loads_no_key();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();

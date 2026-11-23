@@ -2035,9 +2035,8 @@ suite runs under this compiler.
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
   full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
-  cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
-  (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
-  does one heard during a DCR call, which is neither applied nor kept: the DCR call keeps its working key in R. A DCR
+  cipher's. An IDAS INFO1 loads no key: the cipher and key ID it applies are reported against the working key a VCALL
+  or an assignment loaded, and one heard during a DCR call is neither applied nor kept. A DCR
   call's scrambler names no key ID, so its key is reported as the working key (direct, no effective ID), never as the
   signalled key 0 a selection would read as keyring entry 0 (`nxdn_vcall_publish_crypto()`). A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the

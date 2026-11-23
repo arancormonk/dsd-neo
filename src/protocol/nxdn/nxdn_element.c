@@ -3139,18 +3139,6 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     nxdn_load_selected_key(opts, state, info->cipher_type, (int)info->key_id, info->destination_id);
 }
 
-/* The working key for the applied cipher and key ID (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key), loaded as a
-   VCALL loads its own (nxdn_load_selected_key()), the live call's target being the destination the NXDN48 fallback
-   reads: an INFO1 whose pair took effect on the live call, so the voice and the key report read the key the applied
-   pair names. */
-static void
-nxdn_load_applied_key(const dsd_opts* opts, dsd_state* state) {
-    dsd_call_snapshot call;
-    const uint64_t destination =
-        dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE ? call.ota_target_id : 0U;
-    nxdn_load_selected_key(opts, state, (uint8_t)state->nxdn_cipher_type, (int)state->nxdn_key, destination);
-}
-
 /* The VCALL's own cipher and key ID, as received, then the working key (through the key redaction) only when that pair
    is the one applied (nxdn_vcall_apply_state()): a pair the hysteresis held back left the applied pair's key loaded,
    which is not the key this VCALL named. */
@@ -4216,9 +4204,8 @@ nxdn_scch_print_call_option(uint8_t call_opt) {
  * Cipher Type and Key ID, and a Spare bit sent as 0 (Table 9.1-1). A receiver ignores a Spare bit, so an INFO1 with it
  * set still places its frame and is evidence like any (nxdn_scch_content_problem()), but its Call Option, Cipher Type
  * and Key ID are not taken (D2): some decoders read part of an encryption IV in its bits 8-12 and 18-23, which no NXDN
- * specification defines, nor how its parts would join. The cipher and key ID it applies select the working key as a
- * VCALL's do (nxdn_load_applied_key()), but it never touches the decoder's working scrambler register or IV, and those
- * fields are printed only through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
+ * specification defines, nor how its parts would join. It never touches the decoder's working scrambler register or
+ * IV, and those fields are printed only through the key redaction. Cipher Types 10 and 11 are reserved on Type-D (Table 6.6-31; DES and AES, as every known
  * decoder names them, are Type-C's, TS 1-A): a call option naming one is kept like any other. Its published MI is
  * only an IV received over the air (nxdn_published_mi()), never the scrambler register an earlier Scramble call left.
  */
@@ -4260,13 +4247,10 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     // One SCCH observation must not flip the classification the VCALLs established -- in
     // either direction: a corrupt call option could mute a clear call, or silently unmute
     // an encrypted one mid-stream. The hysteresis holds it until it repeats.
-    /* The key ID goes with the cipher it came with: a held-back contradiction changes neither. */
+    /* The key ID goes with the cipher it came with: a held-back contradiction changes neither. An INFO1 loads no key:
+       the working key is the one a VCALL or an assignment loaded (nxdn_vcall_load_key()). */
     state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, (uint8_t)info->cipher, (uint8_t)info->key_id, 0,
                                                         (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    /* The pair took effect: its key is the working key at once, as a VCALL's is; a held-back INFO1 loads nothing. */
-    if (state->nxdn_cipher_type == info->cipher) {
-        nxdn_load_applied_key(opts, state);
-    }
     nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
 }
 
