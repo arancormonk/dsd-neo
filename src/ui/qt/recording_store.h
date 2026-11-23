@@ -459,6 +459,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         qint64 offset = 0;
         qint64 lines = 0;
         qint64 compactFailedAt = -1;
+        /* Session starts that adopted, made or relabelled the folder at this path: a read that saw another count
+         * commits nothing (loadFolder()). */
+        quint64 starts = 0U;
     };
 
     /* regular: a regular file, read; missing: nothing at the name; unreadable: the read failed for a reason that says
@@ -543,6 +546,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p journalPath read whole into @p data; true for one read to its end, or a name confirmed missing (nothing
      * published yet), false for anything else (a read that failed, a link, a name that cannot be read). */
     static bool readJournal(const QString& journalPath, QByteArray* data);
+    /* loadFolder()'s read of @p path's folder.json into @p folder: true to go on with the owner read; false when the
+     * load ends (not readable now: read again later; no folder of the app's: dropped, unless a start adopted it since
+     * @p starts). */
+    bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
     /* Each file @p records publishes into @p files (one the folder's listing read already is kept). */
@@ -647,6 +654,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Read @p path whole again at the next pass, with what the index held for it kept until then; the store is not
      * settled meanwhile. Under the store's lock. */
     void scheduleFolderReadLocked(const QString& path, Pass* pass);
+    /* @p path read whole again before any request is taken (loaded false, what the index holds kept). Lock held. */
+    void markFolderUnreadLocked(const QString& path);
+    /* A recheck could not read @p id's name: kept, its journal line with it, and out of every index, count and usage
+     * (Entry::unreadable). Under the store's lock. */
+    void markEntryUnreadableLocked(const QString& id, Pass* pass);
+    /* @p entry out of the detection index. Under the store's lock. */
+    void unindexSearchLocked(const Entry& entry);
     /* tailFolder() could not read @p path's new journal lines: read whole at the next pass (its root still there). */
     void noteTailReadFailed(const QString& path, Pass* pass);
     void processDeletes(Pass* pass);
@@ -712,10 +726,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
      * and a new folder. */
     QList<bool> usableRootsLocked();
-    QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone);
+    QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
     /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
-     * for), one no longer the owner's and never read goes to @p gone. Under the store's lock. */
-    bool ownerFolderOnDiskLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone);
+     * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
+     * folder is read again before any request). Under the store's lock. */
+    bool ownerFolderOnDiskLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone,
+                                 QStringList* unread);
     QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
     CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);

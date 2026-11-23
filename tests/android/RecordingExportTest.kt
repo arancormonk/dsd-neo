@@ -321,9 +321,11 @@ private fun aRecordingNotTheOneSelectedAbandonsTheExport() {
     val cases = listOf<Pair<String, (File) -> Unit>>(
         "another size" to { file -> file.writeBytes(bytes(150)) },
         "another time" to { file -> check(file.setLastModified(file.lastModified() - 60_000)) { "a time is set" } },
+        // The recording itself moved aside and a link put at its name: the link's target is the very file selected
+        // (its size and time unchanged), so only the no-follow open tells it apart.
         "a link" to { file ->
-            val target = File(scratch, "elsewhere${++serial}.wav").apply { writeBytes(file.readBytes()) }
-            file.delete()
+            val target = File(scratch, "elsewhere${++serial}.wav")
+            Files.move(file.toPath(), target.toPath())
             Files.createSymbolicLink(file.toPath(), target.toPath())
         },
     )

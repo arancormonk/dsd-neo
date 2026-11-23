@@ -16959,20 +16959,30 @@ Qt Quick frontend (`src/ui/qt`):
     The unread rule (issue #902, simplified): only a journal or a folder.json that cannot be read holds its folder
     unread. A journal is opened once with the platform regular-file opener (`open_journal()`:
     `dsd_fopen_existing_regular_file()`, never through a link, never waiting on a FIFO) and read from that file, for a
-    full read and a tail alike; only a name confirmed missing is an empty journal (`readJournal()`). One there that
+    full read and a tail alike, with the stream's own error flag checked too (a read that stops at an error can return a
+    prefix with `QFile` reporting none); only ENOENT is an empty journal (`readJournal()`). One there that
     cannot be opened or read whole leaves its folder unread, with what the index held for it, so the store is not
     settled and exports and deletes are refused until a later pass reads it (`test_unread_journal_is_not_settled`); so
     do new journal lines that cannot be read (an open, seek or read that fails in `tailFolder()`, not a last line still
     being written; `scheduleFolderReadLocked()`, `test_tail_read_failure_unsettles`). A folder.json there that cannot
-    be read (`read_folder_marker()`: `FolderMarker::Unreadable`, no access or an I/O error, apart from one missing or
-    not valid, which is no folder of the app's) keeps the folder known, with its owner and recordings, unread and read
-    again each pass; it is never dropped from the folder table, by a folder's read, a root's listing or a session
-    start's lookup (`test_unreadable_marker_keeps_the_folder`). A recording whose own name cannot be read (EACCES, EIO,
-    ENAMETOOLONG, EOVERFLOW: anything but a name confirmed missing or confirmed no regular file) blocks nothing: it is
-    kept (`Entry::unreadable`, `applyPublishLocked()`), its journal line with it, never deleted (no identity matches it;
-    a delete naming it is told as skipped), and never counted, in the limit's usage or anywhere else, exported, played
-    or shared (`readerEntryLocked()`); a later read of its folder that sees the file indexes it as before
-    (`test_unreadable_recording_is_kept`). A delete, asked or the limit's, waits while its folder is unread, checked
+    be read (`read_folder_marker()`: `FolderMarker::Unreadable`; an open that fails is decided by the name's own type,
+    read without following it, since the opener's errno does not tell a socket or a failed attribute read from a
+    missing name: confirmed missing or no regular file is `Absent`, no folder of the app's, anything else unreadable;
+    `test_socket_marker_is_no_folder`) keeps the folder known, with its owner and recordings, unread and read again
+    each pass; it is never dropped from the folder table, by a folder's read, a root's listing or a session start's
+    lookup, and a session start that cannot read it marks a read folder unread too, so no request is taken against an
+    owner it could not confirm (`test_unreadable_marker_keeps_the_folder`, `test_owner_lookup_failure_unsettles`). A
+    read whose owner a session start changed while it ran (adopted, made or relabelled: `Folder::starts`) commits
+    nothing, and the folder is read again (`test_adoption_during_a_read_is_read_again`). A recording whose own name cannot be read (EACCES, EIO,
+    ENAMETOOLONG, EOVERFLOW, a parent that does not resolve, ENOTDIR or EMLINK: anything but ENOENT or a type read as
+    no regular file) blocks nothing: it is kept (`Entry::unreadable`, `applyPublishLocked()`), its journal line with it,
+    never deleted (no identity matches it; a delete naming it is told as skipped), and out of every index, count and
+    usage: History's fragment and detection indexes (a link record and a committed view included), the limit's usage
+    and candidates, exports, play and share (`readerEntryLocked()`). A recheck, the limit's look included, that finds a
+    name it cannot read marks the entry so (`markEntryUnreadableLocked()`), so retention never counts it. A later read
+    of its folder that sees the file indexes it as before (`test_unreadable_recording_is_kept`,
+    `test_unreadable_linked_recording_is_in_no_index`, `test_limit_look_drops_an_unreadable_recording_from_usage`,
+    `test_recheck_keeps_an_unreadable_name`). A delete, asked or the limit's, waits while its folder is unread, checked
     again under the lock the unlink runs under (the uploader is asked without it), so a folder a session start adopted
     or a read that failed meanwhile holds the delete for the folder's read, which drops it
     (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`). A folder's read, first or again, always publishes, so `indexed` comes back

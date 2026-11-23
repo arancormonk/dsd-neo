@@ -733,7 +733,7 @@ DecoderHost::recordingInputCheck(const QString& path, const dsd_file_identity_t&
     dsd_file_identity_t now{};
     if (dsd_path_file_identity(platform_path(path).constData(), &now) != 0) {
         const int err = errno;
-        return err == ENOENT || err == ENOTDIR ? RecordingInput::Missing : RecordingInput::Changed;
+        return err == ENOENT ? RecordingInput::Missing : RecordingInput::Changed; // only ENOENT is a name gone
     }
     return dsd_file_identity_equal(&expected, &now) != 0 ? RecordingInput::Selected : RecordingInput::Changed;
 }
@@ -743,8 +743,7 @@ DecoderHost::openRecordingInput(const QString& path, const dsd_file_identity_t& 
     *out = nullptr;
     FILE* fp = dsd_fopen_existing_regular_file(platform_path(path).constData(), "rb");
     if (fp == nullptr) {
-        const int err = errno;
-        return err == ENOENT || err == ENOTDIR ? RecordingInput::Missing : RecordingInput::Changed;
+        return errno == ENOENT ? RecordingInput::Missing : RecordingInput::Changed;
     }
     dsd_file_identity_t opened{};
     if (dsd_file_stream_identity(fp, &opened) != 0 || dsd_file_identity_equal(&expected, &opened) == 0) {

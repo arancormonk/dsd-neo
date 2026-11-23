@@ -86,12 +86,13 @@ object Os {
     // ENOENT, EACCES.
     @JvmStatic
     fun open(path: String, flags: Int, mode: Int): FileDescriptor {
-        val stat = statOf("open", path)
-        if (flags and OsConstants.O_NOFOLLOW != 0 &&
-            java.nio.file.Files.isSymbolicLink(java.nio.file.Paths.get(path))
-        ) {
+        // A link at the name: refused with O_NOFOLLOW, followed without it, as open(2) does; what is opened is then the
+        // target, and fstat() reports the target.
+        val link = java.nio.file.Files.isSymbolicLink(java.nio.file.Paths.get(path))
+        if (link && flags and OsConstants.O_NOFOLLOW != 0) {
             throw ErrnoException("open", OsConstants.ELOOP)
         }
+        val stat = statOf("open", path, follow = link)
         if (!OsConstants.S_ISREG(stat.st_mode)) {
             // A FIFO: on Android an open without O_NONBLOCK waits for a writer that never comes, so the stub refuses
             // to stand in for it (the test fails instead of hanging).
@@ -127,12 +128,13 @@ object Os {
     // How many descriptors open() gave are still open: a test sees each one closed.
     fun openCount(): Int = opened.size
 
-    private fun statOf(call: String, path: String): StructStat {
+    private fun statOf(call: String, path: String, follow: Boolean = false): StructStat {
+        val options = if (follow) emptyArray() else arrayOf(java.nio.file.LinkOption.NOFOLLOW_LINKS)
         val attributes = try {
             java.nio.file.Files.readAttributes(
                 java.nio.file.Paths.get(path),
                 java.nio.file.attribute.BasicFileAttributes::class.java,
-                java.nio.file.LinkOption.NOFOLLOW_LINKS,
+                *options,
             )
         } catch (e: java.nio.file.NoSuchFileException) {
             throw ErrnoException(call, OsConstants.ENOENT)

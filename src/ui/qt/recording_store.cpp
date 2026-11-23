@@ -105,18 +105,26 @@ enum class FolderMarker { Read, Absent, Unreadable };
 
 FolderMarker
 read_folder_marker(const QString& dir, QString* uid, QString* kind, QString* name) {
-    FILE* fp = dsd_fopen_existing_regular_file(platform_path(dir + QLatin1Char('/') + kFolderFile).constData(), "rb");
+    const QByteArray marker = platform_path(dir + QLatin1Char('/') + kFolderFile);
+    FILE* fp = dsd_fopen_existing_regular_file(marker.constData(), "rb");
     if (fp == nullptr) {
-        const int err = errno;
-        const bool absent = err == ENOENT || err == ENOTDIR || err == ELOOP || err == EINVAL || err == EISDIR;
-        return absent ? FolderMarker::Absent : FolderMarker::Unreadable;
+        // The opener's errno does not tell a name that is no regular file from a lookup that failed (a socket fails
+        // its open with ENXIO; Windows maps a failed attribute read to EINVAL): the name's own type, read without
+        // following it, decides. Confirmed missing, or there and no regular file: not the app's. Anything else, a
+        // regular file that would not open included: not known now.
+        dsd_path_type type = DSD_PATH_TYPE_OTHER;
+        const int present = dsd_path_type_nofollow(marker.constData(), &type);
+        return present == 0 || (present == 1 && type != DSD_PATH_TYPE_FILE) ? FolderMarker::Absent
+                                                                            : FolderMarker::Unreadable;
     }
     QFile file;
     QByteArray data;
     bool read = file.open(fp, QIODevice::ReadOnly);
     if (read) {
         data = file.read(kMaxFolderFileBytes + 1);
-        read = file.error() == QFileDevice::NoError;
+        // A read that stopped at an error may still return a prefix with QFile reporting none: the stream's own error
+        // flag says so (stream_read_whole()).
+        read = file.error() == QFileDevice::NoError && ferror(fp) == 0;
         file.close();
     }
     (void)fclose(fp);
@@ -159,7 +167,7 @@ read_journal_tail(const QString& journalPath, qint64 offset, qint64 length, QByt
     bool read = journal.open(fp, QIODevice::ReadOnly) && journal.seek(offset);
     if (read) {
         *data = journal.read(length);
-        read = data->size() == length;
+        read = data->size() == length && ferror(fp) == 0;
     }
     journal.close();
     (void)fclose(fp);
@@ -645,8 +653,10 @@ RecordingStore::statOf(const QString& path) {
     }
     // Missing, or known to be no file (a folder, a link, a FIFO, a device); any other failure (no access to the name,
     // an I/O error) says nothing about whether a file is there.
+    // Only ENOENT is a name confirmed missing; a parent that does not resolve (ENOTDIR, or EMLINK for too many links on
+    // the way) leaves the name's own type unread, as any other failure does.
     const int err = errno;
-    stat.missing = err == ENOENT || err == ENOTDIR;
+    stat.missing = err == ENOENT;
     stat.unreadable = !stat.missing && err != EISDIR && err != ELOOP && err != ENODEV;
     return stat;
 }
@@ -867,29 +877,15 @@ RecordingStore::loadPendingFolders(Pass* pass) {
 void
 RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pass) {
     noteRereadStart(pass);
-    Folder folder;
-    const FolderMarker marker = read_folder_marker(path, &folder.uid, &folder.kind, &folder.name);
-    if (marker == FolderMarker::Unreadable) {
-        // There and not readable now (no access, an I/O error): the folder stays known, unread, with what the index
-        // held for it, and is read again at the next pass.
-        if (rootStillAvailable(root, pass)) {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            scheduleFolderReadLocked(path, pass);
-        }
-        return;
-    }
-    if (marker == FolderMarker::Absent) {
-        // A root that went away since the pass began (unmounted, a USB session) took the folder.json with it: nothing
-        // in it is deleted.
-        if (!rootStillAvailable(root, pass)) {
-            return;
-        }
-        // Not a folder the app made, or not any more (removed from a computer while its root is there, perhaps
-        // between the folder table's read and this one): nothing in it is managed, and no session is given it.
+    // A session start that adopts or relabels the folder while it is read (the lock is not held for the read) makes
+    // what was read another owner's, or another label's: nothing is committed then, and the folder is read again.
+    quint64 starts = 0U;
+    {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        removeFolderEntriesLocked(path, pass);
-        m_folders.remove(path);
-        pass->dirty = true;
+        starts = m_folders.value(path).starts;
+    }
+    Folder folder;
+    if (!readFolderOwner(path, root, starts, &folder, pass)) {
         return;
     }
     folder.path = path;
@@ -925,11 +921,17 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
 
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_folders.value(path).starts != starts) {
+            scheduleFolderReadLocked(path, pass);
+            m_passRequested = true;
+            return;
+        }
         if (replace) {
             holdCommittedFolderLocked(path);
             removeFolderEntriesLocked(path, pass);
         }
         folder.offset = consumed;
+        folder.starts = starts;
         folder.lines = lines;
         folder.loaded = true;
         // The owner is the one folder.json names. A session start may have relabelled the same owner's folder since
@@ -963,20 +965,55 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
 }
 
 bool
+RecordingStore::readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass) {
+    const FolderMarker marker = read_folder_marker(path, &folder->uid, &folder->kind, &folder->name);
+    if (marker == FolderMarker::Read) {
+        return true;
+    }
+    if (marker == FolderMarker::Unreadable) {
+        // There and not readable now (no access, an I/O error): the folder stays known, unread, with what the index
+        // held for it, and is read again at the next pass.
+        if (rootStillAvailable(root, pass)) {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            scheduleFolderReadLocked(path, pass);
+        }
+        return false;
+    }
+    // A root that went away since the pass began (unmounted, a USB session) took the folder.json with it: nothing in it
+    // is deleted.
+    if (!rootStillAvailable(root, pass)) {
+        return false;
+    }
+    // Not a folder the app made, or not any more (removed from a computer while its root is there, perhaps between the
+    // folder table's read and this one): nothing in it is managed, and no session is given it. One a start adopted
+    // meanwhile is read again instead.
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_folders.value(path).starts != starts) {
+        scheduleFolderReadLocked(path, pass);
+        m_passRequested = true;
+        return false;
+    }
+    removeFolderEntriesLocked(path, pass);
+    m_folders.remove(path);
+    pass->dirty = true;
+    return false;
+}
+
+bool
 RecordingStore::readJournal(const QString& journalPath, QByteArray* data) {
-    // Opened once and read from that file (open_journal()). Only a name confirmed missing is an empty journal (a
-    // folder a session made, nothing published); anything else not read whole is a read that failed: no access to
-    // it, an I/O error, a link, a folder or a FIFO at its name.
+    // Opened once and read from that file (open_journal()). Only a name confirmed missing (ENOENT) is an empty journal
+    // (a folder a session made, nothing published); anything else not read whole is a read that failed: no access to
+    // it, an I/O error, a parent that does not resolve, a link, a folder or a FIFO at its name.
     FILE* fp = open_journal(journalPath);
     if (fp == nullptr) {
-        const int err = errno;
-        return err == ENOENT || err == ENOTDIR;
+        return errno == ENOENT;
     }
     QFile journal;
     bool read = journal.open(fp, QIODevice::ReadOnly);
     if (read) {
         *data = journal.readAll();
-        read = journal.error() == QFileDevice::NoError;
+        // A read that stopped at an error can return a prefix with QFile reporting none; the stream's flag tells.
+        read = journal.error() == QFileDevice::NoError && ferror(fp) == 0;
     }
     journal.close();
     (void)fclose(fp);
@@ -1000,12 +1037,41 @@ RecordingStore::noteTailReadFailed(const QString& path, Pass* pass) {
 
 void
 RecordingStore::scheduleFolderReadLocked(const QString& path, Pass* pass) {
+    markFolderUnreadLocked(path);
+    pass->dirty = true; // the next pass reads it whole (loadPendingFolders())
+}
+
+void
+RecordingStore::markFolderUnreadLocked(const QString& path) {
     const auto it = m_folders.find(path);
     if (it != m_folders.end()) {
         it->rereading = it->rereading || it->loaded;
         it->loaded = false;
     }
-    pass->dirty = true; // the next pass reads it whole (loadPendingFolders())
+}
+
+void
+RecordingStore::unindexSearchLocked(const Entry& entry) {
+    const auto bySearch = m_bySearch.find(entry.search);
+    if (bySearch != m_bySearch.end()) {
+        bySearch->removeAll(entry.id);
+        if (bySearch->isEmpty()) {
+            m_bySearch.erase(bySearch);
+        }
+    }
+}
+
+void
+RecordingStore::markEntryUnreadableLocked(const QString& id, Pass* pass) {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end() || it->unreadable) {
+        return;
+    }
+    unindexFragmentLocked(*it, pass);
+    unindexSearchLocked(*it);
+    it->unreadable = true;
+    noteQueryChangeLocked(pass);
+    pass->dirty = true;
 }
 
 void
@@ -1242,8 +1308,11 @@ RecordingStore::applyLinkLocked(const RecordingJournalRecord& record, Pass* pass
     if (it->fragment != fragment) {
         unindexFragmentLocked(*it, pass);
         it->fragment = fragment;
-        m_byFragment[fragment].append(it->id);
-        pass->fragments.insert(fragment);
+        // Kept for the journal; a recording whose name cannot be read is in no reader's index.
+        if (!it->unreadable) {
+            m_byFragment[fragment].append(it->id);
+            pass->fragments.insert(fragment);
+        }
         noteQueryChangeLocked(pass);
     }
     it->hasInstance = true;
@@ -1313,13 +1382,7 @@ RecordingStore::removeEntryLocked(const QString& id, Pass* pass) {
         return;
     }
     unindexFragmentLocked(*it, pass);
-    const auto bySearch = m_bySearch.find(it->search);
-    if (bySearch != m_bySearch.end()) {
-        bySearch->removeAll(id);
-        if (bySearch->isEmpty()) {
-            m_bySearch.erase(bySearch);
-        }
-    }
+    unindexSearchLocked(*it);
     const auto byPath = m_byPath.find(it->path);
     if (byPath != m_byPath.end() && byPath.value() == id) {
         m_byPath.erase(byPath);
@@ -1350,10 +1413,10 @@ RecordingStore::holdCommittedFolderLocked(const QString& folder) {
             continue;
         }
         committed.entries.insert(entry.id, entry);
-        if (!entry.fragment.isEmpty()) {
+        if (!entry.fragment.isEmpty() && !entry.unreadable) {
             committed.byFragment[entry.fragment].append(entry.id);
         }
-        if (!entry.search.isEmpty()) {
+        if (!entry.search.isEmpty() && !entry.unreadable) {
             committed.bySearch[entry.search].append(entry.id);
         }
         if (m_byPath.value(entry.path) == entry.id) {
@@ -1492,7 +1555,10 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
             }
             const FileStat stat = statOf(it->path);
             if (stat.unreadable) {
-                continue; // no access to the name: says nothing about whether it is there, and changes nothing
+                // No access to the name: says nothing about whether it is there. Kept, its journal line with it, and out
+                // of every index, count and usage from now on (the limit's look counts it no more).
+                markEntryUnreadableLocked(it.key(), pass);
+                continue;
             }
             if (stat.regular) {
                 // A recheck the host asked for (the player, an export or a share found it changed) that finds another
@@ -1523,7 +1589,9 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
         // Only a name confirmed missing, or confirmed no recording (a link, a folder, a FIFO), leaves the index; one
         // that cannot be read stays.
         const FileStat again = statOf(it->path);
-        if (!again.regular && !again.unreadable) {
+        if (again.unreadable) {
+            markEntryUnreadableLocked(id, pass);
+        } else if (!again.regular) {
             removeEntryLocked(id, pass);
         }
     }
@@ -2269,7 +2337,7 @@ RecordingStore::usableRootsLocked() {
 }
 
 QString
-RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone) {
+RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread) {
     // The owner's folder in the first available root that has one: a rename keeps it, and a clash of the short
     // uid in the name never merges two owners.
     const Folder* best = nullptr;
@@ -2279,7 +2347,7 @@ RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, Q
                 && (folder.root > best->root || (folder.root == best->root && folder.path >= best->path)))) {
             continue;
         }
-        if (!ownerFolderOnDiskLocked(folder, uid, usable, gone)) {
+        if (!ownerFolderOnDiskLocked(folder, uid, usable, gone, unread)) {
             continue;
         }
         // One that no longer takes new files (storage mounted read-only, permissions changed) records nothing: the
@@ -2294,7 +2362,7 @@ RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, Q
 
 bool
 RecordingStore::ownerFolderOnDiskLocked(const Folder& folder, const QString& uid, QList<bool>* usable,
-                                        QStringList* gone) {
+                                        QStringList* gone, QStringList* unread) {
     // A folder whose folder.json no longer names this owner (removed from a computer) is not handed out. One the worker
     // has not read yet holds no recordings, so it leaves the table here; a read one, or one whose recordings from
     // before its storage went wait for their read, is the worker's. One whose folder.json cannot be read now is not
@@ -2305,6 +2373,9 @@ RecordingStore::ownerFolderOnDiskLocked(const Folder& folder, const QString& uid
         return true;
     }
     if (marker == FolderMarker::Unreadable) {
+        // Its owner not known now: what the index holds for it is kept, but no request is taken against it until a
+        // read can tell again (read whole at the next pass; marked once the table is no longer walked).
+        unread->append(folder.path);
         return false;
     }
     if (!rootAvailableNow(m_roots.at(folder.root))) {
@@ -2320,10 +2391,15 @@ QString
 RecordingStore::existingFolderLocked(const QString& kind, const QString& uid, const QString& name,
                                      QList<bool>* usable) {
     QStringList gone;
-    const QString bestPath = ownerFolderPathLocked(uid, usable, &gone);
+    QStringList unread;
+    const QString bestPath = ownerFolderPathLocked(uid, usable, &gone, &unread);
     for (const QString& path : std::as_const(gone)) {
         m_folders.remove(path);
         m_foldersChanged = true;
+    }
+    for (const QString& path : std::as_const(unread)) {
+        markFolderUnreadLocked(path);
+        m_passRequested = true;
     }
     const auto found = bestPath.isEmpty() ? m_folders.cend() : m_folders.constFind(bestPath);
     const Folder* best = found != m_folders.cend() ? &found.value() : nullptr;
@@ -2333,6 +2409,7 @@ RecordingStore::existingFolderLocked(const QString& kind, const QString& uid, co
     const QString path = best->path;
     if (kind != kExplore && !name.isEmpty() && best->name != name && write_folder_json(path, uid, kind, name)) {
         m_folders[path].name = name;
+        m_folders[path].starts++;
         m_foldersChanged = true;
         noteFolderAddedLocked(path, best->root); // relabelled: a listing of its root going on now keeps the new label
     }
@@ -2353,6 +2430,7 @@ RecordingStore::takeCandidateFolderLocked(const QString& path, int root, const Q
         found.root = root;
         const auto held = m_folders.constFind(path);
         found.rereading = held != m_folders.cend() && (held->loaded || held->rereading);
+        found.starts = held != m_folders.cend() ? held->starts + 1U : 1U;
         m_folders.insert(path, found); // not read yet: the worker reads its journal next
         noteFolderAddedLocked(path, root);
         m_passRequested = true;
@@ -2376,6 +2454,7 @@ RecordingStore::keepSessionFoldersLocked(int root, QList<Folder>* table, QSet<QS
             folder.uid = live->uid;
             folder.kind = live->kind;
             folder.name = live->name;
+            folder.starts = live->starts;
         }
         made.remove(folder.path);
     }
@@ -2410,6 +2489,7 @@ RecordingStore::makeFolderLocked(const QString& path, int root, const QString& k
     folder.name = kind == kExplore ? QStringLiteral("Explore") : name;
     folder.root = root;
     folder.loaded = true; // new: nothing to read
+    folder.starts = m_folders.value(path).starts + 1U;
     m_folders.insert(path, folder);
     noteFolderAddedLocked(path, root);
     m_foldersChanged = true;
