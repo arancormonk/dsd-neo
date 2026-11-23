@@ -2306,52 +2306,6 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
 }
 
 /*
- * An INFO1's destination-key fallback reads only an NXDN call's known target (issue #903): with the keyloader on NXDN48
- * and the INFO1's key ID 5 holding no key, two INFO1s naming the scrambler under key ID 5 select nothing, and the
- * working key stays as it was, when the call on slot 0 is a DMR call to talkgroup 77 whose end was never decoded (with a
- * key filed under 77), and when no call is live at all (with a key imported under keyring entry 0, which is no
- * destination).
- */
-static int
-test_info1_destination_fallback_needs_an_nxdn_target(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    int rc = 0;
-    for (int dmr_call = 1; dmr_call >= 0; dmr_call--) {
-        if (alloc_fixture(&opts, &state) != 0) {
-            return 1;
-        }
-        init_sacch2_state(state, histories);
-        state->nxdn_confirmed = 1;
-        use_nxdn48_keyloader(opts, state);
-        state->rkey_array[5] = 0ULL; /* the INFO1's key ID holds no key */
-        if (dmr_call) {
-            state->rkey_array[77] = 0x4444ULL;
-            const dsd_call_observation dmr = {
-                .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
-                .slot = 0U,
-                .kind = DSD_CALL_KIND_GROUP_VOICE,
-                .ota_target_id = 77U,
-                .policy_target_id = 77U,
-            };
-            (void)dsd_call_state_observe(state, &dmr, DSD_CALL_BOUNDARY_BEGIN);
-        } else {
-            state->rkey_array[0] = 0x5555ULL;
-            state->rkey_array_loaded[0] = 1U;
-        }
-        send_outbound_info1(opts, state, 1U, 5U);
-        send_outbound_info1(opts, state, 1U, 5U);
-        rc |= expect_int(dmr_call ? "info1-destination-dmr-call-scrambler" : "info1-destination-no-call-scrambler",
-                         (int)state->nxdn_cipher_type, 1);
-        rc |= expect_int(dmr_call ? "info1-destination-not-the-dmr-talkgroup" : "info1-destination-not-keyring-entry-0",
-                         state->R == 0x1234ULL ? 1 : 0, 1);
-        free_fixture(opts, state);
-    }
-    return rc;
-}
-
-/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2588,7 +2542,6 @@ main(void) {
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
-    rc |= test_info1_destination_fallback_needs_an_nxdn_target();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {

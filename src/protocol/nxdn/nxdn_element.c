@@ -3082,28 +3082,6 @@ nxdn_load_aes_key_index(dsd_state* state, uint32_t key_index) {
     state->scalar_key_present[0] = 0;
 }
 
-/* No destination for the NXDN48 scrambler's destination-key fallback (nxdn_select_key()), never a keyring index: no
-   active NXDN call naming a target, or the Null ID 0 (TS 1-E Tables 6.6-5, 6.6-6), which names none. */
-#define NXDN_KEY_NO_DESTINATION UINT64_MAX
-
-/* The destination the call ID @p id gives the fallback: none for the Null ID. */
-static uint64_t
-nxdn_key_destination(uint64_t id) {
-    return id != 0U ? id : NXDN_KEY_NO_DESTINATION;
-}
-
-/* The live call's destination for the fallback: an active NXDN call's known target, else none. Another protocol's call
-   on slot 0 names no NXDN destination. */
-static uint64_t
-nxdn_live_call_key_destination(const dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol)) {
-        return NXDN_KEY_NO_DESTINATION;
-    }
-    return nxdn_key_destination(call.ota_target_id);
-}
-
 /** The keyring key an NXDN call decrypts with under the keyloader, and where it came from. */
 typedef struct {
     int key_id; /* -1: the call's ID and destination hold none of this cipher's key */
@@ -3113,8 +3091,7 @@ typedef struct {
 // The one choice the VCALL and VCALL_IV loaders and the key source the call reports all make, so loading and
 // reporting cannot disagree. Cipher-specific presence: a scalar (an imported zero included) for the scrambler and DES,
 // all four AES-256 segments for AES, so another ID's scalar parked on one of this ID's AES cells (ID + 0x101 ...)
-// never reads as this ID's key. The scrambler on NXDN48 falls back to the destination's key (none for
-// NXDN_KEY_NO_DESTINATION); AES to key 0.
+// never reads as this ID's key. The scrambler on NXDN48 falls back to the destination's key; AES to key 0.
 static nxdn_key_choice
 nxdn_select_key(const dsd_opts* opts, const dsd_state* state, uint8_t cipher_type, int key_id, uint64_t destination) {
     nxdn_key_choice choice = {-1, DSD_CALL_KEY_DEFAULT};
@@ -3134,8 +3111,7 @@ nxdn_select_key(const dsd_opts* opts, const dsd_state* state, uint8_t cipher_typ
         if (keyring_kid_scalar_present(state, key_id)) {
             choice.key_id = key_id;
             choice.source = DSD_CALL_KEY_SIGNALED;
-        } else if (destination != NXDN_KEY_NO_DESTINATION
-                   && destination < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
+        } else if (destination < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
                    && keyring_kid_scalar_present(state, (int)destination)) {
             choice.key_id = (int)destination;
             choice.source = DSD_CALL_KEY_DESTINATION;
@@ -3160,18 +3136,19 @@ nxdn_load_selected_key(const dsd_opts* opts, dsd_state* state, uint8_t cipher_ty
 
 static void
 nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    nxdn_load_selected_key(opts, state, info->cipher_type, (int)info->key_id,
-                           nxdn_key_destination(info->destination_id));
+    nxdn_load_selected_key(opts, state, info->cipher_type, (int)info->key_id, info->destination_id);
 }
 
 /* The working key for the applied cipher and key ID (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key), loaded as a
-   VCALL loads its own (nxdn_load_selected_key()), the live NXDN call's known target being the destination the NXDN48
-   fallback reads (nxdn_live_call_key_destination()): an INFO1 whose pair took effect on the live call, so the voice
-   and the key report read the key the applied pair names. */
+   VCALL loads its own (nxdn_load_selected_key()), the live call's target being the destination the NXDN48 fallback
+   reads: an INFO1 whose pair took effect on the live call, so the voice and the key report read the key the applied
+   pair names. */
 static void
 nxdn_load_applied_key(const dsd_opts* opts, dsd_state* state) {
-    nxdn_load_selected_key(opts, state, (uint8_t)state->nxdn_cipher_type, (int)state->nxdn_key,
-                           nxdn_live_call_key_destination(state));
+    dsd_call_snapshot call;
+    const uint64_t destination =
+        dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE ? call.ota_target_id : 0U;
+    nxdn_load_selected_key(opts, state, (uint8_t)state->nxdn_cipher_type, (int)state->nxdn_key, destination);
 }
 
 /* The VCALL's own cipher and key ID, as received, then the working key (through the key redaction) only when that pair
@@ -3260,8 +3237,7 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
                working key, which no selection loaded. */
             if (state->keyloader == 1 && state->nxdn_cipher_origin != (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
                 // The loaders' own choice (nxdn_select_key()), so the report names the key that decrypts.
-                const nxdn_key_choice choice =
-                    nxdn_select_key(opts, state, cipher_type, key_id, nxdn_key_destination(call.ota_target_id));
+                const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, call.ota_target_id);
                 source = choice.source;
                 selected = choice.key_id;
             }
@@ -3552,7 +3528,7 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
     // The VCALL's choice again (nxdn_select_key()), never the signalled ID unconditionally: the key the IV keys
     // stays the one the VCALL loaded and reported.
     if ((state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) && state->keyloader == 1) {
-        nxdn_load_selected_key(NULL, state, (uint8_t)state->nxdn_cipher_type, state->nxdn_key, NXDN_KEY_NO_DESTINATION);
+        nxdn_load_selected_key(NULL, state, (uint8_t)state->nxdn_cipher_type, state->nxdn_key, 0U);
     }
     if (state->nxdn_cipher_type == 0x03) {
         LFSR128n(state);
