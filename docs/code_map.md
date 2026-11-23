@@ -12486,7 +12486,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   VCALL_IV, an INFO1) publishes nothing on a DCR call (`nxdn_vcall_publish_crypto()`). A VCALL_IV
   heard while a DCR call is the live call is another transmission's (DCR carries no IV): it is printed only, never the
   DCR call's MI, never written into the working register the DCR scrambler runs, and it publishes nothing
-  (`NXDN_decode_VCALL_IV()`).
+  (`NXDN_decode_VCALL_IV()`). A publication names the applied key ID only once an observation of the transmission
+  applied a cipher (`dsd_state::nxdn_cipher_class`): a release resets the cipher, as on main, but leaves the released
+  call's key ID, so a VCALL_IV opening the next call before its VCALL publishes its IV with no key ID.
   A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.

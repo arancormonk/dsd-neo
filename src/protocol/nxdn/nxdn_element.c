@@ -3230,7 +3230,10 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
         return; // another protocol's call on slot 0 takes no NXDN cipher, nor a DCR call a numbered call's message
     }
     const uint8_t cipher_type = (uint8_t)state->nxdn_cipher_type;
-    const uint8_t key_id = (uint8_t)state->nxdn_key;
+    /* The key ID is the applied pair's only once an observation of this transmission applied it: a release resets the
+       cipher, as on main, but leaves the released call's key ID, which a message naming none (a VCALL_IV) must never
+       publish on the next call. */
+    const uint8_t key_id = state->nxdn_cipher_class != 0U ? (uint8_t)state->nxdn_key : 0U;
     const int has_key = nxdn_vcall_has_key(state, cipher_type);
     const dsd_call_crypto_update update = {
         .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR

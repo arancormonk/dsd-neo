@@ -3196,6 +3196,50 @@ test_dcr_audio_follows_the_applied_cipher(void) {
     return rc;
 }
 
+/*
+ * A VCALL_IV publishes no key ID of a released call (issue #903): a DES call under key ID 7 ends at a checked TX_REL,
+ * which resets the cipher as on main and leaves the key ID; voice opens the next call before its VCALL, and a
+ * VCALL_IV arrives. No observation applied a cipher to the new call, so the IV is published with no key ID.
+ */
+static int
+test_vcall_iv_publishes_no_released_key_id(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("released-kid-des-applied", (int)state->nxdn_cipher_type, 2);
+    make_vcall_elements(bits, 0x08U, 0x0123U, 0x0456U, 0U, 0U); /* TX_REL */
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("released-kid-call-ended", call.phase != DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("released-kid-cipher-reset", (int)state->nxdn_cipher_type, 0);
+
+    /* The vocoder opens an identity-less call for the next transmission's voice (mark_vocoder_call_media()). */
+    const dsd_call_observation voice = {.protocol = DSD_SYNC_NXDN_POS, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    rc |= expect_int("released-kid-voice-call", dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN), 1);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x00000000U);
+    write_bits_msb(bits, 40U, 32U, 0x000D0000U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("released-kid-new-call", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("released-kid-iv-published", call.mi == 0xD0000ULL ? 1 : 0, 1);
+    rc |= expect_int("released-kid-algid", (int)call.algid, 0);
+    rc |= expect_int("released-kid-no-kid", (int)call.kid, 0);
+    rc |= expect_int("released-kid-no-signalled-key", call.key_selection.signaled_id, 0);
+    free_fixture(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3251,6 +3295,7 @@ main(void) {
     rc |= test_vcall_source_learned_before_its_target();
     rc |= test_dcr_identification_withdraws_inherited_crypto();
     rc |= test_dcr_audio_follows_the_applied_cipher();
+    rc |= test_vcall_iv_publishes_no_released_key_id();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
