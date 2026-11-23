@@ -2033,7 +2033,9 @@ suite runs under this compiler.
   and VCALL_IV loaders and the key source the call reports share one choice, `nxdn_select_key()`: the signalled ID
   when it holds the cipher's key (a scalar for the scrambler and DES, all four AES-256 segments for AES), else the
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
-  full width. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
+  full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
+  (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
+  cipher's. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
   Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
   AES, and falls back to the direct key only when nothing usable was imported, judging that one by

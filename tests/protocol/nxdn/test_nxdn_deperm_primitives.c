@@ -2222,6 +2222,44 @@ test_held_info1_cipher_expires_at_the_next_calls_first_segment(void) {
     return rc;
 }
 
+/*
+ * With the keyloader on, a VCALL loads a key only for the cipher and key ID the hysteresis applies (issue #903): two
+ * VCALLs naming the scrambler under key ID 5 load key 5; a lone contradicting VCALL naming DES under key ID 7 is held
+ * back, and loads nothing, so the working key stays key 5. Its repeat applies DES under key 7, and loads key 7.
+ */
+static int
+test_held_back_vcall_loads_no_key(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    opts->frame_nxdn48 = 1; /* the scrambler's key is selected on NXDN48 */
+    opts->frame_nxdn96 = 0;
+    state->keyloader = 1;
+    state->rkey_array[5] = 0x1111ULL;
+    state->rkey_array[7] = 0x2222ULL;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 1U, 5U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("vcall-key-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("vcall-key-5-loaded", state->R == 0x1111ULL ? 1 : 0, 1);
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-key-contradiction-held", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("vcall-key-held-back-loads-nothing", state->R == 0x1111ULL ? 1 : 0, 1);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("vcall-key-repeat-applies-des", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("vcall-key-repeat-loads-key-7", state->R == 0x2222ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2259,6 +2297,7 @@ main(void) {
     rc |= test_quarantined_info1_keeps_the_held_key();
     rc |= test_held_info1_cipher_is_never_republished_on_the_dcr_call();
     rc |= test_held_info1_cipher_expires_at_the_next_calls_first_segment();
+    rc |= test_held_back_vcall_loads_no_key();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

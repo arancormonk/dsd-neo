@@ -3303,7 +3303,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
 }
 
 static void
-nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
+nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
         // A VCALL reaches here only through a channel decoder whose CRC passed -- the element
         // decoder is never handed unverified content -- and even then mutates the live cipher only
@@ -3312,6 +3312,11 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
         state->nxdn_cipher_type =
             nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+        /* The key loads for the pair applied, never for one the hysteresis held back: a lone contradiction leaves
+           the working key the applied cipher's, as it leaves the cipher and key ID. */
+        if (state->nxdn_cipher_type == info->cipher_type) {
+            nxdn_vcall_load_key(opts, state, info);
+        }
     } else {
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         state->generic_talker_alias_epoch[0] = 0U; /* not bound to a call (P25 keeps only its own) */
@@ -3439,9 +3444,8 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
            and moves neither the live cipher nor the call, whatever cipher it carries. */
         return;
     }
-    nxdn_vcall_load_key(opts, state, info);
+    nxdn_vcall_apply_state(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
-    nxdn_vcall_apply_state(state, info);
     if (info->message_type == 0x01U && nxdn_confirm_is_confirmed(state) && nxdn_call_type_opens_call(info->call_type)) {
         nxdn_vcall_note_confirmed(opts, state, info);
     }
