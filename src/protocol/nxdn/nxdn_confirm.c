@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>

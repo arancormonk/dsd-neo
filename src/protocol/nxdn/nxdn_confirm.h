@@ -65,8 +65,8 @@ typedef enum {
 #define NXDN_CONFIRM_PARTIAL_HOLD_MS_48 160U
 #define NXDN_CONFIRM_PARTIAL_HOLD_MS_96 80U
 
-/** @brief Forget everything learned about the current transmission. */
-void nxdn_confirm_reset(dsd_state* state);
+/* nxdn_confirm_reset() and nxdn_confirm_frame_proved() are declared once, in <dsd-neo/protocol/nxdn/nxdn.h>, which the
+   engine also reads. */
 
 /**
  * @brief Say where a frame whose body is about to be read begins, before nxdn_confirm_begin_frame().
@@ -131,17 +131,6 @@ int nxdn_confirm_scch_confirmed(const dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */
 int nxdn_confirm_is_confirmed(const dsd_state* state);
-
-/**
- * @brief Whether the frame just closed carried a passing CRC of its own.
- *
- * Narrower than nxdn_confirm_is_confirmed(), which stays true across a confirmed
- * transmission's empty frames. The SPS hunt needs the narrower answer: only a frame that
- * checked out itself proves the profile it was read on, or the noise syncs that follow a
- * transmission would go on holding a profile nothing is decoding on (#445). Read it after
- * nxdn_confirm_end_frame().
- */
-int nxdn_confirm_frame_proved(const dsd_state* state);
 
 /**
  * @brief Whether this frame's own CRCs proved its content: a strong check, or the short one that completes or continues
