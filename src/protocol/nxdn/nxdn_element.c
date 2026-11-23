@@ -3319,6 +3319,31 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     dsd_event_sync_slot(opts, state, 0U);
 }
 
+/* An SCCH that acts is a Type-D call's, and a VCALL a call's of its own, never a DCR call's (DCR carries no SCCH, and its
+ * frames no FACCH1): the scrambler a DCR call received (its cipher and the classification behind it, while the cipher
+ * applied is the DCR call's: dsd_state::nxdn_cipher_origin, a contradiction the hysteresis held back notwithstanding)
+ * is not that call's, whose voice plays clear until its own signalling names a cipher, nor is a VCALL judged against
+ * it. It is forgotten once, before the SCCH's own message acts or the hysteresis reads the VCALL, so an INFO1 naming
+ * the new call's cipher ahead of its numbered party keeps it; an INFO1 heard while the DCR call is still the live call
+ * forgets nothing, as it applies nothing (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a
+ * key) stays, as at a release. */
+static void
+nxdn_forget_applied_cipher(dsd_state* state) {
+    state->nxdn_cipher_type = 0;
+    state->nxdn_key = 0; /* the key goes with the cipher it came with (nxdn_cipher_observe_keyed()) */
+    nxdn_cipher_class_reset(state);
+    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
+        nxdn_cipher_force(state, 0x1);
+    }
+}
+
+static void
+nxdn_forget_dcr_cipher(dsd_state* state) {
+    if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
+        nxdn_forget_applied_cipher(state);
+    }
+}
+
 static void
 nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
@@ -3327,6 +3352,11 @@ nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
+        /* A VCALL of a confirmed transmission is never the DCR call's: a DCR call's scrambler is forgotten before the
+           hysteresis reads it (nxdn_forget_dcr_cipher()). */
+        if (nxdn_confirm_is_confirmed(state)) {
+            nxdn_forget_dcr_cipher(state);
+        }
         state->nxdn_cipher_type =
             nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
         /* The key loads for the pair applied, never for one the hysteresis held back: a lone contradiction leaves
@@ -3952,30 +3982,6 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
     }
 }
 
-/* An SCCH that acts is a Type-D call's, never a DCR call's (DCR carries none): the scrambler a DCR call received (its
- * cipher and the classification behind it, while the cipher applied is the DCR call's: dsd_state::nxdn_cipher_origin,
- * a contradiction the hysteresis held back notwithstanding) is not that call's, whose voice plays clear until its own
- * signalling names a cipher. It is forgotten once, before the SCCH's own message acts, so an INFO1 naming the
- * new call's cipher ahead of its numbered party keeps it; an INFO1 heard while the DCR call is still the live call
- * forgets nothing, as it applies nothing (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a key)
- * stays, as at a release. */
-static void
-nxdn_forget_applied_cipher(dsd_state* state) {
-    state->nxdn_cipher_type = 0;
-    state->nxdn_key = 0; /* the key goes with the cipher it came with (nxdn_cipher_observe_keyed()) */
-    nxdn_cipher_class_reset(state);
-    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
-        nxdn_cipher_force(state, 0x1);
-    }
-}
-
-static void
-nxdn_scch_forget_dcr_cipher(dsd_state* state) {
-    if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
-        nxdn_forget_applied_cipher(state);
-    }
-}
-
 /* The live call takes an SCCH's source or target (0: keep the call's), named under @p prefix (the message's Home
  * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
@@ -4279,7 +4285,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     /* An INFO1 heard during a DCR call leaves that call's cipher as it is (nxdn_scch_handle_info1()). */
     const int info1 = info.opcode == 0x07U || info.opcode == 0x03U;
     if (info.acts && !info.diagnostic_only && !(info1 && info.during_dcr)) {
-        nxdn_scch_forget_dcr_cipher(state);
+        nxdn_forget_dcr_cipher(state);
     }
     nxdn_scch_prepare_type_d(opts, state, &info);
 

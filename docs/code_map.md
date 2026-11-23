@@ -12454,8 +12454,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_state::nxdn_cipher_origin`, which follows the observation the applied cipher equals and stays when the
   hysteresis holds a contradiction back, `nxdn_cipher_observe_keyed()`) is forgotten, cipher and classification, at the
   first SCCH that acts, which no DCR call carries, other than an INFO1 heard while the DCR call is still the live call,
-  before that SCCH's message acts, so the new call's voice is not descrambled with it, while an INFO1 naming the new
-  call's own cipher once the DCR call is over and ahead of its numbered party keeps it (`nxdn_scch_forget_dcr_cipher()`;
+  before that SCCH's message acts, and at the first VCALL of a confirmed transmission, which no DCR frame carries,
+  before the hysteresis reads its cipher, so the new call's voice is not descrambled with it nor its VCALL held back
+  against it (which under `--enc-lockout` locked out a call the VCALL's own key decrypts), while an INFO1 naming the
+  new call's own cipher once the DCR call is over and ahead of its numbered party keeps it (`nxdn_forget_dcr_cipher()`;
   a scrambler forced with `-4` stays). An INFO1 heard while the DCR
   call is still the live call is neither that call's (DCR carries no SCCH) nor yet the next call's, which no SCCH has
   opened: it is neither applied nor kept (`nxdn_scch_handle_info1()`), and it forgets nothing, so the DCR call's

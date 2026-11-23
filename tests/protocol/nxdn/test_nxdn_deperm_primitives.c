@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -2262,6 +2263,49 @@ test_dcr_key_is_reported_as_the_working_key(void) {
 }
 
 /*
+ * A VCALL opening the next call takes that call's cipher from itself, not the DCR call's (issue #903): a VCALL is never a
+ * DCR call's (DCR frames carry no FACCH1), so the scrambler a DCR call received is forgotten before the hysteresis
+ * reads it, as at the first SCCH that acts. Trunking with --enc-lockout, the keyloader on NXDN48 holding DES key 7 and
+ * no working key: during a scrambled DCR call, a checked VCALL of group 0x0456 names DES under key ID 7. It is applied
+ * at once with its key, and its call is published decryptable: never judged against the DCR call's keyless scrambler,
+ * which would lock the group out and drop a call it can decrypt.
+ */
+static int
+test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    use_nxdn48_keyloader(opts, state);
+    state->R = 0ULL; /* no working key: the DCR call's scrambler has none */
+    state->scalar_key_present[0] = 0U;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_enc_calls = 0; /* --enc-lockout */
+    rc |= expect_int("vcall-after-dcr-dcr-scrambler", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-after-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-after-dcr-another-call", call.epoch != dcr.epoch && call.ota_target_id == 0x0456U, 1);
+    rc |= expect_int("vcall-after-dcr-des-applied", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("vcall-after-dcr-key-id", (int)state->nxdn_key, 7);
+    rc |= expect_int("vcall-after-dcr-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
+    rc |= expect_int("vcall-after-dcr-algid", (int)call.algid, 2);
+    rc |= expect_int("vcall-after-dcr-kid", (int)call.kid, 7);
+    rc |= expect_int("vcall-after-dcr-decryptable", (int)call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("vcall-after-dcr-still-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("vcall-after-dcr-not-locked-out", dsd_enc_lockout_entry_active(state, 0x0456U, 1), 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2440,6 +2484,7 @@ main(void) {
     rc |= test_accepted_info1_loads_its_key();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_key_is_reported_as_the_working_key();
+    rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {
