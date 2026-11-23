@@ -36,8 +36,10 @@ extern "C" {
  * - `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` applies parsed tuning to
  *   existing `rtl_*` option fields and normalizes `audio_in_dev` to
  *   `soapy`/`soapy:<args>`. Each field is read in its place
- *   (dsd_spec_split_fields()): an empty one leaves its option, and an empty
- *   args field is no args (`soapy::154.43M`).
+ *   (split as dsd_spec_split_fields() splits, but a bracketed part such as
+ *   SoapyRemote's `remote=[2001:db8::1]` keeps its colons in one field): an
+ *   empty one leaves its option, and an empty args field is no args
+ *   (`soapy::154.43M`).
  * - If trailing fields are ambiguous or not valid shorthand, the full string is
  *   treated as opaque Soapy args so valid third-party device strings are not
  *   misinterpreted as shorthand fields.

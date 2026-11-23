@@ -3131,7 +3131,9 @@ Advanced (env)
   used to turn the whole string into device args. The frequency comes right after the args: `soapy:<args>::<freq>`
   leaves the frequency place empty, and a K, M or G number after it, past one empty field or any number of them, stops the start
   (`Soapy frequency must follow the device args`). Empty fields at the end hold nothing: a trailing colon
-  (`soapy:driver=airspy:154.43M:30:0:24:noise+17:3:`) keeps the tuning.
+  (`soapy:driver=airspy:154.43M:30:0:24:noise+17:3:`) keeps the tuning. A bracketed address in the args keeps its
+  colons, which end no field: `soapy:driver=remote,remote=[2001:db8::1]` is device args alone (SoapyRemote), and
+  `soapy:driver=remote,remote=[2001:db8::1]:851.375M:22` tunes that remote device, as an IPv4 `remote=` does.
 - A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args, signed or with
   an exponent too (`+5.8G`, `5.8e0G`). One outside 1 MHz to 4294.967295 MHz (`soapy:driver=hackrf:5.8G`,
   `soapy:500k`) is an error at startup and in `--print-config`:

@@ -5090,7 +5090,10 @@ suite runs under this compiler.
     into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
     before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range
     (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
-    fallback (`RUNTIME_INPUT_SPEC`). Both read a gain field the same way: one whose tenths of a dB (the gain times ten,
+    fallback (`RUNTIME_INPUT_SPEC`). It splits the tail at colons outside brackets (`soapy_split_fields()`): a
+    bracketed part (SoapyRemote's `remote=[2001:db8::1]`) runs to the next `]`, or to the end when none follows, and
+    stays in one device-args field, so its groups are never read as a frequency and a squelch field (issue #899).
+    The rtl and Soapy readers both read a gain field the same way: one whose tenths of a dB (the gain times ten,
     as the tuner is set) do not fit an int, above 214748364, is ignored with a warning naming it, like a field that
     does not parse, and the gain before stays; 0 and negatives (automatic) are taken as written. The two places that
     turn the configured gain into tenths, the stream's open (`rtl_sdr_fm.cpp`) and a trunk scan's retune gain profile

@@ -129,7 +129,53 @@ restore_opaque_soapy_args(dsd_opts* opts, const char* raw_tail) {
 
 enum { SOFTY_TOK_MAX = 16 };
 
-/* The tail's fields, each in its place, empty ones included (dsd_spec_split_fields(), as every other spec reads its
+/* The ':' that ends the field starting at @p field, or NULL when the field runs to the end. A '[' opens a bracketed
+   part that runs to the next ']', or to the end when none follows, and its colons end no field: SoapyRemote's
+   `remote=[2001:db8::1]` is one device-args field, whose groups were read as tuning fields (issue #899). */
+static char*
+soapy_field_end(char* field) {
+    for (char* p = field; *p != '\0'; p++) {
+        if (*p == '[') {
+            p = strchr(p, ']');
+            if (!p) {
+                return NULL;
+            }
+        } else if (*p == ':') {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* The fields of @p tail as dsd_spec_split_fields() splits a spec, each in its place, empty ones included, but with
+   colons inside brackets kept (soapy_field_end()): copied into @p buf, at most SOFTY_TOK_MAX stored in @p tok, each
+   field right after the one before it and its terminator. Returns how many the tail has, which can be more, with the
+   last one in *out_last; -1 when the tail does not fit @p buf. */
+static int
+soapy_split_fields(const char* tail, char* buf, size_t buf_size, char* tok[SOFTY_TOK_MAX], const char** out_last) {
+    const size_t len = strlen(tail);
+    if (len >= buf_size) {
+        return -1;
+    }
+    DSD_MEMCPY(buf, tail, len + 1U);
+    int count = 0;
+    char* field = buf;
+    for (;;) {
+        if (count < SOFTY_TOK_MAX) {
+            tok[count] = field;
+        }
+        count++;
+        char* end = soapy_field_end(field);
+        if (!end) {
+            *out_last = field;
+            return count;
+        }
+        *end = '\0';
+        field = end + 1;
+    }
+}
+
+/* The tail's fields, each in its place, empty ones included (soapy_split_fields(), as every other spec reads its
    fields: skipping an empty one read every later field one place early). @p tail_copy keeps the tail as it was. At most
    SOFTY_TOK_MAX are stored; *out_count is how many the tail has, which can be more. Empty fields at the end are not
    counted (one is always left): a trailing colon holds no field, and strtok() read
@@ -143,14 +189,16 @@ tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size
 
     DSD_SNPRINTF(tail_copy, tail_copy_size, "%s", raw_tail);
     tail_copy[tail_copy_size - 1] = '\0';
-    const int count = dsd_spec_split_fields(tail_copy, scratch, scratch_size, tok, SOFTY_TOK_MAX);
+    const char* last = NULL;
+    const int count = soapy_split_fields(tail_copy, scratch, scratch_size, tok, &last);
     if (count < 0) {
         return -1;
     }
     /* Each colon ending the tail ends one more empty field, so the trailing empty fields are counted from the text,
-       also those past the fields stored. */
+       also those past the fields stored. A last field that is not empty ends the tail inside an unclosed bracket,
+       whose colons end no field. */
     size_t trailing = 0;
-    for (size_t len = strlen(tail_copy); len > 0 && tail_copy[len - 1U] == ':'; len--) {
+    for (size_t len = strlen(tail_copy); last[0] == '\0' && len > 0 && tail_copy[len - 1U] == ':'; len--) {
         trailing++;
     }
     const size_t total = (size_t)count;
