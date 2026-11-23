@@ -166,6 +166,18 @@ struct Store {
         pass();
     }
 
+    /* The limit set to @p mb once the store has started and settled, and the pass that applies it waited for without
+     * asking for another while it runs: a limit walk sees no pass asked for, so its count does not go stale under it
+     * (a test hooking that walk sees it whole). */
+    void
+    limitQuietly(int mb) {
+        start();
+        const quint64 before = store.passCountForTest();
+        store.setLimitMb(mb);
+        store.waitForPassCountForTest(before + 1U);
+        QCoreApplication::processEvents();
+    }
+
     void
     pass() {
         store.waitForPassForTest();
@@ -4917,9 +4929,7 @@ test_limit_unlink_check_drops_an_unreadable_recording(void) {
         }
         return false;
     });
-    s.store.setLimitMb(1);
-    s.start();
-    s.pass();
+    s.limitQuietly(1);
     const bool healthy = QFileInfo::exists(folder + QStringLiteral("/new.wav"));
     QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
     expect("limit unreadable: closed right before its unlink", closed.load());
@@ -5217,9 +5227,7 @@ test_limit_counts_the_size_its_unlink_check_found(void) {
         }
         return false;
     });
-    s.store.setLimitMb(1);
-    s.start();
-    s.pass();
+    s.limitQuietly(1);
     expect("limit size found: shrunk right before its unlink", shrunk.load());
     expect("limit size found: skipped and told, nothing else removed",
            QFileInfo::exists(folder + QStringLiteral("/old.wav"))
@@ -5290,9 +5298,7 @@ test_limit_skip_of_a_link_is_told(void) {
         }
         return false;
     });
-    s.store.setLimitMb(1);
-    s.start();
-    s.pass();
+    s.limitQuietly(1);
     expect("limit link: the link stays, told as not done",
            linked.load() && QFileInfo(folder + QStringLiteral("/old.wav")).isSymLink()
                && s.store.deletesSkipped() == 1);

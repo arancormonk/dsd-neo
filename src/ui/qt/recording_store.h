@@ -352,6 +352,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
+    /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
+     * for, which a limit walk takes as its count gone stale). Test hook. */
+    void waitForPassCountForTest(quint64 count);
+    /** @brief The passes ended so far. Test hook. */
+    quint64 passCountForTest() const;
     /** @brief Pass every @p activeMs while a session runs, else every @p idleMs; before start(). Test hook. */
     void setTimingForTest(int activeMs, int idleMs);
     /** @brief How long a folder whose folder.json or journal could not be read waits before its next read (30 s by

@@ -3341,6 +3341,18 @@ RecordingStore::recheckPaths(const QStringList& paths) {
 #ifdef DSD_NEO_TEST_HOOKS
 
 void
+RecordingStore::waitForPassCountForTest(quint64 count) {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_passed.wait(lock, [this, count]() { return m_passes >= count || m_stop || !m_started; });
+}
+
+quint64
+RecordingStore::passCountForTest() const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return m_passes;
+}
+
+void
 RecordingStore::waitForPassForTest() {
     std::unique_lock<std::mutex> lock(m_mutex);
     if (!m_started || m_stop) {
