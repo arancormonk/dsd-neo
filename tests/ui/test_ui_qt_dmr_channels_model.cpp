@@ -81,7 +81,7 @@ add_overlay(uint16_t lpcn, bool hidden, long hz, long base) {
     row.hz = hz;
     row.base_hz = base;
     g_fixture->view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_USER;
-    /* The entry lies beside the shared row, which keeps the frequency RESTORE shows (review gate b-r4 S1). */
+    /* The entry lies beside the shared row, which keeps the frequency RESTORE shows. */
     g_fixture->state->trunk_chan_map[lpcn] = base;
     g_fixture->view.channel_hz[lpcn] = hidden ? 0 : hz;
 }
@@ -319,7 +319,7 @@ test_other_system_offers_no_edits() {
     g_fixture->opts->trunk_scan_enabled = 0;
 }
 
-/* Review gate b-r4 S6, b-r5 U3: a grant heard again on a channel with no frequency moves the ledger alone (the view's
+/* A grant heard again on a channel with no frequency moves the ledger alone (the view's
  * missing_seq); only the missing rows are built again, not one row per mapped channel (a map can hold 4094). A name
  * learned builds none either. The channel rows copied anew (content_seq: a frequency DMR uses, an origin, one of the
  * user's entries) build them again. */
@@ -340,7 +340,7 @@ test_repeated_grant_builds_only_the_missing_rows() {
     for (int grant = 1; grant <= 5; ++grant) {
         g_fixture->view.missing.details[0].last_heard_ms += 1000U; // channel 12 granted again
         g_fixture->view.missing.revision++;
-        g_fixture->view.missing_seq++; // the ledger alone was copied anew (review gate b-r5 U3)
+        g_fixture->view.missing_seq++; // the ledger alone was copied anew
         model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     }
     expect("repeated grants build no Channels row", model.channelRowBuilds() == 1U && channelSignals == 0);
@@ -382,7 +382,7 @@ test_repeated_grant_builds_only_the_missing_rows() {
     DSD_MEMSET(g_fixture->state->trunk_chan_map, 0, sizeof g_fixture->state->trunk_chan_map);
 }
 
-/* Review gate b-r7 V2: the ledger can hold every channel number, and only the page the sheet shows is built as rows.
+/* The ledger can hold every channel number, and only the page the sheet shows is built as rows.
  * A grant heard again builds at most that page again; a larger limit or the other order builds the new page. */
 void
 test_missing_rows_are_built_a_page_at_a_time() {
@@ -414,7 +414,7 @@ test_missing_rows_are_built_a_page_at_a_time() {
     DSD_MEMSET(g_fixture->view.missing.missing, 0, sizeof g_fixture->view.missing.missing);
 }
 
-/* Review gate b-r4 S10: a live mode change left DMR off (dmr_decoding 0). No Tier III lookup reads the channels, and
+/* A live mode change left DMR off (dmr_decoding 0). No Tier III lookup reads the channels, and
  * the decoder refuses every edit, so an open sheet lists no rows and offers no edit, as for another system, until DMR
  * is decoded again; the flag moves the rows by itself. */
 void
@@ -439,7 +439,7 @@ test_not_decoding_dmr_offers_no_edits() {
     expect("no session is not read as DMR off", model.dmrDecoding());
 }
 
-/* Review gate b-r7 V5: the view names another system (an Auto session that first heard P25, say) before the DMR module
+/* The view names another system (an Auto session that first heard P25, say) before the DMR module
  * recorded anything for the session. The flags are the view's whatever it holds: the sheet shows the other-system
  * notice and offers no edit, which the decoder would refuse. */
 void

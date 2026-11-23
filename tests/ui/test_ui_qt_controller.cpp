@@ -2171,7 +2171,7 @@ test_dmr_channel_bridge() {
     const quint32 request = bridge.lastDmrChannelRequest();
     check(request != 0U);
     check(dsd_app_drain_cmds(&opts, &state) == 1);
-    /* DMR uses the user's frequency; the shared map row under it is untouched (review gate b-r4 S1). */
+    /* DMR uses the user's frequency; the shared map row under it is untouched. */
     check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L && state.trunk_chan_map[12] == rowHz);
     const uint32_t revisionAfter = dmr_t3_chan_revision(&state);
     /* Another caller's request is not this bridge's to report. */
@@ -2252,7 +2252,7 @@ test_dmr_channel_bridge() {
     again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
     check(again.value("saved").toBool() && again.value("saveError").toString().isEmpty());
     check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
-    /* Review gate b-r8t W2: a restore no saved entry made (a channel file of the user's set it) is not saved. */
+    /* A restore no saved entry made (a channel file of the user's set it) is not saved. */
     again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
     check(!again.value("saved").toBool() && again.value("saveError").toString() == "session-only");
     again = bridge.saveDmrChannelEdit(QString(), 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
@@ -2270,7 +2270,7 @@ test_dmr_channel_bridge() {
     check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
     state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_NONE);
 
-    /* A live mode change left DMR off by the time the decoder applies it (review gate b-r4 S2/S10): refused with its
+    /* A live mode change left DMR off by the time the decoder applies it: refused with its
        own key, kept nowhere, and the open sheet lists nothing and offers no edit. */
     opts.frame_dmr = 0;
     check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER,
@@ -2298,7 +2298,7 @@ test_dmr_channel_bridge() {
     freeState(&state);
 }
 
-/* Review gate b-r4 S7: the decoder applied an edit and the app quits before the next tick polls its answer (Android's
+/* The decoder applied an edit and the app quits before the next tick polls its answer (Android's
  * activity teardown exits the event loop, and main() then destroys the bridge and the saved systems). The answer is
  * settled as the loop quits: the edit is kept on the saved system it was sent for. */
 static void

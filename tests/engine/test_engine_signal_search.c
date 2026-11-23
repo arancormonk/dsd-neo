@@ -3117,7 +3117,7 @@ user_dmr_row_kept(const dsd_state* s) {
            && dmr_t3_overlay_get(s, USER_CHANNEL, &hz) == DMR_T3_OVERLAY_SET && hz == 852112500;
 }
 
-/* The shared row under the user's entry is the session's (review gate b-r4 S1): the site's SITE row, which a visit that
+/* The shared row under the user's entry is the session's: the site's SITE row, which a visit that
    heard another network dropped, comes back with the session's rows, while DMR goes on using the user's frequency. */
 static int
 overlaid_dmr_row_back(const dsd_state* s) {
@@ -3206,7 +3206,7 @@ note_missing_dmr_channel(dsd_opts* o, dsd_state* s, uint16_t lpcn) {
     dmr_t3_missing_note_grant(o, s, lpcn, &cls, 0U, 0);
 }
 
-/* Review gate b-r1 E7: a session that ends during a visit keeps the visit's site, its DMR ledger included, until the
+/* A session that ends during a visit keeps the visit's site, its DMR ledger included, until the
    engine's teardown releases it. Only then is the live ledger the session's own, so the exit summary is logged after
    the release (dsd_engine_cleanup()): before it, the visit's channel would be reported and the session's not. */
 static void

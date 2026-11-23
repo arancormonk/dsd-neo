@@ -3789,7 +3789,7 @@ test_completed_slco_sys_parms_note_tier3(void) {
     free(opts);
 }
 
-/* Review gate b-r3 R5: the site can move its TSCC while the receiver stays on the carrier. A checked P_SYS_PARMS
+/* The site can move its TSCC while the receiver stays on the carrier. A checked P_SYS_PARMS
    after a checked C_SYS_PARMS names the carrier a payload channel: the TSCC evidence ends, Tier III stays known. A
    composite control channel's P_SYS_PARMS (Comp_CC set) keeps it. */
 static void

@@ -2429,7 +2429,7 @@ test_dmr_channels_csv(void) {
     auto sys = tier3_system();
     const QByteArray want("lpcn,frequency_hz\n12,0\n40,451137500\n");
     expect("the system's channels, valid ones, by channel", dsd_qt::session_args_dmr_channels_csv(sys) == want);
-    /* Review gate b-r7 V1: what the session decodes is the decoder's to judge, from every option it reads. */
+    /* What the session decodes is the decoder's to judge, from every option it reads. */
     for (const QString& flag : {QStringLiteral("-fi"), QStringLiteral("-fp"), QStringLiteral("-fs -fi")}) {
         sys["decodeFlag"] = flag;
         expect(qPrintable(QStringLiteral("passed whatever the decode flag: '%1'").arg(flag)),
@@ -2454,7 +2454,7 @@ test_dmr_channels_csv(void) {
              .contains(QStringLiteral("--dmr-chan-overrides")));
 }
 
-/* Review gate b-r7 V1: the decoder keeps the last --dmr-chan-overrides, so the start puts the saved channels after
+/* The decoder keeps the last --dmr-chan-overrides, so the start puts the saved channels after
    every option the user typed: the decode flag's tokens, the system's and the app's extra options, and the live radio
    settings. A file the user named among them starts too, and the saved channels win over it. */
 static void
@@ -2483,7 +2483,7 @@ test_dmr_channels_last(void) {
                args.contains(token) && args.lastIndexOf(token) < args.size() - 2);
     }
 
-    /* Review gate b-r8t W1: a "--" in the extra options ends the options the decoder reads, so the saved channels go
+    /* A "--" in the extra options ends the options the decoder reads, so the saved channels go
        just before it, still after every option before it; a "--" that is a long option's value ends nothing. */
     sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides /data/system.csv -- /data/operand.csv");
     prefs.extraArgs.clear();
@@ -2571,7 +2571,7 @@ test_dmr_channels_start(void) {
     expect("the folder blocked", QDir(folder).removeRecursively() && QFile(folder).open(QIODevice::WriteOnly));
     host.starts = 0;
     result = builder.start(sys, &host, QStringLiteral("saved"));
-    /* Review gate b-r7 V1: a file that cannot be written never stops the start: it goes on without the channels, and
+    /* A file that cannot be written never stops the start: it goes on without the channels, and
        Home's notice list says so. */
     expect("a file that cannot be written starts without it",
            result.value("ok").toBool() && result.value("started").toBool() && host.starts == 1
@@ -2587,7 +2587,7 @@ test_dmr_channels_start(void) {
     };
     const qint64 first = episode();
     expect("and posts a notice for the file", first >= 0);
-    /* Review gate b-r8t W4: while the file keeps failing the notice stays the same one, so a dismissal holds; once a
+    /* While the file keeps failing the notice stays the same one, so a dismissal holds; once a
        start passed the channels, the next failure is a new one, which an earlier dismissal does not hide. */
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("a failure again is the same episode", episode() == first);
@@ -2614,7 +2614,7 @@ test_dmr_channels_start(void) {
     while (systems.count() > 0 && systems.remove(0)) {}
 }
 
-/* Review gate b-r7 V3: the generated channels file is written and cleaned up without following a link. A link at the
+/* The generated channels file is written and cleaned up without following a link. A link at the
    file is replaced, never written through; a linked dmr_channels folder is neither written into nor cleaned up in, and
    the start goes on without the channels. */
 static void
@@ -2653,7 +2653,7 @@ test_dmr_channels_never_follow_links(void) {
     const QString uid = sys.value("uid").toString();
     const QString path = dsd_qt::SavedSystemsModel::dmrChannelsFilePath(uid);
     const QString folder = QFileInfo(path).absolutePath();
-    /* Review gate b-r8t W6: what the links name lives in a scratch folder of this test's own; only the links stand where
+    /* What the links name lives in a scratch folder of this test's own; only the links stand where
        the builder looks. */
     const QTemporaryDir scratch;
     expect("links: a scratch folder", scratch.isValid());
@@ -2708,7 +2708,7 @@ test_dmr_channels_never_follow_links(void) {
 #endif
 }
 
-/* Review gate b-r8t W7: a generated path the decoder's 1024-byte field cannot hold is a file that could not be prepared:
+/* A generated path the decoder's 1024-byte field cannot hold is a file that could not be prepared:
    the start goes on without the option, and the notice says so. Linux only: there the store follows XDG_DATA_HOME, and
    a path that long can be made. */
 static void

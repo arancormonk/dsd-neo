@@ -10136,7 +10136,7 @@ test_dmr_ras_carrier_lifetime(void) {
     return rc;
 }
 
-/* Review gate b-r6: the Tier III control-channel evidence (a checked C_ALOHA or C_SYS_Parms on the tuned carrier,
+/* The Tier III control-channel evidence (a checked C_ALOHA or C_SYS_Parms on the tuned carrier,
    dmr_t3_cc_note_evidence()) ends with reception: the no-carrier pass leaves the carrier, the received identity's epoch
    and the tuning generation as they were, yet the carrier is offered as the control channel again only once a new
    checked message names it. */

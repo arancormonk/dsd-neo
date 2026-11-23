@@ -71,8 +71,7 @@ recent_activity_matches(const dsd_state* state, uint8_t index, dsd_call_kind kin
            && (!notice_fragment || strstr(entry->notice, notice_fragment) != NULL);
 }
 
-/* The channel kind (dsd_call_channel_kind) recent-activity row @p index gives its channel; -1 with no rows. Review gate
-   b-r5 U4: the call view reads the user's Tier III channels only for an LPCN. */
+/* The channel kind (dsd_call_channel_kind) recent-activity row @p index gives its channel; -1 with no rows. The call view reads the user's Tier III channels only for an LPCN. */
 static int
 recent_activity_channel_kind(const dsd_state* state, uint8_t index) {
     dsd_recent_activity_snapshot recent;

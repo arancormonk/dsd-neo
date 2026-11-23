@@ -173,7 +173,7 @@ test_publish_carries_the_recording_view(void) {
     assert(dsd_app_recording_view_get(NULL) == -1);
 }
 
-/* Review gate b-r4 S2: each options snapshot notes whether the options decode DMR, for the DMR Tier III record's next
+/* Each options snapshot notes whether the options decode DMR, for the DMR Tier III record's next
    publish (its dmr_decoding), which has the decoder state only. */
 static void
 test_publish_notes_dmr_decoding(void) {

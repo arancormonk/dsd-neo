@@ -357,7 +357,7 @@ dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const
     d->group = (uint8_t)(cls->group != 0U);
     d->data = (uint8_t)(cls->data != 0U);
     /* The details are this grant's, so is their provenance; the checked set keeps whether any grant confirmed the
-       channel (review gate b-r7 V4). */
+       channel. */
     d->unverified = (uint8_t)(unverified != 0);
     d->caller = cls->caller;
     d->recipient = cls->recipient;

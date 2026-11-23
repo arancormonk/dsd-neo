@@ -1662,7 +1662,7 @@ test_ras_grant_ledger_unverified(void) {
     dmr_t3_missing_log_summary(&g_state);
     assert(strstr(g_missing_summary, "40 (unchecked)") != NULL);
 
-    /* A checked repeat clears the mark, and no second notice. A later RAS one (review gate b-r7 V4) leaves the channel
+    /* A checked repeat clears the mark, and no second notice. A later RAS one leaves the channel
        confirmed (the sticky checked bit: the summary names it plainly), but its details are that grant's, so they are
        marked unchecked; a checked grant after it clears the mark again. */
     g_state.event_crc_invalid[0] = 0U;
@@ -1917,7 +1917,7 @@ test_overlay_refused_under_trunk_scan(void) {
     assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, "never-opened.csv") == -1);
 }
 
-/* Review gate b-r4 S1: a reload of the saved map (an RR refresh writes the file and reloads it) and a clear change only
+/* A reload of the saved map (an RR refresh writes the file and reloads it) and a clear change only
    the shared rows. The entries keep deciding what DMR uses, and RESTORE shows the row the reload put there. */
 static void
 test_overlay_restore_after_reload_shows_the_reloaded_row(void) {
@@ -2062,7 +2062,7 @@ test_overlay_hidden_channel_leaves_ledger(void) {
     assert(dmr_t3_missing_count(&g_state) == 1U && g_missing_notices == 2);
 }
 
-/* Review gate b-r1 E1/E3: the user's entry decides a grant's channel before the shared map does. A P25 IDEN 0
+/* The user's entry decides a grant's channel before the shared map does. A P25 IDEN 0
    invalidation (another protocol's writer) empties rows 0..4095, the file's row under the user's set entry among them:
    a logical grant for it is still followed on the user's frequency, never recorded as missing, and the same SET again
    changes nothing. An absolute grant for a hidden channel is not followed (nor learned into the row), and one for a
@@ -2103,7 +2103,7 @@ test_overlay_governs_grants_over_the_shared_map(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 }
 
-/* Review gate b-r1 E2: a hidden channel (the user's row at no frequency) is no heuristic anchor. With channel 10 hidden
+/* A hidden channel (the user's row at no frequency) is no heuristic anchor. With channel 10 hidden
    and 12 the only mapped row, the fill has one anchor and invents nothing for 11. */
 static void
 test_hidden_channel_anchors_no_estimate(void) {
@@ -2118,7 +2118,7 @@ test_hidden_channel_anchors_no_estimate(void) {
     assert(g_state.trunk_chan_map[11] == 0L);
 }
 
-/* Review gate b-r1 E6: another writer of the shared map (P25's frequency cache, a -Y visit, a replay) fills a missing
+/* Another writer of the shared map (P25's frequency cache, a -Y visit, a replay) fills a missing
    channel's row without a reconcile. The next map change DMR sees reconciles every outstanding channel, not only its
    own: a learned row, the exit summary, and a save each catch up. A mapped grant does no reconcile. */
 static void
@@ -2154,7 +2154,7 @@ test_missing_reconciled_after_other_writers(void) {
     assert(dmr_t3_missing_revision(&g_state) == rev);
 }
 
-/* Review gate b-r2 C2: an edit's expected frequency is the one DMR uses for the channel (the entry over the shared
+/* An edit's expected frequency is the one DMR uses for the channel (the entry over the shared
    row), not the shared row, which another protocol's writer can empty or fill under an entry. A set channel whose row
    P25 emptied and a hidden one whose row P25 filled both take an edit naming the entry's frequency; the shared row's
    value is stale for both. A channel with no entry is judged by its shared row. */
@@ -2188,7 +2188,7 @@ test_overlay_edit_expects_the_effective_frequency(void) {
     assert(dmr_t3_chan_effective_hz(&g_state, 0U) == 0L && dmr_t3_chan_effective_hz(&g_state, 4095U) == 0L);
 }
 
-/* Review gate b-r5 U1: the fill anchors on shared map rows only, since its estimates go into the shared map. The user's
+/* The fill anchors on shared map rows only, since its estimates go into the shared map. The user's
    entries anchor nothing: two set channels with empty shared rows invent nothing between them, and a hidden channel
    whose shared row another protocol filled anchors at that row, as any other shared row. A channel with an entry takes
    no estimate. */
@@ -2213,7 +2213,7 @@ test_anchors_are_shared_rows_only(void) {
     assert(dmr_t3_chan_effective_hz(&g_state, 20U) == 0L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_USER);
 }
 
-/* Review gate b-r2 C4: a fill the user's edit caused (or the --dmr-chan-overrides file) has no received burst behind
+/* A fill the user's edit caused (or the --dmr-chan-overrides file) has no received burst behind
    it: its notice is a system notice, with no protocol, slot or CRC flags. An entry anchors nothing, but its channel
    takes no estimate, so removing it lets the gap fill. A fill a learned row caused stays received data on that burst's
    slot. */
@@ -2325,7 +2325,7 @@ test_overlay_load_csv_rows(void) {
     assert(dmr_t3_overlay_count(&g_state) == 3U);
 }
 
-/* Review gate b-r3 R4: the overrides file is one change. With the heuristic fill on, every row is laid over the map
+/* The overrides file is one change. With the heuristic fill on, every row is laid over the map
    first and the estimates are redone once for the whole file: one fill notice, not one per row. The anchors are the
    shared map's two rows; the file's hidden channels take no estimate. */
 static void
@@ -2392,7 +2392,7 @@ test_cc_evidence_from_checked_aloha(void) {
     assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
 }
 
-/* Review gate b-r2 C6: a trunk retune (to a voice channel, back, a hunt's next candidate) moves the runtime tuning
+/* A trunk retune (to a voice channel, back, a hunt's next candidate) moves the runtime tuning
    generation, not always the carrier count: the evidence goes stale with it, and none holds while a tune is pending. */
 static void
 test_cc_evidence_stale_after_trunk_retune(void) {
@@ -2413,7 +2413,7 @@ test_cc_evidence_stale_after_trunk_retune(void) {
     assert(dmr_t3_cc_confirmed_hz(&g_state) == CC_HZ);
 }
 
-/* Review gate b-r4 S3: two DMR systems can share a frequency. Another colour code on the carrier (another system's
+/* Two DMR systems can share a frequency. Another colour code on the carrier (another system's
    access code) moves the received identity's epoch with no carrier boundary or retune, and so does the operator's DMR
    reset (dsd_rxid_forget_system()): the evidence the old identity's C_ALOHA left names no TSCC for the new one. */
 static void

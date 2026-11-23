@@ -3823,7 +3823,7 @@ test_channels_panel_opens_for_missing_t3_channels(void) {
     assert(ui_channels_panel_open(opts, state) == 0);
     view.other_system_here = 0U;
     assert(ui_channels_panel_open(opts, state) == 1);
-    /* Review gate b-r4: a live mode change left DMR off: no Tier III grant is followed, so none is missing a frequency
+    /* A live mode change left DMR off: no Tier III grant is followed, so none is missing a frequency
        (the same rule as Qt's NO FREQ). */
     view.dmr_decoding = 0U;
     assert(ui_channels_panel_open(opts, state) == 0);

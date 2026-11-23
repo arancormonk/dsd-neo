@@ -13,7 +13,7 @@
  * mapped channels (up to 4094 rows) only when the channel rows were (content_seq), so a grant heard again on a channel
  * with no frequency costs one ledger walk. Of the missing channels (the ledger can hold 4094) only the page the sheet
  * shows is built as rows (missingPage: the first missingLimit, in the order missingInChannelOrder picks), so a grant
- * heard again builds at most one page (review gate b-r7 V2). A list is published only when its rows differ, so a sheet
+ * heard again builds at most one page. A list is published only when its rows differ, so a sheet
  * a screen reader reads sees no churn from repeated grants (#782). While the sheet is closed (active false) nothing is read. While the carrier names
  * another system (other_system_here), or the session does not decode DMR now (dmr_decoding 0), both lists are empty
  * and no channel is offered for an edit: no Tier III lookup reads them there.

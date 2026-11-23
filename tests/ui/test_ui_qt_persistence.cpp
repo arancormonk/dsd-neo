@@ -2166,7 +2166,7 @@ test_dmr_channel_edit() {
            ok(model.applyDmrChannelEdit(uid, 12, restore, 0))
                && model.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
     log.clear();
-    /* Review gate b-r8t W2: nothing of the system's set it, so a channel file of the user's did: kept for this session
+    /* Nothing of the system's set it, so a channel file of the user's did: kept for this session
        only, not reported as saved. */
     expect("channel edit: restoring a channel with no entry changes nothing, for this session only",
            error(model.applyDmrChannelEdit(uid, 12, restore, 0)) == "session-only" && log.isEmpty());
@@ -2188,7 +2188,7 @@ test_dmr_channel_edit() {
            error(model.applyDmrChannelEdit(uid, 40, set, 99999)) == "invalid"
                && error(model.applyDmrChannelEdit(uid, 40, set, 2147483648LL)) == "invalid");
     expect("channel edit: no such operation", error(model.applyDmrChannelEdit(uid, 40, 4, 451150000)) == "invalid");
-    /* Review gate b-r7 V1: kept whatever the system's options say. Every start passes the entries, after the user's
+    /* Kept whatever the system's options say. Every start passes the entries, after the user's
        own options, and the decoder decides whether the session takes them. */
     expect("channel edit: an NXDN system with its own channels file",
            model.add({{"name", "NXDN"},

@@ -13413,7 +13413,7 @@ Private per-protocol modules worth knowing about:
   The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
   slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
   shared map row that has a frequency and is no estimate, and writes its rows as ESTIMATE through the writer into the
-  shared map, which every protocol reads; so the user's entries never anchor (review gate b-r5 U1: two set channels
+  shared map, which every protocol reads; so the user's entries never anchor (two set channels
   with empty shared rows would put an estimate between them where P25's frequency cache reads it as its own channel),
   and a channel with an entry takes no estimate (the writer refuses it, its origin being USER), so an edit or the file
   still redoes the fill; any anchor that appears, moves or goes drops every estimate and fills again,
@@ -13454,7 +13454,7 @@ Private per-protocol modules worth knowing about:
   extension (`dmr_t3_missing_ledger`): three 4096-bit sets (`missing`; `checked`, a checked grant ever named it, sticky;
   `reported`, its notice was logged), a revision, and the 16 most recently heard channels' details (destination slot,
   group or private, data, caller, recipient, `dsd_decode_now_mono_ms()` stamp, and `unverified`, the latest grant's
-  own provenance, so a RAS-only grant after a checked one marks its parties unchecked; review gate b-r7 V4), newest
+  own provenance, so a RAS-only grant after a checked one marks its parties unchecked), newest
   first; a channel past them is in the sets only, and frontends mark it unchecked from `checked`. Only the unmapped
   branch of `dmr_cspdu_pf0_handle_grants()` feeds it
   (`dmr_cspdu_pf0_note_missing_channel()` → `dmr_t3_missing_note_grant()`), so a mapped grant costs nothing: a standard
@@ -13479,7 +13479,7 @@ Private per-protocol modules worth knowing about:
   `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries live in the same extension
   (`dmr_t3_overlay`: per LPCN an op, SET or HIDE, and the SET frequency; at most `DMR_T3_OVERLAY_MAX_ROWS` = 256
   entries, a new one past them is FULL), beside the shared `trunk_chan_map` and never written into it: only DMR Tier
-  III's own lookups read them (review gate b-r4 S1), so P25, NXDN and the other trunking protocols, which share the
+  III's own lookups read them, so P25, NXDN and the other trunking protocols, which share the
   map's channel numbers, never see a user's entry (an Auto session's P25 grant for channel `0x000c` resolves by P25's
   rules, not at the user's frequency for LPCN 12). A channel with an entry reads as USER (`dmr_t3_chan_origin()`), so
   nothing over the air writes the shared row under it; that row stays what the map file, a reload, a network change or
@@ -13511,7 +13511,7 @@ Private per-protocol modules worth knowing about:
   result `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` (OK, STALE,
   TRUNK_SCAN, INVALID, FULL) plus app-control's `SEARCH`, `DROPPED`, `OTHER_SYSTEM` (7: the carrier names another
   system, `dsd_app_dmr_t3_other_system_here()`) and `NO_DMR` (8: the options no longer decode DMR, `frame_dmr` off after
-  a live mode change, `dsd_app_dmr_t3_dmr_decoding()`, review gate b-r4 S2). Both are judged on the decoder thread as
+  a live mode change, `dsd_app_dmr_t3_dmr_decoding()`). Both are judged on the decoder thread as
   the edit is applied, so an edit queued before the identity arrived or before the mode change is refused too; `hz` is
   checked only for SET, handed back along `apply_cmd()` in `ui_cmd_result_codes`. The command is in
   `k_deferred_commands`: it changes only the overlay, so a DMR BS voice loop keeps its call and the edit applies once
@@ -13520,20 +13520,18 @@ Private per-protocol modules worth knowing about:
   unchecked by the engine before the first frame (`import_dmr_chan_overrides_if_needed()`). A startup `-C` map makes
   the DMR record before then (`note_startup_channel_map()`, `dmr_t3_chan_note_map_loaded()`, as a live import does;
   skipped when the state already has a record, and under a trunk scan, where a DMR target's own `chan_csv` makes the
-  record as the target is built, `trunk_scan_import_target_chan_csv()`, before its snapshot is saved; review gate
-  b-r6), so a checked grant for a mapped channel keeps its Tier III evidence though the grant path never allocates
-  (review gate b-r5 U2). The file is one change
+  record as the target is built, `trunk_scan_import_target_chan_csv()`, before its snapshot is saved), so a checked grant for a mapped channel keeps its Tier III evidence though the grant path never allocates. The file is one change
   (`dmr_t3_overlay_load_csv()`): every row becomes its entry first, then the ledger is reconciled and the heuristic
   estimates are redone once, so a long file with the fill on rebuilds once, not per row; once read,
   `dmr_t3_overrides_applied()` is 1 for the session. The engine decides on the options as the config file (its
   `[mode] decode`), `--profile` and the command line left them: it applies the file only in a run mode that decodes
   frames (`dsd_engine_run_decodes_frames()`: not MBE playback `-r`, the M17 encoders or the M17 UDP/IP decoder `-fU`,
-  which `dsd_engine_run_dispatch_frameless_mode()` runs whatever the decode mode says; review gate b-r5 U5), while DMR
+  which `dsd_engine_run_dispatch_frameless_mode()` runs whatever the decode mode says), while DMR
   decoding is on (`frame_dmr`) and no trunk scan runs, and otherwise starts without it after one
   `NOTICE: DMR Tier III channels in <file> not applied: ...` and never opens it (no start failure; the parser refuses no
   combination, so a profile's trunk scan starts). The parser only keeps the path (an empty one or one past the field is
   refused) and checks no file: a session that takes it opens it at start and stops on a missing or unreadable one, while
-  a P25-only session, a frameless run mode or a trunk scan starts whatever the path names (review gate b-r4 S4). The
+  a P25-only session, a frameless run mode or a trunk scan starts whatever the path names. The
   bootstrap pre-scan steps over its separate value (`dsd_cli_option_takes_free_value()`), so a file named like a
   one-shot option is the file. No INI key. Tests: `DMR_T3_CHANNELS`, `DMR_T3_ANN_WD_TSCC`, `DMR_T3_FORCE_RELEASE`,
   `DMR_T3_CMOVE`, `APP_COMMAND_QUEUE` (the P25 `0x000c` Auto session, a restore after a map reload),
@@ -13549,11 +13547,11 @@ Private per-protocol modules worth knowing about:
   `dsd_state::carrier_seq`, the received identity's epoch (`dsd_state::rx_id.epoch`) and the runtime trunk-tuning
   generation (`dsd_trunk_tuning_generation()`); `dmr_t3_cc_confirmed_hz()` returns it only while all three hold and no
   tune is pending (`dsd_trunk_tuning_frame_is_current()`), so a carrier boundary, another identity on the same carrier
-  (a colour-code change: two DMR systems can share a frequency; the DMR reset; review gate b-r4 S3) or a trunk retune
+  (a colour-code change: two DMR systems can share a frequency; the DMR reset) or a trunk retune
   (a grant's voice channel, the return, a hunt's next candidate: these move the generation, not always the carrier
   count) makes it stale, and a network change or target restore drops it, and so does the no-carrier pass
   (`dmr_t3_cc_note_reception_lost()` from `dsd_engine_no_carrier_identity_stale()`, beside the received identity's
-  stale mark; review gate b-r6): sync loss leaves all three as they were, so only a checked C_ALOHA or C_SYS_Parms heard
+  stale mark): sync loss leaves all three as they were, so only a checked C_ALOHA or C_SYS_Parms heard
   after it offers "Use control channel frequency" again. A checked P_SYS_Parms on the carrier names
   it a payload channel (`dmr_t3_cc_note_payload_channel()`): unless its Comp_CC bit says composite control channel, the
   evidence ends, since the site can move its TSCC while the receiver stays. Tier III grant activity notices name the
@@ -13567,7 +13565,7 @@ Private per-protocol modules worth knowing about:
   shows and sends as the edit's expected frequency, the snapshot's `trunk_chan_map` row being the shared one), `tier3`/`tier3_unchecked` (0 while `other_system_here`),
   `other_system_here` (the carrier's `rx_id` names another protocol's system or another DMR trunking system,
   `dsd_rxid_dmr_trunk_named()`: Capacity Plus, Connect Plus, XPT; or, naming none, the last frame sync was another
-  protocol's than DMR, `dsd_state::rx_sync_protocol`, as YSF, D-STAR and X2-TDMA send no identity, review gate b-r6;
+  protocol's than DMR, `dsd_state::rx_sync_protocol`, as YSF, D-STAR and X2-TDMA send no identity;
   0 while nothing was heard on the carrier yet, or DMR that named no trunking system; a scalar, copied every
   publish; `dsd_app_dmr_t3_other_system_here()` in `dmr_t3_effective.c`, which also refuses edits),
   `overrides_applied` (the `--dmr-chan-overrides` file applied to this session, `dmr_t3_overrides_applied()`: 0 when the
@@ -13578,10 +13576,9 @@ Private per-protocol modules worth knowing about:
   `cc_hz`/`cc_confirmed_here`, the state instance, a target id (moves whenever `trunk_scan_active_id` changes), the channel revision and network generation (what
   `DSD_APP_CMD_DMR_CHANNEL_SET` expects), `missing_seq` and `content_seq`. `ui_snapshot.c` fills it at both hops
   (`dsd_app_dmr_t3_view_publish()`, `dsd_app_dmr_t3_view_consume()`) and points slot 18 of each snapshot at it. The
-  body is two parts, each with its own key in `dsd_app_dmr_t3_view_mark` (review gate b-r5 U3): the ledger is copied
+  body is two parts, each with its own key in `dsd_app_dmr_t3_view_mark`: the ledger is copied
   only when the state instance, the DMR record (`dmr_t3_chan_record_id()`, drawn when the extension is made, so a
-  host's next run on the same state, whose record the engine freed and made again, is another key; review gate b-r7
-  V6), target or ledger revision moved (publish) or `missing_seq` moved (consume), the channel rows (origins, overlay
+  host's next run on the same state, whose record the engine freed and made again, is another key), target or ledger revision moved (publish) or `missing_seq` moved (consume), the channel rows (origins, overlay
   rows, `channel_hz`) only when the instance, record, target, channel revision or channel map sequence moved, or
   `content_seq`; a grant heard again for a channel with no frequency (only its last-heard time
   moves) copies the ledger alone, an idle refresh copies none, and two targets at equal revisions never alias. Each
@@ -13604,7 +13601,7 @@ Private per-protocol modules worth knowing about:
   the kind its grant gave it (`channel_kind`, set by `dmr_csbk_publish_activity()`: LPCN for a Tier III grant, LSN for
   Capacity Plus, LCN for Connect Plus): an LPCN at `dsd_app_dmr_t3_channel_hz()` (a hidden channel has none), any other
   at the shared row, so a Connect Plus grant -F accepted before any checked burst named the system never reads the
-  user's Tier III channel (review gate b-r5 U4). Tests linking the call view without the DMR
+  user's Tier III channel. Tests linking the call view without the DMR
   module take `dmr_t3_chan_effective_hz()` from `tests/test_support/dmr_t3_effective_stub.c`
   (`dsd-neo_test_dmr_t3_effective_stub`, the shared row); `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` links the real one.
   Tests: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`, `UI_NCURSES_TRUNK_DISPLAY_HELPERS`,
@@ -17769,15 +17766,14 @@ Qt Quick frontend (`src/ui/qt`):
   `channel_hz`, the frequency DMR uses, never the shared map row another protocol can empty or fill under an entry),
   the edit's expectations
   (`generation`, `revision`, `session`, `channel(lpcn)`), `tier3`, `ccHz`/`ccConfirmedHere`, `trunkScanActive`,
-  `otherSystemHere` (the view's `other_system_here`, read whether or not the view holds a DMR record, review gate b-r7
-  V5: both lists empty and `channel()` not `valid`, since that map is the other system's), `dmrDecoding` (the view's
+  `otherSystemHere` (the view's `other_system_here`, read whether or not the view holds a DMR record: both lists empty and `channel()` not `valid`, since that map is the other system's), `dmrDecoding` (the view's
   `dmr_decoding`, true while no view is known: off after a live mode change
   left DMR off, read as `otherSystemHere` is), `editable` (none of those, nor a trunk scan) and `sessionSystemUid` (Main
   binds the saved system the session runs). The two lists are rebuilt apart, each from its part of the view: the
   missing rows when the view's `missing_seq` or a name list moved, the Channels rows (up to 4094) when its
   `content_seq` did (`channelRowBuilds()` counts those builds), and both when a flag that emptied the lists cleared,
   so a grant heard again on a channel with no frequency rebuilds only the missing rows, and of those only the page
-  shown (review gate b-r7 V2: the model keeps the ledger's sets and its named details, and builds `missingPage` from
+  shown (the model keeps the ledger's sets and its named details, and builds `missingPage` from
   them, also when the limit or the order moves; `missingRowBuilds()` counts the rows built); a list is published only
   when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked Tier III
   identity, or the view's `overrides_applied`: the saved system's channels file applied to this session; the path
@@ -17795,16 +17791,16 @@ Qt Quick frontend (`src/ui/qt`):
   captured uid. On Android, an edit still queued when the app quits is applied by the service but not saved to the
   system. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number entries
   only, never a bool, text or a fraction, the first per channel, at most 256, by channel). An edit is kept on the system
-  whatever its options say (review gate b-r7 V1). Each start of a saved system with entries writes
+  whatever its options say. Each start of a saved system with entries writes
   `session_args_dmr_channels_csv()` to `dmr_channels/<uid>.csv` in the app's folder
-  (`SavedSystemsModel::writeDmrChannelsFile()`: never through a link, review gate b-r7 V3; the folder must be a real
+  (`SavedSystemsModel::writeDmrChannelsFile()`: never through a link; the folder must be a real
   one, and a private temporary file beside the leaf is renamed over it, a link there included; a start with no entries
   and the system's removal use `removeDmrChannelsFile()`, which removes nothing through a linked folder; known limit,
-  review gate b-r8t W3: the folder is checked by path and each step resolves the path again, with no pinned directory
+  The folder is checked by path and each step resolves the path again, with no pinned directory
   handle, so the no-follow checks guard a stale or accidental link, not a link swapped in between check and step by
   something that can already write the app's private data folder) and passes `--dmr-chan-overrides`
   after every option the user typed (the decode flag's tokens, the system's and the app's extra
-  options, the live radio settings), last of the options the decoder reads (review gate b-r8t W1: before a `--` among
+  options, the live radio settings), last of the options the decoder reads (before a `--` among
   them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
   win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
   trunk scan (any other starts without it, with a notice). A file that cannot be written, or whose path does not fit
@@ -17823,7 +17819,7 @@ Qt Quick frontend (`src/ui/qt`):
   is still handled, and a status kept while it was closed is read out once when it opens; an edit still unanswered after
   `slowRequestMs` (2 s; the decoder defers the command through a DMR voice call) shows "Saved when the current call
   ends." in the editor that sent it, else in the sheet, read out once. Focus follows a channel that moves between the
-  lists only for an answer that came while the editor that sent the edit was still open (review gate b-r5 U8: a later
+  lists only for an answer that came while the editor that sent the edit was still open (a later
   answer is still handled and saved, but never moves the focus), and never while an editor opened since is up: a
   channel listed on the page after the ones shown shows that one page first; one further on is not revealed (every page
   before it would be built at once on a large map), and the focus waits on the Channels heading
@@ -17838,16 +17834,15 @@ Qt Quick frontend (`src/ui/qt`):
   action key goes on to the frequency, `nextField`) and a frequency, offers "Use control channel frequency" only with
   `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
   twice). The edit expects the channel as the editor read it (`opened`): a row's when the editor opened, and in Add
-  channel the typed number's, read each time the number changes (review gate b-r5 U6), never at the button press, so a
+  channel the typed number's, read each time the number changes, never at the button press, so a
   frequency the decoder learned while the user typed refuses the edit as STALE. Add channel always opens with an empty
-  frequency, whatever row the editor showed before (review gate b-r6). A STALE refusal closes the editor that
+  frequency, whatever row the editor showed before. A STALE refusal closes the editor that
   sent it, and the sheet says "This channel changed while you were editing it. Open it again to see the current
-  value." (`channelsStatus`, read out once; review gate b-r5 U7). While the editor's own edit is
+  value." (`channelsStatus`, read out once). While the editor's own edit is
   unanswered (`sentPending`) its fields are read-only, so its answer closing the editor loses nothing typed, and Close
   asks first only for what was typed beyond the edit on its way. Under a trunk scan, on another system's carrier, in a
   session not decoding DMR and while a save is owed both are read-only, fields included, the editor saying why
-  (`channelEditLocked`); the sheet's rows then stay in the keyboard's focus order (focusable, not activatable; review
-  gate b-r7 V7), so the list can be read through by keyboard. The Site sheet's "Channels" button (DMR with `dmrTier3`
+  (`channelEditLocked`); the sheet's rows then stay in the keyboard's focus order (focusable, not activatable), so the list can be read through by keyboard. The Site sheet's "Channels" button (DMR with `dmrTier3`
   or `dmrUserChannels`) and
   the Monitor's `NO FREQ n` reading (`noFreqRow`, `Theme.alert`, hidden at 0, also in the collapsed summary) open the
   sheet, and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels`, or a save is

@@ -273,7 +273,7 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     if (view == nullptr || view->present == 0U) {
         m_built = false;
         dropLists();
-        /* The view's flags hold whether or not the DMR module recorded anything (review gate b-r7 V5): another
+        /* The view's flags hold whether or not the DMR module recorded anything: another
            system's carrier refuses an edit before the first DMR record, as after it. */
         State none;
         none.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;

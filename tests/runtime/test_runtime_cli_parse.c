@@ -10247,7 +10247,7 @@ test_dmr_chan_overrides_long_option_parse(void) {
     return test_rc;
 }
 
-/* Review gate b-r7 V1: a repeated --dmr-chan-overrides keeps the last one, in either spelling and either order, so the
+/* A repeated --dmr-chan-overrides keeps the last one, in either spelling and either order, so the
    app's saved channels, put after every option the user typed, are the file the decoder reads. */
 static int
 test_dmr_chan_overrides_last_wins(void) {
@@ -10295,9 +10295,9 @@ test_dmr_chan_overrides_last_wins(void) {
     return test_rc;
 }
 
-/* A missing value is refused at parse. A missing file is not (review gate b-r4 S4): only the engine, once it knows the
+/* A missing value is refused at parse. A missing file is not: only the engine, once it knows the
    session takes the file (it decodes DMR and runs no trunk scan), opens it, so a session that ignores the option starts
-   whatever the path names. A trunk scan (in either order) is not refused either (b-r2 C1): the path is kept, and the
+   whatever the path names. A trunk scan (in either order) is not refused either: the path is kept, and the
    decoder starts without the file, with a notice, as it does for a session that does not decode DMR. */
 static int
 test_dmr_chan_overrides_refusals(void) {
@@ -10367,7 +10367,7 @@ test_dmr_chan_overrides_refusals(void) {
     return test_rc;
 }
 
-/* Review gate b-r2 C7: the bootstrap pre-scan steps over the channels file's separate value, as the parser does: a file
+/* The bootstrap pre-scan steps over the channels file's separate value, as the parser does: a file
    named like a one-shot option ("--print-config", in the working directory) is the file, never the option. Read as the
    option, the bootstrap would print the config and exit 0 instead of starting with the file. */
 static int

@@ -681,7 +681,7 @@ test_dmr_t3_view_carries_the_record(void) {
     free_session_state(st);
 }
 
-/* A refresh with nothing new copies no body at either hop. Review gate b-r5 U3: the ledger and the channel rows are
+/* A refresh with nothing new copies no body at either hop. The ledger and the channel rows are
    keyed apart. A grant heard again for a channel with no frequency (only its last-heard time moves) copies the ledger
    once at each hop and no channel row; a moved channel revision copies the rows once at each and not the ledger. */
 static void
@@ -710,7 +710,7 @@ test_dmr_t3_view_idle_refresh_copies_nothing(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r1 E6: another protocol's writer (P25's frequency cache, say) fills a missing channel's row with no
+/* Another protocol's writer (P25's frequency cache, say) fills a missing channel's row with no
    DMR write after it. The snapshot reconciles the ledger before copying it, so no frontend lists the channel both as
    mapped and as having no frequency. */
 static void
@@ -726,7 +726,7 @@ test_dmr_t3_view_reconciles_rows_other_writers_filled(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r2 C2: the view carries the frequency DMR uses per channel (channel_hz). A set channel whose shared row
+/* The view carries the frequency DMR uses per channel (channel_hz). A set channel whose shared row
    another protocol emptied shows the user's frequency, a hidden one whose row another protocol filled shows none, and a
    channel with no entry shows its row; the snapshot's shared rows keep what the other writer left. */
 static void
@@ -760,7 +760,7 @@ user_entry(dsd_state* state, uint16_t lpcn, long hz) {
     ext->overlay.count++;
 }
 
-/* Review gate b-r3 R6: the view says whether the overrides file applied to this session, in both hops, whatever the
+/* The view says whether the overrides file applied to this session, in both hops, whatever the
    options' path holds (the engine leaves it set when it skipped the file). */
 static void
 test_dmr_t3_view_carries_overrides_applied(void) {
@@ -774,7 +774,7 @@ test_dmr_t3_view_carries_overrides_applied(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r4 S2: the view says whether the options last published decode DMR (what the options snapshot notes,
+/* The view says whether the options last published decode DMR (what the options snapshot notes,
    dsd_app_dmr_t3_note_opts()), at every publish and in both hops (the body is not copied again): a live mode change to
    P25 only reads 0, and back on DMR 1. */
 static void
@@ -801,7 +801,7 @@ test_dmr_t3_view_carries_dmr_decoding(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r3 R2: the call view's voice-channel fallback reads a Tier III grant's channel at the frequency DMR
+/* The call view's voice-channel fallback reads a Tier III grant's channel at the frequency DMR
    uses (the user's entry over the shared row), on the live state as on a snapshot: a hidden channel whose shared row
    another protocol filled names no frequency, and a set one whose row was emptied names the user's. On a carrier
    naming another system (Connect Plus) the shared row decides. */
@@ -839,7 +839,7 @@ test_vc_freq_reads_the_tier3_channel_dmr_uses(void) {
     assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 451162500L);
     DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
 
-    /* Review gate b-r5 U4: the kind the grant gave its channel decides, not the carrier's identity. A Connect Plus LCN
+    /* The kind the grant gave its channel decides, not the carrier's identity. A Connect Plus LCN
        14 (a -F RAS-accepted grant, before any checked burst named the system) reads the shared row, which is empty:
        the user's Tier III channel 14 is not its frequency. */
     grant.channel = 14U;
@@ -853,7 +853,7 @@ test_vc_freq_reads_the_tier3_channel_dmr_uses(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r2 C5: Tier III numbering and the editor belong to the current Tier III system. A Connect Plus site
+/* Tier III numbering and the editor belong to the current Tier III system. A Connect Plus site
    reached later in the same session (or another protocol's system) reads tier3 0 and lists no LPCNs, though the
    session's flags hold; back on a Tier III site, or on a carrier that named nothing yet, they hold again. */
 static void
@@ -897,7 +897,7 @@ test_dmr_t3_view_follows_the_current_system(void) {
     assert(view->other_system_here == 1U && view->tier3 == 0U && !dsd_app_dmr_t3_view_shows_lpcns(view));
     DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
 
-    /* Review gate b-r6: a protocol that sends no identity (YSF) names another system all the same, though the record
+    /* A protocol that sends no identity (YSF) names another system all the same, though the record
        holds no family; a DMR sync after it names none again. */
     dsd_rxid_note_sync(st, DSD_SYNC_YSF_POS);
     view = dmr_t3_view_after_publish(st);
@@ -910,7 +910,7 @@ test_dmr_t3_view_follows_the_current_system(void) {
     free_session_state(st);
 }
 
-/* Review gate b-r7 V6: a host runs again on the same dsd_state. The engine's cleanup frees the DMR record after the
+/* A host runs again on the same dsd_state. The engine's cleanup frees the DMR record after the
    last snapshot, and the next run's record reaches the same revisions with another override row: the first publish of
    the new run copies its rows, so a frontend shows (and an edit expects) the frequency the decoder uses. */
 static void

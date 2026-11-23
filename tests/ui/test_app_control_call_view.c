@@ -740,7 +740,7 @@ test_vc_freq_tier3_uses_the_observed_channel(void) {
     destroy_state(state);
 }
 
-/* Review gate b-r3 R2: on a snapshot, a Tier III observation's channel reads the frequency DMR uses (the view's
+/* On a snapshot, a Tier III observation's channel reads the frequency DMR uses (the view's
    channel_hz: the user's entry over the shared row), so a hidden channel whose shared row another protocol filled names
    none. On a carrier naming another system (a Connect Plus LCN) the shared row decides, and so it does with no
    record. */

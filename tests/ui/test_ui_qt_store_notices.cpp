@@ -225,7 +225,7 @@ test_signal_search_files() {
            shown("signal-search-history.v2").isEmpty() && shown("signal-search-history.v1").isEmpty());
 }
 
-/* Discussion #900 (review gate b-r7 V1): a saved system's DMR Tier III channels file a start could not write is
+/* Discussion #900: a saved system's DMR Tier III channels file a start could not write is
    listed as "unwritten", under the channels' own label, whatever was or was not kept. */
 void
 test_dmr_channels_unwritten() {
@@ -236,7 +236,7 @@ test_dmr_channels_unwritten() {
     expect("channels: their own label", field(file, "store") == QLatin1String("dmr-channels"));
     StoreNotices::instance()->dismiss(file);
     expect("channels: dismissed", shown(file).isEmpty());
-    /* Review gate b-r8t W4: the same failure posted again stays dismissed; a new episode (after a start that passed the
+    /* The same failure posted again stays dismissed; a new episode (after a start that passed the
        channels) shows again. */
     std::thread again([file] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString()}); });
     again.join();

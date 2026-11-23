@@ -2109,7 +2109,7 @@ test_dmr_channel_origins_restore_per_target(void) {
     return test_rc;
 }
 
-/* Review gate b-r6: a DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
+/* A DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
    start, so a checked grant for a mapped channel keeps its Tier III evidence on a fresh scan (the grant path allocates
    no record), and the evidence goes and comes back with the target. */
 static int

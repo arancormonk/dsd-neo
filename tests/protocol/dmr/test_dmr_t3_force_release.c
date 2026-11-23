@@ -568,7 +568,7 @@ user_entry(dsd_state* state, uint16_t lpcn, long hz) {
     ext->overlay.count++;
 }
 
-/* Review gate b-r3 R2: a logical P_CLEAR TSCC reads the frequency DMR uses for it (the user's entry over the shared
+/* A logical P_CLEAR TSCC reads the frequency DMR uses for it (the user's entry over the shared
    row): a set channel whose row another protocol emptied is still a candidate, at the user's frequency; a hidden one
    whose row another protocol filled is none. */
 static void

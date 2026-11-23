@@ -3233,7 +3233,7 @@ test_dmr_tier3_readings() {
     model.refresh(&opts, &state);
     expect("back on the Tier III system, the route is back",
            model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
-    /* Review gate b-r4 S10: a live mode change left DMR off. No Tier III lookup reads the channels and the decoder
+    /* A live mode change left DMR off. No Tier III lookup reads the channels and the decoder
        refuses every edit: no route opens, and nothing reads as missing. */
     view.dmr_decoding = 0U;
     model.refresh(&opts, &state);

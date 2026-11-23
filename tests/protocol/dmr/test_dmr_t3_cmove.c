@@ -541,7 +541,7 @@ user_entry(dsd_state* state, uint16_t lpcn, long hz) {
     ext->overlay.count++;
 }
 
-/* Review gate b-r3 R2: a logical Move TSCC prints the frequency DMR uses for its channel (the user's entry over the
+/* A logical Move TSCC prints the frequency DMR uses for its channel (the user's entry over the
    shared row): a set channel whose row another protocol emptied shows the user's frequency, a hidden one whose row
    another protocol filled shows none. */
 static void

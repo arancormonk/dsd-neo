@@ -333,7 +333,7 @@ Item {
             compare(status.Accessible.role, Accessible.AlertMessage);
         }
 
-        // Review gate b-r8t W2: a restore no saved entry made (the user's own
+        // A restore no saved entry made (the user's own
         // channel file set it) lasts for this session only, and says so; no
         // save is owed for it.
         function test_session_only_is_said() {
@@ -478,7 +478,7 @@ Item {
             compare(commands.dmrChannelRequests().length, 0);
         }
 
-        // Review gate b-r7 V7: read-only rows stay in the keyboard's focus
+        // Read-only rows stay in the keyboard's focus
         // order, so a keyboard alone can go through every channel (and the
         // list scrolls to it); a key on one opens nothing.
         function test_read_only_rows_take_the_keyboard_focus() {
@@ -501,7 +501,7 @@ Item {
             compare(commands.dmrChannelRequests().length, 0);
         }
 
-        // Review gate b-r5 U7: a stale refusal closes the editor that sent the edit, and the sheet says so, read out
+        // A stale refusal closes the editor that sent the edit, and the sheet says so, read out
         // once. Opened again, the editor shows the channel as it is now, and an edit is sent against that.
         function test_stale_closes_the_editor() {
             openSheet(view({}));
@@ -543,7 +543,7 @@ Item {
             compare(retry.session, "6");
         }
 
-        // Review gate b-r5 U6: Add channel expects the channel its number names as it was when the number was typed. A
+        // Add channel expects the channel its number names as it was when the number was typed. A
         // frequency the decoder learns for it while the frequency is typed is not sent as the expected one (the decoder
         // then refuses the edit as stale); a number typed again reads the channel again.
         function test_add_expects_the_channel_as_typed() {
@@ -576,7 +576,7 @@ Item {
             compare(sent.expectedOrigin, 3);
         }
 
-        // Review gate b-r6: Add channel starts with no frequency, whatever channel the editor showed before. A new
+        // Add channel starts with no frequency, whatever channel the editor showed before. A new
         // number alone then sends nothing: the previous channel's frequency is never saved for it.
         function test_add_starts_with_no_frequency() {
             openSheet(view({}));
@@ -596,7 +596,7 @@ Item {
             compare(commands.dmrChannelRequests().length, 0, "nothing sent");
         }
 
-        // Review gate b-r4 S5: while the editor's own edit is due its fields take no typing, so nothing typed after
+        // While the editor's own edit is due its fields take no typing, so nothing typed after
         // Apply is lost when the answer closes the editor; Close needs no question then. An editor opened on another
         // channel while an earlier edit is due takes typing, and Close asks before that goes.
         function test_fields_read_only_while_the_edit_is_due() {
@@ -645,7 +645,7 @@ Item {
             compare(other.text, "451.31250");
         }
 
-        // Review gate b-r4 S10: a live mode change left DMR off. The open sheet lists no rows and the open editor
+        // A live mode change left DMR off. The open sheet lists no rows and the open editor
         // sends nothing, each saying why, until DMR is decoded again.
         function test_not_decoding_dmr_is_read_only() {
             openSheet(view({}));
@@ -998,7 +998,7 @@ Item {
             compare(sheet.followLpcn, 0);
         }
 
-        // Review gate b-r5 U8: the focus follows an answer only when the editor that sent the edit is still open when it
+        // The focus follows an answer only when the editor that sent the edit is still open when it
         // comes. A late answer, after that editor closed (the sheet open, or closed and opened again), is handled and
         // saved, but the focus stays where the user has it now.
         function test_late_answer_leaves_the_focus() {
@@ -1337,7 +1337,7 @@ Item {
             tryCompare(monitorItem("siteSheet"), "visible", true);
         }
 
-        // Review gate b-r4 S8: a save owed for the session's system keeps the way to the sheet (its Try saving again)
+        // A save owed for the session's system keeps the way to the sheet (its Try saving again)
         // whatever the live lists hold: the last channel of the user's removed, nothing without a frequency, no site.
         function test_monitor_route_while_a_save_is_owed() {
             monitor.visible = true;

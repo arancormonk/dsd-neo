@@ -10653,7 +10653,7 @@ test_commands_that_need_the_frame_loop(void) {
         {NULL, 0U, "clear avoids", DSD_APP_CMD_SCAN_AVOID_CLEAR, 0},
         {&put_back, sizeof put_back, "put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0},
         {NULL, 0U, "avoid", DSD_APP_CMD_SCAN_AVOID, 1},
-        /* Review gate b-r3 R3: a Tier III channel edit changes only the map, so a DMR voice loop keeps its call. */
+        /* A Tier III channel edit changes only the map, so a DMR voice loop keeps its call. */
         {&channel_edit, sizeof channel_edit, "DMR channel edit", DSD_APP_CMD_DMR_CHANNEL_SET, 0},
     };
 
@@ -26483,7 +26483,7 @@ test_dmr_channel_set_command(void) {
     opts->trunk_scan_enabled = 0;
     rc |= expect_true("the trunk scan refusal changes nothing", state->trunk_chan_map[13] == 451025000L);
 
-    /* Review gate b-r4 S2: refused once the session no longer decodes DMR (a live mode change to P25 only), judged as
+    /* Refused once the session no longer decodes DMR (a live mode change to P25 only), judged as
        the edit is applied: one queued before the change is refused too. */
     dsd_app_dmr_channel_set_result mode_before;
     (void)dsd_app_dmr_channel_set_result_get(&mode_before);
@@ -26503,7 +26503,7 @@ test_dmr_channel_set_command(void) {
     rc |= expect_true("the DMR-off refusals change nothing", dmr_t3_overlay_get(state, 13U, NULL) == 0);
     opts->frame_dmr = 1;
 
-    /* Review gate b-r3 R1: refused while the carrier names another system, its map being that system's. An edit the
+    /* Refused while the carrier names another system, its map being that system's. An edit the
        editor queued before a Connect Plus identity arrived is judged as it is applied, on the decoder thread. */
     dsd_app_dmr_channel_set_result queued_before;
     (void)dsd_app_dmr_channel_set_result_get(&queued_before);
@@ -26524,7 +26524,7 @@ test_dmr_channel_set_command(void) {
     p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     rc |= expect_int("refused on a P25 carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
-    /* Review gate b-r6: so does a carrier whose protocol sends no identity (YSF), the record holding no family. */
+    /* So does a carrier whose protocol sends no identity (YSF), the record holding no family. */
     DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
     dsd_rxid_note_sync(state, DSD_SYNC_YSF_POS);
     p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
@@ -26565,7 +26565,7 @@ test_dmr_channel_set_command(void) {
     return rc;
 }
 
-/* Review gate b-r4 S1: the user's channels lie beside the shared map, never in it. A reload of the saved map (what an
+/* The user's channels lie beside the shared map, never in it. A reload of the saved map (what an
    RR refresh posts after writing the file) and its clear change only the map, through the real import services: the
    entries keep deciding what DMR uses, the map holds the file's rows, and RESTORE shows the reloaded row. */
 static int
@@ -26636,7 +26636,7 @@ test_dmr_channel_restore_after_reload_shows_the_reloaded_row(void) {
     return rc;
 }
 
-/* Review gate b-r4 S1: in an Auto session (DMR and P25 both decoded) the user's entry for DMR LPCN 12 is not P25's
+/* In an Auto session (DMR and P25 both decoded) the user's entry for DMR LPCN 12 is not P25's
    channel 0x000c. A P25 grant for 0x000c resolves through P25's own rules (its IDEN band plan), never at the user's
    DMR frequency, and P25's cached row changes nothing DMR uses. */
 static int
@@ -26664,7 +26664,7 @@ test_dmr_channel_set_leaves_p25_channels(void) {
     rc |= expect_true("auto: P25 cached its own row, DMR still uses the user's",
                       state->trunk_chan_map[12] == 851150000L && dmr_t3_chan_effective_hz(state, 12U) == 451137500L);
     rc |= expect_true("auto: a repeat resolves the same", process_channel_to_freq(opts, state, 0x000C) == 851150000L);
-    /* Review gate b-r5 U1: with the heuristic fill on, entries on 10 and 14 (empty shared rows) anchor no estimate for
+    /* With the heuristic fill on, entries on 10 and 14 (empty shared rows) anchor no estimate for
        the channels between them, so P25 channel 0x000b still resolves by its band plan. */
     opts->dmr_t3_heuristic_fill = 1;
     p = dmr_channel_edit(state, 10U, DMR_T3_OVERLAY_SET, 451112500);

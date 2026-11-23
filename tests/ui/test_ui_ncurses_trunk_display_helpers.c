@@ -444,7 +444,7 @@ test_t3_missing_channels_open_the_panel(void) {
     t3_checked(12U);
     t3_missing(40U); /* past the details: in the sets only, a checked grant named it */
     t3_checked(40U);
-    t3_missing(42U); /* past the details too, named by RAS-accepted grants only (review gate b-r1 T2) */
+    t3_missing(42U); /* past the details too, named by RAS-accepted grants only */
     t3_missing(41U);
     t3_detail(41U, 1U, 0U, 5678U);
     g_t3.missing.details[1].data = 1U;
@@ -476,7 +476,7 @@ test_t3_missing_channels_open_the_panel(void) {
     f.state->trunk_chan_map_used_count = 0U;
     g_t3.other_system_here = 0U;
 
-    /* Review gate b-r4: a live mode change left DMR off. No Tier III grant is followed, so none is listed as missing a
+    /* A live mode change left DMR off. No Tier III grant is followed, so none is listed as missing a
        frequency, and with trunking off the panel stays closed (as Qt's NO FREQ is hidden). */
     g_t3.dmr_decoding = 0U;
     reset_render_capture();
@@ -554,7 +554,7 @@ test_t3_mapped_rows_decimal_and_distinct(void) {
     t3_fixture_free(&f);
 }
 
-/* Review gate b-r1 T1: the Tier III flags hold for the session, so a move from a Tier III site to a P25 system keeps
+/* The Tier III flags hold for the session, so a move from a Tier III site to a P25 system keeps
    them; the P25 map then keeps its IDEN numbering, its channels past 4094 included. Before any sync the decoded modes
    decide. */
 static void
@@ -591,7 +591,7 @@ test_t3_numbering_follows_the_current_system(void) {
     ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL && strstr(g_output, "CH 12:") == NULL);
 
-    /* Review gate b-r2 C5: on a DMR carrier whose identity names another trunking system (a Connect Plus site after a
+    /* On a DMR carrier whose identity names another trunking system (a Connect Plus site after a
        Tier III one in the same session), its map keeps the hex its grant notices use. */
     f.opts->frame_p25p1 = 0;
     f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
@@ -604,7 +604,7 @@ test_t3_numbering_follows_the_current_system(void) {
     ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 12: 851.150000 MHz") != NULL);
 
-    /* Review gate b-r4: DMR no longer decoded (the last sync still DMR's): no Tier III lookup reads the map, so it
+    /* DMR no longer decoded (the last sync still DMR's): no Tier III lookup reads the map, so it
        shows in its own form. */
     g_t3.dmr_decoding = 0U;
     reset_render_capture();
@@ -614,7 +614,7 @@ test_t3_numbering_follows_the_current_system(void) {
     t3_fixture_free(&f);
 }
 
-/* Review gate b-r2 C2: the Tier III list shows the frequency DMR uses (the view's channel_hz), not the shared row: a
+/* The Tier III list shows the frequency DMR uses (the view's channel_hz), not the shared row: a
    set channel whose row P25 emptied shows the user's frequency, a hidden one whose row P25 filled is not listed. */
 static void
 test_t3_map_shows_the_effective_frequency(void) {
@@ -636,7 +636,7 @@ test_t3_map_shows_the_effective_frequency(void) {
     t3_fixture_free(&f);
 }
 
-/* Review gate b-r3 R2: the Tier III panel lists the channels DMR uses even when the shared map holds none (a P25 IDEN
+/* The Tier III panel lists the channels DMR uses even when the shared map holds none (a P25 IDEN
    invalidation emptied it under the user's entry), and a positional row is named by the LPCN DMR uses that frequency
    for, never by a hidden channel whose shared row another protocol filled. */
 static void

@@ -105,7 +105,7 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /**
      * @brief Write @p csv as saved system @p uid's channels file (dmrChannelsFilePath()), owner-only, never through a
-     * link (review gate b-r7 V3): the dmr_channels folder must be a real folder (made when absent), and the file is
+     * link: the dmr_channels folder must be a real folder (made when absent), and the file is
      * replaced, a link at it included (the link goes, never what it names), by renaming a private temporary file
      * written beside it (<dsd-neo/platform/file_compat.h>). False, with @p reason, when it was not written.
      */

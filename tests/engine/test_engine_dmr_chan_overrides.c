@@ -7,10 +7,10 @@
  * --dmr-chan-overrides at start (discussion #900 F3): the decoder applies the user's Tier III channels before the first
  * frame, beside the -C map, which keeps the file's rows: a grant in the first dispatched frame resolves to the user's
  * frequency, and a hidden channel's grant is not followed. A file that cannot be read stops the start. Only a session
- * that decodes DMR and runs no trunk scan takes it (review gate b-r2 C1): any other starts without it, with one
- * notice, and never opens it, so a missing file stops nothing there (b-r4 S4), and so does a run mode that decodes no
- * frames (b-r5 U5: MBE playback, the M17 UDP/IP decoder). A -C map alone makes the DMR record at start, so a checked
- * grant for a mapped channel keeps its Tier III evidence (b-r5 U2). Real engine run; the frame sync is wrapped and
+ * that decodes DMR and runs no trunk scan takes it: any other starts without it, with one
+ * notice, and never opens it, so a missing file stops nothing there, and so does a run mode that decodes no
+ * frames (MBE playback, the M17 UDP/IP decoder). A -C map alone makes the DMR record at start, so a checked
+ * grant for a mapped channel keeps its Tier III evidence. Real engine run; the frame sync is wrapped and
  * dispatches the grants itself.
  */
 
@@ -174,7 +174,7 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (g_expect_applied == RUN_SKIPPED) {
         /* Not this session's: no entry was made, and a map's rows are the map file's. */
         assert(dmr_t3_overlay_count(state) == 0U && dmr_t3_chan_origin(state, 12U) != DMR_CHAN_ORIGIN_USER);
-        /* Review gate b-r3 R6: the path stays set, and the record says the file did not apply. */
+        /* The path stays set, and the record says the file did not apply. */
         assert(opts->dmr_chan_overrides_file[0] != '\0' && !dmr_t3_overrides_applied(state));
         assert(opts->chan_in_file[0] == '\0'
                || (state->trunk_chan_map[12] == 451012500L && state->trunk_chan_map[13] == 451025000L));
@@ -248,7 +248,7 @@ test_overrides_applied_before_first_frame(const char* map, const char* overrides
     free(opts);
 }
 
-/* Review gate b-r2 C1: a session whose decode, after the config file and the command line, is not DMR (an INI's
+/* A session whose decode, after the config file and the command line, is not DMR (an INI's
    [mode] decode, -fp) starts without the file, with one notice; so does one that runs a trunk scan (a profile can turn
    it on), which has no global map: its start goes on to the trunk scan's own checks (this one has no targets or tuner,
    which stop it there). */
@@ -306,7 +306,7 @@ test_unreadable_overrides_stop_the_start(const char* map, const char* missing) {
     free(opts);
 }
 
-/* Review gate b-r5 U5: a run mode that decodes no frames starts without the file, with one notice, though the decode
+/* A run mode that decodes no frames starts without the file, with one notice, though the decode
    mode still names DMR: MBE playback (-r, here with no files to play) runs to its end, and the M17 UDP/IP decoder (-fU)
    reaches its own socket. */
 static void
@@ -339,7 +339,7 @@ test_overrides_skipped_without_frames(const char* map, const char* missing) {
     }
 }
 
-/* Review gate b-r5 U2: a -C map with no overrides file makes the DMR record before the first frame. */
+/* A -C map with no overrides file makes the DMR record before the first frame. */
 static void
 test_startup_map_makes_the_record(const char* map) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -368,7 +368,7 @@ main(void) {
     test_overrides_skipped_without_dmr(map, overrides);
     test_overrides_skipped_under_trunk_scan(overrides);
     (void)remove(overrides);
-    /* Review gate b-r4 S4: the file is opened only by a session that takes it. A P25-only session and a trunk scan
+    /* The file is opened only by a session that takes it. A P25-only session and a trunk scan
        start (or reach their own checks) with the missing file as with a readable one; a DMR session refuses it. */
     test_overrides_skipped_without_dmr(map, overrides);
     test_overrides_skipped_under_trunk_scan(overrides);

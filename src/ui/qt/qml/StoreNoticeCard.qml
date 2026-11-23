@@ -45,7 +45,7 @@ UiPanel {
         if (notice.state === "leftInPlace")
             return qsTr("It was left in place.");
         if (notice.state === "unwritten")
-            return qsTr("dsd-neo couldn't write this system's saved channels. Starts use the decoder's own channel map until this is fixed.");
+            return qsTr("Starts use the decoder's own channel map until they can be written. Check that the device has free storage.");
         if (notice.state === "kept")
             return qsTr("Some entries may be missing. The file was kept as %1.").arg(kept);
         // Defaults: nothing the file held is in use, so no entry is "missing".

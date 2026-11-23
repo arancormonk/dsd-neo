@@ -358,7 +358,7 @@ long_options_end(const QStringList& args) {
 
 /* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, after every option the
    user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the extra options.
-   Review gate b-r8t W1: before a "--" among them, which ends the options the decoder reads. */
+   Before a "--" among them, which ends the options the decoder reads. */
 void
 append_dmr_channels_args(QStringList& args, const QVariantMap& system) {
     const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
@@ -1439,7 +1439,7 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
 
 namespace {
 
-/* Review gate b-r8t W4: saved system @p uid's failure episode for its channels file. @p failed: this start could not
+/* Saved system @p uid's failure episode for its channels file. @p failed: this start could not
    pass them (the episode stays, so a dismissed notice stays dismissed while they keep failing); otherwise it could, and
    a failure before it is over, so the next one is a new episode. For the whole process, as the notice list is. */
 quint64
@@ -1470,7 +1470,7 @@ note_dmr_channels_unwritten(const QString& uid, const QString& reason) {
     json_store_post_notice({name, reason, QString(), dmr_channels_episode(uid, true)});
 }
 
-/* Review gate b-r8t W7: whether the decoder can take @p path as --dmr-chan-overrides (its field, NUL included). */
+/* Whether the decoder can take @p path as --dmr-chan-overrides (its field, NUL included). */
 bool
 dmr_channels_path_fits(const QString& path) {
     return static_cast<size_t>(path.toUtf8().size()) < sizeof(dsd_opts::dmr_chan_overrides_file);
