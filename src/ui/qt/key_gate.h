@@ -45,9 +45,13 @@ class PressGate : public QObject {
      * (a cancelled touch, which is what makes a Qt Quick control let go of one). A combo's open list closing under its
      * pressed option. */
     Q_INVOKABLE void cancelPress(QQuickItem* control) const;
-    /* The control (an item declaring `inReach`) that last took the focus, while it exists: what a closing sheet
-     * hands the keyboard back to when the focus at its opening sat on a container its panel was disabled under. */
-    Q_INVOKABLE QQuickItem* lastFocused() const;
+    /* The control (an item declaring `inReach`) that lost the focus in this turn of the event loop, not to the
+     * window leaving, and no control has taken it since: a sheet opening as its panel is disabled records it as its
+     * opener. Null once that turn is over (a control the user left before is no opener). */
+    Q_INVOKABLE QQuickItem* focusLostThisTurn() const;
+    /* @p item was given the stored focus of a window that is away (a sheet's hand-back), which delivers it no
+     * focus-in: the gate follows it from now on, as it does a control that takes the focus. */
+    Q_INVOKABLE void followStoredFocus(QQuickItem* item);
     /* The item with the keyboard in @p item's window: its active focus item, or, with the window away (its root
      * holding no active focus), the item its focus scopes would hand the focus back to on its return. Null for none
      * or the window root. */
@@ -64,6 +68,8 @@ class PressGate : public QObject {
     /* A key's release (not a repeat) was taken from an unreachable control: what notes the key's held press forgets
      * it. */
     void releaseTaken(int key);
+    /* The control with the focus was destroyed with it (a row its model took away); @p root is its window's root. */
+    void focusVanished(QQuickItem* root);
     /* @p item lost the focus (not to the window leaving), told once that change has settled. */
     void focusLeft(QQuickItem* item);
 
@@ -83,7 +89,7 @@ class PressGate : public QObject {
      * reachability, and whether it was composing a word as it turned unreachable (the one commit still to let
      * through). */
     QPointer<QQuickItem> m_focus;
-    QPointer<QQuickItem> m_last_focus;
+    QPointer<QQuickItem> m_lost_this_turn;
     int m_focus_index = -1;
     bool m_focus_in_reach = true;
     bool m_composing = false;
@@ -91,6 +97,7 @@ class PressGate : public QObject {
     bool m_closing = false;
     QMetaObject::Connection m_watch;
     QMetaObject::Connection m_watch_enabled;
+    QMetaObject::Connection m_watch_destroyed;
 };
 } // namespace dsd_qt
 

@@ -104,6 +104,7 @@ Rectangle {
                 // focus reveal that follows still scrolls to a focused field.
                 scroll.contentX = 0;
                 scroll.contentY = 0;
+                Navigation.surfaceOpening(sheet);
                 sheet.previousFocus = Navigation.openerIn(window);
                 Navigation.clearInput(window);
                 Navigation.addModal(sheet);

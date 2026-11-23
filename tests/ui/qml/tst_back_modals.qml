@@ -183,6 +183,62 @@ Item {
             cancelled.clear();
             return {sheet: sheet, opener: opener};
         }
+        // Issue #902: a call row has the keyboard when Clear is tapped (a tap takes no keyboard), so the row is the
+        // confirmation's opener, and the hand-back gives it the keyboard; confirming then clears the log, which
+        // takes the row away under it. The keyboard falls to the list, a container, and goes on to the Back owner, so
+        // Escape still goes back to Listen.
+        function test_cleared_row_hands_the_keyboard_to_the_back_owner() {
+            app.currentTab = 1;
+            var screen = item("idleHistoryScreen");
+            var uid = callHistory.newestUid();
+            var row = null;
+            tryVerify(function () { row = screen.rowFocusFor(uid); return row !== null; }, 2000, "the call is listed");
+            tryVerify(function () {
+                if (!row.activeFocus)
+                    row.forceActiveFocus();
+                return row.activeFocus;
+            }, 5000, "the row takes the keyboard");
+            tap(item("clearHistoryButton", screen));
+            var sheet = item("clearHistoryConfirm", screen);
+            tryCompare(sheet, "visible", true);
+            tap(item("confirmActionButton", sheet));
+            tryCompare(sheet, "visible", false);
+            compare(callHistory.count, 0, "the log is cleared");
+            wait(50);
+            verify(item("safeArea").activeFocus, "the keyboard is the Back owner's, not the list's");
+            keyClick(Qt.Key_Escape);
+            tryCompare(app, "currentTab", 0, 1000, "Escape goes back to Listen");
+        }
+        // Issue #902: a search finished with Enter is left by the user; Clear tapped later opens its confirmation
+        // over a container holding the keyboard, and cancelling it does not put the keyboard back in the search
+        // (typing then would change the filter): only a control that lost the keyboard as the sheet opened is its
+        // opener.
+        function test_finished_search_is_no_opener() {
+            app.currentTab = 1;
+            var screen = item("idleHistoryScreen");
+            var input = item("historySearch", screen).input;
+            tryVerify(function () {
+                if (!input.activeFocus)
+                    input.forceActiveFocus();
+                return input.activeFocus;
+            }, 5000, "the search takes the keyboard");
+            keyClick(Qt.Key_4);
+            keyClick(Qt.Key_Return);
+            tryVerify(function () { return !input.activeFocus; }, 1000, "Enter finishes the search");
+            tryCompare(historyView, "filterText", "4", 2000, "the search lands");
+            var filter = historyView.filterText;
+            tap(item("clearHistoryButton", screen));
+            var sheet = item("clearHistoryConfirm", screen);
+            tryCompare(sheet, "visible", true);
+            tap(item("confirmCancelButton", sheet));
+            tryCompare(sheet, "visible", false);
+            wait(50);
+            verify(!input.activeFocus, "the finished search does not get the keyboard back");
+            keyClick(Qt.Key_7);
+            wait(400);
+            compare(historyView.filterText, filter, "typing changes no filter");
+            historyView.filterText = "";
+        }
         function dismiss(opened, method) {
             var tab = app.currentTab;
             var destination = app.sessionDestination;

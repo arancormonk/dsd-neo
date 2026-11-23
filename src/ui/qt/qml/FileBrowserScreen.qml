@@ -130,6 +130,7 @@ Item {
         if (d.token !== 0) {
             decoderHost.closeFileBrowserSession(d.session);
         } else {
+            Navigation.surfaceOpening(screen);
             d.opener = Navigation.openerIn(window);
             // What stands for it (a combo option's selector), taken now: the
             // option's delegate may be destroyed while the browser is open.

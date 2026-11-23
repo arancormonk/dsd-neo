@@ -21821,11 +21821,8 @@ edit ends with it, and the field keeps the stored focus (`test_window_leaving_pu
 cancelled touch), so a check box or switch that hid under a held Space and shows again before the keyboard moves on is
 not left pressed (`test_release_taken_while_hidden_lets_the_press_go`), and ends the key's held activation for
 Navigation (`PressGate.releaseTaken`; `heldActivationItem`, so a repeat of a later hold presses nothing:
-`test_release_taken_ends_the_held_activation`). Presses in
-progress are not followed (a decided limit, issue #902): a tap, drag or held key already in progress when a sheet
-opens or its control changes may still complete on its release, as before issue #902; covered and hidden controls
-refuse new presses (a cover's barrier, and `GatedTapHandler`'s and `activate()`'s checks, as before), keys and
-accessible actions. The gate tells
+`test_release_taken_ends_the_held_activation`). Limits of the gate and the hand-back (decided, issue #902; see
+"Keyboard gate limits" below). The gate tells
 Navigation when the control with the focus turns unreachable, or a control takes the focus while unreachable
 (`PressGate.strayed`; a deferred hand-off landing on it after it hid lets it go too,
 `test_focus_taken_while_hidden_is_given_up`); Navigation commits an editor's word at once and hands the focus on a turn
@@ -21899,14 +21896,23 @@ opener, if in reach by its own gate (`inReach` where present, with visible, enab
 is none, `test_opener_no_longer_live_is_not_returned_to`); else its stand-in by the same test; else the item that
 takes Escape and Back (`keyOwner()`), so Escape always works. The opener and the stand-in are captured as the surface
 opens (`Navigation.openerIn()`), since a combo's model rebuilt while it is open destroys the option
-(`test_rebuilt_options_still_return_to_the_selector`), and never a container: the focus on a Loader or a screen (the
-Spectrum's loader, its button's panel disabled before the confirmation showed) records the control the gate last saw
-focused inside it (`PressGate.lastFocused()`), else none (`tst_main_map.qml`
-`test_explore_confirmation_then_back_closes_the_spectrum`). The hand-back is taken at the dismissal when the opener or
-its stand-in is in reach then; else once the dismissal's turn has settled, as a binding on the closing sheet can
-enable the opener only after the sheet's own handler ran (Home's body, disabled while a management sheet shows:
-`tst_back_modals.qml` `test_home_sort_back`, `test_remove_cancel`), and is skipped then if the surface opened again
-or a new sheet took the top. Either way it is the only one: an opener that turns reachable only later does not get the
+(`test_rebuilt_options_still_return_to_the_selector`): the item with the keyboard, or in a window that is away the one
+it returns to (`test_sheet_opened_away_returns_to_the_stored_focus`), and never a container. The focus on a Loader or a
+screen (the Spectrum's loader, its button's panel disabled before the confirmation showed) records the control that
+lost the keyboard inside it in that same turn (`PressGate.focusLostThisTurn()`; `tst_main_map.qml`
+`test_explore_confirmation_then_back_closes_the_spectrum`), never one the user left before (a History search finished
+with Enter, then Clear cancelled: `tst_back_modals.qml` `test_finished_search_is_no_opener`), else none. The hand-back
+is taken at the dismissal when the opener or its stand-in is in reach then; else once the dismissal's turn has
+settled, as a binding on the closing sheet can enable the opener only after the sheet's own handler ran (Home's body,
+disabled while a management sheet shows: `tst_back_modals.qml` `test_home_sort_back`, `test_remove_cancel`). A
+surface opening again cancels its pending hand-back (`Navigation.surfaceOpening()`), so only the latest visit's runs
+(`test_only_the_latest_visit_hands_back`), and it is skipped if a new sheet took the top. A control given only the
+stored focus of a window that is away is followed by the gate from then on (`PressGate.followStoredFocus()`), so
+disabling it before the window returns still hands the keyboard on (`test_background_hand_back_is_followed`). A
+control that had the keyboard and is then taken away (the row a confirmation's action clears, destroyed or out of its
+window) leaves the focus on its container or the window root, which goes on to the key owner
+(`PressGate.focusVanished`, `Navigation.focusVanished()`; `tst_back_modals.qml`
+`test_cleared_row_hands_the_keyboard_to_the_back_owner`). Either way it is the only one: an opener that turns reachable only later does not get the
 keyboard back, a decided behaviour (`test_opener_reachable_only_later_does_not_take_the_keyboard_back`). A newer
 choice made meanwhile stays (a sheet opened as the first closed, its field given the keyboard:
 `test_next_sheet_keeps_its_fields_keyboard`; a field the user focused: `test_dismissed_sheet_keeps_a_newer_focus_choice`,
@@ -21914,7 +21920,21 @@ choice made meanwhile stays (a sheet opened as the first closed, its field given
 `test_dismissed_sheet_keeps_a_newly_opened_list`),
 `test_empty_list_closes_on_return`). These tests run on the Basic controls style the app pins
 (`QT_QUICK_CONTROLS_STYLE=Basic` on `UI_QT_QML_A11Y_CHURN`): a style whose popups animate their close keeps a closing
-list visible a while. The
+list visible a while.
+
+Keyboard gate limits (decided, issue #902):
+
+- Presses in progress are not followed: a tap, drag or held key already in progress when a sheet opens or its control
+  changes may still complete on its release, as before issue #902. Covered and hidden controls refuse new presses (a
+  cover's barrier, and `GatedTapHandler`'s and `activate()`'s checks, as before), keys and accessible actions.
+- One hand-back per closing surface: an opener that turns reachable only after it does not get the keyboard back
+  (`test_opener_reachable_only_later_does_not_take_the_keyboard_back`).
+- A hand-back left for the end of the dismissal's turn (its opener not in reach at the dismissal) leaves the keyboard
+  on the closed surface until then: a key in that same turn is taken by the gate, not passed to the Back owner.
+- The offscreen test platform keeps every window active, so the stored-only path of a hand-back into a window that is
+  away is covered by its outcome (`test_background_hand_back_is_followed`), not by an inactive window.
+
+The
 Monitor's reading groups (`ReadingFlow`, `ReadingRow`) and the site sheet's `FieldGrid` are gated as a single
 reading is (`Pane` role, focusable and release from the gate; `tst_a11y_monitor_controls.qml`
 `test_grouped_readings_follow_their_gate`, `test_site_fields_follow_their_gate`), and a StableRows row let go of

@@ -155,6 +155,9 @@ QtObject {
             if (navigation.editsText(item))
                 navigation.commitComposingOf(item);
         }
+        function onFocusVanished(root) {
+            navigation.focusVanished(root);
+        }
         function onFocusLeft(item) {
             navigation.focusDropped(item);
         }
@@ -228,6 +231,22 @@ QtObject {
         if (active && edits)
             Qt.inputMethod.hide();
     }
+    // The control with the keyboard was destroyed with it (a row a
+    // confirmation's action took away, after the hand-back gave it the
+    // keyboard): Qt leaves the focus on its container (a list) or the window
+    // root, where Escape and Back reach nothing. A drop to anything but a
+    // control is handed on to the key owner; a control that has it keeps it.
+    function focusVanished(root) {
+        var window = root ? root.Window.window : null;
+        if (!window || !windowActive(root))
+            return;
+        var current = window.activeFocusItem;
+        if (current && current !== window.contentItem && isControl(current))
+            return;
+        var owner = keyOwner();
+        if (owner && owner !== current && owner.visible && owner.enabled)
+            owner.forceActiveFocus();
+    }
     function windowActive(item) {
         var root = item.Window.contentItem;
         return !root || root.activeFocus;
@@ -269,9 +288,10 @@ QtObject {
     // (a binding on the closing sheet, such as Home's body disabled while a
     // management sheet shows, may enable the opener only after this runs),
     // and then for good: an opener that turns reachable later still does not
-    // get the keyboard back (a decided behaviour). Skipped then if the surface
-    // opened again, or a sheet not among @p under (the modals under it as it
-    // opened) took the top since.
+    // get the keyboard back (a decided behaviour). A surface opening again
+    // cancels its visit's pending hand-back (surfaceOpening()), so only the
+    // latest visit's runs; it is skipped too if a sheet not among @p under
+    // (the modals under it as it opened) took the top since.
     property var handBacks: []
     function restoreFocusFrom(surface, opener, standIn, under) {
         if (handBack(surface, opener, standIn, false))
@@ -279,12 +299,16 @@ QtObject {
         handBacks = handBacks.concat([{surface: surface, opener: opener, standIn: standIn, under: under || null}]);
         Qt.callLater(navigation.runHandBacks);
     }
+    function surfaceOpening(surface) {
+        if (handBacks.length)
+            handBacks = handBacks.filter(function (entry) {
+                return entry.surface !== surface;
+            });
+    }
     function runHandBacks() {
         var pending = handBacks;
         handBacks = [];
         for (var entry of pending) {
-            if (entry.surface && entry.surface.visible)
-                continue;
             if (entry.under && topModal && entry.under.indexOf(topModal) < 0)
                 continue;
             handBack(entry.surface, entry.opener, entry.standIn, true);
@@ -297,6 +321,10 @@ QtObject {
         for (var target of [opener, standIn]) {
             if (focusReturnable(surface, target)) {
                 target.forceActiveFocus();
+                // Away, only its stored focus changed: the gate follows it,
+                // so disabling it before the window returns hands it on.
+                if (!windowActive(target))
+                    PressGate.followStoredFocus(target);
                 return true;
             }
         }
@@ -331,16 +359,18 @@ QtObject {
         return !!item && (item.inReach !== undefined || item.activeFocusOnTab === true);
     }
     // What a surface opening over @p window records as its opener: the item
-    // with the keyboard when it is a control. When that is a container (Qt
-    // dropped the focus to the Spectrum's loader as the button's panel was
-    // disabled before the sheet showed), the control the gate last saw
-    // focused inside it; else none, and the hand-back goes to the Back owner.
+    // with the keyboard (in a window that is away, the one it returns to) when
+    // it is a control. When that is a container (Qt dropped the focus to the
+    // Spectrum's loader as the button's panel was disabled before the sheet
+    // showed), the control that lost the keyboard inside it in this same
+    // turn; never one the user left before (a search finished with Enter).
+    // Else none, and the hand-back goes to the Back owner.
     function openerIn(window) {
-        var item = window ? window.activeFocusItem : null;
-        if (!item || isControl(item))
+        var item = window && window.contentItem ? PressGate.focusItemOf(window.contentItem) : null;
+        if (item && isControl(item))
             return item;
-        var last = PressGate.lastFocused();
-        return last && encloses(item, last) ? last : null;
+        var lost = PressGate.focusLostThisTurn();
+        return lost && (!item || encloses(item, lost)) ? lost : null;
     }
     function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)

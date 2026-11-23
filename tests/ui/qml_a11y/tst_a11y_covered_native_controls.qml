@@ -999,6 +999,68 @@ Item {
             checkBox.checked = false;
         }
 
+        // Issue #902: a sheet opened while the window is away records the focus the window returns to (a field) as
+        // its opener, though no item has the active focus then: dismissed, it hands the keyboard back to the field.
+        function test_sheet_opened_away_returns_to_the_stored_focus() {
+            textField.input.forceActiveFocus();
+            verify(textField.input.activeFocus);
+            testContext.sendWindowFocus(holder, false);
+            try {
+                sheet.open();
+            } finally {
+                testContext.sendWindowFocus(holder, true);
+            }
+            verify(sheet.visible);
+            sheet.visible = false;
+            tryVerify(function () { return textField.input.activeFocus; }, 1000, "the field has the keyboard back");
+        }
+
+        // Issue #902: a sheet closed while the window is away hands the field its stored focus; the field disabled
+        // before the window returns is followed (PressGate.followStoredFocus()), so the window comes back with the
+        // keyboard on the Back owner, where Escape works. The offscreen platform keeps every window active, so a
+        // focus given while away turns active again here: this guards the outcome, not the stored-only path.
+        function test_background_hand_back_is_followed() {
+            textField.input.forceActiveFocus();
+            sheet.open();
+            testContext.sendWindowFocus(holder, false);
+            try {
+                sheet.visible = false;
+                textField.enabled = false;
+                wait(50);
+            } finally {
+                testContext.sendWindowFocus(holder, true);
+            }
+            try {
+                verify(!textField.input.activeFocus, "the disabled field has no keyboard");
+                tryVerify(function () { return appBack.activeFocus; }, 1000, "the Back owner has it");
+                keyClick(Qt.Key_Escape);
+                compare(appBack.escapes, 1, "Escape goes back");
+            } finally {
+                textField.enabled = true;
+            }
+        }
+
+        // Issue #902: two visits to one sheet in a turn, each opener disabled at its dismissal: only the latest
+        // visit's hand-back runs. The first visit's opener enabled again before the turn ends gets nothing; the
+        // latest visit's opener still disabled, the keyboard goes to the Back owner.
+        function test_only_the_latest_visit_hands_back() {
+            checkBox.forceActiveFocus();
+            sheet.open();
+            checkBox.enabled = false;
+            sheet.visible = false;
+            holder.forceActiveFocus();
+            sheet.open();
+            holder.enabled = false;
+            sheet.visible = false;
+            checkBox.enabled = true;
+            try {
+                tryVerify(function () { return appBack.activeFocus; }, 1000, "the latest visit hands the keyboard to the Back owner");
+                verify(!checkBox.activeFocus, "the first visit's opener gets nothing");
+            } finally {
+                holder.enabled = true;
+            }
+        }
+
         // Issue #902: only a real change of navigation closes an open list. A selector destroyed while hidden, its
         // list never opened, takes nothing out of the modals, and the same entries assigned again (a binding
         // re-evaluated) are no change either: the list stays open.

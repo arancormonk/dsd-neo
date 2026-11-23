@@ -82,6 +82,7 @@ Item {
                 testContext.sendWindowFocus(resume, true);
             }
             verify(!resume.activeFocus, "back: the disabled button has no keyboard");
+            verify(findChild(app, "safeArea").activeFocus, "back: the Back owner has it, not the Spectrum's loader");
             keyClick(Qt.Key_Escape);
             verify(!app.spectrumOpen, "Escape closes the Spectrum");
             testContext.setMetric("scanPaused", false);

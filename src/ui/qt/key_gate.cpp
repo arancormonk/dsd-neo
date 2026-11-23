@@ -23,6 +23,12 @@ isKeyEvent(QEvent::Type type) {
     return type == QEvent::KeyPress || type == QEvent::KeyRelease || type == QEvent::ShortcutOverride;
 }
 
+QPointer<QQuickItem>
+rootOf(const QQuickItem* item) {
+    const QQuickWindow* const window = item != nullptr ? item->window() : nullptr;
+    return QPointer<QQuickItem>(window != nullptr ? window->contentItem() : nullptr);
+}
+
 bool
 isComposing(const QQuickItem* item) {
     return item != nullptr && !item->property("preeditText").toString().isEmpty();
@@ -64,8 +70,10 @@ void
 PressGate::setFocusItem(QQuickItem* item, int index) {
     disconnect(m_watch);
     disconnect(m_watch_enabled);
+    disconnect(m_watch_destroyed);
     m_watch = {};
     m_watch_enabled = {};
+    m_watch_destroyed = {};
     m_focus = item;
     m_focus_index = item != nullptr ? index : -1;
     m_composing = false;
@@ -80,6 +88,14 @@ PressGate::setFocusItem(QQuickItem* item, int index) {
         m_watch = connect(item, property.notifySignal(), this, slot);
     }
     m_watch_enabled = connect(item, &QQuickItem::enabledChanged, this, &PressGate::recheck);
+    // Destroyed with the focus and no focus-out (its row taken away by a model reset): told once that has settled.
+    m_watch_destroyed = connect(item, &QObject::destroyed, this, [this, root = rootOf(item)] {
+        QTimer::singleShot(0, this, [this, root] {
+            if (root) {
+                Q_EMIT focusVanished(root);
+            }
+        });
+    });
     m_focus_in_reach = focusInReach();
     if (!m_focus_in_reach) {
         // Taking the focus while unreachable (a deferred hand-off landing on it after it hid): let go.
@@ -111,7 +127,7 @@ PressGate::filterFocus(QQuickItem* item, const QEvent* event) {
         // Looked up per focus change, from the item's own type: a type's metaobject goes with its engine.
         const int index = item->metaObject()->indexOfProperty("inReach");
         if (index >= 0) {
-            m_last_focus = item;
+            m_lost_this_turn = nullptr;
             setFocusItem(item, index);
         }
         return;
@@ -144,11 +160,18 @@ PressGate::filterFocus(QQuickItem* item, const QEvent* event) {
         m_closing = false;
     }
     setFocusItem(nullptr, -1);
+    m_lost_this_turn = item;
     // Told after the change settles: Qt may drop the focus to the window root (the control disabled), which
     // Navigation then hands on to the Back owner.
-    QTimer::singleShot(0, this, [this, lost = QPointer<QQuickItem>(item)] {
-        if (lost) {
+    QTimer::singleShot(0, this, [this, lost = QPointer<QQuickItem>(item), root = rootOf(item)] {
+        if (m_lost_this_turn == lost) {
+            m_lost_this_turn = nullptr; // The turn it lost the focus in is over.
+        }
+        if (lost && lost->window() != nullptr) {
             Q_EMIT focusLeft(lost);
+        } else if (root) {
+            // Destroyed, or taken out of its window, as it lost the focus (its row taken away by a model reset).
+            Q_EMIT focusVanished(root);
         }
     });
 }
@@ -192,9 +215,18 @@ PressGate::cancelPress(QQuickItem* control) const {
     }
 }
 
+void
+PressGate::followStoredFocus(QQuickItem* item) {
+    const int index = item != nullptr ? item->metaObject()->indexOfProperty("inReach") : -1;
+    if (index >= 0 && item != m_focus.data()) {
+        m_lost_this_turn = nullptr;
+        setFocusItem(item, index);
+    }
+}
+
 QQuickItem*
-PressGate::lastFocused() const {
-    return m_last_focus.data();
+PressGate::focusLostThisTurn() const {
+    return m_lost_this_turn.data();
 }
 
 QQuickItem*
