@@ -130,7 +130,7 @@ Item {
         if (d.token !== 0) {
             decoderHost.closeFileBrowserSession(d.session);
         } else {
-            d.opener = window ? window.activeFocusItem : null;
+            d.opener = Navigation.openerIn(window);
             // What stands for it (a combo option's selector), taken now: the
             // option's delegate may be destroyed while the browser is open.
             d.standIn = d.opener && d.opener.focusReturnTarget ? d.opener.focusReturnTarget : null;
@@ -158,11 +158,7 @@ Item {
         d.opener = null;
         d.standIn = null;
         d.modalsUnder = [];
-        var fallback = restoreFocus(opener, standIn, under);
-        // Bindings may settle after the request ends (the opener shown or
-        // enabled again): a turn later, while the keyboard is still on that
-        // fallback, the opener takes it back.
-        Navigation.retryFocusLater(screen, opener, standIn, fallback);
+        restoreFocus(opener, standIn, under);
     }
     function reset() {
         readingDelay.stop();
@@ -200,17 +196,16 @@ Item {
     // still on screen and reachable, else to its stand-in, else to the item
     // that takes Escape and Back (Navigation.restoreFocusFrom()). A sheet that
     // took the top since the browser opened (the backup's unlock sheet, after
-    // a pick) keeps the focus it gave itself. Returns the fallback it gave the
-    // keyboard to.
+    // a pick) keeps the focus it gave itself. Once, as the request ends.
     function restoreFocus(opener, standIn, under) {
         // Read from the token, not `shown`: this runs inside the request's
         // change, before that binding has caught up. A new browse keeps focus.
         if (d.token !== 0)
-            return null;
+            return;
         var top = Navigation.topModal;
         if (top && under.indexOf(top) < 0)
-            return null;
-        return Navigation.restoreFocusFrom(screen, opener, standIn);
+            return;
+        Navigation.restoreFocusFrom(screen, opener, standIn, under);
     }
     // One level up: a folder to its parent, a location to the list of
     // locations, which ends the request.

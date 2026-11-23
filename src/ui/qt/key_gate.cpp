@@ -111,6 +111,7 @@ PressGate::filterFocus(QQuickItem* item, const QEvent* event) {
         // Looked up per focus change, from the item's own type: a type's metaobject goes with its engine.
         const int index = item->metaObject()->indexOfProperty("inReach");
         if (index >= 0) {
+            m_last_focus = item;
             setFocusItem(item, index);
         }
         return;
@@ -172,6 +173,7 @@ PressGate::filterClosed(QEvent* event) {
     const auto* key = event->type() == QEvent::KeyRelease ? dynamic_cast<const QKeyEvent*>(event) : nullptr;
     if (key != nullptr && !key->isAutoRepeat()) {
         cancelPress(m_focus);
+        Q_EMIT releaseTaken(key->key());
     }
     event->accept();
     return true;
@@ -188,6 +190,29 @@ PressGate::cancelPress(QQuickItem* control) const {
         QTouchEvent cancel(QEvent::TouchCancel, QPointingDevice::primaryPointingDevice());
         QCoreApplication::sendEvent(control, &cancel);
     }
+}
+
+QQuickItem*
+PressGate::lastFocused() const {
+    return m_last_focus.data();
+}
+
+QQuickItem*
+PressGate::focusItemOf(QQuickItem* item) const {
+    const QQuickWindow* const window = item != nullptr ? item->window() : nullptr;
+    QQuickItem* const root = window != nullptr ? window->contentItem() : nullptr;
+    if (root == nullptr) {
+        return nullptr;
+    }
+    QQuickItem* focused = window->activeFocusItem();
+    if (!root->hasActiveFocus()) {
+        // Away: down each focus scope's own focus item from the root, where the window's focus goes back to.
+        focused = root;
+        while (focused->isFocusScope() && focused->scopedFocusItem() != nullptr) {
+            focused = focused->scopedFocusItem();
+        }
+    }
+    return focused != root ? focused : nullptr;
 }
 
 bool

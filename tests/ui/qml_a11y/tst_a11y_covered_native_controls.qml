@@ -897,10 +897,10 @@ Item {
             tryVerify(function () { return !combo.popup.visible; });
         }
 
-        // Issue #902: a sheet closing while its opener is disabled for the moment hands the keyboard to the sheet
-        // below as a fallback; the opener enabled again before the deferred hand-back takes it back, as the fallback
-        // is no choice of the user's.
-        function test_fallback_gives_way_to_the_opener_enabled_again() {
+        // Issue #902, one hand-back (a decided behaviour): a sheet closing while its opener is disabled hands the
+        // keyboard, once its dismissal has settled, to the sheet below (the item that takes Escape and Back), and the
+        // opener enabled again afterwards does not take it back.
+        function test_opener_reachable_only_later_does_not_take_the_keyboard_back() {
             var button = findChild(sheet, "sheetButton");
             sheet.visible = true;
             button.forceActiveFocus();
@@ -908,10 +908,95 @@ Item {
             nextSheet.open();
             button.enabled = false;
             nextSheet.visible = false;
-            verify(sheet.activeFocus, "the opener disabled: the sheet below takes the keyboard");
+            tryVerify(function () { return sheet.activeFocus; }, 1000, "the opener disabled: the sheet below takes the keyboard");
             button.enabled = true;
-            tryVerify(function () { return button.activeFocus; }, 1000, "enabled again: the opener takes it back");
+            wait(50);
+            verify(sheet.activeFocus, "enabled again later: the keyboard stays where the hand-back put it");
+            verify(!button.activeFocus);
+            keyClick(Qt.Key_Escape);
+            tryVerify(function () { return !sheet.visible; }, 1000, "Escape reaches the sheet below");
+        }
+
+        // Issue #902: a pin captured as a sheet's opener whose row StableRows lets go of (no longer live) while the
+        // sheet is open is no place to return to, though still shown and enabled: the keyboard goes to the Back
+        // owner, where Escape works.
+        function test_opener_no_longer_live_is_not_returned_to() {
+            pinButton.live = true;
+            pinButton.forceActiveFocus();
+            verify(pinButton.activeFocus);
+            sheet.open();
+            pinButton.live = false;
+            try {
+                verify(pinButton.visible && pinButton.enabled, "still shown and enabled");
+                sheet.visible = false;
+                verify(!pinButton.activeFocus, "the hand-back gives the pin let go of no keyboard");
+                tryVerify(function () { return appBack.activeFocus; }, 1000, "the keyboard goes to the Back owner");
+                verify(!pinButton.activeFocus, "nor afterwards");
+                keyClick(Qt.Key_Escape);
+                compare(appBack.escapes, 1, "Escape goes back");
+            } finally {
+                pinButton.live = true;
+            }
+        }
+
+        // Issue #902: a lower sheet closing while a sheet above it has its field focused (the recordings sheet closing
+        // itself as its list empties) takes nothing from that field: not its keyboard, not its input.
+        function test_lower_sheet_closing_keeps_the_upper_field() {
+            holder.forceActiveFocus();
+            sheet.open();
+            nextSheet.open();
+            nextField.input.forceActiveFocus();
+            verify(nextField.input.activeFocus);
             sheet.visible = false;
+            verify(nextField.input.activeFocus, "the upper sheet's field keeps the keyboard");
+            wait(50);
+            verify(nextField.input.activeFocus, "and still has it once the close has settled");
+            keyClick(Qt.Key_7);
+            compare(nextField.text, "7", "typing reaches it");
+            nextField.text = "";
+        }
+
+        // Issue #902: the same with the window away as the lower sheet closes: the focus the window returns to is the
+        // upper sheet's field, not the lower sheet's opener.
+        function test_lower_sheet_closing_away_keeps_the_upper_field() {
+            holder.forceActiveFocus();
+            sheet.open();
+            nextSheet.open();
+            nextField.input.forceActiveFocus();
+            verify(nextField.input.activeFocus);
+            testContext.sendWindowFocus(holder, false);
+            try {
+                sheet.visible = false;
+                wait(50);
+            } finally {
+                testContext.sendWindowFocus(holder, true);
+            }
+            verify(nextField.input.activeFocus, "back: the upper sheet's field has the keyboard");
+            verify(!holder.activeFocus, "not the lower sheet's opener");
+            keyClick(Qt.Key_7);
+            compare(nextField.text, "7", "typing reaches it");
+            nextField.text = "";
+        }
+
+        // Issue #902: Space down on a button that hides before the key comes up: the release the gate takes also ends
+        // the button's hold for Navigation, so a later repeat of another Space hold, with the button shown and
+        // focused again, presses nothing.
+        function test_release_taken_ends_the_held_activation() {
+            iconButton.forceActiveFocus();
+            testContext.sendKey(iconButton, Qt.Key_Space, 0, true, false);
+            compare(Ui.Navigation.heldActivationItem, iconButton, "Space's hold is the button's");
+            var presses = iconButton.presses;
+            iconButton.visible = false;
+            testContext.sendKey(iconButton, Qt.Key_Space, 0, false, false);
+            compare(Ui.Navigation.heldActivationItem, null, "the taken release ends the hold");
+            iconButton.visible = true;
+            checkBox.forceActiveFocus();
+            testContext.sendKey(checkBox, Qt.Key_Space, 0, true, false);
+            iconButton.forceActiveFocus();
+            testContext.sendKey(iconButton, Qt.Key_Space, 0, true, true);
+            testContext.sendKey(iconButton, Qt.Key_Space, 0, false, false);
+            compare(iconButton.presses, presses, "a repeat of another hold presses nothing");
+            checkBox.checked = false;
         }
 
         // Issue #902: only a real change of navigation closes an open list. A selector destroyed while hidden, its

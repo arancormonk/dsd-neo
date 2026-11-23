@@ -2408,6 +2408,11 @@ Window {
     Loader {
         id: spectrumLoader
         objectName: "spectrumLoader"
+        // Issue #902: Escape and Back from a control on the Spectrum go back,
+        // as from the safe area: the loader anchors to it but is no child of
+        // it, so a key the screen leaves would otherwise reach nothing.
+        Keys.onEscapePressed: mainRoot.requestBack()
+        Keys.onBackPressed: mainRoot.requestBack()
 
         anchors.fill: safeArea
         active: false

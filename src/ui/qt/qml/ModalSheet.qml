@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import DsdNeo
 import QtQuick.Window
 
 // A centred panel over a dimmed screen.
@@ -55,7 +56,7 @@ Rectangle {
         // A caller may disable its opener when the sheet becomes visible.
         // Capture focus before those bindings move it to the window root.
         var window = sheet.Window.window;
-        var opener = window ? window.activeFocusItem : null;
+        var opener = Navigation.openerIn(window);
         visible = true;
         previousFocus = opener;
     }
@@ -72,20 +73,22 @@ Rectangle {
     }
     // The opener while it is still shown and in reach, else its stand-in,
     // else the item that takes Escape and Back (issue #902,
-    // Navigation.restoreFocusFrom()): never a surface by itself, which may
+    // Navigation.restoreFocusFrom()), once: never a surface by itself, which may
     // pass Escape to nothing (a tab Main anchors but does not parent, a
-    // layer's loaded screen). Returns the fallback it gave the keyboard to.
+    // layer's loaded screen).
     function restoreFocus(opener, standIn) {
         if (visible)
-            return null;
+            return;
         var standsIn = standIn !== undefined ? standIn : (opener && opener.focusReturnTarget ? opener.focusReturnTarget : null);
-        return Navigation.restoreFocusFrom(sheet, opener, standsIn);
+        Navigation.restoreFocusFrom(sheet, opener, standsIn);
     }
     function focusInside() {
         if (!visible || !isTopModal || adjustingFocus)
             return;
+        // The focus a window that is away returns to counts (issue #902): its
+        // active focus item is null meanwhile, not outside the sheet.
         var window = sheet.Window.window;
-        if (window && !Navigation.contains(sheet, window.activeFocusItem)) {
+        if (window && !Navigation.contains(sheet, PressGate.focusItemOf(sheet))) {
             adjustingFocus = true;
             sheet.forceActiveFocus();
             adjustingFocus = false;
@@ -101,22 +104,21 @@ Rectangle {
                 // focus reveal that follows still scrolls to a focused field.
                 scroll.contentX = 0;
                 scroll.contentY = 0;
-                sheet.previousFocus = window ? window.activeFocusItem : null;
+                sheet.previousFocus = Navigation.openerIn(window);
                 Navigation.clearInput(window);
                 Navigation.addModal(sheet);
                 sheet.forceActiveFocus();
             } else {
                 Navigation.removeModal(sheet);
-                Navigation.clearInput(window);
+                // Only input this sheet holds: a sheet above it keeps its
+                // field, its word and its keyboard (issue #902).
+                if (window && Navigation.contains(sheet, window.activeFocusItem))
+                    Navigation.clearInput(window);
                 var opener = sheet.previousFocus;
                 var standIn = sheet.previousStandIn;
                 sheet.previousFocus = null;
                 sheet.previousStandIn = null;
-                var fallback = sheet.restoreFocus(opener, standIn);
-                // Bindings may settle after dismissal (the opener shown or
-                // enabled again): a turn later, while the keyboard is still on
-                // that fallback, the opener takes it back.
-                Navigation.retryFocusLater(sheet, opener, standIn, fallback);
+                sheet.restoreFocus(opener, standIn);
             }
         }
     }

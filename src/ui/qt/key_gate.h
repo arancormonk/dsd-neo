@@ -45,6 +45,13 @@ class PressGate : public QObject {
      * (a cancelled touch, which is what makes a Qt Quick control let go of one). A combo's open list closing under its
      * pressed option. */
     Q_INVOKABLE void cancelPress(QQuickItem* control) const;
+    /* The control (an item declaring `inReach`) that last took the focus, while it exists: what a closing sheet
+     * hands the keyboard back to when the focus at its opening sat on a container its panel was disabled under. */
+    Q_INVOKABLE QQuickItem* lastFocused() const;
+    /* The item with the keyboard in @p item's window: its active focus item, or, with the window away (its root
+     * holding no active focus), the item its focus scopes would hand the focus back to on its return. Null for none
+     * or the window root. */
+    Q_INVOKABLE QQuickItem* focusItemOf(QQuickItem* item) const;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
   Q_SIGNALS:
@@ -54,6 +61,9 @@ class PressGate : public QObject {
     /* @p item, composing a word, is losing the focus to its window leaving: the word is to be finished now, before
      * the item ends its edit. */
     void finishComposing(QQuickItem* item);
+    /* A key's release (not a repeat) was taken from an unreachable control: what notes the key's held press forgets
+     * it. */
+    void releaseTaken(int key);
     /* @p item lost the focus (not to the window leaving), told once that change has settled. */
     void focusLeft(QQuickItem* item);
 
@@ -73,6 +83,7 @@ class PressGate : public QObject {
      * reachability, and whether it was composing a word as it turned unreachable (the one commit still to let
      * through). */
     QPointer<QQuickItem> m_focus;
+    QPointer<QQuickItem> m_last_focus;
     int m_focus_index = -1;
     bool m_focus_in_reach = true;
     bool m_composing = false;

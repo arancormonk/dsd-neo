@@ -21819,7 +21819,9 @@ word (`test_disabled_field_commit_lands_at_its_word`). The window leaving finish
 edit ends with it, and the field keeps the stored focus (`test_window_leaving_publishes_the_whole_word`,
 `PressGate.finishComposing`). A key release the gate takes lets go of the press it would have ended, unacted (a
 cancelled touch), so a check box or switch that hid under a held Space and shows again before the keyboard moves on is
-not left pressed (`test_release_taken_while_hidden_lets_the_press_go`). Presses in
+not left pressed (`test_release_taken_while_hidden_lets_the_press_go`), and ends the key's held activation for
+Navigation (`PressGate.releaseTaken`; `heldActivationItem`, so a repeat of a later hold presses nothing:
+`test_release_taken_ends_the_held_activation`). Presses in
 progress are not followed (a decided limit, issue #902): a tap, drag or held key already in progress when a sheet
 opens or its control changes may still complete on its release, as before issue #902; covered and hidden controls
 refuse new presses (a cover's barrier, and `GatedTapHandler`'s and `activate()`'s checks, as before), keys and
@@ -21847,9 +21849,10 @@ to another control or the window is away (`tst_home_systems_search_sort.qml`
 (`Navigation.keyOwner()`): the top modal's, else the top layer's, own handler when it declares one (`keyTarget`: a
 `ModalSheet` and the File browser are their own; a `NavigationLayer` may name one, none does), else the app's one
 Back owner, `Navigation.backTarget`, which Main binds to its safe area (its Keys run `requestBack()`). Never a
-surface by itself, nor the window root: a screen may pass Escape to nothing (the Spectrum's loaded screen; the idle
-History tab, which the tab shell anchors to the safe area without parenting under it, so Escape from Clear filters,
-hidden by its own press, left History selected). `tst_a11y_covered_native_controls.qml`
+surface by itself, nor the window root: a screen may pass Escape to nothing (the idle History tab, which the tab
+shell anchors to the safe area without parenting under it, so Escape from Clear filters, hidden by its own press, left
+History selected). The Spectrum's loader, anchored to the safe area the same way, takes Escape and Back itself
+(`requestBack()`), so a key a Spectrum control leaves goes back. `tst_a11y_covered_native_controls.qml`
 `test_layer_hands_the_keyboard_to_a_back_owner`, `tst_main_map.qml`
 `test_hidden_control_keeps_back_working_on_the_history_tab` and `..._on_the_spectrum`, and the Hold button with the
 keyboard when a Signal search detection ends (`tst_signal_search.qml` `test_escape_after_the_hold_button_hides`). A control that held only the stored focus of a
@@ -21858,7 +21861,9 @@ focus to the same key owner, each focus scope above it holding it, with nothing 
 (`PressGate.passStoredFocus()`), so the window comes back with the keyboard on the Back owner
 (`test_escape_after_the_hold_button_hides_while_away`). The same goes for a control disabled while it holds that
 stored focus (the gate follows its `enabled` too while the window is away; Spectrum's Resume scan disabled with the
-scan still paused: `tst_main_map.qml` `test_resume_disabled_while_away_keeps_back_working`). So a covered control no longer keeps the keyboard under a sheet (`tst_keypad_enter.qml`), and
+scan still paused: `tst_main_map.qml` `test_resume_disabled_while_away_keeps_back_working`), also when the window
+comes back before that hand-off ran and Qt has put the focus on the Spectrum's loader
+(`test_resume_disabled_while_away_window_back_early`). So a covered control no longer keeps the keyboard under a sheet (`tst_keypad_enter.qml`), and
 its held Tab stop (`|| activeFocus`) lasts only that turn. Every step a slider or a rail takes (the coarse-tuning
 rail's and the seek bar's `nudge()`, from a screen reader's Increase or Decrease or an arrow key) checks effective
 visibility too, so nothing retunes or seeks unseen. A `PlexComboBox` list's options (`plexComboRow`) have their own
@@ -21885,18 +21890,28 @@ move nowhere and leave the list and the keyboard as they were; Escape or Back cl
 `test_sheet_over_the_open_list_returns_to_the_selector`; an
 option row names its selector as `focusReturnTarget`, which a sheet or the File browser closing with that row gone
 hands the keyboard to: `test_sheet_over_a_focused_option_returns_to_the_selector`. A sheet and the File browser hand
-the keyboard back by one rule (`Navigation.restoreFocusFrom()`, `retryFocusLater()`). The opener and its stand-in are
-captured as the surface opens, since a combo's model rebuilt while it is open destroys the option
-(`test_rebuilt_options_still_return_to_the_selector`). The first hand-back goes to the opener, else the stand-in, else
-(unless the keyboard already sits on a control in reach, judged by the control's own `inReach` where it has one) to
-`keyOwner()`, which it records as its fallback. The one retry, a turn later, acts only while the keyboard is still on
-that fallback, or dropped to the window root or a scope enclosing the opener, and then gives it to the opener, else the
-stand-in; any other focus is a newer choice and is left alone, so the retry never closes a list (a sheet opened as the
-first closed, its field given the keyboard: `test_next_sheet_keeps_its_fields_keyboard`; a field the user focused
-meanwhile: `test_dismissed_sheet_keeps_a_newer_focus_choice`, `tst_file_browser.qml`
-`test_closed_browser_keeps_a_newer_focus_choice`; a selector whose list opened meanwhile:
-`test_dismissed_sheet_keeps_a_newly_opened_list`; an opener disabled at the close and enabled again before the retry
-takes the keyboard back from the fallback: `test_fallback_gives_way_to_the_opener_enabled_again`),
+the keyboard back once (`Navigation.restoreFocusFrom()`), with no retry. A control in reach that already holds the
+keyboard keeps it: a sheet above the closing one with its field focused (and a lower sheet closing clears input only
+when it holds it, `test_lower_sheet_closing_keeps_the_upper_field`), and in a window that is away the focus it returns
+to (`PressGate.focusItemOf()`, `test_lower_sheet_closing_away_keeps_the_upper_field`; a sheet's own `focusInside()`
+reads the same, as on origin/main it took the window's stored focus off its field whenever the window left). Else the
+opener, if in reach by its own gate (`inReach` where present, with visible, enabled and in the window: a pin let go of
+is none, `test_opener_no_longer_live_is_not_returned_to`); else its stand-in by the same test; else the item that
+takes Escape and Back (`keyOwner()`), so Escape always works. The opener and the stand-in are captured as the surface
+opens (`Navigation.openerIn()`), since a combo's model rebuilt while it is open destroys the option
+(`test_rebuilt_options_still_return_to_the_selector`), and never a container: the focus on a Loader or a screen (the
+Spectrum's loader, its button's panel disabled before the confirmation showed) records the control the gate last saw
+focused inside it (`PressGate.lastFocused()`), else none (`tst_main_map.qml`
+`test_explore_confirmation_then_back_closes_the_spectrum`). The hand-back is taken at the dismissal when the opener or
+its stand-in is in reach then; else once the dismissal's turn has settled, as a binding on the closing sheet can
+enable the opener only after the sheet's own handler ran (Home's body, disabled while a management sheet shows:
+`tst_back_modals.qml` `test_home_sort_back`, `test_remove_cancel`), and is skipped then if the surface opened again
+or a new sheet took the top. Either way it is the only one: an opener that turns reachable only later does not get the
+keyboard back, a decided behaviour (`test_opener_reachable_only_later_does_not_take_the_keyboard_back`). A newer
+choice made meanwhile stays (a sheet opened as the first closed, its field given the keyboard:
+`test_next_sheet_keeps_its_fields_keyboard`; a field the user focused: `test_dismissed_sheet_keeps_a_newer_focus_choice`,
+`tst_file_browser.qml` `test_closed_browser_keeps_a_newer_focus_choice`; a selector whose list opened:
+`test_dismissed_sheet_keeps_a_newly_opened_list`),
 `test_empty_list_closes_on_return`). These tests run on the Basic controls style the app pins
 (`QT_QUICK_CONTROLS_STYLE=Basic` on `UI_QT_QML_A11Y_CHURN`): a style whose popups animate their close keeps a closing
 list visible a while. The

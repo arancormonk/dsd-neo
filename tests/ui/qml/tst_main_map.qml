@@ -86,6 +86,55 @@ Item {
             verify(!app.spectrumOpen, "Escape closes the Spectrum");
             testContext.setMetric("scanPaused", false);
         }
+        // Issue #902: with the tuner controlled, "Explore from here" asks first, and its panel is disabled as the
+        // confirmation shows, so the keyboard sits on the Spectrum's loader as the sheet records its opener. The
+        // opener recorded is the button, never the loader: the first Escape closes the confirmation, the keyboard
+        // back on the button, and the second closes the Spectrum.
+        function test_explore_confirmation_then_back_closes_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("tunerControlled", true);
+            try {
+                findChild(app, "spectrumLoader").active = true;
+                app.spectrumOpen = true;
+                var explore = findChild(app, "spectrumExploreFromHere");
+                verify(explore !== null);
+                tryVerify(function () { return explore.visible && explore.enabled; }, 1000, "view only: Explore from here shows");
+                focusOnceSettled(explore);
+                keyClick(Qt.Key_Space);
+                var confirm = findChild(app, "spectrumExploreConfirm");
+                tryVerify(function () { return confirm.visible; }, 1000, "the confirmation shows");
+                keyClick(Qt.Key_Escape);
+                tryVerify(function () { return !confirm.visible; }, 1000, "the first Escape closes the confirmation");
+                tryVerify(function () { return explore.activeFocus; }, 1000, "the keyboard is back on the button");
+                keyClick(Qt.Key_Escape);
+                verify(!app.spectrumOpen, "the second Escape closes the Spectrum");
+            } finally {
+                testContext.setMetric("tunerControlled", false);
+            }
+        }
+        // Issue #902: the same as test_resume_disabled_while_away_keeps_back_working, the window back before the
+        // hand-off ran: Qt has already put the focus on the Spectrum's loader, which is handed on all the same.
+        function test_resume_disabled_while_away_window_back_early() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            focusOnceSettled(resume);
+            testContext.sendWindowFocus(resume, false);
+            testContext.setMetric("scanResumable", false);
+            testContext.sendWindowFocus(resume, true);
+            wait(50);
+            verify(!resume.activeFocus, "the disabled button has no keyboard");
+            verify(findChild(app, "safeArea").activeFocus, "the Back owner has it, not the Spectrum's loader");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+            testContext.setMetric("scanPaused", false);
+        }
         function mapScreen() {
             return findChild(app, "mapScreen");
         }

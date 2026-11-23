@@ -103,7 +103,7 @@ QtObject {
     // item that takes Escape and Back. The top modal's, else the top layer's,
     // own handler when it declares one (`keyTarget`: a sheet is its own), else
     // the app's backTarget. Never a surface by itself: a screen may pass
-    // Escape to nothing (the Spectrum's loaded screen; a tab Main anchors to
+    // Escape to nothing (a layer's loaded screen; a tab Main anchors to
     // its safe area but does not parent under it). Null with neither.
     function keyOwner() {
         var top = topModal || (layers.length ? layers[layers.length - 1] : null);
@@ -144,6 +144,12 @@ QtObject {
         target: PressGate
         function onStrayed(item) {
             navigation.strayed(item);
+        }
+        function onReleaseTaken(key) {
+            if (key === navigation.heldActivationKey) {
+                navigation.heldActivationItem = null;
+                navigation.heldActivationKey = 0;
+            }
         }
         function onFinishComposing(item) {
             if (navigation.editsText(item))
@@ -189,10 +195,17 @@ QtObject {
     }
     // A control disabled while it holds the stored focus of a window that is
     // away (its root holds no active focus) is let go of too: Qt would hand
-    // the returning window's focus to the scope above it.
+    // the returning window's focus to the scope above it. The window back
+    // before this ran, Qt has done so already: that drop is handed on.
     function letGo(item) {
-        if (!item || (item.inReach && (item.enabled || windowActive(item))))
+        if (!item)
             return;
+        if (item.inReach) {
+            if (!item.enabled && windowActive(item))
+                focusDropped(item);
+            if (item.enabled || windowActive(item))
+                return;
+        }
         // Again here for a word composed since (none is let through a closed
         // gate, so this finds nothing as a rule), whatever happened to the
         // keyboard meanwhile; only the hand-off below depends on the control
@@ -245,75 +258,89 @@ QtObject {
             owner.forceActiveFocus();
     }
     // Issue #902: where a closing surface (a sheet, the File browser) hands
-    // the keyboard back. Its opener and the opener's stand-in (a combo
-    // option's selector, `focusReturnTarget`) are captured as it opens, as a
-    // delegate can be destroyed while it is open (a model rebuilt). The first
-    // hand-back goes to the opener, else the stand-in, while shown, enabled
-    // and in reach; else, unless the keyboard already sits on a control in
-    // reach outside @p surface, to keyOwner(), which it returns as the
-    // fallback it assigned (null when it assigned none).
-    function restoreFocusFrom(surface, opener, standIn) {
+    // the keyboard back, once. A control in reach that already holds the
+    // keyboard keeps it (a sheet above the closing one with its field
+    // focused; in a window that is away, the focus it would return to). Else
+    // the opener, if in reach by its own gate; else its stand-in (a combo
+    // option's selector, `focusReturnTarget`), both captured as the surface
+    // opened; else the item that takes Escape and Back (keyOwner()), so
+    // Escape always works. Taken at the dismissal when the opener or its
+    // stand-in is in reach then; else once the dismissal's turn has settled
+    // (a binding on the closing sheet, such as Home's body disabled while a
+    // management sheet shows, may enable the opener only after this runs),
+    // and then for good: an opener that turns reachable later still does not
+    // get the keyboard back (a decided behaviour). Skipped then if the surface
+    // opened again, or a sheet not among @p under (the modals under it as it
+    // opened) took the top since.
+    property var handBacks: []
+    function restoreFocusFrom(surface, opener, standIn, under) {
+        if (handBack(surface, opener, standIn, false))
+            return;
+        handBacks = handBacks.concat([{surface: surface, opener: opener, standIn: standIn, under: under || null}]);
+        Qt.callLater(navigation.runHandBacks);
+    }
+    function runHandBacks() {
+        var pending = handBacks;
+        handBacks = [];
+        for (var entry of pending) {
+            if (entry.surface && entry.surface.visible)
+                continue;
+            if (entry.under && topModal && entry.under.indexOf(topModal) < 0)
+                continue;
+            handBack(entry.surface, entry.opener, entry.standIn, true);
+        }
+    }
+    function handBack(surface, opener, standIn, settled) {
+        var held = PressGate.focusItemOf(surface || opener || standIn || backTarget);
+        if (holdsReachableFocus(surface, held))
+            return true;
         for (var target of [opener, standIn]) {
             if (focusReturnable(surface, target)) {
                 target.forceActiveFocus();
-                return null;
+                return true;
             }
         }
-        var window = surface ? surface.Window.window : null;
-        if (holdsReachableFocus(surface, window ? window.activeFocusItem : null))
-            return null;
+        if (!settled)
+            return false;
         var owner = keyOwner();
-        if (owner && owner !== surface && !contains(surface, owner) && owner.visible && owner.enabled) {
+        if (owner && owner !== surface && !contains(surface, owner) && owner.visible && owner.enabled)
             owner.forceActiveFocus();
-            return owner;
-        }
-        return null;
+        return true;
+    }
+    // A control in reach: by its own gate where it declares one (`inReach`;
+    // a combo whose own list is open is no longer allowed by the navigation,
+    // yet in reach), else shown and allowed; enabled, and in the window.
+    function controlInReach(item) {
+        if (!item || !item.enabled || !item.visible || !item.Window.window)
+            return false;
+        return item.inReach !== undefined ? item.inReach === true : (allows(item) && presented(item));
     }
     function focusReturnable(surface, target) {
-        return !!target && target !== surface && !contains(surface, target) && presented(target) && target.enabled && allows(target);
+        return !!target && target !== surface && !contains(surface, target) && isControl(target) && controlInReach(target);
     }
-    // A control in reach with the keyboard: judged by its own reach where it
-    // declares one (a combo whose own list is open is no longer allowed by
-    // the navigation, yet in reach), never the window root, @p surface or
-    // what is in it, or the app's Back owner.
+    // The keyboard on a control in reach outside @p surface: never the window
+    // root, @p surface or what is in it, or the app's Back owner.
     function holdsReachableFocus(surface, current) {
         if (!current || current === backTarget || current === surface || contains(surface, current))
             return false;
-        var window = current.Window.window;
-        if (window && current === window.contentItem)
-            return false;
-        if (!current.enabled)
-            return false;
-        return current.inReach !== undefined ? current.inReach === true : (allows(current) && presented(current));
+        return isControl(current) && controlInReach(current);
     }
-    // The one deferred retry, a turn later (bindings may settle, the opener
-    // shown or enabled again): it acts only while the keyboard is still on
-    // the fallback the first hand-back assigned, or dropped to the window
-    // root or to a scope enclosing the opener; then the opener, else the
-    // stand-in, takes it. Any other focus (a newer choice: a field focused, a
-    // selector whose list opened) is left alone.
-    property var focusRetries: []
-    function retryFocusLater(surface, opener, standIn, fallback) {
-        focusRetries = focusRetries.concat([{surface: surface, opener: opener, standIn: standIn, fallback: fallback}]);
-        Qt.callLater(navigation.runFocusRetries);
+    // A control, not a container: one the gate follows (`inReach`) or a Tab
+    // stop. A Loader or a screen holding the focus is none.
+    function isControl(item) {
+        return !!item && (item.inReach !== undefined || item.activeFocusOnTab === true);
     }
-    function runFocusRetries() {
-        var retries = focusRetries;
-        focusRetries = [];
-        for (var retry of retries) {
-            var anchor = retry.opener || retry.standIn;
-            var window = anchor ? anchor.Window.window : null;
-            var current = window ? window.activeFocusItem : null;
-            var dropped = !current || current === window.contentItem || encloses(current, retry.opener) || encloses(current, retry.standIn);
-            if (!(retry.fallback && current === retry.fallback) && !dropped)
-                continue;
-            for (var target of [retry.opener, retry.standIn]) {
-                if (focusReturnable(retry.surface, target)) {
-                    target.forceActiveFocus();
-                    break;
-                }
-            }
-        }
+    // What a surface opening over @p window records as its opener: the item
+    // with the keyboard when it is a control. When that is a container (Qt
+    // dropped the focus to the Spectrum's loader as the button's panel was
+    // disabled before the sheet showed), the control the gate last saw
+    // focused inside it; else none, and the hand-back goes to the Back owner.
+    function openerIn(window) {
+        var item = window ? window.activeFocusItem : null;
+        if (!item || isControl(item))
+            return item;
+        var last = PressGate.lastFocused();
+        return last && encloses(item, last) ? last : null;
     }
     function activationPress(event, item) {
         if (event.key !== Qt.Key_Space && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter)
