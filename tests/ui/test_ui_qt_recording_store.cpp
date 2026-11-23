@@ -150,6 +150,7 @@ struct Store {
         store.setRoots(roots);
         store.hostSessionReport(true, false, false);
         store.setTimingForTest(3600000, 3600000);
+        store.setReadRetryForTest(0); // a failed read is tried again at the next pass a test asks for
         store.setUploadHoldsForTest([this](const QString& path) {
             return uploadingSet.load() && uploading.contains(QFileInfo(path).fileName());
         });
@@ -5050,6 +5051,130 @@ test_session_start_remembers_storage_away(void) {
            all.value(QStringLiteral("count")).toInt() == 2);
 }
 
+/* Issue #902: a delete whose root a session start found missing between the delete's checks and its unlink (back by
+ * then) is held for the root's listing in full, which drops it: the file stays. */
+void
+test_delete_held_when_its_root_was_seen_away(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("seen away at unlink: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    const QString id = QStringLiteral("0000000000000956-1");
+    record(folder, id, QStringLiteral("a.wav"), 1754000000, 1);
+    Store s(roots.list(), false);
+    std::atomic<bool> seen{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/a.wav")) && !seen.exchange(true) && QDir().rename(ext, away)) {
+            (void)s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Other"));
+            s.store.endSession();
+            (void)QDir().rename(away, ext);
+        }
+        return false;
+    });
+    s.start();
+    expect("seen away at unlink: the delete asked", s.store.deleteRecording(id));
+    s.pass();
+    s.pass();
+    expect("seen away at unlink: the start found it missing", seen.load());
+    expect("seen away at unlink: the file stays, the delete dropped and told",
+           QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.deletesWaiting() == 0
+               && s.store.deletesCancelled() == 1);
+}
+
+/* Issue #902: a session start that cannot read the folder.json of a folder whose new journal lines the worker has read
+ * (not applied yet) ends that tail: the new recording is not shown, and the folder is read whole once it can be. */
+void
+test_owner_lookup_failure_ends_a_tail_in_flight(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000957-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const QString marker = folder + QStringLiteral("/folder.json");
+    std::atomic<int> lookedUp{-1};
+    s.store.setTailHookForTest([&](const QString& path) {
+        if (path == folder && lookedUp.load() < 0) {
+            lookedUp = take_read_access(marker) ? 1 : 0;
+            (void)s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+            s.store.endSession();
+        }
+    });
+    record(folder, QStringLiteral("0000000000000957-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    s.pass();
+    s.store.setTailHookForTest({});
+    if (lookedUp.load() == 0) {
+        DSD_FPRINTF(stdout, "SKIP tail in flight: this process reads any file\n");
+        return;
+    }
+    const bool hidden = !s.store.hasRecordingForFragments({fragment(2)});
+    const bool refused = bulk_requests_refused(s.store, QString(kUidA));
+    QFile::setPermissions(marker, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("tail in flight: the lookup failed during the tail", lookedUp.load() == 1);
+    expect("tail in flight: the new recording not shown, requests refused", hidden && refused);
+    s.pass();
+    expect("tail in flight: read whole once it can be", s.store.hasRecordingForFragments({fragment(2)}));
+}
+
+#ifndef _WIN32
+/* Issue #902: a recheck that finds a link where a recording was, with a delete of it waiting, settles that delete as
+ * not done and tells it (not as a recording gone): the link stays. */
+void
+test_recheck_finding_a_link_tells_its_delete(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("0000000000000958-1");
+    record(folder, id, QStringLiteral("r.wav"), 1754000000, 1);
+    make_file(folder + QStringLiteral("/elsewhere.bin"), 1000);
+    s.pass();
+    const int held = s.store.selectRecordings({id}).value(QStringLiteral("selection")).toInt();
+    expect("recheck link: the delete asked, held", held > 0 && s.store.deleteRecording(id));
+    s.pass();
+    QFile::remove(folder + QStringLiteral("/r.wav"));
+    expect("recheck link: the name is a link now",
+           QFile::link(QStringLiteral("elsewhere.bin"), folder + QStringLiteral("/r.wav")));
+    s.store.recheckRecordings({id});
+    s.store.releaseSelection(held);
+    s.pass();
+    expect("recheck link: the link stays, the delete told as not done",
+           QFileInfo(folder + QStringLiteral("/r.wav")).isSymLink() && s.store.deletesSkipped() == 1
+               && s.store.deletesWaiting() == 0);
+}
+#endif
+
+/* Issue #902: a folder whose journal cannot be read is not read again every pass: its retry waits (30 s by default),
+ * and it stays unread meanwhile. */
+void
+test_unreadable_journal_retry_backs_off(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("retry backs off: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    record(folder, QStringLiteral("0000000000000959-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    if (!take_read_access(journal_of(folder))) {
+        DSD_FPRINTF(stdout, "SKIP retry backs off: this process reads any file\n");
+        return;
+    }
+    Store s(roots.list(), false);
+    s.store.setReadRetryForTest(3600000);
+    std::atomic<int> reads{0};
+    s.store.setFolderLoadHookForTest([&](const QString& path) {
+        if (path == folder) {
+            reads++;
+        }
+    });
+    s.start();
+    s.pass();
+    s.pass();
+    s.pass();
+    const bool refused = bulk_requests_refused(s.store, QString(kUidA));
+    QFile::setPermissions(journal_of(folder), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("retry backs off: read once in four passes", reads.load() == 1);
+    expect("retry backs off: unread meanwhile", refused);
+}
+
 /* Issue #902: the limit's check right before an unlink finding a link at the name leaves it and tells the removal as
  * not done (deletesSkipped()), and takes the recording out of the usage: with a 1 MB limit over two 600 kB recordings,
  * the older one's name a link by then, the other is under the limit and stays. */
@@ -5617,6 +5742,12 @@ main(int argc, char** argv) {
     test_owner_lookup_failure_ends_a_read_in_flight();
     test_marker_retry_takes_the_label_on_disk();
     test_session_start_remembers_storage_away();
+    test_delete_held_when_its_root_was_seen_away();
+    test_owner_lookup_failure_ends_a_tail_in_flight();
+#ifndef _WIN32
+    test_recheck_finding_a_link_tells_its_delete();
+#endif
+    test_unreadable_journal_retry_backs_off();
     test_selection_token();
     test_open_recording_input();
     test_selection_goes_stale_as_a_read_starts();

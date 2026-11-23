@@ -232,9 +232,12 @@ object RecordingExport {
                 write.fail(FileNotFoundException("every recording is gone"))
                 return MISSING
             }
-            // Read again while it was written: the store may have given a path it named to another recording.
+            // Read again while it was written: the store may have given a path it named to another recording. Asked
+            // again once the document is synced (that can wait), before it is closed as good.
             if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
-            write.finish(counted.count)
+            write.finish(counted.count) {
+                if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
+            }
             DONE
         } catch (e: SelectionStaleException) {
             Log.w(TAG, "call recordings were read again since they were selected; nothing is kept", e)

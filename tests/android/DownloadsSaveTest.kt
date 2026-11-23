@@ -300,10 +300,11 @@ private fun recordingTransferSettles() {
     // #902: the selection goes stale after the last check of the write and before the row's publication (the fsync and
     // the settle can wait): the row is deleted, not published, and the export is told as changed.
     var asked = 0
-    RecordingExport.selectionCurrent = { ++asked < 4 }
+    RecordingExport.selectionCurrent = { ++asked < 5 }
     val stale = row("stale.zip")
-    // Three checks in the write, the fourth at the publication (stale), and the settled result asks once more.
-    check(transfer(stale) == RecordingExport.CHANGED && asked == 5) { "a stale export is changed: asked $asked times" }
+    // Four checks in the write (the last once the document is synced), the fifth at the publication (stale), and the
+    // settled result asks once more.
+    check(transfer(stale) == RecordingExport.CHANGED && asked == 6) { "a stale export is changed: asked $asked times" }
     drainWorker()
     check(deleted(stale) && "update $stale" !in rows.callsFor(stale)) { "and its row is not published" }
     RecordingExport.selectionCurrent = { true }

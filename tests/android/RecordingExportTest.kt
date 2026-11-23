@@ -430,8 +430,41 @@ private fun aSelectionReadAgainKeepsNothing() {
         "read again while it was written: changed: ${late.toList()}, $opens opened, asked $asked times"
     }
     check(during in provider.deleted) { "and the ZIP written is not kept" }
+
+    // Read again while the picked document was synced: closed with an error and deleted, never kept as good.
+    asked = 0
+    RecordingExport.selectionCurrent = { ++asked < 4 }
+    val synced = provider.add()
+    val afterSync = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), synced, true)
+    check(afterSync.toList() == listOf(RecordingExport.CHANGED.toString()) && asked == 4) {
+        "read again during the sync: changed: ${afterSync.toList()}, asked $asked times"
+    }
+    check(synced in provider.deleted && provider.descriptors.getValue(synced).closedWithError != null) {
+        "and the picked document is closed with an error and deleted"
+    }
     RecordingExport.selectionCurrent = { true }
     RecordingExport.inputOpener = RecordingExport::openSelected
+}
+
+/**
+ * Issue #902: a recording that is there but may not be opened (mode 000 in a folder that can be searched) is not gone:
+ * the export keeps nothing, changed, naming it.
+ */
+private fun aRecordingThatMayNotBeOpenedIsChanged() {
+    val provider = Provider()
+    val (paths, names) = recordings(100, 200)
+    val chosen = selected(paths)
+    val closed = File(paths[1])
+    if (!closed.setReadable(false, false) || closed.canRead()) {
+        closed.setReadable(true, false)
+        println("SKIP: this process reads any file")
+        return
+    }
+    val answer = RecordingExport.transfer(provider, ++nextId, paths, names, chosen, provider.add(), true)
+    closed.setReadable(true, false)
+    check(answer.toList() == listOf(RecordingExport.CHANGED.toString(), paths[1])) {
+        "a recording that may not be opened is changed, named: ${answer.toList()}"
+    }
 }
 
 /**
@@ -595,6 +628,7 @@ fun main() {
         aRecordingNotTheOneSelectedAbandonsTheExport()
         aSelectionReadAgainKeepsNothing()
         aRecordingUnderADanglingFolderIsNoMissingOne()
+        aRecordingThatMayNotBeOpenedIsChanged()
         repeatedNamesStayApart()
         moreThan65535EntriesWriteZip64()
         anErrorStillFailsTheDocument()

@@ -113,10 +113,13 @@ object Os {
             opened[none] = Opened(null, stat)
             return none
         }
+        // The JDK says FileNotFoundException for a name that is not there and for one it may not open alike: one that
+        // is there is a permission refusal, as open(2) reports it (EACCES).
         val stream = try {
             FileInputStream(path)
         } catch (e: java.io.FileNotFoundException) {
-            throw ErrnoException("open", OsConstants.ENOENT)
+            val there = java.nio.file.Files.exists(java.nio.file.Paths.get(path), java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            throw ErrnoException("open", if (there) OsConstants.EACCES else OsConstants.ENOENT)
         }
         opened[stream.fd] = Opened(stream, stat)
         return stream.fd

@@ -16996,7 +16996,16 @@ Qt Quick frontend (`src/ui/qt`):
     `test_recheck_keeps_an_unreadable_name`). A delete, asked or the limit's, waits while its folder is unread, checked
     again under the lock the unlink runs under (the uploader is asked without it), so a folder a session start adopted
     or a read that failed meanwhile holds the delete for the folder's read, which drops it
-    (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`). A folder's read, first or again, always publishes, so `indexed` comes back
+    (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`); so does one whose
+    root a session start or a request has seen missing since (`m_rootsSeenAway`), until the root's listing in full
+    drops it (`test_delete_held_when_its_root_was_seen_away`). A session start that finds a root missing, at its first
+    probe or during its owner lookup, remembers it (`noteRootSeenAwayLocked()`) and makes every selection stale at once.
+    A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
+    with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
+    that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
+    (`test_recheck_finding_a_link_tells_its_delete`). A folder read opens and reads the journal before it lists or looks
+    at any file, and a folder whose folder.json or journal could not be read is tried again no more often than every
+    30 s (`Folder::retryAtMs`, `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read, first or again, always publishes, so `indexed` comes back
     even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
     as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
     on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one
@@ -17014,7 +17023,19 @@ Qt Quick frontend (`src/ui/qt`):
     A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
     file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 
-    Decided limit (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
+    Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
+    documented rather than handled:
+    - Outside changes to the recordings folders while DSD-neo runs (replacing, swapping or re-permissioning files or
+      folders) are not tracked beyond the guards described below.
+    - A file's identity is its kind, size and modification time only: another file with exactly the same size and
+      time counts as the recording, and the short window between the check before an unlink and the unlink is open.
+    - Windows: the regular-file opener checks the name's attributes and then opens it, so a reparse point made in
+      between is followed (the identity then checked is the opened file's).
+    - armv7 bionic has no 64-bit `time_t`: a file dated past 2038 reads with its time wrapped (the same each read).
+    - Windows long paths (`MAX_PATH` and beyond) and share roots are handled in code but not exercised by a local test
+      (Wine has no `MAX_PATH` limit and no shares).
+
+    In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
     the index when the player, an export, a share or the limit finds it missing), the only guards are the check right
     before a delete's or the limit's unlink, by kind, size and modification time (seconds and nanoseconds), never the
@@ -17036,8 +17057,9 @@ Qt Quick frontend (`src/ui/qt`):
     (`saveRecordingToLocalDocument()`), the Android worker, and RecordingExport over JNI
     (`DsdNative.nativeRecordingSelectionCurrent()`, answered from the running transfer's token by
     `DecoderHostAndroid::recordingSelectionCurrent()`; asked before `DocumentCopies.beginWrite()`, so a stale transfer
-    never truncates or deletes a document the user picked, again once the provider's open is done, and before the
-    document is kept; `aSelectionReadAgainKeepsNothing`), so a read again that
+    never truncates or deletes a document the user picked, again once the provider's open is done, before the document
+    is finished, and once it is synced, before it is closed as good (`DocumentWrite.finish(beforeClose)`), with a
+    Download-folder row checked again at its publication; `aSelectionReadAgainKeepsNothing`), so a read again that
     finishes while the Android worker is still busy with another transfer abandons the export, `TransferChanged` naming
     no file. Every transfer opens each file once, never through a link at its final name, and checks what it opened
     before it copies from it: `DecoderHost::openRecordingInput()` (`dsd_fopen_existing_regular_file()`, then

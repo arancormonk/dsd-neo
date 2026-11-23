@@ -354,6 +354,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void waitForPassForTest();
     /** @brief Pass every @p activeMs while a session runs, else every @p idleMs; before start(). Test hook. */
     void setTimingForTest(int activeMs, int idleMs);
+    /** @brief How long a folder whose folder.json or journal could not be read waits before its next read (30 s by
+     * default). Test hook. */
+    void setReadRetryForTest(int ms);
     /** @brief Replace dsd_rdio_upload_holds() (called on the worker thread); before start(). Test hook. */
     void setUploadHoldsForTest(std::function<bool(const QString&)> holds);
     /** @brief Replace the free-space read (worker thread; -1 unknown); before start(). Test hook. */
@@ -462,6 +465,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         /* Session starts that adopted, made or relabelled the folder at this path: a read that saw another count
          * commits nothing (loadFolder()). */
         quint64 starts = 0U;
+        /* When a read that failed (folder.json or journal) is tried again (dsd_realtime_mono_ms()); 0 at once. */
+        qint64 retryAtMs = 0;
     };
 
     /* regular: a regular file, read; missing: nothing at the name; unreadable: the read failed for a reason that says
@@ -599,7 +604,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void applyRecordsInSlices(const Folder& folder, const QList<RecordingJournalRecord>& records,
                               const QHash<QString, FileStat>& files, Pass* pass);
     void tailFolders(Pass* pass);
-    void tailFolder(const QString& path, qint64 offset, Pass* pass);
+    /* @p path's new journal lines from @p offset, applied only while the folder is still read with the session starts
+     * count @p starts it had when its cursor was taken. */
+    void tailFolder(const QString& path, qint64 offset, quint64 starts, Pass* pass);
+    /* Whether @p path is still read, at @p offset, with @p starts: the tail's lines may be applied. Lock held. */
+    bool tailCursorCurrentLocked(const QString& path, qint64 offset, quint64 starts) const;
     void applyRecordLocked(const Folder& folder, const RecordingJournalRecord& record,
                            const QHash<QString, FileStat>& files, Pass* pass);
     void applyPublishLocked(const Folder& folder, const RecordingJournalRecord& record,
@@ -657,6 +666,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void scheduleFolderReadLocked(const QString& path, Pass* pass);
     /* @p path read whole again before any request is taken (loaded false, what the index holds kept). Lock held. */
     void markFolderUnreadLocked(const QString& path);
+    /* scheduleFolderReadLocked() after a read that failed: tried again once m_readRetryMs has passed. Lock held. */
+    void deferFolderReadLocked(const QString& path, Pass* pass);
+    /* A session start found @p root missing: listed in full when it is back, deletes held, selections stale. Lock
+     * held. */
+    void noteRootSeenAwayLocked(int root);
     /* A recheck could not read @p id's name: kept, its journal line with it, and out of every index, count and usage
      * (Entry::unreadable). Under the store's lock. */
     void markEntryUnreadableLocked(const QString& id, Pass* pass);
@@ -838,6 +852,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     quint64 m_passes = 0U;
     int m_activeMs = 1000;
     int m_idleMs = 60000;
+    /* deferFolderReadLocked()'s wait before a failed folder read is tried again. */
+    qint64 m_readRetryMs = 30000;
     quint64 m_nextOrder = 1U;
     int m_compactions = 0;
     qint64 m_rebuildNs = 0;
