@@ -263,6 +263,12 @@ A fresh offline build passes both overrides and `-DFETCHCONTENT_FULLY_DISCONNECT
 ("Pinned PFFFT source", "Pinned TETRA_crypto source") has the pin and update procedure, scalar builds and AUR
 packaging; the checksums are in `tools/ci-dependency-pins.env`.
 
+DSD-neo's own libraries (`libdsd-neo_*`) are always static and linked into its programs, and `cmake --install` installs
+none of them. They are internal, with no stable interface: they call into each other and the tests replace some of
+their functions at link time. `BUILD_SHARED_LIBS=ON`, which some distribution macros pass to every build, is
+ignored, and configure says so. Installs made by earlier releases put `libdsd-neo_*.a` archives in the library folder (`lib/` under the
+install prefix); nothing uses them, and a newer install neither replaces nor uninstalls them, so delete them by hand.
+
 ## Standard Build Variables
 
 CMake honors standard compiler and linker selection mechanisms. Users may pass
