@@ -590,6 +590,13 @@ void dmr_sm_emit_data_sync(dsd_opts* opts, dsd_state* state, int slot);
 void dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Release the one assignment a slot termination naming @p target, received on @p slot, ends (Connect Plus
+ * opcode 0x0C): the slot of the followed carrier whose known call has that target, else the slot it arrived on. Never
+ * the whole carrier, so the other slot's followed call or transfer stays live.
+ */
+void dmr_sm_emit_slot_termination(dsd_opts* opts, dsd_state* state, int slot, uint32_t target);
+
+/**
  * @brief Emit a group voice grant event.
  *
  * The emit_*_grant wrappers carry no policy decision: while the receiver holds a call they are busy, never a Hold or

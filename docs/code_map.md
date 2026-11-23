@@ -13815,7 +13815,11 @@ Private per-protocol modules worth knowing about:
     identity whose decision is built without any endpoint lookup (allow-list, Hold and private-off block it; priority 0,
     no preemption) and published by the voice LC only; 1 and 0 are not followed; private needs no group tuning.
   - Connect Plus evaluates policy before its 2/4 s window: an ordinary grant inside it is refused as before, a Hold or
-    preempt grant goes to the gate with the window as `caller_busy`, and `is_con_plus` is set only once taken.
+    preempt grant goes to the gate with the window as `caller_busy`, and `is_con_plus` is set only once taken. A
+    Connect Plus slot termination (opcode 0x0C, a target and no slot) releases one slot, never the carrier
+    (`dmr_sm_emit_slot_termination()`): the slot of the followed carrier whose known call has its target, else the slot
+    it arrived on, so the other slot's followed call or data transfer stays live
+    (`test_con_plus_termination_scoped_to_its_assignment()`).
   - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;
     a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
     Hold; a followed Connect Plus data call is held as any followed call is (Hold, or a preempt past its dwell, takes

@@ -1277,6 +1277,49 @@ test_con_plus_data_follow_is_tracked(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A Connect Plus slot termination ends the assignment it names, never the whole carrier: with a data grant followed on
+   TS1 and a TS1 data burst heard, a TS2 termination naming another target leaves TS1's transfer live (zero hangtime:
+   the next tick would otherwise return to the control channel before the next TS1 block); a termination naming the
+   followed data target, wherever it arrives, ends TS1's. */
+static int
+test_con_plus_termination_scoped_to_its_assignment(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        con_plus_env(opts, st);
+        opts->trunk_tune_data_calls = 1;
+        opts->trunk_hangtime = 0.0f;
+        opts->frame_dmr = 1; /* The DMR state machine ticks only while DMR trunking can recover. */
+        st->trunk_chan_map[4] = 856250000L;
+        dmr_sm_init(opts, st);
+        status_window_closed(st);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        rc |= expect_true("con+ termination: data grant followed on TS1",
+                          ctx->state == DMR_SM_TUNED && ctx->vc_slot == 0 && ctx->vc_data_call == 1);
+        status_clock_at(1.0);
+        dmr_sm_emit_data_sync(opts, st, 0);
+        st->currentslot = 1;
+        build_con_plus_termination(bits, bytes, variant == 0 ? 0x00BEEFU : 0x00CAFEU);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        status_clock_at(1.01);
+        dmr_sm_tick_ctx(ctx, opts, st);
+        if (variant == 0) {
+            rc |= expect_true("con+ TS2 termination for another target keeps the TS1 data follow",
+                              ctx->state == DMR_SM_TUNED && opts->trunk_is_tuned == 1 && ctx->slots[0].voice_active == 1
+                                  && ctx->slots[1].voice_active == 0);
+        } else {
+            rc |= expect_true("con+ termination naming the followed data target ends it",
+                              ctx->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0);
+        }
+        st->currentslot = 0;
+        status_env_done(st);
+    }
+    return rc;
+}
+
 static int
 test_xpt_busy_carrier(dsd_opts* opts, dsd_state* st) {
     uint8_t bits[256];
@@ -2844,8 +2887,8 @@ main(void) {
                       dmr_sm_get_ctx()->slots[0].voice_active == 1 && dmr_sm_get_ctx()->slots[1].voice_active == 1);
     build_con_plus_termination(bits, bytes, 0x445566U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("con+ termination clears voice activity",
-                      dmr_sm_get_ctx()->slots[0].voice_active == 0 && dmr_sm_get_ctx()->slots[1].voice_active == 0);
+    rc |= expect_true("con+ termination clears the voice activity of the call it names only",
+                      dmr_sm_get_ctx()->slots[0].voice_active == 1 && dmr_sm_get_ctx()->slots[1].voice_active == 0);
     rc |= expect_true("con+ termination leaves tuned grant pending", con_opts.trunk_is_tuned == 1
                                                                          && con_st.p25_sm_release_count == 0
                                                                          && dmr_sm_get_ctx()->vc_tg == 0x445566);
@@ -3297,6 +3340,7 @@ main(void) {
     rc |= test_con_plus_blocked_reassignment_ends_follow(opts, st);
     rc |= test_con_plus_unfollowed_reassignment_ends_follow(opts, st);
     rc |= test_con_plus_data_follow_is_tracked(opts, st);
+    rc |= test_con_plus_termination_scoped_to_its_assignment(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

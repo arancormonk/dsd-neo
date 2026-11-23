@@ -2765,7 +2765,9 @@ dmr_cspdu_con_plus_handle_termination(dsd_opts* opts, dsd_state* state, const ui
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " Connect Plus Slot Termination;");
     DSD_FPRINTF(stderr, " Target: %d;", ttarget);
-    dmr_sm_emit_release(opts, state, -1);
+    /* It ends the assignment it names (on the slot it arrived on, unless the other slot's call is its target), never
+       the carrier: the other slot's followed call or data transfer stays live. */
+    dmr_sm_emit_slot_termination(opts, state, state->currentslot, ttarget);
     dmr_cspdu_con_plus_set_branding(state);
 }
 
