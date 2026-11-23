@@ -1549,7 +1549,9 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   the gate: at least the margin over the floor. A weaker carrier that was already playing, between the closing level and
   the opening level (up to 3 dB under the margin), stays muted after such a restart until it rises to the opening level,
   however long it goes on: under `auto+10`, a carrier about 9 dB over the floor plays without a restart but is muted
-  after one. The noise squelch starts over closed at all of these too.
+  after one. The noise squelch starts over closed at all of these too. A switch onto the analog monitor or between FM
+  and AM, and a retune to another analog channel, add the brief mute of a new analog channel on top, until the
+  decoder sets that channel's squelch (a few ms; see [Analog default squelch](#analog-default-squelch---squelch-analog-default)).
 - Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
   `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On
@@ -1703,7 +1705,8 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
 
 `--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch grammar's dynamic settings, N 3..30; a level is
 refused, and so is `off`: for no default, leave the option out) is the squelch the decoder runs on an analog channel
-of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`) while no squelch was set. It is for a frontend
+of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`, and an I/Q stream, `-i iqtcp` or `-i iqudp`;
+not the PCM `tcp` and `udp` inputs) while no squelch was set. It is for a frontend
 that starts every radio session the same way: the Qt/Android app passes its Settings default (`noise+10` unless
 changed; nothing when it is Off) with every radio session it starts, so its analog channels play only traffic while
 digital decoding is left exactly as it was. It is no INI key: a config saves the squelch the session set, never this
@@ -1727,12 +1730,14 @@ default.
   menu, the Qt/Android Radio and Squelch sheets, the control API's `rtl_set_sql_setting`), an Off or a value equal to
   the default as much as any other. A refused edit ends nothing. A scan row's own `--squelch` / `--squelch-db`, and a
   signal-search range's listening squelch, replace it for that row or those landings only.
-- It reaches the receiver before any sample of a new stream or channel: every stream open (the start, an input change
-  back to a radio, a restart, a replay re-plan, a config that reopens the input), a live decode switch or a config's
-  `[mode]` (the receiver has it before the switch's channel, and Off before a digital one), and each `-Y` row's retune
-  (the row's gate goes with the tune, so a tune that lands before the decoder commits the row already runs it) and
-  trunk-scan target. So no analog block runs with the squelch off, and no digital row runs under an analog row's
-  default.
+- A new analog channel stays muted until the squelch for it is set: every stream open on an analog channel (the
+  start, an input change back to a radio, a restart, a replay re-plan, a config that reopens the input), a live decode
+  switch or a config's `[mode]` onto the analog monitor or between FM and AM, each `-Y` row's retune and each
+  trunk-scan target's, a tune and a signal search's visit or restore start the receiver muted on the new channel, and
+  the decoder sets that channel's squelch, the default included, once it has taken the channel over (a `-Y` row at its
+  commit). That adds a short mute at each landing, the decoder's time to reach the new channel: a few ms, about
+  100 ms behind a retune over rtl_tcp, which is over before the new channel's first samples arrive. So no analog block
+  runs with the squelch off or under another channel's squelch, and no digital row runs under an analog row's default.
 - What it shows: the readout names the default as the configured setting, marked `(default)` (`SQL: noise +10 dB
   (default; quieting 23 dB)`), and so does the RTL-SDR and SoapySDR startup tuning notice, which is printed once the
   squelch the receiver opens with is known (`SQ=noise+10dB (default)`); after an explicit edit it reads as any other

@@ -85,7 +85,8 @@ Auto has two limits there:
 - When the stream starts over (a switch between FM and AM, a retune to the same
   frequency, a PPM change, or a gap in the input), a transmission that goes on
   through it is muted for up to 40 ms, 80 ms at worst, before it plays again
-  (Noise on FM mutes it for its first 40 ms).
+  (Noise on FM mutes it for its first 40 ms), plus the few ms a new channel
+  stays muted until its squelch is set.
 - Auto first learns the channel's noise. While it is learning, it opens only for
   what sounds like a carrier, so a transmission already on the air plays at once,
   and so does a steady carrier or spur (a dongle's birdie, or a distant carrier a
@@ -102,7 +103,8 @@ backup restores to this default too):
   Extra decoder arguments), analog calls are recorded too.
 - Analog scan entries no longer hold the scan on noise.
 - The first 40 ms of a channel's audio after each start or tune stays closed (up
-  to 80 ms where Auto runs).
+  to 80 ms where Auto runs). A new analog channel also stays muted until the
+  squelch for it is set, a few ms after the tune lands.
 - AM channels, and NFM at the 8 and 10 kHz widths, run it as Auto: Auto learns
   each new channel's noise in its first moments. Meanwhile noise stays quiet, but
   a transmission already on the air plays, and so can a steady carrier or spur
