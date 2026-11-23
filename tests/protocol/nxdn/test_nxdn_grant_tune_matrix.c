@@ -1830,6 +1830,61 @@ nxdn_run_in_place_follow_binds_call_case(void) {
     return rc;
 }
 
+/* A Type-C VCALL from radio 2200 to the null destination is on the air when an assignment naming group 1400 but no
+ * source is followed in place: the held call is bound to that transmission, so its source is the one the VCALL named
+ * there (issue #903), and it is judged with radio 2200's row. With @p source_row that row ranks it at priority 100, so
+ * a priority-50 preempting call never takes the receiver; without it the unlisted group is taken from (the control). */
+static int
+nxdn_run_in_place_follow_takes_vcall_source_variant(int source_row) {
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "type-c-in-place-follow-vcall-source-%s", source_row ? "ranked" : "unranked");
+    type_c_fixture();
+    const long here = type_c_freq(16U);
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = here; /* the receiver sits on the carrier */
+    if (source_row) {
+        policy_row(2200U, 100, 0);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9900.0);
+    voice_live();
+    send_vcall(2200U, 0U);
+    at_seconds(9901.5);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
+    const nxdn_case assignment = {"", NXDN_MATRIX_TYPE_C, 0x04U, 1U, 0U, 1400U, 16U, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &assignment);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == here, name, "follow", "followed in place");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && g_state.nxdn_call.valid == 1U
+                          && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "follow", "the held call is bound to the call on the air");
+    rc |= nxdn_expect(g_state.nxdn_call.source == 2200U, name, "follow", "the held call's source is the VCALL's");
+
+    at_seconds(9903.0);
+    voice_live();
+    send_assignment(0x05U, 1500U, 17U);
+    if (source_row) {
+        rc |= nxdn_expect(g_tune_count == 1, name, "preempt", "a priority-50 call never outranks radio 2200's row");
+    } else {
+        rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                          "a priority-50 call takes the receiver from the unlisted group");
+    }
+    return rc;
+}
+
+static int
+nxdn_run_in_place_follow_takes_vcall_source_case(void) {
+    return nxdn_run_in_place_follow_takes_vcall_source_variant(1)
+           | nxdn_run_in_place_follow_takes_vcall_source_variant(0);
+}
+
 /* A followed call whose voice arrives with no message naming it (no VCALL, no SCCH: nothing reads the held call while
  * it lasts) fades by a sync loss, which the engine's no-carrier pass reports (nxdn_held_call_note_call_end()). The held
  * call was awaiting that call, the first to begin after the follow: the end binds it there, so the next anonymous
@@ -3182,6 +3237,7 @@ main(void) {
     rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
+    rc |= nxdn_run_in_place_follow_takes_vcall_source_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
     rc |= nxdn_run_type_c_group_preempts_same_number_private_case();
     rc |= nxdn_run_type_d_info3_new_source_keeps_held_call_case();

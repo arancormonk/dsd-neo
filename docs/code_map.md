@@ -12712,7 +12712,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     reconcile (`nxdn_call_identity_reconcile()`) gives the held call the source a checked VCALL named for the
     transmission (`dsd_state::nxdn_tx_source`, `nxdn_tx_source_of()`), whether that VCALL came before the target was
     known (a VCALL to the null destination) or after; a later VCALL of the transmission naming no source keeps it, and
-    with none the held call's stays as it was, never the canonical call's, which an INFO3 may have renamed. The INFO3
+    with none the held call's stays as it was, never the canonical call's, which an INFO3 may have renamed. A follow
+    that binds the held call to the call on the air in place (`nxdn_note_follow()`) and names no source takes that
+    record's source too. The INFO3
     source update that opens another epoch for the same call moves that record to it
     (`nxdn_call_identity_follow_source_update()`), and it travels with a trunk scan target. A VCALL on an RTCH2 reading of a value a composite
     channel shares, with no Type-D evidence, keeps the Type-C layout's full IDs and names a Type-C call, judged by its

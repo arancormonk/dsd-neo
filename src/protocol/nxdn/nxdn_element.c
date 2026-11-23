@@ -2112,7 +2112,11 @@ nxdn_note_follow(dsd_state* state, uint32_t target, uint32_t source, int private
     state->nxdn_follow.chan = chan;
     state->nxdn_follow.repeater = repeater;
     const int on_air = nxdn_on_air_call_is(state, target, private_call, data_call);
-    nxdn_call_identity_set(state, target, source, private_call, data_call, repeater != 0U, freq, now_m, on_air);
+    /* Bound to the call on the air, a held call the follow names no source for takes the one a checked VCALL named for
+       that call (nxdn_tx_source_of(), issue #903), as a naming message gives it (nxdn_call_identity_reconcile()). */
+    const uint32_t held_source =
+        (source == 0U && on_air) ? nxdn_tx_source_of(state, nxdn_live_call_transmission(state)) : source;
+    nxdn_call_identity_set(state, target, held_source, private_call, data_call, repeater != 0U, freq, now_m, on_air);
     dsd_tg_policy_call_route route;
     DSD_MEMSET(&route, 0, sizeof route);
     route.target_id = target;
