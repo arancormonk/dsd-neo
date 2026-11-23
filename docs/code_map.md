@@ -12461,6 +12461,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   cipher only from its own INFO1 or VCALL. An INFO1's or VCALL's key ID is applied (`dsd_state::nxdn_key`) only with
   the cipher it came with (`nxdn_cipher_observe_keyed()`), so a contradiction the hysteresis holds back changes
   neither half; a DCR SACCH-2 names no key ID, so once its scrambler is the cipher applied the key ID applied is none.
+  Every publication of the applied pair on the live call (a VCALL's, a VCALL_IV's, an INFO1's, a DCR SACCH-2's that
+  names the scrambler) reads one rule, `nxdn_applied_cipher_is_live_calls()` (`nxdn_internal.h`): on a DCR call only
+  that call's own scrambler (`NXDN_CIPHER_ORIGIN_DCR`) is published, so a pair an INFO1 or a VCALL applied before the
+  DCR call began, still applied while the hysteresis holds the DCR call's scrambler back, never reaches it.
   A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.

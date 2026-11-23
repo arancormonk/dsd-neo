@@ -3205,12 +3205,13 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
 // Publish the applied cipher and key (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key: one pair,
 // nxdn_cipher_observe_keyed()) on the live NXDN call. @p received: the DSD_CALL_CRYPTO_RX_* fields this publication
 // carries from a checked VCALL (0 for a republish). The MI is an IV received over the air (nxdn_published_mi()), never
-// the working register a scrambled call loads from the key.
+// the working register a scrambled call loads from the key. On a DCR call only that call's own scrambler is published
+// (nxdn_applied_cipher_is_live_calls()).
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, uint8_t contradicted,
                           uint8_t enc_observed) {
-    if (!nxdn_live_call_is_nxdn(state)) {
-        return; // another protocol's call on slot 0 takes no NXDN cipher
+    if (!nxdn_live_call_is_nxdn(state) || !nxdn_applied_cipher_is_live_calls(state)) {
+        return; // another protocol's call on slot 0 takes no NXDN cipher, nor a DCR call another source's
     }
     const uint8_t cipher_type = (uint8_t)state->nxdn_cipher_type;
     const uint8_t key_id = (uint8_t)state->nxdn_key;
@@ -4103,15 +4104,6 @@ nxdn_scch_handle_info4(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
     if (!nxdn_scch_handle_repeater_status(state, info) && !nxdn_scch_reserved_prefix(opts, info)) {
         nxdn_scch_handle_busy(opts, state, info);
     }
-}
-
-/* Whether the live call on slot 0 is an active NXDN DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()). */
-static int
-nxdn_live_call_is_dcr(const dsd_state* state) {
-    dsd_call_snapshot call;
-    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-           && DSD_SYNC_IS_NXDN(call.protocol)
-           && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text);
 }
 
 /* The live call's transmission (0: none active). */

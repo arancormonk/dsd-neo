@@ -860,7 +860,10 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
                            uint8_t ota_cipher) {
-    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
+    /* A scrambler field publishes the applied cipher, which only the DCR call's own may be: one the hysteresis held
+       back against another source's leaves the call's crypto as it is (nxdn_applied_cipher_is_live_calls()). */
+    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)
+        || (ota_cipher == 1U && !nxdn_applied_cipher_is_live_calls(state))) {
         return;
     }
     const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);

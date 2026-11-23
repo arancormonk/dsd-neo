@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 
 #include <stddef.h>
@@ -59,6 +60,25 @@ static inline int
 nxdn_live_call_is_nxdn(const dsd_state* state) {
     dsd_call_snapshot call;
     return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
+}
+
+/* Whether the live call on slot 0 is an active NXDN DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()). */
+static inline int
+nxdn_live_call_is_dcr(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_NXDN(call.protocol)
+           && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text);
+}
+
+/* The one rule every NXDN publication of the applied cipher and key (dsd_state::nxdn_cipher_type, dsd_state::nxdn_key)
+   on the live call reads (a VCALL's, a VCALL_IV's, an INFO1's, a DCR SACCH-2's): on a DCR call only the DCR call's own
+   scrambler (NXDN_CIPHER_ORIGIN_DCR) is that call's. A pair another source applied before the DCR call began (an
+   INFO1, a VCALL), still applied because the hysteresis held the DCR call's scrambler back, is not, and is published
+   there by nothing (issue #903). */
+static inline int
+nxdn_applied_cipher_is_live_calls(const dsd_state* state) {
+    return state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR || !nxdn_live_call_is_dcr(state);
 }
 
 /* The MI an NXDN call publishes (call state, snapshots, events, history, the API feed): the IV a CRC-verified VCALL_IV

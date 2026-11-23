@@ -2170,6 +2170,60 @@ test_info1_during_a_dcr_call_is_neither_applied_nor_held(void) {
 }
 
 /*
+ * No cipher but the DCR call's own is published on a DCR call (issue #903): on a numbered call two INFO1s apply DES
+ * under key ID 6; that call ends, and the next transmission is a DCR call whose SB0 names the scrambler. The lone
+ * scrambler is held back against the established DES, so DES under key 6 is still the cipher applied, but it is the
+ * INFO1's, not the DCR call's: neither the SB0 nor a VCALL_IV publishes it there. The SB0's repeat applies the DCR
+ * call's scrambler, which is published.
+ */
+static int
+test_no_other_cipher_is_published_on_a_dcr_call(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    send_outbound_info1(opts, state, 2U, 6U);
+    send_outbound_info1(opts, state, 2U, 6U);
+    int rc = expect_int("dcr-other-cipher-des-applied", (int)state->nxdn_cipher_type, 2);
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot call;
+    rc |= expect_int("dcr-other-cipher-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_str("dcr-other-cipher-dcr-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-other-cipher-scrambler-held-back", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("dcr-other-cipher-sb0-no-des", (int)call.algid, 0);
+
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_str("dcr-other-cipher-iv-still-dcr", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-other-cipher-iv-no-des", (int)call.algid, 0);
+    rc |= expect_int("dcr-other-cipher-iv-no-kid", (int)call.kid, 0);
+
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("dcr-other-cipher-scrambler-applied", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    rc |= expect_int("dcr-other-cipher-scrambler-published", (int)call.algid, 1);
+    rc |= expect_int("dcr-other-cipher-scrambler-no-kid", (int)call.kid, 0);
+    free_fixture(opts, state);
+    return rc;
+}
+
+/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2346,6 +2400,7 @@ main(void) {
     rc |= test_held_back_vcall_loads_no_key();
     rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
     rc |= test_accepted_info1_loads_its_key();
+    rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {
