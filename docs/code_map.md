@@ -17806,10 +17806,10 @@ Qt Quick frontend (`src/ui/qt`):
   options, the live radio settings), last of the options the decoder reads (before a `--` among
   them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
   win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
-  trunk scan (any other starts without it, with a notice). The decode flag's tokens and the extra options may not end
-  on an option left without its value (`--profile`, `-C`, `--dmr-chan-overrides`; `value_option_left_open()`, read as
-  the decoder's two passes read them): it would take the next option the app adds as that value, so
-  `session_args_extra_error()` refuses the start as `UnsafeOption`, and no argv reaches the host. A file that cannot be written, or whose path does not fit
+  trunk scan (any other starts without it, with a notice). Known limit: extra decoder arguments (or decode flag
+  tokens) that end on an option missing its value take the next argument as that value, as they would on the command
+  line, so `--profile` or `-C` last takes `--dmr-chan-overrides` and the saved channels are lost; the builder does not
+  mirror the parser to catch it. A file that cannot be written, or whose path does not fit
   the CLI's 1023 bytes, never stops the start: it starts without the option, logs a warning and posts a
   `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
   `dmr-channels`) on Home's notice card ("Starts run without this system's saved channels until they can be written.",
@@ -17817,8 +17817,9 @@ Qt Quick frontend (`src/ui/qt`):
   carries the system's failure episode (`JsonStoreNotice::episode`, part of `StoreNotices`' key and of each notice's
   map, so a withdrawal and a new failure that reach the list in one `sync()` still change it, and the card, which
   announces on any change of its `notices`, reads the new one out). The episode ends only
-  when `startSession()` hands the host an argv that passes the channels or has none to pass (`prepareDmrChannels()`
-  answers the uid; a written file whose start is refused after it ends nothing), and then
+  when `startSession()` hands the host an argv with the written file, or with none to pass (`prepareDmrChannels()`
+  answers the uid; a written file whose start is refused after it ends nothing; whether the decoder then uses the file
+  is not judged: the notice is about the write), and then
   `json_store_withdraw_notice()` takes the notice off, so a later failure is a new notice, announced again, whether
   or not the earlier one was dismissed. A Restore that removes no saved entry (a channel nothing saved with the system
   set) answers `saved: false`, `saveError: "session-only"`, and the sheet says "Changed for this session only: nothing

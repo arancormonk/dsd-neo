@@ -2505,40 +2505,6 @@ test_dmr_channels_last(void) {
                && profiled.last() == QStringLiteral("/data/dmr_channels/a.csv")
                && profiled.indexOf(QStringLiteral("/data/system.csv")) >= 0
                && profiled.indexOf(QStringLiteral("/data/system.csv")) < profiled.size() - 2);
-    /* An option left without its value at the end of the user's tokens would take the next one
-       the app adds as that value ("--profile" the saved channels' option): refused as an unsafe extra. One whose value
-       is there, or optional, is not. */
-    for (const QString& open : {
-             QStringLiteral("--profile"),
-             QStringLiteral("-fs --dmr-chan-overrides"),
-             QStringLiteral("-C"),
-             QStringLiteral("--frame-log x -o"),
-         }) {
-        sys["extraArgs"] = open;
-        expect(qPrintable(QStringLiteral("extra options ending on '%1' are refused").arg(open)),
-               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
-    }
-    sys["extraArgs"].clear();
-    prefs.extraArgs = QStringLiteral("--profile");
-    expect("so are the app's",
-           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
-    prefs.extraArgs.clear();
-    sys["decodeFlag"] = QStringLiteral("-fs --profile");
-    expect("and a decode flag's",
-           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
-    sys["decodeFlag"] = QStringLiteral("-fs");
-    for (const QString& closed : {
-             QStringLiteral("--profile p"),
-             QStringLiteral("--profile --"),
-             QStringLiteral("-C /data/c.csv"),
-             QStringLiteral("-C/data/c.csv"),
-             QStringLiteral("--config"),
-             QStringLiteral("-o --"),
-         }) {
-        sys["extraArgs"] = closed;
-        expect(qPrintable(QStringLiteral("extra options ending on '%1' are not").arg(closed)),
-               !session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::None);
-    }
     sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides --");
     const QStringList value = session_args_build(sys, prefs, &error);
     expect("a '--' that is an option's value ends nothing",
@@ -2653,14 +2619,6 @@ test_dmr_channels_start(void) {
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("so a failure after it is the same episode", episode() == first);
     expect("the folder unblocked again", QFile::remove(folder));
-    /* A start refused for an option left without its value hands the host nothing: the notice
-       stays. */
-    QVariantMap dangling = sys;
-    dangling["extraArgs"] = QStringLiteral("--profile");
-    host.starts = 0;
-    expect("extra options ending on --profile refuse the start",
-           !builder.start(dangling, &host, QStringLiteral("saved")).value("started").toBool() && host.starts == 0);
-    expect("and leave the notice", episode() == first);
     (void)builder.start(sys, &host, QStringLiteral("saved"));
     expect("a start with its channels", host.received.contains(QStringLiteral("--dmr-chan-overrides")));
     expect("withdraws the notice", episode() == -1);

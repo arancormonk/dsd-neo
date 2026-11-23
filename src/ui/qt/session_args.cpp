@@ -75,10 +75,9 @@ short_known(QChar letter) {
 }
 
 /* option_tokens()' first pass: the long options in @p split go to @p options, each with the value it takes stepped
- * over; @return what is left, from the first "--" on, for getopt. @p open, when given, is set when the last element is
- * a long option that takes the next argument, whatever it is, and none follows. */
+ * over; @return what is left, from the first "--" on, for getopt. */
 QStringList
-long_option_tokens(const QStringList& split, QStringList* options, bool* open = nullptr) {
+long_option_tokens(const QStringList& split, QStringList* options) {
     QStringList rest;
     for (qsizetype i = 0; i < split.size(); ++i) {
         const QString& token = split.at(i);
@@ -98,50 +97,16 @@ long_option_tokens(const QStringList& split, QStringList* options, bool* open = 
             || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
         if (takesNext && hasNext) {
             ++i;
-        } else if (arity == DSD_CLI_LONG_NEXT && open != nullptr) {
-            *open = true;
         }
     }
     return rest;
 }
 
-/* short_option_tokens()' reading of the element @p rest[*i], a group of short options: each goes to @p options until the
-   first that takes a value, which takes the rest of the element, or the next element (*i then steps over it); with
-   @p values the value of option @p wanted, and @p open set when that next element is missing. @return false when an
-   unknown letter ends the parse. */
-bool
-short_option_group(const QStringList& rest, qsizetype* i, QStringList* options, QChar wanted, QStringList* values,
-                   bool* open) {
-    const QString& token = rest.at(*i);
-    for (qsizetype at = 1; at < token.size(); ++at) {
-        const QChar letter = token.at(at);
-        if (!short_known(letter)) {
-            return false;
-        }
-        options->append(QLatin1Char('-') + letter);
-        if (!short_takes_value(letter)) {
-            continue;
-        }
-        const bool separate = at + 1 == token.size();
-        const bool present = !separate || *i + 1 < rest.size();
-        if (values != nullptr && letter == wanted && present) {
-            values->append(separate ? rest.at(*i + 1) : token.mid(at + 1));
-        }
-        if (open != nullptr && !present) {
-            *open = true;
-        }
-        *i += separate ? 1 : 0;
-        break;
-    }
-    return true;
-}
-
 /* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options, and with @p values the
-   values getopt hands option @p wanted, in order. @p open, when given, is set when the last element is a short option
-   whose value would be the next element, and none follows. */
+   values getopt hands option @p wanted, in order. */
 void
 short_option_tokens(const QStringList& rest, QStringList* options, QChar wanted = QChar(),
-                    QStringList* values = nullptr, bool* open = nullptr) {
+                    QStringList* values = nullptr) {
     for (qsizetype i = 0; i < rest.size(); ++i) {
         const QString& token = rest.at(i);
         if (token == QLatin1String("--")) {
@@ -154,8 +119,22 @@ short_option_tokens(const QStringList& rest, QStringList* options, QChar wanted 
             options->append(token);
             break;
         }
-        if (!short_option_group(rest, &i, options, wanted, values, open)) {
-            return;
+        for (qsizetype at = 1; at < token.size(); ++at) {
+            const QChar letter = token.at(at);
+            if (!short_known(letter)) {
+                return;
+            }
+            options->append(QLatin1Char('-') + letter);
+            if (short_takes_value(letter)) {
+                const bool separate = at + 1 == token.size();
+                if (values != nullptr && letter == wanted && (!separate || i + 1 < rest.size())) {
+                    values->append(separate ? rest.at(i + 1) : token.mid(at + 1));
+                }
+                if (separate) {
+                    ++i;
+                }
+                break;
+            }
         }
     }
 }
@@ -182,19 +161,6 @@ option_tokens(const QString& tokens) {
     const QStringList rest = long_option_tokens(split, &options);
     short_option_tokens(rest, &options);
     return options;
-}
-
-/* Whether the user's @p tokens (the decode flag's, or the extra options') end on an option whose value is missing, as the
-   decoder's two passes read them. In the argv the next element, one the app adds after them (the saved system's DMR
-   channels option, the live radio settings), would be taken as that value: "--profile" would name a profile
-   "--dmr-chan-overrides" and leave the saved channels' file an operand. */
-bool
-value_option_left_open(const QString& tokens) {
-    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    QStringList options;
-    bool open = false;
-    short_option_tokens(long_option_tokens(split, &options, &open), &options, QChar(), nullptr, &open);
-    return open;
 }
 
 /* Whether the extra options @p tokens pick an I/Q stream input (issue #743): an -i the decoder reads whose value is an
@@ -1242,18 +1208,11 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
                : SessionArgsError::None;
 }
 
-namespace {
-
-/* What the extra options refuse: one that could reveal keys (WP-F5), an option left without its value at the end of
-   the decode flag's tokens or of the extra options, which would take the next option the app adds as its value, an I/Q
-   stream input, which every check before the extras would judge as the saved source (issue #743, D4), then a call
-   recording option (issue #708). */
-SessionArgsError
-session_args_extra_error(const QVariantMap& system, const SessionArgPrefs& prefs) {
-    const QString extra = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs;
-    const QString decodeFlag = system.value(QStringLiteral("decodeFlag")).toString();
-    const QString tokens = extra + QLatin1Char(' ') + decodeFlag;
-    if (!session_args_extra_safe(tokens) || value_option_left_open(extra) || value_option_left_open(decodeFlag)) {
+/* What the extra options refuse: one that could reveal keys (WP-F5), an I/Q stream input, which every check before the
+   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). */
+static SessionArgsError
+session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
+    if (!session_args_extra_safe(tokens)) {
         return SessionArgsError::UnsafeOption;
     }
     if (extra_names_iq_stream(tokens)) {
@@ -1261,8 +1220,6 @@ session_args_extra_error(const QVariantMap& system, const SessionArgPrefs& prefs
     }
     return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
 }
-
-} // namespace
 
 QByteArray
 session_args_dmr_channels_csv(const QVariantMap& system) {
@@ -1292,7 +1249,9 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     };
 
     // WP-F5: never permit a saved/pasted option to reveal keys in any sink.
-    const SessionArgsError extraError = session_args_extra_error(system, prefs);
+    const QString tokens = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs
+                           + QLatin1Char(' ') + system.value(QStringLiteral("decodeFlag")).toString();
+    const SessionArgsError extraError = session_args_extra_error(tokens, prefs);
     if (extraError != SessionArgsError::None) {
         return fail(extraError);
     }
@@ -1629,7 +1588,7 @@ SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, c
     const QStringList args = buildForStart(system, host, kind, &error, &recording, &channelsUid);
     auto result = validationResult(error);
     // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
-    const bool asked = error == SessionArgsError::None && host;
+    const bool asked = error == SessionArgsError::None && host != nullptr;
     if (asked) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
         // The argv that goes to the host passes the saved channels (or has none to pass): a failure before is over.

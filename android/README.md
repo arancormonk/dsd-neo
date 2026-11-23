@@ -538,7 +538,9 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
   opens the list. If the system's extra decoder arguments (or the app's) also name a channels file with
   `--dmr-chan-overrides`, the channels you saved with the system are used instead of that file whenever the system
-  has any. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
+  has any. Extra decoder arguments that end on an option missing its value (`--profile` or `-C` with nothing after
+  it) take the next argument as that value, as they would on the command line, so the saved channels can be lost that
+  way. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
   the sheet says so. If DSD-neo can't write your channels when the system starts (the device is out of storage, say),
   the system starts without them and Home says so until a start passes them again.
 - **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
@@ -726,10 +728,6 @@ names the option, when Extra decoder arguments contain:
 - `-P` when there is no storage for call recordings, since it would record outside the app's folders.
 
 A `-P` in Extra decoder arguments with Record calls off still records, into the session's own folder.
-
-Extra decoder arguments can't end on an option that still needs its value, such as `--profile` or `-C` with nothing
-after it: the option would take the next one DSD-neo adds as its value. The start is refused with the prohibited-option
-message until the value is added.
 
 A scan list also owns its scan settings, so a scan list's start is refused when Extra decoder arguments contain one of
 them: input, decoder and modulation options (`-i`, `-f`, `-m`), trunking and scan modes (`-T`, `-Y`, `-C`,
