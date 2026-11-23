@@ -21449,6 +21449,9 @@ struct GateWriteRace {
     const dsd_opts* digital_opts = nullptr;
     int rounds = 0;
     std::atomic<int> landings{0};
+    /* The decoder thread's writes so far: each landing waits for one more, so the writer takes part however the two
+       threads are scheduled (one core included), and its writes still race the landings around them. */
+    std::atomic<int> writes{0};
     std::atomic<int> done{0};
 };
 } // namespace
@@ -21458,6 +21461,9 @@ gate_write_race_lander(void* arg) {
     GateWriteRace* race = static_cast<GateWriteRace*>(arg);
     const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 0};
     for (int i = 0; i < race->rounds; i++) {
+        while (race->writes.load(std::memory_order_acquire) <= i) {
+            dsd_thread_yield();
+        }
         /* Digital first, so the last landing is the marked NFM one. */
         const uint32_t hz = kFamilyTestRetuneHz + 25000U * (uint32_t)(i % 8);
         const int analog = (i % 2) != 0;
@@ -21500,10 +21506,11 @@ gate_write_race_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, 
     }
     while (!race.done.load(std::memory_order_acquire)) {
         rtl_stream_write_squelch_gate(&noise10, &off);
-        out->writes++;
+        race.writes.fetch_add(1, std::memory_order_release);
     }
     (void)dsd_thread_join(lander);
     out->landings = race.landings.load(std::memory_order_acquire);
+    out->writes = race.writes.load(std::memory_order_acquire);
     rtl_stream_write_squelch_gate(&noise10, &off);
     out->final_open = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
                        && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10)
