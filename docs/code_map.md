@@ -5317,7 +5317,8 @@ suite runs under this compiler.
     whether or not the row on air shadows it; a config's squelch push; a live Airspy apply whose squelch changed,
     however its frequency was tuned; the in-place Airspy failure); the scan scope's entry points (options, leave,
     resume) through `dsd_receiver_gate_settle_hook_run()`, which `dsd_engine_run_install_hooks()` installs (a runtime
-    with no engine hands the fields over as they are). A staged row that ends without its commit after its retune landed
+    with no engine hands the fields over as they are; the engine's stream hooks map no untagged setter, so with it
+    nothing reaches the demod's squelch without naming its channel). A staged row that ends without its commit after its retune landed
     (out of date, or a dropped restage) gets the staged row's gate written for its channel
     (`channel_scan_gate_after_end()`). Every stream open resolves the gate of the channel it opens
     (`svc_rtl_open_on_the_channel_squelch_locked()`, the body of `svc_rtl_start_locked()`):
