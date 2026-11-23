@@ -1609,6 +1609,15 @@ quiet_widths(const dsd_signal_quiet_request& request, double* widths, int* count
     return true;
 }
 
+/* Whether @p params' thresholds, guard and occupancy limit are usable: finite, the share in [0, 1], the centred
+   threshold not negative. */
+static bool
+quiet_params_usable(const dsd_signal_quiet_params& params) {
+    return std::isfinite(params.threshold_db) && std::isfinite(params.guard_db) && params.occupancy_max_share >= 0.0f
+           && params.occupancy_max_share <= 1.0f && std::isfinite(params.centred_threshold_db)
+           && !(params.centred_threshold_db < 0.0f);
+}
+
 /* Arm @p detector, whose transform buffers are kept between requests of one size. */
 static dsd_signal_request_failure
 quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* request,
@@ -1616,9 +1625,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     double widths[3] = {0, 0, 0};
     int count = 0;
     double span = 0;
-    if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
-        || !(params.occupancy_max_share >= 0.0f && params.occupancy_max_share <= 1.0f)
-        || !std::isfinite(params.centred_threshold_db) || params.centred_threshold_db < 0.0f
+    if (!request || !request->request_id || !quiet_params_usable(params)
         || dsd_signal_quiet_receiver_refused(&request->capture)
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
