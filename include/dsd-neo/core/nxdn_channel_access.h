@@ -203,9 +203,10 @@ dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
 
 /**
  * Drop the IDAS identity a composite control channel's SRV_INFO, read with the Type-D layout, named out of a Type-C
- * Location ID: the IDAS System ID and Site Code, and the received identity's Type-D system. A frame that its own
- * CCH_INFO showed composite disproves that reading before any of its messages acts (nxdn_frame()), and the Type-C note
- * drops it for good (dsd_nxdn_note_type_c()).
+ * Location ID: the IDAS System ID and Site Code, and the whole Type-D part of the received identity (its system, the
+ * SCCH area and site ID: dsd_rxid_forget_nxdn_type_d()). A local composite frame with checked content disproves that
+ * reading before any of its messages acts (nxdn_frame()), and the Type-C note drops it for good
+ * (dsd_nxdn_note_type_c()).
  */
 static inline void
 dsd_nxdn_forget_type_d_identity(dsd_state* state) {
@@ -214,7 +215,7 @@ dsd_nxdn_forget_type_d_identity(dsd_state* state) {
     }
     state->nxdn_idas_system_id = 0U;
     state->nxdn_idas_site_code = 0U;
-    dsd_rxid_forget_nxdn_typed_system(state);
+    dsd_rxid_forget_nxdn_type_d(state);
 }
 
 /**

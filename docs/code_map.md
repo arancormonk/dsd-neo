@@ -4618,7 +4618,9 @@ suite runs under this compiler.
   another Type-D system drops the SCCH area and site. NXDN Type-C (a location ID) and IDAS Type-D parts exclude each
   other: a checked note of one drops the other kind's parts and the control channel (a RAN is Type-C's: a Type-D RTCH2
   carries SCCH, FACCH1, UDCH2 and FACCH3, NXDN TS 1-E 4.2.3, none of which carries one; so a Type-D note drops a
-  location and a RAN, and a RAN drops the IDAS parts). So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III,
+  location and a RAN, and a RAN drops the IDAS parts). A local frame that disproves the Type-D reading of a composite
+  control channel drops every IDAS part, the area and site ID included, with the control channel
+  (`dsd_rxid_forget_nxdn_type_d()`), even when no Type-C note follows. So do the DMR trunking systems (`dsd_rxid_dmr_trunk`: Tier III,
   Capacity Plus, Connect Plus, Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or a free
   LCN; the colour code stays. The TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access code, so
   after a trunk tune another colour is still another cell; a SYSINFO of another cell with the same network and colour

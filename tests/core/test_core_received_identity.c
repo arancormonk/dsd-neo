@@ -329,6 +329,42 @@ test_nxdn_idas_site_reconcile(void) {
     free(state);
 }
 
+/* A local frame that disproves the Type-D reading of the carrier (issue #903) drops the whole Type-D part of the
+   record: the SCCH area and site ID as well as the SRV_INFO system, and the control channel noted with them. A record of
+   another family, or an NXDN one with no Type-D part, keeps what it holds. */
+static void
+test_nxdn_forget_type_d(void) {
+    dsd_state* state = new_state();
+    const dsd_received_identity* id = &state->rx_id;
+
+    dsd_rxid_note_nxdn_idas_area(state, 1U);
+    dsd_rxid_note_nxdn_idas_site(state, 2U, 7U);
+    dsd_rxid_note_nxdn_typed_system(state, 0x12345U, 7U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    const uint32_t epoch = id->epoch;
+    dsd_rxid_forget_nxdn_type_d(state);
+    expect_u("type-d forget drops every type-d part", id->valid, 0U);
+    expect_u("type-d forget moves the epoch", id->epoch, epoch + 1U);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_nxdn_idas_area(state, 0U);
+    dsd_rxid_note_nxdn_idas_site(state, 1U, 9U);
+    dsd_rxid_forget_nxdn_type_d(state);
+    expect_u("type-d forget drops an scch-only record", id->valid, 0U);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 3U);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, 452000000U);
+    dsd_rxid_forget_nxdn_type_d(state);
+    expect_u("type-d forget keeps a type-c record", id->valid, DSD_RXID_ACCESS | DSD_RXID_CC_FREQ);
+
+    dsd_rxid_reset(state);
+    dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, 452000000U);
+    dsd_rxid_forget_nxdn_type_d(state);
+    expect_u("type-d forget keeps another family", id->valid, DSD_RXID_CC_FREQ);
+    free(state);
+}
+
 static void
 test_trunk_tune(void) {
     dsd_state* state = new_state();
@@ -1220,6 +1256,7 @@ main(void) {
     test_trunk_tune();
     test_access_change();
     test_nxdn_idas_site_reconcile();
+    test_nxdn_forget_type_d();
     test_lost_frame_notes_nothing();
     test_nxdn_subtypes_exclusive();
     test_nxdn_location_reserved_refused();

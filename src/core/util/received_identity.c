@@ -683,9 +683,10 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
 }
 
 void
-dsd_rxid_forget_nxdn_typed_system(dsd_state* state) {
-    if (state != NULL) {
-        rxid_invalidate(&state->rx_id, DSD_RXID_NXDN_TYPED_SYSTEM);
+dsd_rxid_forget_nxdn_type_d(dsd_state* state) {
+    if (state != NULL && rxid_has(&state->rx_id, RXID_NXDN_TYPE_D)) {
+        /* As a Type-C note drops them (rxid_nxdn()): the control channel went with the Type-D parts. */
+        rxid_invalidate(&state->rx_id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);
     }
 }
 

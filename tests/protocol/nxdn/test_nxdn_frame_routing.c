@@ -528,7 +528,7 @@ nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
 }
 
 void
-dsd_rxid_forget_nxdn_typed_system(dsd_state* state) {
+dsd_rxid_forget_nxdn_type_d(dsd_state* state) {
     (void)state;
 }
 
