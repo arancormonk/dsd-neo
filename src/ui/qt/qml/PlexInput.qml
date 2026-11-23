@@ -27,6 +27,9 @@ TextField {
     FocusFrame {}
     property string label: placeholderText
     Accessible.name: !navigationAllowed || !visible ? "" : label
+    // Issue #902: Qt writes the placeholder into the description; it follows
+    // the same gate as the name (covered or hidden, the node says nothing).
+    Accessible.description: !navigationAllowed || !visible ? "" : placeholderText
     Accessible.focusable: navigationAllowed && visible
     // Issue #902: covered or hidden, no Tab stop and no editable-text role,
     // either of which keeps a SetFocus action on its accessible node (see

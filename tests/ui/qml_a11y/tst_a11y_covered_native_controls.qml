@@ -351,6 +351,35 @@ Item {
             }
         }
 
+        // Issue #902: a native text field's placeholder is its accessible description (Qt writes it there). Covered or
+        // hidden, the node describes nothing, as it names nothing; shown, the placeholder reads again.
+        function test_native_placeholder_follows_the_gate_data() {
+            return [{tag: "covered", how: "covered"}, {tag: "hidden", how: "hidden"}];
+        }
+        function test_native_placeholder_follows_the_gate(data) {
+            var label = plexInput.label;
+            plexInput.label = "Gain";
+            plexInput.placeholderText = "auto";
+            try {
+                compare(testContext.accessibleNode(plexInput).description, "auto", "shown, the placeholder describes it");
+                if (data.how === "covered")
+                    Ui.Navigation.modals = [cover];
+                else
+                    plexInput.visible = false;
+                var node = testContext.accessibleNode(plexInput);
+                compare(node.name, "", data.tag + ": nameless");
+                compare(node.description, "", data.tag + ": no description");
+                Ui.Navigation.modals = [];
+                plexInput.visible = true;
+                compare(testContext.accessibleNode(plexInput).description, "auto", "shown again, it reads again");
+            } finally {
+                Ui.Navigation.modals = [];
+                plexInput.visible = true;
+                plexInput.placeholderText = "";
+                plexInput.label = label;
+            }
+        }
+
         function controls_data() {
             return [
                 {tag: "PlexComboBox", node: function () { return combo; }, name: "Entry protocol"},

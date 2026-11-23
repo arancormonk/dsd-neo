@@ -21756,7 +21756,8 @@ already was, which changes nothing. Diagnostics lines that arrived while the log
 from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
 The shared controls do too (issue #902): `IconButton`, `OutlineButton`, `GradientButton`, `DisclosureRow`,
 `PlayCircle`, `MapControlButton`, `DecodeChip`, `DashedActionButton`, `PinButton`, `SegmentedControl` (its root while
-it has a name, and each segment), `ToggleRow`, `PlexSwitch` (`accessibleDescription`), `PlexInput`, `PlexTextField`,
+it has a name, and each segment), `ToggleRow`, `PlexSwitch` (`accessibleDescription`), `PlexInput` (its placeholder, which Qt makes the description:
+`test_native_placeholder_follows_the_gate`), `PlexTextField`,
 `FrequencyField`, `PlexComboBox` (`accessibleName`; unnamed, its value names it), `MicroLabel`, `ListenTabs`' and
 `BottomNav`'s tabs and `PlexFlickable` take `Accessible.name` and any description from `!navigationAllowed ||
 !visible` (with each one's own further term: a `PinButton`'s `live`, a `PlexSwitch`'s `interactive`), and
@@ -21933,6 +21934,10 @@ Keyboard gate limits (decided, issue #902):
   on the closed surface until then: a key in that same turn is taken by the gate, not passed to the Back owner.
 - The offscreen test platform keeps every window active, so the stored-only path of a hand-back into a window that is
   away is covered by its outcome (`test_background_hand_back_is_followed`), not by an inactive window.
+- A focused control that disappears while the window is inactive (a list delegate a background model refresh removes)
+  is not handed to the Back owner on return: the focus may land on its list, and Tab or the next focus recovers.
+- When a sheet opens over another and both close and reopen in the same turn, an earlier sheet's deferred hand-back can
+  still run on the newer visit.
 
 The
 Monitor's reading groups (`ReadingFlow`, `ReadingRow`) and the site sheet's `FieldGrid` are gated as a single
