@@ -275,6 +275,11 @@ struct demod_state {
     /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
        channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
     int analog_family;
+    /* 1 while a digital decode's symbol profile (a typed digital scan row's) runs on the analog family without a family
+       switch, whatever channel filter it names (TETRA's 18000/4 off CQPSK filters with WIDE, as the monitor does): the
+       front end is then off the analog monitor (dsd_demod_analog_monitor_active()). Set where a requested or retuned
+       symbol profile applies on the analog family, cleared wherever the analog channel is applied again. */
+    int symbol_profile_on_analog;
     /* 1 for the M17 encoder's monitor (issue #625): the FM/WIDE front end the encoder reads, set when the stream
        opens. Not part of the analog family, but the dynamic squelch runs on it (dsd_demod_encoder_monitor_active()). */
     int m17_encoder_monitor;
@@ -553,14 +558,14 @@ static_assert(sizeof(demod_state::voice_resamp_hist) % DSD_DEMOD_BUF_ALIGN == 0,
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
  * channel filter and the published analog profile describe that path only. A symbol profile applied without a family
- * switch leaves the family flag set but moves the front end off that path, and keeps its own profile filter: a CQPSK
- * toggle under -fA moves the output to symbols, and a typed digital scan row's profile puts the row's channel profile
- * in place of the analog (WIDE) one while the monitor output stays.
+ * switch leaves the family flag set but moves the front end off that path: a CQPSK toggle under -fA moves the output to
+ * symbols, and a typed digital scan row's profile is a digital decode's (symbol_profile_on_analog) while the monitor
+ * output stays, whatever channel profile it names (TETRA's off CQPSK is WIDE, as the monitor's is).
  */
 static inline int
 dsd_demod_analog_monitor_active(const struct demod_state* d) {
-    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable
-            && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+    return (d && d->analog_family && !d->symbol_profile_on_analog && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR
+            && !d->cqpsk_enable && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
                ? 1
                : 0;
 }

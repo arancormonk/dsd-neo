@@ -5292,7 +5292,8 @@ suite runs under this compiler.
     that changed it, under `g_pending_retune_profile_mutex`), and a write (`rtl_stream_write_squelch_gate()`, under the
     same lock, never reading the demodulator: round 8, TSan) applies to the channel it is on, the analog gate on the
     monitor and the digital gate it carries off it. Off the monitor (the digital family, or a typed digital row's
-    symbol profile on the analog family, whose landing never starts closed: round 8) a landing or switch runs that
+    symbol profile on the analog family of any mode and modulation, whatever channel filter it names, whose landing
+    never starts closed: round 8) a landing or switch runs that
     digital gate (`g_gate_digital`: `dsd_scan_mode_digital_squelch()`, a digital row's own option or the session's
     configured squelch, never the analog-only default and never an analog row's own option, round 8), so no analog
     gate outlives its analog channel; a retune nobody marks (a trunking grant or hunt) keeps the gate the receiver runs,
@@ -5349,7 +5350,8 @@ suite runs under this compiler.
     whatever the profile's family did, the mark alone, an unmarked retune, a write opening it, family switches into the
     analog family and onto another kind, a width change, the digital gate at a digital switch, write and hunt landing, a
     refusal, a retired request, an analog open and its counts, a typed digital row's landing on `-fA` running the
-    digital gate and its pause in place closed, the closed-start count of a block finished after the write, no
+    digital gate and its pause in place closed, the same for every typed row profile x rf_mod x channel profile by
+    retune and by request (`test_typed_digital_rows_are_digital()`, TETRA 18000/4 on rf_mod 0 included), the closed-start count of a block finished after the write, no
     telemetry on the M17 encoder; and, under TSan, gate writes against landings on another thread), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
@@ -11261,9 +11263,16 @@ Notes:
     output runs on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan row's profile, keeps its
     own profile filter across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
-    family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
-    its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
-    output but filters with the row's channel profile and publishes no analog profile. An IQ replay that decimates
+    family, no digital decode's symbol profile in place, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel
+    profile), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter, and a typed digital scan row's symbol
+    profile on an analog session keeps the monitor output but filters with the row's channel profile and publishes no
+    analog profile. Whether a digital decode's profile is in place is what was asked for, not which filter it names
+    (`demod_state::symbol_profile_on_analog`, issue #899 round 8): every symbol profile a request or a retune applies on
+    the analog family sets it (`rtl_stream_apply_decode_symbol_profile()`; an analog session never asks one for its
+    monitor), and applying the analog channel again (`rtl_demod_apply_analog_channel()`, a family switch, an open)
+    clears it. So TETRA's 18000/4 on the FSK discriminator, whose channel profile is WIDE like the monitor's, is a
+    digital row too: no width refresh, no analog profile published, no dynamic squelch, and the receiver's gate runs
+    the digital one (on main the same predicate took it for the monitor). An IQ replay that decimates
     after the demodulator (`post_downsample` above 1) designs and runs the channel filter at `complex_rate`, ahead of
     that decimator, and publishes the width it filters.
   - While the pipeline runs, `demod_state` is written by the demod thread, or by a thread holding the reconfigure or

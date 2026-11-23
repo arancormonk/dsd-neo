@@ -697,12 +697,14 @@ test_replay_output_scale(void) {
     return rc;
 }
 
-/* A symbol profile without CQPSK never swaps the AM monitor's detector for the FM discriminator: only a family switch
- * or an FM <-> AM switch changes the detector. A CQPSK-off toggle on the monitor (CQPSK off already) keeps AM, and so
- * does the restore of the monitor's own profile a failed tune queues after a typed digital row, with a later AM width
- * request applied to the AM detector. A typed row's profile, which moves the channel off the monitor's, is read with
- * the discriminator for as long as it runs, the AM kind kept; the analog profile a row running the analog family
- * queues for its retune brings the AM monitor back on its own channel. */
+/* A symbol profile without CQPSK never swaps the AM monitor's detector for the FM discriminator for good: only a family
+ * switch or an FM <-> AM switch changes the kind. A CQPSK-off toggle on the monitor (CQPSK off already) keeps AM. A
+ * typed row's profile, which moves the channel off the monitor's, is read with the discriminator for as long as it
+ * runs, the AM kind kept. So is a symbol profile restored after a failed tune, whatever channel filter it names (issue
+ * #899 round 8: a symbol profile asked for on the analog family is a digital decode's, so 4800/4 on WIDE is no more the
+ * monitor than the row's own; the engine never restores one over the monitor, dsd_engine_rtl_profile_snapshot_restore()
+ * returns first there); the AM width request after it brings the AM monitor back with its detector. The analog profile a
+ * row running the analog family queues for its retune brings the AM monitor back on its own channel. */
 static int
 test_am_monitor_keeps_detector_under_symbol_profiles(void) {
     rtl_stream_test_am_symbol_profile_result r;
@@ -714,7 +716,8 @@ test_am_monitor_keeps_detector_under_symbol_profiles(void) {
     rc |= expect_int("typed row moves the channel off the monitor", r.row_monitor, 0);
     rc |= expect_int("typed row is read with the discriminator", r.row_am, 0);
     rc |= expect_int("typed row keeps the AM kind", r.row_kind, DSD_ANALOG_DEMOD_AM);
-    rc |= expect_int("restored monitor profile runs the AM detector", r.am_after_restore, 1);
+    rc |= expect_int("a restored symbol profile is a digital decode's, read with the discriminator", r.am_after_restore,
+                     0);
     rc |= expect_int("AM width request keeps the AM detector", r.am_after_width_request, 1);
     rc |= expect_int("AM width request reaches the filter", r.width_after_request, 10000);
     rc |= expect_int("retuned typed row is read with the discriminator", r.retune_row_am, 0);

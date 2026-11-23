@@ -20,11 +20,14 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <memory>
+#include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -1344,6 +1347,69 @@ test_analog_channel_starts_closed(void) {
         expect_int_eq("closed start: a block finished after the opening write is counted", r.in_flight_counted, 1);
     failed |= expect_int_eq("monitor: an open block without dynamic squelch is counted", r.monitor_unjudged_counted, 1);
     failed |= expect_int_eq("M17 encoder monitor: no landing telemetry", r.encoder_uncounted, 1);
+    return failed;
+}
+
+/* Issue #899, round 8 follow-up: a typed digital row is digital whatever channel filter its profile names. Every typed
+ * row profile the -Y and trunk-scan grammar can put in place (the typed classes' symbol profiles, P25 Phase 2's, and
+ * TETRA's 18000/4, which on the FSK discriminator filters with WIDE like the monitor) on every modulation (rf_mod 0
+ * C4FM, 1 CQPSK, 2 GFSK) with every channel profile dsd_rtl_channel_profile_for() can give, reaching an -fA receiver
+ * by a marked retune landing or by a live symbol request: the receiver leaves the monitor and runs no dynamic squelch,
+ * the landing does not start closed and runs the digital gate (Off), not the analog default (noise +10), so the row's
+ * first samples before its commit pass; the published analog profile says no monitor, and a demod rate change's
+ * analog channel refresh leaves the row's profile (both read the same predicate, so main shared the TETRA case); a
+ * pause in place then returns to the monitor closed. */
+static int
+test_typed_digital_rows_are_digital(void) {
+    std::unique_ptr<dsd_opts, decltype(&free)> opts(static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts))), &free);
+    if (!opts) {
+        return 1;
+    }
+    std::vector<dsd_decode_mode_profile> profiles;
+    for (int mode = DSD_SCAN_MODE_P25; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        if (!dsd_scan_mode_is_analog(static_cast<dsd_scan_mode>(mode))) {
+            profiles.push_back(dsd_scan_mode_profile(static_cast<dsd_scan_mode>(mode)));
+        }
+    }
+    profiles.push_back(dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+    profiles.push_back(dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA));
+    int failed = 0;
+    int cases = 0;
+    for (const dsd_decode_mode_profile& profile : profiles) {
+        for (int rf_mod = 0; rf_mod <= 2; rf_mod++) {
+            std::vector<int> channel_profiles;
+            for (int chan = DSD_CH_LPF_PROFILE_WIDE; chan <= DSD_CH_LPF_PROFILE_TETRA; chan++) {
+                channel_profiles.push_back(chan);
+            }
+            /* The profile the grammar's own mapping gives, first, so a failure names it. */
+            channel_profiles.insert(
+                channel_profiles.begin(),
+                dsd_rtl_channel_profile_for(opts.get(), profile.symbol_rate_hz, profile.levels, rf_mod));
+            for (const int chan : channel_profiles) {
+                for (int by_request = 0; by_request <= 1; by_request++) {
+                    const rtl_stream_test_typed_row_profile p = {rf_mod == 1 ? 1 : 0, profile.symbol_rate_hz,
+                                                                 profile.levels, chan, by_request};
+                    rtl_stream_test_typed_row_gate_result r;
+                    DSD_MEMSET(&r, 0, sizeof r);
+                    const int rc = rtl_stream_test_typed_row_gate(&p, &r);
+                    cases++;
+                    if (rc != 0 || !r.family_kept || !r.off_monitor || !r.landing_open || !r.runs_digital
+                        || !r.published_off_monitor || !r.refresh_kept || !r.pause_monitor || !r.pause_closed) {
+                        DSD_FPRINTF(stderr,
+                                    "FAIL: typed row %d/%d rf_mod %d channel profile %d by %s: rc %d family kept %d "
+                                    "off monitor %d landing open %d digital gate %d published off monitor %d refresh "
+                                    "kept %d pause monitor %d pause closed %d\n",
+                                    profile.symbol_rate_hz, profile.levels, rf_mod, chan,
+                                    by_request ? "request" : "retune", rc, r.family_kept, r.off_monitor, r.landing_open,
+                                    r.runs_digital, r.published_off_monitor, r.refresh_kept, r.pause_monitor,
+                                    r.pause_closed);
+                        failed = 1;
+                    }
+                }
+            }
+        }
+    }
+    failed |= expect_int_eq("typed digital rows: cases run", cases >= 8 * 3 * 8 * 2 ? 1 : 0, 1);
     return failed;
 }
 
@@ -3721,6 +3787,7 @@ main(void) {
     failed |= test_external_backend_landing_filter_state();
     failed |= test_analog_channel_starts_closed();
     failed |= test_gate_write_during_landings();
+    failed |= test_typed_digital_rows_are_digital();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();

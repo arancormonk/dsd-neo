@@ -12936,6 +12936,20 @@ static int rtl_stream_landing_ted_sps(int ted_sps, int ted_sps_is_override, int 
  * thread with no pipeline running) versus the ungated body (the demod
  * thread applying a consumed request; arming the gate there would deadlock
  * waiting for its own block to finish). */
+/* A digital decode's symbol profile, asked for by a request or carried by a retune (issue #899): applied as
+   rtl_stream_set_symbol_profile() does. On the analog family the session never asks one for its monitor (the analog
+   profile answers for it: app_control/symbol_profile.c, and the frame sync's hunt stands down on an analog session), so
+   one that applies there is a typed digital row's, and the front end is off the monitor whatever channel filter it
+   names. Returns rtl_stream_set_symbol_profile()'s result. */
+static int
+rtl_stream_apply_decode_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
+    const int rc = rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    if (rc == 0) {
+        demod.symbol_profile_on_analog = demod.analog_family ? 1 : 0;
+    }
+    return rc;
+}
+
 static void
 rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int chan, int ted_sps,
                                       int ted_sps_is_override, int use_gate) {
@@ -12960,7 +12974,7 @@ rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int c
         }
     }
     if (sym_rate > 0) {
-        if (rtl_stream_set_symbol_profile(sym_rate, levels, chan) != 0) {
+        if (rtl_stream_apply_decode_symbol_profile(sym_rate, levels, chan) != 0) {
             LOG_WARN("RTL: requested demod profile rejected (rate=%d levels=%d profile=%d).\n", sym_rate, levels, chan);
         }
     }
@@ -14790,7 +14804,7 @@ rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* ou
     int symbol_rate_hz = profile->symbol_rate_hz;
     int levels = profile->levels;
     if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
-        (void)rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+        (void)rtl_stream_apply_decode_symbol_profile(symbol_rate_hz, levels, channel_profile);
     }
 
     rtl_stream_apply_retune_ted(profile);
@@ -18976,8 +18990,8 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     out->row_am = dsd_demod_am_active(&demod);
     out->row_kind = demod.analog_demod;
 
-    /* dsd_engine_rtl_profile_snapshot_restore(): the CQPSK state and symbol profile the monitor published before the
-       tune. */
+    /* A symbol profile restored as dsd_engine_rtl_profile_snapshot_restore() queues one (4800/4 on WIDE): a digital
+       decode's, like the row's, whatever filter it names. */
     rc |= rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_WIDE, 10, 0);
     family_test_demod_thread_boundary();
     out->am_after_restore = dsd_demod_am_active(&demod);
@@ -21185,12 +21199,14 @@ channel_gate_test_telemetry_cases(const dsd_opts* analog_opts, rtl_stream_test_c
             : 0;
 }
 
-extern "C" int
-rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out) {
-    if (!out) {
-        return -1;
-    }
-    *out = {};
+/* What a channel-gate case runs inside channel_gate_test_fixture(): @p analog_opts an -fA session's, @p digital_opts a
+   digital one's, @p ctx the case's own. */
+typedef void (*ChannelGateTestBody)(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx);
+
+/* Run @p body on the receiver with its output ring, the stream stand-in and both sessions' options set up, and put the
+   receiver back as it was afterwards. 0, or -2 when the fixture could not be set up. */
+static int
+channel_gate_test_fixture(ChannelGateTestBody body, void* ctx) {
     int initialized_output = 0;
     if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
         fsk_reacquire_test_cleanup_output_ring(initialized_output);
@@ -21203,17 +21219,13 @@ rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out) {
     /* The options for the fixture's lifetime only (a dsd_opts is never static or on the stack). */
     dsd_opts* analog_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*analog_opts)));
     dsd_opts* digital_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*digital_opts)));
-    int rc = (analog_opts && digital_opts) ? 0 : -2;
+    const int rc = (analog_opts && digital_opts) ? 0 : -2;
     if (rc == 0) {
         analog_opts->analog_only = 1;
         analog_opts->monitor_input_audio = 1;
         g_cqpsk_toggle_test_stream.output = &output;
         g_cqpsk_toggle_test_stream.opts = analog_opts;
-        channel_gate_test_controller_cases(analog_opts, out);
-        channel_gate_test_external_cases(analog_opts, out);
-        channel_gate_test_family_cases(analog_opts, digital_opts, out);
-        channel_gate_test_typed_row_cases(analog_opts, out);
-        channel_gate_test_telemetry_cases(analog_opts, out);
+        body(analog_opts, digital_opts, ctx);
     }
     rtl_stream_clear_pending_retune_profile();
     rtl_stream_clear_demod_profile_request();
@@ -21231,6 +21243,86 @@ rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out) {
     free(digital_opts);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return rc;
+}
+
+static void
+channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    rtl_stream_test_channel_gate_result* out = static_cast<rtl_stream_test_channel_gate_result*>(ctx);
+    channel_gate_test_controller_cases(analog_opts, out);
+    channel_gate_test_external_cases(analog_opts, out);
+    channel_gate_test_family_cases(analog_opts, digital_opts, out);
+    channel_gate_test_typed_row_cases(analog_opts, out);
+    channel_gate_test_telemetry_cases(analog_opts, out);
+}
+
+extern "C" int
+rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    return channel_gate_test_fixture(channel_gate_test_all_cases, out);
+}
+
+namespace {
+/* The typed digital row of rtl_stream_test_typed_row_gate() and what it found. */
+struct TypedRowGateCase {
+    rtl_stream_test_typed_row_profile profile;
+    rtl_stream_test_typed_row_gate_result* out;
+};
+} // namespace
+
+/* An -fA session under noise +10 (Off for the digital family) puts a typed digital row's profile in place, by a marked
+   retune landing or by a live symbol request, then pauses in place (its FM request back to the monitor). */
+static void
+channel_gate_test_typed_row_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    (void)digital_opts;
+    const TypedRowGateCase* c = static_cast<const TypedRowGateCase*>(ctx);
+    const rtl_stream_test_typed_row_profile* p = &c->profile;
+    rtl_stream_test_typed_row_gate_result* out = c->out;
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &off);
+    if (p->by_request) {
+        test_stream_set(&g_cqpsk_toggle_test_stream);
+        (void)rtl_stream_request_demod_profile(p->cqpsk, p->symbol_rate_hz, p->levels, p->channel_profile, 0, 0);
+        test_stream_set(NULL);
+        family_test_demod_thread_boundary();
+    } else {
+        const uint32_t hz = kFamilyTestRetuneHz + 1300000U;
+        rtl_stream_prepare_retune_profile_for_target_with_gain(hz, p->cqpsk, p->symbol_rate_hz, p->levels,
+                                                               p->channel_profile, 0, 0, NULL);
+        rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+        (void)channel_gate_test_controller_land(analog_opts, hz);
+    }
+    out->family_kept = demod.analog_family != 0 ? 1 : 0;
+    out->off_monitor = !dsd_demod_analog_monitor_active(&demod) && !dsd_demod_dynamic_squelch_path(&demod);
+    out->landing_open = !channel_gate_test_closed() && !rtl_stream_gate_closed_start();
+    out->runs_digital = channel_gate_test_runs_level(0.0);
+    /* What the stream publishes says the same (no analog profile on air), and a demod rate change's refresh of the
+       analog channel leaves the row's profile in place. */
+    rtl_stream_publish_demod_profile_snapshot();
+    out->published_off_monitor = rtl_stream_get_analog_profile(NULL, NULL, NULL) == 0 ? 1 : 0;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    (void)rtl_demod_refresh_analog_channel_for_rate(&demod, err, sizeof err);
+    out->refresh_kept = !dsd_demod_analog_monitor_active(&demod);
+    /* The row commits (the decoder writes Off for it and for the digital family), then pauses in place. */
+    rtl_stream_write_squelch_gate(&off, &off);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_FM, 0);
+    out->pause_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->pause_closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+}
+
+extern "C" int
+rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
+                               rtl_stream_test_typed_row_gate_result* out) {
+    if (!profile || !out) {
+        return -1;
+    }
+    *out = {};
+    TypedRowGateCase c = {*profile, out};
+    return channel_gate_test_fixture(channel_gate_test_typed_row_body, &c);
 }
 
 namespace {
@@ -21264,70 +21356,53 @@ gate_write_race_lander(void* arg) {
     DSD_THREAD_RETURN;
 }
 
+namespace {
+/* rtl_stream_test_gate_write_during_landings()'s rounds and result. */
+struct GateWriteRaceCase {
+    int rounds;
+    rtl_stream_test_gate_write_race_result* out;
+    int rc;
+};
+} // namespace
+
+static void
+gate_write_race_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    GateWriteRaceCase* c = static_cast<GateWriteRaceCase*>(ctx);
+    rtl_stream_test_gate_write_race_result* out = c->out;
+    channel_gate_test_open(analog_opts);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    GateWriteRace race;
+    race.analog_opts = analog_opts;
+    race.digital_opts = digital_opts;
+    race.rounds = c->rounds;
+    dsd_thread_t lander{};
+    if (dsd_thread_create(&lander, gate_write_race_lander, &race) != 0) {
+        c->rc = -3;
+        return;
+    }
+    while (!race.done.load(std::memory_order_acquire)) {
+        rtl_stream_write_squelch_gate(&noise10, &off);
+        out->writes++;
+    }
+    (void)dsd_thread_join(lander);
+    out->landings = race.landings.load(std::memory_order_acquire);
+    rtl_stream_write_squelch_gate(&noise10, &off);
+    out->final_open = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+                       && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10)
+                          ? 1
+                          : 0;
+}
+
 extern "C" int
 rtl_stream_test_gate_write_during_landings(int rounds, rtl_stream_test_gate_write_race_result* out) {
     if (!out || rounds < 2 || (rounds % 2) != 0) {
         return -1;
     }
     *out = {};
-    int initialized_output = 0;
-    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
-        fsk_reacquire_test_cleanup_output_ring(initialized_output);
-        return -2;
-    }
-    const uint32_t saved_word = g_squelch_auto_word.load(std::memory_order_relaxed);
-    const float saved_level = demod.channel_squelch_level.load(std::memory_order_relaxed);
-    const FamilyTestSaved saved = family_test_save();
-    test_stream_set(NULL);
-    dsd_opts* analog_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*analog_opts)));
-    dsd_opts* digital_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*digital_opts)));
-    int rc = (analog_opts && digital_opts) ? 0 : -2;
-    if (rc == 0) {
-        analog_opts->analog_only = 1;
-        analog_opts->monitor_input_audio = 1;
-        g_cqpsk_toggle_test_stream.output = &output;
-        g_cqpsk_toggle_test_stream.opts = analog_opts;
-        channel_gate_test_open(analog_opts);
-        const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
-        const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
-        GateWriteRace race;
-        race.analog_opts = analog_opts;
-        race.digital_opts = digital_opts;
-        race.rounds = rounds;
-        dsd_thread_t lander{};
-        if (dsd_thread_create(&lander, gate_write_race_lander, &race) != 0) {
-            rc = -3;
-        } else {
-            while (!race.done.load(std::memory_order_acquire)) {
-                rtl_stream_write_squelch_gate(&noise10, &off);
-                out->writes++;
-            }
-            (void)dsd_thread_join(lander);
-            out->landings = race.landings.load(std::memory_order_acquire);
-            rtl_stream_write_squelch_gate(&noise10, &off);
-            out->final_open =
-                (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
-                 && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10)
-                    ? 1
-                    : 0;
-        }
-    }
-    rtl_stream_clear_pending_retune_profile();
-    rtl_stream_clear_demod_profile_request();
-    {
-        const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
-        rtl_stream_gate_open(&off, NULL);
-        rtl_stream_write_squelch_gate(&off, NULL);
-    }
-    family_test_restore(saved);
-    family_test_release_buffers();
-    demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
-    g_squelch_auto_word.store(saved_word, std::memory_order_relaxed);
-    g_cqpsk_toggle_test_stream.opts = NULL;
-    free(analog_opts);
-    free(digital_opts);
-    fsk_reacquire_test_cleanup_output_ring(initialized_output);
-    return rc;
+    GateWriteRaceCase c = {rounds, out, 0};
+    const int rc = channel_gate_test_fixture(gate_write_race_body, &c);
+    return rc != 0 ? rc : c.rc;
 }
 
 /* Threads waiting to take the reconfigure gate (reconfigure_gate_take()). */

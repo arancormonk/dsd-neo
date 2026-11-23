@@ -1518,10 +1518,10 @@ typedef struct rtl_stream_test_am_symbol_profile_result {
     int am_on_open;         /* dsd_demod_am_active() on the -fM open */
     int am_after_cqpsk_off; /* ... after a CQPSK-off toggle on that monitor, whose CQPSK is off already */
     /* Under a typed digital row's CQPSK-off symbol profile, consumed at a block boundary. */
-    int row_monitor;      /* dsd_demod_analog_monitor_active() */
-    int row_am;           /* dsd_demod_am_active(): 0, full_demod() reads the row's signal with the discriminator */
-    int row_kind;         /* demod_state::analog_demod */
-    int am_after_restore; /* dsd_demod_am_active() once a failed tune's restore put the monitor's profile back */
+    int row_monitor; /* dsd_demod_analog_monitor_active() */
+    int row_am;      /* dsd_demod_am_active(): 0, full_demod() reads the row's signal with the discriminator */
+    int row_kind;    /* demod_state::analog_demod */
+    int am_after_restore; /* dsd_demod_am_active() once a symbol profile restored after a failed tune applied (4800/4, WIDE) */
     int am_after_width_request; /* ... once an AM width request on that monitor was consumed */
     int width_after_request;    /* demod_state::channel_lpf_width_hz, likewise */
     /* Retunes landed as the controller lands them: a typed digital row's CQPSK-off symbol profile, then the analog
@@ -2181,6 +2181,32 @@ typedef struct rtl_stream_test_channel_gate_result {
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
  * external backend and the demod thread do, reporting what the receiver runs after each (issue #899). */
 int rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out);
+
+/* A typed digital row's receive profile as it reaches the receiver: by a marked retune landing, or by a live symbol
+   request (@p by_request). */
+typedef struct rtl_stream_test_typed_row_profile {
+    int cqpsk; /* 1 for rf_mod 1 (CQPSK), else 0 */
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile; /* DSD_CH_LPF_PROFILE_* as dsd_rtl_channel_profile_for() gives it */
+    int by_request;
+} rtl_stream_test_typed_row_profile;
+
+/* What the receiver ran for it on an -fA session under noise +10 (Off for the digital family), issue #899. */
+typedef struct rtl_stream_test_typed_row_gate_result {
+    int family_kept;           /* 1 when the analog family flag stayed (no family switch, by design) */
+    int off_monitor;           /* 1 when the front end is off the analog monitor and runs no dynamic squelch */
+    int landing_open;          /* 1 when it did not start closed */
+    int runs_digital;          /* 1 when it runs the digital gate (Off), not the analog one (noise +10) */
+    int published_off_monitor; /* 1 when the published analog profile says no monitor */
+    int refresh_kept;          /* 1 when a demod rate change's analog channel refresh left the row's profile */
+    int pause_monitor;         /* the row paused in place: 1 when its FM request put the monitor back */
+    int pause_closed;          /* ... as a new analog channel, closed and reported */
+} rtl_stream_test_typed_row_gate_result;
+
+/* Open the NFM monitor at 48 kHz, put @p profile in place as a typed digital row's, then pause in place. */
+int rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
+                                   rtl_stream_test_typed_row_gate_result* out);
 
 /* The decoder's gate writes against landings on another thread (issue #899, round 8). */
 typedef struct rtl_stream_test_gate_write_race_result {
