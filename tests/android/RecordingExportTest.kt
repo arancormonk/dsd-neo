@@ -390,9 +390,10 @@ private fun aRecordingNotTheOneSelectedAbandonsTheExport() {
 }
 
 /**
- * Issue #902: a transfer whose selection stopped standing (the store started reading storage again) keeps nothing:
- * asked before the first recording is read, none is opened; asked again before the document is kept, a ZIP written
- * whole is still not kept. Both are CHANGED naming no file.
+ * Issue #902: a transfer whose selection stopped standing (the store started reading storage again) keeps nothing.
+ * Asked before the document is opened, the document the user picked is left as it was, never truncated or deleted;
+ * asked again once it is open, no recording is read; asked again before the document is kept, a ZIP written whole is
+ * still not kept. Each is CHANGED naming no file.
  */
 private fun aSelectionReadAgainKeepsNothing() {
     val provider = Provider()
@@ -400,18 +401,30 @@ private fun aSelectionReadAgainKeepsNothing() {
     var opens = 0
     RecordingExport.inputOpener = { path, chosen -> opens++; RecordingExport.openSelected(path, chosen) }
     RecordingExport.selectionCurrent = { false }
-    val before = provider.add()
+    val kept = bytes(64)
+    val before = provider.add(kept)
     val stale = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), before, true)
     check(stale.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 0) {
-        "read again before the first read: nothing opened, changed: ${stale.toList()}, $opens opened"
+        "read again before the document opened: changed: ${stale.toList()}, $opens opened"
     }
-    check(before in provider.deleted) { "and the document is not kept" }
+    check(before !in provider.deleted && provider.file(before).readBytes().contentEquals(kept)) {
+        "and the document picked is left as it was"
+    }
 
     var asked = 0
-    RecordingExport.selectionCurrent = { ++asked == 1 }
+    RecordingExport.selectionCurrent = { ++asked != 2 }
+    val opened = provider.add()
+    val afterOpen = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), opened, true)
+    check(afterOpen.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 0 && asked == 2) {
+        "read again as the document opened: changed, nothing read: ${afterOpen.toList()}, $opens opened"
+    }
+    check(opened in provider.deleted) { "and the document opened is not kept" }
+
+    asked = 0
+    RecordingExport.selectionCurrent = { ++asked < 3 }
     val during = provider.add()
     val late = RecordingExport.transfer(provider, ++nextId, paths, names, selected(paths), during, true)
-    check(late.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 2 && asked == 2) {
+    check(late.toList() == listOf(RecordingExport.CHANGED.toString()) && opens == 2 && asked == 3) {
         "read again while it was written: changed: ${late.toList()}, $opens opened, asked $asked times"
     }
     check(during in provider.deleted) { "and the ZIP written is not kept" }

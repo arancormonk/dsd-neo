@@ -16953,10 +16953,22 @@ Qt Quick frontend (`src/ui/qt`):
     exports and deletes are refused until a later pass reads it (only a name confirmed missing is an empty journal,
     `readJournal()`; `test_unread_journal_is_not_settled`); so do new journal lines that cannot be read (an open, seek or
     read that fails in `tailFolder()`, not a last line still being written; `scheduleFolderReadLocked()`,
-    `test_tail_read_failure_unsettles`). A folder's read, first or again, always publishes, so `indexed` comes back
+    `test_tail_read_failure_unsettles`), and so does a recording the journal names whose name cannot be read
+    (`statPublished()` false: no access, an I/O error, or a listed name whose identity cannot be read): the folder stays
+    unread with its entries, and compaction, which takes only a read folder, leaves its journal as it is
+    (`test_unreadable_recording_keeps_the_folder_unread`). A delete, asked or the limit's, waits while its folder is
+    unread, even one that became unread in the same pass, and the folder's read drops it
+    (`test_held_delete_waits_for_an_unread_tail`). A folder's read, first or again, always publishes, so `indexed` comes back
     even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
     as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
-    on it during the listing (`m_listing`, `noteFolderAddedLocked()`; `test_rescan_keeps_a_session_folder_made_meanwhile`).
+    on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one
+    the listing has keeps the start's owner and label; one it has not was made new, and what the index held at that
+    path before, a folder removed while the storage was away, goes with its recordings;
+    `test_rescan_keeps_a_session_folder_made_meanwhile`, `test_rescan_drops_a_recreated_folders_old_recordings`,
+    `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
+    its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
+    does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
+    `loading` meanwhile (`test_export_probes_a_root_back`).
     A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
     file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 
@@ -16981,7 +16993,9 @@ Qt Quick frontend (`src/ui/qt`):
     it reads the first file and before it keeps the document: the base host's save
     (`saveRecordingToLocalDocument()`), the Android worker, and RecordingExport over JNI
     (`DsdNative.nativeRecordingSelectionCurrent()`, answered from the running transfer's token by
-    `DecoderHostAndroid::recordingSelectionCurrent()`; `aSelectionReadAgainKeepsNothing`), so a read again that
+    `DecoderHostAndroid::recordingSelectionCurrent()`; asked before `DocumentCopies.beginWrite()`, so a stale transfer
+    never truncates or deletes a document the user picked, again once the provider's open is done, and before the
+    document is kept; `aSelectionReadAgainKeepsNothing`), so a read again that
     finishes while the Android worker is still busy with another transfer abandons the export, `TransferChanged` naming
     no file. Every transfer opens each file once, never through a link at its final name, and checks what it opened
     before it copies from it: `DecoderHost::openRecordingInput()` (`dsd_fopen_existing_regular_file()`, then

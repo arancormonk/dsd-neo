@@ -712,9 +712,6 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
     // (loadPendingFolders()), so a start never waits for them.
     QList<Folder> table;
     const QStringList subdirs = QDir(rootPath).entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden, QDir::Name);
-    if (m_rootReadHook) {
-        m_rootReadHook(rootPath); // listed, its folders not read yet
-    }
     for (const QString& subdir : subdirs) {
         Folder folder;
         folder.path = clean_absolute(rootPath + QLatin1Char('/') + subdir);
@@ -723,6 +720,9 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
             && read_folder_json(folder.path, &folder.uid, &folder.kind, &folder.name)) {
             table.append(folder);
         }
+    }
+    if (m_rootReadHook) {
+        m_rootReadHook(rootPath); // listed and its folder.json read, the table not installed yet
     }
     // Gone again while it was listed: an empty or short listing is not a root emptied. It stays away, what it held
     // stays indexed, and the next pass reads it again.
@@ -751,18 +751,14 @@ RecordingStore::installRootTableLocked(int root, QList<Folder>& table, Pass* pas
             }
         }
     }
-    // A folder a session start made or took while the root was listed is the start's, as the start installed it.
-    const QSet<QString> added = m_listing.value(root);
-    for (const QString& path : added) {
-        stale.remove(path);
-    }
     for (Folder& folder : table) {
         stale.remove(folder.path);
         folder.rereading = held.contains(folder.path);
     }
+    const QSet<QString> made = keepSessionFoldersLocked(root, &table, &stale);
     QStringList ids;
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-        if (stale.contains(it->folder)) {
+        if (stale.contains(it->folder) || made.contains(it->folder)) {
             ids.append(it.key());
         }
     }
@@ -773,9 +769,7 @@ RecordingStore::installRootTableLocked(int root, QList<Folder>& table, Pass* pas
         m_folders.remove(path);
     }
     for (const Folder& folder : std::as_const(table)) {
-        if (!added.contains(folder.path)) {
-            m_folders.insert(folder.path, folder);
-        }
+        m_folders.insert(folder.path, folder);
     }
     m_rootAvailable[root] = true;
     pass->rebuilt = true;
@@ -853,16 +847,18 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
     const qsizetype consumed = data.lastIndexOf('\n') + 1;
     QList<RecordingJournalRecord> records;
     const qint64 lines = parseLines(data.left(consumed), &records);
-    statPublished(path, records, &files);
+    const bool filesRead = statPublished(path, records, &files);
     // What was read stands only with the root still there: one that went away while the folder was read took its
     // files and journal with it, and the folder stays as the index held it.
     if (!rootStillAvailable(root, pass)) {
         return;
     }
-    // Nor with a journal there that could not be read whole: the folder stays unread, with what the index held for
-    // it, and is read again at the next pass. Until then the store is not settled, so exports and deletes are refused
-    // rather than taken from part of the recordings.
-    if (!journalRead) {
+    // Nor with a journal there that could not be read whole, or a recording it names whose name cannot be read (no
+    // access to it, an I/O error: says nothing about whether it is there): the folder stays unread, with what the index
+    // held for it and its journal as it is (compaction takes only a read folder), and is read again at the next pass.
+    // Until then the store is not settled, so exports and deletes are refused rather than taken from part of the
+    // recordings.
+    if (!journalRead || !filesRead) {
         const std::lock_guard<std::mutex> lock(m_mutex);
         scheduleFolderReadLocked(path, pass);
         return;
@@ -1019,14 +1015,21 @@ RecordingStore::parseLines(const QByteArray& data, QList<RecordingJournalRecord>
     return lines;
 }
 
-void
+bool
 RecordingStore::statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
                               QHash<QString, FileStat>* files) {
+    bool read = true;
     for (const RecordingJournalRecord& record : records) {
-        if (record.type == RecordingJournalRecord::Publish && !files->contains(record.file)) {
-            files->insert(record.file, statOf(folder + QLatin1Char('/') + record.file));
+        if (record.type != RecordingJournalRecord::Publish) {
+            continue;
         }
+        auto it = files->constFind(record.file);
+        if (it == files->cend()) {
+            it = files->insert(record.file, statOf(folder + QLatin1Char('/') + record.file));
+        }
+        read = read && !it->unreadable;
     }
+    return read;
 }
 
 void
@@ -1084,7 +1087,12 @@ RecordingStore::tailFolder(const QString& path, qint64 offset, Pass* pass) {
     QList<RecordingJournalRecord> records;
     const qint64 lines = parseLines(data.left(consumed), &records);
     QHash<QString, FileStat> files;
-    statPublished(path, records, &files);
+    // A new line naming a recording whose name cannot be read is not taken as missing: read whole later, as a line
+    // that cannot be read.
+    if (!statPublished(path, records, &files)) {
+        noteTailReadFailed(path, pass);
+        return;
+    }
     // A file that reads as missing is deleted only with its root still there; lines read as the root went stay unread.
     int root = -1;
     {
@@ -1497,6 +1505,11 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, co
         }
         if (!folderAvailableLocked(it->folder)) {
             return DeleteResult::Held; // waits for its storage to come back
+        }
+        // Nor against a folder not read (a journal or a recording it names could not be read, even in this pass): its
+        // read, which drops every delete asked before it, comes first.
+        if (!m_folders.value(it->folder).loaded) {
+            return DeleteResult::Held;
         }
         path = it->path;
     }
@@ -2221,6 +2234,7 @@ RecordingStore::existingFolderLocked(const QString& kind, const QString& uid, co
     if (kind != kExplore && !name.isEmpty() && best->name != name && write_folder_json(path, uid, kind, name)) {
         m_folders[path].name = name;
         m_foldersChanged = true;
+        noteFolderAddedLocked(path, best->root); // relabelled: a listing of its root going on now keeps the new label
     }
     return path;
 }
@@ -2246,6 +2260,29 @@ RecordingStore::takeCandidateFolderLocked(const QString& path, int root, const Q
         return CandidateFolder::Taken;
     }
     return CandidateFolder::NextName; // another owner's, or not the app's
+}
+
+QSet<QString>
+RecordingStore::keepSessionFoldersLocked(int root, QList<Folder>* table, QSet<QString>* stale) {
+    // A folder a session start made, took or relabelled while the root was listed is the start's: one the listing has
+    // keeps the start's owner and label (the listing may have read the folder.json before the start wrote it); one it
+    // has not was made new, so only the table entry the start installed stands, and what the index held at that path
+    // before (a folder removed while the storage was away) leaves with its recordings.
+    const QSet<QString> touched = m_listing.value(root);
+    QSet<QString> made = touched;
+    for (Folder& folder : *table) {
+        const auto live = touched.contains(folder.path) ? m_folders.constFind(folder.path) : m_folders.cend();
+        if (live != m_folders.cend()) {
+            folder.uid = live->uid;
+            folder.kind = live->kind;
+            folder.name = live->name;
+        }
+        made.remove(folder.path);
+    }
+    for (const QString& path : std::as_const(made)) {
+        stale->remove(path);
+    }
+    return made;
 }
 
 void
@@ -2822,10 +2859,12 @@ RecordingStore::selectForExportOn(const QString& folderUid, const QString& prese
     const bool known = recording_export_window(preset, today, zone, &window);
     QVariantMap selection;
     bool loading = false;
+    bool wake = false;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         QList<const Entry*> entries;
-        loading = !storageSettledLocked();
+        wake = awayRootsBackLocked();
+        loading = wake || !storageSettledLocked();
         if (known && !loading) {
             for (const Entry& entry : std::as_const(m_entries)) {
                 if (!entry.unfinished && folderAvailableLocked(entry.folder) && !m_deleteQueue.contains(entry.id)
@@ -2837,6 +2876,9 @@ RecordingStore::selectForExportOn(const QString& folderUid, const QString& prese
         }
         selection = selectLocked(entries);
     }
+    if (wake) {
+        m_wake.notify_all();
+    }
     selection.insert(QStringLiteral("day"), today.toString(QStringLiteral("yyyy-MM-dd")));
     selection.insert(QStringLiteral("loading"), loading);
     return selection;
@@ -2844,14 +2886,46 @@ RecordingStore::selectForExportOn(const QString& folderUid, const QString& prese
 
 QVariantMap
 RecordingStore::selectRecordings(const QStringList& ids) {
-    const std::lock_guard<std::mutex> lock(m_mutex);
-    // A save, as an export: refused while storage is read, so a selection always comes from a whole index.
-    if (!storageSettledLocked()) {
-        QVariantMap refused = selectLocked({});
-        refused.insert(QStringLiteral("loading"), true);
-        return refused;
+    bool wake = false;
+    QVariantMap selection;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        // A save, as an export: refused while storage is read, so a selection always comes from a whole index.
+        wake = awayRootsBackLocked();
+        if (wake || !storageSettledLocked()) {
+            selection = selectLocked({});
+            selection.insert(QStringLiteral("loading"), true);
+        } else {
+            selection = selectIdsLocked(ids);
+        }
     }
-    return selectIdsLocked(ids);
+    if (wake) {
+        m_wake.notify_all();
+    }
+    return selection;
+}
+
+bool
+RecordingStore::awayRootsBackLocked() {
+    // A root the last pass marked away and back since (removable storage plugged in again) wakes no pass on its own:
+    // until one reads it, the index would leave out everything on it. Probed as a delete request probes its roots;
+    // one back asks for a pass that reads it, and the request is refused as loading meanwhile.
+    if (!m_ready) {
+        return false; // the first pass reads every root
+    }
+    QList<int> away;
+    for (int i = 0; i < m_rootAvailable.size(); i++) {
+        if (!m_rootAvailable.at(i) && !m_listing.contains(i)) {
+            away.append(i); // one being listed now is being read already
+        }
+    }
+    bool missing = false;
+    bool unread = false;
+    if (away.isEmpty() || !checkRootsLocked(away, &missing, &unread)) {
+        return false;
+    }
+    m_passRequested = true;
+    return true;
 }
 
 QVariantMap

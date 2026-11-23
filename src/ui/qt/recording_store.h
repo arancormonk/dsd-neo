@@ -370,7 +370,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * start(). Test hook. */
     void setFolderLoadHookForTest(std::function<void(const QString& folder)> hook);
     /** @brief Call @p hook on the worker as a root is read whole (at the first pass, or back from away), once its
-     * folders are listed and before their folder.json is read; before start(). Test hook. */
+     * folders are listed and their folder.json read, before the table is installed; before start(). Test hook. */
     void setRootReadHookForTest(std::function<void(const QString& root)> hook);
     /** @brief Call @p hook on the worker after a folder's new journal lines are read, before their files are looked
      * at; before start(). Test hook. */
@@ -541,7 +541,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     static bool readJournal(const QString& journalPath, QByteArray* data);
     static bool rootAvailableNow(const QString& root);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
-    static void statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
+    /* Each file @p records publishes into @p files (one the folder's listing read already is kept); false when the
+     * name of any of them cannot be read (statOf()'s unreadable: no access, an I/O error), which makes the read
+     * incomplete. */
+    static bool statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
                               QHash<QString, FileStat>* files);
 
     void run();
@@ -565,9 +568,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p root's folder table, as rebuildRoot() listed it, in place of what the index held for the root. Under the
      * store's lock. */
     void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
-    /* A session start put @p path into the folder table: told to a listing of its root going on now. Under the store's
-     * lock. */
+    /* A session start put @p path into the folder table or relabelled it: told to a listing of its root going on now.
+     * Under the store's lock. */
     void noteFolderAddedLocked(const QString& path, int root);
+    /* For installRootTableLocked(): the folders a session start touched during @p root's listing keep the start's owner
+     * and label in @p table; the ones the listing never saw (made new) leave @p stale, and are returned: their earlier
+     * recordings at that path go. Under the store's lock. */
+    QSet<QString> keepSessionFoldersLocked(int root, QList<Folder>* table, QSet<QString>* stale);
     /* A pass's first read of storage again: Pass::reread, and every selection made before it goes stale at once. */
     void noteRereadStart(Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
@@ -613,6 +620,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool storageSettledLocked() const;
     /* storageSettledLocked() within a pass: no pass asked for, and every folder on storage that is there read. */
     bool storageReadLocked() const;
+    /* Whether a root the index holds as away is back now (checkRootsLocked()): a pass is asked for to read it, and the
+     * caller wakes the worker and refuses its export or save as loading. Under the store's lock. */
+    bool awayRootsBackLocked();
     /* Queue @p ids that are indexed for deletion; false, queuing nothing, when any is on storage not there now
      * (m_deleteRefusal says so). @p wake: a pass was asked for. The caller checked storageSettledLocked(). */
     bool queueDeletesLocked(const QStringList& ids, bool* wake);
@@ -773,8 +783,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
      * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
     QSet<int> m_rootsSeenAway;
-    /* The roots rebuildRoot() is listing now, each with the folders a session start made or took on it since the
-     * listing began: the listing never saw them, so installRootTableLocked() keeps them as the start installed them. */
+    /* The roots rebuildRoot() is listing now, each with the folders a session start made, took or relabelled on it since
+     * the listing began (keepSessionFoldersLocked()). */
     QHash<int, QSet<QString>> m_listing;
     /* Accepted deletes a read again of their storage dropped (deletesCancelled()), since the app started. */
     int m_deletesCancelled = 0;

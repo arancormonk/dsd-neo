@@ -3874,8 +3874,9 @@ test_delete_leaves_a_folder_adopted_meanwhile(void) {
     expect("adopted meanwhile: B's start took the restored folder", adopted == x);
     expect("adopted meanwhile: B's recording stays", QFileInfo::exists(x + QStringLiteral("/r0.wav")));
     expect("adopted meanwhile: A's too", QFileInfo::exists(aside + QStringLiteral("/r0.wav")));
+    // A's delete waits for the folder's read (unread once B's start took it), which drops it: told as cancelled.
     expect("adopted meanwhile: nothing waits, the cancellation is told",
-           s.store.deletesWaiting() == 0 && s.store.deletesSkipped() == 1);
+           s.store.deletesWaiting() == 0 && s.store.deletesCancelled() == 1 && s.store.deletesSkipped() == 0);
 }
 
 /* Issue #902: storage a delete request finds missing, back before any pass reads it (a quick reconnect, two owners'
@@ -4341,6 +4342,192 @@ test_rescan_keeps_a_session_folder_made_meanwhile(void) {
     s.pass();
     expect("made meanwhile: its recording is indexed",
            s.store.recordingCount() == 2 && s.store.isIndexedPath(made + QStringLiteral("/c.wav")));
+}
+
+/* Issue #902: at the end of the next pass, on the worker (so no pass marks the root away meanwhile), the storage goes,
+ * a delete of @p uid's recordings finds it missing, @p whileAway runs on the storage away, and it comes back: the next
+ * pass lists it again in full while it reads as available. Returns whether the delete saw it missing. */
+bool
+storage_seen_away_and_back(Store& s, const QString& ext, const QString& away, const QString& uid,
+                           const std::function<void()>& whileAway) {
+    std::atomic<int> ends{0};
+    std::atomic<bool> seen{false};
+    s.store.setPassEndHookForTest([&]() {
+        if (ends++ == 0 && QDir().rename(ext, away)) {
+            seen = !s.store.deleteFolder(uid) && s.store.deleteRefusal() == QLatin1String("storageAway");
+            if (whileAway) {
+                whileAway();
+            }
+            (void)QDir().rename(away, ext);
+        }
+    });
+    s.pass();
+    s.pass();
+    s.store.setPassEndHookForTest({});
+    return seen.load();
+}
+
+/* Issue #902: a session folder removed while its storage was away and made again by a start while the returning root is
+ * listed is a new folder: its earlier recordings are not counted, only what is recorded into it now. */
+void
+test_rescan_drops_a_recreated_folders_old_recordings(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000936-1"), QStringLiteral("old.wav"), 1754000000, 1, 5000);
+    s.pass();
+    expect("recreated: indexed", s.store.recordingCount() == 1 && s.store.usedBytes() == 5000);
+    QString made;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(ext + QLatin1Char('/')) && made.isEmpty()) {
+            made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        }
+    });
+    const QString awayFolder = away + QStringLiteral("/Call recordings/") + QFileInfo(a).fileName();
+    expect("recreated: seen away and back, its folder removed meanwhile",
+           storage_seen_away_and_back(s, ext, away, QString(kUidA),
+                                      [&awayFolder]() { (void)QDir(awayFolder).removeRecursively(); }));
+    s.store.setRootReadHookForTest({});
+    expect("recreated: the start made the same folder again", made == a);
+    record(a, QStringLiteral("0000000000000936-2"), QStringLiteral("new.wav"), 1754000100, 2, 3000);
+    s.store.endSession();
+    s.pass();
+    expect("recreated: only the new recording counts", s.store.recordingCount() == 1 && s.store.usedBytes() == 3000
+                                                           && !s.store.isIndexedPath(a + QStringLiteral("/old.wav")));
+}
+
+/* Issue #902: a start that relabels its owner's folder while the returning root is listed (the listing read the old
+ * folder.json already) keeps the new label. */
+void
+test_rescan_keeps_a_relabel_made_meanwhile(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000937-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    QString relabelled;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(ext + QLatin1Char('/')) && relabelled.isEmpty()) {
+            relabelled = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Metro"));
+            s.store.endSession();
+        }
+    });
+    expect("relabel: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
+    s.store.setRootReadHookForTest({});
+    s.pass();
+    QString name;
+    for (const QVariant& folder : s.store.folders()) {
+        if (folder.toMap().value(QStringLiteral("uid")).toString() == QString(kUidA)) {
+            name = folder.toMap().value(QStringLiteral("name")).toString();
+        }
+    }
+    expect("relabel: the same folder", relabelled == a);
+    expect("relabel: the new label stands", name == QStringLiteral("Metro"));
+}
+
+/* Issue #902: storage plugged in again after a pass marked it away wakes no pass on its own; an export (or a save)
+ * pressed then probes it, is refused as loading, and asks for the pass that reads it, so Export all never leaves out
+ * the recordings on it. */
+void
+test_export_probes_a_root_back(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString outer = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString inner = roots.internal + QStringLiteral("/Metro (5e6f7a8b)");
+    expect("root back: two folders", write_owner_json(outer, QString(kUidA), QStringLiteral("County"))
+                                         && write_owner_json(inner, QString(kUidC), QStringLiteral("Metro")));
+    record(outer, QStringLiteral("0000000000000938-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    record(inner, QStringLiteral("0000000000000938-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    Store s(roots.list());
+    expect("root back: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    expect("root back: the storage comes back, no pass yet", QDir().rename(away, ext));
+    const QVariantMap first = s.store.selectForExport(QString(), QStringLiteral("all"));
+    expect("root back: Export all refused as loading",
+           first.value(QStringLiteral("selection")).toInt() == 0 && first.value(QStringLiteral("loading")).toBool());
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("root back: read, Export all takes both", all.value(QStringLiteral("count")).toInt() == 2);
+}
+
+/* Issue #902: a held delete whose folder's new journal lines cannot be read in the pass that frees it is not run:
+ * the folder is unread, and its read (which drops the delete) comes first. */
+void
+test_held_delete_waits_for_an_unread_tail(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("0000000000000939-1");
+    record(folder, id, QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const int held = s.store.selectRecordings({id}).value(QStringLiteral("selection")).toInt();
+    expect("unread tail: the delete asked, held", held > 0 && s.store.deleteRecording(id));
+    s.pass();
+    expect("unread tail: waiting", s.store.deletesWaiting() == 1);
+    record(folder, QStringLiteral("0000000000000939-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    if (!take_read_access(journal_of(folder))) {
+        DSD_FPRINTF(stdout, "SKIP unread tail: this process reads any file\n");
+        s.store.releaseSelection(held);
+        return;
+    }
+    s.store.releaseSelection(held);
+    s.pass();
+    expect("unread tail: nothing deleted while the folder is unread",
+           QFileInfo::exists(folder + QStringLiteral("/a.wav")));
+    QFile::setPermissions(journal_of(folder), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    s.pass();
+    expect("unread tail: read, the delete dropped and told",
+           QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.deletesWaiting() == 0
+               && s.store.deletesCancelled() == 1 && s.store.recordingCount() == 2);
+}
+
+/* Issue #902: a folder read again whole (a recording in it found changed) with another recording it names that cannot
+ * be read (its subfolder lost search permission) is an incomplete read: the folder stays unread and refused, its
+ * recordings and journal kept, until a read can see every one. */
+void
+test_unreadable_recording_keeps_the_folder_unread(void) {
+    Roots roots;
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString sub = folder + QStringLiteral("/locked");
+    QDir().mkpath(sub);
+    if (!permissions_enforced(sub)) {
+        DSD_FPRINTF(stdout, "SKIP unreadable read: this process reads any folder\n");
+        return;
+    }
+    record(folder, QStringLiteral("0000000000000940-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    make_file(sub + QStringLiteral("/x.wav"), 1000);
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000940-2"), QStringLiteral("locked/x.wav"), 1754000100, 2));
+    s.pass();
+    expect("unreadable read: both indexed", s.store.recordingCount() == 2);
+    // a.wav written to since: a recheck reads the folder again whole, with x.wav's subfolder closed.
+    make_file(folder + QStringLiteral("/a.wav"), 1500);
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    s.store.recheckRecordings({QStringLiteral("0000000000000940-1")});
+    s.pass();
+    s.pass();
+    const bool refused = bulk_requests_refused(s.store, QString(kUidA));
+    const qint64 count = s.store.recordingCount();
+    const bool journalKept = read_all(journal_of(folder)).contains("locked/x.wav");
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    expect("unreadable read: refused, both kept, the journal too", refused && count == 2 && journalKept);
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("unreadable read: read whole once it can be", all.value(QStringLiteral("count")).toInt() == 2);
 }
 
 /* Issue #902: the limit's check right before an unlink finding a link at the name leaves it and tells the removal as
@@ -4877,6 +5064,11 @@ main(int argc, char** argv) {
     test_changed_file_reads_its_folder_again();
     test_rescan_keeps_a_session_folder_made_meanwhile();
     test_limit_skip_of_a_link_is_told();
+    test_rescan_drops_a_recreated_folders_old_recordings();
+    test_rescan_keeps_a_relabel_made_meanwhile();
+    test_export_probes_a_root_back();
+    test_held_delete_waits_for_an_unread_tail();
+    test_unreadable_recording_keeps_the_folder_unread();
     test_selection_token();
     test_open_recording_input();
     test_selection_goes_stale_as_a_read_starts();

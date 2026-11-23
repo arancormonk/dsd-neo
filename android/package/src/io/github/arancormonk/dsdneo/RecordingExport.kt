@@ -200,6 +200,12 @@ object RecordingExport {
                 transfer.bytes += count
             }
         }
+        // Before the document is opened for replacement: a transfer already known stale never truncates, or deletes, a
+        // document the user picked. A pending Download-folder row made for it goes as for any other end (settled()).
+        if (!selectionCurrent(transfer.id)) {
+            Log.w(TAG, "call recordings were read again since they were selected; the document is left as it was")
+            return CHANGED
+        }
         val write = try {
             DocumentCopies.beginWrite(resolver, uriText, transfer.signal) ?: return FAILED
         } catch (e: Exception) {
@@ -207,6 +213,7 @@ object RecordingExport {
             return if (transfer.signal.isCanceled) CANCELLED else FAILED
         }
         return try {
+            // Again once the provider's open (which may wait) is done, before the first recording is read.
             if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
             val counted = CountingOutputStream(write.output)
             val written = if (zip) {
