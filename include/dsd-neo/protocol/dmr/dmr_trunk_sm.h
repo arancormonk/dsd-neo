@@ -483,7 +483,8 @@ dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, cons
 /**
  * A checked channel grant names the assignment of its slot whether or not the receiver follows it: a caller that
  * refuses a grant before submitting it (a call-type switch, data following off, the talkgroup policy) still hands it
- * here. One for the followed slot of the followed carrier that names another call than the slot is followed for
+ * here. One for the followed slot of the followed carrier (its explicit frequency, or its LPCN's mapping only where
+ * that mapping is trusted) that names another call than the slot is followed for
  * (another target, address class or media; a repeat of the followed grant or of the call the slot names, whatever its
  * caller, is the same call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
  * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.

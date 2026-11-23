@@ -13629,7 +13629,11 @@ Private per-protocol modules worth knowing about:
     its follow time now, so its dwell runs from that grant (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
-    slot names, or of the grant followed there, keeps record and follow time. A checked grant (not a channel status)
+    slot names, or of the grant followed there, keeps record and follow time. A grant's carrier is its explicit
+    frequency, else its LPCN's mapping only where that mapping is trusted (`dmr_sm_grant_freq()`, `lpcn_is_trusted()`:
+    confirmed, or heard on the control channel): an LPCN-only grant whose mapping is unconfirmed off the control channel
+    names no carrier, so it neither tunes nor ends the followed assignment, whatever frequency the mapping holds
+    (`test_untrusted_lpcn_grant_keeps_followed_slot()`). A checked grant (not a channel status)
     for the followed slot of the followed carrier that names another call than the slot is followed for
     (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
