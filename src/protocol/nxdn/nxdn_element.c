@@ -3310,6 +3310,9 @@ nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
+        /* An INFO1 cipher held for a transmission no longer the live call is forgotten before the hysteresis reads
+           this VCALL, as before every cipher observation: the next call's cipher is never judged against it. */
+        nxdn_cipher_drop_stale_hold(state);
         state->nxdn_cipher_type =
             nxdn_cipher_observe_keyed(state, info->cipher_type, info->key_id, 0, (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
         /* The key loads for the pair applied, never for one the hysteresis held back: a lone contradiction leaves

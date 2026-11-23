@@ -1573,8 +1573,9 @@ test_foreign_frame_anchors_no_spacing(dsd_opts* opts, dsd_state* state) {
 
 /*
  * An INFO1 cipher held for a DCR transmission that is no longer the live call (it ended between frames) is forgotten
- * by the next frame, before its voice, even when nothing of that frame names a call (issue #903): here an RTCH frame
- * whose SACCH names nothing.
+ * by the next frame before anything of it reads the cipher, even when nothing of that frame names a call (issue #903):
+ * here an RTCH frame whose SACCH names nothing, then one whose FACCH1 is the next call's VCALL, then a data frame whose
+ * cipher slots step before its signalling.
  */
 static int
 test_stale_info1_hold_expires_before_the_frames_voice(dsd_opts* opts, dsd_state* state) {
@@ -1587,6 +1588,33 @@ test_stale_info1_hold_expires_before_the_frames_voice(dsd_opts* opts, dsd_state*
     send_frame(opts, state, LICH_RTCH_IDLE, 0x21U, NULL, NULL);
     rc |= expect_long("stale hold: the scrambler forgotten", (long)state->nxdn_cipher_type, 0L);
     rc |= expect_long("stale hold: its key forgotten", (long)state->nxdn_key, 0L);
+
+    /* The next call's own cipher: an RTCH frame whose FACCH1 is a VCALL naming DES under key ID 7 is classified from
+       nothing, not against the stale scrambler, and DES under key 7 stays applied. */
+    uint8_t vcall[80];
+    follow_call_to_f(opts, state);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 5U, 1, (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR);
+    state->nxdn_cipher_held_transmission = 0x1234U;
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 2100U, 1100U);
+    put_bits(vcall, 56U, 2U, 2U);                       // cipher: DES
+    put_bits(vcall, 58U, 7U, 6U);                       // key ID 7
+    send_frame(opts, state, 0x31U, 0x21U, vcall, NULL); // RTCH outbound, superframe SACCH, two FACCH1s
+    rc |= expect_long("stale hold, next call's VCALL: DES applied", (long)state->nxdn_cipher_type, 2L);
+    rc |= expect_long("stale hold, next call's VCALL: its key", (long)state->nxdn_key, 7L);
+
+    /* Nor does the stale scrambler run the register on through the cipher slots a frame steps before its signalling:
+       a data frame of a non-superframe SACCH (LICH 0x21) leaves the register as it was. */
+    follow_call_to_f(opts, state);
+    state->nxdn_confirmed = 1;
+    state->R = FOLLOWED_KEY;
+    state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 5U, 1, (uint8_t)NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR);
+    state->nxdn_cipher_held_transmission = 0x1234U;
+    state->nxdn_payload_mi = 0U;
+    send_frame(opts, state, 0x21U, 0x21U, NULL, NULL); // RTCH outbound, non-superframe SACCH, two FACCH1s
+    rc |= expect_long("stale hold, data frame: no slots stepped", (long)state->nxdn_payload_mi, 0L);
     return rc;
 }
 

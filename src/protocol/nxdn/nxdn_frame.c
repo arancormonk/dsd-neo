@@ -1015,10 +1015,13 @@ nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
     }
 }
 
-/* What the frame does before its channels are committed: the SACCH mode its LICH names, the voice/data banner and the
-   cipher slots of a frame that carries no position (nxdn_step_cipher_before_signalling()). */
+/* What the frame does before its channels are committed: an INFO1 cipher held for a transmission that is no longer the
+   live call (it ended since the last frame) is forgotten before anything of the frame reads the cipher, the VCALL its
+   channels may carry included (nxdn_cipher_drop_stale_hold()); then the SACCH mode its LICH names, the voice/data
+   banner and the cipher slots of a frame that carries no position (nxdn_step_cipher_before_signalling()). */
 static void
 nxdn_frame_before_channels(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    nxdn_cipher_drop_stale_hold(state);
     nxdn_update_sacch_mode(state, ctx->lich);
     nxdn_print_voice_or_data(ctx);
     nxdn_step_cipher_before_signalling(state, ctx);

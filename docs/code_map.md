@@ -12462,8 +12462,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   DCR transmission (the call ended, another DCR call, any identity change), the INFO1's cipher and key are forgotten,
   decoder and classification alike (`nxdn_cipher_drop_stale_hold()`), so they never reach a later call: at the next
   SCCH, before it acts; at every checked DCR SACCH-2 segment, a first one of an incomplete message included, once it
-  named the live call; at every crypto publication; and on every frame after its channels, before its cipher steps and
-  voice (`nxdn_frame()`). A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
+  named the live call; before the hysteresis reads any VCALL's cipher, so the next call's cipher is never judged
+  against the forgotten one; at every crypto publication; and on every frame both before its channels, so none of its
+  cipher steps or messages reads a hold already stale, and after them, before its cipher steps and voice
+  (`nxdn_frame()`). A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,

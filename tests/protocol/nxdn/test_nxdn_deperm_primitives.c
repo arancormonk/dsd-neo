@@ -2260,6 +2260,43 @@ test_held_back_vcall_loads_no_key(void) {
     return rc;
 }
 
+/*
+ * An INFO1 cipher held for a DCR transmission that has ended is forgotten before the next call's VCALL is classified
+ * (issue #903): DCR call A is received with the scrambler and two INFO1s name the scrambler under key ID 5; A ends
+ * between frames, and a checked VCALL of the next call names DES under key ID 7. The hysteresis starts from nothing,
+ * not from A's held scrambler: DES under key 7 is applied and published, never the clear that forgetting the hold
+ * after the VCALL left.
+ */
+static int
+test_stale_info1_hold_expires_before_the_next_vcall(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 1U, 5U);
+    rc |= expect_int("stale-vcall-held-scrambler", (int)state->nxdn_cipher_type, 1);
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+    dsd_decode_clock_test_set_ns(1010000000000ULL);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    rc |= expect_int("stale-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("stale-vcall-another-call", call.epoch != dcr.epoch && call.ota_target_id == 0x0456U, 1);
+    rc |= expect_int("stale-vcall-des-applied", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("stale-vcall-key-applied", (int)state->nxdn_key, 7);
+    rc |= expect_int("stale-vcall-algid", (int)call.algid, 2);
+    rc |= expect_int("stale-vcall-kid", (int)call.kid, 7);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2298,6 +2335,7 @@ main(void) {
     rc |= test_held_info1_cipher_is_never_republished_on_the_dcr_call();
     rc |= test_held_info1_cipher_expires_at_the_next_calls_first_segment();
     rc |= test_held_back_vcall_loads_no_key();
+    rc |= test_stale_info1_hold_expires_before_the_next_vcall();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
