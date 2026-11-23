@@ -93,6 +93,9 @@ typedef struct {
     /* A LICH value a composite control channel shares with Type-D, read as an RTCH2 until this frame's own FACCH1 said
        Type-C (nxdn_frame_classify()). */
     int reclassified;
+    /* A composite frame one of whose FACCH1 halves is a checked CCH_INFO (nxdn_facch1_says_type_c()), whether its LICH
+       was read as RTCH_C at once (Type-C known) or only once that CCH_INFO said so (reclassified). */
+    int composite_checked;
     /* Another channel's control traffic heard on the followed traffic channel (dsd_nxdn_control_heard_is_foreign()). */
     int foreign;
     /* The frame reads the Type-D (IDAS) address layout (nxdn_frame_classify(), dsd_state::nxdn_frame_type_d). */
@@ -739,12 +742,14 @@ nxdn_frame_decode_signalling(nxdn_frame_ctx* ctx) {
 static void
 nxdn_frame_classify(const dsd_opts* opts, const dsd_state* state, nxdn_frame_ctx* ctx) {
     const nxdn_lich_profile* composite = ctx->scch ? nxdn_composite_lich_profile(ctx->lich) : NULL;
-    if (composite != NULL && (nxdn_facch1_says_type_c(&ctx->facch1[0]) || nxdn_facch1_says_type_c(&ctx->facch1[1]))) {
+    const int says_type_c = nxdn_facch1_says_type_c(&ctx->facch1[0]) || nxdn_facch1_says_type_c(&ctx->facch1[1]);
+    if (composite != NULL && says_type_c) {
         nxdn_take_lich_profile(ctx, composite);
         ctx->composite = 1;
         ctx->reclassified = 1;
         ctx->field = nxdn_sacch_decode_soft(ctx->sacch_bits, ctx->sacch_reliab);
     }
+    ctx->composite_checked = ctx->composite && says_type_c;
     ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
     const int own_check = ctx->field.crc == ctx->field.check
                           || ((ctx->facch3 || ctx->udch2) && nxdn_facch3_udch2_crc_ok(&ctx->facch3_udch2));
@@ -996,16 +1001,17 @@ nxdn_frame_left(void) {
  * the followed call's cipher (nxdn_step_cipher_before_signalling(), nxdn_handle_sacch(), nxdn_finish_decoded_frame()),
  * and it breaks the SACCH superframe being assembled whatever channels it carries: the followed channel's segments
  * before it and after it are no one superframe. So does a frame its own FACCH1 showed composite, read as Type-D until
- * then whatever the frames before it were. A local such frame disproves that Type-D reading at once: the IDAS identity
- * an SRV_INFO read with it named (dsd_nxdn_forget_type_d_identity()) is gone before either half's message acts, so the
- * unit activity of the half before its CCH_INFO is recorded in the scope the half after it would be.
+ * then whatever the frames before it were. A local composite frame with a checked CCH_INFO, so read at once (Type-C
+ * known) or by that CCH_INFO, disproves any Type-D reading of the carrier: the IDAS identity an SRV_INFO read with it
+ * named (dsd_nxdn_forget_type_d_identity()), a Type-D-only frame's included, is gone before either half's message
+ * acts, so the unit activity of the half before its CCH_INFO is recorded in the scope the half after it would be.
  */
 static void
 nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
     state->nxdn_frame_type_d = (uint8_t)ctx->type_d;
     state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
-    if (ctx->reclassified && !ctx->foreign) {
+    if (ctx->composite_checked && !ctx->foreign) {
         dsd_nxdn_forget_type_d_identity(state);
     }
     if (ctx->foreign || ctx->reclassified) {
