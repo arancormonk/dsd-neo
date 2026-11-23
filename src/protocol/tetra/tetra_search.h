@@ -53,7 +53,9 @@
  * ambiguous before gate A opens (a second BSCH identity observed first) confirms "TETRA" with no access text and sends
  * no site, the withdrawal right after it, so no publication ever carries its colour code. After the
  * gate that named the detection opened, every burst that carries its mode's content refreshes the visit's activity
- * (dsd_signal_search_note_activity()): in trunked mode a CRC-passed downlink block or BSCH of the gate identity; in
+ * (dsd_signal_search_note_activity()): in trunked mode a CRC-passed downlink block or BSCH of the gate identity (for a
+ * colour code 0 cell, whose seed every such cell shares, no block after a checked BSCH of another cell, its own
+ * burst's included, until the gate cell's next BSCH); in
  * direct mode a checked normal burst block under the visit's DM colour code, checked direct mode speech, or a checked
  * DMAC-SYNC the call records take as a call or short data (never a presence signal, DM-2-C, a reservation, a
  * registration or a timing acknowledgement). The other mode's content never does, its gate opening included: a trunked
@@ -120,12 +122,15 @@ typedef struct {
     uint8_t first_valid;
     uint8_t two_cells;
 
-    /* Gate A: its cell and the first SYSINFO under its seed; and whether a checked BSCH of the visit showed a SYNC
-     * sharing mode other than 00 (the visit's one identity's, kept whatever becomes of the observation). */
+    /* Gate A: its cell and the first SYSINFO under its seed; whether a checked BSCH of the visit showed a SYNC
+     * sharing mode other than 00 (the visit's one identity's, kept whatever becomes of the observation); and whether
+     * the latest checked BSCH since the gate opened named another cell (for a colour code 0 cell, whose seed every
+     * such cell shares, the blocks after it are no activity of the gate cell's). */
     tetra_search_cell cell;
     tetra_search_sysinfo sysinfo;
     uint8_t gate_a;
     uint8_t shared;
+    uint8_t other_bsch;
 
     /* Gate D, the mode that opened first, the withdrawal and the last site note sent. */
     uint8_t gate_d;

@@ -448,9 +448,12 @@ and history and the CSV export keep it withdrawn.
 
 A confirmed TETRA visit ends 2.1 seconds after the last checked TETRA signalling
 (one multiframe and one lost frame), not 500 ms, so a control channel's quiet
-moments do not end it. On a DMO carrier only a call keeps the visit going (its
-checked signalling or speech); a presence signal, reservation signalling and
-encrypted signalling (DM-2-C) identify the carrier but do not hold it. A control
+moments do not end it. On a cell with colour code 0, signalling heard after
+another cell's synchronization burst does not keep it going until the confirmed
+cell's next one, since every such cell scrambles the same way. On a DMO carrier
+only a call keeps the visit going (its checked signalling or speech); a presence
+signal, reservation signalling and encrypted signalling (DM-2-C) identify the
+carrier but do not hold it. A control
 channel never stops, so with **Maximum visit** set to 0 a confirmed TETRA control
 channel keeps the receiver until you move on, as a P25 control channel does.
 

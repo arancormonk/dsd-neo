@@ -15910,7 +15910,8 @@ itself, so the decoder's own handling stays as it was.
   name no frequency by their band, carrier number and offset) or, beside
   a CA main carrier, another location area under the gate seed, sharing seen after the site, or the other mode's
   gate. Every burst of the naming gate's mode content calls
-  `dsd_signal_search_note_activity()` (the other mode's never does); evidence and notes go only on change. Test: `TETRA_SEARCH`.
+  `dsd_signal_search_note_activity()` (the other mode's never does, nor, for a colour code 0 gate cell, a block after
+  a checked BSCH of another cell until the gate cell's next BSCH: every such cell shares the seed); evidence and notes go only on change. Test: `TETRA_SEARCH`.
 - Decided limit: the decoder's MAC still applies a SYSINFO from an SCH/F (EN 300 392-2 clause 21.4.4.1 names the
   half-slot channels), as osmo-tetra, tetra-kit and tetra-bluestation all do; only the search refuses it.
 

@@ -261,10 +261,12 @@ note_sharing(const dsd_state* state, tetra_search_t* sr, uint8_t sharing) {
     }
 }
 
-/* A BSCH after gate A opened: the gate cell's keeps the visit active; another cell's withdraws the identity. */
+/* A BSCH after gate A opened: the gate cell's keeps the visit active; another cell's withdraws the identity, and until
+ * the gate cell's next BSCH a colour code 0 block (under the seed every such cell shares) is no activity. */
 static void
 bsch_after_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_cell* c) {
-    if (!cell_same(&sr->cell, c)) {
+    sr->other_bsch = (uint8_t)!cell_same(&sr->cell, c);
+    if (sr->other_bsch) {
         withdraw(state, sr);
         return;
     }
@@ -393,7 +395,10 @@ tetra_search_note_tmo_block(dsd_state* state, uint32_t seed, const uint8_t* bits
     }
     note_block_sysinfo(sr, bits, len);
     if (sr->gate_a) {
-        search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
+        /* A colour code 0 seed binds no cell: after another cell's BSCH the block may be that cell's. */
+        if (c->colour != 0u || !sr->other_bsch) {
+            search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
+        }
         gate_sysinfo(state, sr);
     } else if (c->colour != 0u) {
         gate_a_open(state, sr, *c);

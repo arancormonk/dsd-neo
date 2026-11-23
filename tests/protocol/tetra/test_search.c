@@ -216,12 +216,12 @@ seed_of(uint32_t colour) {
     return ttb_seed(MCC, MNC, colour);
 }
 
-/* A trunked SB: the SYNC of @p sync, captured before the training sequence, then the broadcast block and block 2,
- * @p block2 (124 type-1 bits) scrambled with @p seed, or noise for NULL. */
+/* A trunked SB of network MCC / @p mnc: the SYNC of @p sync, captured before the training sequence, then the broadcast
+ * block and block 2, @p block2 (124 type-1 bits) scrambled with @p seed, or noise for NULL. */
 static void
-sb(session* s, const sync_spec* sync, const ttb_block* block2, uint32_t seed) {
+sb_of_mnc(session* s, uint32_t mnc, const sync_spec* sync, const ttb_block* block2, uint32_t seed) {
     ttb_block pdu = {0};
-    ttb_sync_pdu(&pdu, MCC, MNC, sync->colour);
+    ttb_sync_pdu(&pdu, MCC, mnc, sync->colour);
     ttb_set(&pdu, 0, sync->system_code, 4);
     ttb_set(&pdu, 12, sync->fn, 5);
     ttb_set(&pdu, 23, sync->sharing, 2);
@@ -234,6 +234,12 @@ sb(session* s, const sync_spec* sync, const ttb_block* block2, uint32_t seed) {
     feed(s, tail, (int)sizeof tail);
     sb_captured(s, bsch);
     (void)processTetraSBFrame(s->opts, s->state);
+}
+
+/* A trunked SB of the made-up network (MCC / MNC). */
+static void
+sb(session* s, const sync_spec* sync, const ttb_block* block2, uint32_t seed) {
+    sb_of_mnc(s, MNC, sync, block2, seed);
 }
 
 /* A cell's SB with its own SYSINFO (main carrier 50 in band 4, offset 2; location area @p la) in block 2. */
@@ -658,6 +664,28 @@ test_gate_a_colour_zero(void) {
     ttb_sysinfo(&si, CARR_MAIN + 1u, 4u, 2u, LA_B);
     ndb(&s, 3u, &si, NULL);
     check(g_log.notes == 1 && withdrawals() == 0, "colour 0: another SYSINFO withdraws nothing");
+    session_close(&s);
+
+    /* Another colour code 0 cell on the carrier scrambles its blocks with the same predefined seed: after its BSCH
+     * (which withdraws the identity), neither the block 2 of its own burst nor the blocks after it keep the visit
+     * active. The gate cell's next BSCH does, and the blocks after it again. */
+    s = session_open();
+    sb(&s, &k_z, NULL, 0);
+    sb(&s, &k_z, NULL, 0);
+    check(tmo_evidence(0u), "colour 0, other cell: the gate cell confirms");
+    const int activity = g_log.activity;
+    const ttb_block nb = null_block();
+    sb_of_mnc(&s, MNC + 1u, &k_z, &nb, 3u);
+    check(withdrawals() == 1 && g_log.activity == activity,
+          "colour 0, other cell: its BSCH and block 2 withdraw and keep the visit no more active");
+    const int after_other = g_log.activity;
+    ndb_null(&s, 3u);
+    ndb_null(&s, 3u);
+    check(g_log.activity == after_other, "colour 0, other cell: blocks after its BSCH keep the visit no more active");
+    const int after_blocks = g_log.activity;
+    sb(&s, &k_z, NULL, 0);
+    ndb_null(&s, 3u);
+    check(g_log.activity == after_blocks + 2, "colour 0, other cell: the gate cell's BSCH and the blocks after it do");
     session_close(&s);
 }
 
