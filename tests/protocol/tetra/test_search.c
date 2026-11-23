@@ -794,27 +794,31 @@ test_gate_a_withdrawals(void) {
      * carrier and an advertised one does, both ways, and so does another LA beside a main carrier the decoder cannot
      * name. Two main carriers no frequency names are told apart by their band, carrier and offset. */
     static const struct {
-        uint32_t carrier1, band1, la1, carrier2, band2, la2;
+        uint32_t carrier1, band1, offset1, la1, carrier2, band2, offset2, la2;
         int withdraws;
         const char* what;
     } k_la_cases[] = {
-        {0u, 0u, LA_A, 0u, 0u, LA_B, 0, "LA: two SYSINFOs with no CA main carrier, other LA bits, withdraw nothing"},
-        {0u, 0u, LA_A, CARR_MAIN, 4u, LA_A, 1, "LA: no CA main carrier, then an advertised one, withdraws"},
-        {CARR_MAIN, 4u, LA_A, 0u, 0u, LA_A, 1, "LA: an advertised main carrier, then none, withdraws"},
-        {100u, 12u, LA_A, 100u, 12u, LA_B, 1, "LA: another LA beside a main carrier no frequency names withdraws"},
-        {100u, 12u, LA_A, 101u, 12u, LA_A, 1, "main: another carrier no frequency names, same LA, withdraws"},
-        {5u, 0u, LA_A, 6u, 0u, LA_A, 1, "main: another band 0 carrier, same LA, withdraws"},
-        {100u, 12u, LA_A, 100u, 12u, LA_A, 0, "main: the same carrier no frequency names withdraws nothing"},
+        {0u, 0u, 2u, LA_A, 0u, 0u, 2u, LA_B, 0,
+         "LA: two SYSINFOs with no CA main carrier, other LA bits, withdraw nothing"},
+        {0u, 0u, 2u, LA_A, CARR_MAIN, 4u, 2u, LA_A, 1, "LA: no CA main carrier, then an advertised one, withdraws"},
+        {CARR_MAIN, 4u, 2u, LA_A, 0u, 0u, 2u, LA_A, 1, "LA: an advertised main carrier, then none, withdraws"},
+        {100u, 12u, 2u, LA_A, 100u, 12u, 2u, LA_B, 1,
+         "LA: another LA beside a main carrier no frequency names withdraws"},
+        {100u, 12u, 2u, LA_A, 101u, 12u, 2u, LA_A, 1, "main: another carrier no frequency names, same LA, withdraws"},
+        {100u, 12u, 2u, LA_A, 100u, 13u, 2u, LA_A, 1, "main: the same carrier in another unnamed band withdraws"},
+        {100u, 12u, 2u, LA_A, 100u, 12u, 1u, LA_A, 1, "main: the same unnamed carrier at another offset withdraws"},
+        {5u, 0u, 2u, LA_A, 6u, 0u, 2u, LA_A, 1, "main: another band 0 carrier, same LA, withdraws"},
+        {100u, 12u, 2u, LA_A, 100u, 12u, 2u, LA_A, 0, "main: the same carrier no frequency names withdraws nothing"},
     };
 
     for (size_t i = 0; i < sizeof k_la_cases / sizeof k_la_cases[0]; i++) {
         s = session_open();
         ttb_block si1 = {0};
-        ttb_sysinfo(&si1, k_la_cases[i].carrier1, k_la_cases[i].band1, 2u, k_la_cases[i].la1);
+        ttb_sysinfo(&si1, k_la_cases[i].carrier1, k_la_cases[i].band1, k_la_cases[i].offset1, k_la_cases[i].la1);
         sb(&s, &k_a, &si1, seed_of(COL_A));
         check(tmo_evidence(COL_A) && g_log.notes == 1, "LA: the first SYSINFO supplies the site");
         ttb_block si2 = {0};
-        ttb_sysinfo(&si2, k_la_cases[i].carrier2, k_la_cases[i].band2, 2u, k_la_cases[i].la2);
+        ttb_sysinfo(&si2, k_la_cases[i].carrier2, k_la_cases[i].band2, k_la_cases[i].offset2, k_la_cases[i].la2);
         ndb(&s, seed_of(COL_A), NULL, &si2);
         check(withdrawals() == k_la_cases[i].withdraws && g_log.notes == 1 + k_la_cases[i].withdraws,
               k_la_cases[i].what);
