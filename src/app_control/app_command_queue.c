@@ -6994,7 +6994,7 @@ ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
 /* decode_mode_republish(), with the gate of the channel it switches to, resolved now, riding its family request: the
    first block on the new family runs under it, whatever retune is outstanding (issue #899). */
 static int
-decode_mode_republish_gated(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+decode_mode_republish_gated(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
     const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
     const int rc = decode_mode_republish(opts, state, mode);
     dsd_engine_receiver_gate_family_done(gate_channel);

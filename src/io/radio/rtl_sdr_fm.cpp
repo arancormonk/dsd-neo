@@ -581,10 +581,12 @@ static RtlRetuneProfile g_pending_retune_profile;
    request was replaced and its channel is never committed, so it runs closed (kGateClosed) until the decoder writes for
    it or the newer one lands. All under g_pending_retune_profile_mutex; g_gate_epoch moves with every change of the
    channel or of the bindings outstanding, and the decoder reads it without the lock to skip an idle settle. */
+namespace {
 struct GateBinding {
     uint32_t channel;
     dsd_squelch_setting gate;
 };
+} // namespace
 
 static constexpr size_t kGateBindings = 8U;
 static GateBinding g_gate_bindings[kGateBindings] = {};
@@ -21309,7 +21311,7 @@ rtl_stream_test_retune_squelch_landing(rtl_stream_test_retune_squelch_result* ou
     const FamilyTestSaved saved = family_test_save();
     test_stream_set(NULL);
     /* The options for the fixture's lifetime only (a dsd_opts is never static or on the stack). */
-    dsd_opts* analog_opts = (dsd_opts*)calloc(1, sizeof(*analog_opts));
+    dsd_opts* analog_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*analog_opts)));
     if (!analog_opts) {
         fsk_reacquire_test_cleanup_output_ring(initialized_output);
         return -2;

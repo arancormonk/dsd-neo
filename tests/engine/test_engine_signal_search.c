@@ -831,8 +831,10 @@ test_restore_hands_back_the_analog_default_first(dsd_opts* o, dsd_state* s, dsd_
     assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && family_gate_taken == 1);
     assert(dsd_squelch_setting_equal(&family_gate_at_request, &noise10) == 1 && family_gate_staged == 0);
     assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
-    /* The restore's retune carries the session's gate too (review round 4), which the receiver applies where it lands. */
+    /* The restore's retune carries the session's gate too (review round 4), which the receiver applies where it lands,
+       on the channel the on-air channel goes to (round 5). */
     assert(g_retune_gates > 0 && dsd_squelch_setting_equal(&g_retune_gate, &noise10) == 1);
+    assert(g_on_air_channel == (uint32_t)g_retune_gates);
     land(o, s); // the restore tune
     assert(status.phase == DSD_SEARCH_STOPPED && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
     dsd_rtl_stream_metrics_hooks_set(NULL);

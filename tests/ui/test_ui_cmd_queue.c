@@ -138,90 +138,12 @@
 #include "test_env.h"
 #include "test_support.h"
 
-/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h), reached through the stream
-   hooks as the engine reaches the stream, whatever other hooks a case installs (cmd_rx_gates_hooks_set()). Each gate it
-   comes to run reaches the squelch setter wraps as the stream would set it: a level as a threshold, a dynamic setting
-   whole. A retune that carries a gate lands it at once here (no case holds a retune's landing back), and a family
-   request's lands where the demod thread takes it. */
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-void __wrap_rtl_stream_set_channel_squelch(float level);
-void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
-uint32_t __wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
-void __wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
-
-uint32_t
-__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
-    (void)target_freq_hz;
-    if (!gate) {
-        return 0U;
-    }
-    const uint32_t channel = channel_gate_fake_bind(gate);
-    channel_gate_fake_land(channel);
-    return channel;
-}
-
-void
-__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
-    (void)target_freq_hz;
-}
-
-/* The engine's own hook table (dsd_engine_rtl_stream_metrics_hooks_install(), which a case's engine run installs)
-   reaches the stand-in too: it is the stream here. */
-int __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate);
-uint32_t __wrap_rtl_stream_channel_gate_epoch(void);
-uint32_t __wrap_rtl_stream_channel_gate_opened(void);
-uint32_t __wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate);
-int __wrap_rtl_stream_unstage_family_gate(uint32_t channel);
-
+/* The stand-in's hook table, which the stream's own entry points reach here, and every resolve of the gate of the
+   channel on air the engine makes (dsd_scan_mode_channel_squelch()); the wraps are with the other stream wraps. */
 static dsd_rtl_stream_metrics_hooks g_cmd_rx_fake_hooks;
-
-int
-__wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate) {
-    return g_cmd_rx_fake_hooks.write_channel_gate(channel, gate);
-}
-
-uint32_t
-__wrap_rtl_stream_channel_gate_epoch(void) {
-    return g_cmd_rx_fake_hooks.channel_gate_epoch();
-}
-
-uint32_t
-__wrap_rtl_stream_channel_gate_opened(void) {
-    return g_cmd_rx_fake_hooks.channel_gate_opened();
-}
-
-uint32_t
-__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
-    return g_cmd_rx_fake_hooks.stage_family_gate(gate);
-}
-
-int
-__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
-    return g_cmd_rx_fake_hooks.unstage_family_gate(channel);
-}
-
-// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-
-/* Every resolve of the gate of the channel on air the engine makes (dsd_scan_mode_channel_squelch()). */
 static int g_cmd_rx_resolves;
-dsd_squelch_setting __real_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
-dsd_squelch_setting __wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
-
-dsd_squelch_setting
-__wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
-    g_cmd_rx_resolves++;
-    return __real_dsd_scan_mode_channel_squelch(opts, state);
-}
-
-static void
-cmd_rx_runs(const dsd_squelch_setting* gate) {
-    if (dsd_squelch_mode_is_dynamic(gate->mode)) {
-        __wrap_rtl_stream_set_channel_squelch_setting(gate);
-    } else {
-        __wrap_rtl_stream_set_channel_squelch((float)gate->level);
-    }
-}
+static void cmd_rx_runs(const dsd_squelch_setting* gate);
 #endif
 
 /* Install @p hooks (NULL: none of their own) with the receiver's gates in them. */
@@ -752,6 +674,87 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     g_rigctl_fake_freq = freq;
     return true;
 }
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here,
+   reached through the stream hooks as the engine reaches the stream, whatever other hooks a case installs
+   (cmd_rx_gates_hooks_set()). A retune that carries a gate lands it at once (no case holds a retune's landing back), and
+   a family request's lands as the request is made. */
+void __wrap_rtl_stream_set_channel_squelch(float level);
+void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
+uint32_t __wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
+void __wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
+
+uint32_t
+__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+    (void)target_freq_hz;
+    if (!gate) {
+        return 0U;
+    }
+    const uint32_t channel = channel_gate_fake_bind(gate);
+    channel_gate_fake_land(channel);
+    return channel;
+}
+
+void
+__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+    (void)target_freq_hz;
+}
+
+/* The engine's own hook table (dsd_engine_rtl_stream_metrics_hooks_install(), which a case's engine run installs)
+   reaches the stand-in too: it is the stream here. */
+int __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate);
+uint32_t __wrap_rtl_stream_channel_gate_epoch(void);
+uint32_t __wrap_rtl_stream_channel_gate_opened(void);
+uint32_t __wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate);
+int __wrap_rtl_stream_unstage_family_gate(uint32_t channel);
+
+int
+__wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate) {
+    return g_cmd_rx_fake_hooks.write_channel_gate(channel, gate);
+}
+
+uint32_t
+__wrap_rtl_stream_channel_gate_epoch(void) {
+    return g_cmd_rx_fake_hooks.channel_gate_epoch();
+}
+
+uint32_t
+__wrap_rtl_stream_channel_gate_opened(void) {
+    return g_cmd_rx_fake_hooks.channel_gate_opened();
+}
+
+uint32_t
+__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
+    return g_cmd_rx_fake_hooks.stage_family_gate(gate);
+}
+
+int
+__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
+    return g_cmd_rx_fake_hooks.unstage_family_gate(channel);
+}
+
+/* Every resolve of the gate of the channel on air the engine makes (dsd_scan_mode_channel_squelch()). */
+dsd_squelch_setting __real_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
+dsd_squelch_setting __wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
+
+dsd_squelch_setting
+__wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
+    g_cmd_rx_resolves++;
+    return __real_dsd_scan_mode_channel_squelch(opts, state);
+}
+
+/* Each gate the stand-in comes to run reaches the squelch setter wraps as the stream would set it: a level as a
+   threshold, a dynamic setting whole. */
+static void
+cmd_rx_runs(const dsd_squelch_setting* gate) {
+    if (dsd_squelch_mode_is_dynamic(gate->mode)) {
+        __wrap_rtl_stream_set_channel_squelch_setting(gate);
+    } else {
+        __wrap_rtl_stream_set_channel_squelch((float)gate->level);
+    }
+}
+#endif
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 

@@ -152,15 +152,12 @@ rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_
     return 0U;
 }
 
-/* The engine's channel-tagged receiver gates (issue #899; channel_scan.c, not linked here): the last channel a visit or
-   restore put on air, and a family request's gate staged through the stream hooks, as the engine stages it. */
-static uint32_t g_on_air_channel;
-
+/* The engine's channel-tagged receiver gates (issue #899; channel_scan.c, not linked here), which no scene here reads:
+   the channels a visit or restore puts on air, and a family request's gate staged through the stream hooks, as the
+   engine stages it. */
 void
 dsd_engine_receiver_gate_on_air(uint32_t channel) {
-    if (channel != 0U) {
-        g_on_air_channel = channel;
-    }
+    (void)channel;
 }
 
 uint32_t

@@ -21,6 +21,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/engine/channel_scan.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/runtime/analog_channel.h"
