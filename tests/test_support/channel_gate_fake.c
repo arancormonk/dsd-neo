@@ -5,7 +5,6 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
-#include <stddef.h>
 
 static dsd_squelch_setting g_digital;
 static dsd_squelch_setting g_gate;

@@ -51,6 +51,7 @@
 #include <unistd.h>
 #include <vector>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/power.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"

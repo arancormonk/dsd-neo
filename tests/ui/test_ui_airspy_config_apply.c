@@ -31,6 +31,7 @@
 #include "dsd-neo/runtime/rtl_stream_metrics_hooks.h"
 #include "dsd-neo/runtime/squelch.h"
 #include "manual_tune_pending.h"
+#include "services.h"
 
 /* The drain's own dispatch of a config apply; what a scan list toggle would retain does not apply to one. */
 static int

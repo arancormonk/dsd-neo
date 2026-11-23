@@ -6,14 +6,17 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <utility>
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0

@@ -4,6 +4,8 @@
 #define DSD_NEO_TEST_CHANNEL_SCAN_STUBS_H
 
 #include <dsd-neo/core/power.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <dsd-neo/platform/sockets.h>
 #include <mutex>
+#include <stddef.h>
 #include <string>
 #include <thread>
 #include <vector>
