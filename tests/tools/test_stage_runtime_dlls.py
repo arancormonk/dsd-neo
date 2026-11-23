@@ -217,8 +217,10 @@ def pwsh_cache_folder(test_class):
 
 
 def pwsh_env(cache, env=None):
-    """env (the environment if None) with pwsh's cache folder set to cache, which pwsh_cache_folder() made."""
-    return dict(os.environ if env is None else env, XDG_CACHE_HOME=str(cache))
+    """env (the environment if None) with pwsh's cache folder set to cache, which pwsh_cache_folder() made, and pwsh
+    telemetry off. In an empty cache folder pwsh would create its telemetry id under a named mutex, and on macOS .NET
+    keeps a named mutex's files in $TMPDIR/.dotnet, which would be left in the test's temp folder."""
+    return dict(os.environ if env is None else env, XDG_CACHE_HOME=str(cache), POWERSHELL_TELEMETRY_OPTOUT="1")
 
 
 # stage()'s default: the developer shell of the first toolset visual_studio() made, if any.
