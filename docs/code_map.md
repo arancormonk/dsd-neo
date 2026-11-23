@@ -12461,7 +12461,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   before the hysteresis reads its cipher, so the new call's voice is not descrambled with it nor its VCALL held back
   against it (which under `--enc-lockout` locked out a call the VCALL's own key decrypts), while an INFO1 naming the
   new call's own cipher once the DCR call is over and ahead of its numbered party keeps it (`nxdn_forget_dcr_cipher()`;
-  a scrambler forced with `-4` stays). An INFO1 heard while the DCR
+  a scrambler forced with `-4` stays). The same SCCH or VCALL also forgets, cipher and classification, whatever cipher
+  is still applied while a DCR call is the live call because the hysteresis held the DCR call's scrambler back: that
+  one is an earlier call's, and a clear VCALL judged against it was held back and, under `--enc-lockout`, locked out. An INFO1 heard while the DCR
   call is still the live call is neither that call's (DCR carries no SCCH) nor yet the next call's, which no SCCH has
   opened: it is neither applied nor kept (`nxdn_scch_handle_info1()`), and it forgets nothing, so the DCR call's
   cipher, key ID, origin and working key stay as they were, and the call an SCCH or a VCALL opens next takes its

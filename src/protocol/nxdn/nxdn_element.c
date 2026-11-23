@@ -3311,7 +3311,8 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
  * frames no FACCH1): the scrambler a DCR call received (its cipher and the classification behind it, while the cipher
  * applied is the DCR call's: dsd_state::nxdn_cipher_origin, a contradiction the hysteresis held back notwithstanding)
  * is not that call's, whose voice plays clear until its own signalling names a cipher, nor is a VCALL judged against
- * it. It is forgotten once, before the SCCH's own message acts or the hysteresis reads the VCALL, so an INFO1 naming
+ * it. Nor is a cipher still applied while a DCR call is the live call because the hysteresis held the DCR call's
+ * scrambler back: that one is an earlier call's, older still. Either is forgotten once, before the SCCH's own message acts or the hysteresis reads the VCALL, so an INFO1 naming
  * the new call's cipher ahead of its numbered party keeps it; an INFO1 heard while the DCR call is still the live call
  * forgets nothing, as it applies nothing (NXDN_decode_scch()). A scrambler the operator forced (-4: state->M with a
  * key) stays, as at a release. */
@@ -3327,7 +3328,7 @@ nxdn_forget_applied_cipher(dsd_state* state) {
 
 static void
 nxdn_forget_dcr_cipher(dsd_state* state) {
-    if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR) {
+    if (state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR || nxdn_live_call_is_dcr(state)) {
         nxdn_forget_applied_cipher(state);
     }
 }
@@ -3340,8 +3341,9 @@ nxdn_vcall_apply_state(const dsd_opts* opts, dsd_state* state, const struct nxdn
         // through the classification hysteresis: trellis miscorrections that survive the short
         // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
         // one -- and, under lockout, permanently blocking the talkgroup. The key ID goes with the cipher it came with.
-        /* A VCALL of a confirmed transmission is never the DCR call's: a DCR call's scrambler is forgotten before the
-           hysteresis reads it (nxdn_forget_dcr_cipher()). */
+        /* A VCALL of a confirmed transmission is never the DCR call's: a DCR call's scrambler, or whatever cipher is
+           still applied while a DCR call is the live call, is forgotten before the hysteresis reads it
+           (nxdn_forget_dcr_cipher()). */
         if (nxdn_confirm_is_confirmed(state)) {
             nxdn_forget_dcr_cipher(state);
         }

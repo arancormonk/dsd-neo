@@ -2306,6 +2306,55 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
 }
 
 /*
+ * A VCALL ends a DCR call's classification even when the DCR scrambler never became the cipher applied (issue #903).
+ * Trunking with --enc-lockout and no key: on a numbered call two INFO1s apply DES under key ID 6, and that call ends.
+ * A DCR call's single SB0 naming the scrambler is held back against the established DES, so DES, another call's, is
+ * still the cipher applied. A checked VCALL of group 0x0789 then says clear: it is not judged against that DES, so it is
+ * applied at once, its call is published clear, and the group is not locked out.
+ */
+static int
+test_vcall_after_a_dcr_call_resets_a_held_cipher(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    send_outbound_info1(opts, state, 2U, 6U);
+    send_outbound_info1(opts, state, 2U, 6U);
+    int rc = expect_int("dcr-reset-des-applied", (int)state->nxdn_cipher_type, 2);
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot call;
+    rc |= expect_int("dcr-reset-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_str("dcr-reset-dcr-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-reset-scrambler-held-back", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("dcr-reset-origin-not-dcr", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_OTHER);
+
+    opts->trunk_enable = 1;
+    opts->trunk_tune_enc_calls = 0; /* --enc-lockout */
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0789U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("dcr-reset-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("dcr-reset-vcall-target", (int)call.ota_target_id, 0x0789);
+    rc |= expect_int("dcr-reset-clear-applied", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("dcr-reset-published-clear", (int)call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    rc |= expect_int("dcr-reset-still-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("dcr-reset-not-locked-out", dsd_enc_lockout_entry_active(state, 0x0789U, 1), 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
  * An INFO1 loads no key, as on main (issue #903): with the keyloader on, two INFO1s naming the scrambler under key ID 7
  * on a numbered call apply that cipher and key ID, and the working key stays the one a VCALL or an assignment loaded.
  */
@@ -2539,6 +2588,7 @@ main(void) {
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
+    rc |= test_vcall_after_a_dcr_call_resets_a_held_cipher();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {
