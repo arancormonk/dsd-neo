@@ -1419,6 +1419,54 @@ test_retired_slot_starts_fresh(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Whether every embedded-signalling fragment of @p slot is clear. */
+static int
+embedded_lc_clear(const dsd_state* st, int slot) {
+    for (size_t b = 0; b < sizeof(st->dmr_embedded_signalling[0]) / sizeof(st->dmr_embedded_signalling[0][0]); b++) {
+        for (size_t i = 0; i < sizeof(st->dmr_embedded_signalling[0][0]); i++) {
+            if (st->dmr_embedded_signalling[slot][b][i] != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* A retired slot's pending embedded LC dies with its assignment: TS1 is followed for TG 300 and has collected bursts
+   B-E of a voice superframe, while TS2 carries TG 100. A TD_GRANT for TS1 retires TS1 before its burst F, and the
+   receiver stays for TS2. TS1's fragments are dropped and its voice gate is closed with no voice sync seen, so its F
+   burst is not decoded and no LC is dispatched from the retired call's fragments: the next LC there needs a fresh
+   superframe (its burst A's sync, then fresh B-E). TS2 keeps its fragments and open gate. */
+static int
+test_retired_slot_drops_embedded_lc(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 100U, 1U);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    for (int s = 0; s < 2; s++) {
+        st->dmr_confidence_voice_sync_seen[s] = 1U;
+        st->dmr_confidence_voice_count[s] = 2U;
+        for (int b = 1; b <= 4; b++) { // bursts B-E
+            DSD_MEMSET(st->dmr_embedded_signalling[s][b], 1, sizeof(st->dmr_embedded_signalling[s][b]));
+        }
+    }
+    clock_at(0.4);
+    voice(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1, before its burst F
+    int rc = expect_true("the receiver stays for the companion", sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1);
+    rc |= expect_true("the retired slot's pending embedded LC is dropped", embedded_lc_clear(st, 0));
+    rc |= expect_true("the retired slot's voice gate waits for a fresh superframe",
+                      st->dmr_confidence_voice_open[0] == 0U && st->dmr_confidence_voice_sync_seen[0] == 0U
+                          && st->dmr_confidence_voice_count[0] == 0U);
+    rc |= expect_true("the companion keeps its embedded LC and voice gate",
+                      st->dmr_embedded_signalling[1][1][0] == 1 && st->dmr_embedded_signalling[1][4][47] == 1
+                          && st->dmr_confidence_voice_open[1] == 1U && st->dmr_confidence_voice_sync_seen[1] == 1U);
+    return rc;
+}
+
 /* A companion slot the receive policy rejects never keeps the receiver, its live voice or hangtime tail alike: TS1 is
    followed for TG 300 while TS2 carries TG 100, and the receive filter then admits TS1 alone. A TD_GRANT for TS1 retires
    TS1 and returns the receiver to the control channel, TS2's live call being one it cannot receive. Likewise on the
@@ -1607,6 +1655,7 @@ main(void) {
     rc |= test_media_change_release_retries(opts, st);
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
+    rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_rejected_companion_keeps_nothing(opts, st);
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
 

@@ -12,6 +12,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 
+#include "dmr_confidence.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -74,5 +75,10 @@ dmr_slot_retire(dsd_state* state, uint8_t slot) {
         state->payload_miN = 0;
     }
     dmr_slot_reset_blocks(state, idx);
+    /* The retired call's pending embedded LC (bursts B-E of its superframe) is dropped with its voice gate, which then
+       reopens only after a fresh burst A's voice sync: the slot's next burst F never decodes an LC from the retired
+       call's fragments, which could still pass their CRC and reopen that call. */
+    DSD_MEMSET(state->dmr_embedded_signalling[idx], 0, sizeof(state->dmr_embedded_signalling[idx]));
+    dmr_confidence_reset_slot(state, idx);
     dmr_enc_class_hold_slot(state, idx);
 }

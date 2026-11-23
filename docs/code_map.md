@@ -13602,7 +13602,10 @@ Private per-protocol modules worth knowing about:
     its record, Capacity Plus seed and ledger entry are cleared, the grant identity stands for nothing, and its crypto
     (FID, service options, ALG, key ID, MI and derived DES IV, encryption class, vendor late-entry mode, held pre-call
     PI, MI chain, heal stash, autoloaded talkgroup key), talker metadata and data header and packet assembly are reset,
-    with its voice held until its next call says how it is encrypted (`dmr_enc_class_hold_slot()`), so the replacement
+    its pending embedded LC (the bursts B-E collected so far) is dropped with its voice gate, which reopens only after a
+    fresh superframe's voice sync, so its next burst F decodes no LC from the retired call's fragments (they would still
+    pass their CRC and reopen the retired call, `test_retired_slot_drops_embedded_lc()`), and its voice is held until
+    its next call says how it is encrypted (`dmr_enc_class_hold_slot()`), so the replacement
     call's voice or blocks before their own signalling are neither decrypted nor addressed with the retired call's. The
     companion slot's call, crypto and decryption go on untouched. While the companion slot's call still holds the carrier by the
     retention rule (live voice or its hangtime tail, from the companion's activity alone and only while the receive
@@ -13988,8 +13991,8 @@ Private per-protocol modules worth knowing about:
 - `src/protocol/dmr/dmr_slot_reset.{c,h}` — one slot's call state, reset slot by slot: the live crypto field map the
   terminator reset and the heal stash share (`dmr_slot_crypto_fields()`), the terminator's crypto and metadata halves
   (`dmr_slot_reset_crypto()`, `dmr_slot_reset_metadata()`), the slot's share of `dmr_reset_blocks()`
-  (`dmr_slot_reset_blocks()`, inline), and the retirement that runs them all for a slot whose assignment a grant ended
-  (`dmr_slot_retire()`, called by the trunk machine's `dmr_sm_retire_slot()`; see the gate under DMR talkgroup priority
+  (`dmr_slot_reset_blocks()`, inline), and the retirement that runs them all, and drops the slot's pending embedded LC
+  and voice gate, for a slot whose assignment a grant ended (`dmr_slot_retire()`, called by the trunk machine's `dmr_sm_retire_slot()`; see the gate under DMR talkgroup priority
   and preemption). The other slot is never touched. Trunk-machine fixtures that compile `dmr_trunk_sm.c` alone stub
   the retirement in `tests/test_support/dmr_carrier_leave_stubs.c`. Test: `DMR_PREEMPT`.
 - `src/protocol/nxdn/nxdn_confirm.{c,h}` — its NXDN counterpart, and for the same reason: the 10-symbol sync word and

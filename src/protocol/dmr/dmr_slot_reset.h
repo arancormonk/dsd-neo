@@ -75,8 +75,9 @@ dmr_slot_reset_blocks(dsd_state* state, uint8_t slot) {
 /* Slot @p slot's assignment ended (a grant there named another call), and the receiver may stay on the carrier for the
    companion slot's call, which is not touched: the slot is left as a fresh call there finds it. Its crypto and metadata as a verified
    terminator leaves them (no heal can restore an assignment the system ended, so the heal stash goes too), the
-   talkgroup its key autoload keyed from, its derived DES IV, its data header and packet assembly, and its voice held
-   until its next call says how it is encrypted (dmr_enc_class_hold_slot()). Call after the slot's call has ended, so its
+   talkgroup its key autoload keyed from, its derived DES IV, its data header and packet assembly, its pending embedded
+   LC with its voice gate (closed until a fresh superframe's voice sync, so no LC is dispatched from the retired call's
+   fragments), and its voice held until its next call says how it is encrypted (dmr_enc_class_hold_slot()). Call after the slot's call has ended, so its
    final row keeps the FID its vendor annotations render by. */
 void dmr_slot_retire(dsd_state* state, uint8_t slot);
 
