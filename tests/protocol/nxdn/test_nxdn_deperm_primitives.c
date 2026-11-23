@@ -2297,6 +2297,45 @@ test_stale_info1_hold_expires_before_the_next_vcall(void) {
     return rc;
 }
 
+/*
+ * A VCALL that opens the next call from the DCR transmission an INFO1 cipher is held for hands that call the hold, as
+ * the SCCH opening it would (issue #903): during scrambled DCR call A, two INFO1s name the scrambler under key ID 5,
+ * then a checked VCALL of the next call names DES under key ID 7 while A is still the live call. The lone VCALL is
+ * held back against the INFO1s, and the call it opens is published with the INFO1s' scrambler under key 5, never as
+ * clear; the VCALL's repeat applies DES under key 7.
+ */
+static int
+test_vcall_opening_the_next_call_takes_the_held_info1_cipher(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 1U, 5U);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-handoff-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-handoff-another-call", call.epoch != dcr.epoch && call.ota_target_id == 0x0456U, 1);
+    rc |= expect_int("vcall-handoff-scrambler-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("vcall-handoff-algid", (int)call.algid, 1);
+    rc |= expect_int("vcall-handoff-kid", (int)call.kid, 5);
+    rc |= expect_int("vcall-handoff-not-clear", call.crypto != DSD_CALL_CRYPTO_CLEAR, 1);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("vcall-handoff-repeat-des", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("vcall-handoff-repeat-algid", (int)call.algid, 2);
+    rc |= expect_int("vcall-handoff-repeat-kid", (int)call.kid, 7);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2336,6 +2375,7 @@ main(void) {
     rc |= test_held_info1_cipher_expires_at_the_next_calls_first_segment();
     rc |= test_held_back_vcall_loads_no_key();
     rc |= test_stale_info1_hold_expires_before_the_next_vcall();
+    rc |= test_vcall_opening_the_next_call_takes_the_held_info1_cipher();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

@@ -2069,7 +2069,7 @@ struct dsd_state {
     uint8_t nxdn_cipher_origin;
     /* The DCR call's transmission (dsd_call_snapshot_transmission()) an INFO1 held as NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR
      * was heard on: the hold, and its cipher, last only while that transmission is the live call
-     * (nxdn_cipher_drop_stale_hold()), and only a call an SCCH opens from it takes the INFO1 (issue #903). */
+     * (nxdn_cipher_drop_stale_hold()), and only a call an SCCH or a VCALL opens from it takes the INFO1 (issue #903). */
     uint64_t nxdn_cipher_held_transmission;
 
     /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus

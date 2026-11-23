@@ -12453,8 +12453,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   held as one pair (an INFO1's or VCALL's key ID is applied, `dsd_state::nxdn_key`, only with the cipher it came with,
   `nxdn_cipher_observe_keyed()`, so a contradiction the hysteresis holds back changes neither half)
   (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
-  `dsd_state::nxdn_cipher_held_transmission`) and published once on the call an SCCH opens from that very transmission
-  (`nxdn_scch_publish_held_cipher()`). Every other crypto publication on the live call (a VCALL's, a VCALL_IV's, an
+  `dsd_state::nxdn_cipher_held_transmission`) and handed to the call an SCCH or a VCALL opens from that very
+  transmission (`nxdn_cipher_hand_hold_to_call()`), the call the INFO1 named: there the cipher and key stay applied and
+  are published, the SCCH's at once (`nxdn_scch_publish_held_cipher()`), and a VCALL is judged against them as any
+  later cipher observation is, so a lone contradicting VCALL is held back rather than leaving the new call clear. Every other crypto publication on the live call (a VCALL's, a VCALL_IV's, an
   INFO1's, a DCR SACCH-2's) reads one rule, `nxdn_cipher_publication_held()`: while the hold binds the DCR call still
   live it publishes nothing, so no republication gives that call the INFO1's cipher or key, and a publication always
   names the applied pair, read at that boundary. The hold fails closed: any cipher observation since makes it another source's;

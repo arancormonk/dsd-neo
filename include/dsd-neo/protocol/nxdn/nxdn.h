@@ -99,7 +99,7 @@ uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
 
 /* Where an observed cipher came from (dsd_state::nxdn_cipher_origin): a DCR call's SACCH-2; an IDAS INFO1 heard while
  * a DCR call was the live call, the next call's cipher, held while that DCR transmission is the live call, for the
- * call an SCCH opens from it (dsd_state::nxdn_cipher_held_transmission, nxdn_element.c); or
+ * call an SCCH or a VCALL opens from it (dsd_state::nxdn_cipher_held_transmission, nxdn_element.c); or
  * anything else. */
 enum {
     NXDN_CIPHER_ORIGIN_OTHER = 0,
