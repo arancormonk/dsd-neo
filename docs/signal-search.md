@@ -1311,8 +1311,8 @@ The check runs only where the calibration rendered and validated it, matched exa
   SoapySDR device that cannot be ruled out as an Airspy, at any rate: one reached through SoapyRemote (the `remote`
   module, whether named or found by discovery), which can deliver any device at any rate, or one opened by a module
   dsd-neo does not know. The device is identified by the module SoapySDR selected to open it (airspy, airspyhf, hackrf,
-  rtlsdr, sdrplay, plutosdr, bladerf, lime, uhd, SDDC); its reported keys count only when they name an Airspy, and the
-  argument text (hostnames, labels, serials) never counts.
+  rtlsdr, sdrplay, plutosdr, bladerf, lime and limesuiteng for LimeSuite and LimeSuiteNG, uhd, SDDC); its reported
+  keys count only when they name an Airspy, and the argument text (hostnames, labels, serials) never counts.
 - A native Airspy input (`-i airspy`) delivers centred I/Q with no quarter-rate shift, tuned on the channel. It is
   checked under its own policy at 2.5, 3, 6 and 10 MS/s (`dsd_signal_quiet_airspy_centred_rate_supported()`), with
   the reference span narrowed to the flat part of its passband (±0.25 of the rate at 2.5 and 3 MS/s, ±0.375 at 6 and

@@ -11121,9 +11121,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   case-sensitive keys, the last duplicate winning). `dsdneo::soapy_identity_evidence()` reads
   that factory, compared exactly as modules register it (airspy; airspyhf; remote, a proxy,
   auto-discovered or not; a known local factory: hackrf, rtlsdr, sdrplay, plutosdr, bladerf,
-  lime, uhd, SDDC), and takes the driver and hardware keys only as evidence of an Airspy
-  (modules report other things there: LimeSuite its connection module, SoapyUHD its device type,
-  SoapyRemote its server's device). Argument text never counts, nor does the requested profile.
+  lime and limesuiteng (LimeSuite, LimeSuiteNG), uhd, SDDC), and takes the driver and hardware
+  keys only as evidence of an Airspy (modules report other things there: LimeSuite its
+  connection module, SoapyUHD its device type, SoapyRemote its server's device). Argument text never counts, nor does the requested profile.
   `dsdneo::soapy_receiver_from_evidence()` then gives `DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN` for a
   proxy whatever its device forwards (it can stand for any device at any rate),
   `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` as soon as anything named an Airspy (a local factory whose

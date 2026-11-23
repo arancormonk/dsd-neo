@@ -165,6 +165,12 @@ test_airspy_identity(void) {
         {"a HackRF, its keys failing", "hackrf", "", "", SoapyReceiver::NotAirspy},
         {"an RTL-SDR", "rtlsdr", "RTLSDR", "R820T", SoapyReceiver::NotAirspy},
         {"a LimeSDR-USB", "lime", "FX3", "LimeSDR-USB", SoapyReceiver::NotAirspy},
+        /* LimeSuiteNG registers its module as "limesuiteng" (plugins/soapysdr/Registration.cpp), its driver key the
+           same and its hardware key the board's name. */
+        {"a LimeSDR opened by LimeSuiteNG", "limesuiteng", "limesuiteng", "LimeSDR-USB", SoapyReceiver::NotAirspy},
+        {"a LimeSDR Mini opened by LimeSuiteNG", "limesuiteng", "limesuiteng", "LimeSDR Mini",
+         SoapyReceiver::NotAirspy},
+        {"LimeSuiteNG's factory compares exactly", "LimeSuiteNG", "limesuiteng", "LimeSDR-USB", SoapyReceiver::Unknown},
         {"a UHD B210", "uhd", "b200", "B210", SoapyReceiver::NotAirspy},
         {"an SDDC", "SDDC", "SDDC", "RX888", SoapyReceiver::NotAirspy},
         {"SDRplay, Pluto, bladeRF", "sdrplay", "SDRplay", "RSP1A", SoapyReceiver::NotAirspy},

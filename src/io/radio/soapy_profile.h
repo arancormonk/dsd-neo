@@ -100,9 +100,9 @@ SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
    as SoapySDR registers it and compared exactly (the enumeration record's "driver", or with no record the "driver" of
    the arguments as the SDK parses them): airspy, an Airspy; remote, a proxy (it forwards whatever its server's device
    reports, so its keys establish nothing); one of the local factories dsd-neo knows (airspyhf, hackrf, rtlsdr,
-   sdrplay, plutosdr, bladerf, lime, uhd, SDDC), not an Airspy. The driver key and hardware key the device reported
-   count only as evidence of an Airspy (driver key airspy, hardware key airspy, airspy mini or airspy r2, without case),
-   since modules report other things there (LimeSDR its connection, UHD its device type). SOAPY_IDENTITY_AIRSPY_HF is
+   sdrplay, plutosdr, bladerf, lime, limesuiteng, uhd, SDDC), not an Airspy. The driver key and hardware key the
+   device reported count only as evidence of an Airspy (driver key airspy, hardware key airspy, airspy mini or
+   airspy r2, without case), since modules report other things there (LimeSDR its connection, UHD its device type). SOAPY_IDENTITY_AIRSPY_HF is
    kept for the factory. */
 enum : uint8_t {
     SOAPY_IDENTITY_AIRSPY = 1,

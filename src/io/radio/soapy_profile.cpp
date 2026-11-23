@@ -328,7 +328,10 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
 
 uint8_t
 soapy_identity_evidence(const std::string& factory, const std::string& driver_key, const std::string& hardware_key) {
-    static const char* const k_local[] = {"hackrf", "rtlsdr", "sdrplay", "plutosdr", "bladerf", "lime", "uhd", "SDDC"};
+    /* The local modules' factory names as each registers them (SoapySDR::Registry): LimeSuite's "lime" and
+       LimeSuiteNG's "limesuiteng" both open LimeSDRs. */
+    static const char* const k_local[] = {"hackrf", "rtlsdr",      "sdrplay", "plutosdr", "bladerf",
+                                          "lime",   "limesuiteng", "uhd",     "SDDC"};
     uint8_t bits = 0U;
     if (factory == "airspy") {
         bits |= SOAPY_IDENTITY_AIRSPY;
