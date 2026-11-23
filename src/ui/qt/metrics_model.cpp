@@ -12,7 +12,6 @@
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/received_identity.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 #include "metrics_model.h"

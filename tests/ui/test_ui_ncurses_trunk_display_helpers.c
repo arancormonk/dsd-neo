@@ -409,6 +409,7 @@ static void
 attach_t3(dsd_state* state) {
     DSD_MEMSET(&g_t3, 0, sizeof g_t3);
     g_t3.present = 1U;
+    g_t3.dmr_decoding = 1U;
     state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_t3;
 }
 
@@ -474,6 +475,17 @@ test_t3_missing_channels_open_the_panel(void) {
     f.state->trunk_chan_map[12] = 0;
     f.state->trunk_chan_map_used_count = 0U;
     g_t3.other_system_here = 0U;
+
+    /* Review gate b-r4: a live mode change left DMR off. No Tier III grant is followed, so none is listed as missing a
+       frequency, and with trunking off the panel stays closed (as Qt's NO FREQ is hidden). */
+    g_t3.dmr_decoding = 0U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(g_header_calls == 0 && g_output[0] == '\0');
+    g_t3.dmr_decoding = 1U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 12: no frequency") != NULL);
 
     /* Nothing missing, trunking off: no panel. */
     DSD_MEMSET(g_t3.missing.missing, 0, sizeof g_t3.missing.missing);
@@ -591,6 +603,14 @@ test_t3_numbering_follows_the_current_system(void) {
     reset_render_capture();
     ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 12: 851.150000 MHz") != NULL);
+
+    /* Review gate b-r4: DMR no longer decoded (the last sync still DMR's): no Tier III lookup reads the map, so it
+       shows in its own form. */
+    g_t3.dmr_decoding = 0U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL && strstr(g_output, "CH 12:") == NULL);
+    g_t3.dmr_decoding = 1U;
     t3_fixture_free(&f);
 }
 

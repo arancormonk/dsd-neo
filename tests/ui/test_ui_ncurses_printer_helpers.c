@@ -3810,6 +3810,7 @@ test_channels_panel_opens_for_missing_t3_channels(void) {
     assert(ui_channels_panel_open(opts, state) == 0);
     state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
     view.present = 1U;
+    view.dmr_decoding = 1U;
     assert(ui_channels_panel_open(opts, state) == 0);
     view.missing.missing[12 >> 3] = (uint8_t)(1U << (12 & 7));
     assert(ui_channels_panel_open(opts, state) == 1);
@@ -3821,6 +3822,12 @@ test_channels_panel_opens_for_missing_t3_channels(void) {
     view.other_system_here = 1U;
     assert(ui_channels_panel_open(opts, state) == 0);
     view.other_system_here = 0U;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    /* Review gate b-r4: a live mode change left DMR off: no Tier III grant is followed, so none is missing a frequency
+       (the same rule as Qt's NO FREQ). */
+    view.dmr_decoding = 0U;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    view.dmr_decoding = 1U;
     assert(ui_channels_panel_open(opts, state) == 1);
     view.missing.missing[12 >> 3] = 0U;
     opts->frontend_display.show_channels = 1;

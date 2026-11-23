@@ -13566,17 +13566,18 @@ Private per-protocol modules worth knowing about:
   alias. Frontends read it with `dsd_app_dmr_t3_view(snapshot)`; a live state has none. The terminal's Channels panel
   (`ui_print_learned_lcns()`) opens while the ledger holds a channel, with the toggle off and in monitor mode too
   (`ui_channels_panel_open()`); both read `dsd_app_dmr_t3_view_missing_shown()`, the ledger's count unless the carrier
-  names another system (`other_system_here`), as Qt's NO FREQ does. It lists up to eight as
-  `CH 12: no frequency (TG 1234, slot 1)` (a row past the details reads `(unchecked)` from the checked set when no
-  checked grant named it), and when `dsd_app_dmr_t3_view_lists_lpcns()` holds (`dsd_app_dmr_t3_view_shows_lpcns()`: Tier
-  III named, checked or RAS-accepted, or a ledger or overlay entry, and no other system named on the carrier
-  (`other_system_here`); and the receiver is on a DMR system now, by the snapshot's sync, or before any sync DMR the
-  only trunking protocol decoded) lists the map by LPCN ascending in decimal from `channel_hz` (a hidden channel is not
-  listed, a set one shows the user's frequency), each LPCN even when two share a frequency, and whether it has rows to
-  list is `channel_hz`'s too, not the shared map's count (another protocol can empty the rows under the user's
-  entries); positional rows stay, named by the LPCN `channel_hz` gives their frequency, P25
-  and Connect Plus rows keep hex, a P25 map after a move from a Tier III site and a Connect Plus site reached after one
-  included (the session's flags hold, the view's do not). The call view's VC lookup (`app_recent_activity_vc_freq()`)
+  names another system (`other_system_here`) or the session no longer decodes DMR (`dmr_decoding`), as Qt's NO FREQ
+  does. It lists up to eight as `CH 12: no frequency (TG 1234, slot 1)` (a row past the details reads `(unchecked)` from
+  the checked set when no checked grant named it), and when `dsd_app_dmr_t3_view_lists_lpcns()` holds
+  (`dsd_app_dmr_t3_view_shows_lpcns()`: Tier III named, checked or RAS-accepted, or a ledger or overlay entry, and no
+  other system named on the carrier (`other_system_here`), and DMR decoded (`dmr_decoding`); and the receiver is on a
+  DMR system now, by the snapshot's sync, or before any sync DMR the only trunking protocol decoded) lists the map by
+  LPCN ascending in decimal from `channel_hz` (a hidden channel is not listed, a set one shows the user's frequency),
+  each LPCN even when two share a frequency, and whether it has rows to list is `channel_hz`'s too, not the shared map's
+  count (another protocol can empty the rows under the user's entries); positional rows stay, named by the LPCN
+  `channel_hz` gives their frequency, P25 and Connect Plus rows keep hex, a P25 map after a move from a Tier III site
+  and a Connect Plus site reached after one included (the session's flags hold, the view's do not). The call view's VC
+  lookup (`app_recent_activity_vc_freq()`)
   takes a DMR activity row's channel from its observation, never its decimal text, at `dsd_app_dmr_t3_channel_hz()`
   (a hidden channel has none; a Connect Plus LCN reads the shared row). Tests linking the call view without the DMR
   module take `dmr_t3_chan_effective_hz()` from `tests/test_support/dmr_t3_effective_stub.c`
@@ -17760,8 +17761,9 @@ Qt Quick frontend (`src/ui/qt`):
   while the bridge and the saved systems are still alive) reads the retained results and, for an OK edit, keeps it on
   that system with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the
   RadioReference provenance) before `dmrChannelResultReceived()`; `saveDmrChannelEdit()` runs that save again for a
-  captured uid. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number
-  entries only, never a bool, text or a fraction, the first per channel, at most 256, by channel). `dmr_channels_args.h`
+  captured uid. On Android, an edit still queued when the app quits is applied by the service but not saved to the
+  system. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number entries
+  only, never a bool, text or a fraction, the first per channel, at most 256, by channel). `dmr_channels_args.h`
   judges a system by its start's options, read as the decoder reads them (`cli_option_tokens.h`, shared with
   `session_args.cpp`): `dmr_channels_session_decodes_dmr()` takes the last `-f` (either getopt form) over the decode
   flag, the system's and the app's extra options and the live radio settings, in argv order (Auto, DMR, DMR mono, TDMA

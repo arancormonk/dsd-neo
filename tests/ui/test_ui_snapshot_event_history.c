@@ -620,6 +620,17 @@ assert_dmr_t3_copies(uint64_t published, uint64_t consumer) {
 /* Both hops carry an owned copy: the ledger with its details, the origins, the overlay rows (hidden ones too), the Tier
    III flag and the checked TSCC evidence, which goes stale once the receiver leaves the carrier. A live state carries
    none. */
+/* The Tier III cases below run a DMR session: its options were published first, as the engine publishes them before
+   any state (dsd_app_dmr_t3_note_opts()), so the view reads dmr_decoding 1 and the shared predicates hold. */
+static void
+note_dmr_session(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    opts->frame_dmr = 1;
+    dsd_app_dmr_t3_note_opts(opts);
+    free(opts);
+}
+
 static void
 test_dmr_t3_view_carries_the_record(void) {
     dsd_state* st = new_session_state();
@@ -1437,6 +1448,7 @@ main(void) {
     test_chan_map_gate_keys_on_the_session();
     test_history_copy_keys_on_the_ring_instance();
     test_render_range_carries_every_field();
+    note_dmr_session();
     test_dmr_t3_view_carries_the_record();
     test_dmr_t3_view_idle_refresh_copies_nothing();
     test_dmr_t3_view_reconciles_rows_other_writers_filled();

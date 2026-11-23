@@ -13,6 +13,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
