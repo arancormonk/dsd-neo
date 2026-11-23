@@ -305,10 +305,10 @@ def confirm_time(record, tx):
     return None
 
 
-def tetra_site(main, mcc, mnc):
-    """The site line of a TMO cell: its main carrier first, an LA after the MNC when SYSINFO carried one."""
-    head = re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}")
-    return re.compile("^" + head + f"({re.escape(DOT)}LA \\d+)?$")
+def tetra_site(main, mcc, mnc, la):
+    """The whole site line of a TMO cell whose SYSINFO the search took: its main carrier first, then MCC, MNC and the
+    location area its fixture's SYSINFO carries."""
+    return re.compile("^" + re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}{DOT}LA {la}") + "$")
 
 
 # id, range digital (0 analog, 1 Auto, 10 TETRA), fixture (None: noise; "dmo traffic" and "dmo presence" the
@@ -317,15 +317,17 @@ def tetra_site(main, mcc, mnc):
 # plays: looped from the scene's start (None), its bursts at a phase against each tune ("phase", the phase at the first
 # tune in eighths of a frame), off from the search's landing tune on ("until landing"), or on until the search leaves
 # its first visit to it, or its time is up ("until departure").
-TMO_SITE = tetra_site("426.70000 MHz", 228, 8889)
+# The real-air call (and its AWGN copy) broadcasts LA 1, the marginal control channel LA 1052, the synthetic cell LA
+# 777 (build_iq_fixtures.py tetra_sysinfo_dibits()), in every SYSINFO the decoder reads from them.
+TMO_SITE = tetra_site("426.70000 MHz", 228, 8889, 1)
 DIRECT = re.compile("^Direct$")
-CELL_SITE = tetra_site("408.03125 MHz", 460, 4242)
+CELL_SITE = tetra_site("408.03125 MHz", 460, 4242, 777)
 RUN_A = (
     ("nfm", 0, "nfm_tone_synth", 446100000, 25000, 12500, None, ON_S),
     ("dmr", 1, "dmr_voice", 448100000, 25000, 12500, ("DMR", None, None, 1), ON_S),
     ("tmo", 10, "tetra_call_real_air_72k", 426700000, 50000, 25000, ("TETRA", "CC 1", TMO_SITE, 1), ON_S),
     ("cc144", 10, "tetra_cc_marginal_real_air_144k", 467912500, 50000, 12500,
-     ("TETRA", "CC 44", tetra_site("467.91250 MHz", 250, 13), 1), ON_S),
+     ("TETRA", "CC 44", tetra_site("467.91250 MHz", 250, 13, 1052), 1), ON_S),
     ("cell", 10, "tetra_bsch_synth_72k", 408031250, 25000, 25000, ("TETRA", "CC 17", CELL_SITE, 1), ON_S),
     ("traffic", 10, "tetra_bsch_synth_72k", 408131250, 25000, 25000, ("TETRA", "CC 17", CELL_SITE, 1), ON_S),
     ("dmo", 10, "tetra_dmo_call_synth_72k", 433000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S),
