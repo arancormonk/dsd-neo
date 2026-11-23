@@ -2268,6 +2268,41 @@ test_dcr_key_is_reported_as_the_working_key(void) {
 }
 
 /*
+ * A VCALL_IV heard during a DCR call is another transmission's (issue #903): DCR carries no IV, and its frames no
+ * FACCH1. On a scrambled DCR call it neither becomes the call's MI nor republishes its crypto, and the DCR call's
+ * working register runs on untouched.
+ */
+static int
+test_vcall_iv_during_a_dcr_call_is_not_the_dcr_calls(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    state->nxdn_payload_mi = 0x0BADULL; /* the scrambler's working register */
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("dcr-iv-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("dcr-iv-no-mi", call.mi == dcr.mi ? 1 : 0, 1);
+    rc |= expect_int("dcr-iv-not-on-air", (int)state->nxdn_iv_on_air, 0);
+    rc |= expect_int("dcr-iv-register-untouched", state->nxdn_payload_mi == 0x0BADULL ? 1 : 0, 1);
+    rc |= expect_int("dcr-iv-algid", (int)call.algid, (int)dcr.algid);
+    rc |= expect_int("dcr-iv-kid", (int)call.kid, (int)dcr.kid);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
  * A VCALL opening the next call takes that call's cipher from itself, not the DCR call's (issue #903): a VCALL is never a
  * DCR call's (DCR frames carry no FACCH1), so the scrambler a DCR call received is forgotten before the hysteresis
  * reads it, as at the first SCCH that acts. Trunking with --enc-lockout, the keyloader on NXDN48 holding DES key 7 and
@@ -2592,6 +2627,7 @@ main(void) {
     rc |= test_info1_loads_no_key();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_key_is_reported_as_the_working_key();
+    rc |= test_vcall_iv_during_a_dcr_call_is_not_the_dcr_calls();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
     rc |= test_vcall_after_a_dcr_call_resets_a_held_cipher();
     rc |= test_held_back_vcall_prints_no_key_value();

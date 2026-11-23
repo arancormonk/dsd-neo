@@ -3532,12 +3532,18 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
 }
 
 /* A CRC-verified VCALL_IV: its IV, received over the air, is the working IV and the MI the call publishes
-   (nxdn_published_mi()). */
+   (nxdn_published_mi()). One heard while a DCR call is the live call is another transmission's (DCR carries no IV, and
+   its frames no FACCH1): it is printed, but it neither becomes the DCR call's MI nor touches the working register the
+   DCR scrambler runs, and it publishes nothing. */
 static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    state->nxdn_payload_mi = nxdn_vcall_iv_extract(state, Message);
+    const unsigned long long int iv = nxdn_vcall_iv_extract(state, Message);
+    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", iv);
+    if (nxdn_live_call_is_dcr(state)) {
+        return;
+    }
+    state->nxdn_payload_mi = iv;
     state->nxdn_iv_on_air = 1U;
-    DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->nxdn_payload_mi);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }

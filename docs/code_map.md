@@ -12475,7 +12475,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   Every publication of the applied pair on the live call (a VCALL's, a VCALL_IV's, an INFO1's, a DCR SACCH-2's that
   names the scrambler) reads one rule, `nxdn_applied_cipher_is_live_calls()` (`nxdn_internal.h`): on a DCR call only
   that call's own scrambler (`NXDN_CIPHER_ORIGIN_DCR`) is published, so a pair an INFO1 or a VCALL applied before the
-  DCR call began, still applied while the hysteresis holds the DCR call's scrambler back, never reaches it.
+  DCR call began, still applied while the hysteresis holds the DCR call's scrambler back, never reaches it. A VCALL_IV
+  heard while a DCR call is the live call is another transmission's (DCR carries no IV): it is printed only, never the
+  DCR call's MI, never written into the working register the DCR scrambler runs, and it publishes nothing
+  (`NXDN_decode_VCALL_IV()`).
   A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
