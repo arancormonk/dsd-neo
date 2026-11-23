@@ -2913,7 +2913,8 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             if (!opts || opts->trunk_is_tuned != 1) {
                 tick_on_cc(ctx, opts, state, now_m);
             } else if (state) {
-                /* A voice channel a CSBK path tuned itself (Connect Plus, Hytera XPT) is judged as a followed grant's. */
+                /* A voice channel the receiver is on outside a follow the machine tracks is judged as a followed
+                   grant's. */
                 (void)dmr_sm_receive_check(ctx, opts, state, state->trunk_vc_freq[0], now_m, grant_timeout);
             }
             break;

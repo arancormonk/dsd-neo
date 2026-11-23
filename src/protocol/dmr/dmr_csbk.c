@@ -2685,28 +2685,6 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     dmr_cspdu_con_plus_try_tune_voice(opts, state, &g, &ev);
 }
 
-/* Follow a Connect Plus data grant the talkgroup policy allows, unless the receive policy rejects its slot or the
-   colour code verified on its channel (issue #637). Returns 0 only when the tune was refused. */
-static int
-dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint8_t tslot) {
-    const long freq = state->trunk_chan_map[lcn];
-    if (freq == 0 || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_DATA_POS, tslot)
-        || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
-        return 1;
-    }
-    const long receiver = dmr_sm_receiver_frequency(opts);
-    uint64_t request_id = 0U;
-    const dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id);
-    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        return 0;
-    }
-    /* A tune still in flight is judged once it lands, and one that fails takes nothing from the calls it left. */
-    dmr_sm_note_tracked_carrier_tune(dmr_sm_get_ctx(), state, tune_result, request_id, receiver, freq);
-    state->is_con_plus = 1;
-    dmr_reset_blocks(opts, state);
-    return 1;
-}
-
 static void
 dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu[], int csbk_o) {
     uint32_t dtarget;
@@ -2753,12 +2731,24 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     }
 
     policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
-    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
-        if (!dmr_cspdu_con_plus_tune_data(opts, state, lcn, tslot)) {
-            (void)dsd_recent_activity_restore(state, &activity_transaction);
-        }
-    } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+    if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
+        return;
+    }
+    if (!policy_allowed) {
         dmr_policy_log_block(opts, 0, dtarget, 0, &policy_decision);
+        return;
+    }
+    /* Followed through the trunk state machine's one follow entry point, as every other grant is: the machine owns the
+       assignment (its slot, data media and channel), so a later grant naming another call there ends it, and the receive
+       policy, the tune and the carrier it leaves are judged as for any grant. */
+    dmr_sm_event_t follow = ev;
+    follow.policy_valid = 1;
+    follow.policy = policy_decision;
+    const dmr_sm_grant_result_e result = dmr_sm_submit_grant(opts, state, &follow);
+    if (result == DMR_SM_GRANT_FOLLOWED || result == DMR_SM_GRANT_IN_PLACE) {
+        state->is_con_plus = 1;
+    } else if (result == DMR_SM_GRANT_DEFERRED) {
+        (void)dsd_recent_activity_restore(state, &activity_transaction);
     }
 }
 

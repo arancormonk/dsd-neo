@@ -78,7 +78,7 @@ int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
  * - the release of a followed call, a return to the control channel's included, even when no control channel is
  *   known and the receiver stays;
  * - the DMR machine, for every DMR tune it judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a status follow,
- *   a rest channel, a Connect Plus data tune, a probe, a settle) and for an operator's manual move under DMR
+ *   a rest channel, a probe, a settle) and for an operator's manual move under DMR
  *   trunking or before the trunk's owner is known (dmr_sm_note_operator_leave());
  * - the engine's reading of the receiver, for another trunk machine's tune (P25, NXDN) through the tune hooks and for
  *   an operator's manual move under P25 or NXDN trunking with DMR decoding on (dmr_sm_note_foreign_operator_leave()).

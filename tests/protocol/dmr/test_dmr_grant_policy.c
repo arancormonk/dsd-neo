@@ -1154,27 +1154,34 @@ test_con_plus_policy_before_window(dsd_opts* opts, dsd_state* st) {
     st->tg_hold = 0;
     status_env_done(st);
 
-    // A data channel the CSBK path tuned itself (the machine follows no call there): a preempt is refused inside the
-    // window, a Hold is followed.
-    con_plus_env(opts, st);
-    opts->trunk_tune_data_calls = 1;
-    seed_policy_row(st, 300, "A", 60, 1);
-    st->trunk_chan_map[4] = 856250000L;
-    status_window_closed(st);
-    uint8_t bits[256];
-    uint8_t bytes[48];
-    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
-    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-    rc |= expect_true("con+ data channel tuned", st->trunk_vc_freq[0] == 856250000L);
-    status_clock_at(1.0);
-    st->last_vc_sync_time = dsd_decode_time();
-    con_plus_voice(opts, st, 3, 300, 6, 0, 2);
-    rc |= expect_true("con+ preempt is refused on a CSBK-tuned data channel", st->trunk_vc_freq[0] == 856250000L);
-    st->tg_hold = 400;
-    con_plus_voice(opts, st, 4, 400, 6, 0, 2);
-    rc |= expect_true("con+ hold is followed from a CSBK-tuned data channel", st->trunk_vc_freq[0] == CP_FB);
-    st->tg_hold = 0;
-    status_env_done(st);
+    // A followed data call is held as any followed call is (the trunk state machine follows it): inside the window an
+    // outranking preempt past its dwell is followed over it, as is a Hold over it.
+    for (int hold = 0; hold < 2; hold++) {
+        con_plus_env(opts, st);
+        opts->trunk_tune_data_calls = 1;
+        seed_policy_row(st, 300, "A", 60, 1);
+        st->trunk_chan_map[4] = 856250000L;
+        status_window_closed(st);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        rc |= expect_true("con+ data channel tuned", st->trunk_vc_freq[0] == 856250000L);
+        status_clock_at(1.0);
+        st->last_vc_sync_time = dsd_decode_time();
+        if (hold) {
+            st->tg_hold = 400;
+            con_plus_voice(opts, st, 4, 400, 6, 0, 2);
+            rc |= expect_true("con+ hold is followed from a followed data call",
+                              st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_tg == 400);
+            st->tg_hold = 0;
+        } else {
+            con_plus_voice(opts, st, 3, 300, 6, 0, 2);
+            rc |= expect_true("con+ preempt past the dwell is followed from a followed data call",
+                              st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_tg == 300);
+        }
+        status_env_done(st);
+    }
 
     // Group tuning off still refuses a private grant.
     con_plus_env(opts, st);
@@ -1237,6 +1244,35 @@ test_con_plus_unfollowed_reassignment_ends_follow(dsd_opts* opts, dsd_state* st)
                         dmr_sm_get_ctx()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_status_tunes == 1);
         status_env_done(st);
     }
+    return rc;
+}
+
+/* A Connect Plus data grant the receiver follows is the trunk state machine's assignment, as every other followed grant
+   is: data following on, a data grant for LCN 4 TS1 is followed, and the machine follows that slot for a data call. A
+   group voice grant for LCN 4 TS1 then names another call there; the policy blocks its talkgroup, so it is not
+   followed, and the obsolete data assignment ends: the receiver returns to the control channel. (Private following off
+   refuses the data grant itself, whose target is a radio, so it cannot leave a data follow for a private grant.) */
+static int
+test_con_plus_data_follow_is_tracked(dsd_opts* opts, dsd_state* st) {
+    con_plus_env(opts, st);
+    opts->trunk_tune_data_calls = 1;
+    seed_policy_row(st, 200, "B", 0, 0);
+    st->trunk_chan_map[4] = 856250000L;
+    status_window_closed(st);
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    int rc = expect_true("con+ data grant followed", st->trunk_vc_freq[0] == 856250000L && st->is_con_plus == 1);
+    rc |= expect_true("con+ followed data grant is the machine's assignment",
+                      ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == 856250000L && ctx->vc_slot == 0
+                          && ctx->vc_data_call == 1 && ctx->vc_lpcn == 4);
+    status_clock_at(1.0);
+    con_plus_voice(opts, st, 2, 200, 4, 0, 2); // group voice grant, its talkgroup blocked
+    rc |= expect_true("con+ blocked voice grant on the followed data slot returns to the control channel",
+                      ctx->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_status_tunes == 1);
+    status_env_done(st);
     return rc;
 }
 
@@ -3259,6 +3295,7 @@ main(void) {
     rc |= test_xpt_csbk_hint_converts(opts, st);
     rc |= test_con_plus_blocked_reassignment_ends_follow(opts, st);
     rc |= test_con_plus_unfollowed_reassignment_ends_follow(opts, st);
+    rc |= test_con_plus_data_follow_is_tracked(opts, st);
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }

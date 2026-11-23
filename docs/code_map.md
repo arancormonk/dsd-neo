@@ -13592,7 +13592,9 @@ Private per-protocol modules worth knowing about:
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
     either being the same call whatever its caller) ends that assignment before any admission, whether the receiver
     would follow it or not: the Tier III and Connect Plus CSBK layers hand every decoded grant (Connect Plus: its voice
-    grants, group and private, and its data grants, opcode 0x06, through `dmr_cspdu_con_plus_grant_event()`) to
+    grants, group and private, and its data grants, opcode 0x06, through `dmr_cspdu_con_plus_grant_event()`, the data
+    grant it follows then going through `dmr_sm_submit_grant()` too, so the machine tracks that assignment,
+    `test_con_plus_data_follow_is_tracked()`) to
     `dmr_sm_note_grant_assignment()` before their call-type switches (data following off, the default; private off;
     group off), policy check (blocked or locked-out talkgroups) and voice window, and `dmr_sm_submit_grant()` checks it first as
     well (`dmr_sm_end_changed_assignment()`, `grant-replaces-followed`, REFUSED: the grant itself is not followed). The slot is retired by one per-slot reset (`dmr_sm_retire_slot()`,
@@ -13698,7 +13700,7 @@ Private per-protocol modules worth knowing about:
     chain on a kept timeline would otherwise step the left call's MI on and decrypt them with it. DMR's other tunes that leave a carrier
     forget the same privacy bit, ALG, key ID, MI and MI chain, and hold the next carrier's voice, once the tune is
     accepted (`dmr_sm_note_carrier_tune()`, given the receiver's frequency before the tune): the Capacity Plus rest move
-    (`dmr_slco_tune_and_reset()`), the Connect Plus data tune, a control channel probe and a settle tune (these two read
+    (`dmr_slco_tune_and_reset()`), a control channel probe and a settle tune (these two read
     it from the machine's own attribution, `dmr_sm_attributed_receiver()`, so the hunt adds no rigctl round trip: the
     carrier it follows, else the one a tune of this generation put it on, else on a rigctl peer the frequency the peer
     last confirmed, `dsd_opts::rigctl_sent_freq_hz`, else the RTL centre; a rigctl settle tunes the peer to the
@@ -13715,9 +13717,9 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_follow_grant()` takes its request): the left calls end at once, as the machine moves on, and their
     decryption is judged once the request lands (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY`
     `dmr_grant_follow_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
-    (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data channel follow
-    (`dmr_cspdu_con_plus_tune_data()`, through `dmr_sm_note_tracked_carrier_tune()`):
-    `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
+    (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data grant, which is
+    followed as every grant is (`dmr_sm_submit_grant()`, so the machine owns its assignment: its slot, data media and
+    LCN): `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
     reading of the tuner (`dsd_engine_receiver_hz()`): the machine's own tunes go through `dmr_sm_tune_to_freq()` and
     `dmr_sm_tune_to_cc()`, which mark them as judged by their caller for the engine's hook
     (`dsd_trunk_tuning_caller_judges()`, the marker a trunk-scan park, a return to the control channel and an operator's
@@ -13787,8 +13789,8 @@ Private per-protocol modules worth knowing about:
     preempt grant goes to the gate with the window as `caller_busy`, and `is_con_plus` is set only once taken.
   - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;
     a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
-    Hold; a Connect Plus data channel the CSBK path tuned itself has nothing to describe, so only Hold leaves it inside
-    its window; the ranking covers one status message (one XPT bank). Tests: `DMR_PREEMPT`, `DMR_GRANT_POLICY`,
+    Hold; a followed Connect Plus data call is held as any followed call is (Hold, or a preempt past its dwell, takes
+    the receiver from it inside the window, `test_con_plus_policy_before_window()`); the ranking covers one status message (one XPT bank). Tests: `DMR_PREEMPT`, `DMR_GRANT_POLICY`,
     `DMR_CSBK_HELPERS`, `DMR_FLCO_PRIVACY_MODES`, `APP_COMMAND_QUEUE`.
 - P25 preemption (`p25_trunk_sm.c`, `p25p2_vpdu.c`, `p25_lcw.c`). While the SM holds a voice channel, grants and
   updates for another carrier that the voice channel carries (Phase 2 FACCH/SACCH MAC grants, Phase 1 LC `0x42`,

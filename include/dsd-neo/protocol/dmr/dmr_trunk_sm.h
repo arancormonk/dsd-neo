@@ -341,7 +341,7 @@ int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 long dmr_sm_receiver_frequency(const dsd_opts* opts);
 
 /** @brief After a DMR tune that is not the machine's follow or status follow (a Capacity Plus rest move, a
- *  Connect Plus data tune, a control channel probe or settle) took the receiver from @p receiver_hz (where it was
+ *  control channel probe or settle) took the receiver from @p receiver_hz (where it was
  *  before the tune, as dmr_sm_receiver_frequency() reads it; 0 unknown) to @p freq_hz: when it left that carrier, the left
  *  calls' privacy bit and talkgroup keys (dmr_forget_call_decryption()), ALG, key ID and MI and each slot's MI chain
  *  are forgotten, as a release forgets them, so the next carrier's frames before their own PI or LC never decrypt with
