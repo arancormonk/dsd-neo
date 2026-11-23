@@ -13605,8 +13605,11 @@ Private per-protocol modules worth knowing about:
   still run for any FID. Grants are outbound only: opcode 56 on MS data is BS_Dwn_Act (TS 102 361-2 Table 7.5a)
   under any FID and never reaches the grant parser. Fields of an appended MBC block (bit 96 on: an absolute grant's
   or C_MOVE's CdefParms, a C_BCAST's Chan_Freq frequencies and Vote_Now/Adjacent_Site absolute parameters) are read
-  only when the MBC assembler handed the block over (`dmr_cspdu_mbc()`'s `appended_blocks`); a header heard as a
-  standalone CSBK (`dmr_cspdu()`) prints its own fields and teaches, publishes or follows no frequency. Tests:
+  only when the MBC assembler handed the block over (`dmr_cspdu_mbc()`'s `appended_blocks`) and the block carries
+  its header's CSBKO (TS 102 361-4 Tables 7.16, 7.18 and 7.21, `dmr_cspdu_mbc_own_blocks()`: both CRCs passing does not
+  show that the blocks belong together); a header heard as a standalone CSBK (`dmr_cspdu()`), or with another
+  message's block (`test_foreign_block_never_confirms()`, both directions), prints its own fields and teaches,
+  publishes or follows no frequency. Tests:
   `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`), `DMR_GRANT_POLICY` (lone
   C_BCAST headers), `DMR_T3_CMOVE`, `DMR_EVENT_CRC`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
@@ -13680,8 +13683,8 @@ Private per-protocol modules worth knowing about:
     the mapping in an empty cell with its provenance (`dmr_chan_map_note()` in `dmr_csbk.c`): 2 on the control channel,
     else 1, whatever its CRC verdict, as before. A mapping already held is never rewritten: an unconfirmed one (1) is
     confirmed (2) only when this site's own channel (a grant or a Chan_Freq whose appended block carries its header's
-    CSBKO, TS 102 361-4 Tables 7.16 and 7.21, `test_foreign_block_never_confirms()`: an absolute grant reads nothing
-    from another MBC's block; never another site's Vote_Now or
+    CSBKO, TS 102 361-4 Tables 7.16 and 7.21, `test_foreign_block_never_confirms()`: an MBC reads nothing from
+    another message's block; never another site's Vote_Now or
     Adjacent site announcement) names the same frequency for it on the control channel in a CSBK whose own CRC passed
     (`dmr_csbk_crc_checked()`: never one `-F` accepted as RAS, nor an MBC whose header failed; a mapping learned off the
     control channel of a RAS site therefore stays unconfirmed, a decided limit), and an imported or heuristic one (0),

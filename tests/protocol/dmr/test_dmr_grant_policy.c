@@ -599,6 +599,7 @@ build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_
     build_pf0(bits, bytes, 40U, 0U);
     write_bits_u32(bits, 16U, 5U, 5U);
     write_bits_u32(bits, 68U, channel & 0x0FFFU, 12U);
+    write_bits_u32(bits, 98U, 40U, 6U); // the appended block's CSBKO: its header's (TS 102 361-4 Table 7.21)
     write_bits_u32(bits, 112U, 0U, 4U);
     write_bits_u32(bits, 118U, channel & 0x0FFFU, 12U);
     write_bits_u32(bits, 130U, rx_int & 0x03FFU, 10U);
@@ -613,6 +614,7 @@ build_c_bcast_adjacent_apcn(uint8_t* bits, uint8_t* bytes, uint16_t channel, uin
     write_bits_u32(bits, 16U, 6U, 5U);
     bits[56] = 1U;
     write_bits_u32(bits, 68U, 0x0FFFU, 12U);
+    write_bits_u32(bits, 98U, 40U, 6U); // the appended block's CSBKO: its header's (TS 102 361-4 Table 7.21)
     write_bits_u32(bits, 112U, 0U, 4U);
     write_bits_u32(bits, 118U, channel & 0x0FFFU, 12U);
     write_bits_u32(bits, 130U, rx_int & 0x03FFU, 10U);

@@ -6454,6 +6454,7 @@ build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_
     bytes[0] = 40U;
     write_csbk_bits(bits, 16U, 5U, 5U);
     write_csbk_bits(bits, 68U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 98U, 40U, 6U); // the appended block's CSBKO: its header's (TS 102 361-4 Table 7.21)
     write_csbk_bits(bits, 112U, 0U, 4U);
     write_csbk_bits(bits, 118U, channel & 0x0FFFU, 12U);
     write_csbk_bits(bits, 130U, rx_int & 0x03FFU, 10U);

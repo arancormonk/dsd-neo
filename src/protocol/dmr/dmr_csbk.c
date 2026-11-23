@@ -418,20 +418,15 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 }
 
 /* An absolute grant's channel (TS 102 361-4 §7.1.1.1.1.1.1): the CdefParms of the block appended to its MBC header.
-   Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over)
-   and carries the header's CSBKO @p csbk_o (TS 102 361-4 Table 7.16): the header's and the block's CRCs do not show
-   that they belong together. A header heard as a standalone CSBK carries only its own 96 bits, and a block of another
-   MBC is not this grant's, so either names no frequency, is not followed, ends no followed call and teaches the channel
-   map nothing (fail closed). */
+   Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over,
+   which dmr_cspdu_mbc() counts only when the block carries the header's CSBKO, dmr_cspdu_mbc_own_blocks()): a header
+   heard as a standalone CSBK, or with another MBC's block, names no frequency, is not followed, ends no followed call
+   and teaches the channel map nothing (fail closed). */
 static uint16_t
-dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
-                                   uint8_t appended_blocks, long int* freq) {
+dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t appended_blocks,
+                                   long int* freq) {
     if (appended_blocks == 0U) {
         DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Absolute Parameters Not Received;");
-        return 0;
-    }
-    if ((int)convert_bits_into_output(&cs_pdu_bits[98], 6) != csbk_o) {
-        DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Appended Block of Another MBC;");
         return 0;
     }
     uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
@@ -630,8 +625,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
 
     uint16_t mbc_lpchannum = 0U;
     if (lpchannum == 0xFFF) {
-        mbc_lpchannum =
-            dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, csbk_o, appended_blocks, &air_freq);
+        mbc_lpchannum = dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, appended_blocks, &air_freq);
     }
     const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
     const long int freq = dmr_cspdu_pf0_named_freq(state, call_channel, air_freq);
@@ -1425,10 +1419,10 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
     dsd_state_trunk_lcn_count_raise(state, state->lcn_freq_count + 1);
 }
 
+// A Chan_Freq maps this site's own channel: it may confirm a learned mapping (dmr_chan_map_note()).
 static void
-dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr,
-                                          int may_confirm) {
-    if (!dmr_chan_map_note(opts, state, a_channel, freqr, may_confirm)) {
+dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
+    if (!dmr_chan_map_note(opts, state, a_channel, freqr, 1)) {
         return;
     }
     dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
@@ -1595,14 +1589,14 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, f->a_channel == 0xFFF);
-    /* The header's channel, or for its absolute escape the one the appended block defines (as an absolute grant's);
-       only a block carrying C_BCAST's CSBKO (TS 102 361-4 Table 7.21) may confirm a learned mapping. The escape only
+    /* The header's channel, or for its absolute escape the one the appended block defines (as an absolute grant's).
+       The block is C_BCAST's own (dmr_cspdu_mbc_own_blocks()), so it may confirm a learned mapping. The escape only
        confirms: it teaches no LPCN the map does not hold, as it never has. */
     const uint16_t channel = f->a_channel == 0xFFF ? abs_freqs.lpchannum : f->a_channel;
     if (f->a_channel == 0xFFF && (!dmr_t3_lpcn_is_channel(channel) || state->trunk_chan_map[channel] == 0)) {
         return;
     }
-    dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, channel, abs_freqs.freqr, f->mbc_csbko == 40U);
+    dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, channel, abs_freqs.freqr);
 }
 
 static void
@@ -3242,6 +3236,23 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The appended blocks an MBC header @p csbk_o may read (@p appended_blocks, those the MBC assembler handed over): its
+   first appended block carries the header's CSBKO (bits 98..103, TS 102 361-4 Tables 7.16, 7.18 and 7.21), else none.
+   The header's and the block's CRCs do not show that they belong together; a block of another message names no
+   channel or frequency for this one, so the header is handled as heard alone. */
+static uint8_t
+dmr_cspdu_mbc_own_blocks(const uint8_t cs_pdu_bits[], int csbk_o, uint8_t appended_blocks) {
+    if (appended_blocks == 0U) {
+        return 0U;
+    }
+    const int block_o = (int)convert_bits_into_output(&cs_pdu_bits[98], 6);
+    if (block_o != csbk_o) {
+        DSD_FPRINTF(stderr, "\n MBC Appended Block of Another Message (Op %02X);", (unsigned)block_o);
+        return 0U;
+    }
+    return appended_blocks;
+}
+
 //function for handling Control Signalling PDUs (CSBK, MBC) messages
 void
 dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
@@ -3275,7 +3286,8 @@ dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t c
 
         dmr_cspdu_init_cc_anchor(opts, state);
 
-        dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid, appended_blocks);
+        const uint8_t own_blocks = dmr_cspdu_mbc_own_blocks(cs_pdu_bits, csbk_o, appended_blocks);
+        dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid, own_blocks);
         dmr_cspdu_handle_cap_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
         dmr_cspdu_handle_con_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
         dmr_cspdu_handle_xpt(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);

@@ -1663,9 +1663,9 @@ test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
         }
     }
 
-    /* Another MBC's block names no channel for the grant: a TV_GRANT header for a blocked talkgroup on the followed
+    /* Another MBC's block names no channel for its header: a TV_GRANT header for a blocked talkgroup on the followed
        slot, with a C_BCAST's block naming the followed carrier, neither ends the followed call nor teaches an empty
-       LPCN. */
+       LPCN, and a C_BCAST Chan_Freq header with a grant's block teaches no empty LPCN. */
     init_env(opts, st, 2.0);
     seed_row(st, 2300, "B", 0, 0);
     tv_grant(opts, st, LPCN_B, 0, 300, 1);
@@ -1676,6 +1676,10 @@ test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
                       sm()->state == DMR_SM_TUNED && vc(st) == VC_B && sm()->vc_tg == 300 && g_tunes == 1);
     abs_tv_grant_block(opts, st, 40U, lpcn_d, VC_C, 1, 2300, 3);
     rc |= expect_true("another MBC's block teaches no empty LPCN",
+                      st->trunk_chan_map[lpcn_d] == 0 && st->dmr_lcn_trust[lpcn_d] == 0U);
+    /* The other direction: a C_BCAST Chan_Freq header with a grant's block names no frequency for its LPCN. */
+    c_bcast_chan_freq_block(opts, st, lpcn_d, 49U, lpcn_d, VC_C);
+    rc |= expect_true("a Chan_Freq with a grant's block teaches no empty LPCN",
                       st->trunk_chan_map[lpcn_d] == 0 && st->dmr_lcn_trust[lpcn_d] == 0U);
     return rc;
 }
