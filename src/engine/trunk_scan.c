@@ -3159,6 +3159,12 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
                        target->id);
         return -1;
     }
+    /* A DMR target's map makes its DMR record here, as the -C map does at start, before the build saves the target's
+       snapshot: a checked grant for a mapped channel then keeps its Tier III evidence (the grant path never allocates
+       the record), and the map's rows are the file's. */
+    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
+        dmr_t3_chan_note_map_loaded(state);
+    }
     return 0;
 }
 

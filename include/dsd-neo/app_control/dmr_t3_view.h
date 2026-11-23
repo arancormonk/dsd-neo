@@ -108,8 +108,10 @@ typedef struct {
     uint8_t other_system_here; /**< the carrier's received identity (dsd_state::rx_id) names a system that is not Tier
                                     III: another DMR trunking system (Capacity Plus, Connect Plus, XPT;
                                     dsd_rxid_dmr_trunk_named()) or another protocol's. Its map is that system's, so
-                                    no Tier III numbering or editor applies; tier3 and tier3_unchecked read 0. 0 while
-                                    the carrier named nothing yet */
+                                    no Tier III numbering or editor applies; tier3 and tier3_unchecked read 0. Also 1
+                                    while it names none but the last frame sync was another protocol's than DMR
+                                    (dsd_state::rx_sync_protocol: YSF, D-STAR and X2-TDMA send no identity). 0 while
+                                    nothing was heard on the carrier yet */
     uint8_t overrides_applied; /**< the --dmr-chan-overrides file applied to this session (dmr_t3_overrides_applied()):
                                     0 with no file, and when the engine skipped it (a session that does not decode
                                     DMR, or a trunk scan), whatever dsd_opts::dmr_chan_overrides_file holds */

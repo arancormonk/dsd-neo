@@ -4286,6 +4286,8 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
     dmr_ras_reset(state);
     (void)dsd_engine_apply_dmr_leave(state);
     dsd_rxid_mark_stale(state);
+    /* So is the carrier's Tier III control-channel evidence: a fresh checked C_ALOHA or C_SYS_Parms names it again. */
+    dmr_t3_cc_note_reception_lost(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
     }

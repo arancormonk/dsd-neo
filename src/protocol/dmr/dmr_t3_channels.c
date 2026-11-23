@@ -620,6 +620,14 @@ dmr_t3_cc_note_payload_channel(const dsd_state* state, int composite) {
     }
 }
 
+void
+dmr_t3_cc_note_reception_lost(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL) {
+        ext->cc_evidence = 0U;
+    }
+}
+
 long
 dmr_t3_cc_confirmed_hz(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);

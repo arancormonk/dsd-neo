@@ -2492,6 +2492,26 @@ test_dmr_channels_csv(void) {
     expect("another option that starts the same is no trunk scan",
            !dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
 
+    /* Review gate b-r6: a run mode that decodes no frames never reads the file (dsd_engine_run_decodes_frames()): MBE
+       playback (-r) wherever it is typed, the M17 UDP/IP decoder (-fU) and the M17 encoders (-fZ, -fB, -fP), which
+       keep their run mode whatever -f comes after them. */
+    for (const QString& extra :
+         {QStringLiteral("-r /data/call.amb"), QStringLiteral("-fU"), QStringLiteral("-fU -fs"), QStringLiteral("-f U"),
+          QStringLiteral("-fZ -fa"), QStringLiteral("-fB"), QStringLiteral("-fP -fs")}) {
+        sys = tier3_system();
+        sys["extraArgs"] = extra;
+        expect(qPrintable(QStringLiteral("not for a run that decodes no frames: '%1'").arg(extra)),
+               dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+        sys.remove("extraArgs");
+        SessionArgPrefs framelessPrefs;
+        framelessPrefs.extraArgs = extra;
+        expect("nor with it among the app's", dsd_qt::session_args_dmr_channels_csv(sys, framelessPrefs).isEmpty());
+    }
+    sys = tier3_system();
+    sys["extraArgs"] = QStringLiteral("-C -r");
+    expect("-r as another option's value is no playback: passed",
+           !dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+
     sys = tier3_system();
     expect("an argv names no file the start did not write",
            !session_args_build(sys, prefs, nullptr).contains(QStringLiteral("--dmr-chan-overrides")));
@@ -2659,6 +2679,18 @@ test_dmr_channels_start(void) {
                && result.value("error").toString() == QStringLiteral("dmr-channels")
                && result.value("errorText").toString()
                       == dsd_qt::session_args_error_text(SessionArgsError::DmrChannelsShadowed));
+
+    /* Review gate b-r6: MBE playback decodes no frames, so the engine never opens either file: the start neither writes
+       the saved channels nor refuses the user's own file over them. */
+    QVariantMap playback = sys;
+    playback["extraArgs"] = QStringLiteral("-r /data/call.amb --dmr-chan-overrides /data/old.csv");
+    host.starts = 0;
+    result = builder.start(playback, &host, QStringLiteral("saved"));
+    expect("an MBE playback start is not refused", result.value("started").toBool() && host.starts == 1);
+    expect("and passes only the user's own file", host.received.count(QStringLiteral("--dmr-chan-overrides")) == 1
+                                                      && host.received.contains(QStringLiteral("/data/old.csv"))
+                                                      && !host.received.contains(path));
+    expect("and writes none", !QFileInfo::exists(path));
     while (systems.count() > 0 && systems.remove(0)) {}
 }
 

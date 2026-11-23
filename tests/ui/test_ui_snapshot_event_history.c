@@ -896,6 +896,17 @@ test_dmr_t3_view_follows_the_current_system(void) {
     view = dmr_t3_view_after_publish(st);
     assert(view->other_system_here == 1U && view->tier3 == 0U && !dsd_app_dmr_t3_view_shows_lpcns(view));
     DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
+
+    /* Review gate b-r6: a protocol that sends no identity (YSF) names another system all the same, though the record
+       holds no family; a DMR sync after it names none again. */
+    dsd_rxid_note_sync(st, DSD_SYNC_YSF_POS);
+    view = dmr_t3_view_after_publish(st);
+    assert(st->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
+    assert(view->other_system_here == 1U && view->tier3 == 0U && !dsd_app_dmr_t3_view_shows_lpcns(view));
+    dsd_rxid_note_sync(st, DSD_SYNC_DMR_BS_DATA_POS);
+    view = dmr_t3_view_after_publish(st);
+    assert(view->other_system_here == 0U && view->tier3 == 1U && dsd_app_dmr_t3_view_shows_lpcns(view));
+    dsd_rxid_reset(st);
     free_session_state(st);
 }
 

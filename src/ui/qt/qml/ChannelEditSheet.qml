@@ -98,7 +98,9 @@ ModalSheet {
     }
 
     // @p lpcn 0 opens an empty editor (Add channel); @p isListed a channel
-    // from the Channels list, which keeps its number.
+    // from the Channels list, which keeps its number. Add channel starts
+    // with no frequency whatever the editor showed before: setting adding
+    // reads the number field as it was left, which can name a channel.
     function openFor(lpcn, isListed) {
         opened = lpcn > 0 ? channels.channel(lpcn) : noChannel;
         adding = lpcn <= 0;
@@ -106,7 +108,7 @@ ModalSheet {
         generation = channels.generation;
         session = channels.session;
         initialNumber = lpcn > 0 ? String(lpcn) : "";
-        initialFrequency = opened.hz > 0 ? Util.mhzValueText(opened.hz) : "";
+        initialFrequency = lpcn > 0 && opened.hz > 0 ? Util.mhzValueText(opened.hz) : "";
         numberField.text = initialNumber;
         frequencyField.text = initialFrequency;
         sent = 0;

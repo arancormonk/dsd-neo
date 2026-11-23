@@ -173,7 +173,8 @@ constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::DmrChannelsS
  * @brief The --dmr-chan-overrides file a start of @p system passes (discussion #900 F3), or empty for none: a header
  * and one `lpcn,frequency_hz` row per entry of its dmrChannels (SavedSystemsModel::validDmrChannels(), 0 = hidden),
  * by channel. Only for a system whose start decodes DMR (dmr_channels_session_decodes_dmr() over its decode flag,
- * its extra options, the app's and its live radio settings: Auto, DMR, DMR mono, TDMA) with entries, and never when
+ * its extra options, the app's and its live radio settings: Auto, DMR, DMR mono, TDMA, in a run mode that decodes
+ * frames, so never with MBE playback (-r), the M17 UDP/IP decoder (-fU) or an M17 encoder) with entries, and never when
  * the system's or the app's extra options start a trunk scan (--trunk-scan), which the decoder refuses the option
  * under.
  *

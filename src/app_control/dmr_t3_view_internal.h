@@ -75,7 +75,9 @@ uint8_t dsd_app_dmr_t3_dmr_decoding_noted(void);
 
 /* 1 while the carrier's received identity (dsd_state::rx_id of the live decoder state @p state) names a system that is
  * not Tier III: another protocol's, or another DMR trunking system (Capacity Plus, Connect Plus, XPT;
- * dsd_rxid_dmr_trunk_named()). 0 while the carrier named nothing yet, and for NULL. The view's other_system_here, and
+ * dsd_rxid_dmr_trunk_named()); or while it names none but the last frame sync was another protocol's than DMR
+ * (dsd_state::rx_sync_protocol: a YSF or D-STAR carrier sends no identity). 0 while nothing was heard on the carrier
+ * yet (or only DMR that named no trunking system), and for NULL. The view's other_system_here, and
  * what refuses a channel edit (DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM) on the decoder thread. */
 uint8_t dsd_app_dmr_t3_other_system_here(const dsd_state* state);
 

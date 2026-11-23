@@ -6,7 +6,7 @@
 /**
  * @file
  * @brief Discussion #900 F3: what a saved system's start options say about its DMR Tier III channels: whether the
- * session decodes DMR, and whether the user's own options name a channels file.
+ * session decodes DMR frames, and whether the user's own options name a channels file.
  *
  * Header-only and read the way the decoder reads its command line (cli_option_tokens.h), so the start
  * (session_args.cpp) and an edit kept on the system (saved_systems_model.cpp, which does not link the session
@@ -53,9 +53,28 @@ dmr_channels_decode_options(const QVariantMap& system, const QString& appExtra) 
 }
 
 /**
- * @brief Whether a start of @p system decodes DMR, with @p appExtra the app-wide extra options: the last -f the
- * decoder reads (getopt's "-fs" and "-f s" alike) among dmr_channels_decode_options(), as each -f sets the decode
- * set over the one before, selects a preset that frames DMR; or none does, which leaves the engine's default, Auto.
+ * @brief Whether a start of @p system runs a mode that decodes no frames, with @p appExtra the app-wide extra options,
+ * as the engine judges its options (dsd_engine_run_decodes_frames(), src/engine/engine.c): MBE playback (-r), or a -f
+ * that selects the M17 UDP/IP decoder (-fU) or an M17 encoder (-fZ, -fB, -fP). Each sets its run mode for the whole
+ * run, whatever -f the decoder reads after it, so any one among dmr_channels_decode_options() counts.
+ */
+inline bool
+dmr_channels_session_frameless(const QVariantMap& system, const QString& appExtra) {
+    const QStringList split = dmr_channels_decode_options(system, appExtra);
+    if (option_tokens(split).contains(QStringLiteral("-r"))) {
+        return true;
+    }
+    const QStringList values = short_option_values(split, QLatin1Char('f'));
+    return std::any_of(values.cbegin(), values.cend(), [](const QString& value) {
+        return !value.isEmpty() && QStringLiteral("UZBP").contains(value.at(0));
+    });
+}
+
+/**
+ * @brief Whether a start of @p system decodes DMR, with @p appExtra the app-wide extra options: it decodes frames
+ * (dmr_channels_session_frameless() is false), and the last -f the decoder reads (getopt's "-fs" and "-f s" alike)
+ * among dmr_channels_decode_options(), as each -f sets the decode set over the one before, selects a preset that frames
+ * DMR; or none does, which leaves the engine's default, Auto.
  *
  * The presets that frame DMR are the ones src/runtime/decode_mode.c sets frame_dmr for: Auto (-fa), DMR (-fs), DMR
  * mono and TDMA (-ft, P25 with DMR). The CLI takes -fr (the single-slot mono decoder) as the DMR preset, and reads only
@@ -64,6 +83,9 @@ dmr_channels_decode_options(const QVariantMap& system, const QString& appExtra) 
  */
 inline bool
 dmr_channels_session_decodes_dmr(const QVariantMap& system, const QString& appExtra) {
+    if (dmr_channels_session_frameless(system, appExtra)) {
+        return false;
+    }
     const QStringList values = short_option_values(dmr_channels_decode_options(system, appExtra), QLatin1Char('f'));
     if (values.isEmpty()) {
         return true;

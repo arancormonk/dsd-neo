@@ -13516,8 +13516,10 @@ Private per-protocol modules worth knowing about:
   by `<dsd-neo/core/dmr_chan_overrides_csv.h>`, bad rows and rows past 256 channels skipped with a warning) is applied
   unchecked by the engine before the first frame (`import_dmr_chan_overrides_if_needed()`). A startup `-C` map makes
   the DMR record before then (`note_startup_channel_map()`, `dmr_t3_chan_note_map_loaded()`, as a live import does;
-  skipped when the state already has a record, and under a trunk scan), so a checked grant for a mapped channel keeps
-  its Tier III evidence though the grant path never allocates (review gate b-r5 U2). The file is one change
+  skipped when the state already has a record, and under a trunk scan, where a DMR target's own `chan_csv` makes the
+  record as the target is built, `trunk_scan_import_target_chan_csv()`, before its snapshot is saved; review gate
+  b-r6), so a checked grant for a mapped channel keeps its Tier III evidence though the grant path never allocates
+  (review gate b-r5 U2). The file is one change
   (`dmr_t3_overlay_load_csv()`): every row becomes its entry first, then the ledger is reconciled and the heuristic
   estimates are redone once, so a long file with the fill on rebuilds once, not per row; once read,
   `dmr_t3_overrides_applied()` is 1 for the session. The engine decides on the options as the config file (its
@@ -13546,7 +13548,10 @@ Private per-protocol modules worth knowing about:
   tune is pending (`dsd_trunk_tuning_frame_is_current()`), so a carrier boundary, another identity on the same carrier
   (a colour-code change: two DMR systems can share a frequency; the DMR reset; review gate b-r4 S3) or a trunk retune
   (a grant's voice channel, the return, a hunt's next candidate: these move the generation, not always the carrier
-  count) makes it stale, and a network change or target restore drops it. A checked P_SYS_Parms on the carrier names
+  count) makes it stale, and a network change or target restore drops it, and so does the no-carrier pass
+  (`dmr_t3_cc_note_reception_lost()` from `dsd_engine_no_carrier_identity_stale()`, beside the received identity's
+  stale mark; review gate b-r6): sync loss leaves all three as they were, so only a checked C_ALOHA or C_SYS_Parms heard
+  after it offers "Use control channel frequency" again. A checked P_SYS_Parms on the carrier names
   it a payload channel (`dmr_t3_cc_note_payload_channel()`): unless its Comp_CC bit says composite control channel, the
   evidence ends, since the site can move its TSCC while the receiver stays. Tier III grant activity notices name the
   channel in decimal (`Active Group Ch: 12 (TDMA S1) TG: 1234;`, B11); Connect Plus and P25 keep hex. Tests:
@@ -13558,7 +13563,9 @@ Private per-protocol modules worth knowing about:
   LPCN (`channel_hz`, `dmr_t3_chan_effective_copy()`: the entry's over the shared row, 0 when hidden; what a frontend
   shows and sends as the edit's expected frequency, the snapshot's `trunk_chan_map` row being the shared one), `tier3`/`tier3_unchecked` (0 while `other_system_here`),
   `other_system_here` (the carrier's `rx_id` names another protocol's system or another DMR trunking system,
-  `dsd_rxid_dmr_trunk_named()`: Capacity Plus, Connect Plus, XPT; 0 while it names nothing yet; a scalar, copied every
+  `dsd_rxid_dmr_trunk_named()`: Capacity Plus, Connect Plus, XPT; or, naming none, the last frame sync was another
+  protocol's than DMR, `dsd_state::rx_sync_protocol`, as YSF, D-STAR and X2-TDMA send no identity, review gate b-r6;
+  0 while nothing was heard on the carrier yet, or DMR that named no trunking system; a scalar, copied every
   publish; `dsd_app_dmr_t3_other_system_here()` in `dmr_t3_effective.c`, which also refuses edits),
   `overrides_applied` (the `--dmr-chan-overrides` file applied to this session, `dmr_t3_overrides_applied()`: 0 when the
   engine skipped it, whatever the options' path holds; a scalar), `dmr_decoding` (the options last published decode
@@ -17780,8 +17787,11 @@ Qt Quick frontend (`src/ui/qt`):
   judges a system by its start's options, read as the decoder reads them (`cli_option_tokens.h`, shared with
   `session_args.cpp`): `dmr_channels_session_decodes_dmr()` takes the last `-f` (either getopt form) over the decode
   flag, the system's and the app's extra options and the live radio settings, in argv order (Auto, DMR, DMR mono, TDMA
-  frame DMR); `dmr_channels_extra_names_overrides()` finds the user's own `--dmr-chan-overrides`. An edit is refused
-  `not-dmr` or `explicit-overrides` by those. Each start of a DMR system with entries writes
+  frame DMR), and none in a run mode that decodes no frames (`dmr_channels_session_frameless()`, as
+  `dsd_engine_run_decodes_frames()`: `-r` MBE playback, `-fU`, `-fZ`, `-fB` or `-fP` anywhere among those options, since
+  each keeps its run mode whatever `-f` follows; review gate b-r6), so such a start neither writes the file nor is
+  refused over the user's own; `dmr_channels_extra_names_overrides()` finds the user's own `--dmr-chan-overrides`. An
+  edit is refused `not-dmr` or `explicit-overrides` by those. Each start of a DMR system with entries writes
   `session_args_dmr_channels_csv()` to `dmr_channels/<uid>.csv` in the app's folder and passes `--dmr-chan-overrides`
   (never with a trunk scan: `--trunk-scan` or `--trunk-scan-off`, separate or `=` form, in either extra options); a
   start whose extra options name their own file as well is refused (`SessionArgsError::DmrChannelsShadowed`, category
@@ -17809,7 +17819,8 @@ Qt Quick frontend (`src/ui/qt`):
   `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
   twice). The edit expects the channel as the editor read it (`opened`): a row's when the editor opened, and in Add
   channel the typed number's, read each time the number changes (review gate b-r5 U6), never at the button press, so a
-  frequency the decoder learned while the user typed refuses the edit as STALE. A STALE refusal closes the editor that
+  frequency the decoder learned while the user typed refuses the edit as STALE. Add channel always opens with an empty
+  frequency, whatever row the editor showed before (review gate b-r6). A STALE refusal closes the editor that
   sent it, and the sheet says "This channel changed while you were editing it. Open it again to see the current
   value." (`channelsStatus`, read out once; review gate b-r5 U7). While the editor's own edit is
   unanswered (`sentPending`) its fields are read-only, so its answer closing the editor loses nothing typed, and Close

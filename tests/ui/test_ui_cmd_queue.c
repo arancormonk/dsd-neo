@@ -26524,6 +26524,13 @@ test_dmr_channel_set_command(void) {
     p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     rc |= expect_int("refused on a P25 carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    /* Review gate b-r6: so does a carrier whose protocol sends no identity (YSF), the record holding no family. */
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    dsd_rxid_note_sync(state, DSD_SYNC_YSF_POS);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("refused on a YSF carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    dsd_rxid_reset(state);
     rc |= expect_true("the other-system refusals change nothing",
                       state->trunk_chan_map[13] == 451025000L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE
                           && dmr_t3_overlay_get(state, 13U, NULL) == 0);

@@ -48,7 +48,10 @@ dsd_app_dmr_t3_other_system_here(const dsd_state* state) {
     }
     const uint8_t family = state->rx_id.family;
     if (family == (uint8_t)DSD_RXID_FAMILY_NONE) {
-        return 0U;
+        /* No identity yet, but a sync of another protocol than DMR (YSF, D-STAR and X2-TDMA send none) is heard: the
+           carrier is that protocol's, not a Tier III site's. Nothing heard since the last reset names no system. */
+        const uint16_t heard = state->rx_sync_protocol;
+        return heard != 0U && heard != (uint16_t)DSD_RXID_FAMILY_DMR ? 1U : 0U;
     }
     if (family != (uint8_t)DSD_RXID_FAMILY_DMR) {
         return 1U;

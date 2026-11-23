@@ -291,9 +291,17 @@ void dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state);
  */
 void dmr_t3_cc_note_payload_channel(const dsd_state* state, int composite);
 
+/**
+ * Reception stopped (the no-carrier pass, which marks the received identity stale): the TSCC evidence
+ * dmr_t3_cc_note_evidence() recorded ends, though the receiver stays on the carrier, so only a checked C_ALOHA or
+ * C_SYS_Parms heard after it names the carrier the control channel again (a site that moved its control channel leaves
+ * the old frequency silent). It writes @p state's DMR extension, so decoder thread only.
+ */
+void dmr_t3_cc_note_reception_lost(const dsd_state* state);
+
 /** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none, the receiver left it
- * (a carrier boundary or a trunk retune since), the received identity moved to another epoch, or a trunk tune is
- * pending (dsd_trunk_tuning_frame_is_current()). */
+ * (a carrier boundary or a trunk retune since), reception stopped since (dmr_t3_cc_note_reception_lost()), the
+ * received identity moved to another epoch, or a trunk tune is pending (dsd_trunk_tuning_frame_is_current()). */
 long dmr_t3_cc_confirmed_hz(const dsd_state* state);
 
 /** Whether the DMR module recorded anything for @p state (its extension exists). */

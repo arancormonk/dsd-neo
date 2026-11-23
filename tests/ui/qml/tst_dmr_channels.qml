@@ -536,6 +536,26 @@ Item {
             compare(sent.expectedOrigin, 3);
         }
 
+        // Review gate b-r6: Add channel starts with no frequency, whatever channel the editor showed before. A new
+        // number alone then sends nothing: the previous channel's frequency is never saved for it.
+        function test_add_starts_with_no_frequency() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            compare(findChild(edit, "channelEditFrequency").text, "451.0125");
+            edit.requestClose();
+            tryCompare(edit, "visible", false);
+            tap(item("channelsAddButton"));
+            tryCompare(edit, "visible", true);
+            compare(findChild(edit, "channelEditNumber").text, "");
+            compare(findChild(edit, "channelEditFrequency").text, "", "no frequency from channel 18");
+            compare(edit.opened.lpcn, 0);
+            type(findChild(edit, "channelEditNumber"), "30");
+            verify(!findChild(edit, "channelEditSave").inputValid, "a number alone is no edit");
+            tap(findChild(edit, "channelEditSave"));
+            compare(commands.dmrChannelRequests().length, 0, "nothing sent");
+        }
+
         // Review gate b-r4 S5: while the editor's own edit is due its fields take no typing, so nothing typed after
         // Apply is lost when the answer closes the editor; Close needs no question then. An editor opened on another
         // channel while an earlier edit is due takes typing, and Close asks before that goes.

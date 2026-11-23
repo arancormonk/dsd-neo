@@ -2109,6 +2109,74 @@ test_dmr_channel_origins_restore_per_target(void) {
     return test_rc;
 }
 
+/* Review gate b-r6: a DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
+   start, so a checked grant for a mapped channel keeps its Tier III evidence on a fresh scan (the grant path allocates
+   no record), and the evidence goes and comes back with the target. */
+static int
+test_dmr_target_map_makes_the_record(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char chan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n14,452037500\n") != 0
+        || write_targets_file(dir,
+                              "a,dmr-trunk,452000000,chan.csv,250,,tier iii\n"
+                              "b,p25-trunk,851000000,,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "target map record: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (!dmr_t3_chan_recorded(&state) || state.trunk_chan_map[14] != 452037500L
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: none for A's map (recorded %d, row %ld, origin %d)\n",
+                    dmr_t3_chan_recorded(&state), state.trunk_chan_map[14], (int)dmr_t3_chan_origin(&state, 14U));
+        test_rc = 1;
+    }
+    /* A checked grant for mapped channel 14, the first thing A's control channel sends. */
+    dmr_t3_note_tier3_if_recorded(&state, 1);
+    if (!dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: the grant's Tier III evidence was dropped\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence leaked into B\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_t3_tier3_seen(&state)
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence not restored\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
 /* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): what
    another target left there never reaches a P25 target, where channel 0x0000 (IDEN 0, channel 0) is checked against
    the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. */
@@ -27498,6 +27566,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_target_map_makes_the_record);
     rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
     rc |= run_with_default_tune_hook(test_dmr_overlay_never_crosses_targets);
     rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
