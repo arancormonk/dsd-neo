@@ -4500,6 +4500,50 @@ test_type_d_scch_info1_fields_print(void) {
     return rc;
 }
 
+/* A Type-D VCALL's diagnostics name each party under its own prefix (TS 1-E §6.4.1.1 Fig 6.4-1), so a call to 03-0005
+ * and one to 07-0005 print differently. */
+static int
+test_type_d_vcall_summary_names_prefixes(void) {
+    static const uint16_t destinations[] = {0x1805U, 0x3805U};
+    char outputs[2][4096];
+    int rc = 0;
+    for (size_t i = 0U; i < 2U; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        dsd_test_capture_stderr cap;
+        uint8_t bits[64];
+        if (!opts || !state) {
+            free(state);
+            free(opts);
+            return 1;
+        }
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+        write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x1864U, destinations[i], 0U, 0U);
+        if (dsd_test_capture_stderr_begin(&cap, "dsdneo_nxdn_vcall_typed") != 0) {
+            free(state);
+            free(opts);
+            return 1;
+        }
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        if (dsd_test_capture_stderr_end(&cap) != 0 || read_capture_file(cap.path, outputs[i], sizeof outputs[i]) != 0) {
+            (void)remove(cap.path);
+            free(state);
+            free(opts);
+            return 1;
+        }
+        (void)remove(cap.path);
+        rc |= expect_contains("type-d-vcall-src", outputs[i], "Src=03-0100 ");
+        rc |= expect_contains("type-d-vcall-dst", outputs[i], i == 0U ? "Dst/TG=03-0005 " : "Dst/TG=07-0005 ");
+        dsd_state_ext_free_all(state);
+        free(state->event_history_s);
+        free(state);
+        free(opts);
+    }
+    rc |= (strcmp(outputs[0], outputs[1]) == 0) ? 1 : 0;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -4517,6 +4561,7 @@ main(void) {
     rc |= test_sdcall_header_short_is_ignored();
     rc |= test_sdcall_iv_short_type_c_is_ignored();
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();
+    rc |= test_type_d_vcall_summary_names_prefixes();
     rc |= test_prop_form_alias_requires_marker();
     rc |= test_short_dcall_data_is_rejected(0x39U, "sdcall-data-short");
     rc |= test_short_dcall_data_is_rejected(0x0BU, "dcall-data-short");

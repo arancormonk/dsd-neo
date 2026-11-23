@@ -3081,9 +3081,16 @@ nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
     nxdn_vcall_update_crypto_flags(state, info);
     DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type, info->idas));
     nxdn_vcall_print_voice_option(info);
-    DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     if (info->idas) {
-        DSD_FPRINTF(stderr, "- Prefix Ch: %d ", info->rep1);
+        char source_text[16];
+        char target_text[16];
+        DSD_SNPRINTF(source_text, sizeof(source_text), "%02u-%04u", (unsigned)(info->rep1 & 0x1FU),
+                     (unsigned)(info->source_unit_id & 0x7FFU));
+        DSD_SNPRINTF(target_text, sizeof(target_text), "%02u-%04u", (unsigned)(info->dst_prefix & 0x1FU),
+                     (unsigned)(info->destination_id & 0x7FFU));
+        DSD_FPRINTF(stderr, "Src=%s - Dst/TG=%s ", source_text, target_text);
+    } else {
+        DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
