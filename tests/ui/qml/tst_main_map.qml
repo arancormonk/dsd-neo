@@ -256,7 +256,8 @@ Item {
             testContext.setMetric("scanResumable", false);
             testContext.setMetric("scanPaused", false);
             tryVerify(function () { return !resume.visible && !resume.activeFocus; }, 1000, "Resume scan hides without the keyboard");
-            wait(50);
+            tryVerify(function () { return app.activeFocusItem === Ui.Navigation.backTarget; }, 1000,
+                "the keyboard goes to the Back owner, not the Spectrum's loader");
             keyClick(Qt.Key_Escape);
             verify(!app.spectrumOpen, "Escape closes the Spectrum");
         }

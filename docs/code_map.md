@@ -21938,6 +21938,11 @@ Keyboard gate limits (decided, issue #902):
   is not handed to the Back owner on return: the focus may land on its list, and Tab or the next focus recovers.
 - When a sheet opens over another and both close and reopen in the same turn, an earlier sheet's deferred hand-back can
   still run on the newer visit.
+- If a combo's model is replaced while its list is open and a screen reader had focused an option, the keyboard moves
+  to the Back handler instead of staying in the list: the list stays open, Escape closes it, and Tab and the arrows
+  work once it is reopened.
+- If a button hides while Space is held and the keyboard is handed on before Space is released, a later held Space
+  started on another control can repeat on the old button once.
 
 The
 Monitor's reading groups (`ReadingFlow`, `ReadingRow`) and the site sheet's `FieldGrid` are gated as a single
