@@ -1756,6 +1756,12 @@ expect_path_file_identity(void) {
     errno = 0;
     ok = ok && symlink("a.wav", soft) == 0 && dsd_path_file_identity(soft, &none) == -1 && errno == ELOOP;
     /* Read, and no file: ENODEV, never EIO (which a failed read gives, and says nothing about the name). */
+    // A parent that does not resolve (a link to itself: too many links on the way) is a lookup that failed (EMLINK),
+    // never read as a link at the name (ELOOP).
+    const char* loop = "dsd_neo_file_identity/loop";
+    errno = 0;
+    ok = ok && symlink("loop", loop) == 0 && dsd_path_file_identity("dsd_neo_file_identity/loop/r.wav", &none) == -1
+         && errno == EMLINK && none.kind == 0;
     const char* fifo = "dsd_neo_file_identity/fifo.wav";
     errno = 0;
     ok =
@@ -1776,6 +1782,7 @@ expect_path_file_identity(void) {
     }
 #if !DSD_PLATFORM_WIN_NATIVE
     (void)remove(fifo);
+    (void)remove(loop);
     (void)remove(soft);
 #endif
     (void)remove(twin);

@@ -346,9 +346,10 @@ typedef struct {
  *
  * @param path  Path (UTF-8 on Windows, as the file note says).
  * @param out   Receives the identity; zero-filled on failure.
- * @return 0 for a regular file; -1 with errno set otherwise (ENOENT or ENOTDIR for a missing name, EINVAL for NULL or
- *         an empty path or an @p out of NULL, ELOOP for a link (a Windows reparse point, a folder one included),
- *         EISDIR for a folder, ENODEV for anything else read and known not to be a regular file (a FIFO, a socket, a
+ * @return 0 for a regular file; -1 with errno set otherwise (ENOENT for a missing name, ENOTDIR for a parent that is no
+ *         folder, EINVAL for NULL or an empty path or an @p out of NULL, ELOOP for a link at the name itself (a Windows
+ *         reparse point, a folder one included; a lookup that met too many links resolving a parent is EMLINK, its type
+ *         never read), EISDIR for a folder, ENODEV for anything else read and known not to be a regular file (a FIFO, a socket, a
  *         device), and the system's own errno when the name cannot be read: EACCES, EPERM or EIO, for one, says
  *         nothing about whether a file is there).
  */

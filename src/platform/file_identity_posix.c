@@ -76,6 +76,11 @@ dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
     }
     struct stat st;
     if (lstat(path, &st) != 0) {
+        // lstat()'s own ELOOP comes from resolving a parent (too many links on the way): the name's type was never
+        // read, so it is reported apart from a link at the name itself (ELOOP below), as a lookup that failed.
+        if (errno == ELOOP) {
+            errno = EMLINK;
+        }
         return -1;
     }
     return dsd_stat_file_identity(&st, out);

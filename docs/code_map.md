@@ -1780,7 +1780,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     (`expect_file_stream_identity`). No device, inode, volume or file id is kept (FAT
     and exFAT number a file anew when it is read again from disk, a remount numbers a volume anew), and
     `dsd_file_identity_equal()` says whether two readings are one regular file unchanged as far as size and time tell,
-    so another file of exactly the same size and time reads as the same one (the store's decided limit below); a link (ELOOP; on Windows the reparse-point bit is checked before the folder bit, so a folder
+    so another file of exactly the same size and time reads as the same one (the store's decided limit below); a link at
+    the name itself (ELOOP; `lstat()`'s own ELOOP, too many links resolving a parent, is reported as EMLINK, a lookup
+    that failed with the type never read; on Windows the reparse-point bit is checked before the folder bit, so a folder
     link or junction is a link), a folder (EISDIR), anything else read and known not to be a regular file (ENODEV: a
     FIFO, a socket or a device, on Windows `GetFileType()` other than a disk file) or a missing name (ENOENT, ENOTDIR)
     has none, and a name that cannot be read fails with the system's own errno (EACCES, EIO), which says nothing about a
