@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25_patch_policy.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>

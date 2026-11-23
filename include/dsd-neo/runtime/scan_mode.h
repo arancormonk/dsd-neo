@@ -12,7 +12,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
-#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
