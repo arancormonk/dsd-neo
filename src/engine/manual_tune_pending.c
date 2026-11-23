@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -324,6 +325,16 @@ dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t re
     manual_tune_note(state, &record);
 }
 
+/* The receiver channel a timed-out app-control tune named, by its id (dsd_engine_manual_tune_note_channel()). */
+static uint64_t g_channel_id;
+static uint32_t g_channel;
+
+void
+dsd_engine_manual_tune_note_channel(uint64_t id, uint32_t channel) {
+    g_channel_id = id;
+    g_channel = channel;
+}
+
 void
 dsd_engine_manual_tune_note_walk_judge(uint64_t id, int move_judge, long move_from_hz) {
     if (id == 0U || !manual_tune_record_live() || g_record.id != id || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE
@@ -494,6 +505,10 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
         /* Taken over before it ran: what replaced it decides the receiver, as for a tune superseded here. */
         manual_tune_rr_report(state, MANUAL_TUNE_RR_SUPERSEDED);
         return DSD_MANUAL_TUNE_DROPPED;
+    }
+    /* The receiver stayed on the channel before it (issue #899). */
+    if (g_record.id == g_channel_id) {
+        dsd_engine_receiver_channel_abandon(g_channel);
     }
     if (opts) {
         const uint32_t applied_hz = manual_tune_applied_after_failure();

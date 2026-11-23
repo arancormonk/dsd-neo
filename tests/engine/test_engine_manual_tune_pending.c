@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
@@ -51,6 +52,13 @@ static dsd_opts* g_stream_opts;
 
 /* rtl_stream_tune_tagged(), renamed here and in the io/control source this test compiles (see the CMake target). */
 int test_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
+
+/* The decoder's receiver channels (issue #899; channel_scan.c, not linked here): the late failure of a timed-out tune
+   that named one goes back to the channel before it, which no case here follows. */
+void
+dsd_engine_receiver_channel_abandon(uint32_t channel) {
+    (void)channel;
+}
 
 int
 test_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {

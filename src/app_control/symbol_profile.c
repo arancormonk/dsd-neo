@@ -307,9 +307,14 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
        the validator's text and the front end keeps its receive profile rather
        than run the width without its channel filter, and the decoder puts
        itself back to match (the width it kept, or the mode it had before a
-       switch onto the monitor or between FM and AM). */
+       switch onto the monitor or between FM and AM). The family request names
+       a receiver channel of its own (issue #899), which starts closed on the
+       analog family until the decoder writes the gate the session resolves to. */
     if (dsd_opts_is_analog_family(opts)) {
-        return symbol_profile_request_monitor(opts, configured_before_hz, scan_leave);
+        const uint32_t channel = dsd_engine_receiver_family_begin(opts);
+        const int rc = symbol_profile_request_monitor(opts, configured_before_hz, scan_leave);
+        dsd_engine_receiver_family_end(channel);
+        return rc;
     }
     /* The M17 encoder rides the analog front end without being the analog family: no symbol profile reaches it. -fZ
        clears analog_only and leaves the digital frame flags at their defaults, so the encoder flag decides (issue
@@ -339,7 +344,9 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
        analog front end: the republish is the newer word on the family, so it lands there whether an outstanding
        retune it supersedes lands after it or one landed before it. Otherwise the plain request, a no-op unless the
        front end is analog. Either is queued for the demod thread rather than written into demod state from the
-       caller's thread, the digital family first, then the symbol profile it runs on. */
+       caller's thread, the digital family first, then the symbol profile it runs on, on a receiver channel of its own
+       (issue #899). */
+    const uint32_t channel = dsd_engine_receiver_family_begin(opts);
     if (configured_digital
         && (dsd_scan_mode_timed_digital_family(state) || rtl_stream_family_landing_after_pending())) {
         const unsigned int rate_hz =
@@ -352,6 +359,7 @@ symbol_profile_publish(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_p
     } else if (configured_digital) {
         (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     }
+    dsd_engine_receiver_family_end(channel);
     symbol_profile_request_symbols(opts, state, profile, mod);
 #endif
     return 0;
@@ -693,7 +701,10 @@ svc_toggle_rtl_cqpsk(const dsd_opts* opts) {
        width, the AM default included) or where it lands (a retune moved the rate since), leaves CQPSK on, and the
        refusal is logged with the validator's text. */
     if (!cqpsk && opts && dsd_opts_is_analog_family(opts)) {
+        /* On a receiver channel of its own, closed until the decoder writes its gate (issue #899). */
+        const uint32_t channel = dsd_engine_receiver_family_begin(opts);
         (void)symbol_profile_request_monitor(opts, -1, 0);
+        dsd_engine_receiver_family_end(channel);
         return;
     }
     (void)rtl_stream_request_demod_profile(cqpsk, 0, 0, -1, -1, 0);

@@ -154,18 +154,67 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return 0;
 }
 
-/* With no -Y tune staged and no retune modelled here, the receiver runs the gate of the channel on air (issue #899): a
-   stream opens on it, and a settle after a change hands it over through the stream hooks, a level as a threshold and a
-   dynamic setting whole. UI_MENU_SERVICES counts those pushes; the engine's own channel tagging is exercised by
-   ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
-dsd_squelch_setting
-dsd_engine_receiver_gate_now(const dsd_opts* opts, const dsd_state* state) {
-    return dsd_scan_mode_channel_squelch(opts, state);
+/* No receiver channel is modelled here (issue #899): a settle after a change hands the gate of the channel on air over
+   through the stream hooks, a level as a threshold and a dynamic setting whole. UI_MENU_SERVICES counts those pushes;
+   the engine's own channel rules are exercised by ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
+uint32_t
+dsd_engine_receiver_channel_new(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
+uint32_t
+dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
 }
 
 void
-dsd_engine_receiver_gate_on_air(uint32_t channel) {
+dsd_engine_receiver_channel_commit(uint32_t channel) {
     (void)channel;
+}
+
+void
+dsd_engine_receiver_channel_abandon(uint32_t channel) {
+    (void)channel;
+}
+
+static int g_opens_committed;
+static dsd_squelch_setting g_open_gate;
+
+void
+dsd_engine_receiver_channel_opened(const dsd_opts* opts, const dsd_state* state) {
+    g_opens_committed++;
+    g_open_gate = dsd_scan_mode_channel_squelch(opts, state);
+}
+
+int
+dsd_test_channel_scan_opens_committed(dsd_squelch_setting* out) {
+    const int opens = g_opens_committed;
+    g_opens_committed = 0;
+    if (out) {
+        *out = g_open_gate;
+    }
+    return opens;
+}
+
+void
+dsd_engine_receiver_channel_refused(void) {}
+
+uint32_t
+dsd_engine_receiver_family_begin(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
+}
+
+void
+dsd_engine_receiver_family_end(uint32_t channel) {
+    (void)channel;
+}
+
+void
+dsd_engine_receiver_gate_command(int applying) {
+    (void)applying;
 }
 
 void
@@ -179,18 +228,6 @@ dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, in
     } else {
         (void)dsd_rtl_stream_metrics_hook_set_channel_squelch(gate.level);
     }
-}
-
-uint32_t
-dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state) {
-    (void)opts;
-    (void)state;
-    return 0U;
-}
-
-void
-dsd_engine_receiver_gate_family_done(uint32_t channel) {
-    (void)channel;
 }
 
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real

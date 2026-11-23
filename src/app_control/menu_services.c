@@ -2042,43 +2042,21 @@ svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
     rtl_stream_enforce_tuner_autogain(opts->rtl_gain_value > 0 ? 0 : configured);
 }
 
-/* Whether the streams opened from here on are the session's channel, not the scan row's a command holds suspended
-   (svc_rtl_open_for_session()). */
-static int g_svc_open_for_session;
-
-void
-svc_rtl_open_for_session(int on) {
-    g_svc_open_for_session = on ? 1 : 0;
-}
-
-/* Create and start the stream on the squelch gate of the channel it opens on (issue #899): the stream takes the squelch
-   the options hold, so they hold that gate while it opens, resolved now, and the standing they had goes back once it
-   has. The channel is the one whose samples the receiver produces (dsd_engine_receiver_gate_now(): under a suspended scan
-   scope the row's, from the profile being opened), or the session's for a config that leaves the scan scope
-   (svc_rtl_open_for_session()). Outside a scope the options keep the analog default where it now belongs. 0, or -1
-   with no stream. */
+/* Create and start the stream on the squelch the options hold, the analog default where it belongs (issue #899): on
+   the analog family it opens closed, on a channel of its own the decoder opens with its gate once it commits it
+   (dsd_engine_receiver_channel_opened()). 0, or -1 with no stream. */
 static int
 svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
     (void)dsd_squelch_analog_default_sync(opts, state);
-    const dsd_squelch_setting gate = g_svc_open_for_session
-                                         ? dsd_squelch_channel_gate(opts, state, NULL, dsd_opts_is_analog_family(opts))
-                                         : dsd_engine_receiver_gate_now(opts, state);
-    /* The gate's fields alone: the default's standing stays the session's while the stream opens. */
-    dsd_squelch_standing standing;
-    dsd_squelch_standing_capture(opts, &standing);
-    opts->rtl_squelch_mode = gate.mode;
-    if (dsd_squelch_mode_is_dynamic(gate.mode)) {
-        opts->rtl_squelch_margin_db = gate.margin_db;
-    } else {
-        opts->rtl_squelch_level = gate.level;
-    }
     int rc = rtl_stream_create(opts, &state->rtl_ctx) < 0 ? -1 : 0;
     if (rc == 0 && rtl_stream_start(state->rtl_ctx) < 0) {
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
         rc = -1;
     }
-    dsd_squelch_standing_restore(opts, &standing);
+    if (rc == 0) {
+        dsd_engine_receiver_channel_opened(opts, state);
+    }
     return rc;
 }
 
@@ -2314,8 +2292,7 @@ svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
     dsd_scan_settings configured;
     dsd_scan_settings_capture(opts, state, &configured);
     /* The squelch apart: the captures hold the configured one, which the restore of the profile that ran writes over
-       the standing the change left (a config's squelch keys that ended the analog default, issue #899). The open
-       resolves the row's gate from the profile restored, over that standing (svc_rtl_open_on_the_channel_squelch_locked()). */
+       the standing the change left (a config's squelch keys that ended the analog default, issue #899). */
     dsd_squelch_standing configured_squelch;
     dsd_squelch_standing_capture(opts, &configured_squelch);
     dsd_scan_settings_restore(ran, opts, state);
@@ -2464,8 +2441,6 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
     if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
         uint32_t frequency = opts->rtlsdr_center_freq;
         opts->rtlsdr_center_freq = previous_tuning->frequency;
-        /* The retune carries the squelch gate the apply leaves (svc_io_control_tune(), issue #899): the receiver runs
-           it from the first sample of the new frequency, and keeps the gate it runs when the retune is refused. */
         rc = guard_held ? svc_rtl_set_freq_locked(opts, state, frequency) : svc_rtl_set_freq(opts, state, frequency);
         if (rc == RTL_STREAM_TUNE_TIMEOUT) {
             /* Accepted-but-pending requests remain owned by the controller. DEFERRED
@@ -2480,9 +2455,8 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
         }
     }
     /* What the channel runs, the analog default where it belongs (issue #899), not the bare value an apply wrote; under
-       a suspended scan scope the row's (svc_rtl_push_channel_squelch()). Tagged with its channel: a native retune
-       outstanding lands it, a rigctl tune (no receiver retune) or none takes it on the channel on air, and a native
-       retune that fails late leaves it on the channel it stays on. */
+       a suspended scan scope the row's (svc_rtl_push_channel_squelch()), on the channel a native retune puts on air
+       once it lands, or the one on air. */
     (void)dsd_squelch_analog_default_sync(opts, state);
     if (svc_airspy_squelch_changed(previous_tuning, opts)) {
         svc_rtl_push_channel_squelch(opts, state);
@@ -2868,36 +2842,43 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
 /* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
    the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
    late failure putting the cached frequency back (issue #671). */
-/* An RTL-family tune carries the squelch gate of the channel it puts on air, resolved now, to a channel of its own where
-   the on-air channel goes (issue #899): the receiver applies it where the retune lands. 1 when it was queued (a radio
-   stream running, no rigctl peer tuning in its place). */
-static int
-svc_rtl_queue_tune_gate(const dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+/* An RTL-family tune puts its channel on air (issue #899): committed now, on a channel of its own its retune names. 0
+   with a rigctl peer tuning in its place or no radio stream. */
+static uint32_t
+svc_rtl_begin_tune_channel(const dsd_opts* opts, const dsd_state* state, uint32_t hz) {
 #ifdef USE_RADIO
     if (opts->use_rigctl == 1 || opts->audio_in_type != AUDIO_IN_RTL || !state || !state->rtl_ctx) {
-        return 0;
+        return 0U;
     }
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    dsd_engine_receiver_gate_on_air(rtl_stream_prepare_retune_squelch_for_target(hz, &gate));
-    return 1;
+    const uint32_t channel = dsd_engine_receiver_channel_begin(opts);
+    rtl_stream_prepare_retune_channel_for_target(hz, channel);
+    return channel;
 #else
     (void)opts;
     (void)state;
     (void)hz;
-    return 0;
+    return 0U;
 #endif
 }
 
-/* A tune that did not take the gate svc_rtl_queue_tune_gate() queued for @p hz drops it, with the receiver's unchanged. */
+/* The tune returned @p rc: a profile it never took names its channel no more, one refused leaves the decoder on the
+   channel before it, and one that timed out (@p pending_id) does if it fails late. */
 static void
-svc_rtl_settle_tune_gate(int gated, uint32_t hz) {
+svc_rtl_end_tune_channel(uint32_t channel, uint32_t hz, int rc, const uint64_t* pending_id) {
 #ifdef USE_RADIO
-    if (gated) {
-        rtl_stream_drop_untaken_retune_squelch(hz);
+    if (channel != 0U) {
+        rtl_stream_prepare_retune_channel_for_target(hz, 0U);
+        if (rc == RTL_STREAM_TUNE_TIMEOUT && pending_id) {
+            dsd_engine_manual_tune_note_channel(*pending_id, channel);
+        } else if (rc != RTL_STREAM_TUNE_OK && rc != RTL_STREAM_TUNE_TIMEOUT) {
+            dsd_engine_receiver_channel_abandon(channel);
+        }
     }
 #else
-    (void)gated;
+    (void)channel;
     (void)hz;
+    (void)rc;
+    (void)pending_id;
 #endif
 }
 
@@ -2911,9 +2892,9 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
        answers, and is on the old frequency while it answers a passband request before that. */
     dsd_input_cut mark;
     DSD_MEMSET(&mark, 0, sizeof mark);
-    const int gated = svc_rtl_queue_tune_gate(opts, state, hz);
+    const uint32_t channel = svc_rtl_begin_tune_channel(opts, state, hz);
     const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id, &mark);
-    svc_rtl_settle_tune_gate(gated, hz);
+    svc_rtl_end_tune_channel(channel, hz, rc, out_pending_id);
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
         dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
@@ -3137,8 +3118,8 @@ svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
      * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
      * scanner leaves it. */
     (void)dsd_scan_mode_set_configured_squelch(opts, state, level);
-    /* The receiver hears it on every channel that inherits it, resolved for that channel (issue #899): the row on air,
-       or a -Y row whose retune landed before its commit, whichever of them keeps its own threshold. */
+    /* The receiver hears it on the channel the decoder committed, resolved for that channel (issue #899), whether or not
+       the row on air keeps its own threshold. */
     svc_rtl_push_channel_squelch(opts, state);
     return 0;
 }

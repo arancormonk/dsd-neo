@@ -306,8 +306,8 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     (void)setting;
 }
 
-/* The receiver's channel-tagged gates (issue #899): a write and the channel it named, the epoch and open, and the
-   family-request staging. */
+/* The receiver's channels (issue #899): a write and the channel it named, the numbering, the channels on air, opened
+   and refused, and the family-request staging. */
 static int g_channel_gate_writes;
 static uint32_t g_last_channel_gate_channel;
 static dsd_squelch_setting g_last_channel_gate;
@@ -321,8 +321,18 @@ rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setti
 }
 
 uint32_t
-rtl_stream_channel_gate_epoch(void) {
+rtl_stream_new_channel(void) {
     return 41U;
+}
+
+uint32_t
+rtl_stream_current_channel(void) {
+    return 7U;
+}
+
+uint32_t
+rtl_stream_refused_channel(void) {
+    return 3U;
 }
 
 uint32_t
@@ -330,16 +340,15 @@ rtl_stream_channel_gate_opened(void) {
     return 5U;
 }
 
-static dsd_squelch_setting g_staged_family_gate;
+static uint32_t g_staged_family_channel;
 
-uint32_t
-rtl_stream_stage_family_gate(const dsd_squelch_setting* setting) {
-    g_staged_family_gate = *setting;
-    return 9U;
+void
+rtl_stream_stage_family_channel(uint32_t channel) {
+    g_staged_family_channel = channel;
 }
 
 int
-rtl_stream_unstage_family_gate(uint32_t channel) {
+rtl_stream_unstage_family_channel(uint32_t channel) {
     return channel == 9U ? 1 : 0;
 }
 
@@ -571,13 +580,14 @@ main(void) {
            && g_last_channel_gate.mode == DSD_SQUELCH_MODE_NOISE && g_last_channel_gate.margin_db == 10);
     assert(dsd_rtl_stream_metrics_hook_write_channel_gate(6U, &noise10) == DSD_CHANNEL_GATE_STALE);
     assert(dsd_rtl_stream_metrics_hook_write_channel_gate(7U, NULL) == -1 && g_channel_gate_writes == 2);
-    assert(dsd_rtl_stream_metrics_hook_channel_gate_epoch() == 41U);
+    assert(dsd_rtl_stream_metrics_hook_new_channel() == 41U);
+    assert(dsd_rtl_stream_metrics_hook_current_channel() == 7U);
     assert(dsd_rtl_stream_metrics_hook_channel_gate_opened() == 5U);
-    assert(dsd_rtl_stream_metrics_hook_stage_family_gate(&noise10) == 9U
-           && g_staged_family_gate.mode == DSD_SQUELCH_MODE_NOISE);
-    assert(dsd_rtl_stream_metrics_hook_stage_family_gate(NULL) == 0U);
-    assert(dsd_rtl_stream_metrics_hook_unstage_family_gate(9U) == 1);
-    assert(dsd_rtl_stream_metrics_hook_unstage_family_gate(8U) == 0);
+    assert(dsd_rtl_stream_metrics_hook_refused_channel() == 3U);
+    dsd_rtl_stream_metrics_hook_stage_family_channel(9U);
+    assert(g_staged_family_channel == 9U);
+    assert(dsd_rtl_stream_metrics_hook_unstage_family_channel(9U) == 1);
+    assert(dsd_rtl_stream_metrics_hook_unstage_family_channel(8U) == 0);
 
     test_replay_batch_hook();
     /* The stream's discontinuity count reaches DSP through the table (issue #518). */

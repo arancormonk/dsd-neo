@@ -200,15 +200,17 @@ dsd_engine_scan_tune_moved(void) {
    a resume tunes its row as the running scan does, after the manual session's calls have ended). */
 static int tune_saw_open_call;
 static int tune_saw_scanner_mode = -1;
-/* The receiver's side of the squelch (issue #899), the shared stand-in for the stream's channel-tagged gates
-   (channel_gate_fake.h): g_rx_squelch is the gate it runs, which every landing and applied write hands it. A tune's
-   retune carries its row's gate (tune_carried) to a channel of its own (tune_channel), bound until it lands: at once
-   for a tune that lands as it is asked for, when a case lands a pending one (land_pending_tune()), never for one that
-   does not land. tune_saw_rx_squelch is what the receiver ran when the tune was issued. */
+/* The receiver's side of the squelch (issue #899), the shared stand-in for the stream's channels (channel_gate_fake.h):
+   g_rx_squelch is the gate it runs, which every landing and applied write hands it. A tune's retune names a channel of
+   its own (tune_channel; tune_carried when it names one), which the receiver moves to where it lands, closed on the
+   analog family (tune_landed_closed says whether it was): at once for a tune that lands as it is asked for, when a case
+   lands a pending one (land_pending_tune()), never for one that does not land. tune_saw_rx_squelch is what the receiver
+   ran when the tune was issued. */
 static dsd_squelch_setting g_rx_squelch;
 static dsd_squelch_setting tune_saw_rx_squelch;
 static int tune_carried;
 static uint32_t tune_channel;
+static int tune_landed_closed;
 /* The frequency the next tune must ask for: every list here sits on 150 MHz unless a case lays out rows on distinct
    frequencies to see which row a step picked (issue #666). */
 static long expected_tune_hz = 150000000;
@@ -225,9 +227,15 @@ rx_runs(const dsd_squelch_setting* gate) {
     }
 }
 
+/* The receiver lands the last tune's retune: on its channel, closed on the analog family. */
+static void
+land_tune_channel(void) {
+    channel_gate_fake_land(tune_channel, tuned_analog_only == 1);
+    tune_landed_closed = channel_gate_fake_closed();
+}
+
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, const dsd_squelch_setting* gate,
-                             uint32_t* out_gate_channel, uint64_t* out) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint32_t channel, uint64_t* out) {
     if (freq != expected_tune_hz) {
         DSD_FPRINTF(stderr, "tune to %ld Hz, want %ld Hz\n", freq, expected_tune_hz);
     }
@@ -237,13 +245,9 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     tune_saw_open_call = dsd_call_state_get(state, 0U, &open_call) > 0 && open_call.phase == DSD_CALL_PHASE_ACTIVE;
     tune_saw_scanner_mode = opts->scanner_mode;
     tune_saw_rx_squelch = g_rx_squelch;
-    tune_carried = gate != NULL;
-    tune_channel = gate ? channel_gate_fake_bind(gate) : 0U;
-    if (out_gate_channel) {
-        *out_gate_channel = tune_channel;
-    } else {
-        dsd_engine_receiver_gate_on_air(tune_channel);
-    }
+    tune_carried = channel != 0U;
+    tune_channel = channel;
+    tune_landed_closed = -1;
     tuned_analog_only = opts->analog_only;
     tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     tuned_analog_kind = opts->analog_demod;
@@ -263,30 +267,17 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
         dsd_trunk_tuning_request_mark_ready(request);
     } else {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_OK) {
-            channel_gate_fake_land(tune_channel);
-        } else {
-            channel_gate_fake_release(tune_channel);
+            land_tune_channel();
         }
         dsd_trunk_tuning_request_complete(request, tune_result);
     }
     return tune_result;
 }
 
-/* The gate the last tune's retune lands with, as the receiver holds it for that channel now (its own, or the decoder's
-   later word on it). */
-static dsd_squelch_setting
-tune_landing_gate(void) {
-    dsd_squelch_setting gate;
-    DSD_MEMSET(&gate, 0, sizeof gate);
-    gate.level = -1.0;
-    (void)channel_gate_fake_bound(tune_channel, &gate);
-    return gate;
-}
-
-/* The controller lands the pending tune's retune, gate and all, and then publishes its outcome. */
+/* The controller lands the pending tune's retune, and then publishes its outcome. */
 static void
 land_pending_tune(uint64_t id) {
-    channel_gate_fake_land(tune_channel);
+    land_tune_channel();
     dsd_trunk_tuning_request_publish(id, DSD_TRUNK_TUNE_RESULT_OK);
 }
 
@@ -891,15 +882,14 @@ test_row_squelch_threshold_off_inherit(void) {
     tunes = reset_count = 0;
 }
 
-/* Issue #899: the analog default through the real -Y coordinator, its preparation and its retune included. Rows in
- * succession on an NFM session of a radio input with --squelch-analog-default noise+10 and no squelch of its own: an
- * nfm row with none (the default), an am row with its own --squelch off, a dmr row (off, the session's own), an nfm row
- * with none again, then a dmr row and an nfm row whose tunes are pending until the radio lands. Each row's retune
- * carries the row's gate and the receiver runs it from where the retune lands, never before (the old channel's samples
- * keep the old gate) and never after (no sample of the new channel runs ungated until the commit). A tune that fails
- * hands the receiver nothing: it keeps the gate of the row it stays on. Before the round-1 fix the preparation put the
- * configured off over the default the receiver held, so the commit onto the am and dmr rows compared off with off and
- * told the receiver nothing (it kept noise). */
+/* Issue #899: the analog default through the real -Y coordinator, its preparation and its retune included, under the
+ * round-6 rule ("analog starts closed"). Rows in succession on an NFM session of a radio input with
+ * --squelch-analog-default noise+10 and no squelch of its own: an nfm row with none (the default), an am row with its
+ * own --squelch off, a dmr row (off, the session's own), an nfm row with none again, then a dmr row and an nfm row
+ * whose tunes are pending until the radio lands. Each row's retune names a channel of its own; the receiver keeps the
+ * row on air's gate until the retune lands, starts an analog row's channel closed there (a digital row's runs the gate
+ * last written), and opens it only on the gate the decoder writes once it commits the row: the row's own, resolved
+ * then. A tune that fails moves nothing: the receiver keeps the gate of the row it stays on. */
 static int
 squelch_is(const dsd_squelch_setting* got, int mode, int margin) {
     if (mode != DSD_SQUELCH_MODE_LEVEL) {
@@ -919,6 +909,16 @@ static void
 gate_clear_hooks(void) {
     dsd_receiver_gate_settle_hook_set(NULL);
     channel_gate_fake_before_write(NULL);
+}
+
+/* The stream opens on the session's family, closed on the analog one, and the decoder commits its channel and writes
+   the gate it resolves to at its next settle (svc_rtl_open_on_the_channel_squelch_locked()). */
+static void
+gate_open(dsd_opts* opts, dsd_state* state) {
+    const dsd_squelch_setting configured = dsd_squelch_setting_of_opts(opts);
+    (void)channel_gate_fake_open(opts->analog_only == 1, &configured, rx_runs);
+    dsd_engine_receiver_channel_opened(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
 }
 
 static void
@@ -948,10 +948,11 @@ test_row_squelch_analog_default_rides_the_retune(void) {
     const dsd_rtl_stream_metrics_hooks hooks = rx_gate_hooks(output_rate);
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     gate_install_resume_settle();
-    /* The session as the engine's setup leaves it: the default in force on the monitor, the stream opened on it. */
+    /* The session as the engine's setup leaves it: the default in force on the monitor, the stream opened closed and
+       opened by the decoder on it. */
     assert(dsd_squelch_analog_default_sync(opts, state) == 1);
-    const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
-    channel_gate_fake_open(&opened, rx_runs);
+    gate_open(opts, state);
+    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10) && !channel_gate_fake_closed());
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 
@@ -960,62 +961,66 @@ test_row_squelch_analog_default_rides_the_retune(void) {
         int margin;
         int held_mode; /* what the receiver held as the tune was issued: the row before's gate */
         int held_margin;
+        int landed_closed; /* the landing started the channel closed: an analog row's */
     } want[] = {
-        {DSD_SQUELCH_MODE_NOISE, 10, DSD_SQUELCH_MODE_NOISE, 10}, /* the nfm row runs what the session ran */
-        {DSD_SQUELCH_MODE_LEVEL, 0, DSD_SQUELCH_MODE_NOISE, 10},  /* the am row's own off */
-        {DSD_SQUELCH_MODE_LEVEL, 0, DSD_SQUELCH_MODE_LEVEL, 0},   /* the dmr row: off again */
-        {DSD_SQUELCH_MODE_NOISE, 10, DSD_SQUELCH_MODE_LEVEL, 0},  /* the default, with the retune */
+        {DSD_SQUELCH_MODE_NOISE, 10, DSD_SQUELCH_MODE_NOISE, 10, 1}, /* the nfm row runs what the session ran */
+        {DSD_SQUELCH_MODE_LEVEL, 0, DSD_SQUELCH_MODE_NOISE, 10, 1},  /* the am row's own off */
+        {DSD_SQUELCH_MODE_LEVEL, 0, DSD_SQUELCH_MODE_LEVEL, 0, 0},   /* the dmr row: off again */
+        {DSD_SQUELCH_MODE_NOISE, 10, DSD_SQUELCH_MODE_LEVEL, 0, 1},  /* the default, at the commit */
     };
 
     for (int row = 0; row < 4; row++) {
         assert(dsd_engine_channel_scan_step(opts, state) == 1);
         const dsd_squelch_setting on_air = dsd_squelch_setting_of_opts(opts);
         if (!tune_carried || !squelch_is(&tune_saw_rx_squelch, want[row].held_mode, want[row].held_margin)
-            || channel_gate_fake_channel() != tune_channel || !squelch_is(&on_air, want[row].mode, want[row].margin)
+            || tune_landed_closed != want[row].landed_closed || channel_gate_fake_channel() != tune_channel
+            || channel_gate_fake_closed() || !squelch_is(&on_air, want[row].mode, want[row].margin)
             || !squelch_is(&g_rx_squelch, want[row].mode, want[row].margin)) {
-            DSD_FPRINTF(stderr,
-                        "row %d: the retune carried %d over a receiver holding mode %d margin %d; it is on channel %u "
-                        "(the retune's %u) and holds mode %d margin %d; the row runs mode %d margin %d; want mode %d "
-                        "margin %d carried over mode %d margin %d\n",
-                        row, tune_carried, tune_saw_rx_squelch.mode, tune_saw_rx_squelch.margin_db,
-                        channel_gate_fake_channel(), tune_channel, g_rx_squelch.mode, g_rx_squelch.margin_db,
-                        on_air.mode, on_air.margin_db, want[row].mode, want[row].margin, want[row].held_mode,
-                        want[row].held_margin);
+            DSD_FPRINTF(
+                stderr,
+                "row %d: the retune named %u over a receiver holding mode %d margin %d and landed closed %d; it "
+                "is on channel %u, closed %d, holding mode %d margin %d; the row runs mode %d margin %d; want "
+                "mode %d margin %d from mode %d margin %d, landed closed %d\n",
+                row, tune_channel, tune_saw_rx_squelch.mode, tune_saw_rx_squelch.margin_db, tune_landed_closed,
+                channel_gate_fake_channel(), channel_gate_fake_closed(), g_rx_squelch.mode, g_rx_squelch.margin_db,
+                on_air.mode, on_air.margin_db, want[row].mode, want[row].margin, want[row].held_mode,
+                want[row].held_margin, want[row].landed_closed);
             assert(0);
         }
     }
-    /* Pending tunes: the receiver keeps the row on air's gate until the retune lands, then runs the new row's, before
-       the decoder commits. */
+    /* Pending tunes: the receiver keeps the row on air's channel and gate until the retune lands; a dmr row's landing
+       runs the gate last written until its commit writes its own, an nfm row's runs closed until then. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const uint32_t nfm_on_air = channel_gate_fake_channel();
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
-    dsd_squelch_setting landing = tune_landing_gate();
-    assert(tune_carried && squelch_is(&landing, DSD_SQUELCH_MODE_LEVEL, 0));
+    assert(tune_carried && channel_gate_fake_channel() == nfm_on_air);
     assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
     /* The row on air until the commit is still the nfm one. */
     const dsd_squelch_setting before_commit = dsd_squelch_setting_of_opts(opts);
     assert(squelch_is(&before_commit, DSD_SQUELCH_MODE_NOISE, 10));
     land_pending_tune(request);
-    assert(dsd_squelch_setting_is_off(&g_rx_squelch));
+    assert(tune_landed_closed == 0 && squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
     assert(!dsd_engine_channel_scan_pending(opts, state));
     assert(state->lcn_freq_roll == 5 && dsd_squelch_setting_is_off(&g_rx_squelch));
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
-    landing = tune_landing_gate();
-    assert(squelch_is(&landing, DSD_SQUELCH_MODE_NOISE, 10) && dsd_squelch_setting_is_off(&g_rx_squelch));
+    assert(dsd_squelch_setting_is_off(&g_rx_squelch) && !channel_gate_fake_closed());
     land_pending_tune(request);
-    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
+    assert(tune_landed_closed == 1 && channel_gate_fake_closed());
     assert(!dsd_engine_channel_scan_pending(opts, state));
-    assert(state->lcn_freq_roll == 6 && squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
-    /* A tune that fails moves nothing: the am row's retune carried off and never landed, and the receiver stays on the
-       nfm row's channel under its noise. */
+    assert(state->lcn_freq_roll == 6 && !channel_gate_fake_closed());
+    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
+    /* A tune that fails moves nothing: the am row's retune never landed, and the receiver stays on the nfm row's channel
+       under its noise. */
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     state->lcn_freq_roll = 1;
     const uint32_t nfm_channel = channel_gate_fake_channel();
     (void)dsd_engine_channel_scan_step(opts, state);
-    assert(tune_carried && !channel_gate_fake_bound(tune_channel, NULL));
+    assert(tune_carried && tune_channel != nfm_channel);
     assert(channel_gate_fake_channel() == nfm_channel && squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     dsd_engine_channel_scan_leave(opts, state);
-    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10) && !channel_gate_fake_closed());
 
     gate_clear_hooks();
     dsd_rtl_stream_metrics_hooks_set(NULL);
@@ -1026,15 +1031,15 @@ test_row_squelch_analog_default_rides_the_retune(void) {
     tunes = reset_count = 0;
 }
 
-/* Issue #899 (review rounds 3 to 5): each -Y retune carries the gate of the row it lands, on a channel of its own the
- * receiver applies it to where the retune lands, so the receiver runs the row on air's gate until then and the landed
- * row's from there; when that tune fails late, nothing changes (before the round-3 fix the gate went ahead of the tune
- * and the receiver kept off). So for a deferral and a pending go-to that fails late (the receiver stays on the nfm
- * row's noise, the channel it stays on); a retry dropped because its row changed under it, whose landing the receiver
- * had taken, hands it that landed channel's off. With a dmr row on air and a go-to of an nfm row pending (its retune
- * carries noise), a second go-to refused before either backend moved reinstates the pending one, and that retune lands
- * noise, the row's own, though the refused tune carried off. A stream that opens while a tune is pending opens on the
- * gate of the row on air, and the landing hands over the staged row's own. */
+/* Issue #899 (review rounds 3 to 6): each -Y retune names a channel of its own, so the receiver runs the row on air's
+ * gate until it lands; an analog row's channel then runs closed until the decoder commits the row and writes its gate,
+ * resolved at that moment. When that tune fails late, nothing changes. So for a deferral and a pending go-to that fails
+ * late, the receiver stays on the nfm row's noise; a retry dropped because its row changed under it leaves the
+ * receiver on the channel its landing named, which the decoder never commits, so it writes nothing for it. With a dmr
+ * row on air and a go-to of an nfm row pending, a second go-to refused before either backend moved reinstates the
+ * pending one, whose landing runs closed until the row commits on noise. A stream that opens while a tune is pending
+ * starts closed and opens on the gate of the row on air, which the decoder commits with it; one that opens after a
+ * row's retune landed and before its commit (review round 6) stays closed until that row, restaged, commits. */
 static const long k_gate_hz[] = {151000000, 152000000, 153000000, 154000000};
 
 static dsd_scan_goto_result
@@ -1054,30 +1059,36 @@ gate_is(const char* what, const char* which, const dsd_squelch_setting* got, int
     }
 }
 
+/* The receiver runs @p mode / @p margin, opened: not closed. */
 static void
 gate_expect(const char* what, int mode, int margin) {
+    if (channel_gate_fake_closed()) {
+        DSD_FPRINTF(stderr, "%s: the receiver runs closed\n", what);
+        assert(0);
+    }
     gate_is(what, "the receiver holds", &g_rx_squelch, mode, margin);
 }
 
+/* The receiver runs closed on the channel the last retune named: landed, not committed. */
 static void
-gate_expect_landing(const char* what, int mode, int margin) {
-    if (!tune_carried || !channel_gate_fake_bound(tune_channel, NULL)) {
-        DSD_FPRINTF(stderr, "%s: the last retune carries no gate still to land\n", what);
+gate_expect_closed(const char* what) {
+    if (!channel_gate_fake_closed() || channel_gate_fake_channel() != tune_channel) {
+        DSD_FPRINTF(stderr, "%s: the receiver runs closed %d on channel %u, want closed on the landed %u\n", what,
+                    channel_gate_fake_closed(), channel_gate_fake_channel(), tune_channel);
         assert(0);
     }
-    const dsd_squelch_setting landing = tune_landing_gate();
-    gate_is(what, "the retune lands", &landing, mode, margin);
 }
 
-/* A typed list on an NFM session of a radio input with --squelch-analog-default noise+10 (nfm rows 0 and 2, dmr rows 1
-   and 3), the receiver's side of the squelch wired to the stand-in, the scope's entry points settling through the
-   engine, and the nfm row 0 on air. */
+/* A typed list on a session of a radio input with --squelch-analog-default noise+10 (nfm rows 0 and 2, dmr rows 1 and
+   3), NFM or, with @p digital_session, DMR, the receiver's side of the squelch wired to the stand-in, the scope's entry
+   points settling through the engine, and the nfm row 0 on air. */
 static void
-gate_list_start(dsd_opts* opts, dsd_state* state) {
+gate_list_start_on(dsd_opts* opts, dsd_state* state, int digital_session) {
     opts->scanner_mode = 1;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->wav_sample_rate = 48000;
-    opts->analog_only = 1;
+    opts->analog_only = digital_session ? 0 : 1;
+    opts->frame_dmr = digital_session ? 1 : 0;
     opts->analog_demod = DSD_ANALOG_DEMOD_FM;
     DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
     assert(dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U) == 0);
@@ -1092,14 +1103,18 @@ gate_list_start(dsd_opts* opts, dsd_state* state) {
     hooks = rx_gate_hooks(output_rate);
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     gate_install_resume_settle();
-    assert(dsd_squelch_analog_default_sync(opts, state) == 1);
-    const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
-    channel_gate_fake_open(&opened, rx_runs);
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    gate_open(opts, state);
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     expected_tune_hz = k_gate_hz[0];
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     gate_expect("the nfm row on air", DSD_SQUELCH_MODE_NOISE, 10);
+}
+
+static void
+gate_list_start(dsd_opts* opts, dsd_state* state) {
+    gate_list_start_on(opts, state, 0);
 }
 
 static void
@@ -1123,17 +1138,17 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     gate_list_start(opts, state);
+    const uint32_t nfm_on_air = channel_gate_fake_channel();
 
     /* A pending step to the dmr row, failing late. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     expected_tune_hz = k_gate_hz[1];
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
-    gate_expect_landing("the dmr row's pending tune", DSD_SQUELCH_MODE_LEVEL, 0);
     gate_expect("the dmr row's pending tune", DSD_SQUELCH_MODE_NOISE, 10);
-    channel_gate_fake_release(tune_channel);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     gate_expect("the dmr row's tune failed late", DSD_SQUELCH_MODE_NOISE, 10);
+    assert(channel_gate_fake_channel() == nfm_on_air);
 
     /* Deferred at once. */
     tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
@@ -1144,33 +1159,39 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     /* A pending go-to of the dmr row, failing late. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(gate_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
-    gate_expect_landing("the go-to's pending tune", DSD_SQUELCH_MODE_LEVEL, 0);
     gate_expect("the go-to's pending tune", DSD_SQUELCH_MODE_NOISE, 10);
-    channel_gate_fake_release(tune_channel);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     gate_expect("the go-to's tune failed late", DSD_SQUELCH_MODE_NOISE, 10);
     (void)dsd_engine_scan_entry_take_failure(state, NULL);
 
-    /* A step to the dmr row that lands, its gate with it, but restages (an edit of the row while its tune was pending),
-       whose row is written over in place before the retry: the retry is dropped, and the receiver, on the dmr row's
-       carrier where that retune landed it, runs the gate of that channel (off). */
+    /* A step to the nfm row 2 that lands but restages (an edit of the row while its tune was pending), whose row is
+       written over in place before the retry: the retry is dropped, and the receiver, on the channel that retune named,
+       stays closed: the decoder never committed it, so it writes nothing for it. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-    state->lcn_freq_roll = 1;
-    expected_tune_hz = k_gate_hz[1];
+    state->lcn_freq_roll = 2;
+    expected_tune_hz = k_gate_hz[2];
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     dsd_scan_row_edit_value value;
     DSD_MEMSET(&value, 0, sizeof value);
     value.squelch_db = -45;
-    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 1, DSD_SCAN_ROW_FIELD_SQUELCH,
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 2, DSD_SCAN_ROW_FIELD_SQUELCH,
                                             DSD_SCAN_ROW_EDIT_SET, &value, NULL)
            == DSD_SCAN_ROW_EDIT_STORED);
     land_pending_tune(request);
+    gate_expect_closed("the nfm row landed, a restage owed");
     assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, owed a restage */
-    *dsd_state_trunk_lcn_slot(state, 1) = 152500000;
+    *dsd_state_trunk_lcn_slot(state, 2) = 153500000;
+    const int writes_before_drop = channel_gate_fake_applied_writes();
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
-    gate_expect("the dropped retry", DSD_SQUELCH_MODE_LEVEL, 0);
-    *dsd_state_trunk_lcn_slot(state, 1) = k_gate_hz[1];
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    gate_expect_closed("the dropped retry");
+    assert(channel_gate_fake_applied_writes() == writes_before_drop);
+    *dsd_state_trunk_lcn_slot(state, 2) = k_gate_hz[2];
+    DSD_MEMSET(&value, 0, sizeof value);
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 2, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_RESET, &value, NULL)
+           != DSD_SCAN_ROW_EDIT_REFUSED);
 
     /* The dmr row 3 on air, a go-to of the nfm row 2 pending, then a go-to of the dmr row 1 refused before anything
        moved. */
@@ -1181,20 +1202,19 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     assert(gate_goto(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
     const uint64_t nfm_request = request;
     const uint32_t nfm_channel = tune_channel;
-    gate_expect_landing("the nfm go-to's pending tune", DSD_SQUELCH_MODE_NOISE, 10);
     gate_expect("the nfm go-to's pending tune", DSD_SQUELCH_MODE_LEVEL, 0);
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     assert(gate_goto(opts, state, 1) == DSD_SCAN_GOTO_REFUSED);
-    tune_channel = nfm_channel;
-    gate_expect_landing("the nfm go-to reinstated", DSD_SQUELCH_MODE_NOISE, 10);
     gate_expect("the nfm go-to reinstated", DSD_SQUELCH_MODE_LEVEL, 0);
     tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     assert(gate_goto(opts, state, 1) == DSD_SCAN_GOTO_DEFERRED);
-    tune_channel = nfm_channel;
-    gate_expect_landing("the nfm go-to reinstated after a deferral", DSD_SQUELCH_MODE_NOISE, 10);
     gate_expect("the nfm go-to reinstated after a deferral", DSD_SQUELCH_MODE_LEVEL, 0);
+    tune_channel = nfm_channel;
+    tuned_analog_only = 1;
     land_pending_tune(nfm_request);
-    gate_expect("the nfm row's retune landed", DSD_SQUELCH_MODE_NOISE, 10);
+    gate_expect_closed("the nfm row's retune landed");
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    gate_expect_closed("the nfm row's retune landed, a settle before its commit");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 2));
     gate_expect("the nfm row committed", DSD_SQUELCH_MODE_NOISE, 10);
@@ -1207,48 +1227,87 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     gate_expect("a go-to refused over the nfm row", DSD_SQUELCH_MODE_NOISE, 10);
 
     /* A stream restart while a go-to of the dmr row 3 is pending: the stream stops (the scan notes the request), the
-       new one opens on a channel of its own under the gate of the nfm row on air (svc_rtl_start_locked() resolves it
-       with dsd_engine_receiver_gate_now()), and the reopen restages the row there, whose retune carries the dmr row's
-       off. */
+       new one opens closed on the NFM session's family and the decoder commits it for the nfm row on air, which opens
+       it on noise; the reopen restages the row there, whose landing runs the gate last written until its commit writes
+       the dmr row's off. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(gate_goto(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
-    gate_expect_landing("the dmr go-to's pending tune", DSD_SQUELCH_MODE_LEVEL, 0);
     /* The same source reopens on the row's frequency, which the pending tune cached as the centre. */
     static int fake_rtl_context;
     state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
     state->carrier_source_key = 0x899U;
     opts->rtlsdr_center_freq = (uint32_t)k_gate_hz[3];
     dsd_engine_channel_scan_stream_stopping(opts, state);
-    const dsd_squelch_setting reopened = dsd_engine_receiver_gate_now(opts, state);
-    gate_is("the stream reopened", "it opens on", &reopened, DSD_SQUELCH_MODE_NOISE, 10);
-    channel_gate_fake_open(&reopened, rx_runs);
+    gate_open(opts, state);
+    gate_expect("the stream reopened", DSD_SQUELCH_MODE_NOISE, 10);
     tune_carried = 0;
     dsd_engine_channel_scan_stream_reopened(opts, state, 1);
     for (int i = 0; i < 4 && !tune_carried; i++) {
         (void)dsd_engine_channel_scan_pending(opts, state);
     }
-    gate_expect_landing("the dmr row restaged on the new stream", DSD_SQUELCH_MODE_LEVEL, 0);
+    assert(tune_carried);
     gate_expect("the dmr row restaged on the new stream", DSD_SQUELCH_MODE_NOISE, 10);
     land_pending_tune(request);
+    assert(tune_landed_closed == 0);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 3));
     gate_expect("the dmr row landed after a restart", DSD_SQUELCH_MODE_LEVEL, 0);
+
+    /* Review round 6: a stream restart after a go-to of the nfm row 2 (its own -40 dB) landed from the nfm row 0 on air
+       (noise +10), before the row's commit. The new stream opens closed on the analog family, and stays closed: the
+       decoder commits no channel for it, so the row on air's noise never reaches samples of the row 2's frequency. The
+       reopen restages the row, whose landing runs closed too, and the row's commit opens it on -40 dB. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(gate_goto(opts, state, 0) == DSD_SCAN_GOTO_HOLDING);
+    gate_expect("the nfm row 0 on air", DSD_SQUELCH_MODE_NOISE, 10);
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -40;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 2, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(gate_goto(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    land_pending_tune(request);
+    gate_expect_closed("the nfm go-to landed, not committed");
+    opts->rtlsdr_center_freq = (uint32_t)k_gate_hz[2];
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    gate_open(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    if (!channel_gate_fake_closed() || channel_gate_fake_applied_writes() != 0) {
+        DSD_FPRINTF(stderr,
+                    "the stream reopened over a landed nfm row: runs closed %d (mode %d margin %d) after %d writes, "
+                    "want closed and none\n",
+                    channel_gate_fake_closed(), g_rx_squelch.mode, g_rx_squelch.margin_db,
+                    channel_gate_fake_applied_writes());
+        assert(0);
+    }
+    tune_carried = 0;
+    dsd_engine_channel_scan_stream_reopened(opts, state, 1);
+    for (int i = 0; i < 4 && !tune_carried; i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    assert(tune_carried && channel_gate_fake_closed());
+    land_pending_tune(request);
+    gate_expect_closed("the nfm row restaged and landed");
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(dsd_engine_channel_scan_row_confirmed(state, 2));
+    const dsd_squelch_setting minus40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
     state->rtl_ctx = NULL;
 
     gate_list_free(opts, state);
 }
 
 /*
- * Issue #899 (review round 4, P2 x2): a command that neither changes the squelch nor ends the analog default (a
+ * Issue #899 (review rounds 4 to 6): a command that neither changes the squelch nor ends the analog default (a
  * talkgroup-list export) suspends and resumes the scan scope while a -Y retune is outstanding. With the dmr row 1 on
- * air (off) and a go-to of the nfm row 0 pending (its retune carries noise +10), the resume leaves that landing to the
- * retune and the receiver keeps the dmr row's off: off until the retune lands and noise +10 from there. Before the fix
- * the gate went ahead of the tune and the resume pushed the dmr row's off over it, so the nfm landing ran ungated until
- * its commit. The same resume after the retune landed (the decoder has not polled it yet) leaves the nfm row's noise.
+ * air (off) and a go-to of the nfm row 0 pending, the resume leaves the dmr row's channel on its off until the retune
+ * lands; the landing starts the nfm row's channel closed, and a resume before the row's commit leaves it closed (the
+ * decoder writes only for the channel it committed, the dmr row's). The commit opens it on noise +10.
  *
- * Then a live Off edit with that go-to pending ends the default: the command's settle writes the nfm row's gate as it
- * stands now (off) for the channel its retune lands, and a second go-to refused before anything moved reinstates the
- * first, whose landing is off. Before the fix the reinstated row got back the noise +10 cached when its tune was issued.
+ * Then a live Off edit with a go-to of the nfm row 2 pending ends the default, and a second go-to refused before
+ * anything moved reinstates the first, whose landing runs closed until the row's commit opens it on the gate resolved
+ * then: Off. Before round 4 the reinstated row got back the noise +10 cached when its tune was issued.
  */
 static void
 test_row_gate_pending_across_commands(void) {
@@ -1263,17 +1322,15 @@ test_row_gate_pending_across_commands(void) {
     /* An unrelated command over a pending go-to of the nfm row. */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(gate_goto(opts, state, 0) == DSD_SCAN_GOTO_PENDING);
-    gate_expect_landing("the nfm go-to", DSD_SQUELCH_MODE_NOISE, 10);
     assert(dsd_scan_mode_suspend(opts, state) == 1);
     (void)dsd_scan_mode_resume(opts, state);
     gate_expect("an unrelated command over the nfm go-to", DSD_SQUELCH_MODE_LEVEL, 0);
-    gate_expect_landing("an unrelated command over the nfm go-to", DSD_SQUELCH_MODE_NOISE, 10);
     land_pending_tune(request);
-    gate_expect("the nfm go-to landed", DSD_SQUELCH_MODE_NOISE, 10);
-    /* Landed, not polled yet: another command's resume leaves the nfm row's noise. */
+    gate_expect_closed("the nfm go-to landed");
+    /* Landed, not polled yet: another command's resume leaves it closed. */
     assert(dsd_scan_mode_suspend(opts, state) == 1);
     (void)dsd_scan_mode_resume(opts, state);
-    gate_expect("an unrelated command over the nfm landing", DSD_SQUELCH_MODE_NOISE, 10);
+    gate_expect_closed("an unrelated command over the nfm landing");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 0));
     gate_expect("the nfm row committed", DSD_SQUELCH_MODE_NOISE, 10);
@@ -1285,19 +1342,18 @@ test_row_gate_pending_across_commands(void) {
     assert(gate_goto(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
     const uint64_t nfm_request = request;
     const uint32_t nfm_channel = tune_channel;
-    gate_expect_landing("the nfm go-to before the edit", DSD_SQUELCH_MODE_NOISE, 10);
     const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
     assert(dsd_scan_mode_set_configured_squelch_setting(opts, state, &off) == 1);
     assert(opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED);
     /* The command's settle at the drain (ui_settle_squelch()). */
     dsd_engine_receiver_gate_settle(opts, state, 1);
-    gate_expect_landing("the nfm go-to after the edit", DSD_SQUELCH_MODE_LEVEL, 0);
+    gate_expect("the dmr row on air after the edit", DSD_SQUELCH_MODE_LEVEL, 0);
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     assert(gate_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
     tune_channel = nfm_channel;
-    gate_expect_landing("the nfm go-to reinstated after the edit", DSD_SQUELCH_MODE_LEVEL, 0);
+    tuned_analog_only = 1;
     land_pending_tune(nfm_request);
-    gate_expect("the nfm go-to landed after the edit", DSD_SQUELCH_MODE_LEVEL, 0);
+    gate_expect_closed("the nfm go-to landed after the edit");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 2));
     gate_expect("the nfm row committed after the edit", DSD_SQUELCH_MODE_LEVEL, 0);
@@ -1315,30 +1371,26 @@ land_at_another_write(uint32_t channel) {
     if (g_race_channel != 0U && channel != g_race_channel) {
         const uint32_t landing = g_race_channel;
         g_race_channel = 0U;
-        channel_gate_fake_land(landing);
+        channel_gate_fake_land(landing, 1);
         dsd_trunk_tuning_request_publish(g_race_request, DSD_TRUNK_TUNE_RESULT_OK);
     }
 }
 
 /*
- * Issue #899 (review round 5): every write names the channel it is for, and the receiver alone judges it.
+ * Issue #899 (review rounds 5 and 6): every write names the channel the decoder committed, the receiver drops any other,
+ * and an analog channel the decoder has not committed runs closed.
  *
- * (P2, channel_scan.c ~613) With the dmr row 1 on air and a go-to of the nfm row 0 (its own -40 dB) pending, a
- * configured -20 dB edit's settle resolves the gates while the controller lands the nfm retune and publishes its
- * completion: the landing comes between the decoder's resolve and its write for the dmr row's channel. That write is
- * stale and dropped; the receiver runs the nfm row's -40 dB it landed. Before the fix the settle resolved the dmr row's
- * -20 dB as the gate "now", saw the hold gone, and pushed it over the gate that had just landed.
+ * With the dmr row 1 on air and a go-to of the nfm row 0 (its own -40 dB) pending, a configured -20 dB edit's settle
+ * resolves the dmr row's gate while the controller lands the nfm retune: the landing comes between the resolve and the
+ * write for the dmr row's channel. That write is dropped, and the nfm row's channel runs closed (never -20 dB) until the
+ * row commits on its own -40 dB.
  *
- * (P2, scan_mode.c ~924) With the nfm row 0's retune landed and its commit not yet made, an edit of the outgoing dmr row
- * 1's squelch (-45 dB) reaches the receiver only for the dmr row's channel: the receiver, on the nfm row's, keeps that
- * row's gate (the configured -20 dB it inherits). Before the fix the row edit's scope settle pushed -45 dB straight to
- * the receiver on the nfm channel.
+ * With the nfm row 0's retune landed and its commit not yet made, an edit of the outgoing dmr row 1's squelch (-45 dB)
+ * never reaches the receiver, which stays closed until the row commits on the configured -20 dB it inherits.
  *
- * (P2, menu_services.c ~3133) Edits between a landing and its commit, as svc_rtl_set_sql_setting() makes them (the
- * configured store, then the channel settle), resolve against the row the receiver produces: the nfm row 2 with its own
- * -40 dB, landed from the dmr row 3 (which inherits), keeps -40 dB over a configured -25 dB edit, where before the fix
- * the edit's push wrote -25 dB over it; and the nfm row 0 (which inherits), landed from the dmr row 3 given its own off,
- * takes a configured -30 dB edit at once, where before the fix the outgoing row's override suppressed the push.
+ * Edits between a landing and its commit, as svc_rtl_set_sql_setting() makes them, leave the landed channel closed, and
+ * the commit opens it on the gate resolved then: the nfm row 2 with its own -40 dB keeps it over a configured -25 dB
+ * edit, and the nfm row 0 (which inherits), landed from the dmr row 3 given its own off, takes a configured -30 dB.
  */
 static void
 test_row_gate_writes_name_their_channel(void) {
@@ -1350,8 +1402,7 @@ test_row_gate_writes_name_their_channel(void) {
     assert(gate_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
     gate_expect("the dmr row on air", DSD_SQUELCH_MODE_LEVEL, 0);
 
-    /* The landing between the resolve and the write: the nfm row 0 with its own -40 dB, pending, and a configured -20
-       dB edit, which the dmr row on air inherits, settled while the nfm retune lands. */
+    /* The landing between the resolve and the write. */
     dsd_scan_row_edit_value value;
     DSD_MEMSET(&value, 0, sizeof value);
     value.squelch_db = -40;
@@ -1369,20 +1420,13 @@ test_row_gate_writes_name_their_channel(void) {
     (void)dsd_squelch_analog_default_sync(opts, state);
     dsd_engine_receiver_gate_settle(opts, state, 1);
     channel_gate_fake_before_write(NULL);
-    assert(g_race_channel == 0U && channel_gate_fake_channel() == tune_channel);
-    if (!dsd_squelch_setting_equal(&g_rx_squelch, &minus40)) {
-        DSD_FPRINTF(stderr,
-                    "a settle across the nfm landing: the receiver holds mode %d level %g, want the landed "
-                    "row's own -40 dB\n",
-                    g_rx_squelch.mode, g_rx_squelch.level);
-        assert(0);
-    }
-    /* The next drain sees the receiver moved, and writes the landed row's gate for it. */
+    assert(g_race_channel == 0U);
+    gate_expect_closed("a settle across the nfm landing");
     dsd_engine_receiver_gate_settle(opts, state, 0);
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
+    gate_expect_closed("the next drain over the nfm landing");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 0));
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
     DSD_MEMSET(&value, 0, sizeof value);
     assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 0, DSD_SCAN_ROW_FIELD_SQUELCH,
                                             DSD_SCAN_ROW_EDIT_RESET, &value, NULL)
@@ -1394,8 +1438,7 @@ test_row_gate_writes_name_their_channel(void) {
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(gate_goto(opts, state, 0) == DSD_SCAN_GOTO_PENDING);
     land_pending_tune(request);
-    /* The nfm row 0 inherits the configured -20 dB now. */
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus20));
+    gate_expect_closed("the nfm row 0 landed");
     DSD_MEMSET(&value, 0, sizeof value);
     value.squelch_db = -45;
     g_rx_watch = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-45.0));
@@ -1403,18 +1446,18 @@ test_row_gate_writes_name_their_channel(void) {
     const int edited = dsd_engine_channel_scan_edit_row(
         opts, state, state->scan_row_session, 1, DSD_SCAN_ROW_FIELD_SQUELCH, DSD_SCAN_ROW_EDIT_SET, &value, NULL);
     assert(edited == DSD_SCAN_ROW_EDIT_APPLIED || edited == DSD_SCAN_ROW_EDIT_STORED);
-    if (g_rx_watch_hits != 0 || !dsd_squelch_setting_equal(&g_rx_squelch, &minus20)) {
+    if (g_rx_watch_hits != 0 || !channel_gate_fake_closed()) {
         DSD_FPRINTF(stderr,
-                    "the outgoing dmr row edited over the nfm landing: the receiver ran -45 dB %d times and holds mode "
-                    "%d level %g, want the landed nfm row's -20 dB throughout\n",
-                    g_rx_watch_hits, g_rx_squelch.mode, g_rx_squelch.level);
+                    "the outgoing dmr row edited over the nfm landing: the receiver ran -45 dB %d times and runs "
+                    "closed %d, want closed throughout\n",
+                    g_rx_watch_hits, channel_gate_fake_closed());
         assert(0);
     }
     /* The edit restages the staged row (its tune was prepared before it); the restage lands and the row commits. */
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     for (int i = 0; i < 4 && dsd_engine_channel_scan_pending(opts, state) != 0; i++) {}
     assert(dsd_engine_channel_scan_row_confirmed(state, 0));
-    assert(g_rx_watch_hits == 0 && dsd_squelch_setting_equal(&g_rx_squelch, &minus20));
+    assert(g_rx_watch_hits == 0 && !channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &minus20));
     DSD_MEMSET(&g_rx_watch, 0, sizeof g_rx_watch);
     g_rx_watch.level = -1.0;
     DSD_MEMSET(&value, 0, sizeof value);
@@ -1433,21 +1476,14 @@ test_row_gate_writes_name_their_channel(void) {
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(gate_goto(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
     land_pending_tune(request);
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
     const dsd_squelch_setting minus25 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-25.0));
     (void)dsd_scan_mode_set_configured_squelch_setting(opts, state, &minus25);
     (void)dsd_squelch_analog_default_sync(opts, state);
     dsd_engine_receiver_gate_settle(opts, state, 1);
-    if (!dsd_squelch_setting_equal(&g_rx_squelch, &minus40)) {
-        DSD_FPRINTF(stderr,
-                    "a configured edit over the landed nfm row 2: the receiver holds mode %d level %g, want "
-                    "the row's own -40 dB\n",
-                    g_rx_squelch.mode, g_rx_squelch.level);
-        assert(0);
-    }
+    gate_expect_closed("a configured edit over the landed nfm row 2");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 2));
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &minus40));
 
     /* The reverse: the outgoing dmr row 3 with its own off, the landed nfm row 0 inheriting the edited level. */
     DSD_MEMSET(&value, 0, sizeof value);
@@ -1464,39 +1500,150 @@ test_row_gate_writes_name_their_channel(void) {
     (void)dsd_scan_mode_set_configured_squelch_setting(opts, state, &minus30);
     (void)dsd_squelch_analog_default_sync(opts, state);
     dsd_engine_receiver_gate_settle(opts, state, 1);
-    if (!dsd_squelch_setting_equal(&g_rx_squelch, &minus30)) {
-        DSD_FPRINTF(stderr,
-                    "a configured edit over the landed nfm row 0: the receiver holds mode %d level %g, want "
-                    "the edited -30 dB it inherits\n",
-                    g_rx_squelch.mode, g_rx_squelch.level);
-        assert(0);
-    }
+    gate_expect_closed("a configured edit over the landed nfm row 0");
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(dsd_engine_channel_scan_row_confirmed(state, 0));
-    assert(dsd_squelch_setting_equal(&g_rx_squelch, &minus30));
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &minus30));
 
     gate_list_free(opts, state);
 }
 
-/* Issue #899 (review round 5): an idle settle (nothing changed here, the receiver not moved) resolves and writes
-   nothing: one lock-free epoch load. A change, or a receiver that moved, re-resolves; a write repeats only on a
-   change. */
+/* The live family request a leave or a mode switch makes, as the stream takes it: the channel staged for it. */
+static uint32_t g_family_request_channel;
+static int g_family_request_family = -1;
+static int g_family_requests_taken;
+
+static int
+take_family_request(int family, int kind, int width_hz) {
+    (void)kind;
+    (void)width_hz;
+    g_family_requests_taken++;
+    g_family_request_family = family;
+    const uint32_t staged = channel_gate_fake_take_staged();
+    if (staged != 0U) {
+        g_family_request_channel = staged;
+    }
+    return 0;
+}
+
+static int
+take_digital_landing(int cqpsk_explicit) {
+    (void)cqpsk_explicit;
+    return take_family_request(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+}
+
+/*
+ * Issue #899 (review round 6, P2): leaving a committed nfm -Y row (the analog default, noise +10) on a DMR session
+ * whose own squelch is Off. The session's Off is never written for the row's channel: the leave names the session a
+ * channel of its own on its family request before the scope leaves, so the receiver keeps the row's noise while the
+ * analog family still runs, and the decoder writes Off once that request has landed the digital family. Before the
+ * fix the leave's settle wrote Off for the row's channel ahead of the family request: ungated analog blocks.
+ */
+static void
+test_row_leave_to_a_digital_session_writes_nothing_on_the_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    gate_list_start_on(opts, state, 1);
+    const uint32_t row_channel = channel_gate_fake_channel();
+    static dsd_rtl_stream_metrics_hooks hooks;
+    hooks = rx_gate_hooks(output_rate);
+    hooks.apply_analog_profile = take_family_request;
+    hooks.request_digital_family_landing = take_digital_landing;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_request_channel = 0U;
+    g_family_requests_taken = 0;
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    g_rx_watch = off;
+    g_rx_watch_hits = 0;
+    const int applied_before = channel_gate_fake_applied_writes();
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    if (g_rx_watch_hits != 0 || channel_gate_fake_applied_writes() != applied_before
+        || channel_gate_fake_channel() != row_channel || !squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10)) {
+        DSD_FPRINTF(stderr,
+                    "the leave to the DMR session: the receiver ran Off %d times, took %d writes, is on channel %u "
+                    "(the row's %u) under mode %d margin %d; want the row's noise +10 untouched\n",
+                    g_rx_watch_hits, channel_gate_fake_applied_writes() - applied_before, channel_gate_fake_channel(),
+                    row_channel, g_rx_squelch.mode, g_rx_squelch.margin_db);
+        assert(0);
+    }
+    assert(g_family_requests_taken > 0 && g_family_request_family == DSD_RX_FAMILY_DIGITAL);
+    assert(g_family_request_channel != 0U && g_family_request_channel != row_channel);
+    /* The family request lands the digital family on the session's channel: the decoder writes Off for it. */
+    channel_gate_fake_land(g_family_request_channel, 0);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    gate_expect("the DMR session after its family landed", DSD_SQUELCH_MODE_LEVEL, 0);
+    assert(channel_gate_fake_channel() == g_family_request_channel);
+    DSD_MEMSET(&g_rx_watch, 0, sizeof g_rx_watch);
+    g_rx_watch.level = -1.0;
+    gate_list_free(opts, state);
+}
+
+/*
+ * Issue #899 (review round 6, P2): nine live family switches made while the demod thread takes none (samples stalled)
+ * replace one another; the decoder keeps no history of them. They all name the one channel the first began, the
+ * receiver refuses the request it takes, and the decoder goes back to the channel the receiver kept: a later edit
+ * reaches it. Before the fix an eight-entry history evicted the channel on air and every later edit wrote nothing.
+ */
+static void
+test_receiver_gate_stalled_family_requests(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    gate_list_start(opts, state);
+    const uint32_t row_channel = channel_gate_fake_channel();
+    static dsd_rtl_stream_metrics_hooks hooks;
+    hooks = rx_gate_hooks(output_rate);
+    hooks.apply_analog_profile = take_family_request;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_family_request_channel = 0U;
+    uint32_t first = 0U;
+    for (int i = 0; i < 9; i++) {
+        const uint32_t began = dsd_engine_receiver_family_begin(opts);
+        (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM,
+                                                               (i % 2) ? 16000 : 12500);
+        dsd_engine_receiver_family_end(began);
+        if (i == 0) {
+            first = began;
+        } else {
+            assert(began == 0U); /* joined the first, still to land */
+        }
+        assert(g_family_request_channel == first);
+    }
+    assert(first != 0U && channel_gate_fake_channel() == row_channel);
+    channel_gate_fake_refuse(first);
+    dsd_engine_receiver_channel_refused();
+    const dsd_squelch_setting minus30 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-30.0));
+    (void)dsd_scan_mode_set_configured_squelch_setting(opts, state, &minus30);
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    if (!dsd_squelch_setting_equal(&g_rx_squelch, &minus30) || channel_gate_fake_channel() != row_channel) {
+        DSD_FPRINTF(stderr, "an edit after nine stalled requests: the receiver holds mode %d level %g, want -30 dB\n",
+                    g_rx_squelch.mode, g_rx_squelch.level);
+        assert(0);
+    }
+    gate_list_free(opts, state);
+}
+
+/* Issue #899 (review round 5, kept in round 6): a settle with nothing changed and nothing due reads, resolves and
+   writes nothing. A change re-resolves; a write repeats only on a change. */
 static void
 test_receiver_gate_idle_settle_is_free(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     gate_list_start(opts, state);
-    /* The first drain after the row landed observes the landing. */
     dsd_engine_receiver_gate_settle(opts, state, 0);
     const int writes = channel_gate_fake_writes();
+    const int reads = channel_gate_fake_reads();
     for (int i = 0; i < 100; i++) {
         dsd_engine_receiver_gate_settle(opts, state, 0);
     }
-    assert(channel_gate_fake_writes() == writes);
+    assert(channel_gate_fake_writes() == writes && channel_gate_fake_reads() == reads);
     /* A change re-resolves, and writes nothing the receiver runs already. */
     dsd_engine_receiver_gate_settle(opts, state, 1);
-    assert(channel_gate_fake_writes() == writes);
+    assert(channel_gate_fake_writes() == writes && channel_gate_fake_reads() == reads);
     gate_list_free(opts, state);
 }
 
@@ -5568,6 +5715,8 @@ main(void) {
     test_row_gate_follows_the_tune_that_can_land();
     test_row_gate_pending_across_commands();
     test_row_gate_writes_name_their_channel();
+    test_row_leave_to_a_digital_session_writes_nothing_on_the_row();
+    test_receiver_gate_stalled_family_requests();
     test_receiver_gate_idle_settle_is_free();
     test_row_squelch_warns_once_per_row_on_pcm_input();
     test_rx_tone_row_commit_and_step_clear();

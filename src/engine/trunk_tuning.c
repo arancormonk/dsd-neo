@@ -9,14 +9,12 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
-#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -1470,6 +1468,15 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
  * @param ted_sps TED samples-per-symbol to set (0 = no change). Caller should
  *        pass the CC SPS (4 for P25P2 TDMA CC, 5 for P25P1 CC).
  */
+/* The receiver channel a trunk-scan target's control-channel park names (issue #899; 0: none): its retune is the one
+   that puts the target on air (dsd_engine_trunk_park_names_channel()). Decoder thread. */
+static uint32_t s_cc_park_channel;
+
+void
+dsd_engine_trunk_park_names_channel(uint32_t channel) {
+    s_cc_park_channel = channel;
+}
+
 static dsd_trunk_tune_result
 engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                      uint64_t request_id) {
@@ -1500,9 +1507,17 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
+        if (s_cc_park_channel != 0U) {
+            rtl_stream_prepare_retune_channel_for_target((uint32_t)freq, s_cc_park_channel);
+        }
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
+#ifdef USE_RADIO
+    if (s_cc_park_channel != 0U && opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_stream_prepare_retune_channel_for_target((uint32_t)freq, 0U);
+    }
+#endif
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -1543,29 +1558,12 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 #ifdef USE_RADIO
-/* The row's squelch gate (issue #899; NULL: none) rides the profile the scan tune's preparation queued: attached last,
-   since a store replaces the whole profile. The channel it lands goes to @p out_gate_channel, or with none is where the
-   on-air channel goes. */
+/* The channel a scan tune names (issue #899; 0: none) on the profile its preparation queued, attached last, since a
+   store replaces the whole profile; with 0 once the tune returned, a profile it never took names none any more. */
 static void
-dsd_engine_prepare_scan_gate(const dsd_opts* opts, long int freq, const dsd_squelch_setting* gate,
-                             uint32_t* out_gate_channel) {
-    if (!gate || opts->audio_in_type != AUDIO_IN_RTL) {
-        return;
-    }
-    const uint32_t channel = rtl_stream_prepare_retune_squelch_for_target((uint32_t)freq, gate);
-    if (out_gate_channel) {
-        *out_gate_channel = channel;
-    } else {
-        dsd_engine_receiver_gate_on_air(channel);
-    }
-}
-
-/* A gate the backend never took (a refusal, or no RTL leg) goes once the tune returns, outstanding no more (issue
-   #899). */
-static void
-dsd_engine_drop_untaken_scan_gate(const dsd_opts* opts, long int freq, const dsd_squelch_setting* gate) {
-    if (gate && opts->audio_in_type == AUDIO_IN_RTL) {
-        rtl_stream_drop_untaken_retune_squelch((uint32_t)freq);
+dsd_engine_name_scan_channel(const dsd_opts* opts, long int freq, uint32_t channel) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_stream_prepare_retune_channel_for_target((uint32_t)freq, channel);
     }
 }
 
@@ -1696,26 +1694,17 @@ dsd_engine_scan_tune_moved(void) {
     return s_scan_tune_moved;
 }
 
-/* A scan tune names no request and no receiver channel until it has them. */
-static void
-dsd_engine_scan_tune_outputs_clear(uint64_t* out_request_id, uint32_t* out_gate_channel) {
-    if (out_request_id) {
-        *out_request_id = 0U;
-    }
-    if (out_gate_channel) {
-        *out_gate_channel = 0U;
-    }
-}
-
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                             const dsd_squelch_setting* gate, uint32_t* out_gate_channel, uint64_t* out_request_id) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint32_t channel,
+                             uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
     uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
     dsd_engine_rtl_profile_snapshot rtl_snapshot;
 #endif
-    dsd_engine_scan_tune_outputs_clear(out_request_id, out_gate_channel);
+    if (out_request_id) {
+        *out_request_id = 0U;
+    }
     s_scan_tune_moved = 0;
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -1734,8 +1723,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
 #ifndef USE_RADIO
     (void)ted_sps;
-    (void)gate;
-    (void)out_gate_channel;
+    (void)channel;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
@@ -1747,14 +1735,18 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    dsd_engine_prepare_scan_gate(opts, freq, gate, out_gate_channel);
+    if (channel != 0U) {
+        dsd_engine_name_scan_channel(opts, freq, channel);
+    }
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
     result = dsd_engine_tune_with_backend(opts, state, freq, tune_request_id);
     s_scan_tune_moved = s_backend_rigctl_moved;
 #ifdef USE_RADIO
-    dsd_engine_drop_untaken_scan_gate(opts, freq, gate);
+    if (channel != 0U) {
+        dsd_engine_name_scan_channel(opts, freq, 0U);
+    }
 #endif
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO

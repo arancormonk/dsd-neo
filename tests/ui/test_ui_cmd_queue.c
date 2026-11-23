@@ -159,19 +159,21 @@ cmd_rx_gates_hooks_set(const dsd_rtl_stream_metrics_hooks* hooks) {
     dsd_rtl_stream_metrics_hooks_set(&installed);
 }
 
-/* The receiver opens on Off (a stream started before the cases), its gates installed, and the scan scope's entry points
-   settle it through the engine, as the engine's run installs them (dsd_engine_run_install_hooks()). */
+/* The receiver opens on Off on the digital family (a stream started before the cases), its channels installed, the
+   decoder commits it, and the scan scope's entry points settle it through the engine, as the engine's run installs them
+   (dsd_engine_run_install_hooks()). */
 static void
 cmd_rx_gates_open(void) {
     dsd_receiver_gate_settle_hook_set(dsd_engine_receiver_gate_settle_now);
     const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     channel_gate_fake_install(&g_cmd_rx_fake_hooks);
-    channel_gate_fake_open(&off, cmd_rx_runs);
+    (void)channel_gate_fake_open(0, &off, cmd_rx_runs);
 #else
-    channel_gate_fake_open(&off, NULL);
+    (void)channel_gate_fake_open(0, &off, NULL);
 #endif
     cmd_rx_gates_hooks_set(NULL);
+    dsd_engine_receiver_channel_commit(channel_gate_fake_channel());
 }
 
 #if defined(DSD_NEO_TEST_IO_CONTROL_WRAP) || defined(USE_RADIO)
@@ -676,38 +678,30 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
 }
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here,
-   reached through the stream hooks as the engine reaches the stream, whatever other hooks a case installs
-   (cmd_rx_gates_hooks_set()). A retune that carries a gate lands it at once (no case holds a retune's landing back), and
-   a family request's lands as the request is made. */
+/* The receiver's channels (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here, reached through
+   the stream hooks as the engine reaches the stream, whatever other hooks a case installs (cmd_rx_gates_hooks_set()). A
+   retune that names a channel lands it at once (no case holds a retune's landing back), on the family the front end
+   runs (cmd_rx_analog_family()), and a family request's lands as the request is made. */
 void __wrap_rtl_stream_set_channel_squelch(float level);
 void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
-uint32_t __wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
-void __wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
-
-uint32_t
-__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
-    (void)target_freq_hz;
-    if (!gate) {
-        return 0U;
-    }
-    const uint32_t channel = channel_gate_fake_bind(gate);
-    channel_gate_fake_land(channel);
-    return channel;
-}
+void __wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel);
+static int cmd_rx_analog_family(void);
 
 void
-__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+__wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
     (void)target_freq_hz;
+    channel_gate_fake_land(channel, cmd_rx_analog_family());
 }
 
 /* The engine's own hook table (dsd_engine_rtl_stream_metrics_hooks_install(), which a case's engine run installs)
    reaches the stand-in too: it is the stream here. */
 int __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate);
-uint32_t __wrap_rtl_stream_channel_gate_epoch(void);
+uint32_t __wrap_rtl_stream_new_channel(void);
+uint32_t __wrap_rtl_stream_current_channel(void);
 uint32_t __wrap_rtl_stream_channel_gate_opened(void);
-uint32_t __wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate);
-int __wrap_rtl_stream_unstage_family_gate(uint32_t channel);
+uint32_t __wrap_rtl_stream_refused_channel(void);
+void __wrap_rtl_stream_stage_family_channel(uint32_t channel);
+int __wrap_rtl_stream_unstage_family_channel(uint32_t channel);
 
 int
 __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate) {
@@ -715,8 +709,13 @@ __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting
 }
 
 uint32_t
-__wrap_rtl_stream_channel_gate_epoch(void) {
-    return g_cmd_rx_fake_hooks.channel_gate_epoch();
+__wrap_rtl_stream_new_channel(void) {
+    return g_cmd_rx_fake_hooks.new_channel();
+}
+
+uint32_t
+__wrap_rtl_stream_current_channel(void) {
+    return g_cmd_rx_fake_hooks.current_channel();
 }
 
 uint32_t
@@ -725,13 +724,18 @@ __wrap_rtl_stream_channel_gate_opened(void) {
 }
 
 uint32_t
-__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
-    return g_cmd_rx_fake_hooks.stage_family_gate(gate);
+__wrap_rtl_stream_refused_channel(void) {
+    return g_cmd_rx_fake_hooks.refused_channel();
+}
+
+void
+__wrap_rtl_stream_stage_family_channel(uint32_t channel) {
+    g_cmd_rx_fake_hooks.stage_family_channel(channel);
 }
 
 int
-__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
-    return g_cmd_rx_fake_hooks.unstage_family_gate(channel);
+__wrap_rtl_stream_unstage_family_channel(uint32_t channel) {
+    return g_cmd_rx_fake_hooks.unstage_family_channel(channel);
 }
 
 /* Every resolve of the gate of the channel on air the engine makes (dsd_scan_mode_channel_squelch()). */
@@ -744,10 +748,22 @@ __wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* stat
     return __real_dsd_scan_mode_channel_squelch(opts, state);
 }
 
+/* A receiver channel a case watches (0: none), and the times the receiver came to run g_cmd_rx_watch_gate on it. */
+static uint32_t g_cmd_rx_watch_channel;
+static dsd_squelch_setting g_cmd_rx_watch_gate;
+static int g_cmd_rx_watch_runs;
+
 /* Each gate the stand-in comes to run reaches the squelch setter wraps as the stream would set it: a level as a
-   threshold, a dynamic setting whole. */
+   threshold, a dynamic setting whole. A channel started closed is no gate told (channel_gate_fake_closed()). */
 static void
 cmd_rx_runs(const dsd_squelch_setting* gate) {
+    if (channel_gate_fake_closed()) {
+        return;
+    }
+    if (g_cmd_rx_watch_channel != 0U && channel_gate_fake_channel() == g_cmd_rx_watch_channel
+        && dsd_squelch_setting_equal(gate, &g_cmd_rx_watch_gate)) {
+        g_cmd_rx_watch_runs++;
+    }
     if (dsd_squelch_mode_is_dynamic(gate->mode)) {
         __wrap_rtl_stream_set_channel_squelch_setting(gate);
     } else {
@@ -11411,6 +11427,9 @@ static double g_config_rtl_create_squelch = -1.0;
 /* The squelch mode and margin a stream would open with (issue #899: the analog default is in them before the open). */
 static int g_config_rtl_create_squelch_mode = -1;
 static int g_config_rtl_create_squelch_margin = -1;
+/* The receiver channel the last create opened (issue #899), and whether it opened closed (on the analog family). */
+static uint32_t g_config_rtl_create_channel;
+static int g_config_rtl_create_closed = -1;
 static int g_config_rtl_create_frame_p25p1 = -1;
 /* Issue #578: 1 has a create succeed, with a context of zeroed storage (the stream calls left unwrapped do nothing with
    it), so the start after it runs; 0, the default, fails every create. The device string, family and analog profile
@@ -11545,6 +11564,8 @@ reset_config_rtl_wrap(void) {
     g_config_rtl_airspy_stops_after_open = 0;
     g_config_rtl_next_fail_opens = 0;
     g_config_rtl_creates = 0;
+    g_config_rtl_create_channel = 0U;
+    g_config_rtl_create_closed = -1;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
     g_config_rtl_fail_after_capture = g_config_rtl_opened_capture = 0;
@@ -11598,6 +11619,12 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
         made->bw_source = opts->rtl_dsp_bw_source;
     }
     g_fake_replay.created_hz = opts ? fake_replay_plan_hz(opts) : 0U;
+    if (opts && g_config_rtl_open_ok) {
+        /* The stream opens a receiver channel of its own: closed on the analog family (issue #899). */
+        const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
+        g_config_rtl_create_channel = channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, cmd_rx_runs);
+        g_config_rtl_create_closed = channel_gate_fake_closed();
+    }
     *out_ctx = g_config_rtl_open_ok ? (RtlSdrContext*)g_config_rtl_ctx : NULL;
     ++g_config_rtl_creates;
     return g_config_rtl_open_ok ? 0 : -1;
@@ -12352,6 +12379,10 @@ init_squelch_row_context(dsd_opts* opts, dsd_state* state) {
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
     const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_cmd_squelch_push};
     cmd_rx_gates_hooks_set(&hooks);
+    /* A stream running on the session (issue #899): the decoder commits its channel. */
+    const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
+    (void)channel_gate_fake_open(0, &opened, cmd_rx_runs);
+    dsd_engine_receiver_channel_opened(opts, state);
     g_cmd_squelch_pushes = 0;
     g_cmd_squelch_pushed = -1.0;
 }
@@ -12661,11 +12692,11 @@ test_squelch_setting_command(void) {
 }
 
 /*
- * Issue #899 (review round 5, P2): an idle drain on a digital radio session (DMR, its own level, no analog default, nothing
- * queued, no retune outstanding, the receiver not moved) resolves no gate and writes none: the receiver's settle costs
- * one lock-free epoch load. A command then re-resolves, and writes nothing the receiver runs already. Before the fix
- * every drain resolved the receiver's gates and took the retune-profile lock to hand an outstanding retune a landing
- * gate, whether or not anything was outstanding.
+ * Issue #899 (review rounds 5 and 6): an idle drain on a digital radio session (DMR, its own level, no analog default,
+ * nothing queued, no transition outstanding) resolves no gate, writes none and does not even read the receiver's
+ * channel: the settle is a branch on what the decoder knows. A command then re-resolves, and writes nothing the
+ * receiver runs already. Before round 5 every drain resolved the receiver's gates and took the retune-profile lock to
+ * hand an outstanding retune a landing gate, whether or not anything was outstanding.
  */
 static int
 test_idle_digital_drain_resolves_nothing(void) {
@@ -12684,15 +12715,18 @@ test_idle_digital_drain_resolves_nothing(void) {
                         DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle drain: dmr drained", dsd_app_drain_cmds(opts, state), 1);
     const dsd_squelch_setting session = dsd_squelch_setting_of_opts(opts);
-    channel_gate_fake_open(&session, cmd_rx_runs);
-    (void)dsd_app_drain_cmds(opts, state); /* observes the open */
+    (void)channel_gate_fake_open(0, &session, cmd_rx_runs);
+    dsd_engine_receiver_channel_opened(opts, state);
+    (void)dsd_app_drain_cmds(opts, state); /* writes the open's gate */
     const int writes = channel_gate_fake_writes();
+    const int reads = channel_gate_fake_reads();
     g_cmd_rx_resolves = 0;
     for (int i = 0; i < 1000; i++) {
         rc |= expect_int("idle drain: nothing queued", dsd_app_drain_cmds(opts, state), 0);
     }
     rc |= expect_int("idle drain: no gate resolved", g_cmd_rx_resolves, 0);
     rc |= expect_int("idle drain: no gate written", channel_gate_fake_writes() - writes, 0);
+    rc |= expect_int("idle drain: no channel read", channel_gate_fake_reads() - reads, 0);
     /* A command re-resolves; the receiver runs the session's gate already, so nothing changes. */
     rc |= expect_int("idle drain: a command", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -14411,14 +14445,26 @@ static int g_demod_req_ted_sps;
    #583), and the cqpsk_explicit it carried (-1: a plain request). */
 static int g_analog_req_landing;
 static int g_analog_req_landing_explicit;
-/* The receiver channel the last family request carried a gate for (rtl_stream_stage_family_gate(), issue #899; 0:
-   none), and that gate. The stand-in receiver lands it as the request is made, as the demod thread takes a request
-   at its next block. */
+/* The receiver channel the last family request named (rtl_stream_stage_family_channel(), issue #899; 0: none), and
+   whether the stand-in receiver ran it closed where it landed it, as the request was made (the demod thread takes a
+   request at its next block). */
 static uint32_t g_analog_req_gate_channel;
-static dsd_squelch_setting g_analog_req_gate;
+static int g_analog_req_landed_closed;
+/* With g_fake_hold_family_channel set, the channel a family request names starts only where the demod thread takes the
+   request (demod_thread_lands()), and a refusal there names it refused (demod_thread_refuses_analog_keeping_kind()). */
+static int g_fake_hold_family_channel;
+static uint32_t g_fake_held_family_channel;
+static int g_fake_held_family_analog;
 /* What rtl_stream_analog_family_active() reports: the front end runs the analog family (its monitor output, or a
    symbol profile a CQPSK toggle or typed row applied under it). */
 static int g_fake_analog_family;
+
+/* The family a retune lands on in the stand-in receiver (issue #899). */
+static int
+cmd_rx_analog_family(void) {
+    return g_fake_analog_family;
+}
+
 /* Outstanding work that lands a receive family on a front end that runs the digital family (issue #583): a retune that
    carries the digital family, which rtl_stream_family_landing_after_pending() counts beside the live analog family. */
 static int g_fake_family_landing_outstanding;
@@ -14680,11 +14726,14 @@ __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
     if (replaces_analog) {
         fake_rx_drop_queued_analog(g_fake_rx_seq);
     }
-    /* A gate the decoder staged for this request rides it, and lands where the switch applies (issue #899). */
+    /* The channel the decoder staged for this request rides it, and starts where the switch applies (issue #899). */
     g_analog_req_gate_channel = channel_gate_fake_take_staged();
-    if (g_analog_req_gate_channel != 0U) {
-        (void)channel_gate_fake_bound(g_analog_req_gate_channel, &g_analog_req_gate);
-        channel_gate_fake_land(g_analog_req_gate_channel);
+    if (g_analog_req_gate_channel != 0U && g_fake_hold_family_channel) {
+        g_fake_held_family_channel = g_analog_req_gate_channel;
+        g_fake_held_family_analog = family == DSD_RX_FAMILY_ANALOG;
+    } else if (g_analog_req_gate_channel != 0U) {
+        channel_gate_fake_land(g_analog_req_gate_channel, family == DSD_RX_FAMILY_ANALOG);
+        g_analog_req_landed_closed = channel_gate_fake_closed();
     }
     g_fake_rx_analog_seq = ++g_fake_rx_seq;
     if (!replaces_analog) {
@@ -14764,6 +14813,10 @@ static void
 demod_thread_lands(int cqpsk) {
     g_fake_cqpsk = cqpsk;
     fake_rx_take_queued();
+    if (g_fake_held_family_channel != 0U) {
+        channel_gate_fake_land(g_fake_held_family_channel, g_fake_held_family_analog);
+        g_fake_held_family_channel = 0U;
+    }
 }
 
 /* The demod thread has taken everything queued so far, and refused the last analog request where it landed (a retune
@@ -14778,6 +14831,10 @@ demod_thread_refuses_analog_keeping_kind(int analog_family, int kind, int width_
     g_fake_rx_kept_monitor = (analog_family && !g_fake_cqpsk) ? 1 : 0;
     g_fake_rx_refused = g_fake_rx_analog_seq;
     g_fake_rx_settled = g_fake_rx_seq;
+    if (g_fake_held_family_channel != 0U) {
+        channel_gate_fake_refuse(g_fake_held_family_channel);
+        g_fake_held_family_channel = 0U;
+    }
     if (analog_family) {
         g_fake_run_kind = kind;
         g_fake_run_width_hz = width_hz;
@@ -16803,15 +16860,13 @@ pushed_off(void) {
            && dsd_squelch_is_off(g_cmd_squelch_pushed);
 }
 
-/* The last receive-family request carried a gate of its own (issue #899, round 5), which @p want names: the default
-   (noise +10) or off. */
+/* The last receive-family request named a channel of its own (issue #899, round 6), where the stand-in receiver ran
+   @p want_closed (an analog switch: closed, until the decoder wrote its gate), and the receiver runs that channel now,
+   opened. */
 static int
-family_request_carried(int want_default) {
-    if (g_analog_req_gate_channel == 0U) {
-        return 0;
-    }
-    return want_default ? (g_analog_req_gate.mode == DSD_SQUELCH_MODE_NOISE && g_analog_req_gate.margin_db == 10)
-                        : dsd_squelch_setting_is_off(&g_analog_req_gate);
+family_request_carried(int want_closed) {
+    return g_analog_req_gate_channel != 0U && g_analog_req_landed_closed == want_closed
+           && channel_gate_fake_channel() == g_analog_req_gate_channel && !channel_gate_fake_closed();
 }
 
 /* An Explore-style radio session: digital (DMR), squelch off, --squelch-analog-default noise+10. */
@@ -17149,15 +17204,91 @@ test_config_apply_under_a_row_keeps_its_gate(void) {
     DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspyhf");
     rc |= submit_config(opts, state, &cfg, "row gate: reopen");
     rc |= expect_int("row gate: reopen, one open", g_config_rtl_creates, 1);
-    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_NOISE || g_config_rtl_create_squelch_margin != 10) {
-        DSD_FPRINTF(stderr, "row gate: reopen, the device opened on squelch mode %d margin %d, want noise +10\n",
-                    g_config_rtl_create_squelch_mode, g_config_rtl_create_squelch_margin);
+    /* Round 6: the device opens on the configured DMR session the suspended scope leaves in the options (not
+       closed: the digital family), the row's resume asks for its analog monitor on a channel of its own, closed until
+       the decoder opens it on the row's noise +10 once the command has run; never the configured Off. */
+    const dsd_squelch_setting reopened_rx = channel_gate_fake_gate();
+    if (g_config_rtl_create_closed != g_config_rtl_create_analog_only
+        || channel_gate_fake_channel() < g_config_rtl_create_channel || channel_gate_fake_closed()
+        || reopened_rx.mode != DSD_SQUELCH_MODE_NOISE || reopened_rx.margin_db != 10) {
+        DSD_FPRINTF(stderr,
+                    "row gate: reopen, the device opened analog %d closed %d on channel %u; the receiver is on %u, "
+                    "closed %d, running mode %d margin %d; want closed on the analog family only, then noise +10\n",
+                    g_config_rtl_create_analog_only, g_config_rtl_create_closed, g_config_rtl_create_channel,
+                    channel_gate_fake_channel(), channel_gate_fake_closed(), reopened_rx.mode, reopened_rx.margin_db);
         rc |= 1;
     }
     rc |= expect_true("row gate: reopen, the row runs it",
                       opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
                           && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
     free_inherited_nfm_row(opts, state);
+    return rc;
+}
+
+/*
+ * Issue #899 (review round 6, P2): a config that keeps the running SoapySDR input, sets no squelch key and turns the NFM
+ * session (the analog default, noise +10) to DMR (Off). Its same-input branch hands the receiver the squelch before the
+ * family change asks for the digital family. The NFM channel never runs Off: the decoder writes no gate in the middle of
+ * a command, and the session in DMR is committed on the channel its family request names, so Off goes to that channel
+ * once the digital family has landed it. Before the fix the same-input push wrote the DMR session's Off for the NFM
+ * channel ahead of the family request: ungated analog blocks.
+ */
+static int
+test_config_to_dmr_on_the_same_input_keeps_off_off_the_nfm_channel(void) {
+    static void* fake_ctx[2];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("same input to dmr: fixtures", 0);
+    }
+    init_stream_replan_context(opts, state, fake_ctx, "soapy", 48, 48000);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    dsd_squelch_setting_store(opts, &off);
+    int rc = expect_int("same input to dmr", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    g_fake_analog_family = 1;
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "same input to dmr: nfm");
+    rc |= expect_true("same input to dmr: the NFM session on the default",
+                      opts->analog_only == 1 && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    const dsd_squelch_setting nfm_rx = channel_gate_fake_gate();
+    rc |= expect_true("same input to dmr: the NFM channel runs noise +10",
+                      !channel_gate_fake_closed() && nfm_rx.mode == DSD_SQUELCH_MODE_NOISE && nfm_rx.margin_db == 10);
+    g_cmd_rx_watch_channel = channel_gate_fake_channel();
+    g_cmd_rx_watch_gate = off;
+    g_cmd_rx_watch_runs = 0;
+    reset_config_rtl_wrap();
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 48000U;
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_DMR;
+    rc |= submit_config(opts, state, &cfg, "same input to dmr");
+    rc |= expect_int("same input to dmr: nothing reopened", g_config_rtl_creates, 0);
+    rc |= expect_true("same input to dmr: out on DMR", opts->analog_only == 0);
+    const dsd_squelch_setting dmr_rx = channel_gate_fake_gate();
+    if (g_cmd_rx_watch_runs != 0 || g_analog_req_gate_channel == 0U
+        || channel_gate_fake_channel() != g_analog_req_gate_channel || g_analog_req_landed_closed != 0
+        || !dsd_squelch_setting_is_off(&dmr_rx)) {
+        DSD_FPRINTF(stderr,
+                    "same input to dmr: the NFM channel %u ran Off %d times; the digital family request named %u (the "
+                    "receiver is on %u, running mode %d level %g); want Off only on the request's channel\n",
+                    g_cmd_rx_watch_channel, g_cmd_rx_watch_runs, g_analog_req_gate_channel, channel_gate_fake_channel(),
+                    dmr_rx.mode, dmr_rx.level);
+        rc |= 1;
+    }
+    g_cmd_rx_watch_channel = 0U;
+    g_fake_analog_family = 0;
+    g_fake_digital_rate = 0U;
+    reset_config_rtl_wrap();
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(state);
+    free(opts);
     return rc;
 }
 #endif
@@ -17206,13 +17337,15 @@ test_config_reopen_opens_on_the_gate_of_what_it_opens(void) {
     rc |= submit_config(opts, state, &cfg, "reopen gate: inherited");
     rc |= expect_int("reopen gate: inherited, one open", g_config_rtl_creates, 1);
     rc |= expect_int("reopen gate: inherited, the scanner kept", opts->scanner_mode, 1);
-    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_NOISE || g_config_rtl_create_squelch_margin != 10
-        || g_config_rtl_create_analog_only != 1) {
+    const dsd_squelch_setting inherited_rx = channel_gate_fake_gate();
+    if (g_config_rtl_create_analog_only != 1 || g_config_rtl_create_closed != 1
+        || channel_gate_fake_channel() < g_config_rtl_create_channel || channel_gate_fake_closed()
+        || inherited_rx.mode != DSD_SQUELCH_MODE_NOISE || inherited_rx.margin_db != 10) {
         DSD_FPRINTF(stderr,
-                    "reopen gate: inherited row onto analog, the device opened analog %d on squelch mode %d margin %d, "
-                    "want the analog monitor on noise +10\n",
-                    g_config_rtl_create_analog_only, g_config_rtl_create_squelch_mode,
-                    g_config_rtl_create_squelch_margin);
+                    "reopen gate: inherited row onto analog, the device opened analog %d closed %d; the receiver runs "
+                    "closed %d, mode %d margin %d; want the analog monitor opened closed, then on noise +10\n",
+                    g_config_rtl_create_analog_only, g_config_rtl_create_closed, channel_gate_fake_closed(),
+                    inherited_rx.mode, inherited_rx.margin_db);
         rc |= 1;
     }
     rc |= expect_true("reopen gate: inherited, the row runs it",
@@ -17248,12 +17381,13 @@ test_config_reopen_opens_on_the_gate_of_what_it_opens(void) {
     rc |= submit_config(opts, state, &cfg, "reopen gate: scanner off");
     rc |= expect_int("reopen gate: scanner off, one open", g_config_rtl_creates, 1);
     rc |= expect_int("reopen gate: scanner off, the scanner off", opts->scanner_mode, 0);
-    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_LEVEL || !dsd_squelch_is_off(g_config_rtl_create_squelch)
-        || g_config_rtl_create_analog_only != 0) {
+    const dsd_squelch_setting session_rx = channel_gate_fake_gate();
+    if (g_config_rtl_create_analog_only != 0 || channel_gate_fake_closed() || !dsd_squelch_setting_is_off(&session_rx)
+        || channel_gate_fake_channel() < g_config_rtl_create_channel) {
         DSD_FPRINTF(stderr,
-                    "reopen gate: a config that stops the scanner, the device opened analog %d on squelch mode %d "
-                    "level %g, want the DMR session on Off\n",
-                    g_config_rtl_create_analog_only, g_config_rtl_create_squelch_mode, g_config_rtl_create_squelch);
+                    "reopen gate: a config that stops the scanner, the device opened analog %d; the receiver runs "
+                    "closed %d, mode %d level %g; want the DMR session on Off\n",
+                    g_config_rtl_create_analog_only, channel_gate_fake_closed(), session_rx.mode, session_rx.level);
         rc |= 1;
     }
     rc |= expect_true("reopen gate: scanner off, the session runs Off", dsd_squelch_is_off(opts->rtl_squelch_level));
@@ -21463,6 +21597,56 @@ expect_back_on_dmr(const char* label, const dsd_opts* opts, const dsd_state* sta
         expect_toast(label, state,
                      "Failed: Analog -> NFM 16 kHz does not fit the 16 kHz DSP rate (max 13.2 kHz); use a 24, 48 or 72 "
                      "kHz DSP bandwidth");
+    return rc;
+}
+
+/*
+ * Issue #899 (review round 6, P2): a switch from the DMR session (its own level) onto the NFM monitor (the analog
+ * default, noise +10), refused where it lands. The receiver stays on the DMR session's channel: it never runs the refused monitor's
+ * noise +10 there, the decoder, once it has put the session back, goes back to that channel, and a squelch edit after it
+ * reaches it. Before the fix the decoder retried the refused family's gate for the surviving channel.
+ */
+static int
+test_family_refused_where_it_lands_keeps_the_surviving_channel(void) {
+    static void* fake_ctx[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    int rc = expect_int("refused family", dsd_squelch_analog_default_parse(&opts, "noise+10", NULL, 0U), 0);
+    const dsd_squelch_setting session = dsd_squelch_setting_of_opts(&opts);
+    const uint32_t dmr_channel = channel_gate_fake_open(0, &session, cmd_rx_runs);
+    dsd_engine_receiver_channel_opened(&opts, &state);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    g_cmd_rx_watch_channel = dmr_channel;
+    g_cmd_rx_watch_gate = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
+    g_cmd_rx_watch_runs = 0;
+    g_fake_hold_family_channel = 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("refused family: on Analog while pending", opts.analog_only, 1);
+    rc |= expect_int("refused family: the request named a channel", g_fake_held_family_channel != 0U, 1);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    demod_thread_refuses_analog_keeping(0, 0);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_back_on_dmr("refused family: back on DMR", &opts, &state);
+    const dsd_squelch_setting kept = channel_gate_fake_gate();
+    rc |= expect_true("refused family: the receiver stays on the DMR channel, on the session's gate",
+                      channel_gate_fake_channel() == dmr_channel && !channel_gate_fake_closed()
+                          && dsd_squelch_setting_equal(&kept, &session));
+    rc |= expect_int("refused family: never noise +10 on the DMR channel", g_cmd_rx_watch_runs, 0);
+    rc |= expect_int("refused family: an edit after it", submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, 0.0001),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    const dsd_squelch_setting edited = channel_gate_fake_gate();
+    rc |= expect_true("refused family: the edit reaches the DMR channel", channel_gate_fake_channel() == dmr_channel
+                                                                              && edited.mode == DSD_SQUELCH_MODE_LEVEL
+                                                                              && fabs(edited.level - 0.0001) < 1e-12);
+    g_fake_hold_family_channel = 0;
+    g_cmd_rx_watch_channel = 0U;
+    reset_rx_family_wrap();
+    state.rtl_ctx = NULL;
+    freeState(&state);
     return rc;
 }
 
@@ -32842,6 +33026,9 @@ main(void) {
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_idle_digital_drain_resolves_nothing();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_config_to_dmr_on_the_same_input_keeps_off_off_the_nfm_channel();
+#endif
     rc |= test_squelch_setting_command();
     rc |= test_squelch_setting_request_answered();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -32969,6 +33156,7 @@ main(void) {
     rc |= test_refused_leave_off_the_monitor_reverts_a_switch_between_kinds();
     rc |= test_refused_leave_revert_refused_gets_the_leave_policy();
     rc |= test_refused_switch_onto_analog_puts_the_mode_back();
+    rc |= test_family_refused_where_it_lands_keeps_the_surviving_channel();
     rc |= test_refused_switch_onto_analog_keeps_the_tetra_session();
     rc |= test_refused_switch_onto_analog_keeps_edacs_addressing();
     rc |= test_queued_switch_off_tetra_commits_once_taken();

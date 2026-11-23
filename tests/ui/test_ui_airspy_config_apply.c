@@ -22,6 +22,7 @@
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/engine/channel_scan.h"
+#include "dsd-neo/engine/manual_tune.h"
 #include "dsd-neo/io/rtl_stream_c.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/runtime/analog_channel.h"
@@ -29,6 +30,7 @@
 #include "dsd-neo/runtime/decode_mode.h"
 #include "dsd-neo/runtime/rtl_stream_metrics_hooks.h"
 #include "dsd-neo/runtime/squelch.h"
+#include "manual_tune_pending.h"
 
 /* The drain's own dispatch of a config apply; what a scan list toggle would retain does not apply to one. */
 static int
@@ -50,21 +52,23 @@ static float test_sql;
    receiver was handed (counted), and when each happened against the retunes (test_events). */
 static int test_events;
 static int test_gates;
-static dsd_squelch_setting test_gate;
 static uint32_t test_gate_hz;
 static int test_gate_event;
 static int test_retune_event;
 static int test_squelch_event;
 static int test_settings;
-/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. What
-   it comes to run (test_rx_runs, the last test_rx_gate, at test_rx_event), the channel the last retune's gate binds
-   (test_gate_channel), and whether that retune was taken by the receiver (landed or in flight: test_gate_taken). The
-   squelch setter wraps count only gates handed over untagged, which nothing does any more. */
+/* The receiver's channels (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. The gates it comes
+   to run (test_rx_runs, the last test_rx_gate, at test_rx_event; test_rx_closed for a landing it started closed), the
+   channel the last retune names (test_gate_channel, still named on its profile: test_gate_named), and whether the
+   receiver took that retune (landed or in flight: test_gate_taken). The squelch setter wraps count only gates handed
+   over untagged, which nothing does any more. */
 static dsd_rtl_stream_metrics_hooks test_rx_hooks;
 static int test_rx_runs;
+static int test_rx_closed;
 static dsd_squelch_setting test_rx_gate;
 static int test_rx_event;
 static uint32_t test_gate_channel;
+static int test_gate_named;
 static int test_gate_taken;
 static uint32_t test_freq;
 static uint32_t test_open_freq;
@@ -91,13 +95,14 @@ int __wrap_rtl_stream_airspy_controls(const dsd_airspy_config* config);
 int __wrap_rtl_stream_airspy_info(dsd_airspy_info* info);
 void __wrap_rtl_stream_set_channel_squelch(float level);
 void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
-uint32_t __wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
-void __wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
+void __wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel);
 int __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate);
-uint32_t __wrap_rtl_stream_channel_gate_epoch(void);
+uint32_t __wrap_rtl_stream_new_channel(void);
+uint32_t __wrap_rtl_stream_current_channel(void);
 uint32_t __wrap_rtl_stream_channel_gate_opened(void);
-uint32_t __wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate);
-int __wrap_rtl_stream_unstage_family_gate(uint32_t channel);
+uint32_t __wrap_rtl_stream_refused_channel(void);
+void __wrap_rtl_stream_stage_family_channel(uint32_t channel);
+int __wrap_rtl_stream_unstage_family_channel(uint32_t channel);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id,
                                       dsd_input_cut* rigctl_mark);
 int __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
@@ -196,23 +201,21 @@ __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting
     test_squelch_event = ++test_events;
 }
 
-uint32_t
-__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+/* A retune names its channel; once it returned without the receiver taking it, its profile names it no more. */
+void
+__wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
+    if (channel == 0U) {
+        if (target_freq_hz == test_gate_hz && !test_gate_taken) {
+            test_gate_named = 0;
+        }
+        return;
+    }
     test_gates++;
-    test_gate = *gate;
     test_gate_hz = target_freq_hz;
     test_gate_event = ++test_events;
-    test_gate_channel = channel_gate_fake_bind(gate);
+    test_gate_channel = channel;
+    test_gate_named = 1;
     test_gate_taken = 0;
-    return test_gate_channel;
-}
-
-/* The retune returned without the receiver taking it (refused): its gate goes. One taken stays the receiver's. */
-void
-__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
-    if (target_freq_hz == test_gate_hz && !test_gate_taken) {
-        channel_gate_fake_release(test_gate_channel);
-    }
 }
 
 int
@@ -221,8 +224,13 @@ __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting
 }
 
 uint32_t
-__wrap_rtl_stream_channel_gate_epoch(void) {
-    return test_rx_hooks.channel_gate_epoch();
+__wrap_rtl_stream_new_channel(void) {
+    return test_rx_hooks.new_channel();
+}
+
+uint32_t
+__wrap_rtl_stream_current_channel(void) {
+    return test_rx_hooks.current_channel();
 }
 
 uint32_t
@@ -231,13 +239,18 @@ __wrap_rtl_stream_channel_gate_opened(void) {
 }
 
 uint32_t
-__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
-    return test_rx_hooks.stage_family_gate(gate);
+__wrap_rtl_stream_refused_channel(void) {
+    return test_rx_hooks.refused_channel();
+}
+
+void
+__wrap_rtl_stream_stage_family_channel(uint32_t channel) {
+    test_rx_hooks.stage_family_channel(channel);
 }
 
 int
-__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
-    return test_rx_hooks.unstage_family_gate(channel);
+__wrap_rtl_stream_unstage_family_channel(uint32_t channel) {
+    return test_rx_hooks.unstage_family_channel(channel);
 }
 
 int
@@ -248,7 +261,8 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
     }
     (void)state;
     if (out_pending_id) {
-        *out_pending_id = 0U;
+        /* A timed-out tune is followed to its completion under this id (dsd_engine_manual_tune_poll()). */
+        *out_pending_id = test_tune_result == RTL_STREAM_TUNE_TIMEOUT ? 899U : 0U;
     }
     test_retunes++;
     test_freq = hz;
@@ -256,12 +270,12 @@ __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32
     if (test_tune_result == 0) {
         opts->rtlsdr_center_freq = hz;
     }
-    /* A receiver retune carries the gate queued for it (none under rigctl): it lands with a tune that completed, and
-       stays in flight with one accepted and pending (RTL_STREAM_TUNE_TIMEOUT). */
-    if (hz == test_gate_hz && channel_gate_fake_bound(test_gate_channel, NULL)) {
+    /* A receiver retune lands the channel named on it (none under rigctl), on the family the session runs: with a tune
+       that completed, or later with one accepted and pending (RTL_STREAM_TUNE_TIMEOUT). */
+    if (hz == test_gate_hz && test_gate_named) {
         if (test_tune_result == 0) {
             test_gate_taken = 1;
-            channel_gate_fake_land(test_gate_channel);
+            channel_gate_fake_land(test_gate_channel, opts->analog_only == 1);
         } else if (test_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
             test_gate_taken = 1;
         }
@@ -280,13 +294,17 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
 
 static void
 test_rx_run(const dsd_squelch_setting* gate) {
+    if (channel_gate_fake_closed()) {
+        test_rx_closed++;
+        return;
+    }
     test_rx_runs++;
     test_rx_gate = *gate;
     test_rx_event = ++test_events;
 }
 
-/* The running Airspy's receiver opened under the squelch @p opts holds, its gates installed (the engine reaches them
-   through the stream hooks), nothing counted yet. */
+/* The running Airspy's receiver on a channel the decoder committed, under the squelch @p opts holds, its channels
+   installed (the engine reaches them through the stream hooks), nothing counted yet. */
 static void
 test_rx_open(const dsd_opts* opts) {
     channel_gate_fake_install(&test_rx_hooks);
@@ -295,10 +313,12 @@ test_rx_open(const dsd_opts* opts) {
     channel_gate_fake_install(&hooks);
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
-    channel_gate_fake_open(&opened, test_rx_run);
+    dsd_engine_receiver_channel_commit(channel_gate_fake_open(0, &opened, test_rx_run));
     test_rx_runs = 0;
+    test_rx_closed = 0;
     test_rx_event = 0;
     test_gate_channel = 0U;
+    test_gate_named = 0;
     test_gate_taken = 0;
 }
 
@@ -391,11 +411,10 @@ test_config_apply(int failure) {
         assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_retunes == 1 && test_freq == 852000000 && test_creates == 0);
         assert(carrier_codes_forgotten(state)); /* retuned live to another carrier */
-        /* The retune carries the config's -55 dB, which the receiver runs from where it lands (issue #899): queued
-           with it, before it, and nothing handed to the old channel. */
-        assert(test_gates == 1 && test_gate_hz == 852000000U && test_gate.mode == DSD_SQUELCH_MODE_LEVEL
-               && fabs(test_gate.level - dsd_squelch_level_from_sql(-55)) < 1e-12
-               && test_gate_event < test_retune_event);
+        /* The retune names a channel of its own, queued before it, and the decoder writes the config's -55 dB for it
+           once it has landed (issue #899): nothing handed to the old channel. */
+        assert(test_gates == 1 && test_gate_hz == 852000000U && test_gate_event < test_retune_event
+               && channel_gate_fake_channel() == test_gate_channel);
         assert(test_squelches == 0 && test_settings == 0);
         const dsd_squelch_setting minus55 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-55));
         assert(test_rx_runs == 1 && test_rx_event > test_retune_event && test_rx_runs_gate(&minus55));
@@ -736,11 +755,12 @@ squelch_default_airspy_start(dsd_opts* opts, dsd_state* state, struct dsd_app_co
 }
 
 /*
- * Issue #899 (review round 4, P2): a same-device Airspy config that changes the frequency and the squelch keeps the
+ * Issue #899 (review rounds 4 and 6): a same-device Airspy config that changes the frequency and the squelch keeps the
  * stream running and retunes it. Starting on the inherited noise +10 and applying 852 MHz with rtl_sql = -1, the retune
- * carries the -1 dB gate the apply leaves, queued before the retune is submitted, and the receiver is handed nothing
- * else: it runs noise +10 on 851 MHz and -1 dB from the first sample of 852 MHz. Before the fix the retune went first
- * and the -1 dB setter followed once it returned, so 852 MHz samples could queue under the old default.
+ * names a channel of its own, queued before the retune is submitted; the receiver runs noise +10 on 851 MHz, starts the
+ * 852 MHz channel closed where it lands, and opens it on the -1 dB the apply leaves, which the decoder writes for that
+ * channel after the landing. Before round 4 the retune went first and the -1 dB setter followed once it returned, so
+ * 852 MHz samples could queue under the old default.
  */
 static void
 test_live_airspy_retune_carries_the_config_gate(void) {
@@ -764,17 +784,17 @@ test_live_airspy_retune_carries_the_config_gate(void) {
     assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
     const double want = dsd_squelch_level_from_sql(-1.0);
     if (test_retunes != 1 || test_creates != 0 || test_gates != 1 || test_gate_hz != 852000000U
-        || test_gate.mode != DSD_SQUELCH_MODE_LEVEL || !(fabs(test_gate.level - want) <= 1e-9 * want)
-        || !(test_gate_event < test_retune_event) || test_squelches != 0 || test_settings != 0 || test_rx_runs != 1
-        || !(test_rx_event > test_retune_event) || !(fabs(test_rx_gate.level - want) <= 1e-9 * want)) {
+        || !(test_gate_event < test_retune_event) || test_squelches != 0 || test_settings != 0 || test_rx_closed != 1
+        || test_rx_runs != 1 || !(test_rx_event > test_retune_event) || channel_gate_fake_channel() != test_gate_channel
+        || !(fabs(test_rx_gate.level - want) <= 1e-9 * want)) {
         DSD_FPRINTF(stderr,
-                    "live Airspy retune with rtl_sql = -1: %d retunes (event %d), %d creates, %d gates (event %d, %u "
-                    "Hz, mode %d level %g), %d level and %d setting pushes (last event %d, level %g), the receiver "
-                    "came to run %d gates (last at event %d, level %g); want the -1 dB gate queued for 852 MHz before "
-                    "the one retune, run from its landing, and no push\n",
+                    "live Airspy retune with rtl_sql = -1: %d retunes (event %d), %d creates, %d channels named (event "
+                    "%d, %u Hz), %d level and %d setting pushes (last event %d, level %g), the receiver started %d "
+                    "closed and came to run %d gates (last at event %d, level %g); want one channel named for 852 MHz "
+                    "before the one retune, closed where it lands, then -1 dB, and no push\n",
                     test_retunes, test_retune_event, test_creates, test_gates, test_gate_event, test_gate_hz,
-                    test_gate.mode, test_gate.level, test_squelches, test_settings, test_squelch_event,
-                    (double)test_sql, test_rx_runs, test_rx_event, test_rx_gate.level);
+                    test_squelches, test_settings, test_squelch_event, (double)test_sql, test_rx_closed, test_rx_runs,
+                    test_rx_event, test_rx_gate.level);
         assert(0);
     }
     assert(opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
@@ -855,13 +875,14 @@ live_airspy_squelch_config(dsd_opts* opts, dsd_state* state, struct dsd_app_comm
 }
 
 /*
- * Issue #899 (review round 5, P2): the squelch a live Airspy config leaves reaches the receiver whatever tunes the
- * frequency. With rigctl tuning the peer (no receiver retune, so no gate rides one), the -1 dB the config leaves is
- * written for the channel the receiver is on, and it runs it; before the fix a successful rigctl tune counted as the
+ * Issue #899 (review rounds 5 and 6): the squelch a live Airspy config leaves reaches the receiver whatever tunes the
+ * frequency. With rigctl tuning the peer (no receiver retune, so no channel named on one), the -1 dB the config leaves
+ * is written for the channel the receiver is on, and it runs it; before round 5 a successful rigctl tune counted as the
  * gate's landing and the receiver kept noise +10. With the native retune accepted and still in flight
- * (RTL_STREAM_TUNE_TIMEOUT), the receiver keeps noise +10 on 851 MHz and the gate rides the retune: it runs -1 dB from
- * the landing; and when that retune fails late instead, the drain after the failure writes -1 dB for the channel the
- * receiver stayed on. Before the fix nothing owed the push, and the receiver kept noise +10 for good.
+ * (RTL_STREAM_TUNE_TIMEOUT), the receiver keeps noise +10 on 851 MHz; the retune's channel starts closed where it lands
+ * and the drain after it opens it on -1 dB; and when that retune fails late instead, the engine's poll of the timed-out
+ * tune (dsd_engine_manual_tune_poll()) puts the decoder back on the channel the receiver stayed on, and the drain writes
+ * -1 dB for it. Before round 5 nothing owed the push, and the receiver kept noise +10 for good.
  */
 static void
 test_live_airspy_squelch_reaches_the_receiver_whatever_tunes(void) {
@@ -887,20 +908,21 @@ test_live_airspy_squelch_reaches_the_receiver_whatever_tunes(void) {
         if (case_index == 0) {
             ok = ok && test_gates == 0 && test_rx_runs_gate(&minus1);
         } else {
-            /* In flight: the receiver keeps the old channel's gate; the retune's channel holds the config's. */
-            dsd_squelch_setting landing;
-            DSD_MEMSET(&landing, 0, sizeof landing);
-            ok = ok && test_gates == 1 && test_rx_runs_gate(&noise10)
-                 && channel_gate_fake_bound(test_gate_channel, &landing)
-                 && dsd_squelch_setting_equal(&landing, &minus1);
+            /* In flight: the receiver keeps the old channel and its gate. */
+            const uint32_t old_channel = channel_gate_fake_channel();
+            ok = ok && test_gates == 1 && test_gate_taken && test_rx_runs_gate(&noise10)
+                 && old_channel != test_gate_channel;
             if (case_index == 1) {
-                channel_gate_fake_land(test_gate_channel);
+                channel_gate_fake_land(test_gate_channel, 1);
+                ok = ok && channel_gate_fake_closed();
             } else {
-                channel_gate_fake_release(test_gate_channel);
+                dsd_engine_manual_tune_completion(899U, RTL_STREAM_TUNE_FAILED);
+                ok = ok && dsd_engine_manual_tune_poll(opts, state) == DSD_MANUAL_TUNE_FAILED;
             }
-            /* The drain after the outcome (ui_settle_squelch(), no command): the receiver moved, so it settles. */
+            /* The drain after the outcome (ui_settle_squelch(), no command). */
             dsd_engine_receiver_gate_settle(opts, state, 0);
-            ok = ok && test_rx_runs_gate(&minus1);
+            ok = ok && !channel_gate_fake_closed() && test_rx_runs_gate(&minus1)
+                 && channel_gate_fake_channel() == (case_index == 1 ? test_gate_channel : old_channel);
         }
         if (!ok || test_squelches != 0 || test_settings != 0) {
             const dsd_squelch_setting now = channel_gate_fake_gate();

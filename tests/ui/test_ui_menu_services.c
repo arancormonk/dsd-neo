@@ -64,6 +64,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "channel_scan_stubs.h"
 #include "commands_internal.h"
 #include "services.h"
 
@@ -635,6 +636,13 @@ dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind,
     g_note_pending_row = row;
 }
 
+/* The receiver channel a timed-out tune names (issue #899), which no case here follows. */
+void
+dsd_engine_manual_tune_note_channel(uint64_t id, uint32_t channel) {
+    (void)id;
+    (void)channel;
+}
+
 /* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at
    their success points, and the engine and config-apply tests run the real ones. */
 static int g_carrier_boundary_calls = 0;
@@ -708,7 +716,6 @@ static int g_rtl_start_clears_latch = 0;
 static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
 /* The squelch the last create opened on: the setting and whether it was the analog default (issue #899). */
-static dsd_squelch_setting g_rtl_create_squelch;
 static int g_rtl_create_squelch_default = -1;
 static int g_rtltcp_autotune_result = 0;
 
@@ -838,7 +845,6 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_rtl_create_captures += g_rtl_create_capture == 1;
     if (opts) {
-        g_rtl_create_squelch = dsd_squelch_setting_of_opts(opts);
         g_rtl_create_squelch_default = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
     }
     if (out_ctx) {
@@ -980,22 +986,15 @@ push_channel_squelch_level(double mean_power) {
     rtl_stream_set_channel_squelch((float)mean_power);
 }
 
-/* The gate a retune carries and the channel it lands (issue #899), which no case here reads: these services retune
-   through the stubs above. */
-uint32_t
-rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+/* The channel a retune names (issue #899), which no case here reads: these services retune through the stubs above. */
+void
+rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
     (void)target_freq_hz;
-    (void)gate;
-    return 0U;
+    (void)channel;
 }
 
 void
 rtl_stream_clear_pending_retune_profile(void) {}
-
-void
-rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
-    (void)target_freq_hz;
-}
 
 int
 rtl_stream_set_bias_tee(int on) {
@@ -1650,14 +1649,14 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     return rc;
 }
 
-/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream on the squelch gate of the row,
- * resolved from the profile restored, not the configured one the suspend put back: an nfm row with no squelch of its
- * own on a DMR session opens on the analog default (Noise +10), one with its own level on that level. Once the stream
- * opened the configured standing is back, for the resume to put the row over. A change that ended the default while the
- * scope was suspended (@p end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the
- * inheriting row on the session's Off beneath it, not on the default the row ran before the change. The stream opens
- * on the resolved gate itself (svc_rtl_open_on_the_channel_squelch_locked()); the default's standing in the options is
- * the session's throughout, so no stream open can carry a row's standing out of the scope. */
+/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream, which on the analog family
+ * starts closed ("analog starts closed", round 6), and the decoder commits its channel, whose gate resolves to the row's,
+ * from the profile restored, not the configured one the suspend put back: an nfm row with no squelch of its own on a
+ * DMR session resolves to the analog default (Noise +10), one with its own level to that level. The configured standing
+ * stays in the options, for the resume to put the row over. A change that ended the default while the scope was
+ * suspended (@p end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the inheriting
+ * row on the session's Off beneath it, not on the default the row ran before the change. No stream open can carry a
+ * row's standing out of the scope: the default's standing in the options is the session's throughout. */
 static int
 recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_values* row, dsd_squelch_setting want,
                                   int end_default) {
@@ -1685,13 +1684,17 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
     g_rtl_start_result = 0;
     g_rtl_create_squelch_default = -1;
     const int default_state_before = opts->squelch_default_state;
+    (void)dsd_test_channel_scan_opens_committed(NULL);
     rc |= expect_int(label, svc_rtl_restart_recovery_locked(opts, state, 1, 0, NULL, NULL), 0);
-    if (!dsd_squelch_setting_equal(&g_rtl_create_squelch, &want) || g_rtl_create_squelch_default != 0) {
+    dsd_squelch_setting committed;
+    const int opens = dsd_test_channel_scan_opens_committed(&committed);
+    if (opens != 1 || !dsd_squelch_setting_equal(&committed, &want) || g_rtl_create_squelch_default != 0) {
         DSD_FPRINTF(stderr,
-                    "%s: opened on mode %d margin %d level %g (the default applied in the options: %d), want mode %d "
-                    "margin %d level %g with the session's standing\n",
-                    label, g_rtl_create_squelch.mode, g_rtl_create_squelch.margin_db, g_rtl_create_squelch.level,
-                    g_rtl_create_squelch_default, want.mode, want.margin_db, want.level);
+                    "%s: %d opens committed, the last resolving to mode %d margin %d level %g (the default applied in "
+                    "the options at the open: %d), want 1 resolving to mode %d margin %d level %g with the session's "
+                    "standing\n",
+                    label, opens, committed.mode, committed.margin_db, committed.level, g_rtl_create_squelch_default,
+                    want.mode, want.margin_db, want.level);
         rc |= 1;
     }
     rc |= expect_int(label, opts->squelch_default_state, default_state_before);

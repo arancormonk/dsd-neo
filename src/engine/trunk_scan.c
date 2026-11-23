@@ -13,7 +13,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25_patch_policy.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
@@ -273,6 +272,8 @@ typedef struct {
     /* The analog demodulator and width an analog target's last retune queued with its profile (issue #526). */
     int tune_analog_kind;
     int tune_analog_width_hz;
+    /* The receiver channel its last switch named on its retune (issue #899, dsd_engine_receiver_channel_begin()). */
+    uint32_t channel;
     /* While a failed retune's cooldown has run out but another target can take the receiver, the retry in place waits
        for the rotation; this is when it next looks again, so the wait walks the targets once a cooldown, not each
        tick. */
@@ -3307,20 +3308,17 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         *out_request_id = 0U;
     }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
-    /* The target's scope is in force (trunk_scan_switch_to()): its retune carries the target's squelch gate, resolved
-       from it (issue #899). */
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
     if (trunk_scan_type_is_analog(rt->target.type)) {
         /* No symbol clock: the tune queues the target's analog receive profile (its options already hold
          * the width), and no symbol rate ever reaches the SPS arithmetic. */
         rt->tune_analog_kind = opts->analog_demod;
         rt->tune_analog_width_hz = dsd_opts_analog_width_hz(opts);
-        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, &gate, NULL, out_request_id);
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, 0, rt->channel, out_request_id);
     }
     if (trunk_scan_type_is_conventional(rt->target.type)) {
         const int ted_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                                   : trunk_scan_gfsk_sps(opts, state, rt->target.type);
-        return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, &gate, NULL, out_request_id);
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, ted_sps, rt->channel, out_request_id);
     }
     /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
        for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or
@@ -3331,7 +3329,9 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     const int cc_sps = trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state)
                                                              : trunk_scan_gfsk_sps(opts, state, rt->target.type);
     dsd_trunk_tuning_caller_judges_begin();
+    dsd_engine_trunk_park_names_channel(rt->channel);
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_engine_trunk_park_names_channel(0U);
     dsd_trunk_tuning_caller_judges_end();
     return result;
 }
@@ -3912,6 +3912,10 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    /* The target is on air from its switch (issue #899): committed now, before its settings resolve, on a channel of its
+       own its retune names, so nothing it resolves to reaches the target left, whose channel keeps its gate until the
+       retune lands. */
+    rt->channel = dsd_engine_receiver_channel_begin(opts);
     /* The scope was reserved above and every target type maps to a valid mode. */
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type));
     trunk_scan_restore_target_snapshot(coord, state, rt);
@@ -4605,6 +4609,8 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         trunk_scan_note_landing(state, coord, rt, request_id);
+        /* The target's channel is on air: an analog one opens on its gate now (issue #899). */
+        dsd_engine_receiver_gate_settle(opts, state, 0);
         trunk_scan_reapply_analog_width(opts, rt);
         /* The visit began when the backend finished the tune, not when this tick noticed, and so did the idle dwell
            (discussion #717): this tick may come a no-sync pass after the landing. */

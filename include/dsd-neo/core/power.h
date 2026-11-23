@@ -55,6 +55,13 @@ dsd_squelch_mode_or_level(int mode) {
 enum { DSD_SQUELCH_FLAG_CLOSED = 0x01 };
 
 /**
+ * @brief The level of a squelch closed outright (issue #899): no channel power reaches it, so every block is muted, and
+ * the demodulator flags each sample of such a block closed too, so a decoder that reads the flags hears and learns
+ * nothing of it either. A receiver runs it on a new analog channel until the decoder writes that channel's gate.
+ */
+#define DSD_SQUELCH_LEVEL_CLOSED 3.0e38
+
+/**
  * @brief The longest an auto squelch's gate takes to close after a carrier drops, in milliseconds of the samples it
  * flags (issue #625). While the floor is learned the gate opens for windows classed CARRIER only, and a 40 ms window
  * holding the drop can still read CARRIER, so the next one closes it: two windows. With a floor, two 20 ms power

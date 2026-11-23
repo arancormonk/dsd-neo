@@ -411,13 +411,13 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended above, so a start that found
        no list, or turned the scanner on over a manual tune, stops filing its calls as the operator's here. */
     state->operator_tuned = 0U;
-    /* The row's channel is the one on air from here on: the decoder writes it the on-air gate, the row's (issue
-       #899). */
-    dsd_engine_receiver_gate_on_air(scan->gate_channel);
+    /* The row's channel is the one the decoder commits from here on, and writes the row's gate for (issue #899). */
+    dsd_engine_receiver_channel_commit(scan->gate_channel);
     scan->gate_channel = 0U;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));
+    dsd_engine_receiver_gate_settle(opts, state, 0);
     scan->committed_row = scan->row;
     channel_scan_publish_row(state, scan);
     dsd_engine_scan_ensure_output(opts, state);
@@ -525,154 +525,143 @@ channel_scan_staged_landed(const channel_scan* scan) {
     return scan->retry && scan->left_carrier;
 }
 
-/* The squelch gate of the staged row (issue #899), resolved now from the options as they stand
-   (dsd_squelch_channel_gate()): its own option, else the session's, with the analog default where the row runs the
-   analog monitor on a radio input. A typed row runs its class; a row that declares no mode runs the configured
-   decoder, the scope's (or, while a command holds the scope suspended, the one the options hold). */
-static dsd_squelch_setting
-channel_scan_staged_gate(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
-    int analog = dsd_scan_mode_is_analog(scan->mode);
-    if (scan->mode == DSD_SCAN_MODE_INHERIT) {
-        const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-        analog = (configured ? configured->analog_only : opts->analog_only) == 1;
+/* The decoder's side of the receiver's channels (issue #899). The receiver numbers the channel it produces, starts a new
+   analog one closed, and applies a gate write only when it is tagged with the channel it is on. The decoder writes only
+   for the channel it has committed (s_rx_channel): the one a stream opened on, a -Y row's at its commit, or the one an
+   on-air transition it began names (a manual tune, a trunk-scan target, a signal-search visit or restore, a family
+   switch), its owner committed when the transition began. The gate is the on-air answer, resolved at write time
+   (dsd_scan_mode_channel_squelch()). A write is made once the receiver is seen on that channel (s_rx_landed: looked for
+   only while it is not, so a decoder whose receiver has settled reads nothing), and again on every change after it;
+   one the receiver drops (the channel was replaced) is not repeated. A transition whose requests the receiver never
+   took, or refused, goes back to the channel before it (s_rx_before). While a command is applied
+   (dsd_engine_receiver_gate_command()) the decoder writes nothing: the command's options are whole only after it, and
+   the drain writes then. Decoder thread only. */
+static uint32_t s_rx_channel;
+static uint32_t s_rx_before;
+static int s_rx_landed;
+static int s_rx_write_due;
+static int s_rx_in_command;
+/* The last write the receiver applied: a write repeats only on a change of channel or gate. */
+static uint32_t s_rx_written_channel;
+static dsd_squelch_setting s_rx_written_gate;
+
+static void
+receiver_channel_commit(uint32_t channel) {
+    /* The channel committed before, once the receiver is on it (seen, or reached since), is the one an abandoned
+       transition goes back to. */
+    if (s_rx_channel != channel
+        && (s_rx_landed || (s_rx_channel != 0U && dsd_rtl_stream_metrics_hook_current_channel() == s_rx_channel))) {
+        s_rx_before = s_rx_channel;
     }
-    return dsd_squelch_channel_gate(opts, state, scan->staged_has_values ? &scan->staged_values : NULL,
-                                    analog && opts->m17encoder != 1);
+    s_rx_channel = channel;
+    s_rx_landed = 0;
+    s_rx_write_due = 1;
 }
 
-/* The decoder's side of the receiver's channel-tagged gates (issue #899). The receiver numbers the channel it produces
-   and applies a gate write only for that channel (or keeps it for one still to land); the decoder names, for each
-   write, the channel the gate was resolved for. Decoder thread only.
+uint32_t
+dsd_engine_receiver_channel_new(const dsd_opts* opts) {
+    return opts && opts->audio_in_type == AUDIO_IN_RTL ? dsd_rtl_stream_metrics_hook_new_channel() : 0U;
+}
 
-   s_gate_on_air holds the channels the on-air answer (dsd_scan_mode_channel_squelch()) is for, oldest first: the one a
-   stream opened on, then each transition that puts the on-air channel elsewhere (a retune of a manual tune, trunk-scan
-   target or signal search, a family switch, a -Y row once it commits). The newest one the receiver still knows takes
-   the write: bound while its transition is outstanding, applied once it is on air. An older one is left alone while a
-   newer one is outstanding (the options already describe the newer), and dropped once the receiver no longer knows it
-   (the write comes back stale): a transition that failed falls back to the one before it, still on air. A staged -Y
-   row's channel (channel_scan::gate_channel) takes the staged row's own answer. A channel no entry names (a replaced
-   retune's, landed closed) takes no write. */
-#define RECEIVER_GATE_ON_AIR_MAX 8U
-static uint32_t s_gate_on_air[RECEIVER_GATE_ON_AIR_MAX];
-static size_t s_gate_on_air_count;
-/* The receiver's channel epoch (dsd_rtl_stream_metrics_hook_channel_gate_epoch()) and open the last settle saw. */
-static uint32_t s_gate_seen_epoch;
-static uint32_t s_gate_seen_opened;
-static int s_gate_seen;
-
-/* The last write for the on-air channel and for the staged one, and what the receiver did with it, which stand while the
-   epoch does: a write repeats only on a change. */
-typedef struct {
-    uint32_t channel;
-    dsd_squelch_setting gate;
-    int result;
-} receiver_gate_write;
-
-static receiver_gate_write s_gate_written_on_air;
-static receiver_gate_write s_gate_written_staged;
+uint32_t
+dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
+    const uint32_t channel = dsd_engine_receiver_channel_new(opts);
+    if (channel != 0U) {
+        receiver_channel_commit(channel);
+    }
+    return channel;
+}
 
 void
-dsd_engine_receiver_gate_on_air(uint32_t channel) {
-    if (channel == 0U) {
+dsd_engine_receiver_channel_commit(uint32_t channel) {
+    if (channel != 0U) {
+        receiver_channel_commit(channel);
+    }
+}
+
+void
+dsd_engine_receiver_channel_abandon(uint32_t channel) {
+    if (channel != 0U && channel == s_rx_channel && !s_rx_landed) {
+        s_rx_channel = s_rx_before;
+        s_rx_write_due = 1;
+    }
+}
+
+void
+dsd_engine_receiver_channel_opened(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
-    if (s_gate_on_air_count == RECEIVER_GATE_ON_AIR_MAX) {
-        DSD_MEMMOVE(s_gate_on_air, s_gate_on_air + 1, (RECEIVER_GATE_ON_AIR_MAX - 1U) * sizeof(s_gate_on_air[0]));
-        s_gate_on_air_count--;
-    }
-    s_gate_on_air[s_gate_on_air_count++] = channel;
-}
-
-/* Write @p gate for @p channel, unless the same write already stands: the receiver's verdict (DSD_CHANNEL_GATE_*), or
-   -1 with no radio backend. */
-static int
-receiver_gate_write_once(uint32_t channel, const dsd_squelch_setting* gate, receiver_gate_write* last) {
-    if (last->channel == channel && dsd_squelch_setting_equal(&last->gate, gate)) {
-        return last->result;
-    }
-    const int result = dsd_rtl_stream_metrics_hook_write_channel_gate(channel, gate);
-    if (result > DSD_CHANNEL_GATE_STALE) {
-        last->channel = channel;
-        last->gate = *gate;
-        last->result = result;
-    }
-    return result;
-}
-
-/* The on-air answer, written for the newest channel the receiver still knows it for. */
-static void
-receiver_gate_write_on_air(const dsd_opts* opts, const dsd_state* state) {
-    if (s_gate_on_air_count == 0U) {
-        return;
-    }
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    while (s_gate_on_air_count > 0U) {
-        const int result =
-            receiver_gate_write_once(s_gate_on_air[s_gate_on_air_count - 1U], &gate, &s_gate_written_on_air);
-        if (result != DSD_CHANNEL_GATE_STALE) {
-            return;
-        }
-        s_gate_on_air_count--;
-    }
-}
-
-/* The staged -Y row's answer, for the channel its tune lands. */
-static void
-receiver_gate_write_staged(const dsd_opts* opts, const dsd_state* state) {
+    /* A -Y row whose retune landed before the stream stopped and has not committed: the stream opened on samples no
+       committed row owns, so it stays closed until that row commits after its restage. */
     const channel_scan* scan = opts->trunk_scan_enabled != 1 ? channel_scan_get(state) : NULL;
-    if (scan && scan->gate_channel != 0U) {
-        const dsd_squelch_setting gate = channel_scan_staged_gate(opts, state, scan);
-        (void)receiver_gate_write_once(scan->gate_channel, &gate, &s_gate_written_staged);
+    if (scan && channel_scan_staged_landed(scan)) {
+        s_rx_channel = 0U;
+        s_rx_landed = 0;
+        return;
+    }
+    receiver_channel_commit(dsd_rtl_stream_metrics_hook_channel_gate_opened());
+}
+
+void
+dsd_engine_receiver_channel_refused(void) {
+    if (!s_rx_landed) {
+        dsd_engine_receiver_channel_abandon(dsd_rtl_stream_metrics_hook_refused_channel());
     }
 }
 
-/* The receiver moved (a landing, a family switch, an open, a channel dropped or failed) since the last settle: the
-   writes standing say nothing about it any more, and a stream that opened since starts the on-air channels over from
-   its own. */
-static void
-receiver_gate_observe(uint32_t epoch) {
-    s_gate_seen_epoch = epoch;
-    s_gate_seen = 1;
-    DSD_MEMSET(&s_gate_written_on_air, 0, sizeof s_gate_written_on_air);
-    DSD_MEMSET(&s_gate_written_staged, 0, sizeof s_gate_written_staged);
-    const uint32_t opened = dsd_rtl_stream_metrics_hook_channel_gate_opened();
-    if (opened == s_gate_seen_opened) {
-        return;
+uint32_t
+dsd_engine_receiver_family_begin(const dsd_opts* opts) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return 0U;
     }
-    /* The receiver numbers its channels in order: the on-air channels named since the open stay above it, the old
-       stream's go. */
-    s_gate_seen_opened = opened;
-    uint32_t since[RECEIVER_GATE_ON_AIR_MAX];
-    size_t kept = 0U;
-    for (size_t i = 0U; i < s_gate_on_air_count; i++) {
-        if (s_gate_on_air[i] > opened) {
-            since[kept++] = s_gate_on_air[i];
-        }
+    /* A transition already begun whose channel the receiver has not reached yet (a retune of the same move in flight)
+       is the one this family switch belongs to: both name its channel, and whichever lands first starts it. */
+    const int joins =
+        s_rx_channel != 0U && !s_rx_landed && dsd_rtl_stream_metrics_hook_current_channel() != s_rx_channel;
+    const uint32_t channel = joins ? s_rx_channel : dsd_engine_receiver_channel_begin(opts);
+    dsd_rtl_stream_metrics_hook_stage_family_channel(channel);
+    return joins ? 0U : channel;
+}
+
+void
+dsd_engine_receiver_family_end(uint32_t channel) {
+    const uint32_t staged = channel != 0U ? channel : s_rx_channel;
+    if (dsd_rtl_stream_metrics_hook_unstage_family_channel(staged) == 0) {
+        dsd_engine_receiver_channel_abandon(channel);
     }
-    s_gate_on_air_count = 0U;
-    dsd_engine_receiver_gate_on_air(opened);
-    for (size_t i = 0U; i < kept; i++) {
-        dsd_engine_receiver_gate_on_air(since[i]);
-    }
+}
+
+void
+dsd_engine_receiver_gate_command(int applying) {
+    s_rx_in_command = applying ? 1 : 0;
 }
 
 void
 dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed) {
-    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL || s_rx_channel == 0U) {
         return;
     }
-    /* The idle drain's whole cost: one lock-free load. Nothing changed here and the receiver has not moved, so every
-       write that stands is still the right one. */
-    const uint32_t epoch = dsd_rtl_stream_metrics_hook_channel_gate_epoch();
-    const int moved = !s_gate_seen || epoch != s_gate_seen_epoch;
-    if (!changed && !moved) {
+    s_rx_write_due |= changed;
+    if (s_rx_in_command || !s_rx_write_due) {
         return;
     }
-    if (moved) {
-        receiver_gate_observe(epoch);
+    if (!s_rx_landed) {
+        /* Looked for only while a channel the decoder committed has not been seen: one lock-free load. */
+        if (dsd_rtl_stream_metrics_hook_current_channel() != s_rx_channel) {
+            return;
+        }
+        s_rx_landed = 1;
     }
-    receiver_gate_write_on_air(opts, state);
-    receiver_gate_write_staged(opts, state);
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    s_rx_write_due = 0;
+    if (s_rx_written_channel == s_rx_channel && dsd_squelch_setting_equal(&s_rx_written_gate, &gate)) {
+        return;
+    }
+    if (dsd_rtl_stream_metrics_hook_write_channel_gate(s_rx_channel, &gate) == DSD_CHANNEL_GATE_APPLIED) {
+        s_rx_written_channel = s_rx_channel;
+        s_rx_written_gate = gate;
+    }
 }
 
 void
@@ -680,59 +669,15 @@ dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state
     dsd_engine_receiver_gate_settle(opts, state, 1);
 }
 
-dsd_squelch_setting
-dsd_engine_receiver_gate_now(const dsd_opts* opts, const dsd_state* state) {
-    const channel_scan* scan = opts && opts->trunk_scan_enabled != 1 ? channel_scan_get(state) : NULL;
-    if (scan && channel_scan_staged_landed(scan)) {
-        return channel_scan_staged_gate(opts, state, scan);
-    }
-    return dsd_scan_mode_channel_squelch(opts, state);
-}
-
-uint32_t
-dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
-        return 0U;
-    }
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    return dsd_rtl_stream_metrics_hook_stage_family_gate(&gate);
-}
-
-void
-dsd_engine_receiver_gate_family_done(uint32_t channel) {
-    if (channel != 0U && dsd_rtl_stream_metrics_hook_unstage_family_gate(channel) == 1) {
-        dsd_engine_receiver_gate_on_air(channel);
-    }
-}
-
-/* The staged row ended without its commit (issue #899). A retune that landed all the same (@p landed: out of date, or
-   its restage dropped) left the receiver on the staged row's channel, which gets the staged row's gate, resolved now;
-   otherwise the receiver stayed on the channel on air, whose writes never stopped. */
-static void
-channel_scan_gate_after_end(const dsd_opts* opts, const dsd_state* state, channel_scan* scan, int landed) {
-    if (landed && scan->gate_channel != 0U && opts->audio_in_type == AUDIO_IN_RTL) {
-        const dsd_squelch_setting gate = channel_scan_staged_gate(opts, state, scan);
-        (void)dsd_rtl_stream_metrics_hook_write_channel_gate(scan->gate_channel, &gate);
-    }
-    scan->gate_channel = 0U;
-}
-
-/* The scan lets go of its staged row (issue #899): that row's channel is where the session's channel goes now. The
-   receiver is on it, or will be if its retune lands, and the session's gate is the one it runs there. */
-static void
-channel_scan_gate_to_the_session(channel_scan* scan) {
-    if (scan) {
-        dsd_engine_receiver_gate_on_air(scan->gate_channel);
-        scan->gate_channel = 0U;
-    }
-}
-
-/* The staged row ends without its commit, its move noted (@p moved: channel_scan_note_unlanded_move()), and the
-   receiver is handed the gate of the channel it is on (channel_scan_gate_after_end(), issue #899). */
+/* The staged row ends without its commit, its move noted (@p moved: channel_scan_note_unlanded_move()). A retune that
+   landed all the same (@p landed) left the receiver on the row's channel, which a release hands the session (issue
+   #899); one that did not left it on the row on air. */
 static void
 channel_scan_end_uncommitted(dsd_opts* opts, dsd_state* state, channel_scan* scan, int moved, int landed) {
     channel_scan_note_unlanded_move(opts, state, scan, moved);
-    channel_scan_gate_after_end(opts, state, scan, landed);
+    if (!landed) {
+        scan->gate_channel = 0U;
+    }
 }
 
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
@@ -761,7 +706,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     channel_scan_end_entry_waiting_on_nothing(state, scan);
     if (scan->retry) {
         if (!channel_scan_row_is_current(opts, state, scan)) {
-            /* A restage owed after the receiver left the carrier: its retune landed, gate and all. */
+            /* A restage owed after the receiver left the carrier: its retune landed. */
             const int landed = scan->left_carrier;
             scan->retry = 0;
             channel_scan_end_uncommitted(opts, state, scan, 0, landed);
@@ -1530,12 +1475,11 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     /* The output generation before the tune is issued: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
-    /* The row's gate rides its retune (issue #899): the receiver applies it where the retune lands, so every sample of
-       the new channel runs under it and none of the old one's, however long the commit waits on a pending tune. A tune
-       that never lands leaves the receiver on the row on air's gate. */
-    const dsd_squelch_setting gate = channel_scan_staged_gate(opts, state, scan);
+    /* The row's retune names a channel of its own (issue #899): an analog one starts closed where it lands, and opens
+       on the row's gate once the row commits. A tune that never lands leaves the receiver on the row on air. */
+    scan->gate_channel = dsd_engine_receiver_channel_new(opts);
     const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(
-        opts, state, scan->row_freq, state->samplesPerSymbol, &gate, &scan->gate_channel, &scan->request);
+        opts, state, scan->row_freq, state->samplesPerSymbol, scan->gate_channel, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);
     dsd_squelch_standing_restore(opts, &before_squelch);
     /* A new attempt is named by its first request; a restage keeps the name. An entry waiting on the row is this
@@ -1866,7 +1810,8 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     dsd_engine_scan_quiet_note_change(state);
     channel_scan_release_entry(state);
     channel_scan* scan = channel_scan_get(state);
-    channel_scan_gate_to_the_session(scan);
+    /* The session takes over the channel the receiver is on, or the staged row's it goes to (issue #899). */
+    dsd_engine_receiver_channel_commit(scan ? scan->gate_channel : 0U);
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
     const int active =
         !already_left
@@ -1887,17 +1832,18 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     dsd_scan_maps_leave(state);
     /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
     const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
+    /* A family switch the leave makes puts the session on a channel of its own (issue #899): named before the scope
+       leaves, so nothing the session's options resolve to reaches the row's channel; dropped if the leave makes none. */
+    const uint32_t family_channel = active ? dsd_engine_receiver_family_begin(opts) : 0U;
     dsd_scan_mode_leave(opts, state);
     int monitor_request = 0;
     if (active) {
         /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
            leaves for the manual session, which no target names (issue #671). */
         dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
-        /* The session's gate rides the family request the leave makes, so the first block on the family it switches
-           to runs under it (issue #899). */
-        const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
         monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
-        dsd_engine_receiver_gate_family_done(gate_channel);
+        dsd_engine_receiver_family_end(family_channel);
+        dsd_engine_receiver_gate_settle(opts, state, 0);
         /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
          * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
          * the analog profile request stays the leave's last. */
@@ -2485,9 +2431,6 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
             dsd_trunk_tuning_request_disown(staging.request);
         }
         channel_scan_staging_clear(&staging);
-        /* The refused tune's channel went with it: the reinstated request's channel lands its own row's gate, which
-           its binding kept, here resolved again (issue #899). The receiver keeps the gate it runs. */
-        dsd_engine_receiver_gate_settle(opts, state, 1);
         return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
     }
     *retired = 1;

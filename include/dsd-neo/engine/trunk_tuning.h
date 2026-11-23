@@ -15,7 +15,6 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_ENGINE_TRUNK_TUNING_H_
 
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -91,16 +90,14 @@ void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint3
  * runs the analog family or outstanding work lands a family (dsd_engine_scan_retune_attaches_family(), issue #583). A
  * row width the front end refuses at the rate it runs fails the tune before any backend moves.
  *
- * On an RTL-family input the retune carries @p gate (issue #899; NULL: none), the squelch gate of the row it goes to
- * (dsd_squelch_channel_gate()), and lands the receiver on a channel of its own under it, at the same boundary as the
- * rest of the profile (rtl_stream_prepare_retune_squelch_for_target()): a tune refused, deferred or failed, or a profile
- * superseded or cleared, leaves the receiver on the channel it runs. That channel goes to @p out_gate_channel, which
- * then belongs to the caller (a -Y row staged until it commits); with @p out_gate_channel NULL it is where the on-air
- * channel goes (dsd_engine_receiver_gate_on_air(): a trunk-scan target, active from its switch).
+ * On an RTL-family input the retune names @p channel (issue #899; 0: none), a receiver channel the caller numbered
+ * (dsd_engine_receiver_channel_new()), which its landing puts the receiver on (rtl_stream_prepare_retune_channel_for_target()).
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                                   const dsd_squelch_setting* gate, uint32_t* out_gate_channel,
-                                                   uint64_t* out_request_id);
+                                                   uint32_t channel, uint64_t* out_request_id);
+/** @brief The receiver channel (issue #899; 0: none) the control-channel retunes made from here on name, as a
+ * trunk-scan target's park puts the target on air: the coordinator sets it around the park. Decoder thread. */
+void dsd_engine_trunk_park_names_channel(uint32_t channel);
 /** @brief Whether the rigctl leg of the last dsd_engine_scan_tune_to_freq() on this thread moved the radio, whatever
  * that tune returned. With rigctl and an RTL front end in a conventional scan, a tune whose RTL leg then failed, or
  * went on asynchronously (PENDING) and later fails, has the receiver on another carrier though its row never lands.

@@ -18,7 +18,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -33,8 +32,6 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <math.h>
 #include <stddef.h>
@@ -144,33 +141,35 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
-/* The squelch gate a retune carries (issue #899), which no scene here reads. */
-uint32_t
-rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
+/* The channel a retune names (issue #899), which no scene here reads. */
+void
+rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
     (void)target_freq_hz;
-    (void)gate;
+    (void)channel;
+}
+
+/* The engine's side of the receiver's channels (issue #899; channel_scan.c, not linked here), which no scene here
+   reads. */
+uint32_t
+dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
+    (void)opts;
     return 0U;
 }
 
-/* The engine's channel-tagged receiver gates (issue #899; channel_scan.c, not linked here), which no scene here reads:
-   the channels a visit or restore puts on air, and a family request's gate staged through the stream hooks, as the
-   engine stages it. */
 void
-dsd_engine_receiver_gate_on_air(uint32_t channel) {
+dsd_engine_receiver_channel_abandon(uint32_t channel) {
     (void)channel;
 }
 
 uint32_t
-dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state) {
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    return dsd_rtl_stream_metrics_hook_stage_family_gate(&gate);
+dsd_engine_receiver_family_begin(const dsd_opts* opts) {
+    (void)opts;
+    return 0U;
 }
 
 void
-dsd_engine_receiver_gate_family_done(uint32_t channel) {
-    if (channel != 0U && dsd_rtl_stream_metrics_hook_unstage_family_gate(channel) == 1) {
-        dsd_engine_receiver_gate_on_air(channel);
-    }
+dsd_engine_receiver_family_end(uint32_t channel) {
+    (void)channel;
 }
 
 int

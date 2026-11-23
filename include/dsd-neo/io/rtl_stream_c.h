@@ -999,76 +999,65 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);
 
 /**
- * @brief Make the retune queued for @p target_freq_hz carry the squelch gate (issue #899), and name the channel it
- * lands: the receiver numbers every channel it produces, and the retune's landing puts it on this one, under @p gate or
- * the gate the decoder wrote for this channel since (rtl_stream_write_channel_gate()), at the same boundary as the
- * profile's family, width and gain (the controller's finalize, or an external backend's landing,
- * rtl_stream_apply_pending_retune_profile_for_target()), so no sample of the new channel runs under the old channel's
- * gate and none of the old channel's under the new one's.
+ * @brief The receiver's channels (issue #899). The receiver numbers the channel it produces; a decoder numbers a channel
+ * it is about to put the receiver on (rtl_stream_new_channel()) and names it on the retune or live family request that
+ * does so. Where that request lands (the controller's finalize, an external backend's landing, the demod thread's take
+ * of a family request) the receiver moves to that channel: on the analog family it starts closed, every block muted,
+ * until a write tagged with it (rtl_stream_write_channel_gate()) opens it; on the digital family it keeps the gate the
+ * decoder last wrote. A stream open starts a channel of its own (rtl_stream_channel_gate_opened()), closed on the
+ * analog family. A request that names no channel, or the channel the receiver is on, leaves the channel alone.
  *
- * Attach it last: rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile. With
- * nothing queued for this target, a profile for the gate alone is queued, which lands nothing else and settles no
- * receive request. A profile cleared (rtl_stream_clear_pending_retune_profile()), superseded (a live family request, or
- * for a profile with no family a live analog request or a scan leave, counted after it was queued), refused where it
- * lands (an analog width the rate cannot run), left behind by a coalesced retune to another target, or whose retune
- * fails, lands no channel: the receiver stays on the one it runs, under its gate. Each channel keeps its own gate. A
- * landing whose channel a newer retune or family request replaced (one outstanding, or landed already) runs the gate
- * closed, every block muted, until the decoder writes for that channel or the newer one lands. Decoder thread.
- *
- * @return The channel this retune lands, or 0 with no @p gate.
+ * @return A new channel number, never 0. Any thread.
  */
-uint32_t rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
+uint32_t rtl_stream_new_channel(void);
+
+/** @brief The channel the receiver produces now (0 before any stream opened). Lock-free; any thread. */
+uint32_t rtl_stream_current_channel(void);
+
+/**
+ * @brief Name @p channel (0: none) on the retune queued for @p target_freq_hz (issue #899): its landing puts the
+ * receiver on that channel, at the same boundary as the profile's family, width and gain, whatever the profile's family
+ * does there (applied, refused or superseded: the tuner moved). Attach it last:
+ * rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile. With nothing queued for
+ * this target, a profile for the channel alone is queued, which lands nothing else and settles no receive request. A
+ * profile cleared, replaced, or whose retune fails lands nothing. With @p channel 0, a profile still queued for the
+ * target (its tune returned without taking it) names none any more, and one for the channel alone goes. Decoder
+ * thread.
+ */
+void rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel);
 
 /** @brief What rtl_stream_write_channel_gate() did with a write. */
 enum {
-    RTL_STREAM_GATE_STALE = 0,   /**< not the channel on air nor one outstanding: dropped */
-    RTL_STREAM_GATE_APPLIED = 1, /**< the channel the receiver is on: in force from its next block */
-    RTL_STREAM_GATE_BOUND = 2    /**< a channel a retune or family request still has to land: lands with it */
+    RTL_STREAM_GATE_STALE = 0,  /**< not the channel the receiver is on: dropped */
+    RTL_STREAM_GATE_APPLIED = 1 /**< the channel the receiver is on: in force from its next block */
 };
 
 /**
- * @brief Write the squelch gate of @p channel (issue #899): the receiver is the only judge of which gate applies. It
- * applies the write at once when @p channel is the one it is on (atomically with respect to every landing), keeps it as
- * the gate @p channel lands with while a retune or family request for it is outstanding, and drops it otherwise. Any
- * thread.
+ * @brief Write the squelch gate of @p channel (issue #899): applied at once when @p channel is the one the receiver is on
+ * (atomically with respect to every channel move), and dropped otherwise. The only way a closed analog channel opens.
+ * Any thread.
  *
- * @return RTL_STREAM_GATE_APPLIED, RTL_STREAM_GATE_BOUND or RTL_STREAM_GATE_STALE.
+ * @return RTL_STREAM_GATE_APPLIED or RTL_STREAM_GATE_STALE.
  */
 int rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate);
 
-/**
- * @brief A count that moves whenever the channel the receiver is on changes (a landing, a family request that carries a
- * gate, a stream open) or a channel stops being outstanding (landed, dropped, refused, failed). Lock-free: the decoder
- * compares it with the one it saw to skip an idle settle (issue #899).
- */
-uint32_t rtl_stream_channel_gate_epoch(void);
-
-/** @brief The channel the last stream open started on, under the gate it opened with (issue #899); 0 before any. */
+/** @brief The channel the last stream open started on (issue #899); 0 before any. */
 uint32_t rtl_stream_channel_gate_opened(void);
 
 /**
- * @brief Bind @p gate to the next live family request (rtl_stream_request_analog_profile(),
- * rtl_stream_request_digital_family_landing()), which then puts the receiver on a channel of its own, under that gate,
- * at the block boundary where the family switch applies (issue #899). A request refused, or made with no stream
- * running, lands none. A request that replaces one still queued without carrying a gate of its own takes on that one's.
- * Call rtl_stream_unstage_family_gate() once the requests are made. Decoder thread.
- *
- * @return The channel the family request lands, or 0 with no @p gate.
+ * @brief Name @p channel on the next live family request (rtl_stream_request_analog_profile(),
+ * rtl_stream_request_digital_family_landing()), which then puts the receiver on that channel at the block boundary
+ * where the family switch applies (issue #899). A request refused, or made with no stream running, takes none; a
+ * request that replaces one still queued without a channel of its own takes on that one's; a retune that retires the
+ * request drops it. Call rtl_stream_unstage_family_channel() once the requests are made. Decoder thread.
  */
-uint32_t rtl_stream_stage_family_gate(const dsd_squelch_setting* gate);
+void rtl_stream_stage_family_channel(uint32_t channel);
 
-/**
- * @brief Drop the gate rtl_stream_stage_family_gate() staged as @p channel if no family request took it. Returns 1
- * when a request took it (the channel is outstanding, or landed or refused since), else 0.
- */
-int rtl_stream_unstage_family_gate(uint32_t channel);
+/** @brief Drop @p channel from the next family request if none took it: 1 when a request took it, else 0. */
+int rtl_stream_unstage_family_channel(uint32_t channel);
 
-/**
- * @brief A tune to @p target_freq_hz has returned: a gate-carrying profile still queued for it was never taken (the
- * tune was refused, deferred, or went nowhere), so it is dropped with its gate and no longer counts as outstanding
- * (issue #899). A taken one is the controller's, and nothing changes. Decoder thread.
- */
-void rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz);
+/** @brief The channel the last family request the demod thread refused named (issue #899); 0: none. */
+uint32_t rtl_stream_refused_channel(void);
 
 /**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),
@@ -1198,6 +1187,8 @@ typedef struct {
     int plan_valid;      /**< 0 when the channel plan could not be designed (the gate then stays open) */
     double floor_power;  /**< the tracker's floor, mean |z|^2 (0 while learning) */
     double window_power; /**< the tracker's last 40 ms window's mean |z|^2 */
+    int closed_starts;   /**< new analog channels opened since the stream did, each after a closed start (issue #899) */
+    double closed_ms;    /**< how long the last of them ran closed, until the decoder wrote its gate */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */

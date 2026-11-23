@@ -87,11 +87,13 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
     /* No untagged squelch setter (issue #899): every gate the engine hands the receiver names its channel. */
-    hooks.write_channel_gate = rtl_stream_write_channel_gate;
-    hooks.channel_gate_epoch = rtl_stream_channel_gate_epoch;
+    hooks.new_channel = rtl_stream_new_channel;
+    hooks.current_channel = rtl_stream_current_channel;
     hooks.channel_gate_opened = rtl_stream_channel_gate_opened;
-    hooks.stage_family_gate = rtl_stream_stage_family_gate;
-    hooks.unstage_family_gate = rtl_stream_unstage_family_gate;
+    hooks.refused_channel = rtl_stream_refused_channel;
+    hooks.write_channel_gate = rtl_stream_write_channel_gate;
+    hooks.stage_family_channel = rtl_stream_stage_family_channel;
+    hooks.unstage_family_channel = rtl_stream_unstage_family_channel;
     hooks.replay_batch = rtl_stream_metrics_replay_batch;
     hooks.discontinuity_seq = rtl_stream_discontinuity_seq;
     hooks.monitor_deemph_gain = rtl_stream_monitor_deemph_gain;

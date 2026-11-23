@@ -2450,6 +2450,12 @@ full_demod_update_channel_state(struct demod_state* d, int streamed) {
         for (int k = 0; k < d->lp_len; k++) {
             d->lowpassed[k] = 0.0f;
         }
+        if (squelch_level >= (float)DSD_SQUELCH_LEVEL_CLOSED) {
+            /* Closed outright (issue #899): each sample flagged closed too, so a decoder that reads the flags (a
+               dynamic squelch in its options) neither plays nor learns its gain from the zeros. */
+            DSD_MEMSET(d->result_flags, DSD_SQUELCH_FLAG_CLOSED, (size_t)(d->lp_len >> 1));
+            d->result_flags_active = 1;
+        }
         return;
     }
     d->channel_squelched = 0;

@@ -4287,6 +4287,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
+        /* Its channel is the session's (issue #899): opened, on the analog family, once the decoder writes its gate. */
+        dsd_engine_receiver_channel_opened(opts, state);
         dsd_engine_note_run_stream_source(opts, state);
     }
     return 0;
@@ -4863,6 +4865,9 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
         return;
     }
     dsd_runtime_pump_controls(opts, state);
+    /* A receiver channel the decoder committed gets its squelch gate once the receiver is on it, a new analog one
+       closed until then (issue #899): with none due, a branch on what the decoder knows. */
+    dsd_engine_receiver_gate_settle(opts, state, 0);
     /* A manual tune that timed out lands or fails late (issue #671): two loads while none is pending. An untyped
        -Y step's row commits as it lands. */
     (void)dsd_engine_scan_untyped_poll(opts, state);

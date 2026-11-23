@@ -1003,6 +1003,9 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
     const dsd_squelch_setting squelch_before = dsd_squelch_setting_of_opts(opts);
     if (scope->suspended) {
         scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+        /* The options hold the configuration the suspending command left (its squelch edits included), which the
+           session resolves its gate from once the scope is gone, not the copy taken before it ran (issue #899). */
+        dsd_scan_settings_capture(opts, state, &scope->configured);
     } else {
         dsd_scan_settings_restore(&scope->configured, opts, state);
     }
@@ -1117,9 +1120,9 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     /* Unconditional: the command that ran while suspended may have pushed the configured
      * default straight to the demod (CONFIG_APPLY does), so a comparison with the pre-suspend
-     * value would leave the row's threshold behind. The engine's settle hands the receiver the gate of the channel whose
-     * samples it produces, which is not the row on air's while a -Y row's retune has landed and waits for its commit,
-     * and keeps the gate an outstanding retune lands current (issue #899); without one, the row on air's. */
+     * value would leave the row's threshold behind. The engine's settle writes it only for the channel the decoder
+     * committed, which a -Y row whose retune has landed and waits for its commit is not (issue #899); without one, the
+     * row on air's. */
     scope->squelch_pending = SCAN_SQUELCH_SETTLED;
     (void)dsd_squelch_analog_default_sync(opts, state);
     scan_squelch_push(opts, state);

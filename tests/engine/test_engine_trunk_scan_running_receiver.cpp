@@ -14,7 +14,9 @@
  *   no dynamic squelch there and flags no sample closed;
  * - NFM row (every visit, the second one being the default's return after the DMR row): the receiver runs the noise
  *   squelch, the receiver noise the visit starts on is flagged closed and none of it plays, and the speech after it
- *   plays.
+ *   plays. Every sample it delivers there with no dynamic squelch running is flagged closed: the row's landing starts
+ *   the channel closed until the decoder writes the row's gate (round 6), never the DMR row's Off before or after the
+ *   rotation. How long that closed start lasts, the mute a landing adds, is printed per visit.
  * With --saved-digital-under-level (ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL) the digital row comes from a saved DMR
  * system whose saved squelch is dynamic, so the generator gives the row --squelch off (B13), and the session carries
  * an Advanced --squelch -1, which ends the analog default. Then the DMR row runs its own off and decodes, and the plain
@@ -26,8 +28,8 @@
  * landings take it from the cache and play in about 0.15 s), and a shorter dwell can expire before its speech.
  * Real time, about 30 s. A receiver that delivers no samples, or a scan that never leaves its first row, fails on any
  * host. A host too slow for the real-time dwell (a sanitizer build), measured before the session by timing a noise
- * squelch plan design and not from anything the receiver or the scan did, is reported as a skip (77). POSIX only (the
- * server's loopback sockets).
+ * squelch plan design and not from anything the receiver or the scan did, is reported as a skip (77); the level scenario
+ * designs no plan, so it never skips (review round 6). POSIX only (the server's loopback sockets).
  */
 #include <QByteArray>
 #include <QCoreApplication>
@@ -119,6 +121,9 @@ struct Visit {
     uint64_t analog_audio = 0U;             /* monitor samples played */
     uint64_t analog_audio_while_gated = 0U; /* monitor samples played before the first open sample */
     uint64_t off_reads = 0U;                /* reads under a LEVEL setting that is off */
+    uint64_t ungated = 0U;                  /* samples flagged open under no dynamic squelch */
+    int closed_starts = -1;                 /* the receiver's count of closed starts at the visit's last read */
+    double closed_ms = 0.0;                 /* and how long the last one lasted */
     uint64_t session_level_reads = 0U;      /* reads under the session's -1 dB level, the default not in force */
     uint64_t first_ms = 0U;                 /* real time of the visit's first read, empty ones too */
     uint64_t first_data_ms = 0U;            /* and of its first and last read that brought samples */
@@ -182,6 +187,16 @@ note_read(int rc, const uint8_t* flags, const int* out_got) {
     }
     if (flags == nullptr) {
         return;
+    }
+    if (have_status) {
+        v->closed_starts = st.closed_starts;
+        v->closed_ms = st.closed_ms;
+    }
+    if (have_status && !st.active) {
+        /* A landing's closed start (round 6), or a level squelch: a sample flagged open is one no gate ran on. */
+        for (int i = 0; i < *out_got; ++i) {
+            v->ungated += (flags[i] & DSD_SQUELCH_FLAG_CLOSED) != 0U ? 0U : 1U;
+        }
     }
     for (int i = 0; i < *out_got; ++i) {
         ++v->flagged;
@@ -389,6 +404,15 @@ printVisit(const Visit& v, int n, const char* note) {
         static_cast<unsigned long long>(v.analog_audio), static_cast<unsigned long long>(v.analog_audio_while_gated));
     DSD_FPRINTF(stderr, "visit %d: reads under an off level %llu, under the session's -1 dB level %llu\n", n,
                 static_cast<unsigned long long>(v.off_reads), static_cast<unsigned long long>(v.session_level_reads));
+    /* The closed start runs from the landing, about when the visit's first read finds the new row tuned, to the
+       decoder's write: what the receiver delivers inside it is muted on top of what the squelch mutes. */
+    const double first_samples_ms = v.samples != 0U ? static_cast<double>(v.first_data_ms - v.first_ms) : 0.0;
+    DSD_FPRINTF(stderr,
+                "visit %d: closed starts so far %d, the last one %.1f ms, the first samples after %.1f ms: %.1f ms of "
+                "delivered audio muted by it (the mute a landing adds); samples open under no dynamic squelch %llu\n",
+                n, v.closed_starts, v.closed_ms, first_samples_ms,
+                v.closed_ms > first_samples_ms ? v.closed_ms - first_samples_ms : 0.0,
+                static_cast<unsigned long long>(v.ungated));
 }
 
 /* The samples the decoder read over the whole run, every visit included. */
@@ -453,6 +477,7 @@ checkVisits(const std::vector<Visit>& seen) {
                    "the NFM row's idle receiver noise is gated", n);
             expect(v.analog_audio_while_gated == 0U, "none of the gated noise plays", n);
             expect(v.opened && static_cast<double>(v.analog_audio) >= 1.0 * kOutputRateHz, "the NFM speech plays", n);
+            expect(v.ungated == 0U, "the NFM row never runs a sample ungated (no Off, the closed start flagged)", n);
         }
     }
     expect(dmr >= 2 && nfm >= 2, "two visits of each row in time", static_cast<int>(seen.size()));
@@ -578,7 +603,7 @@ main(int argc, char** argv) {
                     samples == 0U ? "the receiver delivered no samples" : "the scan never left its first row");
         return 1;
     }
-    if (design_ms > kPlanDesignMaxMs) {
+    if (!g_saved_level && design_ms > kPlanDesignMaxMs) {
         for (size_t i = 0; i < seen.size(); ++i) {
             printVisit(seen[i], static_cast<int>(i), "");
         }

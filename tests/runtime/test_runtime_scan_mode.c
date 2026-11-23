@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -451,6 +452,51 @@ static void
 record_setting_push(const dsd_squelch_setting* setting) {
     g_setting_pushes++;
     g_setting_pushed = *setting;
+}
+
+/* The gate the engine's settle resolves for the channel on air when a scope entry point hands the receiver its squelch
+   (dsd_receiver_gate_settle_hook_run(), issue #899). */
+static int g_settles;
+static dsd_squelch_setting g_settled;
+
+static void
+record_settle(const dsd_opts* opts, const dsd_state* state) {
+    g_settles++;
+    g_settled = dsd_scan_mode_channel_squelch(opts, state);
+}
+
+/* Issue #899 (review round 6, P2): a command suspends the scope of an nfm row with its own -40 dB, edits the session's
+   squelch to -25 dB, and leaves the scan (a config that changes the squelch and turns -Y off). The leave resolves the
+   session's gate from the options the command left, -25 dB: before the fix it resolved it from the configured copy
+   taken before the command ran (-80 dB), and wrote that old threshold. */
+static void
+test_suspended_leave_resolves_the_edited_session(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_RTL;
+    o->rtl_dsp_bw_khz = 48;
+    o->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    o->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    o->rtl_squelch_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    dsd_receiver_gate_settle_hook_set(record_settle);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -40;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s) == 1);
+    o->rtl_squelch_level = dsd_squelch_level_from_sql(-25.0);
+    g_settles = 0;
+    dsd_scan_mode_leave(o, s);
+    assert(g_settles == 1 && g_settled.mode == DSD_SQUELCH_MODE_LEVEL
+           && level_is(g_settled.level, dsd_squelch_level_from_sql(-25.0)));
+    assert(level_is(o->rtl_squelch_level, dsd_squelch_level_from_sql(-25.0)));
+    dsd_receiver_gate_settle_hook_set(NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
 }
 
 static void
@@ -1778,6 +1824,7 @@ main(void) {
     test_max_visit_row_override_scope();
     test_squelch_row_override_scope();
     test_auto_squelch_row_and_default();
+    test_suspended_leave_resolves_the_edited_session();
     test_tone_row_override_scope();
     test_configured_tone_policy_edit();
     test_baseline_is_configured_under_a_row();

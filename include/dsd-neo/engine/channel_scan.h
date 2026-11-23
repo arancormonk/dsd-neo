@@ -5,7 +5,6 @@
 #ifndef DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #define DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -29,32 +28,43 @@ int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
-/** The squelch gate of the channel whose samples a radio receiver produces (issue #899), resolved now: a -Y row whose
- * retune landed and waits for its commit or restage, else the channel the scan scope, or the session, has on air
- * (dsd_scan_mode_channel_squelch()). What a stream about to open runs. */
-dsd_squelch_setting dsd_engine_receiver_gate_now(const dsd_opts* opts, const dsd_state* state);
-/** The receiver's channel @p channel (a retune's or family request's, rtl_stream_prepare_retune_squelch_for_target(),
- * rtl_stream_stage_family_gate(); 0: none) is where the on-air channel goes (issue #899): a manual tune, a trunk-scan
- * target, a signal-search visit or restore, a family switch, a -Y row that commits. The decoder writes the on-air gate
- * for it from here on, bound until it lands; the channel before it gets no more, unless this one fails. Decoder
- * thread. */
-void dsd_engine_receiver_gate_on_air(uint32_t channel);
-/** On an RTL-family input, write the receiver the gates of the channels it may be producing, each tagged with that
- * channel (issue #899): the on-air answer for the newest on-air channel it still knows, and a staged -Y row's own for
- * that row's channel. The receiver applies the one it is on and keeps the others for their landings. Re-resolved when
- * @p changed (a command ran, the session's squelch moved) or the receiver moved since the last settle (a landing, a
- * family switch, an open, a channel dropped or failed); otherwise one lock-free load, nothing resolved or written. A
- * write repeats only on a change. Decoder thread. */
+/** The decoder's side of the receiver's channels (issue #899, rtl_stream_new_channel()). The decoder writes the
+ * squelch gate only for the receiver channel it has committed, resolved at write time
+ * (dsd_scan_mode_channel_squelch()) and tagged with that channel; a new analog channel stays closed until then. All
+ * decoder thread; nothing off an RTL-family input. */
+/** A new channel number for a retune the caller will name it on (a -Y row's, committed at the row's commit); 0 off a
+ * radio input. */
+uint32_t dsd_engine_receiver_channel_new(const dsd_opts* opts);
+/** An on-air transition (a manual tune, a trunk-scan target, a signal-search visit or restore): its owner is committed
+ * now, on a new channel the caller names on the retune that makes it; returns it, 0 off a radio input. */
+uint32_t dsd_engine_receiver_channel_begin(const dsd_opts* opts);
+/** Commit @p channel (0: keep the one committed): a -Y row's at its commit, or the staged row's a release hands the
+ * session. */
+void dsd_engine_receiver_channel_commit(uint32_t channel);
+/** The transition that named @p channel will never land (refused or failed before the receiver took it): the decoder
+ * goes back to the channel before it. Nothing once the receiver has been seen on it. */
+void dsd_engine_receiver_channel_abandon(uint32_t channel);
+/** A stream opened: its channel is committed, unless a -Y row whose retune landed waits for its commit. */
+void dsd_engine_receiver_channel_opened(const dsd_opts* opts, const dsd_state* state);
+/** A family request the receiver refused where it landed (rtl_stream_refused_channel()), reconciled: when it was the
+ * transition the decoder waits for, it goes back to the channel before it. */
+void dsd_engine_receiver_channel_refused(void);
+/** Before a live family request: the channel it names (rtl_stream_stage_family_channel()), a new transition's, or
+ * that of one begun whose retune has not landed yet. Returns the new channel, or 0 when it joined one or off a radio
+ * input; pass it to dsd_engine_receiver_family_end() once the requests are made, which abandons a new channel no
+ * request took. */
+uint32_t dsd_engine_receiver_family_begin(const dsd_opts* opts);
+void dsd_engine_receiver_family_end(uint32_t channel);
+/** The drain applies a command (@p applying 1) or has applied it (0): no gate is written meanwhile, and the drain's
+ * settle after it writes the one the command's options resolve to. */
+void dsd_engine_receiver_gate_command(int applying);
+/** Write the committed channel's gate when it is due: the channel was committed or @p changed (a command ran, the
+ * session's squelch moved) and the receiver is on it. With nothing due, nothing is read, resolved or written. A write
+ * repeats only on a change. */
 void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
 /** dsd_engine_receiver_gate_settle() with @p changed: what the scan scope's entry points run through
  * dsd_receiver_gate_settle_hook_set() (issue #899). */
 void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);
-/** Before a live family request (issue #899): bind the on-air gate, resolved now, to the next one
- * (rtl_stream_stage_family_gate()), so the family switch applies with it. Returns the channel, 0 off a radio input. */
-uint32_t dsd_engine_receiver_gate_stage_family(const dsd_opts* opts, const dsd_state* state);
-/** After the family requests: the staged gate's channel, if a request took it, is where the on-air channel goes; else
- * it is dropped. */
-void dsd_engine_receiver_gate_family_done(uint32_t channel);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Service a row transaction before dispatch/next sync search. Returns 1 when ready;

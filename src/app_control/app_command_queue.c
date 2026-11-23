@@ -1880,9 +1880,6 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
     if (config_ended) {
         dsd_squelch_analog_default_end(opts);
     }
-    /* The input that ran comes back for the scan row it ran, resolved from the profile restored, whatever the config
-       would have done to the scanner. */
-    svc_rtl_open_for_session(0);
     int capture_stopped = 0;
     if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, before->input.iq_capture_requested,
                                         &before->input.failure, &capture_stopped)
@@ -5144,24 +5141,6 @@ apply_cfg_replay_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
 }
 #endif
 
-#ifdef USE_RADIO
-/* apply_cfg_radio_input(), then the replay re-plan when that worked. A config that stops the scanner reopens the input
-   for the session it leaves, on that session's squelch gate, not the outgoing row's (issue #899), as the analog monitor
-   it asks the stream for is the session's (ui_scan_row_resumed_monitor()). */
-static int
-apply_cfg_radio_input_and_replan(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
-                                 const ui_cfg_rollback* rollback) {
-    svc_rtl_open_for_session(
-        ui_cmd_leaves_scanner_scope_with(opts, state, rollback->was_scanner, rollback->scanner_after));
-    int rc = apply_cfg_radio_input(opts, state, cfg, rollback);
-    if (rc == 0) {
-        rc = apply_cfg_replay_replan(opts, state, cfg, rollback);
-    }
-    svc_rtl_open_for_session(0);
-    return rc;
-}
-#endif
-
 /* A reopen that replaced the stream the decoder read (issue #634): the engine ends the reception before it decodes the
    new one. A reopen that restarted the running UDP input, or lost it, puts back the options the config wrote, so the
    received-tone check that compares them (cfg_forget_rx_tone_on_boundary()) would see no change: the boundary is
@@ -6973,9 +6952,10 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
 }
 
 /* The analog default squelch (issue #899) follows what the session runs now: a command's decode switch, input change,
-   scan leave or explicit edit, or a receive request the front end refused. The receiver's gates, each tagged with its
-   channel, are resolved again when @p changed or the default moved, or when the receiver moved since the last settle
-   (dsd_engine_receiver_gate_settle()); an idle drain, nothing changed and nothing moved, resolves and writes nothing. */
+   scan leave or explicit edit, or a receive request the front end refused. The committed channel's gate is written
+   when @p changed or the default moved, or once the receiver reaches a channel committed since
+   (dsd_engine_receiver_gate_settle()); an idle drain, nothing changed and nothing due, reads, resolves and writes
+   nothing. */
 static void
 ui_settle_squelch(dsd_opts* opts, const dsd_state* state, int changed) {
     if (!opts) {
@@ -6989,16 +6969,6 @@ ui_settle_squelch(dsd_opts* opts, const dsd_state* state, int changed) {
 static void
 ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
     ui_settle_squelch(opts, state, 1);
-}
-
-/* decode_mode_republish(), with the gate of the channel it switches to, resolved now, riding its family request: the
-   first block on the new family runs under it, whatever retune is outstanding (issue #899). */
-static int
-decode_mode_republish_gated(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
-    const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
-    const int rc = decode_mode_republish(opts, state, mode);
-    dsd_engine_receiver_gate_family_done(gate_channel);
-    return rc;
 }
 
 /* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
@@ -7140,9 +7110,9 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
     opts->pulse_digi_rate_out = audio_rate;
     decode_mode_ensure_output(opts, state);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
-    /* The analog default squelch (issue #899) follows the switch into the options; the switch's family request carries
-       the gate it resolves to (decode_mode_republish_gated()), so the first block on the new family runs under it and
-       none of the old family's does. A switch put back below gets the session's own again at the drain. */
+    /* The analog default squelch (issue #899) follows the switch into the options; the switch's family request names
+       the channel the decoder writes it for once it lands (svc_publish_symbol_profile()), so no block of the old family
+       runs under it. A switch put back below gets the session's own again at the drain. */
     (void)dsd_squelch_analog_default_sync(opts, state);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
@@ -7158,7 +7128,7 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
        above) puts the decoder back as it was; one refused where it lands is
        put back by the next drain. */
     ui_arm_analog_entry(opts, state, was_analog_family, was_kind);
-    const int put_back = decode_mode_republish_gated(opts, state, mode) != 0
+    const int put_back = decode_mode_republish(opts, state, mode) != 0
                          && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL);
     /* The mode change commits: one that stands leaves TETRA unless it is TETRA, once a switch the front end has still
        to take or refuse has settled, and one put back finds the TETRA session it left whole. */
@@ -10375,10 +10345,10 @@ apply_cfg_analog_profile_change(dsd_opts* opts, dsd_state* state, const cfg_rx_p
         }
         /* The part-collected monitor block holds the old kind's audio, as decode_mode_apply_value() drops it. */
         dsd_symbol_analog_block_reset(state);
-        /* The new kind's gate rides its channel's request (issue #899), as DECODE_MODE_SET hands it. */
+        /* The new kind's channel is its request's (issue #899), as DECODE_MODE_SET's. */
         (void)dsd_squelch_analog_default_sync(opts, state);
         ui_arm_analog_entry(opts, state, 1, before->analog_kind);
-        return (decode_mode_republish_gated(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
+        return (decode_mode_republish(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
                 && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL))
                    ? -1
                    : 0;
@@ -10414,13 +10384,13 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
-        /* The new family's gate rides the family's request (issue #899), as DECODE_MODE_SET hands it: the analog
-           default onto the monitor, the session's own off it. */
+        /* The new family's channel is the family request's (issue #899), as DECODE_MODE_SET's: the analog default onto
+           the monitor, the session's own off it. */
         (void)dsd_squelch_analog_default_sync(opts, state);
         /* A switch onto the monitor the front end refuses at once goes back to the mode the session had, as
            DECODE_MODE_SET's does, and fails the apply; one refused where it lands is put back by the next drain. */
         ui_arm_analog_entry(opts, state, old_analog_only && opts->m17encoder != 1, before->analog_kind);
-        if (decode_mode_republish_gated(opts, state, cfg->decode_mode) != 0
+        if (decode_mode_republish(opts, state, cfg->decode_mode) != 0
             && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL)) {
             rc = -1;
         }
@@ -10672,7 +10642,10 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     /* A reopen whose start fails puts the receive side back (ui_cfg_settle_reopen()), so everything below sees the
        input, mode and widths the session ran, and publishes nothing for the settings the start refused; with no stream
        running before it there is nothing to put back, and no stream to publish to. */
-    int radio_rc = apply_cfg_radio_input_and_replan(opts, state, &cfg, &rollback);
+    int radio_rc = apply_cfg_radio_input(opts, state, &cfg, &rollback);
+    if (radio_rc == 0) {
+        radio_rc = apply_cfg_replay_replan(opts, state, &cfg, &rollback);
+    }
 #endif
     const cfg_input_before input_before = {old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
                                            old_effective_input_rate, old_staged_file_sample_rate};
@@ -11733,10 +11706,8 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
        publish the old mode's profile over it, and dropping the switch would lose the mode to go back to. Neither is a
        monitor request (one would have taken the record over), so the front end has made the switch no more than
        before, and it stays armed. */
-    if (ui_scan_leave_left_to_later(opts, state, &refusal)) {
-        return;
-    }
-    if (ui_settle_refused_row_edit(opts, state, &refusal)) {
+    if (ui_scan_leave_left_to_later(opts, state, &refusal) || ui_settle_refused_row_edit(opts, state, &refusal)) {
+        dsd_engine_receiver_channel_refused();
         return;
     }
     int changed = 0;
@@ -11758,6 +11729,9 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
             changed = 1;
         }
     }
+    /* Reconciled: a refused switch the decoder waited on leaves it on the channel the receiver kept, whose gate the
+       settings put back resolve to (issue #899). */
+    dsd_engine_receiver_channel_refused();
     if (changed) {
         /* The settings put back run their squelch, the analog default where it belongs (issue #899), before the
            frontends see them. */
@@ -12265,7 +12239,10 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             continue;
         }
         int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+        /* The receiver hears the gate the command leaves once it has run, whole (issue #899). */
+        dsd_engine_receiver_gate_command(1);
         const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        dsd_engine_receiver_gate_command(0);
         ui_sync_analog_default_squelch(opts, state);
         ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS

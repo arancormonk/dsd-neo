@@ -1357,21 +1357,14 @@ enum { SVC_SQL_NOISE_NEEDS_FM = -3, SVC_SQL_AUTO_NEEDS_RADIO = -4 };
 int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
 
 /**
- * @brief Hand a running radio receiver the squelch gates of the channels it may produce, each tagged with its channel
- * (issue #899): the analog default put where it belongs first (dsd_squelch_analog_default_sync()), then the engine's
- * settle (dsd_engine_receiver_gate_settle()), which resolves the channel on air and a staged -Y row afresh, the landed
- * row included. Under a scan scope a command suspended, the row's gate, resolved from what the command left, never the
- * configured squelch the options hold meanwhile. A gate the receiver already runs is not written again; nothing off a
- * radio input. Decoder thread.
+ * @brief Hand a running radio receiver the squelch gate of the channel the decoder committed (issue #899): the analog
+ * default put where it belongs first (dsd_squelch_analog_default_sync()), then the engine's settle
+ * (dsd_engine_receiver_gate_settle()), which resolves it afresh (under a scan scope a command suspended, the row's,
+ * from what the command left) and writes it tagged with that channel once the receiver is on it; while the drain
+ * applies a command, after the command. A gate the receiver already runs is not written again; nothing off a radio
+ * input. Decoder thread.
  */
 void svc_rtl_push_channel_squelch(dsd_opts* opts, const dsd_state* state);
-
-/**
- * @brief Say whether the streams opened from here on open on the session's channel (@p on 1) rather than the scan row a
- * command holds suspended (issue #899): a config apply that turns the conventional scanner off reopens the input for
- * the session it leaves, never for the row it stops. 0 again once that apply has opened its input. Decoder thread.
- */
-void svc_rtl_open_for_session(int on);
 
 #ifdef __cplusplus
 }

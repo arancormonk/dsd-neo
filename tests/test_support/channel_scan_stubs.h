@@ -3,6 +3,8 @@
 #ifndef DSD_NEO_TEST_CHANNEL_SCAN_STUBS_H
 #define DSD_NEO_TEST_CHANNEL_SCAN_STUBS_H
 
+#include <dsd-neo/core/power.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,6 +13,10 @@ extern "C" {
    (dsd_opts::scanner_mode) and whether row keys were in force (dsd_state::scan_keys_active_set). -1 for each before any
    leave. */
 void dsd_test_channel_scan_leave_seen(int* scanner_mode, int* row_keys);
+
+/* The stream opens the decoder committed since the last call (dsd_engine_receiver_channel_opened(), issue #899), with
+   the gate the last one resolved to at its commit (dsd_scan_mode_channel_squelch()) in @p out (may be NULL). */
+int dsd_test_channel_scan_opens_committed(dsd_squelch_setting* out);
 
 #ifdef __cplusplus
 }

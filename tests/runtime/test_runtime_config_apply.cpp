@@ -699,9 +699,10 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 static int g_wrap_fake_ctx = 0;
 static float g_wrap_last_channel_squelch = -1.0f;
 
-/* The receiver's channel-tagged gates (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream
-   opens on a channel of its own under the options' squelch; a retune that carries a gate lands it at once; each gate the
-   receiver comes to run reaches the squelch setter wraps below as the stream would set it. */
+/* The receiver's channels (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream opens on a
+   channel of its own, closed on the analog family, under the options' squelch on the digital one; a retune that names
+   a channel lands it at once; each gate the receiver comes to run reaches the squelch setter wraps below as the stream
+   would set it. */
 static void wrap_rx_runs(const dsd_squelch_setting* gate);
 static dsd_rtl_stream_metrics_hooks g_wrap_rx_hooks;
 
@@ -713,26 +714,18 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
         *out_ctx = (RtlSdrContext*)&g_wrap_fake_ctx;
     }
     if (opts) {
+        /* The demod takes the squelch the stream opens with, on the digital family; the analog family opens closed. */
         const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
-        channel_gate_fake_open(&opened, wrap_rx_runs);
+        (void)channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, wrap_rx_runs);
+        wrap_rx_runs(&opened);
     }
     return 0;
 }
 
-uint32_t
-__wrap_rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate) {
-    (void)target_freq_hz;
-    if (!gate) {
-        return 0U;
-    }
-    const uint32_t channel = channel_gate_fake_bind(gate);
-    channel_gate_fake_land(channel);
-    return channel;
-}
-
 void
-__wrap_rtl_stream_drop_untaken_retune_squelch(uint32_t target_freq_hz) {
+__wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
     (void)target_freq_hz;
+    channel_gate_fake_land(channel, 0);
 }
 
 int
@@ -741,8 +734,13 @@ __wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting
 }
 
 uint32_t
-__wrap_rtl_stream_channel_gate_epoch(void) {
-    return g_wrap_rx_hooks.channel_gate_epoch();
+__wrap_rtl_stream_new_channel(void) {
+    return g_wrap_rx_hooks.new_channel();
+}
+
+uint32_t
+__wrap_rtl_stream_current_channel(void) {
+    return g_wrap_rx_hooks.current_channel();
 }
 
 uint32_t
@@ -751,13 +749,18 @@ __wrap_rtl_stream_channel_gate_opened(void) {
 }
 
 uint32_t
-__wrap_rtl_stream_stage_family_gate(const dsd_squelch_setting* gate) {
-    return g_wrap_rx_hooks.stage_family_gate(gate);
+__wrap_rtl_stream_refused_channel(void) {
+    return g_wrap_rx_hooks.refused_channel();
+}
+
+void
+__wrap_rtl_stream_stage_family_channel(uint32_t channel) {
+    g_wrap_rx_hooks.stage_family_channel(channel);
 }
 
 int
-__wrap_rtl_stream_unstage_family_gate(uint32_t channel) {
-    return g_wrap_rx_hooks.unstage_family_gate(channel);
+__wrap_rtl_stream_unstage_family_channel(uint32_t channel) {
+    return g_wrap_rx_hooks.unstage_family_channel(channel);
 }
 
 int
@@ -806,6 +809,9 @@ __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
 
 static void
 wrap_rx_runs(const dsd_squelch_setting* gate) {
+    if (channel_gate_fake_closed()) {
+        return;
+    }
     if (dsd_squelch_mode_is_dynamic(gate->mode)) {
         __wrap_rtl_stream_set_channel_squelch_setting(gate);
     } else {

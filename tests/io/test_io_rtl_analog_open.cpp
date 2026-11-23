@@ -48,6 +48,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -56,6 +57,15 @@
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
+
+/* The stream's channel opened by the decoder's write (issue #899): an analog channel starts closed, and nothing here
+   runs a decoder, so each case writes the squelch the options hold for the channel the open started. */
+static int
+open_the_channel(const dsd_opts* opts) {
+    const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
+    return rtl_stream_write_channel_gate(rtl_stream_channel_gate_opened(), &squelch) == RTL_STREAM_GATE_APPLIED ? 0
+                                                                                                                : -1;
+}
 
 static int
 expect_int(const char* label, int got, int want) {
@@ -279,7 +289,8 @@ replay_monitor_audio(const ReplayRate& rate, const char* tag, const std::vector<
     std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
     prepare_analog_replay_opts(opts.get(), metadata_path, 0);
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0
+        || open_the_channel(opts.get()) != 0) {
         DSD_FPRINTF(stderr, "FAIL: %s: could not start the replay\n", tag);
         if (ctx) {
             rtl_stream_destroy(ctx);
@@ -420,7 +431,8 @@ test_fa_start_switches_to_digital_through_the_stream(void) {
     prepare_analog_replay_opts(opts.get(), metadata_path, 0);
     opts->iq_replay_loop = 1;
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0
+        || open_the_channel(opts.get()) != 0) {
         DSD_FPRINTF(stderr, "FAIL: -fA to DMR: could not start the replay\n");
         if (ctx) {
             rtl_stream_destroy(ctx);
@@ -481,7 +493,8 @@ test_repeated_symbol_profile_moves_no_change_number(void) {
     prepare_analog_replay_opts(opts.get(), metadata_path, 0);
     opts->iq_replay_loop = 1;
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0
+        || open_the_channel(opts.get()) != 0) {
         DSD_FPRINTF(stderr, "FAIL: repeated profile: could not start the replay\n");
         if (ctx) {
             rtl_stream_destroy(ctx);
@@ -559,7 +572,8 @@ test_fz_start_keeps_the_encoder_front_end(void) {
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts->rtl_squelch_margin_db = 10;
     RtlSdrContext* ctx = NULL;
-    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0) {
+    if (rtl_stream_create(opts.get(), &ctx) != 0 || !ctx || rtl_stream_start(ctx) != 0
+        || open_the_channel(opts.get()) != 0) {
         DSD_FPRINTF(stderr, "FAIL: -fZ: could not start the replay\n");
         if (ctx) {
             rtl_stream_destroy(ctx);

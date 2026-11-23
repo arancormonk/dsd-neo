@@ -64,6 +64,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -73,6 +74,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
@@ -87,6 +89,7 @@
 #include <unistd.h>
 #endif
 #include "analog_tone_policy.h"
+#include "channel_gate_fake.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -542,13 +545,19 @@ dsd_engine_scan_tune_moved(void) {
     return 0;
 }
 
+/* The channel a target's control-channel park names (issue #899), which no case here lands. */
+void
+dsd_engine_trunk_park_names_channel(uint32_t channel) {
+    (void)channel;
+}
+
+/* With g_scan_tune_lands_channel set, a tune that lands puts the stand-in receiver (channel_gate_fake.h) on the channel
+   it names, on the family the target's options run (issue #899). */
+static int g_scan_tune_lands_channel;
+
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                             const dsd_squelch_setting* gate, uint32_t* out_gate_channel, uint64_t* out_request_id) {
-    (void)gate;
-    if (out_gate_channel) {
-        *out_gate_channel = 0U;
-    }
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint32_t channel,
+                             uint64_t* out_request_id) {
     if (out_request_id) {
         *out_request_id = 0U;
     }
@@ -592,6 +601,9 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (g_fake_family_tracking) {
         /* The tune lands: the front end now runs the family the target asked for. */
         g_fake_family_analog = opts->analog_only == 1 ? 1 : 0;
+    }
+    if (g_scan_tune_lands_channel) {
+        channel_gate_fake_land(channel, opts->analog_only == 1);
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
@@ -14264,6 +14276,99 @@ test_nfm_target_rotation_restores_family_and_width(void) {
     return test_rc;
 }
 
+/* The gates the stand-in receiver comes to run on a watched channel that gate nothing (issue #899). */
+static uint32_t g_rx_watch_channel;
+static int g_rx_watch_off_runs;
+static dsd_squelch_setting g_rx_gate;
+
+static void
+rx_watch_runs(const dsd_squelch_setting* gate) {
+    g_rx_gate = *gate;
+    if (!channel_gate_fake_closed() && channel_gate_fake_channel() == g_rx_watch_channel
+        && dsd_squelch_setting_is_off(gate)) {
+        g_rx_watch_off_runs++;
+    }
+}
+
+/*
+ * Issue #899 (review round 6, P2 x2): a rotation from an nfm target running the analog default (noise +10) to a DMR
+ * target (Off) on a radio input. The DMR target is committed at its switch on a channel of its own, before its settings
+ * resolve, so the scope's settle at the switch writes nothing for the nfm target's channel: that channel keeps noise
+ * +10 up to the retune, which starts the DMR channel, and the decoder writes Off for it once it is on air. Before the
+ * fix the switch's settle resolved the DMR target's Off and wrote it for the nfm channel the tuner was still on.
+ */
+static int
+test_nfm_to_dmr_rotation_writes_nothing_on_the_nfm_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "nfm,nfm-conventional,154430000,,250,250,\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.analog_nfm_bandwidth_hz = 20000;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    int test_rc = dsd_squelch_analog_default_parse(&opts, "noise+10", NULL, 0U) == 0 ? 0 : 1;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    static dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    channel_gate_fake_install(&hooks);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_receiver_gate_settle_hook_set(dsd_engine_receiver_gate_settle_now);
+    const dsd_squelch_setting session = dsd_squelch_setting_of_opts(&opts);
+    dsd_engine_receiver_channel_commit(channel_gate_fake_open(0, &session, rx_watch_runs));
+    g_scan_tune_lands_channel = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "rotation gate: init failed: %s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_active_target(&state, "rotation gate: the nfm target", 0U);
+    dsd_engine_receiver_gate_settle(&opts, &state, 0);
+    const uint32_t nfm_channel = channel_gate_fake_channel();
+    if (channel_gate_fake_closed() || g_rx_gate.mode != DSD_SQUELCH_MODE_NOISE || g_rx_gate.margin_db != 10) {
+        DSD_FPRINTF(stderr, "rotation gate: the nfm target's channel runs closed %d, mode %d margin %d\n",
+                    channel_gate_fake_closed(), g_rx_gate.mode, g_rx_gate.margin_db);
+        test_rc = 1;
+    }
+    g_rx_watch_channel = nfm_channel;
+    g_rx_watch_off_runs = 0;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation gate: the dmr target", 1U);
+    dsd_engine_receiver_gate_settle(&opts, &state, 0);
+    const dsd_squelch_setting dmr_rx = channel_gate_fake_gate();
+    if (g_rx_watch_off_runs != 0 || channel_gate_fake_channel() == nfm_channel || channel_gate_fake_closed()
+        || !dsd_squelch_setting_is_off(&dmr_rx)) {
+        DSD_FPRINTF(stderr,
+                    "rotation gate: the nfm channel %u ran Off %d times; the receiver is on %u, closed %d, mode %d "
+                    "level %g; want Off only on the dmr target's channel\n",
+                    nfm_channel, g_rx_watch_off_runs, channel_gate_fake_channel(), channel_gate_fake_closed(),
+                    dmr_rx.mode, dmr_rx.level);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_tune_lands_channel = 0;
+    g_rx_watch_channel = 0U;
+    dsd_receiver_gate_settle_hook_set(NULL);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Every alternate fails to retune, so the advance rolls back: the nfm target on air keeps its
  * analog monitor and width rather than the failed digital alternate's decoder. */
 static int
@@ -27423,6 +27528,7 @@ main(void) {
     /* Issue #526 */
     rc |= run_with_default_tune_hook(test_nfm_target_parse_and_row_diagnostics);
     rc |= run_with_default_tune_hook(test_nfm_target_rotation_restores_family_and_width);
+    rc |= run_with_default_tune_hook(test_nfm_to_dmr_rotation_writes_nothing_on_the_nfm_channel);
     rc |= run_with_default_tune_hook(test_nfm_target_rollback_restores_the_analog_row);
     rc |= run_with_default_tune_hook(test_analog_target_carrier_holds_and_idle_dwell_rotates);
     rc |= run_with_default_tune_hook(test_nfm_targets_leave_digital_activity_accounting_intact);

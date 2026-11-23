@@ -157,12 +157,20 @@ engine_tick_guard_enter(void) {
     return 1;
 }
 
+/* Each analog block the decoder takes is where it sees a new analog channel it committed land, and opens it on its gate
+   (issue #899), so the mute at a landing lasts at most a block past the decoder reaching it; then the block's call. */
+static void
+engine_analog_block(dsd_opts* opts, dsd_state* state, const dsd_analog_call_block* block) {
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    dsd_engine_analog_call_block(opts, state, block);
+}
+
 void
 dsd_engine_frame_sync_hooks_install(void) {
     s_p25_probe_last_answer = 0; // a previous run's probe is not this run's
     dsd_frame_sync_hooks hooks = {0};
     hooks.receive_policy_boundary = dsd_engine_receive_policy_boundary;
-    hooks.analog_call_block = dsd_engine_analog_call_block;
+    hooks.analog_call_block = engine_analog_block;
     hooks.p25_sm_try_tick = p25_sm_try_tick;
     hooks.p25_sm_watchdog_service = p25_sm_watchdog_service;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;

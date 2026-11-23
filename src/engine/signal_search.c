@@ -435,14 +435,7 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     family.kind = r->am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
     family.width_hz = (int)r->bandwidth_hz;
     family.cqpsk_explicit = 1;
-    if (rtl_stream_prepare_retune_analog_profile_for_target(target, &family) != 0) {
-        return -1;
-    }
-    /* The visit's retune carries the range's squelch gate, which its options now hold, and is where the on-air channel
-       goes (issue #899). */
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    dsd_engine_receiver_gate_on_air(rtl_stream_prepare_retune_squelch_for_target(target, &gate));
-    return 0;
+    return rtl_stream_prepare_retune_analog_profile_for_target(target, &family);
 }
 
 /* Right after the carrier boundary that ended a reception: the session's own P25 site comes back whole (issue #804).
@@ -493,13 +486,19 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     dsd_signal_search_visit_clear();
     dsd_frame_sync_reset_acquisition(opts, state, 1);
     c->reception_ended = 0;
-    if (search_prepare_profile(c, opts, state, target, analog)) {
-        search_error(c, "The receiver cannot apply this range's receive profile");
-        return -1;
+    /* The range is on air from here on, before its settings resolve, on a channel of its own its retune names (issue
+       #899); a tune that never goes out leaves the decoder on the channel before it. */
+    const uint32_t channel = dsd_engine_receiver_channel_begin(opts);
+    const int prepared = search_prepare_profile(c, opts, state, target, analog) == 0;
+    if (prepared) {
+        rtl_stream_prepare_retune_channel_for_target(target, channel);
     }
-    int rc = rtl_stream_tune_async(target, c->status.session_id, &c->ticket);
+    const int rc = prepared ? rtl_stream_tune_async(target, c->status.session_id, &c->ticket) : -1;
     if (rc < 0) {
-        search_error(c, "The receiver refused the tune");
+        rtl_stream_prepare_retune_channel_for_target(target, 0U);
+        dsd_engine_receiver_channel_abandon(channel);
+        search_error(c, prepared ? "The receiver refused the tune"
+                                 : "The receiver cannot apply this range's receive profile");
         return -1;
     }
     /* The search now decides where the receiver goes, not a manual tune still pending (issue #671). */
@@ -548,12 +547,12 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
     if (c->restored) {
         return;
     }
+    /* The session's own channel comes back on a channel of its own its family request names, or the one a Stop's
+       restore tune names, still to land (issue #899): nothing the session resolves to reaches the range's channel. */
+    const uint32_t family_channel = dsd_engine_receiver_family_begin(opts);
     dsd_scan_mode_leave(opts, state);
     dsd_scan_settings_restore(&c->saved, opts, state);
-    /* The session's own channel comes back with its gate, the analog default included, which its family request
-       carries (issue #899); a Stop's restore tune carries the same gate to where it lands. */
     (void)dsd_squelch_analog_default_sync(opts, state);
-    const uint32_t gate_channel = dsd_engine_receiver_gate_stage_family(opts, state);
     rtl_stream_enforce_tuner_autogain(c->saved_autogain);
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         (void)rtl_stream_airspy_controls(&c->saved_airspy);
@@ -565,7 +564,7 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
         analog
             ? (opts->analog_demod == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz)
             : 0);
-    dsd_engine_receiver_gate_family_done(gate_channel);
+    dsd_engine_receiver_family_end(family_channel);
     c->restored = 1;
 }
 
@@ -1451,6 +1450,9 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
        ends at the boundary, so nothing received on the restored frequency joins it, and the reception is over, so an
        input lost or a failed restore before this tune lands ends nothing again. */
     search_close_reception(c, opts, state);
+    /* The session is on air from here on, on a channel of its own the restore tune names, and the family request the
+       restore makes with it (issue #899). */
+    const uint32_t channel = dsd_engine_receiver_channel_begin(opts);
     search_restore(c, opts, state);
     dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
     rtl_stream_retune_gain_profile gain = {1, c->saved_gain, c->saved_gain_auto, 1, c->saved_autogain};
@@ -1466,11 +1468,12 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
                                                      analog ? opts->analog_demod : DSD_ANALOG_DEMOD_FM,
                                                      analog ? dsd_opts_analog_width_hz(opts) : 0, 0};
     (void)rtl_stream_prepare_retune_analog_profile_for_target(c->saved_frequency, &family);
-    /* And the session's squelch gate, the analog default where it belongs, on the channel the on-air channel goes to
-       (issue #899). */
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    dsd_engine_receiver_gate_on_air(rtl_stream_prepare_retune_squelch_for_target(c->saved_frequency, &gate));
+    rtl_stream_prepare_retune_channel_for_target(c->saved_frequency, channel);
     int rc = rtl_stream_tune_async(c->saved_frequency, c->status.session_id, &c->ticket);
+    if (rc != RTL_STREAM_TUNE_OK) {
+        rtl_stream_prepare_retune_channel_for_target(c->saved_frequency, 0U);
+        dsd_engine_receiver_channel_abandon(channel);
+    }
     if (rc < 0) {
         search_error(c, "Unable to restore the previous frequency");
     } else if (rc == RTL_STREAM_TUNE_OK) {
