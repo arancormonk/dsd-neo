@@ -1029,25 +1029,33 @@ dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
+/* Whether the row on air under @p scope is analog. The options hold the row's decoder, or while a command holds the
+   scope suspended the configured one, which an inherited row runs (as the command left it) and a typed row runs its own
+   class over. */
+static int
+scan_row_on_air_analog(const dsd_opts* opts, const scan_scope* scope) {
+    if (scope->suspended && scope->mode != DSD_SCAN_MODE_INHERIT) {
+        return dsd_scan_mode_is_analog(scope->mode) && opts && opts->m17encoder != 1;
+    }
+    return dsd_opts_is_analog_family(opts);
+}
+
 dsd_squelch_setting
 dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
     if (!scope) {
         return dsd_squelch_channel_gate(opts, state, NULL, dsd_opts_is_analog_family(opts));
     }
-    /* The options hold the row's decoder, or while a command holds the scope suspended the configured one, which an
-       inherited row runs (as the command left it) and a typed row runs its own class over. */
-    int analog = dsd_opts_is_analog_family(opts);
-    if (scope->suspended && scope->mode != DSD_SCAN_MODE_INHERIT) {
-        analog = dsd_scan_mode_is_analog(scope->mode) && opts && opts->m17encoder != 1;
-    }
-    return dsd_squelch_channel_gate(opts, state, &scope->options, analog);
+    return dsd_squelch_channel_gate(opts, state, &scope->options, scan_row_on_air_analog(opts, scope));
 }
 
 dsd_squelch_setting
 dsd_scan_mode_digital_squelch(const dsd_opts* opts, const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
-    return dsd_squelch_channel_gate(opts, state, scope ? &scope->options : NULL, 0);
+    /* A digital row's own squelch is its gate; an analog row's own belongs to that row, never to the digital landing
+       after it, which runs the session's (issue #899). */
+    const dsd_scan_option_values* row = scope && !scan_row_on_air_analog(opts, scope) ? &scope->options : NULL;
+    return dsd_squelch_channel_gate(opts, state, row, 0);
 }
 
 int
