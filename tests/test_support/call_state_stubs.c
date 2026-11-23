@@ -229,6 +229,27 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, int protocol, const
 }
 
 int
+dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol) {
+    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    call->algid = 0U;
+    call->kid = 0U;
+    call->mi = 0U;
+    call->crypto_received = 0U;
+    call->received_algid = 0U;
+    call->received_kid = 0U;
+    call->crypto_restored = 0U;
+    call->enc_received = 0U;
+    return 1;
+}
+
+int
 dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
                                       const dsd_call_crypto_update* update) {
     return dsd_call_state_update_crypto(state, slot, protocol, update);
