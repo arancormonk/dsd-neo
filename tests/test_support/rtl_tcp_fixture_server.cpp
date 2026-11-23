@@ -306,7 +306,7 @@ RtlTcpFixtureServer::serve_connection(dsd_socket_t sock) {
         }
         const uint32_t chunk = rate / kChunksPerSecond;
         out.resize(2U * static_cast<size_t>(chunk));
-        for (uint32_t k = 0; k < chunk; ++k) {
+        for (size_t k = 0; k < static_cast<size_t>(chunk); ++k) {
             const std::complex<float> x = program->samples[in_pos];
             const std::complex<double> y = std::complex<double>(x.real(), x.imag()) * phasor;
             out[2U * k] = to_cu8(static_cast<float>(y.real()));

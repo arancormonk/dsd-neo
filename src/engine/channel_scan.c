@@ -542,8 +542,11 @@ void
 dsd_engine_receiver_gate_hold(int hold) {
     if (hold) {
         s_rx_hold++;
-    } else if (s_rx_hold > 0 && --s_rx_hold == 0) {
-        s_rx_write_due = 1;
+        return;
+    }
+    if (s_rx_hold > 0) {
+        s_rx_hold--;
+        s_rx_write_due |= s_rx_hold == 0;
     }
 }
 
