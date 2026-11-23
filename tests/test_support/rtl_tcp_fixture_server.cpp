@@ -196,6 +196,12 @@ RtlTcpFixtureServer::serve_main() {
         if (sock == DSD_INVALID_SOCKET) {
             continue;
         }
+        /* Nonblocking, so a client that stops reading cannot hold a send, and stop(), past its bounded wait
+           (send_all()). */
+        if (dsd_socket_set_nonblocking(sock, 1) != 0) {
+            (void)dsd_socket_close(sock);
+            continue;
+        }
         serve_connection(sock);
         (void)dsd_socket_shutdown(sock, SHUT_RDWR);
         (void)dsd_socket_close(sock);
@@ -208,6 +214,12 @@ RtlTcpFixtureServer::read_commands(dsd_socket_t sock) {
     unsigned char buf[512];
     while (dsd_socket_wait(sock, DSD_SOCKET_WAIT_READ, 0U) > 0) {
         const int n = dsd_socket_recv(sock, buf, sizeof buf, 0);
+        if (n < 0) {
+            const int e = dsd_socket_get_error();
+            if (e == EAGAIN || e == EWOULDBLOCK || e == EINTR) {
+                return true;
+            }
+        }
         if (n <= 0) {
             return false;
         }

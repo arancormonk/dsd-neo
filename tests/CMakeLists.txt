@@ -28164,6 +28164,33 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+# Issue #899 (review round 7): the in-process rtl_tcp fixture server's stop() returns while a client stays connected and
+# reads nothing.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        io/test_io_rtl_tcp_fixture_server_stop.cpp
+        test_support/rtl_tcp_fixture_server.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE dsd-neo_runtime dsd-neo_platform dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    add_test(
+        NAME IO_RTL_TCP_FIXTURE_SERVER_STOP
+        COMMAND dsd-neo_test_io_rtl_tcp_fixture_server_stop
+    )
+    set_tests_properties(IO_RTL_TCP_FIXTURE_SERVER_STOP PROPERTIES TIMEOUT 20)
+endif()
+
 # Issue #899: the app's generated mixed scan list (a DMR and an NFM frequency row, the Settings default squelch) run by
 # the real engine on a running rtl_tcp receiver: an in-process server plays committed fixtures for the frequency the
 # stream tunes, and the real trunk-scan coordinator rotates the rows on it. Real time, about 30 s.
