@@ -476,7 +476,9 @@ nxdn_y_conventional(const dsd_opts* opts) {
 #ifdef LIMAZULUTWEAKS
 static void
 nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (!ctx->voice) {
+    /* Another channel's voice (ctx->foreign, classified with the frame's signalling) is not the followed call's: it
+       loads no key, forces no scrambler on that call and holds no scan, as no other effect of such a frame does. */
+    if (!ctx->voice || ctx->foreign) {
         return;
     }
 

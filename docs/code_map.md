@@ -729,7 +729,8 @@ Generated (do not edit/commit):
       through, receiver noise after the call included, and a hold those refreshed, or a lone 6-bit CRC one of them
       passed by chance, never let the row go. Trunked receivers and plain conventional ones keep the
       confirmation's stamp (a `-DLZ=ON` build's LimaZulu voice tweak, which reads a voice frame before any payload
-      check, stamps only off a conventional -Y scan: `NXDN_FRAME_ROUTING_LZ` runs the routing cases with it built in), and a run of failed CACs pushes the anchor only off a conventional -Y scan
+      check, stamps only off a conventional -Y scan, and never for another channel's frame, whose key load and forced
+      scrambler it skips too: `NXDN_FRAME_ROUTING_LZ` runs the routing cases with it built in), and a run of failed CACs pushes the anchor only off a conventional -Y scan
       (`nxdn_reset_after_cac_fail()`). Off -Y the boundary costs one compare. The NOTICE names the row
       (`row N`, 1-based) and, as for the trunk scan, logs the decision before the step runs. Tests: `ENGINE_TRUNK_SCAN`
       (`test_scan_quiet_tick_*`: the skip through the pass and its tick with the exact NOTICE, a lost guard, keep timing

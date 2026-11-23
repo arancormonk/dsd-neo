@@ -1714,6 +1714,41 @@ test_y_scan_hold_needs_a_checked_frame(void) {
     return rc;
 }
 
+/* A composite voice frame (RTCH_C, LICH 0x75, Type-C known) on the followed traffic channel F, which is not this
+   site's control channel when @p foreign: another channel's frame. The -4 scrambler with a key is set, the cipher
+   clear, and the scan hold unset. */
+static void
+limazulu_case(int foreign) {
+    reset_state();
+    g_state.nxdn_site.type_c = 1U;
+    g_opts.trunk_enable = 1;
+    g_opts.trunk_is_tuned = foreign ? 1 : 0;
+    g_state.trunk_vc_freq[0] = 451000000;
+    g_state.p25_cc_freq = 452000000;
+    g_state.trunk_cc_freq = 452000000;
+    g_state.M = 1;
+    g_state.R = 0x1234ULL;
+    g_state.nxdn_cipher_type = 0U;
+    g_state.last_cc_sync_time = 0;
+}
+
+/* Another channel's voice frame takes nothing of the LimaZulu tweak (-DLZ=ON, NXDN_FRAME_ROUTING_LZ): it forces no
+   scrambler on the followed call and holds no scan (issue #903). The followed channel's own frame still takes both. */
+static int
+test_foreign_voice_frame_skips_the_limazulu_tweak(void) {
+    limazulu_case(1);
+    int rc = expect_int("foreign voice frame routed", route_frame(0x75U), 1);
+    rc |= expect_int("foreign voice frame: no forced scrambler", (int)g_state.nxdn_cipher_type, 0);
+    rc |= expect_int("foreign voice frame: no scan hold", (int)g_state.last_cc_sync_time, 0);
+#ifdef LIMAZULUTWEAKS
+    limazulu_case(0);
+    rc |= expect_int("own voice frame routed", route_frame(0x75U), 1);
+    rc |= expect_int("own voice frame: forced scrambler", (int)g_state.nxdn_cipher_type, 1);
+    rc |= expect_int("own voice frame: scan hold", g_state.last_cc_sync_time != 0, 1);
+#endif
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1752,6 +1787,7 @@ main(void) {
     rc |= test_unconfirmed_frame_keeps_the_shared_register();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     rc |= test_y_scan_hold_needs_a_checked_frame();
+    rc |= test_foreign_voice_frame_skips_the_limazulu_tweak();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {
