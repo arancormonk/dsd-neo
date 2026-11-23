@@ -13612,7 +13612,10 @@ Private per-protocol modules worth knowing about:
     policy admits the companion slot itself; the retired grant's acquisition holds nothing), the receiver stays for it and that slot becomes the followed one, with a channel of its own: a Tier III LPCN or a
     Connect Plus LCN (the carrier's) stays, an LSN (the retired slot's alone) gives way to the companion's own LSN where
     its record names one, else to none, so the companion's first LC never takes the retired slot's LSN
-    (`dmr_sm_adopt_companion_channel()`, `test_companion_adoption_takes_its_own_channel()`); a repeat for the
+    (`dmr_sm_adopt_companion_channel()`, `test_companion_adoption_takes_its_own_channel()`), and with its record's
+    media: a companion whose call nothing identified (data or voice activity alone) has an unknown media
+    (`dmr_sm_ctx_t::vc_media_known` 0), which no grant's media contradicts, so a grant there describing the call already
+    on the air is adopted in place and names it (`test_adopted_companion_media_stays_unknown()`); a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
     the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
     next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own

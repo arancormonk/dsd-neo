@@ -200,8 +200,12 @@ typedef struct {
     long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
     int receive_codes_fresh;               // Its codes were forgotten at its tune: what it holds now it proved
     int vc_data_call;                      // the grant was a data call (its policy was judged with data_call set)
-    double t_voice_m;                      // Time of last voice activity
-    double t_cc_sync_m;                    // Time of last CC sync
+    /* vc_data_call says what the followed call's media is: a grant, status or LC named it. 0 for a companion slot
+       adopted for a retired slot while nothing identified its call (dmr_sm_end_changed_assignment()): its media is
+       unknown, and no grant's media contradicts it, until a grant there names its call (in place). */
+    int vc_media_known;
+    double t_voice_m;   // Time of last voice activity
+    double t_cc_sync_m; // Time of last CC sync
     /* The followed grant's own media (voice for a voice grant, data for a data grant) was heard on its slot since the
        follow: from then on its acquisition no longer holds that slot in the busy view. */
     int vc_media_heard;

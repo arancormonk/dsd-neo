@@ -1221,6 +1221,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 0;
     ctx->vc_media_heard = 0;
     ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
@@ -1499,6 +1500,7 @@ dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, uint8_t crc_flags) {
     ctx->vc_src = 0;
     ctx->vc_is_group = 1;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 1;
     ctx->vc_identity_known = 1;
     ctx->vc_crc_flags = crc_flags;
 }
@@ -2423,6 +2425,7 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_identity_known = identity_known;
     ctx->vc_data_call = dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA;
+    ctx->vc_media_known = 1;
     ctx->vc_media_heard = 0;
     // A placeholder names no call: the voice LC will, through the canonical layer.
     ctx->vc_identity_published = (identity_known && dmr_sm_grant_publishable(state, ctx->vc_slot, leaves)) ? 0 : 1;
@@ -2560,6 +2563,7 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
         ctx->vc_src = ev->src;
         ctx->vc_is_group = ev->is_group != 0;
         ctx->vc_data_call = data_call;
+        ctx->vc_media_known = 1;
         ctx->vc_identity_known = 1;
         // The new identity's provenance is this announcement's (dispatched inside its CSBK/MBC burst's CRC scope, as
         // dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes it with these flags.
@@ -2576,7 +2580,8 @@ dmr_sm_grant_for_followed_slot(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev
 }
 
 /* Whether grant @p ev, for the followed slot of the followed carrier @p freq, names another call than the one that
-   slot is followed for: another media (a data grant for a slot followed for voice, or the reverse), or, where the
+   slot is followed for: another media (a data grant for a slot followed for voice, or the reverse; an adopted
+   companion's unknown media is none, vc_media_known), or, where the
    slot's record or the followed grant names a call, another target or address class than both
    (dmr_sm_grant_names_call(): a repeat of either, whatever its caller, is the same call). A channel status (it
    reconciles the slot instead), a slotless grant and a placeholder name no other call. */
@@ -2585,7 +2590,7 @@ dmr_sm_grant_replaces_followed(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev
     if (!dmr_sm_grant_for_followed_slot(ctx, ev, freq)) {
         return 0;
     }
-    if ((dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0)) {
+    if (ctx->vc_media_known && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0)) {
         return 1;
     }
     const int s = ctx->vc_slot;
@@ -2672,7 +2677,10 @@ dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     sm_log(opts, "grant-replaces-followed");
     const dmr_sm_slot_ctx_t* rec = &ctx->slots[companion];
     ctx->vc_slot = companion;
-    ctx->vc_data_call = dmr_sm_slot_identity_known(rec) && rec->data_call;
+    /* The companion's media is its record's, which a grant, status or LC named; with no identity there it is unknown
+       (its voice or data activity alone names no media), and no grant's media contradicts it. */
+    ctx->vc_media_known = dmr_sm_slot_identity_known(rec);
+    ctx->vc_data_call = ctx->vc_media_known && rec->data_call;
     ctx->vc_media_heard = 1; // the companion's call is on the air: no acquisition is pending for it
     dmr_sm_adopt_companion_channel(ctx, rec);
     state->dmr_mono_slot = companion;
@@ -3108,6 +3116,7 @@ dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int sl
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 1; // a channel status names voice calls
     // The slots' identities are the status's seeds (dmr_sm_capplus_seed_arm()), or a kept carrier's own.
     dmr_sm_slots_take_carrier(ctx, freq_hz, leaves);
     if (slot >= 0 && slot <= 1) {

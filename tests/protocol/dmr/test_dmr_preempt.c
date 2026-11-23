@@ -1523,6 +1523,30 @@ test_companion_adoption_takes_its_own_channel(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* An adopted companion whose call nothing identified keeps an unknown media, which no grant's media contradicts: data
+   following on, TS1 is followed for TG 300 while TS2 carries data that no grant or LC named. A TD_GRANT for TS1 retires
+   TS1 and the receiver stays for TS2. A TD_GRANT for TS2 then describes the data already received there: it is no
+   other call, so the receiver stays on the carrier, now following TS2's data call. */
+static int
+test_adopted_companion_media_stays_unknown(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    clock_at(0.4);
+    dmr_sm_emit_data_sync(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    int rc = expect_true("the receiver stays for the data companion",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && g_tunes == 1);
+    clock_at(0.5);
+    dmr_sm_emit_data_sync(opts, st, 1);
+    grant_op(opts, st, 52U, LPCN_A, 1, 900, 9); // TD_GRANT for TS2: the data on the air there
+    rc |= expect_true("a data grant for the unidentified companion does not end its follow",
+                      sm()->state == DMR_SM_TUNED && sm()->vc_slot == 1 && opts->trunk_is_tuned == 1 && g_tunes == 1);
+    rc |= expect_true("the grant establishes the companion's media", sm()->vc_data_call == 1);
+    return rc;
+}
+
 /* A companion slot the receive policy rejects never keeps the receiver, its live voice or hangtime tail alike: TS1 is
    followed for TG 300 while TS2 carries TG 100, and the receive filter then admits TS1 alone. A TD_GRANT for TS1 retires
    TS1 and returns the receiver to the control channel, TS2's live call being one it cannot receive. Likewise on the
@@ -1713,6 +1737,7 @@ main(void) {
     rc |= test_retired_slot_starts_fresh(opts, st);
     rc |= test_retired_slot_drops_embedded_lc(opts, st);
     rc |= test_companion_adoption_takes_its_own_channel(opts, st);
+    rc |= test_adopted_companion_media_stays_unknown(opts, st);
     rc |= test_rejected_companion_keeps_nothing(opts, st);
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
 
