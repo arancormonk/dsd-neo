@@ -51,6 +51,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
 #include "saved_systems_model.h"
@@ -2481,6 +2482,24 @@ test_dmr_channels_last(void) {
         expect(qPrintable(QStringLiteral("after the user's '%1'").arg(token)),
                args.contains(token) && args.lastIndexOf(token) < args.size() - 2);
     }
+
+    /* Review gate b-r8t W1: a "--" in the extra options ends the options the decoder reads, so the saved channels go
+       just before it, still after every option before it; a "--" that is a long option's value ends nothing. */
+    sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides /data/system.csv -- /data/operand.csv");
+    prefs.extraArgs.clear();
+    const QStringList ended = session_args_build(sys, prefs, &error);
+    const qsizetype terminator = ended.indexOf(QStringLiteral("--"));
+    const qsizetype saved = ended.lastIndexOf(QStringLiteral("--dmr-chan-overrides"));
+    expect("before the extra options' '--'",
+           error == SessionArgsError::None && terminator > 0 && saved == terminator - 2
+               && ended.value(saved + 1) == QStringLiteral("/data/dmr_channels/a.csv"));
+    expect("and after the user's own file", ended.indexOf(QStringLiteral("/data/system.csv")) < saved);
+    expect("the operand stays after it", ended.indexOf(QStringLiteral("/data/operand.csv")) > terminator);
+    sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides --");
+    const QStringList value = session_args_build(sys, prefs, &error);
+    expect("a '--' that is an option's value ends nothing",
+           value.size() >= 2 && value.at(value.size() - 2) == QStringLiteral("--dmr-chan-overrides")
+               && value.last() == QStringLiteral("/data/dmr_channels/a.csv"));
 }
 
 static void
@@ -2558,11 +2577,28 @@ test_dmr_channels_start(void) {
            result.value("ok").toBool() && result.value("started").toBool() && host.starts == 1
                && !host.received.contains(QStringLiteral("--dmr-chan-overrides")));
     const QString noticeName = QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
-    const QList<dsd_qt::JsonStoreNotice> notices = dsd_qt::json_store_notices();
-    expect("and posts a notice for the file",
-           std::any_of(notices.cbegin(), notices.cend(),
-                       [&noticeName](const dsd_qt::JsonStoreNotice& n) { return n.fileName == noticeName; }));
+    /* The episode of the notice for the file, -1 for none. */
+    const auto episode = [&noticeName] {
+        const QList<dsd_qt::JsonStoreNotice> notices = dsd_qt::json_store_notices();
+        const auto it = std::find_if(notices.cbegin(), notices.cend(), [&noticeName](const dsd_qt::JsonStoreNotice& n) {
+            return n.fileName == noticeName;
+        });
+        return it == notices.cend() ? qint64(-1) : static_cast<qint64>(it->episode);
+    };
+    const qint64 first = episode();
+    expect("and posts a notice for the file", first >= 0);
+    /* Review gate b-r8t W4: while the file keeps failing the notice stays the same one, so a dismissal holds; once a
+       start passed the channels, the next failure is a new one, which an earlier dismissal does not hide. */
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a failure again is the same episode", episode() == first);
     expect("the folder unblocked", QFile::remove(folder));
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a start with its channels", host.received.contains(QStringLiteral("--dmr-chan-overrides")));
+    expect("does not post", episode() == first);
+    expect("the folder blocked again", QDir(folder).removeRecursively() && QFile(folder).open(QIODevice::WriteOnly));
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a failure after it is a new episode", episode() == first + 1);
+    expect("the folder unblocked again", QFile::remove(folder));
 
     /* A saved system whose extra options name a channels file of their own starts with both, the saved channels last,
        which the decoder keeps. */
@@ -2617,12 +2653,21 @@ test_dmr_channels_never_follow_links(void) {
     const QString uid = sys.value("uid").toString();
     const QString path = dsd_qt::SavedSystemsModel::dmrChannelsFilePath(uid);
     const QString folder = QFileInfo(path).absolutePath();
-    const QString elsewhere = QFileInfo(folder).absolutePath() + QStringLiteral("/elsewhere");
+    /* Review gate b-r8t W6: what the links name lives in a scratch folder of this test's own; only the links stand where
+       the builder looks. */
+    const QTemporaryDir scratch;
+    expect("links: a scratch folder", scratch.isValid());
+    const QString elsewhere = scratch.path() + QStringLiteral("/elsewhere");
     dsd_qt::SessionArgsBuilder builder(nullptr);
     builder.setSavedSystems(&systems);
     const auto write = [](const QString& file, const QByteArray& bytes) {
-        QFile out(file);
-        return out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(bytes) == bytes.size();
+        FILE* out = dsd_fopen_private(file.toUtf8().constData(), "wb");
+        if (out == nullptr) {
+            return false;
+        }
+        const bool wrote =
+            fwrite(bytes.constData(), 1, static_cast<size_t>(bytes.size()), out) == static_cast<size_t>(bytes.size());
+        return fclose(out) == 0 && wrote;
     };
     const auto read = [](const QString& file) {
         QFile in(file);
@@ -2630,7 +2675,7 @@ test_dmr_channels_never_follow_links(void) {
     };
 
     /* A link at the file: replaced by the file, the file it named left as it was. */
-    const QString victim = QFileInfo(folder).absolutePath() + QStringLiteral("/victim.txt");
+    const QString victim = scratch.path() + QStringLiteral("/victim.txt");
     expect("links: a file elsewhere", write(victim, "keep\n"));
     QDir(folder).removeRecursively();
     expect("links: the folder", QDir().mkpath(folder));
@@ -2660,8 +2705,71 @@ test_dmr_channels_never_follow_links(void) {
     expect("links: the system removed", systems.remove(systems.rowForUid(uid)));
     expect("links: nor does removing the system", read(kept) == QByteArray("keep\n"));
     QFile::remove(folder);
-    QDir(elsewhere).removeRecursively();
-    QFile::remove(victim);
+#endif
+}
+
+/* Review gate b-r8t W7: a generated path the decoder's 1024-byte field cannot hold is a file that could not be prepared:
+   the start goes on without the option, and the notice says so. Linux only: there the store follows XDG_DATA_HOME, and
+   a path that long can be made. */
+static void
+test_dmr_channels_path_too_long(void) {
+#ifdef Q_OS_LINUX
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList received;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            return true;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    auto saved = tier3_system();
+    saved.remove("uid");
+    expect("long: a saved Tier III system", systems.add(saved));
+    const QVariantMap sys = systems.get(0);
+    const QString uid = sys.value("uid").toString();
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setSavedSystems(&systems);
+
+    const QByteArray home = qgetenv("XDG_DATA_HOME");
+    const QTemporaryDir scratch;
+    expect("long: a scratch folder", scratch.isValid());
+    QString deep = scratch.path();
+    while (deep.toUtf8().size() < 1100) {
+        deep += QStringLiteral("/") + QString(100, QLatin1Char('d'));
+    }
+    expect("long: the deep folder", QDir().mkpath(deep));
+    qputenv("XDG_DATA_HOME", deep.toUtf8());
+    const QString path = dsd_qt::SavedSystemsModel::dmrChannelsFilePath(uid);
+    expect("long: the path is past the field", path.toUtf8().size() >= 1024);
+    const auto result = builder.start(sys, &host, QStringLiteral("saved"));
+    expect("long: the start goes on without the channels",
+           result.value("started").toBool() && !host.received.contains(QStringLiteral("--dmr-chan-overrides")));
+    expect("long: nothing written", !QFileInfo::exists(path));
+    const QString noticeName = QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
+    const QList<dsd_qt::JsonStoreNotice> notices = dsd_qt::json_store_notices();
+    expect("long: and the notice says so",
+           std::any_of(notices.cbegin(), notices.cend(),
+                       [&noticeName](const dsd_qt::JsonStoreNotice& n) { return n.fileName == noticeName; }));
+    qputenv("XDG_DATA_HOME", home);
+    while (systems.count() > 0 && systems.remove(0)) {}
 #endif
 }
 
@@ -2724,6 +2832,7 @@ main(int argc, char** argv) {
     test_dmr_channels_last();
     test_dmr_channels_start();
     test_dmr_channels_never_follow_links();
+    test_dmr_channels_path_too_long();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

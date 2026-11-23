@@ -123,9 +123,10 @@ class SavedSystemsModel : public QAbstractListModel {
      * sets channel @p lpcn to @p hz, 2 hides it (hz 0; @p hz not read), 3 drops its entry. Persists first, and touches
      * no other field: never the channel map file or the RadioReference provenance.
      *
-     * @return {ok: bool, error: ""} on success, a restore of a channel with no entry included; otherwise ok false and
-     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "full" (a 257th
-     *         channel) or "not-saved" (the save failed; nothing changed). One dataChanged follows a change. Every start
+     * @return {ok: bool, error: ""} on success; otherwise ok false and error "no-system" (no such uid), "invalid" (no
+     *         such channel, frequency or operation), "full" (a 257th channel), "not-saved" (the save failed; nothing
+     *         changed) or "session-only" (a restore of a channel with no entry: nothing of the system's set it, so a
+     *         channel file of the user's did, and still does next start). One dataChanged follows a change. Every start
      *         of the system passes the entries (SessionArgsBuilder), after every option the user typed, and the decoder
      *         applies them when the session decodes DMR frames and runs no trunk scan.
      */

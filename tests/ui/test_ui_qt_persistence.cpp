@@ -2166,8 +2166,10 @@ test_dmr_channel_edit() {
            ok(model.applyDmrChannelEdit(uid, 12, restore, 0))
                && model.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
     log.clear();
-    expect("channel edit: restoring a channel with no entry changes nothing",
-           ok(model.applyDmrChannelEdit(uid, 12, restore, 0)) && log.isEmpty());
+    /* Review gate b-r8t W2: nothing of the system's set it, so a channel file of the user's did: kept for this session
+       only, not reported as saved. */
+    expect("channel edit: restoring a channel with no entry changes nothing, for this session only",
+           error(model.applyDmrChannelEdit(uid, 12, restore, 0)) == "session-only" && log.isEmpty());
     QVariantMap after = model.get(0);
     for (const char* key : {"chanCsvPath", "rrSid", "rrSiteId", "siteName", "name", "decodeFlag", "place"}) {
         expect(qPrintable(QStringLiteral("channel edit: leaves %1 alone").arg(QLatin1String(key))),

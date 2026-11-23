@@ -236,6 +236,17 @@ test_dmr_channels_unwritten() {
     expect("channels: their own label", field(file, "store") == QLatin1String("dmr-channels"));
     StoreNotices::instance()->dismiss(file);
     expect("channels: dismissed", shown(file).isEmpty());
+    /* Review gate b-r8t W4: the same failure posted again stays dismissed; a new episode (after a start that passed the
+       channels) shows again. */
+    std::thread again([file] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString()}); });
+    again.join();
+    QCoreApplication::processEvents();
+    expect("channels: the same failure stays dismissed", shown(file).isEmpty());
+    std::thread next([file] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), 1}); });
+    next.join();
+    QCoreApplication::processEvents();
+    expect("channels: a new episode shows again", field(file, "state") == QLatin1String("unwritten"));
+    StoreNotices::instance()->dismiss(file);
 }
 
 /* A settings file that could not be kept runs on its scratch copy: this run's changes are not saved. */

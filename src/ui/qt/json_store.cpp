@@ -87,7 +87,8 @@ bool
 upsert_notice(QList<JsonStoreNotice>& notices, const JsonStoreNotice& notice) {
     for (JsonStoreNotice& existing : notices) {
         if (existing.fileName == notice.fileName) {
-            if (existing.reason == notice.reason && existing.keptName == notice.keptName) {
+            if (existing.reason == notice.reason && existing.keptName == notice.keptName
+                && existing.episode == notice.episode) {
                 return false;
             }
             existing = notice;

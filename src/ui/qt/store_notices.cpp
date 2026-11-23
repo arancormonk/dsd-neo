@@ -72,7 +72,7 @@ StoreNotices::toMap(const Notice& notice) {
 QString
 StoreNotices::key(const Notice& notice) {
     return notice.file + QLatin1Char('\n') + notice.state + QLatin1Char('\n') + notice.kept + QLatin1Char('\n')
-           + notice.earlierKept;
+           + notice.earlierKept + QLatin1Char('\n') + QString::number(notice.episode);
 }
 
 void
@@ -110,7 +110,9 @@ StoreNotices::sync() {
         if (posted.fileName == QLatin1String(kSeenStoreFileName)) {
             continue;
         }
-        Notice notice{posted.fileName, store_key(posted.fileName), QString(), posted.keptName, QString()};
+        Notice notice{
+            posted.fileName, store_key(posted.fileName), QString(), posted.keptName, QString(), posted.episode,
+        };
         if (posted.fileName.startsWith(QLatin1String(kDmrChannelsFolder))) {
             /* Discussion #900 F3: a saved system's channels file the start could not write. */
             notice.store = QStringLiteral("dmr-channels");

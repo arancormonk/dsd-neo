@@ -509,7 +509,8 @@ class CommandBridge : public QObject {
      * revision after it; a model whose revision is behind does not show it yet), session (decimal), sequence
      * (decimal), systemUid (the one setDmrChannel() captured), saved (an "ok" edit was kept on that system),
      * saveError ("" when saved or nothing was to be kept: not "ok", or no system; else applyDmrChannelEdit()'s error,
-     * "not-saved" for a failed write, or "no-store" with no saved systems set)}.
+     * "not-saved" for a failed write, "session-only" for a restore no saved entry made, or "no-store" with no saved
+     * systems set)}.
      */
     void dmrChannelResultReceived(const QVariantMap& result);
     void dmrChannelResultChanged();

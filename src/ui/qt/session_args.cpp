@@ -18,11 +18,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <mutex>
 
 #include <QByteArray>
 #include <QChar>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
@@ -344,14 +346,26 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
-/* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, appended last, after every
-   option the user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the
-   extra options. */
+/* Where the decoder's long-option scan of @p args stops: the index of the first "--" that is no long option's value
+   (long_option_tokens() hands it on with everything after it), or the size. */
+qsizetype
+long_options_end(const QStringList& args) {
+    QStringList options;
+    const QStringList rest = long_option_tokens(args, &options);
+    const qsizetype terminator = rest.indexOf(QStringLiteral("--"));
+    return terminator < 0 ? args.size() : args.size() - (rest.size() - terminator);
+}
+
+/* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, after every option the
+   user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the extra options.
+   Review gate b-r8t W1: before a "--" among them, which ends the options the decoder reads. */
 void
 append_dmr_channels_args(QStringList& args, const QVariantMap& system) {
     const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
     if (!overrides.isEmpty()) {
-        args << QStringLiteral("--dmr-chan-overrides") << overrides;
+        const qsizetype at = long_options_end(args);
+        args.insert(at, overrides);
+        args.insert(at, QStringLiteral("--dmr-chan-overrides"));
     }
 }
 
@@ -1425,14 +1439,41 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
 
 namespace {
 
+/* Review gate b-r8t W4: saved system @p uid's failure episode for its channels file. @p failed: this start could not
+   pass them (the episode stays, so a dismissed notice stays dismissed while they keep failing); otherwise it could, and
+   a failure before it is over, so the next one is a new episode. For the whole process, as the notice list is. */
+quint64
+dmr_channels_episode(const QString& uid, bool failed) {
+    struct Episode {
+        quint64 number = 0;
+        bool failed = false;
+    };
+
+    static std::mutex lock;
+    static QHash<QString, Episode> episodes;
+    const std::lock_guard<std::mutex> locker(lock);
+    Episode& episode = episodes[uid];
+    if (!failed && episode.failed) {
+        ++episode.number;
+    }
+    episode.failed = failed;
+    return episode.number;
+}
+
 /* Discussion #900 F3: saved system @p uid's channels file could not be written (@p reason), so its start goes on without
-   them. Logged, and posted on the notice list Home's card shows, one per system's file. */
+   them. Logged, and posted on the notice list Home's card shows, one per system's file and failure episode. */
 void
 note_dmr_channels_unwritten(const QString& uid, const QString& reason) {
     const QString name = QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
     LOG_WARN("%s could not be written (%s): the saved system starts without its DMR Tier III channels.\n",
              qUtf8Printable(name), qUtf8Printable(reason));
-    json_store_post_notice({name, reason, QString()});
+    json_store_post_notice({name, reason, QString(), dmr_channels_episode(uid, true)});
+}
+
+/* Review gate b-r8t W7: whether the decoder can take @p path as --dmr-chan-overrides (its field, NUL included). */
+bool
+dmr_channels_path_fits(const QString& path) {
+    return static_cast<size_t>(path.toUtf8().size()) < sizeof(dsd_opts::dmr_chan_overrides_file);
 }
 
 } // namespace
@@ -1450,14 +1491,21 @@ SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
     const QByteArray csv = session_args_dmr_channels_csv(*input);
     if (csv.isEmpty()) {
         SavedSystemsModel::removeDmrChannelsFile(uid);
+        (void)dmr_channels_episode(uid, false);
         return;
     }
+    const QString path = SavedSystemsModel::dmrChannelsFilePath(uid);
     QString reason;
+    if (!dmr_channels_path_fits(path)) {
+        note_dmr_channels_unwritten(uid, QStringLiteral("its path is too long for the decoder"));
+        return;
+    }
     if (!SavedSystemsModel::writeDmrChannelsFile(uid, csv, &reason)) {
         note_dmr_channels_unwritten(uid, reason);
         return;
     }
-    input->insert(QStringLiteral("dmrChanOverridesPath"), SavedSystemsModel::dmrChannelsFilePath(uid));
+    (void)dmr_channels_episode(uid, false);
+    input->insert(QStringLiteral("dmrChanOverridesPath"), path);
 }
 
 QStringList

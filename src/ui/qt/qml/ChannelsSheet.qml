@@ -97,8 +97,8 @@ ModalSheet {
         if (!Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5)
             readOnlyNote.forceActiveFocus();
     }
-    // What the last edit leaves to say: not kept, not saved, or refused after
-    // the editor closed.
+    // What the last edit leaves to say: not kept, kept for this session only,
+    // not saved, or refused after the editor closed.
     property string status: ""
     property bool statusProblem: false
     property bool statusSeen: false
@@ -385,6 +385,8 @@ ModalSheet {
             owe(result);
         if (!kept)
             setStatus(qsTr("Not kept: this session is not a saved system."), false);
+        else if (result.saved !== true && String(result.saveError) === "session-only")
+            setStatus(qsTr("Changed for this session only. Your own channel file still sets this channel next time."), false);
         else if (result.saved !== true)
             setStatus(saveErrorText(String(result.saveError || "")), true);
         else if (owedSaveCount > 0)

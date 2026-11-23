@@ -99,6 +99,9 @@ struct JsonStoreNotice {
     QString fileName;
     QString reason;
     QString keptName; ///< "<name>.unreadable-N" (no folder) once moved aside, empty until then
+    /** Which failure of the file this is, for a poster whose file recovers and fails again (a saved system's DMR
+        channels file, review gate b-r8t W4): a new one is a new notice, which an earlier dismissal does not hide. */
+    quint64 episode = 0;
 };
 
 /** @brief Every notice posted in this process, oldest first, one per file name. Safe from any thread. */

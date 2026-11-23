@@ -952,7 +952,9 @@ SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qin
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
     if (op == DSD_UI_DMR_T3_OP_RESTORE) {
         if (entries.remove(lpcn) == 0) {
-            return dmr_channel_edit_result("");
+            /* Review gate b-r8t W2: no entry of the system's set the channel; one of the user's own channel files did,
+               and it still does next start. */
+            return dmr_channel_edit_result("session-only");
         }
     } else {
         if (!entries.contains(lpcn) && entries.size() >= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {

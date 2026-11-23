@@ -2252,6 +2252,9 @@ test_dmr_channel_bridge() {
     again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
     check(again.value("saved").toBool() && again.value("saveError").toString().isEmpty());
     check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    /* Review gate b-r8t W2: a restore no saved entry made (a channel file of the user's set it) is not saved. */
+    again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "session-only");
     again = bridge.saveDmrChannelEdit(QString(), 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
     check(!again.value("saved").toBool() && again.value("saveError").toString() == "no-system");
 

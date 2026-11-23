@@ -134,7 +134,9 @@ Item {
             testContext.postStoreNotice("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv", "");
             waitForNotices(1);
             compare(texts("storeNoticeTitle"), ["A saved system's DMR channels couldn't be written"]);
-            compare(texts("storeNoticeDetail"), ["That system started without them. Check that the device has free storage, then start it again."]);
+            // Review gate b-r8t W5: posted while the start is prepared, so it
+            // claims no session ran.
+            compare(texts("storeNoticeDetail"), ["dsd-neo couldn't write this system's saved channels. Starts use the decoder's own channel map until this is fixed."]);
         }
 
         // The seen store is the app's own bookkeeping: logged, never on the card.

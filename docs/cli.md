@@ -2688,7 +2688,8 @@ channel is delayed.
   start. A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows; a
   channel given twice keeps its later row. The file names at most 256 channels; a row naming one more is skipped with
   a warning. Given more than once, the last `--dmr-chan-overrides` is the one used: the Android and desktop app put a
-  saved system's own channels last, so they are used over one named in the extra decoder arguments. The file is
+  saved system's own channels after every option the decoder reads (before a `--` that ends them), so they are used
+  over one named in the extra decoder arguments. The file is
   applied only when the session decodes DMR frames and runs no trunk scan, judged after the
   config file (its `[mode] decode`), `--profile` and the command line: a session that does not decode DMR, a run mode
   that decodes no frames (MBE playback `-r`, M17 encoding, the M17 UDP/IP decoder `-fU`), or one that runs a trunk scan

@@ -17799,14 +17799,22 @@ Qt Quick frontend (`src/ui/qt`):
   `session_args_dmr_channels_csv()` to `dmr_channels/<uid>.csv` in the app's folder
   (`SavedSystemsModel::writeDmrChannelsFile()`: never through a link, review gate b-r7 V3; the folder must be a real
   one, and a private temporary file beside the leaf is renamed over it, a link there included; a start with no entries
-  and the system's removal use `removeDmrChannelsFile()`, which removes nothing through a linked folder) and passes
-  `--dmr-chan-overrides`
-  last in the argv, after every option the user typed (the decode flag's tokens, the system's and the app's extra
-  options, the live radio settings): the CLI keeps the last occurrence, so the saved channels win over one the user
-  named, and the engine applies the file only to a session that decodes DMR frames and runs no trunk scan (any other
-  starts without it, with a notice). A file that cannot be written never stops the start: it starts without the
-  option, logs a warning and posts a `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists
-  as `unwritten` (store `dmr-channels`) on Home's notice card. A backup carries those files as generated
+  and the system's removal use `removeDmrChannelsFile()`, which removes nothing through a linked folder; known limit,
+  review gate b-r8t W3: the folder is checked by path and each step resolves the path again, with no pinned directory
+  handle, so the no-follow checks guard a stale or accidental link, not a link swapped in between check and step by
+  something that can already write the app's private data folder) and passes `--dmr-chan-overrides`
+  after every option the user typed (the decode flag's tokens, the system's and the app's extra
+  options, the live radio settings), last of the options the decoder reads (review gate b-r8t W1: before a `--` among
+  them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
+  win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
+  trunk scan (any other starts without it, with a notice). A file that cannot be written, or whose path does not fit
+  the CLI's 1023 bytes (W7), never stops the start: it starts without the option, logs a warning and posts a
+  `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
+  `dmr-channels`) on Home's notice card. The notice carries the system's failure episode (`JsonStoreNotice::episode`,
+  part of `StoreNotices`' key, W4): a start that passes the channels ends the episode, so a later failure shows again
+  even after an earlier notice was dismissed. A Restore that removes no saved entry (a channel only the user's own
+  channels file set) answers `saved: false`, `saveError: "session-only"` (W2), and the sheet says it lasts for this
+  session only. A backup carries those files as generated
   configuration, and removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds;
   50 rows, "Show more
   channels without a frequency" adds 50, the ledger can hold 4094) and "Channels" (tap edits; 50 rows by channel, "Show

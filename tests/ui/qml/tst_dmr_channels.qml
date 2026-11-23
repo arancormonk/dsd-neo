@@ -333,6 +333,23 @@ Item {
             compare(status.Accessible.role, Accessible.AlertMessage);
         }
 
+        // Review gate b-r8t W2: a restore no saved entry made (the user's own
+        // channel file set it) lasts for this session only, and says so; no
+        // save is owed for it.
+        function test_session_only_is_said() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 21));
+            tryCompare(edit, "visible", true);
+            tap(findChild(edit, "channelEditRestore"));
+            commands.answerDmrChannel({result: "ok", saved: false, saveError: "session-only"});
+            tryCompare(edit, "visible", false);
+            var status = item("channelsStatus");
+            compare(status.text, "Changed for this session only. Your own channel file still sets this channel next time.");
+            verify(status.visible);
+            verify(!item("channelsRetrySave").visible, "nothing to save again");
+            compare(sheet.owedSaveCount, 0);
+        }
+
         function test_not_kept_without_a_saved_system() {
             dmrChannels.sessionSystemUid = "";
             openSheet(view({}));
