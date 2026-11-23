@@ -9,6 +9,38 @@ QtObject {
     property var layers: []
     property var modals: []
     readonly property var topModal: modals.length ? modals[modals.length - 1] : null
+    // Issue #902: counts every real change of the modals, the layers and the
+    // root surfaces: a stack whose entries differ from what they were, not an
+    // assignment of the same entries again (a binding re-evaluated). An open
+    // selector list closes on one (PlexComboBox).
+    property int changes: 0
+    property var seenModals: []
+    property var seenLayers: []
+    property var seenRootSurfaces: []
+    function sameEntries(a, b) {
+        if (a.length !== b.length)
+            return false;
+        for (var i = 0; i < a.length; ++i) {
+            if (a[i] !== b[i])
+                return false;
+        }
+        return true;
+    }
+    onModalsChanged: {
+        if (!sameEntries(modals, seenModals))
+            changes++;
+        seenModals = modals.slice();
+    }
+    onLayersChanged: {
+        if (!sameEntries(layers, seenLayers))
+            changes++;
+        seenLayers = layers.slice();
+    }
+    onRootSurfacesChanged: {
+        if (!sameEntries(rootSurfaces, seenRootSurfaces))
+            changes++;
+        seenRootSurfaces = rootSurfaces.slice();
+    }
     // Issue #782: how stale a moving reading's accessible name may get, and the
     // most often it renames between meaningful steps (SpeechPacer). Tests
     // shorten it to keep real-time cases short; the app never changes it.
@@ -17,20 +49,30 @@ QtObject {
     // (SpeechPacer): a lock or gate that flaps is heard once a second at most.
     property int speechStepFloorMs: 1000
 
+    // Adding what is on top already, or removing what is not there, leaves
+    // the stack as it is: no change, so an open list stays open.
     function addLayer(layer) {
+        if (layers.length && layers[layers.length - 1] === layer)
+            return;
         removeLayer(layer);
         layers = layers.concat([layer]);
     }
     function removeLayer(layer) {
+        if (layers.indexOf(layer) < 0)
+            return;
         layers = layers.filter(function (entry) {
             return entry !== layer;
         });
     }
     function addModal(modal) {
+        if (topModal === modal)
+            return;
         removeModal(modal);
         modals = modals.concat([modal]);
     }
     function removeModal(modal) {
+        if (modals.indexOf(modal) < 0)
+            return;
         modals = modals.filter(function (entry) {
             return entry !== modal;
         });

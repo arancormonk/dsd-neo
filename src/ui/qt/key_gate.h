@@ -38,6 +38,10 @@ class PressGate : public QObject {
      * active. Returns whether it did; with the window active, or its focus stored elsewhere, it leaves the focus be.
      */
     Q_INVOKABLE bool passStoredFocus(QQuickItem* from, QQuickItem* to) const;
+    /* Lets @p control go of a press it holds, unacted: its own mouse and touch grabs dropped, a key's press cancelled
+     * (a cancelled touch, which is what makes a Qt Quick control let go of one). A combo's open list closing under its
+     * pressed option. */
+    Q_INVOKABLE void cancelPress(QQuickItem* control) const;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
   Q_SIGNALS:

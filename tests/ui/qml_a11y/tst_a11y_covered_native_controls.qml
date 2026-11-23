@@ -195,6 +195,15 @@ Item {
         signalName: "clicked"
     }
 
+    // A selector made and destroyed while hidden, its list never opened.
+    Component {
+        id: spareCombo
+        Ui.PlexComboBox {
+            visible: false
+            model: ["A"]
+        }
+    }
+
     // A sheet that opens by itself over an open list.
     Ui.ModalSheet {
         id: sheet
@@ -668,6 +677,39 @@ Item {
             compare(combo.currentIndex, 0, "closed: a press chooses nothing");
         }
 
+        // Issue #902: an open list is drawn over everything, a sheet opened after it included, and its options take
+        // taps there by their own handling. A sheet over the list closes it, keeping the keyboard, so a tap where an
+        // option was chooses nothing behind the sheet; a selector that hides closes its list too.
+        function test_combo_list_closes_out_of_reach_data() {
+            return [{tag: "sheet over it", how: "sheet"}, {tag: "selector hidden", how: "hidden"}];
+        }
+        function test_combo_list_closes_out_of_reach(data) {
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            var row = null;
+            (function walk(at) {
+                for (var c of at.children) {
+                    if (c.objectName === "plexComboRow" && c.parent.index === 1)
+                        row = c;
+                    walk(c);
+                }
+            })(combo.popup.contentItem);
+            verify(row !== null, "the second option");
+            if (data.how === "hidden") {
+                combo.visible = false;
+                verify(!combo.popup.visible, "hidden: the list closes at once");
+                return;
+            }
+            var tap = row.mapToItem(root, row.width / 2, row.height / 2);
+            sheet.visible = true;
+            verify(!combo.popup.visible, "covered: the list closes at once");
+            wait(50);
+            verify(Ui.Navigation.contains(sheet, sheet.Window.activeFocusItem), "the sheet keeps the keyboard");
+            mouseClick(root, tap.x, tap.y);
+            compare(combo.currentIndex, 0, "covered: a tap where the option was chooses nothing");
+        }
+
         // Issue #902: the selector's own open list is no cover. While it is open the selector keeps its name, its
         // stop and the keyboard, and Qt's own combo keys work as ever: End then Return chooses the last option, a
         // letter jumps to the option it starts, Escape closes choosing nothing, Tab leaves.
@@ -726,6 +768,53 @@ Item {
             tryVerify(function () { return !sheet.visible; }, 1000, "the next Back closes the sheet");
         }
 
+        // Issue #902: a sheet that opens over the open list closes it; once the sheet is dismissed the keyboard is
+        // the selector's again, to take the choice up where it was.
+        function test_sheet_over_the_open_list_returns_to_the_selector() {
+            longCombo.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            tryVerify(function () { return longCombo.popup.opened; });
+            sheet.visible = true;
+            verify(!longCombo.popup.visible, "the sheet closes the list");
+            sheet.visible = false;
+            tryVerify(function () { return longCombo.activeFocus; }, 1000, "dismissed, the keyboard is the selector's");
+        }
+
+        // Issue #902: a screen reader's focus on an option, then a sheet over the list: the list closes, and once
+        // the sheet is dismissed the keyboard goes back to the selector that owns the option, not to the hidden row.
+        function test_sheet_over_a_focused_option_returns_to_the_selector() {
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            var row = comboRow(1);
+            testContext.accessibleDoAction(row, "SetFocus");
+            verify(row.activeFocus);
+            sheet.visible = true;
+            verify(!combo.popup.visible, "the sheet closes the list");
+            sheet.visible = false;
+            tryVerify(function () { return combo.activeFocus; }, 1000, "dismissed, the keyboard is the selector's");
+            compare(combo.currentIndex, 0, "nothing was chosen");
+        }
+
+        // Issue #902: only a real change of navigation closes an open list. A selector destroyed while hidden, its
+        // list never opened, takes nothing out of the modals, and the same entries assigned again (a binding
+        // re-evaluated) are no change either: the list stays open.
+        function test_open_list_stays_open_across_no_navigation_change() {
+            longCombo.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            tryVerify(function () { return longCombo.popup.opened; });
+            var changes = Ui.Navigation.changes;
+            var spare = spareCombo.createObject(root);
+            spare.destroy();
+            wait(50);
+            Ui.Navigation.modals = Ui.Navigation.modals.slice();
+            Ui.Navigation.layers = Ui.Navigation.layers.slice();
+            Ui.Navigation.rootSurfaces = Ui.Navigation.rootSurfaces.slice();
+            compare(Ui.Navigation.changes, changes, "no stack changed");
+            verify(longCombo.popup.visible, "the list stays open");
+            longCombo.popup.close();
+        }
+
         // Issue #902: a field hidden while composing, its window leaving in the same turn (before the release):
         // the word is committed all the same, into that field, though it is no longer the focus object.
         function test_hidden_field_commits_when_the_window_leaves() {
@@ -739,6 +828,24 @@ Item {
             compare(field.text, "final", "the word is committed");
             compare(field.preeditText, "", "nothing is left composing");
             testContext.sendWindowFocus(holder, true);
+        }
+
+        // Issue #902: the open list closes on a real change of navigation only: the same root surfaces assigned
+        // again keep it open; a modal removed below it closes it.
+        function test_combo_list_follows_real_navigation_changes() {
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            Ui.Navigation.rootSurfaces = Ui.Navigation.rootSurfaces.slice();
+            verify(combo.popup.visible, "the same root surfaces again: the list stays open");
+            combo.popup.close();
+            tryVerify(function () { return !combo.popup.visible; });
+            Ui.Navigation.modals = [under];
+            sheet.visible = true;
+            sheetCombo.popup.open();
+            tryVerify(function () { return sheetCombo.popup.opened; });
+            Ui.Navigation.removeModal(under);
+            verify(!sheetCombo.popup.visible, "a modal removed below it: the list closes");
         }
 
         // Issue #902: a field hidden while composing whose keyboard another field takes before the release runs:
@@ -801,6 +908,53 @@ Item {
             keyClick(Qt.Key_Return);
             tryVerify(function () { return !emptyCombo.popup.visible; }, 1000, "Return closes the empty list");
             compare(emptyCombo.currentIndex, -1, "choosing nothing");
+        }
+
+        // Issue #902: any change of navigation while the list is open (a layer over its screen, a new root surface)
+        // closes it, so a tap where an option was chooses nothing on a screen no longer on top.
+        function test_combo_list_closes_on_any_navigation_change_data() {
+            return [{tag: "layer", how: "layer"}, {tag: "root surface", how: "root"}];
+        }
+        function test_combo_list_closes_on_any_navigation_change(data) {
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            var row = comboRow(1);
+            testContext.accessibleDoAction(row, "SetFocus");
+            var tap = row.mapToItem(root, row.width / 2, row.height / 2);
+            if (data.how === "layer")
+                Ui.Navigation.layers = [{surface: loadedLayer}];
+            else
+                Ui.Navigation.rootSurfaces = [loadedLayer];
+            verify(!combo.popup.visible, data.tag + ": the list closes at once");
+            mouseClick(root, tap.x, tap.y);
+            compare(combo.currentIndex, 0, data.tag + ": a tap where the option was chooses nothing");
+            Ui.Navigation.layers = [];
+            Ui.Navigation.rootSurfaces = [];
+        }
+
+        // Issue #902: Space down on an option a screen reader focused presses the option's delegate (the key goes up
+        // from the row). A sheet before the key comes up lets go of that press, so the list opened again holds no
+        // pressed option, and a lone Space release chooses nothing.
+        function test_combo_option_press_is_let_go_under_a_sheet() {
+            combo.currentIndex = 0;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            var row = comboRow(1);
+            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.sendKey(row, Qt.Key_Space, 0, true, false);
+            verify(row.parent.pressed, "Space is down on the option");
+            sheet.visible = true;
+            verify(!combo.popup.visible, "the list closes");
+            verify(!row.parent.pressed && !row.parent.down, "the option's press is let go of");
+            sheet.visible = false;
+            combo.popup.open();
+            tryVerify(function () { return combo.popup.opened; });
+            row = comboRow(1);
+            verify(!row.parent.pressed && !row.parent.down, "open again: no option is pressed");
+            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.sendKey(row, Qt.Key_Space, 0, false, false);
+            compare(combo.currentIndex, 0, "a lone Space release chooses nothing");
         }
 
         // A hidden coarse-tuning rail retunes nothing, by a screen reader's step or by an arrow key.

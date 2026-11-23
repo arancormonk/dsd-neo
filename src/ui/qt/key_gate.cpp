@@ -7,8 +7,10 @@
 #include <QKeyEvent>
 #include <QMetaMethod>
 #include <QMetaProperty>
+#include <QPointingDevice>
 #include <QQuickWindow>
 #include <QTimer>
+#include <QTouchEvent>
 #include <QVariant>
 #include "input_commit.h"
 
@@ -144,6 +146,19 @@ PressGate::filterClosed(QEvent* event) {
     }
     event->accept();
     return true;
+}
+
+void
+PressGate::cancelPress(QQuickItem* control) const {
+    if (control == nullptr) {
+        return;
+    }
+    control->ungrabMouse();
+    control->ungrabTouchPoints();
+    if (control->property("pressed").toBool()) {
+        QTouchEvent cancel(QEvent::TouchCancel, QPointingDevice::primaryPointingDevice());
+        QCoreApplication::sendEvent(control, &cancel);
+    }
 }
 
 bool
