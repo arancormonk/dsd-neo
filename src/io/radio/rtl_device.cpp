@@ -4814,8 +4814,6 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
 }
 
-/* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
-   never turns a known device into an unknown one, and its identity bits are latched either way. */
 /* The factory SoapySDR selects for @p args, given what enumerating them found: the first record's "driver" (SoapySDR
    writes the factory into every record, so an auto-discovered proxy is "remote" with no remote= argument), as
    Device::make() opens the first record; with no record, the "driver" of the arguments as the SDK parses them
@@ -4827,6 +4825,57 @@ soapy_selected_factory(const SoapySDR::KwargsList& found, const std::string& arg
     return it == parsed.end() ? std::string() : it->second;
 }
 
+/* @p record filled with the arguments' other keys, as Device::make() fills the record it opens (the record's value
+   kept for a key both name). */
+static SoapySDR::Kwargs
+soapy_qualified_record(const SoapySDR::Kwargs& record, const std::string& args) {
+    SoapySDR::Kwargs selected = record;
+    for (const auto& kv : SoapySDR::KwargsFromString(args)) {
+        selected.insert(kv);
+    }
+    return selected;
+}
+
+/* Open the device SoapySDR selects for @p args and keep, in @p factory, the module that opened it
+   (soapy_selected_factory()): the first record discovery finds, opened by its record, so its factory is the record's.
+   With no record, make() of the arguments, which needs their "driver" (its factory) or finds a device by its own
+   discovery. A device it finds that way appeared after this open's discovery (plugged in, or answering, in between),
+   from a module this open never saw, and nothing ties it to a record a later discovery finds (a module that lists only
+   free devices leaves out the one make() holds, and another record can match the arguments): it stays open, the
+   handle make() returned, with no factory, unknown, so it gets no silent-channel check. @p enumerate, @p make_args and
+   @p make_record stand for SoapySDR's (a test supplies its own). Throws what make() throws. */
+template <typename Enumerate, typename MakeArgs, typename MakeRecord>
+static auto
+soapy_open_selected(const std::string& args, std::string* factory, Enumerate enumerate, MakeArgs make_args,
+                    MakeRecord make_record) -> decltype(make_args(args)) {
+    const SoapySDR::KwargsList found = enumerate(args);
+    *factory = soapy_selected_factory(found, args);
+    if (found.empty()) {
+        DSD_FPRINTF(stderr, "SoapySDR: enumerate found no devices for args '%s'.\n", args.c_str());
+        return make_args(args);
+    }
+    return make_record(soapy_qualified_record(found.front(), args));
+}
+
+/* Open @p dev's SoapySDR device for @p args (soapy_open_selected() with SoapySDR's own discovery and make()) and keep
+   the factory that opened it; soapy_dev stays NULL when make() throws. */
+static void
+soapy_open_device_locked(struct rtl_device* dev, const std::string& args) {
+    try {
+        std::string factory;
+        dev->soapy_dev = soapy_open_selected(
+            args, &factory, [](const std::string& a) { return SoapySDR::Device::enumerate(a); },
+            [](const std::string& a) { return SoapySDR::Device::make(a); },
+            [](const SoapySDR::Kwargs& record) { return SoapySDR::Device::make(record); });
+        rtl_device_copy_cstr(dev->soapy_factory, sizeof(dev->soapy_factory), factory.c_str());
+    } catch (const std::exception& e) {
+        DSD_FPRINTF(stderr, "SoapySDR: exception in Device::make: %s\n", e.what());
+        dev->soapy_dev = NULL;
+    }
+}
+
+/* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
+   never turns a known device into an unknown one, and its identity bits are latched either way. */
 static void
 soapy_cache_identity_locked(struct rtl_device* dev) {
     if (!dev || !dev->soapy_dev) {
@@ -10228,28 +10277,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         free(dev);
         return NULL;
     }
-    try {
-        /* Open the record SoapySDR selects for these arguments (the first enumeration result, as Device::make() takes
-           it), filled with the arguments' other keys as make() fills it, and keep the factory that record names. */
-        SoapySDR::KwargsList found = SoapySDR::Device::enumerate(args_string);
-        if (found.empty()) {
-            DSD_FPRINTF(stderr, "SoapySDR: enumerate found no devices for args '%s'.\n", args_cstr);
-        }
-        rtl_device_copy_cstr(dev->soapy_factory, sizeof(dev->soapy_factory),
-                             soapy_selected_factory(found, args_string).c_str());
-        if (found.empty()) {
-            dev->soapy_dev = SoapySDR::Device::make(args_string);
-        } else {
-            SoapySDR::Kwargs selected = found.front();
-            for (const auto& kv : SoapySDR::KwargsFromString(args_string)) {
-                selected.insert(kv); /* keeps the record's value for a key both name, as make() does */
-            }
-            dev->soapy_dev = SoapySDR::Device::make(selected);
-        }
-    } catch (const std::exception& e) {
-        DSD_FPRINTF(stderr, "SoapySDR: exception in Device::make: %s\n", e.what());
-        dev->soapy_dev = NULL;
-    }
+    soapy_open_device_locked(dev, args_string);
     (void)dsd_mutex_unlock(&dev->soapy_lock);
 
     if (!dev->soapy_dev) {
@@ -13635,6 +13663,63 @@ rtl_device_test_soapy_selected_factory(const char* const* records, size_t count,
 #else
     (void)args;
     out[0] = '\0';
+    return -1;
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_open_selection(const char* args, const char* const* first, size_t first_count,
+                                     const char* const* second, size_t second_count, int make_args_opens,
+                                     int record_make_throws, rtl_device_test_soapy_open_result* out) {
+    if (!out || (first_count && !first) || (second_count && !second)) {
+        return -1;
+    }
+    *out = rtl_device_test_soapy_open_result{};
+#ifdef USE_SOAPYSDR
+    static int device = 0; /* the stand-in device: never dereferenced */
+    const auto records = [](const char* const* list, size_t count) {
+        SoapySDR::KwargsList found;
+        for (size_t i = 0; i < count; i++) {
+            found.push_back(SoapySDR::KwargsFromString(list[i] ? list[i] : ""));
+        }
+        return found;
+    };
+    std::string factory;
+    const int* opened = nullptr;
+    try {
+        opened = soapy_open_selected(
+            args ? args : "", &factory,
+            [&](const std::string&) {
+                out->discoveries++;
+                return out->discoveries == 1 ? records(first, first_count) : records(second, second_count);
+            },
+            [&](const std::string& a) -> int* {
+                if (!make_args_opens) {
+                    throw std::runtime_error("no match");
+                }
+                DSD_SNPRINTF(out->opened, sizeof out->opened, "args:%s", a.c_str());
+                return &device;
+            },
+            [&](const SoapySDR::Kwargs& record) -> int* {
+                if (record_make_throws) {
+                    throw std::runtime_error("open failed");
+                }
+                DSD_SNPRINTF(out->opened, sizeof out->opened, "record:%s", SoapySDR::KwargsToString(record).c_str());
+                return &device;
+            });
+    } catch (const std::exception&) {
+        out->failed = 1;
+        out->opened[0] = '\0';
+    }
+    if (!opened) {
+        out->failed = 1;
+    }
+    rtl_device_copy_cstr(out->factory, sizeof out->factory, factory.c_str());
+    return 0;
+#else
+    (void)args;
+    (void)make_args_opens;
+    (void)record_make_throws;
     return -1;
 #endif
 }

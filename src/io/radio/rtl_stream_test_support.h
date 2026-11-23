@@ -805,6 +805,23 @@ struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_
    records in order; @p count 0: none), into @p out: 0, or -1 without SoapySDR. */
 int rtl_device_test_soapy_selected_factory(const char* const* records, size_t count, const char* args, char* out,
                                            size_t out_size);
+
+/* What the open's device selection did (rtl_device_test_soapy_open_selection()). */
+typedef struct {
+    char factory[64]; /* the factory the open keeps: "" unknown */
+    char opened[256]; /* what is left open: "args:<arguments>" (make() of the arguments), "record:<markup>" (make() of
+                         a discovery record filled with the arguments), "" nothing */
+    int discoveries;  /* discoveries made */
+    int failed;       /* the open failed (make() threw) */
+} rtl_device_test_soapy_open_result;
+
+/* The open's device selection, with SoapySDR's discovery and make() stood in for: the first discovery of @p args finds
+   @p first (@p first_count records, SoapySDR markup strings), every later one @p second; make() of the arguments opens
+   a device only when @p make_args_opens (as when they name a driver, or the SDK's own discovery inside make() finds
+   one), and make() of a record opens it unless @p record_make_throws. 0, or -1 without SoapySDR. */
+int rtl_device_test_soapy_open_selection(const char* args, const char* const* first, size_t first_count,
+                                         const char* const* second, size_t second_count, int make_args_opens,
+                                         int record_make_throws, rtl_device_test_soapy_open_result* out);
 void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
 /* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left

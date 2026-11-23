@@ -11118,7 +11118,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   as make() fills it) and keeps that record's factory (`soapy_factory`, from
   `soapy_selected_factory()`: the record's "driver", which SoapySDR writes into every record,
   or with no record the arguments' "driver" as the SDK's `KwargsFromString()` parses them:
-  case-sensitive keys, the last duplicate winning). `dsdneo::soapy_identity_evidence()` reads
+  case-sensitive keys, the last duplicate winning). When that discovery finds nothing but
+  make() of arguments naming no driver still opens a device (one that appeared in between,
+  found by the SDK's own discovery), the open keeps the handle make() returned with no
+  factory, unknown (`soapy_open_selected()`): no later discovery can say which device make()
+  holds (a module listing only free devices leaves it out, another record can match), so it
+  never discovers again or swaps the handle. `dsdneo::soapy_identity_evidence()` reads
   that factory, compared exactly as modules register it (airspy; airspyhf; remote, a proxy,
   auto-discovered or not; a known local factory: hackrf, rtlsdr, sdrplay, plutosdr, bladerf,
   lime and limesuiteng (LimeSuite, LimeSuiteNG), uhd, SDDC), and takes the driver and hardware

@@ -510,6 +510,54 @@ test_selected_factory(void) {
     }
 }
 
+/* A device that appears between the open's discovery and make()'s own (bare -i soapy, the first discovery empty,
+ * make() opening a device found by the SDK's discovery inside it) was opened by a module the open never saw, and no
+ * later discovery says which device make() holds: a module listing only free devices leaves it out, and another
+ * record can match the arguments. So the open keeps the handle make() returned, with no factory, unknown (no
+ * silent-channel check), and never discovers again, releases it or opens something else in its place; an Airspy
+ * appearing that way is refused as unknown. Arguments naming a driver give that factory. */
+void
+test_open_selection_race(void) {
+    struct RaceCase {
+        const char *label, *args;
+        const char *first, *second; /* the record each discovery finds; nullptr: none */
+        int make_args_opens, record_make_throws;
+        const char *factory, *opened;
+        int discoveries, failed;
+    };
+
+    static const RaceCase cases[] = {
+        {"a HackRF appearing after the discovery stays open, unknown", "", nullptr, "driver=hackrf,serial=17", 1, 0, "",
+         "args:", 1, 0},
+        {"an Airspy appearing after the discovery stays open, unknown (refused)", "", nullptr, "driver=airspy,serial=9",
+         1, 0, "", "args:", 1, 0},
+        {"a later discovery naming another device is never consulted", "serial=17,label=desk", nullptr,
+         "driver=hackrf,serial=18", 1, 0, "", "args:serial=17,label=desk", 1, 0},
+        {"still no record: the device make() found stays open, unknown", "", nullptr, nullptr, 1, 0, "", "args:", 1, 0},
+        {"stable discovery: the record opened at once", "", "driver=hackrf,serial=17", nullptr, 1, 0, "hackrf",
+         "record:driver=hackrf, serial=17", 1, 0},
+        {"stable discovery whose record fails to open: the open fails", "", "driver=hackrf,serial=17", nullptr, 1, 1,
+         "hackrf", "", 1, 1},
+        {"a driver named: make() opens that factory", "driver=hackrf", nullptr, "driver=hackrf,serial=17", 1, 0,
+         "hackrf", "args:driver=hackrf", 1, 0},
+        {"nothing found and nothing opened: the open fails", "", nullptr, "driver=hackrf,serial=17", 0, 0, "", "", 1,
+         1},
+    };
+    for (const RaceCase& c : cases) {
+        rtl_device_test_soapy_open_result got{};
+        const int rc =
+            rtl_device_test_soapy_open_selection(c.args, &c.first, c.first ? 1U : 0U, &c.second, c.second ? 1U : 0U,
+                                                 c.make_args_opens, c.record_make_throws, &got);
+        const bool ok = rc == 0 && std::strcmp(got.factory, c.factory) == 0 && std::strcmp(got.opened, c.opened) == 0
+                        && got.discoveries == c.discoveries && got.failed == c.failed;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "  %s: factory '%s', opened '%s', %d discoveries, failed %d\n", c.label, got.factory,
+                        got.opened, got.discoveries, got.failed);
+        }
+        expect_true(c.label, ok);
+    }
+}
+
 /* The filter follows the rate: SoapySDR rewrites the rate on every retune and the bandwidth after it, so a retune
  * applies the opened filter again, and one whose read-back moved the rate applies the filter for the new rate. */
 void
@@ -1625,6 +1673,7 @@ main(int argc, char** argv) {
         {"open", test_open_capture_and_ring},
         {"receiver_identity", test_receiver_identity_through_open},
         {"selected_factory", test_selected_factory},
+        {"open_selection_race", test_open_selection_race},
         {"filter_follows_rate", test_filter_follows_rate_on_retune},
         {"write_programs_asked_rate", test_write_programs_asked_rate},
         {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},
