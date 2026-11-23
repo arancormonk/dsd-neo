@@ -12,7 +12,6 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2353,52 +2352,6 @@ test_info1_destination_fallback_needs_an_nxdn_target(void) {
 }
 
 /*
- * A key the selection loaded lends nothing to a later pair whose key is missing (issue #903): with the keyloader on
- * NXDN48 and no direct key, two INFO1s on a numbered call naming the scrambler under key ID 5 load key 5. The next
- * INFO1 names the scrambler under key ID 7, which holds no key, nor does the call's destination: key 5 is no longer
- * the working key, and the call is published as encrypted with no key, never as decryptable by key 7. A direct key the
- * operator gave is the fallback it always was: with it in R and no selection loaded since, the same INFO1 leaves it
- * the working key, and the call decryptable by it.
- */
-static int
-test_missing_key_discards_the_selected_key(void) {
-    static Event_History_I histories[2];
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    int rc = 0;
-    for (int direct = 0; direct < 2; direct++) {
-        if (alloc_fixture(&opts, &state) != 0) {
-            return 1;
-        }
-        open_clear_numbered_call(opts, state, histories);
-        use_nxdn48_keyloader(opts, state);
-        state->rkey_array[7] = 0ULL; /* key ID 7 holds no key */
-        if (direct) {
-            state->scalar_key_present[0] = 1U; /* the operator's key, 0x1234 */
-        } else {
-            state->R = 0ULL;
-            send_outbound_info1(opts, state, 1U, 5U);
-            send_outbound_info1(opts, state, 1U, 5U);
-            rc |= expect_int("selected-key-5-loaded", state->R == 0x7777ULL ? 1 : 0, 1);
-        }
-        send_outbound_info1(opts, state, 1U, 7U);
-        send_outbound_info1(opts, state, 1U, 7U);
-        dsd_call_snapshot call;
-        (void)dsd_call_state_get(state, 0U, &call);
-        rc |= expect_int(direct ? "direct-key-kid-7" : "selected-key-kid-7", (int)call.kid, 7);
-        if (direct) {
-            rc |= expect_int("direct-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
-            rc |= expect_int("direct-key-decryptable", (int)call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
-        } else {
-            rc |= expect_int("selected-key-5-discarded", dsd_key_scalar_present(state, 0), 0);
-            rc |= expect_int("selected-key-not-decryptable", (int)call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
-        }
-        free_fixture(opts, state);
-    }
-    return rc;
-}
-
-/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2636,7 +2589,6 @@ main(void) {
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
     rc |= test_info1_destination_fallback_needs_an_nxdn_target();
-    rc |= test_missing_key_discards_the_selected_key();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {

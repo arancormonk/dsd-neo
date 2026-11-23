@@ -2035,10 +2035,7 @@ suite runs under this compiler.
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
   full width. The destination is the VCALL's, or for an INFO1 and the key report the live NXDN call's known target
   (`nxdn_live_call_key_destination()`); the Null ID 0 and a call of another protocol, or none, give no destination
-  (`NXDN_KEY_NO_DESTINATION`), never keyring entry 0 or another protocol's talkgroup. A scrambler or DES pair whose key
-  the choice finds nowhere keeps a direct key the operator gave as its fallback, but never a key an earlier selection
-  loaded (`dsd_state::nxdn_key_selected`, `nxdn_key_selection_holds()`: R still holds the keyring entry it loaded), which
-  is another pair's: that key is unloaded, so the call is published with no key and its voice is not decrypted with it. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
+  (`NXDN_KEY_NO_DESTINATION`), never keyring entry 0 or another protocol's talkgroup. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
   cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
   (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
