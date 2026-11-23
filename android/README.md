@@ -523,8 +523,8 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   channel number DSD-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take
   (number − 1) ÷ 2 and drop the remainder: 603 and 604 are both channel 301. Calls on that channel are followed from
   the next call; a call already in progress stays where it is. If the channel changed while you were typing (a
-  reloaded channel map, say), nothing is changed: the editor shows what the channel holds now under your frequency,
-  and **Apply** again replaces it.
+  reloaded channel map, say), nothing is changed: the editor closes and the list says so. Open the channel again to
+  see what it holds now.
 - **Use control channel frequency.** Some systems give the control channel its own channel number too. When DSD-neo
   has checked that it is on the control channel right now, **Use control channel frequency** fills in that frequency.
   Otherwise the button is greyed out.

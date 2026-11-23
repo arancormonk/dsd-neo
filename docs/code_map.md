@@ -17793,9 +17793,11 @@ Qt Quick frontend (`src/ui/qt`):
   is still handled, and a status kept while it was closed is read out once when it opens; an edit still unanswered after
   `slowRequestMs` (2 s; the decoder defers the command through a DMR voice call) shows "Saved when the current call
   ends." in the editor that sent it, else in the sheet, read out once. Focus follows a channel that moves between the
-  lists, and never while an editor opened since is up: a channel listed on the page after the ones shown shows that one
-  page first; one further on is not revealed (every page before it would be built at once on a large map), and the focus
-  waits on the Channels heading (`channelsChannelsLabel`). A save that failed after the decoder applied the edit is kept
+  lists only for an answer that came while the editor that sent the edit was still open (review gate b-r5 U8: a later
+  answer is still handled and saved, but never moves the focus), and never while an editor opened since is up: a
+  channel listed on the page after the ones shown shows that one page first; one further on is not revealed (every page
+  before it would be built at once on a large map), and the focus waits on the Channels heading
+  (`channelsChannelsLabel`). A save that failed after the decoder applied the edit is kept
   (the latest per system and channel) and "Try saving again" saves it; while one is owed for the session's system the
   sheet and editor send nothing more ("Save the earlier change first: Try saving again.", `lockText`), so the saved list
   never takes the edits in another order than the live one. On another system's carrier (`otherSystemHere`) the sheet
@@ -17805,9 +17807,11 @@ Qt Quick frontend (`src/ui/qt`):
   the session ending, closes the editor and its discard question. `qml/ChannelEditSheet.qml` takes a number 1..4094 (its
   action key goes on to the frequency, `nextField`) and a frequency, offers "Use control channel frequency" only with
   `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
-  twice); a STALE refusal rereads the channel and keeps what was typed, shows what the channel holds now under it
-  (`channelEditCurrent`, "Now: 452.000000 MHz, from file.", following the record until the next send, and read out
-  with the refusal), and disarms Remove only when the opened channel changed. While the editor's own edit is
+  twice). The edit expects the channel as the editor read it (`opened`): a row's when the editor opened, and in Add
+  channel the typed number's, read each time the number changes (review gate b-r5 U6), never at the button press, so a
+  frequency the decoder learned while the user typed refuses the edit as STALE. A STALE refusal closes the editor that
+  sent it, and the sheet says "This channel changed while you were editing it. Open it again to see the current
+  value." (`channelsStatus`, read out once; review gate b-r5 U7). While the editor's own edit is
   unanswered (`sentPending`) its fields are read-only, so its answer closing the editor loses nothing typed, and Close
   asks first only for what was typed beyond the edit on its way. Under a trunk scan, on another system's carrier, in a
   session not decoding DMR and while a save is owed both are read-only, fields included, the editor saying why

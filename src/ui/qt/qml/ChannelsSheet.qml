@@ -111,7 +111,8 @@ ModalSheet {
     property int announcements: 0
     // The channel the focus goes to once the record lists it (#782): an edit
     // applied from a "No frequency" row moves the channel to "Channels", and
-    // the row the focus was on now holds another channel, or none.
+    // the row the focus was on now holds another channel, or none. Set only
+    // for an answer that came while the editor that sent it was open.
     property int followLpcn: 0
     property double followRevision: 0
     // The channels with a frequency a page at a time, by number: a channel
@@ -340,17 +341,23 @@ ModalSheet {
         if (request <= 0 || Number(result.request) !== request)
             return;
         var editorSent = editSheet.visible && editSheet.sent === request;
+        var key = String(result.result);
         request = 0;
-        if (result.result === "ok") {
+        if (key === "ok") {
             if (editorSent)
                 editSheet.visible = false;
-            applied(result);
+            applied(result, editorSent);
+            return;
+        }
+        // A channel that changed meanwhile is opened again to be seen as it
+        // is now: the editor that sent the edit closes, and the sheet says so.
+        if (editorSent && key !== "stale") {
+            editSheet.refused(result);
             return;
         }
         if (editorSent)
-            editSheet.refused(result);
-        else
-            setStatus(editSheet.refusalText(String(result.result)), true);
+            editSheet.visible = false;
+        setStatus(editSheet.refusalText(key), true);
     }
     Connections {
         target: sheet.bridge
@@ -359,7 +366,10 @@ ModalSheet {
             sheet.answered(result);
         }
     }
-    function applied(result) {
+    // @p editorSent: the editor that sent the edit was open when its answer
+    // came; only then does the focus follow the channel (a later answer is
+    // handled and saved, but the focus stays where the user has it now).
+    function applied(result, editorSent) {
         var kept = result.systemUid && String(result.systemUid).length > 0;
         if (kept)
             owe(result);
@@ -371,7 +381,7 @@ ModalSheet {
             setStatus(saveErrorText("not-saved"), true);
         else
             setStatus("", false);
-        followLpcn = visible ? Number(result.lpcn) || 0 : 0;
+        followLpcn = visible && editorSent ? Number(result.lpcn) || 0 : 0;
         followRevision = Number(result.revision) || 0;
         Qt.callLater(sheet.follow);
     }
@@ -407,9 +417,9 @@ ModalSheet {
             followLpcn = 0;
             return;
         }
-        // An editor open on another channel has the focus, whether it was
-        // open when the answer came or opened since: it stays there (the one
-        // that sent the edit closed when it was answered).
+        // Only an answer the sending editor was open for is followed, and that
+        // editor closed with it: an editor open now was opened since, and
+        // keeps the focus.
         if (editSheet.visible) {
             followLpcn = 0;
             return;
@@ -799,9 +809,6 @@ ModalSheet {
         channels: sheet.channels
         pending: sheet.request > 0
         sentPending: sent > 0 && sent === sheet.request
-        originText: function (origin) {
-            return sheet.originText(origin);
-        }
         lockedText: sheet.lockText
         waiting: sheet.requestSlow && sent > 0 && sent === sheet.request
         waitingText: sheet.waitingText

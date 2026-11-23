@@ -7,18 +7,19 @@ import "Util.js" as Util
 // Discussion #900 F3: one DMR Tier III channel's frequency, from the Channels
 // sheet. A channel from a row keeps its number; Add channel takes a number
 // 1..4094. The edit is sent against the channel as the editor read it (its
-// frequency and where that came from, the network and the session), so the
-// decoder refuses it when any of those moved on; after such a refusal the
-// editor reads the channel again, keeps what was typed and shows what the
-// channel holds now beside it. The Channels sheet sends the edit (submit) and
-// handles its answer: while it is due nothing more can be sent (pending), the
-// fields of the editor that sent it are read-only (sentPending), so nothing
-// typed after it can be lost when its answer closes the editor, and once it
-// has waited a while a calm line says when it will be made (waiting); a
-// refusal is said here (refused()) and the editor stays open; an applied edit
-// closes it. While the sheet sends nothing (lockedText: a session not
-// decoding DMR, another system's carrier, a trunk scan, a save owed) the
-// editor is read-only and says why.
+// frequency and where that came from, the network and the session): a row's
+// when the editor opened, a typed number's when the number was typed. The
+// decoder refuses it when any of those moved on, and the Channels sheet then
+// closes the editor and says so (open it again to see the channel as it is
+// now). The Channels sheet sends the edit (submit) and handles its answer:
+// while it is due nothing more can be sent (pending), the fields of the
+// editor that sent it are read-only (sentPending), so nothing typed after it
+// can be lost when its answer closes the editor, and once it has waited a
+// while a calm line says when it will be made (waiting); any other refusal is
+// said here (refused()) and the editor stays open; an applied edit closes
+// it. While the sheet sends nothing (lockedText: a session not decoding DMR,
+// another system's carrier, a trunk scan, a save owed) the editor is
+// read-only and says why.
 ModalSheet {
     id: sheet
     objectName: "channelEditSheet"
@@ -34,17 +35,17 @@ ModalSheet {
     // This editor's own edit is the one due (ChannelsSheet): its fields hold
     // what was sent until the answer comes.
     property bool sentPending: false
-    // A channel's origin key ("file", "user", ...) in words (ChannelsSheet).
-    property var originText: null
     // Why the sheet sends no edit now, "" when it does (ChannelsSheet.lockText).
     property string lockedText: ""
     // This editor's edit has waited a while for the decoder (ChannelsSheet).
     property bool waiting: false
     property string waitingText: ""
 
-    // The channel as it was when the editor opened (DmrChannelsModel::channel()),
+    // The channel the edit expects (DmrChannelsModel::channel()): as it was
+    // when the editor opened, or for Add channel when its number was typed;
     // and the network and session the edit expects.
-    property var opened: ({lpcn: 0, valid: false, hz: 0, originCode: 0, hidden: false, yours: false})
+    readonly property var noChannel: ({lpcn: 0, valid: false, hz: 0, originCode: 0, hidden: false, yours: false})
+    property var opened: noChannel
     // Opened from Add channel: the number is typed.
     property bool adding: false
     property bool listed: false
@@ -54,9 +55,6 @@ ModalSheet {
     property string initialFrequency: ""
     // The request this editor sent, until it is reopened.
     property double sent: 0
-    // A refusal said the channel moved on: the editor follows the record
-    // until the next send.
-    property bool stale: false
     property bool removeArmed: false
     property string message: ""
     // Navigation.announce()'s record of what was read out.
@@ -89,11 +87,20 @@ ModalSheet {
     readonly property bool numberValid: number >= channels.minChannel && number <= channels.maxChannel
     readonly property double typedHz: hzOf(frequencyField.text)
     readonly property bool frequencyValid: hzInRange(typedHz)
+    // Add channel: the channel a typed number names, read as the number
+    // changes, so the edit expects what the channel held then, not a value
+    // the decoder learned while the frequency was being typed.
+    onNumberChanged: {
+        if (!adding)
+            return;
+        var lpcn = number;
+        opened = lpcn >= channels.minChannel && lpcn <= channels.maxChannel ? channels.channel(lpcn) : noChannel;
+    }
 
     // @p lpcn 0 opens an empty editor (Add channel); @p isListed a channel
     // from the Channels list, which keeps its number.
     function openFor(lpcn, isListed) {
-        opened = lpcn > 0 ? channels.channel(lpcn) : ({lpcn: 0, valid: false, hz: 0, originCode: 0, hidden: false, yours: false});
+        opened = lpcn > 0 ? channels.channel(lpcn) : noChannel;
         adding = lpcn <= 0;
         listed = isListed && lpcn > 0;
         generation = channels.generation;
@@ -103,40 +110,11 @@ ModalSheet {
         numberField.text = initialNumber;
         frequencyField.text = initialFrequency;
         sent = 0;
-        stale = false;
         removeArmed = false;
         message = "";
         open();
         if (adding)
             numberField.input.forceActiveFocus();
-    }
-    // The channel, the network and the session as the record has them now;
-    // what was typed stays.
-    function reread() {
-        var was = opened;
-        var lpcn = adding ? number : opened.lpcn;
-        if (lpcn > 0)
-            opened = channels.channel(lpcn);
-        // The actions follow where the channel's frequency now comes from.
-        if (!adding)
-            listed = opened.originCode > 0;
-        generation = channels.generation;
-        session = channels.session;
-        // An armed Remove asks again only when the channel it would remove
-        // changed: another channel's update leaves it armed.
-        if (opened.lpcn !== was.lpcn || opened.originCode !== was.originCode || opened.hz !== was.hz
-                || opened.hidden !== was.hidden)
-            removeArmed = false;
-    }
-    Connections {
-        target: sheet.channels
-        enabled: sheet.stale && sheet.visible
-        function onChannelsChanged() {
-            sheet.reread();
-        }
-        function onStateChanged() {
-            sheet.reread();
-        }
     }
     // What was typed asks before it goes, unless it is the edit on its way.
     function requestClose() {
@@ -156,7 +134,7 @@ ModalSheet {
     function refusalText(result) {
         switch (result) {
         case "stale":
-            return qsTr("This channel changed while you were editing it. Check it, then try again.");
+            return qsTr("This channel changed while you were editing it. Open it again to see the current value.");
         case "trunk-scan":
             return qsTr("Channel editing is available when one system is running.");
         case "full":
@@ -178,48 +156,24 @@ ModalSheet {
         message = text;
         Navigation.announce(sheet, messageLine, text);
     }
-    // Send @p op for the channel in the number field: against the channel as
-    // the editor opened it, or, for a number typed since, as the sheet lists
-    // it now.
+    // Send @p op for the channel in the number field, against the channel as
+    // the editor read it (opened).
     function send(op, hz) {
         if (pending || readOnly || !numberValid || !submit)
             return;
         Navigation.commitComposing(true);
-        var lpcn = number;
-        var expected = lpcn === opened.lpcn ? opened : channels.channel(lpcn);
         message = "";
-        stale = false;
-        sent = submit(lpcn, op, hz, expected, generation, session);
+        sent = submit(number, op, hz, opened, generation, session);
         if (sent <= 0) {
             say(qsTr("Couldn't send the change. Try again."));
             return;
         }
         Qt.inputMethod.hide();
     }
-    // What the channel holds now, shown beside what was typed after a stale
-    // refusal: its frequency and where that came from.
-    function currentText() {
-        if (opened.hidden === true)
-            return qsTr("Now: hidden.");
-        if (!(Number(opened.hz) > 0))
-            return qsTr("Now: no frequency.");
-        var mhz = (Number(opened.hz) / 1000000).toFixed(6);
-        var from = originText ? String(originText(String(opened.origin || ""))) : "";
-        return from.length ? qsTr("Now: %1 MHz, %2.").arg(mhz).arg(from) : qsTr("Now: %1 MHz.").arg(mhz);
-    }
-    // The Channels sheet's call for a refusal of this editor's edit.
+    // The Channels sheet's call for a refusal of this editor's edit (a stale
+    // one closes the editor instead).
     function refused(result) {
-        var key = String(result.result);
-        if (key !== "stale") {
-            say(refusalText(key));
-            return;
-        }
-        reread();
-        stale = true;
-        // Read out with what the channel holds now, which shows under the
-        // frequency typed.
-        message = refusalText(key);
-        Navigation.announce(sheet, messageLine, message + " " + currentText());
+        say(refusalText(String(result.result)));
     }
 
     ReadableText {
@@ -299,18 +253,6 @@ ModalSheet {
             if (saveButton.enabled && saveButton.inputValid)
                 saveButton.activate();
         }
-    }
-    // After a stale refusal: what the channel holds now, next to the value
-    // typed, so a retry is made knowing what it replaces.
-    ReadableText {
-        id: currentLine
-        objectName: "channelEditCurrent"
-        width: parent.width
-        visible: sheet.stale
-        text: sheet.stale ? sheet.currentText() : ""
-        wrapMode: Text.Wrap
-        color: Theme.textSecondary
-        font.pixelSize: Theme.fontSize(13)
     }
     // Only checked evidence that this carrier is the site's control channel
     // (a checked C_ALOHA or C_SYS_Parms while no call is followed) offers it.

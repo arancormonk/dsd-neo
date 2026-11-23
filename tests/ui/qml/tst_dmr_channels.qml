@@ -270,10 +270,8 @@ Item {
         }
 
         function test_refusals_are_said() {
+            // A stale refusal closes the editor instead (test_stale_closes_the_editor).
             var cases = [
-                // Read out with what the channel holds now (review gate b-r4 S9).
-                {result: "stale", text: "This channel changed while you were editing it. Check it, then try again.",
-                 announced: "This channel changed while you were editing it. Check it, then try again. Now: 451.012500 MHz, from file."},
                 {result: "full", text: "You already have 256 channels of your own. Remove one first."},
                 {result: "trunk-scan", text: "Channel editing is available when one system is running."},
                 {result: "dropped", text: "Listening stopped before the change was made."},
@@ -298,7 +296,7 @@ Item {
                 verify(edit.visible, "a refused edit keeps the editor open");
                 verify(save.enabled, "and it can be sent again");
                 compare(findChild(edit, "channelEditMessage").Accessible.role, Accessible.AlertMessage);
-                compare(edit.announced, c.announced || c.text);
+                compare(edit.announced, c.text);
                 // Close asks before the typed frequency goes.
                 findChild(edit, "channelEditClose").activate();
                 var discard = findChild(edit, "discardDialogDiscard");
@@ -463,37 +461,38 @@ Item {
             compare(commands.dmrChannelRequests().length, 0);
         }
 
-        // A stale refusal reads the channel again: what was typed stays, the actions follow the channel's new origin,
-        // and the retry is sent against the record as it now is.
-        function test_stale_then_retry() {
+        // Review gate b-r5 U7: a stale refusal closes the editor that sent the edit, and the sheet says so, read out
+        // once. Opened again, the editor shows the channel as it is now, and an edit is sent against that.
+        function test_stale_closes_the_editor() {
             openSheet(view({}));
-            tap(row("channelsChannelRow", 18));
+            var eighteen = row("channelsChannelRow", 18);
+            eighteen.forceActiveFocus();
+            tap(eighteen);
             tryCompare(edit, "visible", true);
-            var freq = findChild(edit, "channelEditFrequency");
-            type(freq, "451.0250");
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
             tap(findChild(edit, "channelEditSave"));
             compare(lastRequest().generation, 3);
             // Meanwhile channel 18 became one of yours, on a new network generation and session.
             var moved = view({generation: 4, session: 6, revision: 12});
             moved.channels[0] = {lpcn: 18, origin: 2, hz: 451050000, baseHz: 451012500};
             testContext.setDmrChannelsView(moved);
+            var before = sheet.announcements;
             commands.answerDmrChannel({result: "stale"});
-            tryCompare(findChild(edit, "channelEditMessage"), "text", "This channel changed while you were editing it. Check it, then try again.");
-            compare(freq.text, "451.0250", "what was typed stays");
-            // Review gate b-r4 S9: beside it, what the channel holds now, and read out with the refusal.
-            var current = findChild(edit, "channelEditCurrent");
-            verify(current.visible, "what the channel holds now is shown");
-            compare(current.text, "Now: 451.050000 MHz, yours.");
-            compare(edit.announced, "This channel changed while you were editing it. Check it, then try again. Now: 451.050000 MHz, yours.");
-            // The editor follows the record until the retry: so does the line.
-            var hidden = view({generation: 4, session: 6, revision: 13});
-            hidden.channels[0] = {lpcn: 18, origin: 2, hidden: true, baseHz: 451012500};
-            testContext.setDmrChannelsView(hidden);
-            tryCompare(current, "text", "Now: hidden.");
-            testContext.setDmrChannelsView(moved);
-            tryCompare(current, "text", "Now: 451.050000 MHz, yours.");
-            verify(!findChild(edit, "channelEditHide").visible);
-            verify(findChild(edit, "channelEditRemove").visible, "the actions follow the new origin");
+            tryCompare(edit, "visible", false);
+            var text = "This channel changed while you were editing it. Open it again to see the current value.";
+            compare(item("channelsStatus").text, text);
+            verify(item("channelsStatus").visible);
+            compare(sheet.announced, text);
+            compare(sheet.announcements, before + 1, "read out once");
+            wait(50);
+            compare(sheet.announcements, before + 1, "and only once");
+            compare(sheet.followLpcn, 0, "a refusal moves nothing");
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            compare(findChild(edit, "channelEditFrequency").text, "451.0500", "opened again: the channel as it is now");
+            verify(findChild(edit, "channelEditRemove").visible, "and the actions of its origin");
+            compare(findChild(edit, "channelEditMessage").text, "");
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
             tap(findChild(edit, "channelEditSave"));
             var retry = lastRequest();
             compare(retry.lpcn, 18);
@@ -502,27 +501,39 @@ Item {
             compare(retry.expectedOrigin, 2);
             compare(retry.generation, 4);
             compare(retry.session, "6");
-            verify(!current.visible, "sent again: the line goes");
         }
 
-        // Review gate b-r4 S9: a channel added by number that got a frequency meanwhile, or lost one, says so.
-        function test_stale_add_shows_what_the_channel_holds() {
+        // Review gate b-r5 U6: Add channel expects the channel its number names as it was when the number was typed. A
+        // frequency the decoder learns for it while the frequency is typed is not sent as the expected one (the decoder
+        // then refuses the edit as stale); a number typed again reads the channel again.
+        function test_add_expects_the_channel_as_typed() {
             openSheet(view({}));
             tap(item("channelsAddButton"));
             tryCompare(edit, "visible", true);
             type(findChild(edit, "channelEditNumber"), "40");
-            type(findChild(edit, "channelEditFrequency"), "451.5000");
-            tap(findChild(edit, "channelEditSave"));
             var learned = view({revision: 12});
             learned.extra = [];
             learned.channels.push({lpcn: 40, origin: 3, hz: 451487500});
             testContext.setDmrChannelsView(learned);
+            wait(20);
+            type(findChild(edit, "channelEditFrequency"), "451.5000");
+            tap(findChild(edit, "channelEditSave"));
+            var sent = lastRequest();
+            compare(sent.lpcn, 40);
+            compare(sent.expectedHz, 0, "the channel as it was when 40 was typed: no frequency");
+            compare(sent.expectedOrigin, 0);
             commands.answerDmrChannel({result: "stale"});
-            var current = findChild(edit, "channelEditCurrent");
-            tryCompare(current, "text", "Now: 451.487500 MHz, heard from site.");
-            compare(findChild(edit, "channelEditFrequency").text, "451.5000");
-            testContext.setDmrChannelsView(view({revision: 13}));
-            tryCompare(current, "text", "Now: no frequency.");
+            tryCompare(edit, "visible", false);
+
+            tap(item("channelsAddButton"));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditNumber"), "4");
+            type(findChild(edit, "channelEditNumber"), "40");
+            type(findChild(edit, "channelEditFrequency"), "451.5000");
+            tap(findChild(edit, "channelEditSave"));
+            sent = lastRequest();
+            compare(sent.expectedHz, 451487500, "typed again: the channel as it is now");
+            compare(sent.expectedOrigin, 3);
         }
 
         // Review gate b-r4 S5: while the editor's own edit is due its fields take no typing, so nothing typed after
@@ -612,31 +623,6 @@ Item {
             tryVerify(function () { return row("channelsChannelRow", 18) !== null; });
             verify(!note.visible);
             verify(item("channelsAddButton").enabled);
-        }
-
-        // After a stale refusal the editor follows the record, but an armed Remove asks again only when the channel it
-        // would remove changed: an update to another channel leaves it armed.
-        function test_stale_keeps_remove_armed_for_other_channels() {
-            openSheet(view({}));
-            tap(row("channelsChannelRow", 20));
-            tryCompare(edit, "visible", true);
-            type(findChild(edit, "channelEditFrequency"), "451.1500");
-            tap(findChild(edit, "channelEditSave"));
-            commands.answerDmrChannel({result: "stale"});
-            tryCompare(findChild(edit, "channelEditMessage"), "text", "This channel changed while you were editing it. Check it, then try again.");
-            var remove = findChild(edit, "channelEditRemove");
-            tap(remove);
-            compare(remove.text, "Tap again to remove");
-            var other = view({revision: 10});
-            other.channels[4] = {lpcn: 23, origin: 4, hz: 451362500};
-            testContext.setDmrChannelsView(other);
-            wait(20);
-            compare(remove.text, "Tap again to remove", "another channel moved: still armed");
-            var moved = view({revision: 11});
-            moved.channels[1] = {lpcn: 20, origin: 2, hz: 451162500, baseHz: 451100000};
-            testContext.setDmrChannelsView(moved);
-            tryCompare(remove, "text", "Remove", 2000, "this channel moved: asks again");
-            compare(commands.dmrChannelRequests().length, 1, "nothing more was sent");
         }
 
         // Remove of a channel of yours with no frequency to go back to: its row goes once the record has the edit,
@@ -951,6 +937,59 @@ Item {
             wait(50);
             verify(freq.activeFocus, "the record coming later moves nothing either");
             compare(sheet.followLpcn, 0);
+        }
+
+        // Review gate b-r5 U8: the focus follows an answer only when the editor that sent the edit is still open when it
+        // comes. A late answer, after that editor closed (the sheet open, or closed and opened again), is handled and
+        // saved, but the focus stays where the user has it now.
+        function test_late_answer_leaves_the_focus() {
+            openSheet(view({}));
+            tap(row("channelsMissingRow", 40));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.5");
+            tap(findChild(edit, "channelEditSave"));
+            edit.visible = false;
+            // The editor hands the focus back as it closes: the user then moves on to another row.
+            wait(50);
+            var twentyTwo = row("channelsChannelRow", 22);
+            twentyTwo.forceActiveFocus();
+            tryVerify(function () { return twentyTwo.activeFocus; });
+            wait(50);
+            verify(twentyTwo.activeFocus);
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            compare(sheet.request, 0, "the answer is handled");
+            compare(sheet.followLpcn, 0, "and not followed");
+            // Channel 40 moves to the end of Channels: the rows before it stay as they are.
+            var moved = view({revision: 10});
+            moved.extra = [];
+            moved.channels.push({lpcn: 40, origin: 2, hz: 451500000});
+            testContext.setDmrChannelsView(moved);
+            tryVerify(function () { return row("channelsChannelRow", 40) !== null; });
+            wait(50);
+            verify(row("channelsChannelRow", 22).activeFocus, "the focus stays on the row the user is on");
+
+            // Sent, both closed, the sheet opened again and a row focused: the answer moves nothing either.
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            edit.visible = false;
+            sheet.visible = false;
+            sheet.open();
+            tryCompare(sheet, "visible", true);
+            testContext.setDmrChannelsView(moved);
+            wait(50);
+            var twentyThree = row("channelsChannelRow", 23);
+            twentyThree.forceActiveFocus();
+            tryVerify(function () { return twentyThree.activeFocus; });
+            wait(50);
+            verify(twentyThree.activeFocus);
+            commands.answerDmrChannel({result: "ok", revision: 11});
+            compare(sheet.followLpcn, 0);
+            testContext.setDmrChannelsView(view({revision: 11}));
+            wait(50);
+            verify(row("channelsChannelRow", 23).activeFocus, "a new visit keeps its own focus");
+            compare(item("channelsStatus").text, "", "kept on the saved system");
         }
 
         // The last page takes Show more channels with it: the focus goes on to the first channel it added.
