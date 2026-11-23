@@ -17006,8 +17006,9 @@ Qt Quick frontend (`src/ui/qt`):
     the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
     by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
     bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
-    offers no recording path to any reader: History shows its rows as away, and play, save and share refuse them
-    (`folderReadLocked()`, `test_unread_folder_offers_no_paths`). A journal is compacted only in a folder read and on
+    offers no recording path for save and share, and History shows its rows as away with Play refused
+    (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); a History call's part buttons still play by path
+    (limits below). A journal is compacted only in a folder read and on
     storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
     `test_compaction_waits_for_a_rescan`).
     A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
@@ -17057,10 +17058,11 @@ Qt Quick frontend (`src/ui/qt`):
     - Storage that returns with a journal another device appended to while it was away: a compaction already past its
       last check can replace that journal before the rescan reads the new records.
     - A recording whose file is made unreadable and changed at the same time: the read again that the change asks for
-      takes the new size and time without trying to open the file, so it can be exported, played or removed by the
-      limit again.
+      takes the new size and time without trying to open the file, so it is selected for export and offered for
+      playback again (both then fail to open it) and the storage limit can remove it.
     - A loaded folder whose journal's new lines cannot be read turns its recordings unavailable without telling an
-      open recordings sheet, and a History call's part buttons can still play from it until the next refresh.
+      open recordings sheet. A History call's part buttons play by path whatever the recording's availability, so a
+      part in a folder not read (whose audio still opens) can be played even after a refresh.
 
     In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
