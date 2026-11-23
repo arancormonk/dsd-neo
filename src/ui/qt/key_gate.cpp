@@ -8,10 +8,13 @@
 #include <QMetaMethod>
 #include <QMetaProperty>
 #include <QPointingDevice>
+#include <QQuickItem>
 #include <QQuickWindow>
+#include <QString>
 #include <QTimer>
 #include <QTouchEvent>
 #include <QVariant>
+#include <Qt>
 #include "input_commit.h"
 
 namespace dsd_qt {

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_UI_QT_KEY_GATE_H_
 #define DSD_NEO_UI_QT_KEY_GATE_H_
-#include <QMetaObject>
 #include <QObject>
 #include <QPointer>
-#include <QQuickItem>
+
+class QEvent;
+class QQuickItem;
 
 namespace dsd_qt {
 /*
