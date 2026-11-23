@@ -859,6 +859,18 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     }
 }
 
+/* A DCR call names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the working key, which no
+   selection loaded, and its own SACCH-2 reports it so at once (nxdn_vcall_publish_crypto() reports the same). A clear
+   call has no key to report (-1). */
+static void
+nxdn_note_dcr_working_key(dsd_state* state, uint8_t cipher, int has_key) {
+    dsd_call_snapshot call;
+    if (cipher <= 1U && dsd_call_state_get(state, 0U, &call) > 0) {
+        (void)dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, DSD_CALL_KEY_DIRECT, 0, -1,
+                                                cipher != 0U ? has_key : -1, 0);
+    }
+}
+
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
                            uint8_t ota_cipher) {
@@ -884,6 +896,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                            : DSD_CALL_ENC_OBSERVED_NONE,
     };
     if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
+        nxdn_note_dcr_working_key(state, cipher, has_key);
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }

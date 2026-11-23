@@ -2038,7 +2038,9 @@ suite runs under this compiler.
   cipher's. An IDAS INFO1 loads no key: the cipher and key ID it applies are reported against the working key a VCALL
   or an assignment loaded, and one heard during a DCR call is neither applied nor kept. A DCR
   call's scrambler names no key ID, so its key is reported as the working key (direct, no effective ID), never as the
-  signalled key 0 a selection would read as keyring entry 0 (`nxdn_vcall_publish_crypto()`). A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
+  signalled key 0 a selection would read as keyring entry 0, by the DCR call's own SACCH-2 publication
+  (`nxdn_publish_sacch2_crypto()`, as `nxdn_vcall_publish_crypto()` reports a DCR scrambler), so a keyloader session
+  never shows a DCR call as using automatic key collection. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
   applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.

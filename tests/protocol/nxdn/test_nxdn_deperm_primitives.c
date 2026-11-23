@@ -2225,14 +2225,16 @@ test_no_other_cipher_is_published_on_a_dcr_call(void) {
 }
 
 /*
- * A DCR call's working key is reported as the key it decodes with, never as a signalled one (issue #903): DCR names no
- * key ID, and the key ID 0 its scrambler applies with is no keyring entry. With the keyloader on NXDN48, a scalar
- * imported under key 0 and another scalar in R, a VCALL_IV on the scrambled DCR call republishes its crypto, and the
- * key choice it records is the working key (direct, no effective ID), not keyring entry 0.
+ * A DCR call's working key is reported as the key it decodes with, never as a signalled one (issue #903), by the DCR
+ * call's own SACCH-2: DCR names no key ID and carries no VCALL_IV, and the key ID 0 its scrambler applies with is no
+ * keyring entry. The scrambled DCR call's SB0 records the working key (direct, no effective ID) at once; with the
+ * keyloader on NXDN48 and a scalar imported under key 0, its next SB0 still records the working key, not keyring
+ * entry 0, and the working key stays as it was.
  */
 static int
 test_dcr_key_is_reported_as_the_working_key(void) {
     static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (alloc_fixture(&opts, &state) != 0) {
@@ -2240,22 +2242,25 @@ test_dcr_key_is_reported_as_the_working_key(void) {
     }
     dsd_call_snapshot dcr;
     int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    rc |= expect_int("dcr-key-choice-recorded", dcr.key_selection.valid, 1);
+    rc |= expect_int("dcr-key-source-direct", dcr.key_selection.source, DSD_CALL_KEY_DIRECT);
+    rc |= expect_int("dcr-key-no-effective-id", dcr.key_selection.effective_id, -1);
+
     use_nxdn48_keyloader(opts, state);
     state->rkey_array[0] = 0x5555ULL;
     state->rkey_array_loaded[0] = 1U;
     state->scalar_key_present[0] = 1U;
-    uint8_t bits[96];
-    DSD_MEMSET(bits, 0, sizeof(bits));
-    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
-    write_bits_msb(bits, 8U, 32U, 0x11223344U);
-    write_bits_msb(bits, 40U, 32U, 0x55667788U);
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
     dsd_call_snapshot call;
     (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("dcr-key-still-the-dcr-call", call.epoch == dcr.epoch, 1);
-    rc |= expect_int("dcr-key-choice-recorded", call.key_selection.valid, 1);
-    rc |= expect_int("dcr-key-source-direct", call.key_selection.source, DSD_CALL_KEY_DIRECT);
-    rc |= expect_int("dcr-key-no-effective-id", call.key_selection.effective_id, -1);
+    rc |= expect_int("dcr-key-keyloader-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("dcr-key-keyloader-choice-recorded", call.key_selection.valid, 1);
+    rc |= expect_int("dcr-key-keyloader-source-direct", call.key_selection.source, DSD_CALL_KEY_DIRECT);
+    rc |= expect_int("dcr-key-keyloader-no-effective-id", call.key_selection.effective_id, -1);
     rc |= expect_int("dcr-key-working-key-kept", state->R == 0x1234ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     dsd_decode_clock_use_system();
