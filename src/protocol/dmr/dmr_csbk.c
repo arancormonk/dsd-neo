@@ -138,9 +138,20 @@ dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t
     }
 }
 
+/* The channel a recent-activity row names: its number, how the system numbers it (dsd_call_channel_kind: a Tier III
+   LPCN, a Capacity Plus LSN, a Connect Plus LCN), and its frequency (0 when none is known). The call view reads the
+   user's Tier III channels only for an LPCN. */
+typedef struct {
+    uint16_t number;
+    uint8_t kind;
+    long int frequency;
+} dmr_csbk_activity_channel;
+
+/* A recent-activity row; @p channel is NULL for a row that names none. */
 static void
 dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_call_kind kind, uint64_t target,
-                          uint64_t source, uint16_t channel, long int frequency, int emergency, const char* notice) {
+                          uint64_t source, const dmr_csbk_activity_channel* channel, int emergency,
+                          const char* notice) {
     const dsd_call_observation observation = {
         .protocol = state->lastsynctype,
         .slot = slot & 1U,
@@ -148,8 +159,9 @@ dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_cal
         .ota_target_id = target,
         .policy_target_id = target,
         .ota_source_id = source,
-        .channel = channel,
-        .frequency_hz = frequency,
+        .channel = channel != NULL ? channel->number : 0U,
+        .channel_kind = channel != NULL && channel->number != 0U ? channel->kind : (uint8_t)DSD_CALL_CHANNEL_NONE,
+        .frequency_hz = channel != NULL ? channel->frequency : 0,
         .emergency = emergency != 0,
     };
     (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
@@ -296,8 +308,8 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     /* Tier III channel numbers read as decimal, as everywhere dsd-neo shows them (discussion #900 B11). */
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "%s: %u%s TG: %u; ", kind, (unsigned)channel, suf, (unsigned)grant->recipient);
-    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, channel, frequency,
-                              emergency, notice);
+    const dmr_csbk_activity_channel lpcn = {channel, (uint8_t)DSD_CALL_CHANNEL_LPCN, frequency};
+    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, &lpcn, emergency, notice);
 }
 
 static void
@@ -2108,7 +2120,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     DSD_FPRINTF(stderr, "\n  ");
     (void)dsd_recent_activity_clear_all(state);
     DSD_SNPRINTF(notices[0], sizeof notices[0], "Cap+ ");
-    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notices[0]);
+    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, NULL, 0, notices[0]);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
@@ -2120,8 +2132,13 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
         if (notices[i][0] != '\0') {
             const dsd_call_kind kind = ctx->pch[i - 1] == 1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
             const uint8_t slot = (uint8_t)((i - 1) & 1);
-            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, (uint16_t)i,
-                                      state->trunk_chan_map[i], 0, notices[i]);
+            const dmr_csbk_activity_channel lsn = {
+                .number = (uint16_t)i,
+                .kind = (uint8_t)DSD_CALL_CHANNEL_LSN,
+                .frequency = state->trunk_chan_map[i],
+            };
+            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, &lsn, 0,
+                                      notices[i]);
         }
     }
 }
@@ -2591,8 +2608,13 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", g.lcn, suf, g.grp_addr);
     const dsd_call_kind kind = g.opt == 3 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
-    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr,
-                              (uint16_t)g.lcn, state->trunk_chan_map[g.lcn], 0, notice);
+    const dmr_csbk_activity_channel channel = {
+        .number = (uint16_t)g.lcn,
+        .kind = (uint8_t)DSD_CALL_CHANNEL_LCN,
+        .frequency = state->trunk_chan_map[g.lcn],
+    };
+    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr, &channel, 0,
+                              notice);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
@@ -2657,8 +2679,12 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     now = dsd_decode_time();
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
-    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
-                              notice);
+    const dmr_csbk_activity_channel channel = {
+        .number = (uint16_t)lcn,
+        .kind = (uint8_t)DSD_CALL_CHANNEL_LCN,
+        .frequency = state->trunk_chan_map[lcn],
+    };
+    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, &channel, 0, notice);
     if (opts->trunk_tune_data_calls == 0) {
         return;
     }
@@ -2806,7 +2832,7 @@ dmr_cspdu_xpt_print_and_collect(dsd_state* state, uint8_t cs_pdu_bits[], uint8_t
 
         DSD_FPRINTF(stderr, "%s", dmr_cspdu_xpt_status_label(xpt_ch[i]));
     }
-    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
+    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, NULL, 0, notice);
 }
 
 /* An XPT private status names no radio: its 8-bit value is a hash or a placeholder (the 16-bit target only comes with

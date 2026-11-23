@@ -79,8 +79,8 @@ dmr_t3_chan_notice_write(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long o
 }
 
 /* Heuristic gap fill (opt-in, dsd_opts::dmr_t3_heuristic_fill): a 125 Hz-step linear model through the anchor rows,
-   every row that is no estimate, accepted when every anchor sits within 500 Hz of it, fills the empty rows between the
-   first and the last anchor as estimates. */
+   every shared map row that is no estimate, accepted when every anchor sits within 500 Hz of it, fills the empty rows
+   between the first and the last anchor as estimates (a channel with the user's entry takes none). */
 typedef struct {
     int first_lcn;
     int last_lcn;
@@ -90,27 +90,28 @@ typedef struct {
     int anchors;
 } dmr_heuristic_anchor_stats;
 
-/* The frequency row @p l anchors the fill at, or 0 when it anchors nothing: the frequency DMR uses for the channel
-   (dmr_t3_chan_effective_hz(): a hidden channel has none, whatever another writer left in its row, and a set one
-   anchors at the user's frequency), of a row that is no estimate. */
+/* The frequency row @p l anchors the fill at, or 0 when it anchors nothing: the shared map row, when it has a frequency
+   and is no estimate of the fill's own. The user's entries never anchor: they are DMR's alone, and the estimates go into
+   the shared map, which every protocol reads (P25's frequency cache would take an estimate as its own channel). */
 static long
-dmr_heuristic_anchor_hz(const dsd_state* state, int l) {
-    const long hz = dmr_t3_chan_effective_hz(state, (uint16_t)l);
+dmr_heuristic_anchor_hz(const dsd_state* state, const dmr_ext_t* ext, int l) {
+    const long hz = state->trunk_chan_map[l];
     if (hz <= 0) {
         return 0;
     }
-    const dmr_chan_origin_e origin = dmr_t3_chan_origin(state, (uint16_t)l);
-    return (origin != DMR_CHAN_ORIGIN_NONE && origin != DMR_CHAN_ORIGIN_ESTIMATE) ? hz : 0;
+    const int estimate =
+        ext->origin[l] == (uint8_t)DMR_CHAN_ORIGIN_ESTIMATE && dsd_state_dmr_lcn_ota_get(state, (uint32_t)l);
+    return estimate ? 0 : hz;
 }
 
 static void
-dmr_heuristic_collect_anchor_stats(const dsd_state* state, dmr_heuristic_anchor_stats* stats) {
+dmr_heuristic_collect_anchor_stats(const dsd_state* state, const dmr_ext_t* ext, dmr_heuristic_anchor_stats* stats) {
     int prev_lcn = 0;
     long prev_freq = 0;
 
     DSD_MEMSET(stats, 0, sizeof(*stats));
     for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        const long f = dmr_heuristic_anchor_hz(state, l);
+        const long f = dmr_heuristic_anchor_hz(state, ext, l);
         if (f == 0) {
             continue;
         }
@@ -139,9 +140,10 @@ dmr_heuristic_estimate_step(const dmr_heuristic_anchor_stats* stats) {
 }
 
 static int
-dmr_heuristic_validate_model(const dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step) {
+dmr_heuristic_validate_model(const dsd_state* state, const dmr_ext_t* ext, const dmr_heuristic_anchor_stats* stats,
+                             long step) {
     for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        const long f = dmr_heuristic_anchor_hz(state, l);
+        const long f = dmr_heuristic_anchor_hz(state, ext, l);
         if (f == 0) {
             continue;
         }
@@ -182,14 +184,14 @@ dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_
 }
 
 static void
-dmr_heuristic_fill(dsd_opts* opts, dsd_state* state, dmr_t3_anchors_cause cause) {
+dmr_heuristic_fill(dsd_opts* opts, dsd_state* state, const dmr_ext_t* ext, dmr_t3_anchors_cause cause) {
     if (opts == NULL || !opts->dmr_t3_heuristic_fill) {
         return;
     }
     dmr_heuristic_anchor_stats stats;
-    dmr_heuristic_collect_anchor_stats(state, &stats);
+    dmr_heuristic_collect_anchor_stats(state, ext, &stats);
     const long step = dmr_heuristic_estimate_step(&stats);
-    if (step <= 0 || !dmr_heuristic_validate_model(state, &stats, step)) {
+    if (step <= 0 || !dmr_heuristic_validate_model(state, ext, &stats, step)) {
         return;
     }
     const int filled = dmr_heuristic_fill_gaps(opts, state, &stats, step);
@@ -209,7 +211,7 @@ dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext, dm
     if (dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_estimate)) {
         ext->revision++;
     }
-    dmr_heuristic_fill(opts, state, cause);
+    dmr_heuristic_fill(opts, state, ext, cause);
 }
 
 int

@@ -319,8 +319,9 @@ lpcn,frequency_hz
   the channel's frequency from the map or the air is used again; Remove in the app does the same at once.
 - dsd-neo never writes the file and never changes the channel map file. The Android app writes one into its private
   folder for each start of a saved system that has channels of yours.
-- Applied only when the session decodes DMR and runs no trunk scan, judged after the config file (its
-  `[mode] decode`), `--profile` and the command line. Any other session starts without it, logs one notice
+- Applied only when the session decodes DMR frames and runs no trunk scan, judged after the config file (its
+  `[mode] decode`), `--profile` and the command line. MBE playback (`-r`), M17 encoding and the M17 UDP/IP decoder
+  (`-fU`) decode no frames. Any other session starts without it, logs one notice
   (`DMR Tier III channels in <file> not applied: ...`) and never opens the file, so a missing file does not stop it.
   A session that applies it stops at start when the file is missing or cannot be read. There is no INI key.
 

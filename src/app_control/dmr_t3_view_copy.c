@@ -4,10 +4,11 @@
  */
 
 /*
- * The DMR Tier III channel record's two snapshot hops (dmr_t3_view_internal.h). The body (origins, ledger, overlay
- * rows) is keyed by the state instance, the parked trunk-scan target, the channel revision, the ledger's revision and
- * the channel map's sequence: a restarted session, or another target whose revisions happen to match, is another key,
- * so no copy keeps a record it does not hold.
+ * The DMR Tier III channel record's two snapshot hops (dmr_t3_view_internal.h). The body is two parts, each with its
+ * own key: the ledger (the state instance, the parked trunk-scan target and the ledger's revision) and the channel rows
+ * (origins, frequencies, overlay rows: the instance, the target, the channel revision and the channel map's sequence).
+ * A grant heard again moves the ledger alone, so only the ledger is copied. A restarted session, or another target
+ * whose revisions happen to match, is another key, so no copy keeps a record it does not hold.
  */
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
@@ -102,11 +103,34 @@ dmr_t3_view_note_target(dsd_app_dmr_t3_view_mark* mark, const dsd_state* src) {
 }
 
 static int
-dmr_t3_view_key_moved(const dsd_app_dmr_t3_view_mark* mark, const dsd_state* src, uint8_t present, uint32_t target_id,
-                      uint32_t revision, uint32_t missing_revision) {
-    return !mark->valid || mark->present != present || mark->instance != src->state_instance
-           || mark->map_seq != src->trunk_chan_map_seq || mark->body_target_id != target_id
-           || mark->revision != revision || mark->missing_revision != missing_revision;
+dmr_t3_view_key_moved(const dsd_app_dmr_t3_view_key* key, const dsd_app_dmr_t3_view_key* now) {
+    return !key->valid || key->present != now->present || key->instance != now->instance
+           || key->target_id != now->target_id || key->revision != now->revision || key->map_seq != now->map_seq;
+}
+
+static void
+dmr_t3_view_copy_ledger(dsd_ui_dmr_t3_view* dst, const dsd_state* src, uint8_t present) {
+    if (present) {
+        dmr_t3_view_copy_missing(&dst->missing, src);
+    } else {
+        DSD_MEMSET(&dst->missing, 0, sizeof(dst->missing));
+    }
+    dst->missing_seq = ++g_content_seq;
+}
+
+static void
+dmr_t3_view_copy_rows(dsd_ui_dmr_t3_view* dst, const dsd_state* src, uint8_t present) {
+    if (present) {
+        dmr_t3_chan_origins_copy(src, dst->origin, sizeof(dst->origin));
+        dmr_t3_view_copy_overlay(dst, src);
+        dmr_t3_chan_effective_copy(src, dst->channel_hz, sizeof(dst->channel_hz) / sizeof(dst->channel_hz[0]));
+    } else {
+        DSD_MEMSET(dst->origin, 0, sizeof(dst->origin));
+        DSD_MEMSET(dst->channel_hz, 0, sizeof(dst->channel_hz));
+        dst->overlay_count = 0U;
+        DSD_MEMSET(dst->overlay, 0, sizeof(dst->overlay));
+    }
+    dst->content_seq = ++g_content_seq;
 }
 
 int
@@ -120,7 +144,6 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     dmr_t3_missing_sync(src);
     const uint8_t present = dmr_t3_chan_recorded(src) ? 1U : 0U;
     const uint32_t revision = dmr_t3_chan_revision(src);
-    const uint32_t missing_revision = dmr_t3_missing_revision(src);
     const long cc_hz = dmr_t3_cc_confirmed_hz(src);
     const uint8_t other = dsd_app_dmr_t3_other_system_here(src);
     dst->present = present;
@@ -135,41 +158,38 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     dst->target_id = mark->target_id;
     dst->revision = revision;
     dst->generation = dmr_t3_chan_generation(src);
-    if (!dmr_t3_view_key_moved(mark, src, present, mark->target_id, revision, missing_revision)) {
-        return 0;
+    const dsd_app_dmr_t3_view_key missing = {
+        .valid = 1U,
+        .present = present,
+        .instance = src->state_instance,
+        .target_id = mark->target_id,
+        .revision = dmr_t3_missing_revision(src),
+    };
+    const dsd_app_dmr_t3_view_key rows = {
+        .valid = 1U,
+        .present = present,
+        .instance = src->state_instance,
+        .target_id = mark->target_id,
+        .revision = revision,
+        .map_seq = src->trunk_chan_map_seq,
+    };
+    int copied = 0;
+    if (dmr_t3_view_key_moved(&mark->missing, &missing)) {
+        dmr_t3_view_copy_ledger(dst, src, present);
+        mark->missing = missing;
+        copied |= DSD_APP_DMR_T3_VIEW_COPIED_MISSING;
     }
-    if (present) {
-        dmr_t3_view_copy_missing(&dst->missing, src);
-        dmr_t3_chan_origins_copy(src, dst->origin, sizeof(dst->origin));
-        dmr_t3_view_copy_overlay(dst, src);
-        dmr_t3_chan_effective_copy(src, dst->channel_hz, sizeof(dst->channel_hz) / sizeof(dst->channel_hz[0]));
-    } else {
-        DSD_MEMSET(&dst->missing, 0, sizeof(dst->missing));
-        DSD_MEMSET(dst->origin, 0, sizeof(dst->origin));
-        DSD_MEMSET(dst->channel_hz, 0, sizeof(dst->channel_hz));
-        dst->overlay_count = 0U;
-        DSD_MEMSET(dst->overlay, 0, sizeof(dst->overlay));
+    if (dmr_t3_view_key_moved(&mark->rows, &rows)) {
+        dmr_t3_view_copy_rows(dst, src, present);
+        mark->rows = rows;
+        copied |= DSD_APP_DMR_T3_VIEW_COPIED_ROWS;
     }
-    dst->content_seq = ++g_content_seq;
-    mark->valid = 1U;
-    mark->present = present;
-    mark->instance = src->state_instance;
-    mark->map_seq = src->trunk_chan_map_seq;
-    mark->body_target_id = mark->target_id;
-    mark->revision = revision;
-    mark->missing_revision = missing_revision;
-    return 1;
+    return copied;
 }
 
-int
-dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* src) {
-    if (dst == NULL || src == NULL) {
-        return 0;
-    }
-    if (dst->content_seq != src->content_seq) {
-        DSD_MEMCPY(dst, src, sizeof(*dst));
-        return 1;
-    }
+/* The scalars every publish sets. */
+static void
+dmr_t3_view_copy_scalars(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* src) {
     dst->present = src->present;
     dst->dmr_decoding = src->dmr_decoding;
     dst->other_system_here = src->other_system_here;
@@ -182,7 +202,29 @@ dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* s
     dst->target_id = src->target_id;
     dst->revision = src->revision;
     dst->generation = src->generation;
-    return 0;
+}
+
+int
+dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* src) {
+    if (dst == NULL || src == NULL) {
+        return 0;
+    }
+    dmr_t3_view_copy_scalars(dst, src);
+    int copied = 0;
+    if (dst->missing_seq != src->missing_seq) {
+        DSD_MEMCPY(&dst->missing, &src->missing, sizeof(dst->missing));
+        dst->missing_seq = src->missing_seq;
+        copied |= DSD_APP_DMR_T3_VIEW_COPIED_MISSING;
+    }
+    if (dst->content_seq != src->content_seq) {
+        DSD_MEMCPY(dst->origin, src->origin, sizeof(dst->origin));
+        dst->overlay_count = src->overlay_count;
+        DSD_MEMCPY(dst->overlay, src->overlay, sizeof(dst->overlay));
+        DSD_MEMCPY(dst->channel_hz, src->channel_hz, sizeof(dst->channel_hz));
+        dst->content_seq = src->content_seq;
+        copied |= DSD_APP_DMR_T3_VIEW_COPIED_ROWS;
+    }
+    return copied;
 }
 
 void

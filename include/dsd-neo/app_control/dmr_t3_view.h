@@ -12,10 +12,11 @@
  * the channels granted without a frequency (the missing-channel ledger), the user's channels over the map (set and
  * hidden), whether the site was named Tier III and whether the carrier names another system now, whether the
  * --dmr-chan-overrides file applied to this session, and the control channel frequency checked evidence names on the
- * current carrier. Both snapshot hops copy it, and each copies the
- * record's body (origins, frequencies, ledger, overlay rows) only when its content moved: the state instance, the
- * parked trunk-scan target, the channel revision, the ledger's revision or the channel map's sequence. Only the decoder
- * thread writes the source.
+ * current carrier. Both snapshot hops copy it. Each copies the ledger only when the state instance, the parked
+ * trunk-scan target or the ledger's revision moved (missing_seq), and the channel rows (origins, frequencies, overlay
+ * rows) only when the instance, the target, the channel revision or the channel map's sequence moved (content_seq): a
+ * grant heard again for a channel with no frequency moves the ledger alone. Only the decoder thread writes the
+ * source.
  *
  * dsd_app_dmr_t3_view() reads it from a snapshot; a live decoder state carries none.
  */
@@ -120,7 +121,9 @@ typedef struct {
     uint32_t target_id;        /**< moves whenever the parked trunk-scan target changes; never repeats in a process */
     uint32_t revision;         /**< dmr_t3_chan_revision(): bumps on any row, origin or overlay change */
     uint32_t generation;       /**< dmr_t3_chan_generation(): the network generation the channel-set command expects */
-    uint64_t content_seq;      /**< moves whenever the body below was copied anew; never repeats in a process */
+    uint64_t content_seq;      /**< moves whenever the channel rows (origin, overlay, channel_hz) were copied anew;
+                                    never repeats in a process */
+    uint64_t missing_seq;      /**< moves whenever the ledger (missing) was copied anew; never repeats in a process */
     dsd_ui_dmr_t3_missing missing;      /**< the ledger */
     uint8_t origin[DSD_UI_DMR_T3_ROWS]; /**< dmr_t3_chan_origin() per LPCN (a dmr_chan_origin_e; USER with an entry) */
     uint16_t overlay_count;             /**< overlay rows in use, by LPCN ascending */

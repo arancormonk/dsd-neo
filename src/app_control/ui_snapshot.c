@@ -100,10 +100,21 @@ static int g_consume_keys_withheld = 0;
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
 static dsd_app_snapshot_dmr_t3_copy_counts g_dmr_t3_copy_counts;
-#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)            g_eh_copy_counts.source_to_published[(slot)]++
-#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot)          g_eh_copy_counts.published_to_consumer[(slot)]++
-#define UI_SNAPSHOT_COUNT_DMR_T3_SOURCE_COPY(copied)   g_dmr_t3_copy_counts.source_to_published += (uint64_t)(copied)
-#define UI_SNAPSHOT_COUNT_DMR_T3_CONSUMER_COPY(copied) g_dmr_t3_copy_counts.published_to_consumer += (uint64_t)(copied)
+
+static void
+dmr_t3_count_copies(uint64_t* missing, uint64_t* rows, int copied) {
+    *missing += (copied & DSD_APP_DMR_T3_VIEW_COPIED_MISSING) != 0 ? 1U : 0U;
+    *rows += (copied & DSD_APP_DMR_T3_VIEW_COPIED_ROWS) != 0 ? 1U : 0U;
+}
+
+#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   g_eh_copy_counts.source_to_published[(slot)]++
+#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot) g_eh_copy_counts.published_to_consumer[(slot)]++
+#define UI_SNAPSHOT_COUNT_DMR_T3_SOURCE_COPY(copied)                                                                   \
+    dmr_t3_count_copies(&g_dmr_t3_copy_counts.source_to_published_missing,                                             \
+                        &g_dmr_t3_copy_counts.source_to_published_rows, (copied))
+#define UI_SNAPSHOT_COUNT_DMR_T3_CONSUMER_COPY(copied)                                                                 \
+    dmr_t3_count_copies(&g_dmr_t3_copy_counts.published_to_consumer_missing,                                           \
+                        &g_dmr_t3_copy_counts.published_to_consumer_rows, (copied))
 #else
 #define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)            ((void)(slot))
 #define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot)          ((void)(slot))

@@ -10454,6 +10454,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_dmr_chan_overrides
         PRIVATE
             "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=UDPBind"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"

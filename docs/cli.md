@@ -2687,9 +2687,10 @@ channel is delayed.
   start, and only by a session that applies it (below): there a file that does not exist or cannot be read stops the
   start. A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows; a
   channel given twice keeps its later row. The file names at most 256 channels; a row naming one more is skipped with
-  a warning. The file is applied only when the session decodes DMR and runs no trunk scan, judged after the config
-  file (its `[mode] decode`), `--profile` and the command line: a session that does not decode DMR, or one that runs a
-  trunk scan (which has no global channel map), starts without it, logs one notice and never opens it, so a missing
+  a warning. The file is applied only when the session decodes DMR frames and runs no trunk scan, judged after the
+  config file (its `[mode] decode`), `--profile` and the command line: a session that does not decode DMR, a run mode
+  that decodes no frames (MBE playback `-r`, M17 encoding, the M17 UDP/IP decoder `-fU`), or one that runs a trunk scan
+  (which has no global channel map) starts without it, logs one notice and never opens it, so a missing
   file does not stop it. It has no INI key. Format and examples: [DMR Tier III](csv-formats.md#dmr-tier-iii) in
   `docs/csv-formats.md`.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.

@@ -24,6 +24,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -609,12 +610,13 @@ dmr_t3_view_after_publish(const dsd_state* st) {
     return view;
 }
 
+/* Each hop's copies since the last reset: the ledger's @p missing and the channel rows' @p rows, at both hops alike. */
 static void
-assert_dmr_t3_copies(uint64_t published, uint64_t consumer) {
+assert_dmr_t3_copies(uint64_t missing, uint64_t rows) {
     dsd_app_snapshot_dmr_t3_copy_counts counts;
     dsd_app_snapshot_test_get_dmr_t3_copy_counts(&counts);
-    assert(counts.source_to_published == published);
-    assert(counts.published_to_consumer == consumer);
+    assert(counts.source_to_published_missing == missing && counts.published_to_consumer_missing == missing);
+    assert(counts.source_to_published_rows == rows && counts.published_to_consumer_rows == rows);
 }
 
 /* Both hops carry an owned copy: the ledger with its details, the origins, the overlay rows (hidden ones too), the Tier
@@ -679,22 +681,32 @@ test_dmr_t3_view_carries_the_record(void) {
     free_session_state(st);
 }
 
-/* A refresh with nothing new copies no body at either hop; a moved revision copies it once at each. */
+/* A refresh with nothing new copies no body at either hop. Review gate b-r5 U3: the ledger and the channel rows are
+   keyed apart. A grant heard again for a channel with no frequency (only its last-heard time moves) copies the ledger
+   once at each hop and no channel row; a moved channel revision copies the rows once at each and not the ledger. */
 static void
 test_dmr_t3_view_idle_refresh_copies_nothing(void) {
     dsd_state* st = new_session_state();
     (void)stage_dmr_t3(st, 12U, 1234U, 18U, 7U, 2U);
-    (void)dmr_t3_view_after_publish(st);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    const uint64_t rows_seq = view->content_seq;
     dsd_app_snapshot_test_reset_dmr_t3_copy_counts();
     for (int i = 0; i < 3; i++) {
         (void)dmr_t3_view_after_publish(st);
         (void)dsd_app_get_latest_snapshot();
     }
     assert_dmr_t3_copies(0U, 0U);
-    dmr_ext_get(st)->missing.revision++;
+    const dmr_t3_grant_class cls = {1U, 0U, 2002U, 1234U};
+    dmr_t3_missing_note_grant(NULL, st, 12U, &cls, 1U, 0);
+    view = dmr_t3_view_after_publish(st);
     (void)dmr_t3_view_after_publish(st);
+    assert_dmr_t3_copies(1U, 0U);
+    assert(view->content_seq == rows_seq && view->missing.details[0].caller == 2002U);
+    dmr_ext_get(st)->revision++;
+    view = dmr_t3_view_after_publish(st);
     (void)dmr_t3_view_after_publish(st);
     assert_dmr_t3_copies(1U, 1U);
+    assert(view->content_seq != rows_seq);
     free_session_state(st);
 }
 
@@ -804,6 +816,7 @@ test_vc_freq_reads_the_tier3_channel_dmr_uses(void) {
     dsd_call_observation grant = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 2002U, 1234U);
     grant.kind = DSD_CALL_KIND_GROUP_VOICE;
     grant.channel = 13U;
+    grant.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LPCN;
     grant.frequency_hz = 0;
     assert(dsd_recent_activity_publish(st, 0U, &grant, "Active Group Ch: 13 TG: 1234; ", 0U) > 0);
     assert(dsd_app_vc_freq(st) == 0L);
@@ -825,6 +838,18 @@ test_vc_freq_reads_the_tier3_channel_dmr_uses(void) {
     (void)dmr_t3_view_after_publish(st);
     assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 451162500L);
     DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
+
+    /* Review gate b-r5 U4: the kind the grant gave its channel decides, not the carrier's identity. A Connect Plus LCN
+       14 (a -F RAS-accepted grant, before any checked burst named the system) reads the shared row, which is empty:
+       the user's Tier III channel 14 is not its frequency. */
+    grant.channel = 14U;
+    grant.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LCN;
+    assert(dsd_recent_activity_publish(st, 0U, &grant, "Active Ch: 000E TG: 1234; ", 0U) > 0);
+    assert(dsd_app_vc_freq(st) == 0L);
+    (void)dmr_t3_view_after_publish(st);
+    assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 0L);
+    dsd_state_set_trunk_chan_freq(st, 14U, 451187500L);
+    assert(dsd_app_vc_freq(st) == 451187500L);
     free_session_state(st);
 }
 

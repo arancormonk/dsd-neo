@@ -99,6 +99,7 @@ seed_view() {
     g_fixture->view.generation = 3U;
     g_fixture->view.revision = 9U;
     g_fixture->view.content_seq = 1U;
+    g_fixture->view.missing_seq = 1U;
     for (uint16_t lpcn : {12U, 7U, 40U}) {
         set_bit(g_fixture->view.missing.missing, lpcn);
     }
@@ -212,6 +213,7 @@ test_no_churn() {
     expect("the first read publishes each group once", missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     g_fixture->view.content_seq++;
+    g_fixture->view.missing_seq++;
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("the same body, or a body copied again unchanged, publishes nothing",
            missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
@@ -227,7 +229,7 @@ test_no_churn() {
     expect("and the revision is published", stateSignals == 2 && model.revision() == 10U);
 
     set_bit(g_fixture->view.missing.missing, 41U);
-    g_fixture->view.content_seq++;
+    g_fixture->view.missing_seq++;
     model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     expect("a channel newly missing moves only the missing rows",
            missingSignals == 2 && channelSignals == 2 && model.missingCount() == 4);
@@ -314,10 +316,10 @@ test_other_system_offers_no_edits() {
     g_fixture->opts->trunk_scan_enabled = 0;
 }
 
-/* Review gate b-r4 S6: a grant heard again on a channel with no frequency moves the ledger, so the view's body is
- * copied anew; only the missing rows are built again, not one row per mapped channel (a map can hold 4094). A name
- * learned builds none either. What a Channels row shows (a frequency DMR uses, an origin, one of the user's entries)
- * builds them again. */
+/* Review gate b-r4 S6, b-r5 U3: a grant heard again on a channel with no frequency moves the ledger alone (the view's
+ * missing_seq); only the missing rows are built again, not one row per mapped channel (a map can hold 4094). A name
+ * learned builds none either. The channel rows copied anew (content_seq: a frequency DMR uses, an origin, one of the
+ * user's entries) build them again. */
 void
 test_repeated_grant_builds_only_the_missing_rows() {
     seed_view();
@@ -335,7 +337,7 @@ test_repeated_grant_builds_only_the_missing_rows() {
     for (int grant = 1; grant <= 5; ++grant) {
         g_fixture->view.missing.details[0].last_heard_ms += 1000U; // channel 12 granted again
         g_fixture->view.missing.revision++;
-        g_fixture->view.content_seq++;
+        g_fixture->view.missing_seq++; // the ledger alone was copied anew (review gate b-r5 U3)
         model.refresh(g_fixture->opts.get(), g_fixture->state.get());
     }
     expect("repeated grants build no Channels row", model.channelRowBuilds() == 1U && channelSignals == 0);

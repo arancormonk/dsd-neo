@@ -23,26 +23,40 @@
 extern "C" {
 #endif
 
-/* What the published copy was filled from: the source's key when its body was last copied, and the trunk-scan target
- * it was parked on (target_id moves whenever that id changes). Zeroed, it holds nothing, so the first copy runs. */
+/* The source a part of the body was last copied from: the state instance, the parked trunk-scan target, whether the
+ * record was there, the part's revision and (the channel rows only) the channel map's sequence. Zeroed, it holds
+ * nothing, so the first copy runs. */
 typedef struct {
     uint8_t valid;
     uint8_t present;
     uint64_t instance;
-    uint64_t map_seq;
-    uint32_t target_id;      /* the parked target's id now */
-    uint32_t body_target_id; /* the target the body was copied for */
+    uint32_t target_id;
     uint32_t revision;
-    uint32_t missing_revision;
+    uint64_t map_seq;
+} dsd_app_dmr_t3_view_key;
+
+/* What the published copy was filled from: each part's key (the ledger, and the channel rows: origins, frequencies,
+ * overlay rows), and the trunk-scan target the receiver is parked on (target_id moves whenever that id changes). */
+typedef struct {
+    dsd_app_dmr_t3_view_key missing;
+    dsd_app_dmr_t3_view_key rows;
+    uint32_t target_id; /* the parked target's id now */
     char target[DSD_CHANNEL_LABEL_SIZE];
 } dsd_app_dmr_t3_view_mark;
 
-/* Fill @p dst from the decoder's @p src (decoder thread): the scalars every time, the body only when @p mark's key
- * moved. Returns 1 when it copied the body. */
+/* What a hop copied: the ledger, the channel rows, both or neither. */
+enum {
+    DSD_APP_DMR_T3_VIEW_COPIED_MISSING = 1,
+    DSD_APP_DMR_T3_VIEW_COPIED_ROWS = 2,
+};
+
+/* Fill @p dst from the decoder's @p src (decoder thread): the scalars every time, the ledger and the channel rows
+ * each only when its key in @p mark moved, so a grant heard again (the ledger's last-heard time) copies the ledger
+ * alone. Returns the parts it copied (DSD_APP_DMR_T3_VIEW_COPIED_*). */
 int dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* mark, const dsd_state* src);
 
-/* Copy the published @p src into the consumer's @p dst: the scalars every time, the body only when its content_seq
- * moved. Returns 1 when it copied the body. */
+/* Copy the published @p src into the consumer's @p dst: the scalars every time, the ledger only when its missing_seq
+ * moved and the channel rows only when their content_seq moved. Returns the parts it copied. */
 int dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* src);
 
 /* Point @p snapshot's slot at @p view (storage the snapshot module owns; no cleanup). */

@@ -71,6 +71,15 @@ recent_activity_matches(const dsd_state* state, uint8_t index, dsd_call_kind kin
            && (!notice_fragment || strstr(entry->notice, notice_fragment) != NULL);
 }
 
+/* The channel kind (dsd_call_channel_kind) recent-activity row @p index gives its channel; -1 with no rows. Review gate
+   b-r5 U4: the call view reads the user's Tier III channels only for an LPCN. */
+static int
+recent_activity_channel_kind(const dsd_state* state, uint8_t index) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) > 0 ? (int)recent.entries[index].observation.channel_kind
+                                                                 : -1;
+}
+
 static int
 recent_activity_is_empty(const dsd_state* state, uint8_t index) {
     dsd_recent_activity_snapshot recent;
@@ -1992,6 +2001,8 @@ test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
     status_window_closed(st);
     con_plus_voice(opts, st, 1, 100, 6, 1, 2);
     int rc = expect_true("con+ follows LCN 6", st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_slot == 1);
+    rc |=
+        expect_true("con+ the activity row names an LCN", recent_activity_channel_kind(st, 1U) == DSD_CALL_CHANNEL_LCN);
     status_clock_at(1.0);
     accepted_voice_now(opts, st, 1);
     rc |= expect_true("con+ the followed call is on LCN 6", call_channel_is(st, 1U, 6U, DSD_CALL_CHANNEL_LCN));
@@ -2185,6 +2196,8 @@ test_duplex_grant_direction(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long f
         rc |=
             expect_true("duplex grant activity row names called and calling",
                         recent_activity_matches(st, 0U, cases[i].kind, cases[i].called, cases[i].calling, lpcn, NULL));
+        rc |= expect_true("duplex grant activity row names an LPCN",
+                          recent_activity_channel_kind(st, 0U) == DSD_CALL_CHANNEL_LPCN);
     }
     reset_to_cc(opts, st);
     return rc;
@@ -2342,6 +2355,8 @@ main(void) {
     rc |= expect_true("cap+ disabled group preserves decoded target",
                       recent_activity_matches(&cap_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 42U, 0U, 1U, "LSN:1 TG:42;"));
     rc |= expect_true("cap+ LSN 1 publishes slot zero", recent_activity_has_slot(&cap_st, 1U, 0U));
+    rc |= expect_true("cap+ the activity row names an LSN",
+                      recent_activity_channel_kind(&cap_st, 1U) == DSD_CALL_CHANNEL_LSN);
     rc |= expect_true("cap+ disabled group does not tune", g_result_tune_to_freq_calls == 0);
 
     init_env(&cap_opts, &cap_st);

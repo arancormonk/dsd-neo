@@ -2179,40 +2179,48 @@ test_overlay_edit_expects_the_effective_frequency(void) {
     assert(dmr_t3_chan_effective_hz(&g_state, 0U) == 0L && dmr_t3_chan_effective_hz(&g_state, 4095U) == 0L);
 }
 
-/* Review gate b-r2 C3: the fill anchors on the frequency DMR uses. A hidden channel whose shared row another protocol
-   filled anchors nothing (one anchor left: no estimate); a set channel whose row another protocol emptied anchors at
-   the user's frequency (two anchors: the gap between them fills). */
+/* Review gate b-r5 U1: the fill anchors on shared map rows only, since its estimates go into the shared map. The user's
+   entries anchor nothing: two set channels with empty shared rows invent nothing between them, and a hidden channel
+   whose shared row another protocol filled anchors at that row, as any other shared row. A channel with an entry takes
+   no estimate. */
 static void
-test_anchors_resolve_the_overlay(void) {
+test_anchors_are_shared_rows_only(void) {
     reset();
     g_opts.dmr_t3_heuristic_fill = 1;
-    assert(overlay_edit(10U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
-    dsd_state_set_trunk_chan_freq(&g_state, 10U, 450000000L);
-    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(overlay_edit(10U, DMR_T3_OVERLAY_SET, 450000000L) == DMR_T3_SET_OK);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 450025000L) == DMR_T3_SET_OK);
     assert(g_state.trunk_chan_map[11] == 0L && dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_NONE);
+    assert(g_state.trunk_chan_map[10] == 0L && g_state.trunk_chan_map[12] == 0L);
+    /* One shared row beside them is still a single anchor. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 14U, 450050000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[11] == 0L && g_state.trunk_chan_map[13] == 0L);
 
     reset();
     g_opts.dmr_t3_heuristic_fill = 1;
-    assert(overlay_edit(20U, DMR_T3_OVERLAY_SET, 450000000L) == DMR_T3_SET_OK);
-    dsd_state_set_trunk_chan_freq(&g_state, 20U, 0L);
+    assert(overlay_edit(20U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    dsd_state_set_trunk_chan_freq(&g_state, 20U, 450000000L);
     assert(dmr_t3_chan_learn(&g_opts, &g_state, 22U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
     assert(g_state.trunk_chan_map[21] == 450012500L && dmr_t3_chan_origin(&g_state, 21U) == DMR_CHAN_ORIGIN_ESTIMATE);
-    assert(g_state.trunk_chan_map[20] == 0L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_effective_hz(&g_state, 20U) == 0L && dmr_t3_chan_origin(&g_state, 20U) == DMR_CHAN_ORIGIN_USER);
 }
 
 /* Review gate b-r2 C4: a fill the user's edit caused (or the --dmr-chan-overrides file) has no received burst behind
-   it: its notice is a system notice, with no protocol, slot or CRC flags. A fill a learned row caused stays received
-   data on that burst's slot. */
+   it: its notice is a system notice, with no protocol, slot or CRC flags. An entry anchors nothing, but its channel
+   takes no estimate, so removing it lets the gap fill. A fill a learned row caused stays received data on that burst's
+   slot. */
 static void
 test_user_fill_notice_is_a_system_notice(void) {
     reset();
     g_opts.dmr_t3_heuristic_fill = 1;
     g_state.currentslot = 1;
     g_state.event_crc_invalid[1] = DSD_CRC_RAS_UNVERIFIED;
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
     assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 450000000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 14U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[13] == 0L);
     const uint64_t before0 = pushes(0);
     uint64_t before1 = pushes(1);
-    assert(overlay_edit(14U, DMR_T3_OVERLAY_SET, 450025000L) == DMR_T3_SET_OK);
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
     assert(g_state.trunk_chan_map[13] == 450012500L && dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_ESTIMATE);
     assert(pushes(1) == before1 && pushes(0) == before0 + 1U);
     const Event_History* row = &g_state.event_history_s[0].Event_History_Items[1];
@@ -2309,23 +2317,25 @@ test_overlay_load_csv_rows(void) {
 }
 
 /* Review gate b-r3 R4: the overrides file is one change. With the heuristic fill on, every row is laid over the map
-   first and the estimates are redone once for the whole file: one fill notice, not one per row that moved an anchor. */
+   first and the estimates are redone once for the whole file: one fill notice, not one per row. The anchors are the
+   shared map's two rows; the file's hidden channels take no estimate. */
 static void
 test_overlay_load_csv_settles_once(void) {
     reset_missing();
     g_opts.dmr_t3_heuristic_fill = 1;
+    g_state.trunk_chan_map[1] = 450000000L;
+    g_state.trunk_chan_map[41] = 450500000L;
+    dmr_t3_chan_note_map_loaded(&g_state);
     char path[DSD_TEST_PATH_MAX];
-    /* Five anchors on one 12.5 kHz plan, the outer two first: each later row would have redone the fill. */
-    write_temp_csv(path, sizeof path, "1,450000000\n41,450500000\n11,450125000\n21,450250000\n31,450375000\n");
+    write_temp_csv(path, sizeof path, "11,0\n21,0\n31,0\n");
     const uint64_t before = pushes(0);
     const uint32_t revision = dmr_t3_chan_revision(&g_state);
-    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == 5);
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == 3);
     assert(pushes(0) == before + 1U);
     assert(strstr(newest_row(0), "DMR TIII: Heuristic filled 36 LCNs") != NULL);
     assert(g_state.trunk_chan_map[2] == 450012500L && dmr_t3_chan_origin(&g_state, 2U) == DMR_CHAN_ORIGIN_ESTIMATE);
     assert(g_state.trunk_chan_map[40] == 450487500L && dmr_t3_chan_origin(&g_state, 40U) == DMR_CHAN_ORIGIN_ESTIMATE);
-    /* The anchors are the user's entries, beside rows the file left empty. */
-    assert(dmr_t3_overlay_get(&g_state, 11U, NULL) == DMR_T3_OVERLAY_SET && g_state.trunk_chan_map[11] == 0L);
+    assert(dmr_t3_overlay_get(&g_state, 11U, NULL) == DMR_T3_OVERLAY_HIDE && g_state.trunk_chan_map[11] == 0L);
     assert(dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_USER && dmr_t3_overrides_applied(&g_state));
     assert(dmr_t3_chan_revision(&g_state) != revision);
     (void)remove(path);
@@ -2553,7 +2563,7 @@ main(void) {
     test_hidden_channel_anchors_no_estimate();
     test_missing_reconciled_after_other_writers();
     test_overlay_edit_expects_the_effective_frequency();
-    test_anchors_resolve_the_overlay();
+    test_anchors_are_shared_rows_only();
     test_user_fill_notice_is_a_system_notice();
     test_overlay_load_csv_rows();
     test_overlay_load_csv_settles_once();

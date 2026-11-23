@@ -10,7 +10,6 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <algorithm>
-#include <array>
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/opts.h>
@@ -20,50 +19,10 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/runtime/decode_clock.h>
-#include <memory>
 #include <stddef.h>
 #include <string.h>
-#include <utility>
-#include <vector>
 
 namespace dsd_qt {
-
-/* Every field a Channels row reads from the view: rows are built again only when one of these moved. */
-struct DmrChannelsModel::ChannelInputs {
-    struct Entry {
-        uint16_t lpcn = 0;
-        uint8_t hidden = 0;
-        long base_hz = 0;
-
-        bool
-        operator==(const Entry& other) const {
-            return lpcn == other.lpcn && hidden == other.hidden && base_hz == other.base_hz;
-        }
-    };
-
-    std::array<uint8_t, DSD_UI_DMR_T3_ROWS> origin{};
-    std::array<long, DSD_UI_DMR_T3_ROWS> hz{};
-    std::vector<Entry> overlay;
-
-    explicit ChannelInputs(const dsd_ui_dmr_t3_view& view) {
-        std::copy(view.origin, view.origin + DSD_UI_DMR_T3_ROWS, origin.begin());
-        std::copy(view.channel_hz, view.channel_hz + DSD_UI_DMR_T3_ROWS, hz.begin());
-        const uint16_t count = view.overlay_count <= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS ? view.overlay_count : 0U;
-        overlay.reserve(count);
-        for (uint16_t i = 0; i < count; ++i) {
-            Entry e;
-            e.lpcn = view.overlay[i].lpcn;
-            e.hidden = view.overlay[i].hidden;
-            e.base_hz = view.overlay[i].base_hz;
-            overlay.push_back(e);
-        }
-    }
-
-    bool
-    operator==(const ChannelInputs& other) const {
-        return origin == other.origin && hz == other.hz && overlay == other.overlay;
-    }
-};
 
 namespace {
 
@@ -232,8 +191,8 @@ void
 DmrChannelsModel::clear() {
     m_built = false;
     m_contentSeq = 0;
+    m_missingSeq = 0;
     m_nameKey = 0;
-    m_channelInputs.reset();
     publishLists({}, {}, {});
     publishState(State());
 }
@@ -275,25 +234,31 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     next.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
     next.otherSystemHere = view->other_system_here != 0U;
     next.dmrDecoding = view->dmr_decoding != 0U;
-    const uint64_t nameKey = dsd_alias_name_key(snapshot);
     if (next.otherSystemHere || !next.dmrDecoding) {
         /* Another system's map, or a session that no longer decodes DMR: no Tier III rows, and nothing to edit. The
            flags can move without a new body, so the rows are read again once they clear. */
         m_built = false;
         publishLists({}, {}, {});
     } else {
-        const bool bodyMoved = !m_built || view->content_seq != m_contentSeq;
-        if (bodyMoved || nameKey != m_nameKey) {
-            rebuildMissing(*view, snapshot); // only these rows carry names
-        }
-        if (bodyMoved) {
-            rebuildChannels(*view, !m_built);
-        }
-        m_built = true;
-        m_contentSeq = view->content_seq;
-        m_nameKey = nameKey;
+        rebuildMoved(*view, snapshot);
     }
     publishState(next);
+}
+
+void
+DmrChannelsModel::rebuildMoved(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot) {
+    /* The two parts of the view's body move apart: a grant heard again moves the ledger alone. */
+    const uint64_t nameKey = dsd_alias_name_key(snapshot);
+    if (!m_built || view.missing_seq != m_missingSeq || nameKey != m_nameKey) {
+        rebuildMissing(view, snapshot); // only these rows carry names
+    }
+    if (!m_built || view.content_seq != m_contentSeq) {
+        rebuildChannels(view);
+    }
+    m_built = true;
+    m_contentSeq = view.content_seq;
+    m_missingSeq = view.missing_seq;
+    m_nameKey = nameKey;
 }
 
 void
@@ -320,12 +285,7 @@ DmrChannelsModel::rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state
 }
 
 void
-DmrChannelsModel::rebuildChannels(const dsd_ui_dmr_t3_view& view, bool force) {
-    auto inputs = std::make_unique<ChannelInputs>(view);
-    if (!force && m_channelInputs && *m_channelInputs == *inputs) {
-        return; // a grant heard again, a name learned: nothing a Channels row shows moved
-    }
-    m_channelInputs = std::move(inputs);
+DmrChannelsModel::rebuildChannels(const dsd_ui_dmr_t3_view& view) {
     ++m_channelRowBuilds;
     QVariantList rows;
     OverlayCursor overlay(view);

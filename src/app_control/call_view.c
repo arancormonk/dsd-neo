@@ -5,6 +5,7 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/analog_mode.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/receive_types.h>
@@ -415,6 +416,22 @@ app_lookup_trunk_chan_map(const dsd_state* state, const char* tok) {
     return 0;
 }
 
+/* The frequency of the channel a DMR recent-activity row names, by the kind its grant gave it: a Tier III LPCN at the
+   frequency DMR uses (the user's entry over the shared row: a hidden channel has none, whatever another protocol left
+   there); any other (a Connect Plus LCN, a Capacity Plus LSN), the shared map row, which the user's Tier III channels
+   never name. */
+static long int
+app_dmr_activity_channel_freq(const dsd_state* state, const dsd_call_observation* observation) {
+    const uint32_t channel = observation->channel;
+    if (channel == 0U || channel >= (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
+        return 0;
+    }
+    if (observation->channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN) {
+        return dsd_app_dmr_t3_channel_hz(state, channel);
+    }
+    return state->trunk_chan_map[channel];
+}
+
 static long int
 app_recent_activity_vc_freq(const dsd_state* state) {
     dsd_recent_activity_snapshot recent;
@@ -432,11 +449,9 @@ app_recent_activity_vc_freq(const dsd_state* state) {
             return (long int)entry->observation.frequency_hz;
         }
         /* A DMR row names its channel in the observation: a Tier III notice shows it in decimal, which the hex-first
-           text lookup below would read as another channel (discussion #900 B11). No frequency for it is none. A Tier
-           III LPCN reads the frequency DMR uses (the user's entry over the shared row: a hidden channel has none,
-           whatever another protocol left there); a Connect Plus LCN, the carrier naming that system, the shared row. */
+           text lookup below would read as another channel (discussion #900 B11). No frequency for it is none. */
         if (DSD_SYNC_IS_DMR(entry->observation.protocol)) {
-            const long int frequency = dsd_app_dmr_t3_channel_hz(state, entry->observation.channel);
+            const long int frequency = app_dmr_activity_channel_freq(state, &entry->observation);
             if (frequency != 0) {
                 return frequency;
             }

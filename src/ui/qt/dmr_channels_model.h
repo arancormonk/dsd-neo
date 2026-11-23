@@ -8,12 +8,11 @@
  * @brief The DMR Tier III Channels sheet's rows, from UiController's held snapshot (discussion #900 F3).
  *
  * Two lists: the channels granted without a frequency (the missing-channel ledger) and the channels with an entry in
- * the channel map or the user's overlay, each named by its decimal LPCN. Nothing is rebuilt until the view's body was
- * copied anew (its content_seq) or a name list changed, and a list is published only when its rows differ, so a sheet
- * a screen reader reads sees no churn from repeated grants (#782). The two lists are read apart: a new body or a name
- * change rebuilds the missing rows, and the mapped channels (up to 4094 rows) are rebuilt only when what they show
- * moved (the origins, the frequencies DMR uses, the user's entries), so a grant heard again on a channel with no
- * frequency costs one ledger walk. While the sheet is closed (active false) nothing is read. While the carrier names
+ * the channel map or the user's overlay, each named by its decimal LPCN. The two are read apart, each from its own part
+ * of the view: the missing rows are rebuilt when the ledger was copied anew (missing_seq) or a name list changed, the
+ * mapped channels (up to 4094 rows) only when the channel rows were (content_seq), so a grant heard again on a channel
+ * with no frequency costs one ledger walk. A list is published only when its rows differ, so a sheet a screen reader
+ * reads sees no churn from repeated grants (#782). While the sheet is closed (active false) nothing is read. While the carrier names
  * another system (other_system_here), or the session does not decode DMR now (dmr_decoding 0), both lists are empty
  * and no channel is offered for an edit: no Tier III lookup reads them there.
  */
@@ -32,7 +31,6 @@
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <memory>
 #include <stdint.h>
 
 namespace dsd_qt {
@@ -292,12 +290,10 @@ class DmrChannelsModel : public QObject {
         bool operator==(const State& other) const;
     };
 
-    /* What the Channels list's rows are made of: the origins, the frequencies DMR uses and the user's entries. */
-    struct ChannelInputs;
-
+    /* Each list whose part of @p view moved since the last build (all of them before the first). */
+    void rebuildMoved(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
     void rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state* snapshot);
-    /* The Channels rows, built again only when @p force or their inputs moved since the last build. */
-    void rebuildChannels(const dsd_ui_dmr_t3_view& view, bool force);
+    void rebuildChannels(const dsd_ui_dmr_t3_view& view);
     void publishState(const State& next);
     void publishMissing(const QVariantList& recentRows, const QVariantList& byChannelRows);
     void publishChannels(const QVariantList& channelRows);
@@ -307,6 +303,7 @@ class DmrChannelsModel : public QObject {
     bool m_active = false;
     bool m_built = false;
     uint64_t m_contentSeq = 0;
+    uint64_t m_missingSeq = 0;
     uint64_t m_nameKey = 0;
     State m_state;
     QString m_sessionSystemUid;
@@ -315,8 +312,6 @@ class DmrChannelsModel : public QObject {
     QVariantList m_missing;
     QVariantList m_missingByChannel;
     QVariantList m_channels;
-    /* The inputs m_channels was last built from (none before a build, or after clear()). */
-    std::unique_ptr<ChannelInputs> m_channelInputs;
     quint64 m_channelRowBuilds = 0;
 };
 

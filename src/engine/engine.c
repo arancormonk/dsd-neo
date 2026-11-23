@@ -430,16 +430,41 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Whether the run decodes frames (liveScanner()). MBE playback (-r), the M17 encoders and the M17 UDP/IP decoder (-fU)
+ * run their own loop instead (dsd_engine_run_dispatch_frameless_mode()), whatever the decode mode says. */
+static int
+dsd_engine_run_decodes_frames(const dsd_opts* opts) {
+    return opts->playfiles != 1 && opts->m17encoder != 1 && opts->m17encoderbrt != 1 && opts->m17encoderpkt != 1
+           && opts->m17decoderip != 1;
+}
+
+/* The startup channel map's rows are the map file's (dmr_t3_chan_note_map_loaded()), as a live import makes them. The
+ * DMR record is made here, before the first frame, so a checked grant for a mapped channel keeps its Tier III evidence
+ * (the grant path never allocates the record). A state that already has the record (a host reusing it for another run)
+ * keeps the origins it holds; without one, every row already reads as the file's. A trunk scan loads each target's map
+ * itself. */
+static void
+note_startup_channel_map(const dsd_opts* opts, dsd_state* state) {
+    if (opts->chan_in_file[0] != '\0' && opts->trunk_scan_enabled != 1 && !dmr_t3_chan_recorded(state)) {
+        dmr_t3_chan_note_map_loaded(state);
+    }
+}
+
 /* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3), which DMR's lookups read over the channel
- * map: applied here, before the first frame. Only a session that decodes DMR and runs no trunk scan takes them, judged
- * on the options as the config file (its [mode] decode), the profile and the command line left them: no Tier III
- * lookup runs in a session without DMR, and a trunk scan keeps each target's own channels. Any other session starts
- * without the file, with one notice, and never opens it (the command line only keeps the path), so a missing file
- * stops nothing there. A session that takes it opens it here: a file that is missing or cannot be read stops the
- * start, as a channel map does; a bad row is skipped with a warning. */
+ * map: applied here, before the first frame. Only a session that decodes DMR frames and runs no trunk scan takes them,
+ * judged on the options as the config file (its [mode] decode), the profile and the command line left them: no Tier III
+ * lookup runs in a session without DMR, nor in a run mode that decodes no frames, and a trunk scan keeps each target's
+ * own channels. Any other session starts without the file, with one notice, and never opens it (the command line only
+ * keeps the path), so a missing file stops nothing there. A session that takes it opens it here: a file that is
+ * missing or cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. */
 static int
 import_dmr_chan_overrides_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->dmr_chan_overrides_file[0] == '\0') {
+        return 0;
+    }
+    if (!dsd_engine_run_decodes_frames(opts)) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: this run mode decodes no frames.\n",
+                 opts->dmr_chan_overrides_file);
         return 0;
     }
     if (opts->frame_dmr != 1) {
@@ -513,6 +538,7 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (import_global_channel_map_if_needed(opts, state) != 0) {
         return -1;
     }
+    note_startup_channel_map(opts, state);
     if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
         return -1;
     }
@@ -5422,9 +5448,11 @@ dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_e
     return processM17IPF(opts, state);
 }
 
+/* A run that decodes no frames (dsd_engine_run_decodes_frames() is 0): MBE playback, an M17 encoder or the M17 UDP/IP
+   decoder. */
 static int
-dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                             dsd_engine_run_started* lifecycle_started) {
+dsd_engine_run_dispatch_frameless_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                                       dsd_engine_run_started* lifecycle_started) {
     if (opts->playfiles == 1) {
         if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
             return -1;
@@ -5441,8 +5469,14 @@ dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_
     if (opts->m17encoderpkt == 1) {
         return dsd_engine_run_mode_m17_pkt(opts, state, hooks, lifecycle_started);
     }
-    if (opts->m17decoderip == 1) {
-        return dsd_engine_run_mode_m17_decoder_ip(opts, state, hooks, lifecycle_started);
+    return dsd_engine_run_mode_m17_decoder_ip(opts, state, hooks, lifecycle_started);
+}
+
+static int
+dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                             dsd_engine_run_started* lifecycle_started) {
+    if (!dsd_engine_run_decodes_frames(opts)) {
+        return dsd_engine_run_dispatch_frameless_mode(opts, state, hooks, lifecycle_started);
     }
     return liveScanner(opts, state, hooks, lifecycle_started);
 }

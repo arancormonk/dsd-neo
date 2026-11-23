@@ -83,7 +83,9 @@ dmr_t3_overlay_change(dmr_ext_t* ext, uint16_t lpcn, dmr_t3_overlay_op op, long 
     return op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(ext, lpcn) : dmr_t3_overlay_put(ext, lpcn, op, hz);
 }
 
-/* After the overlay changed: the revision moves, the ledger is reconciled and the heuristic estimates are redone. */
+/* After the overlay changed: the revision moves, the ledger is reconciled and the heuristic estimates are redone. An
+   entry anchors nothing (the estimates go into the shared map), but its channel takes no estimate, so an entry made
+   or removed changes which gaps fill. */
 static void
 dmr_t3_overlay_settle(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
     ext->revision++;

@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/analog_mode.h>
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -707,11 +708,14 @@ test_vc_freq_falls_back_through_the_chain(void) {
     destroy_state(state);
 }
 
+/* A group grant's activity row on @p channel; a DMR one names a Tier III LPCN, as a Tier III grant's does. */
 static void
 publish_activity(dsd_state* state, int protocol, uint16_t channel, const char* notice) {
     dsd_call_observation observation = dsd_call_observation_data(protocol, 0U, 2002U, 1234U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.channel = channel;
+    observation.channel_kind =
+        DSD_SYNC_IS_DMR(protocol) && channel != 0U ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
     observation.frequency_hz = 0;
     assert(dsd_recent_activity_publish(state, 0U, &observation, notice, 0U) > 0);
 }

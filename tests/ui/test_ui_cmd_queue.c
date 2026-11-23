@@ -26657,6 +26657,19 @@ test_dmr_channel_set_leaves_p25_channels(void) {
     rc |= expect_true("auto: P25 cached its own row, DMR still uses the user's",
                       state->trunk_chan_map[12] == 851150000L && dmr_t3_chan_effective_hz(state, 12U) == 451137500L);
     rc |= expect_true("auto: a repeat resolves the same", process_channel_to_freq(opts, state, 0x000C) == 851150000L);
+    /* Review gate b-r5 U1: with the heuristic fill on, entries on 10 and 14 (empty shared rows) anchor no estimate for
+       the channels between them, so P25 channel 0x000b still resolves by its band plan. */
+    opts->dmr_t3_heuristic_fill = 1;
+    p = dmr_channel_edit(state, 10U, DMR_T3_OVERLAY_SET, 451112500);
+    rc |= expect_int("auto: channel 10 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(state, 14U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("auto: channel 14 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("auto: no estimate between the entries",
+                      state->trunk_chan_map[11] == 0L && state->trunk_chan_map[13] == 0L);
+    rc |= expect_true("auto: P25 channel 0x000b resolves by its band plan",
+                      process_channel_to_freq(opts, state, 0x000B) == 851137500L);
     dsd_app_frontend_runtime_stop();
     freeState(state);
     free(state);

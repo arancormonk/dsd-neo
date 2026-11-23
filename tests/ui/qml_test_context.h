@@ -4674,7 +4674,7 @@ class Setup : public QObject {
      * frequency DMR uses), hidden, baseHz (a USER row's: the shared map row under the entry, what Restore shows)}],
      * `names` [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`,
      * `session` (default 1), `trunkScan`, `otherSystem` (other_system_here), `dmrDecoding` (default true). Every call
-     * is a new body (content_seq moves), as a snapshot copied anew is.
+     * is a new body (content_seq and missing_seq move), as a snapshot copied anew is.
      */
     Q_INVOKABLE void
     setDmrChannelsView(const QVariantMap& spec) {
@@ -4702,6 +4702,7 @@ class Setup : public QObject {
         view->generation = spec.value(QStringLiteral("generation"), 1).toUInt();
         view->revision = spec.value(QStringLiteral("revision"), 1).toUInt();
         view->content_seq = seq;
+        view->missing_seq = seq;
         dmrMissing(view, spec);
         dmrChannelRows(state, view, spec.value(QStringLiteral("channels")).toList());
         for (const QVariant& v : spec.value(QStringLiteral("names")).toList()) {

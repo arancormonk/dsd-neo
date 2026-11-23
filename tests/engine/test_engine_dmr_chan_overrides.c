@@ -8,8 +8,10 @@
  * frame, beside the -C map, which keeps the file's rows: a grant in the first dispatched frame resolves to the user's
  * frequency, and a hidden channel's grant is not followed. A file that cannot be read stops the start. Only a session
  * that decodes DMR and runs no trunk scan takes it (review gate b-r2 C1): any other starts without it, with one
- * notice, and never opens it, so a missing file stops nothing there (b-r4 S4). Real engine run; the frame sync is
- * wrapped and dispatches the grants itself.
+ * notice, and never opens it, so a missing file stops nothing there (b-r4 S4), and so does a run mode that decodes no
+ * frames (b-r5 U5: MBE playback, the M17 UDP/IP decoder). A -C map alone makes the DMR record at start, so a checked
+ * grant for a mapped channel keeps its Tier III evidence (b-r5 U2). Real engine run; the frame sync is wrapped and
+ * dispatches the grants itself.
  */
 
 #include <assert.h>
@@ -23,6 +25,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
@@ -38,8 +41,13 @@ static const long CC_HZ = 451000000L;
 static int g_sync_calls;
 static long g_tuned_hz[1];
 static int g_tunes;
-/* Whether the run under test takes the file; and the "not applied" notices logged. */
-static int g_expect_applied = 1;
+
+/* What the run under test does with the file: applies it, skips it, or has none (the map alone); and the "not
+   applied" notices logged. */
+enum { RUN_SKIPPED = 0, RUN_APPLIED = 1, RUN_MAP_ONLY = 2 };
+
+static int g_expect_applied = RUN_APPLIED;
+static int g_udp_binds;
 static int g_skip_notices;
 static char g_skip_notice[512];
 static int g_overrides_refusals;
@@ -125,13 +133,45 @@ send_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn) {
     dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
 }
 
+/* The first frame of a run with the -C map alone: a checked grant for mapped channel 14 is followed and names the site
+   Tier III (the record it is kept in was made at start; the grant path allocates none). */
+static void
+check_map_only_frame(dsd_opts* opts, dsd_state* state) {
+    assert(!dmr_t3_overrides_applied(state));
+    assert(dmr_t3_chan_origin(state, 14U) == DMR_CHAN_ORIGIN_FILE && !dmr_t3_tier3_seen(state));
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_request});
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->trunk_cc_freq = CC_HZ;
+    opts->trunk_is_tuned = 0;
+    send_grant(opts, state, 14U);
+    assert(g_tunes == 1 && g_tuned_hz[0] == 451037500L);
+    assert(dmr_t3_tier3_seen(state) && dmr_t3_chan_recorded(state));
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
+dsd_socket_t __wrap_UDPBind(char* hostname, int portno);
+
+/* The M17 UDP/IP decoder's socket: counted, and refused, which ends that run once it reached its own loop. */
+dsd_socket_t
+__wrap_UDPBind(char* hostname, int portno) {
+    (void)hostname;
+    (void)portno;
+    g_udp_binds++;
+    return DSD_INVALID_SOCKET;
+}
 
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     ++g_sync_calls;
-    if (!g_expect_applied) {
+    if (g_expect_applied == RUN_MAP_ONLY) {
+        check_map_only_frame(opts, state);
+        dsd_exitflag_store(1);
+        return DSD_SYNC_NONE;
+    }
+    if (g_expect_applied == RUN_SKIPPED) {
         /* Not this session's: no entry was made, and a map's rows are the map file's. */
         assert(dmr_t3_overlay_count(state) == 0U && dmr_t3_chan_origin(state, 12U) != DMR_CHAN_ORIGIN_USER);
         /* Review gate b-r3 R6: the path stays set, and the record says the file did not apply. */
@@ -220,13 +260,13 @@ test_overrides_skipped_without_dmr(const char* map, const char* overrides) {
     init_run(opts, state, map, overrides);
     opts->frame_dmr = 0;
     opts->frame_p25p1 = 1;
-    g_expect_applied = 0;
+    g_expect_applied = RUN_SKIPPED;
     g_sync_calls = 0;
     g_skip_notices = 0;
     assert(dsd_engine_run_with_lifecycle(opts, state, NULL) == 0);
     assert(g_sync_calls == 1 && g_skip_notices == 1);
     assert(strstr(g_skip_notice, "this session does not decode DMR") != NULL);
-    g_expect_applied = 1;
+    g_expect_applied = RUN_APPLIED;
     freeState(state);
     free(state);
     free(opts);
@@ -266,6 +306,57 @@ test_unreadable_overrides_stop_the_start(const char* map, const char* missing) {
     free(opts);
 }
 
+/* Review gate b-r5 U5: a run mode that decodes no frames starts without the file, with one notice, though the decode
+   mode still names DMR: MBE playback (-r, here with no files to play) runs to its end, and the M17 UDP/IP decoder (-fU)
+   reaches its own socket. */
+static void
+test_overrides_skipped_without_frames(const char* map, const char* missing) {
+    for (int mode = 0; mode < 2; mode++) {
+        dsd_opts* opts = calloc(1, sizeof(*opts));
+        dsd_state* state = calloc(1, sizeof(*state));
+        assert(opts && state);
+        init_run(opts, state, map, missing);
+        assert(opts->frame_dmr == 1);
+        if (mode == 0) {
+            opts->playfiles = 1;
+        } else {
+            opts->m17decoderip = 1;
+        }
+        g_sync_calls = 0;
+        g_skip_notices = 0;
+        g_udp_binds = 0;
+        const int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+        assert(g_skip_notices == 1 && strstr(g_skip_notice, "this run mode decodes no frames") != NULL);
+        assert(g_sync_calls == 0 && dmr_t3_overlay_count(state) == 0U && !dmr_t3_overrides_applied(state));
+        if (mode == 0) {
+            assert(rc == 0 && g_udp_binds == 0);
+        } else {
+            assert(rc != 0 && g_udp_binds == 1);
+        }
+        freeState(state);
+        free(state);
+        free(opts);
+    }
+}
+
+/* Review gate b-r5 U2: a -C map with no overrides file makes the DMR record before the first frame. */
+static void
+test_startup_map_makes_the_record(const char* map) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    init_run(opts, state, map, "");
+    g_expect_applied = RUN_MAP_ONLY;
+    g_sync_calls = 0;
+    g_tunes = 0;
+    assert(dsd_engine_run_with_lifecycle(opts, state, NULL) == 0);
+    assert(g_sync_calls == 1);
+    g_expect_applied = RUN_APPLIED;
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     char map[DSD_TEST_PATH_MAX];
@@ -281,7 +372,9 @@ main(void) {
        start (or reach their own checks) with the missing file as with a readable one; a DMR session refuses it. */
     test_overrides_skipped_without_dmr(map, overrides);
     test_overrides_skipped_under_trunk_scan(overrides);
+    test_overrides_skipped_without_frames(map, overrides);
     test_unreadable_overrides_stop_the_start(map, overrides);
+    test_startup_map_makes_the_record(map);
     (void)remove(map);
     printf("ENGINE_DMR_CHAN_OVERRIDES: OK\n");
     return 0;
