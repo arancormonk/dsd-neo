@@ -1308,10 +1308,33 @@ test_updates_apply_only_to_their_protocols_call(void) {
     free(state);
 }
 
+/* Forgetting a call's crypto values or description on a valid, freshly initialized state, where no slot has opened a
+   call yet (no call-state store), finds no active epoch: 0, as for an empty slot once another slot has opened a call.
+   Bad arguments are still -1. */
+static void
+test_forget_on_a_state_with_no_call_yet(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    assert(dsd_call_state_forget_call_description(state, 0U, DSD_SYNC_NXDN_POS) == 0);
+    assert(dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS) == 0);
+    assert(dsd_call_state_forget_call_description(state, 0U, DSD_SYNC_NONE) == -1);
+    assert(dsd_call_state_forget_crypto_values(state, DSD_CALL_STATE_SLOT_COUNT, DSD_SYNC_DMR_BS_VOICE_POS) == -1);
+
+    /* The same empty slot once slot 1 has opened a call. */
+    dsd_call_observation other = group_call(1U, 500U, 600U, 1.0);
+    other.protocol = DSD_SYNC_NXDN_POS;
+    assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_forget_call_description(state, 0U, DSD_SYNC_NXDN_POS) == 0);
+    assert(dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_NXDN_POS) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);
+    test_forget_on_a_state_with_no_call_yet();
     test_epochs_and_late_identity(state);
     test_crypto_and_slot_isolation(state);
     test_retained_crypto_update();

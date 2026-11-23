@@ -1071,7 +1071,7 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
-        return -1;
+        return 0; /* no call has opened in any slot yet: no active epoch */
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
@@ -1104,7 +1104,7 @@ dsd_call_state_forget_call_description(dsd_state* state, uint8_t slot, int proto
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
-        return -1;
+        return 0; /* no call has opened in any slot yet: no active epoch */
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
