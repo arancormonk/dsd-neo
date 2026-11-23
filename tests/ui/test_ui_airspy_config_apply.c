@@ -44,7 +44,7 @@ static int test_outputs;
 static int test_squelches;
 static float test_sql;
 /* Issue #899: the squelch gate the last retune carried and the target it was queued for, the whole settings the
-   receiver was handed, and when each happened against the retunes (test_events). */
+   receiver was handed (counted), and when each happened against the retunes (test_events). */
 static int test_events;
 static int test_gates;
 static dsd_squelch_setting test_gate;
@@ -53,7 +53,6 @@ static int test_gate_event;
 static int test_retune_event;
 static int test_squelch_event;
 static int test_settings;
-static dsd_squelch_setting test_setting;
 static uint32_t test_freq;
 static uint32_t test_open_freq;
 static int test_open_bw;
@@ -173,8 +172,8 @@ __wrap_rtl_stream_set_channel_squelch(float level) {
 
 void
 __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    (void)setting;
     test_settings++;
-    test_setting = *setting;
     test_squelch_event = ++test_events;
 }
 
