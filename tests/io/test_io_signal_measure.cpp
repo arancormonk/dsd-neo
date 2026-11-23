@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_types.h>
@@ -1749,6 +1750,73 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* The occupancy share bit for bit: the count of the reference's bins over its 98th percentile runs on the bins the
+   quartile's selection left above it, and must read what the count over every bin read. Scenes from clean noise to
+   most of the span raised, on both geometries, at a short (1.536 Msps) and a long (10 MS/s) transform, in every class
+   mask; the values are the full count's (recorded from it), compared as raw bits. */
+static void
+test_quiet_occupancy_share_exact(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+
+    struct ShareCase {
+        double share, raise_db;
+        uint32_t rate;
+        unsigned seed;
+        uint32_t want_bits;
+        bool centred;
+        uint8_t classes;
+    };
+
+    static const ShareCase cases[] = {
+        {0.00, 0.0, 1536000, 151, 0x3b99b9f7U, false, 1},   {0.00, 0.0, 1536000, 152, 0x3c825f8dU, false, 1},
+        {0.02, 10.0, 1536000, 151, 0x3ccbed33U, false, 1},  {0.02, 10.0, 1536000, 152, 0x3d0f5647U, false, 1},
+        {0.09, 10.0, 1536000, 151, 0x3dc3ca2bU, false, 1},  {0.09, 10.0, 1536000, 152, 0x3dc3ca2bU, false, 1},
+        {0.50, 10.0, 1536000, 151, 0x3ef2065eU, false, 1},  {0.50, 10.0, 1536000, 152, 0x3ef2065eU, false, 1},
+        {0.70, 3.0, 1536000, 151, 0x3e5cdde7U, false, 1},   {0.70, 3.0, 1536000, 152, 0x3e515fc5U, false, 1},
+        {0.00, 0.0, 1536000, 151, 0x3b99b9f7U, false, 4},   {0.00, 0.0, 1536000, 152, 0x3c825f8dU, false, 4},
+        {0.02, 10.0, 1536000, 151, 0x3ccbed33U, false, 4},  {0.02, 10.0, 1536000, 152, 0x3d0f5647U, false, 4},
+        {0.09, 10.0, 1536000, 151, 0x3dc3ca2bU, false, 4},  {0.09, 10.0, 1536000, 152, 0x3dc3ca2bU, false, 4},
+        {0.50, 10.0, 1536000, 151, 0x3ef2065eU, false, 4},  {0.50, 10.0, 1536000, 152, 0x3ef2065eU, false, 4},
+        {0.70, 3.0, 1536000, 151, 0x3e5cdde7U, false, 4},   {0.70, 3.0, 1536000, 152, 0x3e515fc5U, false, 4},
+        {0.00, 0.0, 1536000, 151, 0x3bcf705aU, false, 7},   {0.00, 0.0, 1536000, 152, 0x3baab95aU, false, 7},
+        {0.02, 10.0, 1536000, 151, 0x3cddaa77U, false, 7},  {0.02, 10.0, 1536000, 152, 0x3cc6b817U, false, 7},
+        {0.09, 10.0, 1536000, 151, 0x3dc48a06U, false, 7},  {0.09, 10.0, 1536000, 152, 0x3dbda7b6U, false, 7},
+        {0.50, 10.0, 1536000, 151, 0x3ef106f8U, false, 7},  {0.50, 10.0, 1536000, 152, 0x3ef199d4U, false, 7},
+        {0.70, 3.0, 1536000, 151, 0x3ddb7c66U, false, 7},   {0.70, 3.0, 1536000, 152, 0x3dbecd6eU, false, 7},
+        {0.00, 0.0, 10000000, 151, 0x3b3f5af4U, false, 1},  {0.02, 10.0, 10000000, 151, 0x3cb73afdU, false, 1},
+        {0.09, 10.0, 10000000, 151, 0x3db65c23U, false, 1}, {0.50, 10.0, 10000000, 151, 0x3ef0acc3U, false, 1},
+        {0.70, 3.0, 10000000, 151, 0x3e274787U, false, 1},  {0.00, 0.0, 2500000, 151, 0x3b9a204cU, true, 1},
+        {0.00, 0.0, 2500000, 152, 0x3c3e6422U, true, 1},    {0.02, 10.0, 2500000, 151, 0x3ce8cee8U, true, 1},
+        {0.02, 10.0, 2500000, 152, 0x3d08a42aU, true, 1},   {0.09, 10.0, 2500000, 151, 0x3dbbb848U, true, 1},
+        {0.09, 10.0, 2500000, 152, 0x3dc7dcb5U, true, 1},   {0.50, 10.0, 2500000, 151, 0x3ef8cbabU, true, 1},
+        {0.50, 10.0, 2500000, 152, 0x3ef94d2fU, true, 1},   {0.70, 3.0, 2500000, 151, 0x3e137d06U, true, 1},
+        {0.70, 3.0, 2500000, 152, 0x3e1c9858U, true, 1},    {0.00, 0.0, 10000000, 151, 0x3b0ec919U, true, 4},
+        {0.02, 10.0, 10000000, 151, 0x3cab7b4aU, true, 4},  {0.09, 10.0, 10000000, 151, 0x3db277f4U, true, 4},
+        {0.50, 10.0, 10000000, 151, 0x3ef6c310U, true, 4},  {0.70, 3.0, 10000000, 151, 0x3e26b80eU, true, 4},
+    };
+    int failures = 0;
+    for (const ShareCase& c : cases) {
+        const dsd_signal_quiet_request q =
+            c.centred
+                ? quiet_centred_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0)
+                : quiet_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0);
+        const auto noise = c.share > 0
+                               ? quiet_occupied_noise(q, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ, c.share, c.raise_db, c.seed)
+                               : quiet_noise(quiet_request_pairs(q), c.seed);
+        const auto r = quiet_run(d, q, noise, 4096, &shipped);
+        uint32_t bits = 0;
+        static_assert(sizeof bits == sizeof r.occupancy_share, "a float is 32 bits");
+        DSD_MEMCPY(&bits, &r.occupancy_share, sizeof bits);
+        if (r.failure != DSD_SIGNAL_MEASURE_OK || bits != c.want_bits) {
+            std::fprintf(stderr, "occupancy share %s %u classes %u share %.2f +%.1f dB seed %u: 0x%08x, want 0x%08x\n",
+                         c.centred ? "centred" : "default", c.rate, (unsigned)c.classes, c.share, c.raise_db, c.seed,
+                         bits, c.want_bits);
+            failures++;
+        }
+    }
+    assert(failures == 0);
+}
+
 /* A SoapySDR Airspy's capture is refused (no check at any rate): its passband leaves the reference under or over the
    channel's noise by an amount nobody has measured. A SoapySDR device of unknown identity (a proxy, opaque keys) cannot
    be ruled out as one, and a proxy can deliver an Airspy at any rate, so it is refused at every rate. The same capture
@@ -2462,6 +2530,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_airspy_centred(d);
     test_quiet_depressed_floor(d);
     test_quiet_occupancy(d);
+    test_quiet_occupancy_share_exact(d);
     test_quiet_default_broad_raise(d);
     test_quiet_centred_threshold(d);
     test_quiet_soapy_airspy(d);

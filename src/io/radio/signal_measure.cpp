@@ -1734,7 +1734,10 @@ wide_reference(const dsd_signal_quiet_detector* detector, double* scratch, doubl
     const double k = 2.0 * detector->frames, wh = 2.0 / (9.0 * k);
     const double reference = *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
     const double upper = reference * std::pow(1.0 - wh + kUpperZ * std::sqrt(wh), 3);
-    const long above = std::count_if(scratch, scratch + count, [upper](double v) { return v > upper; });
+    /* Only bins the selection left after the quartile can stand over the upper level: those before it are at most the
+       quartile, and the upper level is above it (reference / quartile and upper / reference both exceed 1, for any
+       number of transforms). */
+    const long above = std::count_if(rank + 1, scratch + count, [upper](double v) { return v > upper; });
     *occupancy = std::max(0.0, (double)above / count - 0.02);
     return reference;
 }
