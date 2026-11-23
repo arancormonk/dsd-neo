@@ -280,6 +280,43 @@ void nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 void nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint16_t crc, uint16_t check, uint8_t type);
 
+/* The frame decoder (nxdn_frame()) decodes each channel of a frame first and commits it once the frame is classified;
+   the public one-shot entry points (<dsd-neo/protocol/nxdn/nxdn_deperm.h>) do both in turn. */
+
+/* A frame's 60-bit SCCH or SACCH field (both take the same place and code), depermuted and Viterbi-decoded as one or
+   the other: its 32 trellis bits, the decoded bytes the payload log prints, and its CRC (an SCCH's CRC-7, a SACCH's
+   CRC-6) as computed and as received. Nothing has acted on it. */
+typedef struct nxdn_field_decode {
+    uint8_t trellis[32];
+    uint8_t m_data[5];
+    uint8_t crc;
+    uint8_t check;
+} nxdn_field_decode;
+
+/* A FACCH1 half, depermuted and Viterbi-decoded: its 96 trellis bits (80 element bits, the CRC-12 and the tail), the
+   decoded bytes the payload log prints, and its CRC-12 as computed and as received. Nothing has acted on it. */
+typedef struct nxdn_facch1_decode {
+    uint8_t trellis[96];
+    uint8_t m_data[12];
+    uint16_t crc;
+    uint16_t check;
+} nxdn_facch1_decode;
+
+/* Decode a FACCH1 half (FEC and CRC-12) without acting on it: nxdn_frame() reads both halves of a frame before either
+   is committed (nxdn_handle_facch1()). */
+nxdn_facch1_decode nxdn_facch1_decode_soft(const uint8_t bits[144], const uint8_t reliab[144]);
+/* Whether a decoded FACCH1 half says the system is Type-C: a CRC-verified CCH_INFO (0x1A), a Type-C message a Type-D
+   system does not send. A FACCH1's 80 elements always hold a whole CCH_INFO, and never a whole SITE_INFO. */
+int nxdn_facch1_says_type_c(const nxdn_facch1_decode* facch1);
+/* Decode a frame's field as a SACCH (FEC and CRC-6) without acting on it (nxdn_handle_sacch() commits it). */
+nxdn_field_decode nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+/* Decode a frame's field as an SCCH (FEC and CRC-7) without acting on it (nxdn_scch_commit() commits it). */
+nxdn_field_decode nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+/* Act on a decoded SCCH: a CRC-passing one with defined content gives the frame its position and its weak and
+   SCCH-streak evidence, and its messages decode (NXDN_decode_scch()). */
+nxdn_channel_result nxdn_scch_commit(dsd_opts* opts, dsd_state* state, const nxdn_field_decode* scch,
+                                     uint8_t direction);
+
 struct nxdn_facch3_udch2_message {
     uint8_t bits[160];
     uint8_t bytes[24];
