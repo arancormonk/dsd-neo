@@ -1718,18 +1718,27 @@ test_scch_undefined_content_confirms_nothing(void) {
     return rc;
 }
 
-/* A VCALL's 80 elements: type, CC option, call type, voice call option, source, destination, cipher and key. */
+/* A VCALL (message type 0x01) of call type @p call_type and Voice Call Option @p voice_call_option, its other fields as
+ * make_vcall_elements() writes them. */
 static void
-make_vcall_elements(uint8_t bits[96], uint8_t message_type, uint16_t source, uint16_t destination, uint8_t cipher,
-                    uint8_t key_id) {
+make_typed_vcall_elements(uint8_t bits[96], uint8_t call_type, uint8_t voice_call_option, uint16_t source,
+                          uint16_t destination, uint8_t cipher, uint8_t key_id) {
     DSD_MEMSET(bits, 0, 96U);
-    write_bits_msb(bits, 2U, 6U, message_type);
-    write_bits_msb(bits, 16U, 3U, 1U);
-    write_bits_msb(bits, 19U, 5U, 2U);
+    write_bits_msb(bits, 2U, 6U, 0x01U);
+    write_bits_msb(bits, 16U, 3U, call_type);
+    write_bits_msb(bits, 19U, 5U, voice_call_option);
     write_bits_msb(bits, 24U, 16U, source);
     write_bits_msb(bits, 40U, 16U, destination);
     write_bits_msb(bits, 56U, 2U, cipher);
     write_bits_msb(bits, 58U, 6U, key_id);
+}
+
+/* A VCALL's 80 elements: type, CC option, call type, voice call option, source, destination, cipher and key. */
+static void
+make_vcall_elements(uint8_t bits[96], uint8_t message_type, uint16_t source, uint16_t destination, uint8_t cipher,
+                    uint8_t key_id) {
+    make_typed_vcall_elements(bits, 1U, 2U, source, destination, cipher, key_id);
+    write_bits_msb(bits, 2U, 6U, message_type);
 }
 
 /*
@@ -2901,6 +2910,115 @@ test_held_back_vcall_prints_no_key_value(void) {
     return rc;
 }
 
+/* The last conventional scan activity report (dsd_trunk_scan_hook_nxdn_conventional_activity()). */
+static struct {
+    int reports;
+    uint32_t target;
+    uint32_t source;
+    int is_private;
+    int encrypted;
+} g_scan_report;
+
+static void
+capture_scan_report(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source, int is_private,
+                    int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    (void)data_call;
+    g_scan_report.reports++;
+    g_scan_report.target = target;
+    g_scan_report.source = source;
+    g_scan_report.is_private = is_private;
+    g_scan_report.encrypted = encrypted;
+}
+
+/* Decode the VCALL @p bits and expect one scan report from it, encrypted when @p want_encrypted. */
+static int
+expect_vcall_scan_encryption(const char* tag, dsd_opts* opts, dsd_state* state, const uint8_t* bits,
+                             int want_encrypted) {
+    char sub[96];
+    g_scan_report.reports = 0;
+    NXDN_Elements_Content_decode(opts, state, bits, 96U);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-reported", tag);
+    int rc = expect_int(sub, g_scan_report.reports, 1);
+    DSD_SNPRINTF(sub, sizeof sub, "%s-encrypted", tag);
+    rc |= expect_int(sub, g_scan_report.encrypted, want_encrypted);
+    return rc;
+}
+
+/*
+ * The conventional scan activity report judges a VCALL's encryption as --enc-lockout does (issue #903): by the call's
+ * own checked indication, never by a cipher the hysteresis carries from an earlier call. After a scrambled DCR call
+ * with no key, a clear VCALL of group 0x0789 is held back against the scrambler, as on main, but the call said clear,
+ * so it is reported clear and policy may hold the channel for it. A keyless DES call's first VCALL, held back in turn,
+ * is not yet reported encrypted; its repeat, once DES is the cipher applied, is.
+ */
+static int
+test_scan_report_takes_the_calls_own_encryption(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    use_enc_lockout(opts, state);
+    const dsd_trunk_scan_hooks hooks = {.nxdn_conventional_activity = capture_scan_report};
+    dsd_trunk_scan_hooks_set(&hooks);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0789U, 0U, 0U);
+    rc |= expect_vcall_scan_encryption("scan-clear-after-dcr", opts, state, bits, 0);
+    rc |= expect_int("scan-clear-after-dcr-scrambler-held", (int)state->nxdn_cipher_type, 1);
+
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    rc |= expect_vcall_scan_encryption("scan-des-held-back", opts, state, bits, 0);
+    rc |= expect_vcall_scan_encryption("scan-des-applied", opts, state, bits, 1);
+    dsd_trunk_scan_hooks_set(NULL);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * The conventional scan activity report names a VCALL's source only when the VCALL names one (issue #903), as the call
+ * publication and the held call take it (nxdn_vcall_source()): an interconnect (110) or speed dial (111) call whose
+ * Voice Call Option (4) says the source field carries none is reported with source 0, so a radio list row matching
+ * those bits never holds or refuses the channel. The same call with Voice Call Option 2 reports its source.
+ */
+static int
+test_scan_report_names_only_a_named_source(void) {
+    static Event_History_I histories[2];
+    static const uint8_t call_types[2] = {6U, 7U};
+    const dsd_trunk_scan_hooks hooks = {.nxdn_conventional_activity = capture_scan_report};
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(call_types); i++) {
+        for (uint8_t option = 2U; option <= 4U; option = (uint8_t)(option + 2U)) {
+            dsd_opts* opts = NULL;
+            dsd_state* state = NULL;
+            if (alloc_fixture(&opts, &state) != 0) {
+                return 1;
+            }
+            init_sacch2_state(state, histories);
+            state->nxdn_confirmed = 1;
+            state->synctype = DSD_SYNC_NXDN_POS;
+            dsd_trunk_scan_hooks_set(&hooks);
+            uint8_t bits[96];
+            make_typed_vcall_elements(bits, call_types[i], option, 0x0321U, 0x0456U, 0U, 0U);
+            g_scan_report.reports = 0;
+            NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+            char tag[64];
+            DSD_SNPRINTF(tag, sizeof tag, "scan-source-type-%u-option-%u", (unsigned)call_types[i], (unsigned)option);
+            rc |= expect_int(tag, g_scan_report.reports, 1);
+            rc |= expect_int(tag, g_scan_report.is_private, 1);
+            rc |= expect_int(tag, (int)g_scan_report.source, option < 4U ? 0x0321 : 0);
+            dsd_trunk_scan_hooks_set(NULL);
+            free_fixture(opts, state);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2951,6 +3069,8 @@ main(void) {
     rc |= test_repeater_status_keeps_the_dcr_cipher();
     rc |= test_dcr_publication_carries_no_preceding_iv();
     rc |= test_held_back_vcall_prints_no_key_value();
+    rc |= test_scan_report_takes_the_calls_own_encryption();
+    rc |= test_scan_report_names_only_a_named_source();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

@@ -3248,6 +3248,15 @@ nxdn_vcall_source(const struct nxdn_vcall_info* info) {
     return (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U;
 }
 
+/* Whether the cipher applied (dsd_state::nxdn_cipher_type) is this checked VCALL's own: the call's own encryption
+ * indication, which alone describes the call it names (issue #903). A cipher the hysteresis still carries from an earlier
+ * call, holding this VCALL's back, is not: such a VCALL is received with no cipher, is never locked out
+ * (nxdn_vcall_run_enc_lockout()) and is not reported to the conventional scan as encrypted. */
+static int
+nxdn_vcall_cipher_applied(const dsd_state* state, const struct nxdn_vcall_info* info) {
+    return (uint32_t)info->cipher_type == state->nxdn_cipher_type;
+}
+
 /* A Type-D VCALL's call keeps the 11-bit IDs @p observation holds and names them under their prefixes, so 03-0005 and
  * 07-0005 are two calls judged by one policy row (issue #903 D7). */
 static void
@@ -3297,12 +3306,12 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     // key id are received only once the air itself has corroborated the applied encrypted
     // classification: this VCALL passed its channel's CRC on a confirmed transmission and carried
     // the key id. A forced scrambler is the decoder's choice, not a received cipher.
-    // Received only from this VCALL itself: it must carry the cipher being published. A new call that changed cipher
+    // Received only from this VCALL itself: it must carry the cipher being published (nxdn_vcall_cipher_applied()). A new call that changed cipher
     // without a decoded release finds the hysteresis still holding the previous call's cipher, which this VCALL did not
     // carry. A VCALL contradicting a received field withdraws it.
-    const int carries = (uint32_t)info->cipher_type == state->nxdn_cipher_type;
-    const uint8_t received =
-        carries && nxdn_cipher_received_enc(state) ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID) : 0U;
+    const uint8_t received = nxdn_vcall_cipher_applied(state, info) && nxdn_cipher_received_enc(state)
+                                 ? (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID)
+                                 : 0U;
     uint8_t contradicted = 0U;
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) > 0) {
@@ -3378,9 +3387,9 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         return;
     }
     /* The lockout judges a call by its own checked encryption indication, this VCALL's cipher, and only once that is
-       the cipher applied (issue #903): a cipher the hysteresis still carries from an earlier call, held against this
-       VCALL's, neither locks the call out nor releases its entry. */
-    if ((uint32_t)info->cipher_type != state->nxdn_cipher_type) {
+       the cipher applied (nxdn_vcall_cipher_applied(), issue #903): a cipher the hysteresis still carries from an
+       earlier call, held against this VCALL's, neither locks the call out nor releases its entry. */
+    if (!nxdn_vcall_cipher_applied(state, info)) {
         return;
     }
     if (state->dmr_encL != 1) {
@@ -3441,14 +3450,15 @@ nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vc
         // Reached, like the publish below, only once the frame's content has confirmed the transmission:
         // a miscorrected VCALL carries a garbage destination_id, and letting it refresh the
         // conventional scan hold would park the coordinator on noise for a full activity_hold_ms
-        // per corrupt burst. The encryption
-        // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
-        // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
-        // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent. A generic voice
-        // call (011, 101) is of neither class, so it never holds the scan as a group call.
-        dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, info->destination_id, info->source_unit_id,
-                                                       kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0,
-                                                       state->nxdn_cipher_type != 0U, 0);
+        // per corrupt burst. The call is encrypted by the lockout's rule (nxdn_vcall_cipher_applied(), issue #903):
+        // the classification nxdn_vcall_apply_state() just applied, not the raw element field -- a lone flipped
+        // cipher_type would otherwise drop the hold mid-call under --enc-lockout, the exact defect nxdn_enc_class.c
+        // exists to prevent -- and only when that is this VCALL's own cipher, never one carried from an earlier call.
+        // Its source is the one it names (nxdn_vcall_source()), as the publication and the held call take it. A
+        // generic voice call (011, 101) is of neither class, so it never holds the scan as a group call.
+        dsd_trunk_scan_hook_nxdn_conventional_activity(
+            opts, state, info->destination_id, nxdn_vcall_source(info), kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0,
+            nxdn_vcall_cipher_applied(state, info) && state->nxdn_cipher_type != 0U, 0);
     }
     nxdn_vcall_publish(opts, state, info, loaded);
     // Classified as admission classifies its assignment (nxdn_vcall_assgn_should_tune()); a generic voice call names no
