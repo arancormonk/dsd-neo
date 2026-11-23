@@ -829,13 +829,25 @@ nxdn_note_dcr_working_key(dsd_state* state, int available) {
 
 /* The live epoch a Call message's first checked segment has just named "JPN DCR", the DCR call now though it was not
    before, keeps none of what a numbered call's messages published on it (VCALLs naming no party continue an unnamed
-   epoch, issue #903): its ALG ID, key ID, MI and received fields are forgotten, and its key is the DCR call's working
-   key, before the event layer sees the DCR call. The cipher the decoder applies stays: the hysteresis carries it, as
-   on main. The complete Call message publishes the DCR call's own (nxdn_publish_sacch2_crypto()). */
+   epoch, issue #903): its class, service metadata, crypto classification, audio permission, ALG ID, key ID, MI and
+   received fields are forgotten (dsd_call_state_forget_call_description()), and its key is the DCR call's working key,
+   before the event layer sees the DCR call. The cipher the decoder applies stays: the hysteresis carries it, as on
+   main. The complete Call message publishes the DCR call's own crypto (nxdn_publish_sacch2_crypto()). */
 static void
-nxdn_withdraw_inherited_crypto(dsd_state* state) {
-    (void)dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_NXDN_POS);
+nxdn_withdraw_inherited_description(dsd_state* state) {
+    (void)dsd_call_state_forget_call_description(state, 0U, DSD_SYNC_NXDN_POS);
     nxdn_note_dcr_working_key(state, -1);
+}
+
+/* The transmission of the DCR call slot 0 holds, active or ended (dsd_call_snapshot_transmission()), else 0. */
+static uint64_t
+nxdn_dcr_call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol)
+        || !dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
+        return 0U;
+    }
+    return dsd_call_snapshot_transmission(&call);
 }
 
 static void
@@ -866,10 +878,12 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
             .kind = DSD_CALL_KIND_VOICE,
         };
         DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
-        const int was_dcr = nxdn_live_call_is_dcr(state);
+        /* The DCR call this segment continues, or reopens after a sync loss (the same transmission), keeps its own
+           crypto; only an epoch newly named the DCR call is withdrawn from what it held before. */
+        const uint64_t dcr_before = nxdn_dcr_call_transmission(state);
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-        if (!was_dcr && nxdn_live_call_is_dcr(state)) {
-            nxdn_withdraw_inherited_crypto(state);
+        if (nxdn_live_call_is_dcr(state) && nxdn_dcr_call_transmission(state) != dcr_before) {
+            nxdn_withdraw_inherited_description(state);
         }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
@@ -906,6 +920,16 @@ nxdn_dcr_crypto_class(const dsd_state* state, uint8_t ota_cipher) {
     return DSD_CALL_CRYPTO_UNKNOWN;
 }
 
+/* Whether a DCR call's working key is there, by the cipher applied, as its classification is (nxdn_dcr_crypto_class()):
+   available when it decrypts, missing when it is pending, else -1 (no key to report, as for a clear call). */
+static int
+nxdn_dcr_key_available(dsd_call_crypto_state classification) {
+    if (classification == DSD_CALL_CRYPTO_DECRYPTABLE) {
+        return 1;
+    }
+    return classification == DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? 0 : -1;
+}
+
 /* A Call message's crypto carries only the DCR call's own content (issue #903): its own cipher field as the ALG ID, no
    key ID, no MI (DCR carries no IV, and the working register a scrambled call loads from the key is never one), and its
    own key selection, the working key. A received ALG or key ID that a numbered call's message (a VCALL naming no party)
@@ -932,7 +956,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
     };
     if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
         if (ota_cipher <= 1U) {
-            nxdn_note_dcr_working_key(state, ota_cipher != 0U ? dsd_key_scalar_present(state, 0) : -1);
+            nxdn_note_dcr_working_key(state, nxdn_dcr_key_available(classification));
         }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }

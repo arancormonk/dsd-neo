@@ -3106,9 +3106,9 @@ open_party_less_des_epoch(dsd_opts* opts, dsd_state* state, Event_History_I* his
 /*
  * The epoch a DCR call takes over is withdrawn from what VCALLs naming no party published on it (issue #903) as soon
  * as the first checked Call segment names it "JPN DCR", before the event layer sees the DCR call: the first of a
- * four-part scrambled Call publishes no ALG ID, key ID, received field or effective key of the DES VCALLs, though the
- * decoder still applies DES and its key (the working cipher carries, as on main). A single-frame Call naming a
- * reserved cipher leaves no effective key either.
+ * four-part scrambled Call publishes no ALG ID, key ID, received field, effective key, classification or audio
+ * permission of the DES VCALLs, though the decoder still applies DES and its key (the working cipher carries, as on
+ * main). A single-frame Call naming a reserved cipher leaves no effective key either.
  */
 static int
 test_dcr_identification_withdraws_inherited_crypto(void) {
@@ -3152,6 +3152,10 @@ test_dcr_identification_withdraws_inherited_crypto(void) {
         rc |= expect_int(sub, call.key_selection.signaled_id, 0);
         DSD_SNPRINTF(sub, sizeof sub, "%s-no-effective-key", tag);
         rc |= expect_int(sub, call.key_selection.effective_id, -1);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-no-inherited-class", tag);
+        rc |= expect_int(sub, (int)call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-no-inherited-permission", tag);
+        rc |= expect_int(sub, (int)call.audio_permitted, 0);
         DSD_SNPRINTF(sub, sizeof sub, "%s-des-still-applied", tag);
         rc |= expect_int(sub, (int)state->nxdn_cipher_type, 2);
         DSD_SNPRINTF(sub, sizeof sub, "%s-key-still-loaded", tag);
@@ -3296,6 +3300,143 @@ test_vcall_iv_publishes_no_released_key_id(void) {
            | vcall_iv_publishes_no_released_key_id(0x08U, 1) | vcall_iv_publishes_its_calls_key_id();
 }
 
+/*
+ * The epoch a DCR call takes over keeps no class or service a VCALL naming no party gave it (issue #903): two checked
+ * private emergency VCALLs naming neither party open an unnamed private emergency epoch, and the first checked segment
+ * of a four-part DCR Call makes it the DCR call, a generic voice call with no service metadata. A further such VCALL
+ * heard during the DCR call gives it neither back.
+ */
+static int
+test_dcr_identification_withdraws_inherited_class_and_service(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    uint8_t bits[96];
+    make_typed_vcall_elements(bits, 4U, 2U, 0U, 0U, 0U, 0U); /* a private call naming neither party */
+    write_bits_msb(bits, 8U, 8U, 0x80U);                     /* CC option: emergency */
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    int rc = expect_int("party-less-private-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("party-less-private-kind", (int)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_int("party-less-private-emergency", (int)call.emergency, 1);
+    const uint64_t unnamed = call.epoch;
+
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 0U, 3U, 0x01U); /* the first of a four-part Call */
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-takeover-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("dcr-takeover-same-epoch", call.epoch == unnamed, 1);
+    rc |= expect_str("dcr-takeover-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-takeover-generic-voice", (int)call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("dcr-takeover-no-emergency", (int)call.emergency, 0);
+    rc |= expect_int("dcr-takeover-no-service-options", (int)call.service_options, 0);
+    rc |= expect_int("dcr-takeover-no-service-metadata", (int)call.has_service_metadata, 0);
+
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    rc |= expect_int("dcr-party-less-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("dcr-party-less-vcall-same-epoch", call.epoch == unnamed, 1);
+    rc |= expect_int("dcr-party-less-vcall-generic-voice", (int)call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("dcr-party-less-vcall-no-emergency", (int)call.emergency, 0);
+    rc |= expect_int("dcr-party-less-vcall-no-service-metadata", (int)call.has_service_metadata, 0);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A DCR call a sync loss ended and the next checked Call segment reopens is the same transmission (issue #903): it
+ * keeps the crypto its own Call published, the scrambler received, which only a DCR call newly taking over an epoch
+ * withdraws.
+ */
+static int
+test_reacquired_dcr_call_keeps_its_crypto(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    rc |= expect_int("reacquired-dcr-algid-before", (int)dcr.algid, 1);
+    rc |= expect_int("reacquired-dcr-encrypted-before", (int)dcr.enc_received, 1);
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+    dsd_decode_clock_test_set_ns(1000200000000ULL); /* 0.2 s later: inside the reacquisition window */
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 0U, 3U, 0x01U); /* the first of a four-part Call */
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot call;
+    rc |= expect_int("reacquired-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("reacquired-dcr-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("reacquired-dcr-same-transmission",
+                     dsd_call_snapshot_transmission(&call) == dsd_call_snapshot_transmission(&dcr), 1);
+    rc |= expect_int("reacquired-dcr-algid", (int)call.algid, 1);
+    rc |= expect_int("reacquired-dcr-encrypted", (int)call.enc_received, 1);
+    rc |= expect_int("reacquired-dcr-crypto", (int)call.crypto, (int)dcr.crypto);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A DCR call's key availability is the applied cipher's (issue #903), as its classification is: with an AES call
+ * established by two party-less AES VCALLs, a complete AES key and no scalar key, a single-frame Call naming the
+ * scrambler is held at AES. It is decryptable, audio permitted, and its working key is available.
+ */
+static int
+test_dcr_key_availability_follows_the_applied_cipher(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->A1[0] = 0x1111111111111111ULL;
+    state->A2[0] = 0x2222222222222222ULL;
+    state->A3[0] = 0x3333333333333333ULL;
+    state->A4[0] = 0x4444444444444444ULL;
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[0] = 4U;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0U, 0U, 3U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("dcr-aes-applied", (int)state->nxdn_cipher_type, 3);
+    rc |= expect_int("dcr-aes-no-scalar", dsd_key_scalar_present(state, 0), 0);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_str("dcr-aes-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-aes-held", (int)state->nxdn_cipher_type, 3);
+    rc |= expect_int("dcr-aes-decryptable", (int)call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("dcr-aes-permitted", (int)call.audio_permitted, 1);
+    rc |= expect_int("dcr-aes-key-available", call.key_selection.available, 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3352,6 +3493,9 @@ main(void) {
     rc |= test_dcr_identification_withdraws_inherited_crypto();
     rc |= test_dcr_audio_follows_the_applied_cipher();
     rc |= test_vcall_iv_publishes_no_released_key_id();
+    rc |= test_dcr_identification_withdraws_inherited_class_and_service();
+    rc |= test_reacquired_dcr_call_keeps_its_crypto();
+    rc |= test_dcr_key_availability_follows_the_applied_cipher();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

@@ -1042,6 +1042,20 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, 
     return 1;
 }
 
+/* Forget the crypto values a replaced transmission could have published into @p snapshot: ALG ID, key id, MI, received
+   fields, the restored mark and the received encryption indication. */
+static void
+call_state_clear_crypto_values(dsd_call_snapshot* snapshot) {
+    snapshot->algid = 0U;
+    snapshot->kid = 0U;
+    snapshot->mi = 0U;
+    snapshot->crypto_received = 0U;
+    snapshot->received_algid = 0U;
+    snapshot->received_kid = 0U;
+    snapshot->crypto_restored = 0U;
+    snapshot->enc_received = 0U;
+}
+
 /* Whether @p snapshot holds no crypto values a replaced transmission could have published into it. */
 static int
 call_state_crypto_values_empty(const dsd_call_snapshot* snapshot) {
@@ -1066,14 +1080,49 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    snapshot->algid = 0U;
-    snapshot->kid = 0U;
-    snapshot->mi = 0U;
-    snapshot->crypto_received = 0U;
-    snapshot->received_algid = 0U;
-    snapshot->received_kid = 0U;
-    snapshot->crypto_restored = 0U;
-    snapshot->enc_received = 0U;
+    call_state_clear_crypto_values(snapshot);
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+/* Whether @p snapshot holds nothing a message describing another call could have published into it: no class beyond
+   generic voice, no service metadata, no crypto classification, audio permission or values. */
+static int
+call_state_description_empty(const dsd_call_snapshot* snapshot) {
+    return snapshot->kind != DSD_CALL_KIND_GROUP_VOICE && snapshot->kind != DSD_CALL_KIND_PRIVATE_VOICE
+           && snapshot->has_service_metadata == 0U && snapshot->service_options == 0U && snapshot->emergency == 0U
+           && snapshot->priority == 0U && snapshot->crypto == DSD_CALL_CRYPTO_UNKNOWN && snapshot->audio_permitted == 0U
+           && call_state_crypto_values_empty(snapshot);
+}
+
+int
+dsd_call_state_forget_call_description(dsd_state* state, uint8_t slot, int protocol) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return -1;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || !dsd_call_state_update_is_protocols(snapshot, protocol) || call_state_description_empty(snapshot)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    if (snapshot->kind == DSD_CALL_KIND_GROUP_VOICE || snapshot->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        snapshot->kind = DSD_CALL_KIND_VOICE;
+    }
+    snapshot->service_options = 0U;
+    snapshot->emergency = 0U;
+    snapshot->priority = 0U;
+    snapshot->has_service_metadata = 0U;
+    snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
+    snapshot->audio_permitted = 0U;
+    call_state_clear_crypto_values(snapshot);
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);

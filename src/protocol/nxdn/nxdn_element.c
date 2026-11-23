@@ -3308,6 +3308,17 @@ nxdn_vcall_name_type_d(dsd_call_observation* observation, const struct nxdn_vcal
                        (uint16_t)observation->ota_source_id);
 }
 
+/* A VCALL naming no party continues a DCR call (dsd_call_state_observe(): it names no other call) but describes it no
+ * more than it publishes crypto there (nxdn_vcall_publish_crypto()): @p observation gives the DCR call no class or
+ * service metadata of its own (issue #903). */
+static void
+nxdn_vcall_keep_dcr_description(const dsd_state* state, dsd_call_observation* observation) {
+    if (observation->ota_target_id == 0U && observation->ota_source_id == 0U && nxdn_live_call_is_dcr(state)) {
+        observation->kind = DSD_CALL_KIND_UNKNOWN;
+        observation->has_service_metadata = 0U;
+    }
+}
+
 static void
 nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info,
                    const nxdn_key_choice* loaded) {
@@ -3338,6 +3349,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .has_service_metadata = 1U,
     };
     nxdn_vcall_name_type_d(&observation, info);
+    nxdn_vcall_keep_dcr_description(state, &observation);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     // Publish the applied classification, not the raw observation: a quarantined contradiction
     // must not flap the published crypto any more than it may flap the audio gate. The cipher and

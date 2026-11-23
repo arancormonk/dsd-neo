@@ -624,6 +624,13 @@ int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protoc
  * classification and audio permission stay until the new call's next crypto update. Returns 1 when the record
  * changed, 0 when the slot holds no active epoch of @p protocol (or nothing to forget), -1 on bad arguments. */
 int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol);
+/** The slot's active epoch, which messages naming no party described, is now named as a call none of them was (an NXDN
+ * DCR call taking over the epoch VCALLs naming no party opened, issue #903): forget all they published into it, so it
+ * is never shown as the new call's. Its group or private class goes back to generic voice; its service metadata
+ * (options, emergency, priority), crypto classification and audio permission are forgotten, and so are the crypto
+ * values dsd_call_state_forget_crypto_values() forgets, until the call's own messages describe it. Returns 1 when the
+ * record changed, 0 when the slot holds no active epoch of @p protocol (or nothing to forget), -1 on bad arguments. */
+int dsd_call_state_forget_call_description(dsd_state* state, uint8_t slot, int protocol);
 /** Update crypto metadata on an existing active or retained ended epoch, a call of @p protocol. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
                                           const dsd_call_crypto_update* update);
