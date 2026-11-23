@@ -4622,32 +4622,49 @@ test_limit_walk_stops_when_its_count_goes_stale(void) {
                300000);
     }
     Store s(roots.list(), false);
+    // C's folder restored onto the root with two older recordings once the walk began, taken by C's start in it: the
+    // table gains a folder not read yet.
+    const QString c =
+        roots.external + QLatin1Char('/')
+        + dsd_qt::recording_folder_base_name(QStringLiteral("saved"), QString(kUidC), QStringLiteral("Other"));
     std::atomic<bool> adopted{false};
     QString restored;
     s.store.setUploadHoldsForTest([&](const QString& path) {
         if (path.endsWith(QLatin1String("/r0.wav")) && !adopted.exchange(true)) {
+            (void)write_owner_json(c, QString(kUidC), QStringLiteral("Other"));
+            record(c, QStringLiteral("0000000000000943-c0"), QStringLiteral("c0.wav"), 1753000000, 10, 300000);
+            record(c, QStringLiteral("0000000000000943-c1"), QStringLiteral("c1.wav"), 1753000001, 11, 300000);
             restored = s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Other"));
+            s.store.endSession();
         }
         return false;
     });
-    s.start();
-    s.store.endSession();
+    const auto left = [&a]() {
+        int n = 0;
+        for (int i = 0; i < 5; i++) {
+            n += QFileInfo::exists(a + QStringLiteral("/r%1.wav").arg(i)) ? 1 : 0;
+        }
+        return n;
+    };
+    // What the walk left, read at the end of the pass it ran in (later passes read C's folder and run it again).
+    std::atomic<int> leftInWalk{-1};
+    s.store.setPassEndHookForTest([&]() {
+        if (adopted.load() && leftInWalk.load() < 0) {
+            leftInWalk = left() + (QFileInfo::exists(c + QStringLiteral("/c0.wav")) ? 10 : 0);
+        }
+    });
     s.store.setLimitMb(1);
-    s.pass();
-    int left = 0;
-    for (int i = 0; i < 5; i++) {
-        left += QFileInfo::exists(a + QStringLiteral("/r%1.wav").arg(i)) ? 1 : 0;
-    }
-    expect("limit stale: the start ran in the walk", adopted.load() && !restored.isEmpty());
-    expect("limit stale: nothing removed once the count went stale", left == 5 && s.store.removedByLimit() == 0);
-    s.store.endSession();
+    s.start();
     s.pass();
     s.pass();
-    left = 0;
-    for (int i = 0; i < 5; i++) {
-        left += QFileInfo::exists(a + QStringLiteral("/r%1.wav").arg(i)) ? 1 : 0;
-    }
-    expect("limit stale: run again once settled", left == 3 && s.store.removedByLimit() == 2);
+    s.store.setPassEndHookForTest({});
+    expect("limit stale: the start took the restored folder in the walk", adopted.load() && restored == c);
+    expect("limit stale: nothing removed once the count went stale", leftInWalk.load() == 15);
+    // Run again over everything: 2.1 MB down to 950 kB, oldest first, C's two and then A's two oldest.
+    expect("limit stale: run again once settled, oldest first",
+           left() == 3 && !QFileInfo::exists(c + QStringLiteral("/c0.wav"))
+               && !QFileInfo::exists(c + QStringLiteral("/c1.wav")) && !QFileInfo::exists(a + QStringLiteral("/r0.wav"))
+               && s.store.removedByLimit() == 4);
 }
 
 /* Issue #902: storage plugged in again after a pass marked it away: Delete all, Delete unfinished and an owner's delete
