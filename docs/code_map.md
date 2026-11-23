@@ -3429,10 +3429,12 @@ suite runs under this compiler.
       registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
     - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a frame the frame decoder classified a
       composite control channel's (once Type-C decoded, or by the frame's own CCH_INFO, whichever FACCH1 half carries
-      the message, issue #903), never Type-D or a traffic channel; a local composite frame with a checked CCH_INFO,
-      whether its LICH read as composite at once or only by that CCH_INFO, drops the IDAS identity an SRV_INFO read
-      with the Type-D layout left (`dsd_nxdn_forget_type_d_identity()`; a Type-D-only frame's after Type-C decoded
-      included) before either half acts, so its rows take the same reception scope whichever half the CCH_INFO is in; a message shorter than its mandatory part adds no row):
+      the message, issue #903), never Type-D or a traffic channel; a local composite frame with checked FACCH1 content
+      (a CCH_INFO that reclassified its LICH, or any checked message, a registration alone included, once Type-C made
+      its LICH read as composite at once; no ambiguous LICH is reclassified for it) drops the IDAS identity an SRV_INFO
+      read with the Type-D layout left (`dsd_nxdn_forget_type_d_identity()`; a Type-D-only frame's after Type-C decoded
+      included) before either half acts, so no row of it takes a stale Type-D scope, and its rows take the same
+      reception scope whichever half the CCH_INFO is in; a message shorter than its mandatory part adds no row):
       REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
       carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
       0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration

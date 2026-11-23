@@ -1788,6 +1788,56 @@ test_known_composite_frame_drops_the_type_d_scope(dsd_opts* opts, dsd_state* sta
 }
 
 /*
+ * A checked FACCH1 message on a local composite frame read as such at once is Type-C content of that frame (issue #903),
+ * even with no CCH_INFO beside it: with Type-C known, a checked SRV_INFO on a 0x63 frame leaves a Type-D system; the
+ * next composite frame (LICH 0x71), whose SACCH fails, carries an accepted REG_RESP in one FACCH1 and an undecodable
+ * other half. The registration, read on the Type-C path, is not recorded under the Type-D system, whichever half
+ * carries it. No ambiguous LICH is reclassified for it.
+ */
+static int
+test_known_composite_registration_alone_drops_the_type_d_scope(dsd_opts* opts, dsd_state* state) {
+    uint8_t srv[80];
+    uint8_t reg[80];
+    uint8_t cch[80];
+    uint8_t scch[25];
+    int rc = 0;
+    DSD_MEMSET(reg, 0, sizeof(reg));
+    put_bits(reg, 2U, 0x20U, 6U);   // REG_RESP
+    put_bits(reg, 13U, 1U, 2U);     // Location ID category 01: Local
+    put_bits(reg, 15U, 77U, 17U);   // system code
+    put_bits(reg, 32U, 1001U, 16U); // unit
+    put_bits(reg, 48U, 200U, 16U);  // group
+    put_bits(reg, 64U, 0x01U, 8U);  // Cause (MM): accepted
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    srv_info(srv, SITE_A);
+    info3_scch(scch);
+    for (int reg_first = 1; reg_first >= 0; reg_first--) {
+        clear_state(opts, state);
+        opts->trunk_enable = 1;
+        send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+        build_frame_scch(0x63U, scch, 0x5AU, srv, NULL);
+        (void)nxdn_frame(opts, state);
+        rc |= expect_long("registration alone: the 0x63 SRV_INFO left a Type-D system",
+                          (state->rx_id.valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U, 1L);
+        build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0x5AU, reg_first ? reg : NULL, reg_first ? NULL : reg);
+        /* The other half is undecodable: its dibits (frame dibits 38-109 for the first half, 110-181 for the second)
+           are inverted. */
+        const size_t other = reg_first ? 110U : 38U;
+        for (size_t i = other; i < other + 72U; i++) {
+            g_frame[i] ^= 3U;
+        }
+        (void)nxdn_frame(opts, state);
+        rc |= expect_long(reg_first ? "registration alone: first-half row recorded"
+                                    : "registration alone: second-half row recorded",
+                          unit_activity_rows(state), 1L);
+        rc |= expect_long(reg_first ? "registration alone: first-half row not under Type-D"
+                                    : "registration alone: second-half row not under Type-D",
+                          newest_unit_activity_scope_a(state) == 0x200L, 0L);
+    }
+    return rc;
+}
+
+/*
  * A checked Type-D FACCH3 or UDCH2 is Type-D evidence of its own frame (issue #903): on late entry, with no SCCH of the
  * carrier checked yet, two frames of a value a composite channel shares (0x69: SCCH and FACCH3; 0x6F: SCCH and UDCH2)
  * whose SCCHs fail carry a VCALL from 0x1864 to 0x1805 in a payload whose two CRCs pass: it decodes in the Type-D
@@ -1873,6 +1923,7 @@ main(void) {
     rc |= test_first_half_unit_activity_reads_the_frame_verdict(opts, state);
     rc |= test_composite_frame_drops_the_type_d_scope_first(opts, state);
     rc |= test_known_composite_frame_drops_the_type_d_scope(opts, state);
+    rc |= test_known_composite_registration_alone_drops_the_type_d_scope(opts, state);
     rc |= test_checked_facch3_udch2_reads_type_d(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
