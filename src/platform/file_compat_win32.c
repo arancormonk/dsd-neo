@@ -1025,14 +1025,17 @@ dsd_handle_file_identity(HANDLE h, dsd_file_identity_t* out) {
     return 0;
 }
 
-/* Whether the folder @p path (wide when @p kind > 0, else ANSI) names is in is a plain folder, not a reparse point. A
-   bare name's folder is the current one. */
+/* Whether the folder @p path (wide when @p kind > 0, else ANSI) names is in is a plain folder, not a reparse point. The
+   folder itself is opened (backup semantics, never through a reparse point) and its attributes read from the handle:
+   that works on a share's root (\\server\share\) too, where an attribute lookup by name fails. A bare name's folder
+   is the current one. */
 static int
 dsd_win32_parent_is_folder(int kind, const wchar_t* wide, const char* path) {
-    DWORD attrs = INVALID_FILE_ATTRIBUTES;
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    HANDLE h = INVALID_HANDLE_VALUE;
     if (kind > 0) {
-        const size_t len = wcslen(wide);
-        size_t cut = len;
+        size_t cut = wcslen(wide);
         while (cut > 0 && wide[cut - 1] != L'\\' && wide[cut - 1] != L'/') {
             cut--;
         }
@@ -1045,11 +1048,10 @@ dsd_win32_parent_is_folder(int kind, const wchar_t* wide, const char* path) {
         }
         DSD_MEMCPY(parent, wide, cut * sizeof(wchar_t));
         parent[cut] = L'\0';
-        attrs = GetFileAttributesW(parent);
+        h = CreateFileW(parent, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
         free(parent);
     } else {
-        const size_t len = strlen(path);
-        size_t cut = len;
+        size_t cut = strlen(path);
         while (cut > 0 && path[cut - 1] != '\\' && path[cut - 1] != '/') {
             cut--;
         }
@@ -1062,11 +1064,34 @@ dsd_win32_parent_is_folder(int kind, const wchar_t* wide, const char* path) {
         }
         DSD_MEMCPY(parent, path, cut);
         parent[cut] = '\0';
-        attrs = GetFileAttributesA(parent);
+        h = CreateFileA(parent, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
         free(parent);
     }
-    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0
-           && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    const int folder = GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+                       && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    CloseHandle(h);
+    return folder;
+}
+
+/* The errno for a failed open of the name itself (dsd_path_file_identity()): a parent reparse loop is EMLINK (the
+   name's type never read), a parent missing or no plain folder ENOTDIR, ENOENT only for a name not in a folder that is
+   there. */
+static int
+dsd_win32_identity_errno(DWORD err, int kind, const wchar_t* wide, const char* path) {
+    if (err == ERROR_CANT_RESOLVE_FILENAME) {
+        return EMLINK;
+    }
+    if (err == ERROR_PATH_NOT_FOUND) {
+        return ENOTDIR;
+    }
+    if (err == ERROR_FILE_NOT_FOUND) {
+        return dsd_win32_parent_is_folder(kind, wide, path) ? ENOENT : ENOTDIR;
+    }
+    return dsd_path_errno(err);
 }
 
 int
@@ -1093,9 +1118,7 @@ dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
     if (h == INVALID_HANDLE_VALUE) {
         /* Only the name itself not found in a folder that is there is a missing name: a parent missing, a file or a
            reparse point (ERROR_PATH_NOT_FOUND, or a parent that is no plain folder) never looked the name up. */
-        errno = err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND
-                    ? (err == ERROR_FILE_NOT_FOUND && dsd_win32_parent_is_folder(kind, wide, path) ? ENOENT : ENOTDIR)
-                    : dsd_path_errno(err);
+        errno = dsd_win32_identity_errno(err, kind, wide, path);
         free(wide);
         return -1;
     }

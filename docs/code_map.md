@@ -1786,8 +1786,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     link or junction is a link), a folder (EISDIR), anything else read and known not to be a regular file (ENODEV: a
     FIFO, a socket or a device, on Windows `GetFileType()` other than a disk file) or a missing name (ENOENT only for a
     name not in a folder that is there: the parent is checked without following it, `dsd_parent_is_folder()`, and on
-    Windows only ERROR_FILE_NOT_FOUND in a plain folder counts; a parent missing, a file or a dangling link never looked
-    the name up and is ENOTDIR)
+    Windows only ERROR_FILE_NOT_FOUND in a plain folder counts, the folder opened by handle so a share's root counts
+    too; a parent missing, a file or a dangling link never looked the name up and is ENOTDIR; a Windows parent reparse
+    loop, ERROR_CANT_RESOLVE_FILENAME, is EMLINK)
     has none, and a name that cannot be read fails with the system's own errno (EACCES, EIO), which says nothing about a
     file being there. The call recording store keeps each recording's and checks it right before a delete's unlink.
     Test: `PLATFORM_FILE_COMPAT` (`expect_path_file_identity`: read twice, the same size with only its modification
