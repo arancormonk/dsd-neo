@@ -662,6 +662,17 @@ RecordingStore::statOf(const QString& path) {
 }
 
 bool
+RecordingStore::opensToRead(const QString& path) {
+    // As a transfer opens it: once, never through a link, never waiting on a FIFO.
+    FILE* fp = dsd_fopen_existing_regular_file(platform_path(path).constData(), "rb");
+    if (fp == nullptr) {
+        return false;
+    }
+    (void)fclose(fp);
+    return true;
+}
+
+bool
 RecordingStore::rootAvailableNow(const QString& root) {
     const QFileInfo info(root);
     if (info.exists()) {
@@ -705,6 +716,8 @@ RecordingStore::markRootAwayLocked(int root, Pass* pass) {
         return;
     }
     m_rootAvailable[root] = false;
+    // The worker the first to see it gone: every selection made before is stale from now on, as for any loss seen.
+    m_storageReads->fetch_add(1U, std::memory_order_release);
     noteQueryChangeLocked(pass); // its recordings read as away
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
         if (!it->fragment.isEmpty() && m_folders.value(it->folder).root == root) {
@@ -1571,6 +1584,26 @@ RecordingStore::processRechecks(Pass* pass) {
 }
 
 void
+RecordingStore::recheckRegularLocked(Entry& entry, const FileStat& stat, bool readChanged, Pass* pass) {
+    // A recheck the host asked for (the player, an export or a share found it changed) that finds another file than the
+    // index knew reads its folder again whole: the owner and the file then come from what is on disk, never taken onto
+    // this entry. The limit's own look reads the size only, so its check before each unlink still finds a file not as
+    // the index knew it.
+    if (readChanged && dsd_file_identity_equal(&stat.identity, &entry.identity) == 0) {
+        scheduleFolderReadLocked(entry.folder, pass);
+        m_passRequested = true; // read at once, not at the next pass the timer starts
+    } else if (readChanged && !opensToRead(entry.path)) {
+        // The file the index knows, which a transfer could not open (no read access to it): kept, its journal line with
+        // it, and out of every index and selection (the unreadable recording's rule), so the next export takes the
+        // others.
+        markEntryUnreadableLocked(entry.id, pass);
+    } else if (stat.size != entry.bytes) {
+        entry.bytes = stat.size;
+        noteQueryChangeLocked(pass);
+    }
+}
+
+void
 RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChanged) {
     for (const QString& id : ids) {
         yieldToReaders();
@@ -1586,17 +1619,7 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
             }
             const FileStat stat = statOf(it->path);
             if (stat.regular) {
-                // A recheck the host asked for (the player, an export or a share found it changed) that finds another
-                // file than the index knew reads its folder again whole: the owner and the file then come from what
-                // is on disk, never taken onto this entry. The limit's own look reads the size only, so its check
-                // before each unlink still finds a file not as the index knew it.
-                if (readChanged && dsd_file_identity_equal(&stat.identity, &it->identity) == 0) {
-                    scheduleFolderReadLocked(it->folder, pass);
-                    m_passRequested = true; // read at once, not at the next pass the timer starts
-                } else if (stat.size != it->bytes) {
-                    it->bytes = stat.size;
-                    noteQueryChangeLocked(pass);
-                }
+                recheckRegularLocked(*it, stat, readChanged, pass);
                 continue;
             }
             root = m_folders.value(it->folder).root;
@@ -1651,7 +1674,7 @@ RecordingStore::processDeletes(Pass* pass) {
 
 RecordingStore::DeleteResult
 RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted,
-                            const dsd_file_identity_t* expected) {
+                            const dsd_file_identity_t* expected, qint64* foundBytes) {
     QString path;
     {
         yieldToReaders();
@@ -1684,6 +1707,9 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, co
         yieldToReaders();
         const std::lock_guard<std::mutex> lock(m_mutex);
         const DeleteResult decided = unlinkEntryLocked(id, path, uploading, cause, expected, pass, &attempt);
+        if (foundBytes != nullptr) {
+            *foundBytes = attempt.bytes;
+        }
         if (decided != DeleteResult::Failed) {
             return decided;
         }
@@ -1750,7 +1776,7 @@ RecordingStore::unlinkEntryLocked(const QString& id, const QString& path, bool u
     // the file the request was asked of (the limit's: the one the index knows). Storage that came back changed without
     // a read of it again (remounted between two passes, two owners' folders swapped; a folder a session start adopted
     // while a delete waited) has another file at the path, which stays.
-    attempt->found = onDiskAsKnownLocked(path, expected != nullptr ? *expected : it->identity);
+    attempt->found = onDiskAsKnownLocked(path, expected != nullptr ? *expected : it->identity, &attempt->bytes);
     if (attempt->found == OnDisk::Replaced) {
         return DeleteResult::Changed;
     }
@@ -1782,12 +1808,15 @@ RecordingStore::heldLocked(const QString& path) const {
 }
 
 RecordingStore::OnDisk
-RecordingStore::onDiskAsKnownLocked(const QString& path, const dsd_file_identity_t& known) const {
+RecordingStore::onDiskAsKnownLocked(const QString& path, const dsd_file_identity_t& known, qint64* bytes) const {
     // A name that cannot be read (no access to it, an I/O error) is never taken as missing: the file is skipped, as
     // one not known to be the file asked of.
     const FileStat now = statOf(path);
     if (now.unreadable) {
         return OnDisk::Unreadable;
+    }
+    if (bytes != nullptr && now.regular) {
+        *bytes = now.size;
     }
     const OnDisk found = onDiskLocked(path);
     if (found != OnDisk::Removable) {
@@ -1894,7 +1923,9 @@ RecordingStore::removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int
         }
         // Every root the total counts is checked again right before the unlink (deleteEntry()): one found gone
         // holds this removal, wherever the recording is.
-        const DeleteResult result = deleteEntry(candidate.id, DeleteCause::Limit, pass, &usage->rootAvailable);
+        qint64 found = -1;
+        const DeleteResult result =
+            deleteEntry(candidate.id, DeleteCause::Limit, pass, &usage->rootAvailable, nullptr, &found);
         if (result == DeleteResult::Stale) {
             // What it counted may no longer be the whole index: nothing more goes now, and the limit runs again once
             // the store is settled (countLimitUsage()).
@@ -1912,8 +1943,12 @@ RecordingStore::removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int
             continue;
         }
         if (result == DeleteResult::Changed) {
-            // Not the file the index knows (another one, or one that cannot be read): skipped, left on disk and told
-            // (deletesSkipped()); the limit goes on with the next.
+            // Not the file the index knows: skipped, left on disk and told (deletesSkipped()). It still counts, at the
+            // size the check found (another size: the total moves by the difference; another time only: as it was),
+            // and the limit goes on with the next only if that total is still over.
+            if (found >= 0) {
+                usage->total += found - candidate.bytes;
+            }
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_deletesSkipped++;
             pass->dirty = true;
@@ -2380,8 +2415,9 @@ RecordingStore::deliver() {
 
 void
 RecordingStore::noteRootSeenAwayLocked(int root) {
-    // Remembered, as a delete request's probe is: back before the pass samples it, it is still listed in full, no delete
-    // runs against it meanwhile, and every selection made before is stale at once, as for any read of storage again.
+    // The one way a root found missing (or back unread) outside a pass is recorded, by a delete request's probe, a
+    // session start's or its owner lookup: back before the pass samples it, it is still listed in full, no delete runs
+    // against it meanwhile, and every selection made before is stale at once, as for any read of storage again.
     m_rootsSeenAway.insert(root);
     m_storageReads->fetch_add(1U, std::memory_order_release);
     m_passRequested = true;
@@ -2964,13 +3000,13 @@ RecordingStore::checkRootsLocked(const QList<int>& roots, bool* away, bool* unre
             // Found missing before any pass did: remembered, and a pass asked to mark it away. One a pass marked away
             // already is read in full when it is back.
             if (known && !seen) {
-                m_rootsSeenAway.insert(root);
+                noteRootSeenAwayLocked(root);
                 readAgain = true;
             }
             continue;
         }
         // Back, not read again yet (marked away, or found missing by a request): the next pass reads it first.
-        m_rootsSeenAway.insert(root);
+        noteRootSeenAwayLocked(root);
         *unread = true;
         readAgain = true;
     }

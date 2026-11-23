@@ -557,6 +557,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * @p starts). */
     bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
+    /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
+    static bool opensToRead(const QString& path);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
     /* Each file @p records publishes into @p files (one the folder's listing read already is kept). */
     static void statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
@@ -661,6 +663,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * went: the storage-loss rule; kept when its name cannot be read), one still there has its size read again, and
      * with @p readChanged (a recheck the host asked for) another file than the index knew reads its folder again. */
     void recheckEntries(const QStringList& ids, Pass* pass, bool readChanged);
+    /* recheckEntries() for @p entry, a regular file now as @p stat reads it. Under the store's lock. */
+    void recheckRegularLocked(Entry& entry, const FileStat& stat, bool readChanged, Pass* pass);
     /* Read @p path whole again at the next pass, with what the index held for it kept until then; the store is not
      * settled meanwhile. Under the store's lock. */
     void scheduleFolderReadLocked(const QString& path, Pass* pass);
@@ -683,14 +687,14 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p expected: the file a user's delete was asked of (its identity when the request was accepted); null for the
      * limit's, which removes the file the index knows. */
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr,
-                             const dsd_file_identity_t* expected = nullptr);
+                             const dsd_file_identity_t* expected = nullptr, qint64* foundBytes = nullptr);
     /* A recording not removable as found (@p found: missing, or not the store's to remove) leaves the index, unless
      * what is there changed meanwhile. Under the store's lock. */
     DeleteResult dropUnremovableLocked(const QString& id, OnDisk found, Pass* pass);
     OnDisk onDiskLocked(const QString& path) const;
     /* onDiskLocked(), and Replaced when a removable file there is not the one @p known names (its size or time differs),
      * or when the name cannot be read at all. */
-    OnDisk onDiskAsKnownLocked(const QString& path, const dsd_file_identity_t& known) const;
+    OnDisk onDiskAsKnownLocked(const QString& path, const dsd_file_identity_t& known, qint64* bytes = nullptr) const;
 
     /* What deleteEntry() settles after the lock when the unlink did not decide: what is at the name, its root, and the
      * failure's reason. */
@@ -698,6 +702,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         OnDisk found = OnDisk::Removable;
         int root = -1;
         QString error;
+        /* The size of the regular file the check found at the name; -1 when it found none. */
+        qint64 bytes = -1;
     };
 
     /* deleteEntry()'s step under the lock: the holds, the check and the unlink. Failed when deleteEntry() still has to

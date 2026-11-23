@@ -16998,8 +16998,12 @@ Qt Quick frontend (`src/ui/qt`):
     or a read that failed meanwhile holds the delete for the folder's read, which drops it
     (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`); so does one whose
     root a session start or a request has seen missing since (`m_rootsSeenAway`), until the root's listing in full
-    drops it (`test_delete_held_when_its_root_was_seen_away`). A session start that finds a root missing, at its first
-    probe or during its owner lookup, remembers it (`noteRootSeenAwayLocked()`) and makes every selection stale at once.
+    drops it (`test_delete_held_when_its_root_was_seen_away`). Every root found missing outside a pass, by a delete
+    request's probe, a session start's first probe or its owner lookup, goes through one function
+    (`noteRootSeenAwayLocked()`): remembered, and every selection made before stale at once; the worker marking a root
+    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). A recheck a
+    transfer asked for that finds the file the index knows but cannot open it (no read access) marks it unreadable, so
+    the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`).
     A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
     with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
     that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
@@ -17034,6 +17038,10 @@ Qt Quick frontend (`src/ui/qt`):
     - armv7 bionic has no 64-bit `time_t`: a file dated past 2038 reads with its time wrapped (the same each read).
     - Windows long paths (`MAX_PATH` and beyond) and share roots are handled in code but not exercised by a local test
       (Wine has no `MAX_PATH` limit and no shares).
+    - A session start that adopts a folder, or fails its owner lookup, between the slices of that folder's read again
+      may let the read commit; the next pass reads the folder again.
+    - A folder.json read that fails with EIO because removable storage disconnected mid-read is retried for that folder
+      only, so a folder newly present on the returning storage can be missed until the next storage scan.
 
     In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
@@ -17134,7 +17142,9 @@ Qt Quick frontend (`src/ui/qt`):
     never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change,
     and only with the index settled as the refusals have it (`storageReadLocked()`: no pass asked for, no folder on
     storage that is there unread); otherwise it waits (`m_limitPending`) and runs in the pass that reads the folder, so
-    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`). Each removal
+    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`). A removal
+    whose check finds another file counts it at the size found (another time only: as it was), so nothing else goes
+    when that total is under the target (`test_limit_counts_the_size_its_unlink_check_found`). Each removal
     checks that again under the unlink's lock: a folder unread or a pass asked for since the count (a session start
     adopting a folder of older recordings) ends the walk (`DeleteResult::Stale`), and the limit runs again once the
     store is settled (`test_limit_walk_stops_when_its_count_goes_stale`):

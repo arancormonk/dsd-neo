@@ -5175,6 +5175,98 @@ test_unreadable_journal_retry_backs_off(void) {
     expect("retry backs off: unread meanwhile", refused);
 }
 
+/* Issue #902: a delete request that finds a root missing makes every selection stale at once, before any pass: a
+ * transfer's token from before the loss no longer stands. */
+void
+test_root_seen_away_by_a_delete_ends_tokens(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("0000000000000960-1");
+    record(folder, id, QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const int selection = s.store.selectRecordings({id}).value(QStringLiteral("selection")).toInt();
+    RecordingSelectionToken token;
+    expect("loss seen by a delete: a token", s.store.selectionToken(selection, &token) && token.current());
+    expect("loss seen by a delete: the storage goes", QDir().rename(ext, away));
+    expect("loss seen by a delete: the delete finds it missing",
+           !s.store.deleteFolder(QString(kUidA)) && s.store.deleteRefusal() == QLatin1String("storageAway"));
+    const bool stale = !token.current();
+    expect("loss seen by a delete: the storage comes back", QDir().rename(away, ext));
+    s.store.releaseSelection(selection);
+    expect("loss seen by a delete: the token is stale at once", stale);
+}
+
+/* Issue #902: the limit's check right before an unlink finding the older recording shrunk (600 kB counted, 100 kB
+ * found) counts it at the size found: 700 kB is under the 1 MB limit's target, so nothing else goes. */
+void
+test_limit_counts_the_size_its_unlink_check_found(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("limit size found: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    record(folder, QStringLiteral("0000000000000961-1"), QStringLiteral("old.wav"), 1754000000, 1, 600000);
+    record(folder, QStringLiteral("0000000000000961-2"), QStringLiteral("new.wav"), 1754000100, 2, 600000);
+    Store s(roots.list(), false);
+    std::atomic<bool> shrunk{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !shrunk.exchange(true)) {
+            make_file(path, 100000);
+        }
+        return false;
+    });
+    s.store.setLimitMb(1);
+    s.start();
+    s.pass();
+    expect("limit size found: shrunk right before its unlink", shrunk.load());
+    expect("limit size found: skipped and told, nothing else removed",
+           QFileInfo::exists(folder + QStringLiteral("/old.wav"))
+               && QFileInfo::exists(folder + QStringLiteral("/new.wav")) && s.store.removedByLimit() == 0
+               && s.store.deletesSkipped() == 1);
+}
+
+/* Issue #902: a recording a save could not open (mode 000 in a folder that can be searched: its size and time still
+ * read) is looked at again by opening it: still not readable, it is out of every selection, its journal line kept, so
+ * Export all takes the others. */
+void
+test_unopenable_recording_leaves_selections(void) {
+    Roots roots;
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString idA = QStringLiteral("0000000000000962-1");
+    record(folder, idA, QStringLiteral("a.wav"), 1754000000, 1);
+    record(folder, QStringLiteral("0000000000000962-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    s.pass();
+    const QString closed = folder + QStringLiteral("/a.wav");
+    QFile::setPermissions(closed, QFileDevice::WriteOwner);
+    QFile probe(closed);
+    if (probe.open(QIODevice::ReadOnly)) {
+        probe.close();
+        QFile::setPermissions(closed, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        DSD_FPRINTF(stdout, "SKIP unopenable: this process reads any file\n");
+        return;
+    }
+    QSignalSpy finished(&host, &dsd_qt::DecoderHost::recordingTransferFinished);
+    const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
+    expect("unopenable: the save begins",
+           host.saveRecording(s.store.selectRecordings({idA}), QUrl::fromLocalFile(dest).toString()));
+    s.pass();
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    const bool journalKept = read_all(journal_of(folder)).contains("a.wav");
+    QFile::setPermissions(closed, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("unopenable: the save told as changed",
+           !finished.isEmpty() && finished.last().at(1).toInt() == dsd_qt::DecoderHost::TransferChanged);
+    expect("unopenable: Export all takes the other, the line kept",
+           all.value(QStringLiteral("count")).toInt() == 1 && journalKept);
+}
+
 /* Issue #902: the limit's check right before an unlink finding a link at the name leaves it and tells the removal as
  * not done (deletesSkipped()), and takes the recording out of the usage: with a 1 MB limit over two 600 kB recordings,
  * the older one's name a link by then, the other is under the limit and stays. */
@@ -5748,6 +5840,9 @@ main(int argc, char** argv) {
     test_recheck_finding_a_link_tells_its_delete();
 #endif
     test_unreadable_journal_retry_backs_off();
+    test_root_seen_away_by_a_delete_ends_tokens();
+    test_limit_counts_the_size_its_unlink_check_found();
+    test_unopenable_recording_leaves_selections();
     test_selection_token();
     test_open_recording_input();
     test_selection_goes_stale_as_a_read_starts();
