@@ -2035,7 +2035,10 @@ suite runs under this compiler.
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
   full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
-  cipher's. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
+  cipher's. An IDAS INFO1 whose cipher and key ID take effect loads its key the same way (`nxdn_load_applied_key()`,
+  the live call's target as the destination), at once, and again for the call a held INFO1 cipher is handed to
+  (`nxdn_cipher_hand_hold_to_call()`), before that call is published or its voice decoded; a held-back INFO1 loads
+  none. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
   another kind (incompatible) only when its own cell is present, every key kind occupying it, and is missing otherwise.
   Every other loader that reads `rkey_array` by key ID decides presence the same way, requires the ALG's width for
   AES, and falls back to the direct key only when nothing usable was imported, judging that one by

@@ -2336,6 +2336,57 @@ test_vcall_opening_the_next_call_takes_the_held_info1_cipher(void) {
     return rc;
 }
 
+/* NXDN48 with the keyloader on, keys 5 = 0x7777 and 7 = 0x2222, and the working key 0x1234 a previous call left. */
+static void
+use_nxdn48_keyloader(dsd_opts* opts, dsd_state* state) {
+    opts->frame_nxdn48 = 1; /* the scrambler's key is selected on NXDN48 */
+    opts->frame_nxdn96 = 0;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->keyloader = 1;
+    state->rkey_array[5] = 0x7777ULL;
+    state->rkey_array[7] = 0x2222ULL;
+    state->R = 0x1234ULL;
+}
+
+/*
+ * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903). During a scrambled DCR call an
+ * INFO1 names the scrambler under key ID 5: key 5 is loaded, and the numbered call an INFO3 then opens reports key 5
+ * with key 5 in R. The same for an INFO1 on an IDAS call of its own: two INFO1s naming the scrambler under key ID 7
+ * load key 7. A lone INFO1 naming DES under key ID 5 then is held back and loads nothing.
+ */
+static int
+test_accepted_info1_loads_its_key(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    use_nxdn48_keyloader(opts, state);
+    send_outbound_info1(opts, state, 1U, 5U);
+    rc |= expect_int("info1-key-loaded-at-once", state->R == 0x7777ULL ? 1 : 0, 1);
+    state->R = 0x1234ULL; /* whatever happened to the working key since, the hand-over loads the call's */
+    send_outbound_scch(opts, state, 1U);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-key-numbered-call", call.epoch != dcr.epoch && call.ota_source_id == 123U, 1);
+    rc |= expect_int("info1-key-numbered-kid", (int)call.kid, 5);
+    rc |= expect_int("info1-key-handed-over-loaded", state->R == 0x7777ULL ? 1 : 0, 1);
+
+    send_outbound_info1(opts, state, 1U, 7U);
+    send_outbound_info1(opts, state, 1U, 7U);
+    rc |= expect_int("info1-key-idas-kid", (int)state->nxdn_key, 7);
+    rc |= expect_int("info1-key-idas-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
+    send_outbound_info1(opts, state, 2U, 5U);
+    rc |= expect_int("info1-key-held-back-cipher", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-key-held-back-loads-nothing", state->R == 0x2222ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2376,6 +2427,7 @@ main(void) {
     rc |= test_held_back_vcall_loads_no_key();
     rc |= test_stale_info1_hold_expires_before_the_next_vcall();
     rc |= test_vcall_opening_the_next_call_takes_the_held_info1_cipher();
+    rc |= test_accepted_info1_loads_its_key();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
