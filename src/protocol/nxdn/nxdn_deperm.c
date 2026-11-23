@@ -1702,3 +1702,10 @@ nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]
     }
     return message;
 }
+
+void
+nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+                              uint8_t type) {
+    const struct nxdn_facch3_udch2_message message = nxdn_facch3_udch2_decode_soft(bits, reliab);
+    nxdn_handle_facch3_udch2_soft(opts, state, &message, type);
+}

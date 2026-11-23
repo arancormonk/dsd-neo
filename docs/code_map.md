@@ -12471,7 +12471,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   act (`nxdn_frame_classify()`, `dsd_state::nxdn_frame_type_d`). An RTCH2 frame is Type-D when its LICH is a value only
   Type-D has (0x60, 0x62, 0x63, 0x68, 0x6E, 0x70, 0x72, 0x76), when its own SCCH passed its check, when both CRCs of
   its own FACCH3 or UDCH2 passed (on 0x69 and 0x6F a composite frame carries FACCH2 or UDCH there, which that reading
-  fails; decoded before the frame acts, `nxdn_facch3_udch2_decode_soft()`), or when the carrier's
+  fails; decoded before the frame acts, `nxdn_facch3_udch2_decode_soft()`, and committed once the frame is classified,
+  `nxdn_handle_facch3_udch2_soft()`; the public `nxdn_deperm_facch3_udch2_soft()` in `nxdn_deperm.h` does both in
+  turn, as `nxdn_deperm_facch_soft()` does for a FACCH1 half), or when the carrier's
   "Type-D" category is fresh, even on a site an older frame decoded as Type-C: there a composite LICH reads as RTCH_C,
   so an RTCH2 reading is one no composite frame gives, and one failed SCCH keeps the carrier's fresh evidence. An
   element decoded with no frame takes

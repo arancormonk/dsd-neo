@@ -1395,6 +1395,43 @@ test_facch3_udch2_crc_state_update(void) {
     return rc;
 }
 
+/* The public FACCH3/UDCH2 entry point (nxdn_deperm.h) decodes the field and commits it at once: what it leaves is what
+ * the frame decoder's split decode and commit leave, for a field whose two CRCs pass and for one whose CRCs fail. */
+static int
+test_facch3_udch2_public_entry_decodes_then_commits(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* entry = NULL;
+    dsd_opts* split_opts = NULL;
+    dsd_state* split = NULL;
+    uint8_t bits[288];
+    uint8_t reliab[288];
+    int rc = 0;
+    for (int pattern = 0; pattern < 2; pattern++) {
+        if (alloc_fixture(&opts, &entry) != 0) {
+            return 1;
+        }
+        if (alloc_fixture(&split_opts, &split) != 0) {
+            free_fixture(opts, entry);
+            return 1;
+        }
+        for (size_t i = 0U; i < sizeof(bits); i++) {
+            bits[i] = pattern == 0 ? 0U : (uint8_t)((i * 7U + 3U) % 5U == 0U);
+            reliab[i] = 200U;
+        }
+        nxdn_deperm_facch3_udch2_soft(opts, entry, bits, reliab, 1U);
+        const struct nxdn_facch3_udch2_message message = nxdn_facch3_udch2_decode_soft(bits, reliab);
+        nxdn_handle_facch3_udch2_soft(split_opts, split, &message, 1U);
+        rc |= expect_int("facch3-entry-format", entry->data_header_format[0], split->data_header_format[0]);
+        rc |= expect_int("facch3-entry-message-type", entry->NxdnElementsContent.MessageType,
+                         split->NxdnElementsContent.MessageType);
+        rc |=
+            expect_int("facch3-entry-evidence", entry->nxdn_confirm_frame_evidence, split->nxdn_confirm_frame_evidence);
+        free_fixture(opts, entry);
+        free_fixture(split_opts, split);
+    }
+    return rc;
+}
+
 static int
 test_facch3_udch2_split_block_storage_and_crc_gate(void) {
     struct nxdn_facch3_udch2_message message;
@@ -2209,6 +2246,7 @@ main(void) {
     rc |= test_facch2_udch_crc_state_update();
     rc |= test_confirming_frame_reports_its_ran_to_search();
     rc |= test_facch3_udch2_crc_state_update();
+    rc |= test_facch3_udch2_public_entry_decodes_then_commits();
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
     rc |= test_scch_crc_gates_scrambler_reload();
     rc |= test_scch_undefined_content_confirms_nothing();
