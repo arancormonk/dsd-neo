@@ -17052,6 +17052,15 @@ Qt Quick frontend (`src/ui/qt`):
       the probe) can drop a known folder until the next storage scan.
     - A card that disconnects between a recheck's stat and its open marks that recording unreadable until a later read
       can open it.
+    - Two folders swapped with each other outside DSD-neo while it runs: when only one of them is read again, the
+      other still counts as read, and its next compaction can rewrite its journal without the records the swap moved.
+    - Storage that returns with a journal another device appended to while it was away: a compaction already past its
+      last check can replace that journal before the rescan reads the new records.
+    - A recording whose file is made unreadable and changed at the same time: the read again that the change asks for
+      takes the new size and time without trying to open the file, so it can be exported, played or removed by the
+      limit again.
+    - A loaded folder whose journal's new lines cannot be read turns its recordings unavailable without telling an
+      open recordings sheet, and a History call's part buttons can still play from it until the next refresh.
 
     In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
     (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
