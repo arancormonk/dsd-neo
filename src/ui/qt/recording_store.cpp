@@ -938,11 +938,10 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
         // it was read above, and that newer label wins; a table that holds another owner for this path (B's folder
         // put where A's was) never keeps it: the owner on disk is installed, and its recordings are what the read
         // finds (a first read holds none of A's; a read again dropped them above).
+        // The label read here is the newest: a session start that relabelled the folder during the read moved its
+        // starts count, and the read was not committed above.
         const auto table = m_folders.constFind(path);
-        if (table != m_folders.cend() && table->uid == folder.uid) {
-            folder.kind = table->kind;
-            folder.name = table->name;
-        } else if (table != m_folders.cend()) {
+        if (table != m_folders.cend() && table->uid != folder.uid) {
             removeFolderEntriesLocked(path, pass);
             m_foldersChanged = true;
         }
@@ -1006,7 +1005,10 @@ RecordingStore::readJournal(const QString& journalPath, QByteArray* data) {
     // it, an I/O error, a parent that does not resolve, a link, a folder or a FIFO at its name.
     FILE* fp = open_journal(journalPath);
     if (fp == nullptr) {
-        return errno == ENOENT;
+        // Only the name not in its folder, which is there (dsd_path_file_identity() checks the parent), is no journal.
+        dsd_file_identity_t none{};
+        return errno == ENOENT && dsd_path_file_identity(platform_path(journalPath).constData(), &none) != 0
+               && errno == ENOENT;
     }
     QFile journal;
     bool read = journal.open(fp, QIODevice::ReadOnly);
@@ -1554,12 +1556,6 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
                 continue; // gone already, or its storage is away (never read as deleted)
             }
             const FileStat stat = statOf(it->path);
-            if (stat.unreadable) {
-                // No access to the name: says nothing about whether it is there. Kept, its journal line with it, and out
-                // of every index, count and usage from now on (the limit's look counts it no more).
-                markEntryUnreadableLocked(it.key(), pass);
-                continue;
-            }
             if (stat.regular) {
                 // A recheck the host asked for (the player, an export or a share found it changed) that finds another
                 // file than the index knew reads its folder again whole: the owner and the file then come from what
@@ -1587,7 +1583,9 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
             continue;
         }
         // Only a name confirmed missing, or confirmed no recording (a link, a folder, a FIFO), leaves the index; one
-        // that cannot be read stays.
+        // that cannot be read (no access to it, an I/O error: it says nothing about whether it is there), with its root
+        // still there, is kept with its journal line and out of every index, count and usage from now on (the limit's
+        // look counts it no more).
         const FileStat again = statOf(it->path);
         if (again.unreadable) {
             markEntryUnreadableLocked(id, pass);
@@ -1609,7 +1607,7 @@ RecordingStore::processDeletes(Pass* pass) {
         if (result != DeleteResult::Held) {
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_deleteQueue.remove(it.key());
-            if (result == DeleteResult::Changed) {
+            if (result == DeleteResult::Changed || result == DeleteResult::Unreadable) {
                 m_deletesSkipped++; // not the recording: the file stays; said on the screens (deletesSkipped())
                 pass->dirty = true;
             }
@@ -1662,6 +1660,13 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, co
     if (!rootStillAvailable(attempt.root, pass)) {
         return DeleteResult::Held;
     }
+    if (attempt.found == OnDisk::Unreadable) {
+        // Its name cannot be read right now, with its root still there: out of every index, count and usage from here
+        // (the unreadable recording's rule), kept, and skipped.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        markEntryUnreadableLocked(id, pass);
+        return DeleteResult::Unreadable;
+    }
     if (attempt.found != OnDisk::Removable) {
         const std::lock_guard<std::mutex> lock(m_mutex);
         const DeleteResult dropped = dropUnremovableLocked(id, attempt.found, pass);
@@ -1697,6 +1702,11 @@ RecordingStore::unlinkEntryLocked(const QString& id, const QString& path, bool u
     }
     if (liveTemp(path)) {
         return DeleteResult::Kept; // this process may still be writing it
+    }
+    // A recording whose name could not be read is never removed, whoever asked and whenever (access back before its
+    // folder is read again included): skipped, kept with its journal line.
+    if (it->unreadable) {
+        return DeleteResult::Unreadable;
     }
     attempt->root = m_folders.value(it->folder).root;
     // Right before the unlink, without following a link: what is there now is what gets removed, and only when it is
@@ -1740,7 +1750,7 @@ RecordingStore::onDiskAsKnownLocked(const QString& path, const dsd_file_identity
     // one not known to be the file asked of.
     const FileStat now = statOf(path);
     if (now.unreadable) {
-        return OnDisk::Replaced;
+        return OnDisk::Unreadable;
     }
     const OnDisk found = onDiskLocked(path);
     if (found != OnDisk::Removable) {
@@ -1854,6 +1864,15 @@ RecordingStore::removeForLimit(LimitUsage* usage, qint64 target, Pass* pass, int
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_limitPending = true;
             return false;
+        }
+        if (result == DeleteResult::Unreadable) {
+            // Its name cannot be read: kept, out of the usage (it no longer counts), told as not deleted, and the walk
+            // goes on against the usage as it is now.
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            usage->total -= candidate.bytes;
+            m_deletesSkipped++;
+            pass->dirty = true;
+            continue;
         }
         if (result == DeleteResult::Changed) {
             // Not the file the index knows (another one, or one that cannot be read): skipped, left on disk and told
@@ -2330,6 +2349,8 @@ RecordingStore::usableRootsLocked() {
     for (int i = 0; i < usable.size(); i++) {
         if (usable.at(i) && !rootAvailableNow(m_roots.at(i))) {
             usable[i] = false;
+            // Remembered, as a delete request's probe is: back before the pass samples it, it is still listed in full.
+            m_rootsSeenAway.insert(i);
             m_passRequested = true;
         }
     }
@@ -2398,7 +2419,10 @@ RecordingStore::existingFolderLocked(const QString& kind, const QString& uid, co
         m_foldersChanged = true;
     }
     for (const QString& path : std::as_const(unread)) {
+        // An owner it could not confirm: a read in flight now commits nothing (starts), and the next pass reads the
+        // folder whole, never a tail.
         markFolderUnreadLocked(path);
+        m_folders[path].starts++;
         m_passRequested = true;
     }
     const auto found = bestPath.isEmpty() ? m_folders.cend() : m_folders.constFind(bestPath);

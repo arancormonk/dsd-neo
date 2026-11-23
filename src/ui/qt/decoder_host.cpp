@@ -743,7 +743,12 @@ DecoderHost::openRecordingInput(const QString& path, const dsd_file_identity_t& 
     *out = nullptr;
     FILE* fp = dsd_fopen_existing_regular_file(platform_path(path).constData(), "rb");
     if (fp == nullptr) {
-        return errno == ENOENT ? RecordingInput::Missing : RecordingInput::Changed;
+        // Gone only when the name itself is not in a folder that is there (dsd_path_file_identity()'s ENOENT, which
+        // checks the parent): a parent that is a dangling link or missing never looked the name up.
+        dsd_file_identity_t none{};
+        const bool gone =
+            errno == ENOENT && dsd_path_file_identity(platform_path(path).constData(), &none) != 0 && errno == ENOENT;
+        return gone ? RecordingInput::Missing : RecordingInput::Changed;
     }
     dsd_file_identity_t opened{};
     if (dsd_file_stream_identity(fp, &opened) != 0 || dsd_file_identity_equal(&expected, &opened) == 0) {

@@ -16973,8 +16973,11 @@ Qt Quick frontend (`src/ui/qt`):
     missing name: confirmed missing or no regular file is `Absent`, no folder of the app's, anything else unreadable;
     `test_socket_marker_is_no_folder`) keeps the folder known, with its owner and recordings, unread and read again
     each pass; it is never dropped from the folder table, by a folder's read, a root's listing or a session start's
-    lookup, and a session start that cannot read it marks a read folder unread too, so no request is taken against an
-    owner it could not confirm (`test_unreadable_marker_keeps_the_folder`, `test_owner_lookup_failure_unsettles`). A
+    lookup, and a session start that cannot read it marks a read folder unread too and moves its `starts`, so a read in
+    flight commits nothing and the next pass reads the folder whole: no request is taken against an owner it could not
+    confirm (`test_unreadable_marker_keeps_the_folder`, `test_owner_lookup_failure_unsettles`,
+    `test_owner_lookup_failure_ends_a_read_in_flight`). The label a successful read finds wins over the index's for the
+    same owner (a session relabel during the read moved `starts`; `test_marker_retry_takes_the_label_on_disk`). A
     read whose owner a session start changed while it ran (adopted, made or relabelled: `Folder::starts`) commits
     nothing, and the folder is read again (`test_adoption_during_a_read_is_read_again`). A recording whose own name cannot be read (EACCES, EIO,
     ENAMETOOLONG, EOVERFLOW, a parent that does not resolve, ENOTDIR or EMLINK: anything but ENOENT or a type read as
@@ -16982,7 +16985,11 @@ Qt Quick frontend (`src/ui/qt`):
     never deleted (no identity matches it; a delete naming it is told as skipped), and out of every index, count and
     usage: History's fragment and detection indexes (a link record and a committed view included), the limit's usage
     and candidates, exports, play and share (`readerEntryLocked()`). A recheck, the limit's look included, that finds a
-    name it cannot read marks the entry so (`markEntryUnreadableLocked()`), so retention never counts it. A later read
+    name it cannot read with its root still there marks the entry so (`markEntryUnreadableLocked()`), so retention never
+    counts it; so does the check right before an unlink (`OnDisk::Unreadable`, `DeleteResult::Unreadable`: skipped and
+    told, and the limit's walk takes it out of its usage and goes on). An entry marked unreadable is never unlinked, by
+    a request queued before or after, access back before its folder's read included
+    (`test_unreadable_entry_is_never_deleted`, `test_limit_unlink_check_drops_an_unreadable_recording`). A later read
     of its folder that sees the file indexes it as before (`test_unreadable_recording_is_kept`,
     `test_unreadable_linked_recording_is_in_no_index`, `test_limit_look_drops_an_unreadable_recording_from_usage`,
     `test_recheck_keeps_an_unreadable_name`). A delete, asked or the limit's, waits while its folder is unread, checked
@@ -16999,7 +17006,10 @@ Qt Quick frontend (`src/ui/qt`):
     its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
     does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
     `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
-    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`).
+    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
+    preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
+    a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
+    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do.
     A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
     file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 

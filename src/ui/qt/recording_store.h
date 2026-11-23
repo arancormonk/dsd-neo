@@ -511,12 +511,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * remove (left on disk, out of the index) or this process's temp file. Failed: the unlink failed; still indexed.
      * Changed: the file at its path is not the one the request (or, for the limit, the index) knew; left alone. */
     /* Stale: a removal for the limit found the index it counted no longer whole (storageReadLocked()). */
-    enum class DeleteResult { Removed, Gone, Held, Kept, Failed, Changed, Stale };
+    /* Unreadable: the recording's name could not be read (now, or when it was indexed or rechecked): kept, skipped. */
+    enum class DeleteResult { Removed, Gone, Held, Kept, Failed, Changed, Stale, Unreadable };
     enum class DeleteCause { Asked, Limit };
     /* What is at a recording's path, without following a link there: nothing; a regular file inside an available root,
      * which the store may remove; anything else, which it leaves alone; or (onDiskAsKnownLocked()) a removable file that
-     * is not the one known, which it leaves alone too. */
-    enum class OnDisk { Missing, Removable, Foreign, Replaced };
+     * is not the one known, which it leaves alone too, or a name that cannot be read, which it never removes. */
+    enum class OnDisk { Missing, Removable, Foreign, Replaced, Unreadable };
     /* What a folder name an owner's new folder would take, already there, comes to: taken for the owner, or the next
      * name, or the next root (the owner's, taking no new files). */
     enum class CandidateFolder { Taken, NextName, NextRoot };

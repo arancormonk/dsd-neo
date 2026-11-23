@@ -40,11 +40,17 @@ object OsConstants {
     private const val S_IFMT = 0xF000
     private const val S_IFREG = 0x8000
 
-    // The mode lstat() gives a regular file (the type bits only; the stub keeps no permissions).
+    private const val S_IFDIR = 0x4000
+
+    // The mode lstat() gives a regular file and a folder (the type bits only; the stub keeps no permissions).
     const val S_IFREG_BITS = S_IFREG
+    const val S_IFDIR_BITS = S_IFDIR
 
     @JvmStatic
     fun S_ISREG(mode: Int) = (mode and S_IFMT) == S_IFREG
+
+    @JvmStatic
+    fun S_ISDIR(mode: Int) = (mode and S_IFMT) == S_IFDIR
 }
 
 class StructTimespec(@JvmField val tv_sec: Long, @JvmField val tv_nsec: Long)
@@ -142,8 +148,13 @@ object Os {
             throw ErrnoException(call, OsConstants.EACCES)
         }
         val modified = attributes.lastModifiedTime().toInstant()
+        val type = when {
+            attributes.isRegularFile -> OsConstants.S_IFREG_BITS
+            attributes.isDirectory -> OsConstants.S_IFDIR_BITS
+            else -> 0
+        }
         return StructStat(
-            if (attributes.isRegularFile) OsConstants.S_IFREG_BITS else 0,
+            type,
             attributes.size(),
             StructTimespec(modified.epochSecond, modified.nano.toLong()),
         )

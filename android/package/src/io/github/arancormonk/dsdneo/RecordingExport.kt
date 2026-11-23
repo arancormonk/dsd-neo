@@ -267,7 +267,9 @@ object RecordingExport {
             val flags = OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK or OsConstants.O_CLOEXEC
             Os.open(path, flags, 0)
         } catch (e: ErrnoException) {
-            if (e.errno == OsConstants.ENOENT) return null
+            // Gone only when the name is not in its folder and that folder is there (a parent that is a dangling link
+            // never looked the name up).
+            if (e.errno == OsConstants.ENOENT && parentIsFolder(path)) return null
             // A link (ELOOP), a parent that does not resolve (ENOTDIR), no access to it, an I/O error: not the file
             // selected as far as can be told, and the store looks again.
             throw RecordingChangedException(path)
@@ -284,6 +286,16 @@ object RecordingExport {
             throw RecordingChangedException(path)
         }
         return DescriptorInputStream(fd)
+    }
+
+    /** Whether the folder [path] is in is there and a folder, never followed if a link. */
+    private fun parentIsFolder(path: String): Boolean {
+        val parent = File(path).parent ?: return true
+        return try {
+            OsConstants.S_ISDIR(Os.lstat(parent).st_mode)
+        } catch (e: ErrnoException) {
+            false
+        }
     }
 
     /** Reads [fd] and closes it with the stream: a FileInputStream made on a descriptor does not own it. */

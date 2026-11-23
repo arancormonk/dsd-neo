@@ -434,6 +434,28 @@ private fun aSelectionReadAgainKeepsNothing() {
     RecordingExport.inputOpener = RecordingExport::openSelected
 }
 
+/**
+ * Issue #902: a recording whose folder is a dangling link was never looked up: not gone (left out), but changed, so the
+ * export keeps nothing and the store looks at it again.
+ */
+private fun aRecordingUnderADanglingFolderIsNoMissingOne() {
+    if (File.separatorChar != '/') {
+        println("SKIP: links need a privilege on Windows")
+        return
+    }
+    val provider = Provider()
+    val (paths, names) = recordings(100)
+    val dangling = File(scratch, "dangling${++serial}")
+    Files.createSymbolicLink(dangling.toPath(), File(scratch, "nowhere${serial}").toPath())
+    val under = File(dangling, "x.wav").path
+    val inputs = arrayOf(paths[0], under)
+    val chosen = selected(arrayOf(paths[0])) + longArrayOf(100, 0, 0)
+    val answer = RecordingExport.transfer(provider, ++nextId, inputs, arrayOf(names[0], "S/x.wav"), chosen, provider.add(), true)
+    check(answer.toList() == listOf(RecordingExport.CHANGED.toString(), under)) {
+        "a recording under a dangling folder is changed, not gone: ${answer.toList()}"
+    }
+}
+
 private fun aSaveCopiesOneRecordingAsItIs() {
     val provider = Provider()
     val (paths, _) = recordings(2 * DocumentTransfer.CHUNK_BYTES + 9)
@@ -572,6 +594,7 @@ fun main() {
         aSaveCopiesOneRecordingAsItIs()
         aRecordingNotTheOneSelectedAbandonsTheExport()
         aSelectionReadAgainKeepsNothing()
+        aRecordingUnderADanglingFolderIsNoMissingOne()
         repeatedNamesStayApart()
         moreThan65535EntriesWriteZip64()
         anErrorStillFailsTheDocument()

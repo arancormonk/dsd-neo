@@ -4065,9 +4065,10 @@ test_delete_of_an_unreadable_file_skips_it(void) {
     expect("unreadable delete: asked", s.store.deleteRecording(id));
     s.pass();
     QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
-    expect("unreadable delete: skipped and told, still indexed with its record",
+    // Kept with its record, and out of every count from then on (the unreadable recording's rule).
+    expect("unreadable delete: skipped and told, kept with its record",
            QFileInfo::exists(sub + QStringLiteral("/x.wav")) && s.store.deletesSkipped() == 1
-               && s.store.recordingCount() == 1 && read_all(journal_of(folder)).contains("locked/x.wav"));
+               && s.store.recordingCount() == 0 && read_all(journal_of(folder)).contains("locked/x.wav"));
 }
 
 /* Issue #902: a selection made before a read of storage again is stale from the moment that read starts,
@@ -4861,6 +4862,194 @@ test_socket_marker_is_no_folder(void) {
 }
 #endif
 
+/* Issue #902: a recording a recheck found unreadable is never deleted, by a request queued before or after, even with
+ * access back before its folder is read again: Delete all skips it and tells it. */
+void
+test_unreadable_entry_is_never_deleted(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString sub = folder + QStringLiteral("/locked");
+    QDir().mkpath(sub);
+    if (!permissions_enforced(sub)) {
+        DSD_FPRINTF(stdout, "SKIP unreadable delete all: this process reads any folder\n");
+        return;
+    }
+    const QString id = QStringLiteral("0000000000000950-1");
+    make_file(sub + QStringLiteral("/x.wav"), 1000);
+    append(journal_of(folder), publish_line(id, QStringLiteral("locked/x.wav"), 1754000000, 1));
+    s.pass();
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    s.store.recheckRecordings({id});
+    s.pass();
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    expect("unreadable delete all: Delete all asked with access back", s.store.deleteAll());
+    s.pass();
+    expect("unreadable delete all: the file stays, told as skipped",
+           QFileInfo::exists(sub + QStringLiteral("/x.wav")) && s.store.deletesSkipped() == 1);
+}
+
+/* Issue #902: the limit's check right before an unlink finding the name unreadable (its subfolder closed just then)
+ * takes it out of the usage and goes on: two 600 kB recordings and a 1 MB limit leave 600 kB counted, so the healthy
+ * recording stays. */
+void
+test_limit_unlink_check_drops_an_unreadable_recording(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("limit unreadable: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    const QString sub = folder + QStringLiteral("/locked");
+    QDir().mkpath(sub);
+    if (!permissions_enforced(sub)) {
+        DSD_FPRINTF(stdout, "SKIP limit unreadable: this process reads any folder\n");
+        return;
+    }
+    make_file(sub + QStringLiteral("/old.wav"), 600000);
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000951-1"), QStringLiteral("locked/old.wav"), 1754000000, 1));
+    record(folder, QStringLiteral("0000000000000951-2"), QStringLiteral("new.wav"), 1754000100, 2, 600000);
+    Store s(roots.list(), false);
+    std::atomic<bool> closed{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !closed.exchange(true)) {
+            QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        }
+        return false;
+    });
+    s.store.setLimitMb(1);
+    s.start();
+    s.pass();
+    const bool healthy = QFileInfo::exists(folder + QStringLiteral("/new.wav"));
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    expect("limit unreadable: closed right before its unlink", closed.load());
+    expect("limit unreadable: the healthy recording stays, the unreadable one kept and told",
+           healthy && QFileInfo::exists(sub + QStringLiteral("/old.wav")) && s.store.removedByLimit() == 0
+               && s.store.deletesSkipped() == 1);
+}
+
+#ifndef _WIN32
+/* Issue #902: a journal naming sub/r.wav where sub is a dangling link at startup: the name was never looked up, so the
+ * recording is kept (unreadable), never dropped, and its journal line stays through compaction. */
+void
+test_dangling_parent_keeps_the_record(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("dangling parent: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    expect("dangling parent: a dangling link", QFile::link(QStringLiteral("nowhere"), folder + QStringLiteral("/sub")));
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000952-1"), QStringLiteral("sub/r.wav"), 1754000000, 1));
+    Store s(roots.list());
+    s.pass();
+    expect("dangling parent: the journal line stays", read_all(journal_of(folder)).contains("sub/r.wav"));
+}
+#endif
+
+/* Issue #902: a session start that cannot read the folder.json of a folder the worker is reading (the read saw it
+ * before) ends that read: nothing is committed, and the folder stays unread until a whole read can tell its owner. */
+void
+test_owner_lookup_failure_ends_a_read_in_flight(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("0000000000000953-1");
+    record(folder, id, QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const QString marker = folder + QStringLiteral("/folder.json");
+    std::atomic<int> lookedUp{-1};
+    s.store.setFolderLoadHookForTest([&](const QString& path) {
+        if (path == folder && lookedUp.load() < 0) {
+            lookedUp = take_read_access(marker) ? 1 : 0;
+            (void)s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+            s.store.endSession();
+        }
+    });
+    make_file(folder + QStringLiteral("/a.wav"), 1500);
+    s.store.recheckRecordings({id});
+    s.pass();
+    s.pass();
+    s.store.setFolderLoadHookForTest({});
+    s.pass();
+    if (lookedUp.load() == 0) {
+        DSD_FPRINTF(stdout, "SKIP read in flight: this process reads any file\n");
+        return;
+    }
+    const bool refused = bulk_requests_refused(s.store, QString(kUidA));
+    QFile::setPermissions(marker, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("read in flight: the lookup failed during the read", lookedUp.load() == 1);
+    expect("read in flight: refused while the owner cannot be read", refused);
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("read in flight: read whole once it can be",
+           !all.value(QStringLiteral("loading")).toBool() && all.value(QStringLiteral("count")).toInt() == 1);
+}
+
+/* Issue #902: an owner's label changed on storage while it was away, and its folder.json unreadable as it came back:
+ * the folder keeps the index's label until a read succeeds, then takes the label that read finds. */
+void
+test_marker_retry_takes_the_label_on_disk(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("label retry: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    record(folder, QStringLiteral("0000000000000954-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    Store s(roots.list());
+    expect("label retry: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    const QString awayFolder = away + QStringLiteral("/Call recordings/County (1a2b3c4d)");
+    expect("label retry: relabelled while away", write_owner_json(awayFolder, QString(kUidA), QStringLiteral("Metro")));
+    if (!take_read_access(awayFolder + QStringLiteral("/folder.json"))) {
+        DSD_FPRINTF(stdout, "SKIP label retry: this process reads any file\n");
+        return;
+    }
+    expect("label retry: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    QFile::setPermissions(folder + QStringLiteral("/folder.json"), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    s.pass();
+    QString name;
+    for (const QVariant& entry : s.store.folders()) {
+        name = entry.toMap().value(QStringLiteral("name")).toString();
+    }
+    expect("label retry: the label read from disk", name == QStringLiteral("Metro"));
+}
+
+/* Issue #902: a session start that finds the preferred storage missing (it records on the next) remembers it, so
+ * storage back before any pass samples it is still listed in full: an owner folder put on it meanwhile is exported. */
+void
+test_session_start_remembers_storage_away(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000955-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    std::atomic<int> ends{0};
+    QString elsewhere;
+    s.store.setPassEndHookForTest([&]() {
+        if (ends++ == 0 && QDir().rename(ext, away)) {
+            const QString d = away + QStringLiteral("/Call recordings/Metro (5e6f7a8b)");
+            (void)write_owner_json(d, QString(kUidC), QStringLiteral("Metro"));
+            record(d, QStringLiteral("0000000000000955-2"), QStringLiteral("d.wav"), 1754000100, 2);
+            elsewhere = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+            (void)QDir().rename(away, ext);
+        }
+    });
+    s.pass();
+    s.pass();
+    s.store.setPassEndHookForTest({});
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("seen at start: the session went to the other storage", elsewhere.startsWith(roots.internal));
+    expect("seen at start: Export all has the folder put on it while away",
+           all.value(QStringLiteral("count")).toInt() == 2);
+}
+
 /* Issue #902: the limit's check right before an unlink finding a link at the name leaves it and tells the removal as
  * not done (deletesSkipped()), and takes the recording out of the usage: with a 1 MB limit over two 600 kB recordings,
  * the older one's name a link by then, the other is under the limit and stays. */
@@ -4965,6 +5154,12 @@ test_open_recording_input(void) {
     make_file(file, 1001);
     expect("open: another size", ServedHost::openRecordingInput(file, known, &fp) == Input::Changed && fp == nullptr);
 #ifndef _WIN32
+    // Under a dangling link the name was never looked up: not gone, changed.
+    expect("open: a dangling parent is no missing name",
+           QFile::link(dir.path() + QStringLiteral("/nowhere"), dir.path() + QStringLiteral("/sub"))
+               && ServedHost::openRecordingInput(dir.path() + QStringLiteral("/sub/r.wav"), known, &fp)
+                      == Input::Changed
+               && !fp);
     const QString fifo = dir.path() + QStringLiteral("/f.wav");
     expect("open: a FIFO, not waited on", mkfifo(dsd_qt::platform_path(fifo).constData(), 0600) == 0
                                               && ServedHost::openRecordingInput(fifo, known, &fp) == Input::Changed
@@ -5414,6 +5609,14 @@ main(int argc, char** argv) {
 #ifndef _WIN32
     test_socket_marker_is_no_folder();
 #endif
+    test_unreadable_entry_is_never_deleted();
+    test_limit_unlink_check_drops_an_unreadable_recording();
+#ifndef _WIN32
+    test_dangling_parent_keeps_the_record();
+#endif
+    test_owner_lookup_failure_ends_a_read_in_flight();
+    test_marker_retry_takes_the_label_on_disk();
+    test_session_start_remembers_storage_away();
     test_selection_token();
     test_open_recording_input();
     test_selection_goes_stale_as_a_read_starts();
