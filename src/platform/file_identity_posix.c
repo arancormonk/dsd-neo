@@ -6,9 +6,9 @@
 /*
  * File identities (file_compat.h) on POSIX, in a file of their own: the project does not build with 64-bit file offsets
  * everywhere, and on a 32-bit build without them lstat() fails with EOVERFLOW for a file over 2 GiB, which a recording
- * can be. src/platform/CMakeLists.txt compiles this file alone with _FILE_OFFSET_BITS=64 (a definition on the command
- * line, so it comes before the forced safe_api.h include and every system header). No struct stat or off_t leaves it,
- * so nothing else sees another layout.
+ * can be, or dated past 2038. src/platform/CMakeLists.txt compiles this file alone with _FILE_OFFSET_BITS=64 and
+ * _TIME_BITS=64 (definitions on the command line, so they come before the forced safe_api.h include and every system
+ * header). No struct stat, off_t or time_t leaves it, so nothing else sees another layout.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -23,8 +23,18 @@
 
 #include <errno.h>
 #include <sys/stat.h>
+#include <time.h>
+
+#include "file_compat_internal.h"
 
 _Static_assert(sizeof(off_t) >= 8, "file identities need 64-bit file offsets: a recording can pass 2 GiB");
+/* Time too: 32-bit glibc 2.34 and later widen time_t with _TIME_BITS=64 (CMakeLists.txt), so a file dated past 2038 is
+ * read. An older glibc, and bionic on armv7, have no 64-bit time on a 32-bit build: there such a file's stat fails
+ * (EOVERFLOW) or wraps its time, and the store keeps the recording (its name reads as unreadable) without blocking
+ * anything else. */
+#if __SIZEOF_POINTER__ >= 8 || (defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34)))
+_Static_assert(sizeof(time_t) >= 8, "file identities need 64-bit time where the C library offers it");
+#endif
 
 /* The identity in @p st, a regular file's; -1 with errno for anything else (a folder, a link, a FIFO, a socket, a
    device). */
@@ -86,6 +96,19 @@ dsd_file_stream_identity(FILE* fp, dsd_file_identity_t* out) {
         return -1;
     }
     return dsd_stat_file_identity(&st, out);
+}
+
+int
+dsd_fd_regular_file_internal(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
 }
 
 int

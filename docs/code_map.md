@@ -1765,10 +1765,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     keeps overflows (`expect_path_file_identity` sets one in 2300); POSIX `lstat()` with 64-bit file offsets in a file of
     its own (the project does not build with them; `src/platform/CMakeLists.txt` gives `file_identity_posix.c` alone
     `_FILE_OFFSET_BITS=64` as a compile definition, ahead of the forced `safe_api.h` include, and the file asserts
-    `off_t` is 64-bit, so a 32-bit glibc or armv7 bionic build reads a file over 2 GiB; no `struct stat` or `off_t`
-    leaves it). `file_compat_posix.c` cannot take the definition, since `file_compat.h` hands `struct stat` across files
-    (`dsd_stat_t`): its regular-file openers open with `O_LARGEFILE` and check the descriptor with `fstat64()` on glibc and
-    bionic (a 64-bit `struct stat` elsewhere), asserted to hold a 64-bit size. Windows reads the name itself, opened with
+    `off_t` is 64-bit, so a 32-bit glibc or armv7 bionic build reads a file over 2 GiB; with `_TIME_BITS=64` too, so
+    32-bit glibc 2.34 and later read a file dated past 2038, asserted where the C library offers 64-bit time; no
+    `struct stat`, `off_t` or `time_t` leaves it). `file_compat_posix.c` cannot take the definitions, since
+    `file_compat.h` hands `struct stat` across files (`dsd_stat_t`): its regular-file openers open with `O_LARGEFILE`
+    and check the descriptor through the identity file (`dsd_fd_regular_file_internal()`). Decided limit: bionic on
+    armv7 has no 64-bit `time_t`; there a file dated past 2038 reads with its time wrapped (checked under qemu-arm: no
+    error, the same value each read, so a change still shows), and a lookup that does fail leaves the recording kept by
+    the unread rule below, holding nothing else. Windows reads the name itself, opened with
     `FILE_FLAG_OPEN_REPARSE_POINT` and `GetFileInformationByHandle()`, an absolute drive or UNC path of `MAX_PATH` or more
     in extended-length form (`\\?\`, `\\?\UNC\`, also for `dsd_fopen_existing_regular_file()`; one with `.`, `..` or an
     empty part is left as it is; `expect_long_path_identity`). `dsd_file_stream_identity()` reads the same of a stream

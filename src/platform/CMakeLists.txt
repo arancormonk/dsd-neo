@@ -25,12 +25,12 @@ else()
             file_identity_posix.c
             posix_compat_posix.c
     )
-    # File identities read a recording over 2 GiB on a 32-bit build too: this one file takes 64-bit file offsets (it
-    # hands no struct stat or off_t to any other file; file_compat_posix.c does, through dsd_stat_t, and uses explicit
-    # 64-bit calls instead).
+    # File identities read a recording over 2 GiB or dated past 2038 on a 32-bit build too: this one file takes 64-bit
+    # file offsets and time (it hands no struct stat, off_t or time_t to any other file; file_compat_posix.c does,
+    # through dsd_stat_t, and checks its descriptors through this file instead).
     set_source_files_properties(
         file_identity_posix.c
-        PROPERTIES COMPILE_DEFINITIONS _FILE_OFFSET_BITS=64
+        PROPERTIES COMPILE_DEFINITIONS "_FILE_OFFSET_BITS=64;_TIME_BITS=64"
     )
     find_package(Threads REQUIRED)
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)

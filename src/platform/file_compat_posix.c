@@ -275,21 +275,12 @@ dsd_close_failed_fd(int fd) {
 }
 
 /*
- * A descriptor's status with a 64-bit size whatever off_t is in this file. The project does not build with 64-bit file
- * offsets, and this file cannot take them on its own: file_compat.h hands struct stat across files (dsd_stat_t), so it
- * keeps the default layout. On 32-bit glibc and bionic the default fstat() fails with EOVERFLOW for a file over 2 GiB,
- * which a recording can be, so the explicit 64-bit call is used there; musl, Apple and the BSDs have a 64-bit struct
- * stat already. Likewise O_LARGEFILE lets the open itself take such a file (32-bit glibc refuses it without).
+ * The project does not build with 64-bit file offsets or time, and this file cannot take them on its own:
+ * file_compat.h hands struct stat across files (dsd_stat_t), so it keeps the default layout. A 32-bit build's default
+ * open() and fstat() fail with EOVERFLOW for a file over 2 GiB or dated past 2038, which a recording can be: the
+ * openers below open with O_LARGEFILE, and check the descriptor in file_identity_posix.c, which is built with both
+ * (dsd_fd_regular_file_internal()).
  */
-#if defined(__GLIBC__) || defined(__ANDROID__)
-typedef struct stat64 dsd_large_stat_t;
-#define dsd_large_fstat fstat64
-#else
-typedef struct stat dsd_large_stat_t;
-#define dsd_large_fstat fstat
-#endif
-_Static_assert(sizeof(((dsd_large_stat_t*)0)->st_size) >= 8, "a recording can pass 2 GiB: a 64-bit size is needed");
-
 #ifdef O_LARGEFILE
 #define DSD_O_LARGEFILE O_LARGEFILE
 #else
@@ -300,14 +291,8 @@ _Static_assert(sizeof(((dsd_large_stat_t*)0)->st_size) >= 8, "a recording can pa
    its reads blocking. On failure @p fd is closed and -1 returned with errno set. */
 static int
 dsd_existing_regular_fd_ready(int fd) {
-    dsd_large_stat_t st;
-    if (dsd_large_fstat(fd, &st) != 0) {
+    if (dsd_fd_regular_file_internal(fd) != 0) {
         return dsd_close_failed_fd(fd);
-    }
-    if (!S_ISREG(st.st_mode)) {
-        close(fd);
-        errno = EINVAL;
-        return -1;
     }
 
     int fl = fcntl(fd, F_GETFL);

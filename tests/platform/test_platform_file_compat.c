@@ -1701,7 +1701,11 @@ expect_path_file_identity(void) {
     const char* other = "dsd_neo_file_identity/b.wav";
     const char* missing = "dsd_neo_file_identity/missing.wav";
     const char* twin = "dsd_neo_file_identity/twin.wav";
-    (void)dsd_mkdir(dir, 0700);
+    // Only in a folder this run made: a name already there is left alone, never written or removed.
+    if (dsd_mkdir(dir, 0700) != 0) {
+        DSD_FPRINTF(stderr, "file identity: could not make %s (left from an earlier run?)\n", dir);
+        return 1;
+    }
     int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0
              && write_text_file(twin, "cccc") == 0;
     dsd_file_identity_t first;
@@ -1788,7 +1792,11 @@ expect_file_stream_identity(void) {
     const char* dir = "dsd_neo_stream_identity";
     const char* file = "dsd_neo_stream_identity/a.wav";
     const char* other = "dsd_neo_stream_identity/b.wav";
-    (void)dsd_mkdir(dir, 0700);
+    // Only in a folder this run made: a name already there is left alone, never written or removed.
+    if (dsd_mkdir(dir, 0700) != 0) {
+        DSD_FPRINTF(stderr, "file identity: could not make %s (left from an earlier run?)\n", dir);
+        return 1;
+    }
     int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0;
     dsd_file_identity_t named;
     dsd_file_identity_t opened;
@@ -1822,13 +1830,18 @@ expect_file_stream_identity(void) {
 static wchar_t*
 long_path_wide(const char* path) {
     const int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
-    wchar_t* out = n > 0 ? (wchar_t*)malloc((size_t)(n + 4) * sizeof(wchar_t)) : NULL;
+    // A share's path (\\server\share\...) takes the extended UNC form (\\?\UNC\server\share\...), as the
+    // production converter makes it; a drive path takes \\?\ before it.
+    const int unc = (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/');
+    const wchar_t* prefix = unc ? L"\\\\?\\UNC" : L"\\\\?\\";
+    const size_t prefix_len = wcslen(prefix);
+    wchar_t* out = n > 0 ? (wchar_t*)malloc((size_t)n * sizeof(wchar_t) + prefix_len * sizeof(wchar_t)) : NULL;
     if (!out) {
         return NULL;
     }
-    DSD_MEMCPY(out, L"\\\\?\\", 4 * sizeof(wchar_t));
-    (void)MultiByteToWideChar(CP_UTF8, 0, path, -1, out + 4, n);
-    for (wchar_t* c = out + 4; *c != L'\0'; c++) {
+    DSD_MEMCPY(out, prefix, prefix_len * sizeof(wchar_t));
+    (void)MultiByteToWideChar(CP_UTF8, 0, unc ? path + 1 : path, -1, out + prefix_len, n);
+    for (wchar_t* c = out + prefix_len; *c != L'\0'; c++) {
         *c = *c == L'/' ? L'\\' : *c;
     }
     return out;
