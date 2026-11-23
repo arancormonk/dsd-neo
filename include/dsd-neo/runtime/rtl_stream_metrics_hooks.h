@@ -78,6 +78,8 @@ typedef struct {
     void (*set_channel_squelch)(double mean_power);
     /** The whole channel squelch setting: a LEVEL threshold or an AUTO margin over the learned floor. */
     void (*set_channel_squelch_setting)(const dsd_squelch_setting* setting);
+    /** The gate an outstanding retune that carries one lands, resolved again (rtl_stream_update_retune_squelch()). */
+    void (*update_retune_squelch)(const dsd_squelch_setting* setting);
     /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
     int (*apply_analog_profile)(int family, int kind, int width_hz);
     /* A digital family request that lands the digital family's landing whichever family the front end runs
@@ -159,6 +161,12 @@ int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
  * -1 when neither is installed or @p setting is NULL.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_setting* setting);
+/**
+ * @brief The squelch gate an outstanding retune that carries one lands, as the decoder resolves it now (issue #899,
+ * rtl_stream_update_retune_squelch()): nothing changes on the receiver until such a retune lands. Returns 0 when
+ * forwarded and -1 when no radio backend is installed or @p setting is NULL.
+ */
+int dsd_rtl_stream_metrics_hook_update_retune_squelch(const dsd_squelch_setting* setting);
 /**
  * @brief Ask the RTL front end for a receive family and, for analog, a demodulator kind and channel width.
  *

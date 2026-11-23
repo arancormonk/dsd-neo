@@ -11,6 +11,7 @@
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -1284,6 +1285,40 @@ test_external_backend_landing_waits_for_reconfiguration(void) {
                             DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     failed |= expect_int_eq("reconfiguration during an external landing: output rate", r.arriving_output_rate, 48000);
     failed |= expect_int_eq("external landing race: the gate is open again", r.gate_open_after, 1);
+    return failed;
+}
+
+/* Issue #899: a retune carries its squelch gate, which the receiver applies where the rest of the profile lands, the
+ * controller's finalize or an external backend's landing, never before (the old channel keeps its gate while the retune
+ * is outstanding) and in the decoder's latest word on it. A profile superseded by a live family request, cleared before
+ * it was taken, or refused where it landed hands the receiver nothing. A profile queued for the gate alone lands the
+ * gate and nothing else: no family, symbol rate or timing, and no live receive request settled. A scan leave counted
+ * after it supersedes it as any profile with no family. */
+static int
+test_retune_carries_its_squelch_gate(void) {
+    rtl_stream_test_retune_squelch_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("retune gate hook", rtl_stream_test_retune_squelch_landing(&r), 0);
+    failed |= expect_int_eq("retune gate: taken, not landed, the old gate", r.queued_mode, DSD_SQUELCH_MODE_LEVEL);
+    failed |= expect_int_eq("retune gate: the controller lands it", r.controller_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("retune gate: the controller lands its margin", r.controller_margin, 10);
+    failed |= expect_int_eq("retune gate: the decoder's later word lands", r.updated_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("retune gate: the later word's margin", r.updated_margin, 6);
+    failed |= expect_int_eq("retune gate: superseded, nothing", r.superseded_mode, DSD_SQUELCH_MODE_LEVEL);
+    failed |= expect_int_eq("retune gate: cleared, nothing", r.cleared_mode, DSD_SQUELCH_MODE_LEVEL);
+    failed |= expect_int_eq("retune gate: a refused width is refused", r.refused, 1);
+    failed |= expect_int_eq("retune gate: refused, nothing", r.refused_mode, DSD_SQUELCH_MODE_LEVEL);
+    failed |= expect_int_eq("retune gate: an external landing lands it", r.external_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("retune gate: an external landing's margin", r.external_margin, 10);
+    failed |= expect_int_eq("retune gate alone: external", r.gate_only_external_mode, DSD_SQUELCH_MODE_AUTO);
+    failed |= expect_int_eq("retune gate alone: external margin", r.gate_only_external_margin, 6);
+    failed |= expect_int_eq("retune gate alone: the family stays", r.gate_only_family_kept, 1);
+    failed |= expect_int_eq("retune gate alone: a live request stays queued", r.gate_only_request_kept, 1);
+    failed |= expect_int_eq("retune gate alone: the controller", r.gate_only_controller_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("retune gate alone: the controller's margin", r.gate_only_controller_margin, 14);
+    failed |= expect_int_eq("retune gate alone: symbols and timing stay", r.gate_only_symbols_kept, 1);
+    failed |= expect_int_eq("retune gate alone: a scan leave supersedes it", r.gate_only_superseded_mode,
+                            DSD_SQUELCH_MODE_LEVEL);
     return failed;
 }
 
@@ -3645,6 +3680,7 @@ main(void) {
     failed |= test_external_backend_retune_lands_where_timed();
     failed |= test_external_backend_landing_waits_for_reconfiguration();
     failed |= test_external_backend_landing_filter_state();
+    failed |= test_retune_carries_its_squelch_gate();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();

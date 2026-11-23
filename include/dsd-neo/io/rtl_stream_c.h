@@ -999,6 +999,30 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);
 
 /**
+ * @brief Make the retune queued for @p target_freq_hz carry the squelch gate (issue #899): the landing hands the
+ * receiver @p gate, or the newer one rtl_stream_update_retune_squelch() gave while the retune was outstanding, at the
+ * same boundary as the profile's family, width and gain (the controller's finalize, or an external backend's landing,
+ * rtl_stream_apply_pending_retune_profile_for_target()), so no sample of the new channel runs under the old channel's
+ * gate and none of the old channel's under the new one's.
+ *
+ * Attach it last: rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile. With
+ * nothing queued for this target, a profile for the gate alone is queued, which lands nothing else and settles no
+ * receive request. A profile cleared (rtl_stream_clear_pending_retune_profile()), superseded (a live family request, or
+ * for a profile with no family a live analog request or a scan leave, counted after it was queued), refused where it
+ * lands (an analog width the rate cannot run), left behind by a coalesced retune to another target, or whose retune
+ * fails, drops its gate with it: the receiver keeps the gate of the channel it stays on. Decoder thread.
+ */
+void rtl_stream_prepare_retune_squelch_for_target(uint32_t target_freq_hz, const dsd_squelch_setting* gate);
+
+/**
+ * @brief The gate the channel an outstanding retune goes to runs, as the decoder resolves it now (issue #899): a
+ * command that changed it (a squelch edit, a config, a decode switch) while the retune was queued or in flight hands it
+ * here, and the retune lands this one in place of the gate it was queued with. Nothing changes on the receiver until a
+ * retune that carries a gate lands. Decoder thread.
+ */
+void rtl_stream_update_retune_squelch(const dsd_squelch_setting* gate);
+
+/**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),
  * rtl_stream_request_digital_family_landing()).
  *

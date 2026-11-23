@@ -2128,6 +2128,35 @@ typedef struct rtl_stream_test_external_landing_filter_result {
  * on C that had no profile to take (D, then C with no profile, then D). */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
 
+/* The squelch gate a retune carries (issue #899): what the receiver runs (rtl_stream_set_channel_squelch_setting()'s
+ * word) at each point, as a dsd_squelch_mode and a margin (a LEVEL gate's level apart). */
+typedef struct rtl_stream_test_retune_squelch_result {
+    int queued_mode;     /* an analog retune queued with noise +10, taken by the controller, not landed yet */
+    int controller_mode; /* ... once the controller's finalize landed it */
+    int controller_margin;
+    int updated_mode; /* one queued with noise +10, the decoder's later word auto +6 before it landed */
+    int updated_margin;
+    int superseded_mode; /* one superseded by a live family request made after its attach */
+    int cleared_mode;    /* one cleared before the controller took it */
+    int refused_mode;    /* one whose analog width the demod rate cannot run, refused where it landed */
+    int refused;         /* 1 when that finalize reported the refusal */
+    int external_mode;   /* an external backend's landing of one with noise +10 */
+    int external_margin;
+    int gate_only_external_mode; /* an external landing of a profile queued for the gate alone (auto +6) */
+    int gate_only_external_margin;
+    int gate_only_family_kept;     /* 1 when that landing left the receive family as it found it */
+    int gate_only_request_kept;    /* 1 when it left a live analog request queued before it in the queue */
+    int gate_only_controller_mode; /* the controller's landing of a profile for the gate alone (noise +14) */
+    int gate_only_controller_margin;
+    int gate_only_symbols_kept;    /* 1 when that landing left the symbol rate and TED as it found them */
+    int gate_only_superseded_mode; /* one for the gate alone, superseded by a scan leave counted after it */
+} rtl_stream_test_retune_squelch_result;
+
+/* Open the NFM monitor at 48 kHz with the squelch Off and land retunes that carry a squelch gate, one after another, as
+ * the controller does (queue, take, finalize) or as an external backend's landing does, reporting the gate the receiver
+ * runs after each (issue #899). Each case starts from Off. */
+int rtl_stream_test_retune_squelch_landing(rtl_stream_test_retune_squelch_result* out);
+
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
 typedef struct rtl_stream_test_external_landing_race_result {
     /* The controller holds its reconfigure gate (controller_enter_reconfigure_gate()) when the landing starts. */
