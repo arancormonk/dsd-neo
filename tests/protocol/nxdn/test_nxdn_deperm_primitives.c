@@ -2099,6 +2099,57 @@ test_quarantined_info1_keeps_the_held_key(void) {
     return rc;
 }
 
+/*
+ * No republication gives the DCR call the INFO1's cipher while it is held (issue #903): during a scrambled DCR call an
+ * INFO1 names the scrambler under key ID 5, then a checked VCALL_IV comes before any numbered SCCH, and the DCR call
+ * keeps its own crypto. Likewise when two INFO1s replaced the applied cipher with another (cipher 2 under key ID 6) and
+ * the DCR call's next SACCH-2 scrambler is held back as a lone contradiction: the DCR call keeps its own algorithm.
+ */
+static int
+test_held_info1_cipher_is_never_republished_on_the_dcr_call(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 1U, 5U);
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x11223344U);
+    write_bits_msb(bits, 40U, 32U, 0x55667788U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-republish-iv-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("held-republish-iv-dcr-algid", (int)call.algid, (int)dcr.algid);
+    rc |= expect_int("held-republish-iv-dcr-kid", (int)call.kid, (int)dcr.kid);
+    free_fixture(opts, state);
+
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    rc |= establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_info1(opts, state, 2U, 6U);
+    send_outbound_info1(opts, state, 2U, 6U);
+    rc |= expect_int("held-republish-info1-applied", (int)state->nxdn_cipher_type, 2);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-republish-sacch2-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("held-republish-sacch2-dcr-algid", (int)call.algid, (int)dcr.algid);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2133,6 +2184,7 @@ main(void) {
     rc |= test_quarantined_contradiction_keeps_the_dcr_provenance();
     rc |= test_held_info1_cipher_never_lands_on_a_later_call();
     rc |= test_quarantined_info1_keeps_the_held_key();
+    rc |= test_held_info1_cipher_is_never_republished_on_the_dcr_call();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

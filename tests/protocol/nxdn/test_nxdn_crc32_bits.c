@@ -79,6 +79,12 @@ nxdn_cipher_drop_stale_hold(dsd_state* state) {
     (void)state;
 }
 
+int
+nxdn_cipher_publication_held(dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
 void
 NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
     (void)opts;
