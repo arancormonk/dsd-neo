@@ -851,21 +851,21 @@ test_signal_geometries() {
        Airspy's keys on another backend, is not. */
     struct ReceiverCase {
         int backend;
-        const char *factory, *driver_key, *hardware_key, *profile;
         int want;
+        const char *factory, *driver_key, *hardware_key, *profile;
     };
 
     static const ReceiverCase receivers[] = {
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspy", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspy", "Airspy", "Airspy", "generic", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "hackrf", "HackRF", "HackRF One", "airspy", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "airspyhf", "AirspyHF", "AirspyHF+", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "rtlsdr", "Generic RTL2832U", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "rtlsdr", "AirSpy Mini", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "remote", "HackRF", "HackRF One", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {RTL_DEVICE_TEST_BACKEND_SOAPY, "", "HackRF", "HackRF One", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
-        {RTL_DEVICE_TEST_BACKEND_AIRSPY, "", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
-        {RTL_DEVICE_TEST_BACKEND_USB, "", "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, "airspy", "Airspy", "Airspy", ""},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, "airspy", "Airspy", "Airspy", "generic"},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_OTHER, "hackrf", "HackRF", "HackRF One", "airspy"},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_OTHER, "airspyhf", "AirspyHF", "AirspyHF+", ""},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_OTHER, "rtlsdr", "rtlsdr", "Generic RTL2832U", ""},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, "rtlsdr", "rtlsdr", "AirSpy Mini", ""},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, "remote", "HackRF", "HackRF One", ""},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, "", "HackRF", "HackRF One", ""},
+        {RTL_DEVICE_TEST_BACKEND_AIRSPY, DSD_SIGNAL_RECEIVER_OTHER, "", "Airspy", "Airspy", ""},
+        {RTL_DEVICE_TEST_BACKEND_USB, DSD_SIGNAL_RECEIVER_OTHER, "", "Airspy", "Airspy", ""},
     };
     for (const ReceiverCase& r : receivers) {
         assert(rtl_device_test_signal_receiver(r.backend, r.factory, r.driver_key, r.hardware_key, r.profile)
@@ -1741,8 +1741,8 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
             const auto occupied = quiet_occupied_noise(q, width, 0.5, 10, seed);
             auto one = clean;
             const size_t window = quiet_window_pairs(q);
-            std::copy(occupied.begin() + (ptrdiff_t)(2 * 4 * window), occupied.begin() + (ptrdiff_t)(2 * 5 * window),
-                      one.begin() + (ptrdiff_t)(2 * 4 * window));
+            std::copy(occupied.begin() + (ptrdiff_t)(window * 8U), occupied.begin() + (ptrdiff_t)(window * 10U),
+                      one.begin() + (ptrdiff_t)(window * 8U));
             const auto one_voided = quiet_run(d, q, one, 4096, &shipped);
             assert(!one_voided.valid && !one_voided.quiet);
         }

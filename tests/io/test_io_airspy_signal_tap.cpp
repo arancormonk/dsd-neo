@@ -28,6 +28,7 @@
 #include <mutex>
 #include <random>
 #include <stdint.h>
+#include <stdio.h>
 #include <string>
 #include <thread>
 #include <vector>

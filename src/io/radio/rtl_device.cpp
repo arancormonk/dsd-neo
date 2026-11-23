@@ -125,6 +125,7 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <exception>
+#include <map> /* SoapySDR::Kwargs */
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 #include <utility> /* the stream-argument seam walks the arguments' pairs */
 #endif
@@ -4876,23 +4877,28 @@ soapy_open_device_locked(struct rtl_device* dev, const std::string& args) {
 
 /* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
    never turns a known device into an unknown one, and its identity bits are latched either way. */
+/* Copy the key @p read returns into @p out; a lookup that throws leaves @p out as it was. Returns whether it read. */
+template <typename Read>
+static bool
+soapy_read_key(Read read, char* out, size_t out_size) {
+    try {
+        const std::string key = read();
+        rtl_device_copy_cstr(out, out_size, key.c_str());
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 static void
 soapy_cache_identity_locked(struct rtl_device* dev) {
     if (!dev || !dev->soapy_dev) {
         return;
     }
-    try {
-        const std::string key = dev->soapy_dev->getDriverKey();
-        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), key.c_str());
-    } catch (const std::exception&) {
-        /* keep the key read before */
-    }
-    try {
-        const std::string key = dev->soapy_dev->getHardwareKey();
-        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), key.c_str());
-    } catch (const std::exception&) {
-        /* keep the key read before */
-    }
+    SoapySDR::Device* const sdr = dev->soapy_dev;
+    (void)soapy_read_key([sdr]() { return sdr->getDriverKey(); }, dev->soapy_driver_key, sizeof(dev->soapy_driver_key));
+    (void)soapy_read_key([sdr]() { return sdr->getHardwareKey(); }, dev->soapy_hardware_key,
+                         sizeof(dev->soapy_hardware_key));
     soapy_note_identity_locked(dev);
     try {
         double full_scale = 0.0;
