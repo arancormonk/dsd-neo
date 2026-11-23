@@ -434,7 +434,7 @@ analog row whose squelch is off or at -100 dB or below: noise then keeps its car
 block, so only the visit cap or a manual advance or avoid moves on. The auto and noise squelches (`--squelch auto`,
 `--squelch noise`, the row's own or inherited) close on noise on a radio input, so a row running one draws no warning.
 On audio input the noise squelch closes an `nfm` row on noise too (it learns its reference from the input; see "Noise
-squelch on audio input" in `docs/cli.md`); the auto squelch, and the noise squelch on an `am` row, are off there and
+squelch on audio input" in `docs/cli.md`); the auto squelch, and a noise squelch an `am` row inherits, are off there and
 the row is warned about as an open one.
 
 On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy

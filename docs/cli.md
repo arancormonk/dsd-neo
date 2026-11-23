@@ -1714,8 +1714,11 @@ default.
   target that is analog (`nfm`, `am`, `nfm-conventional`, `am-conventional`) and sets no squelch of its own, in
   generated and imported lists alike. On AM a `noise` default runs as auto with the same N. On the standalone `-fM`
   monitor the engine says so each time that starts (`NOTICE: The noise squelch needs an FM channel; this AM channel
-  runs auto+10dB.`), without taking the place of a decode switch's own message; an AM scan row or target falls back
-  to auto without a word, as it does for its own `noise` squelch.
+  runs auto+10dB.`), without taking the place of a decode switch's own message; an AM scan row or target that inherits
+  it falls back to auto without a word, as it does for an inherited `--squelch noise`. A row's own option is not
+  converted: an `am` row or `am-conventional` target takes `auto[+N]` and refuses `--squelch noise`
+  ([above](#noise-squelch---squelch-noise)), so the app's list generator writes a saved Noise setting on an AM row as
+  `auto+N` with the same N.
 - Not in force: digital channels and rows, audio input, EDACS analog voice and the M17 encoder run the session's own
   squelch (off unless set), exactly as without the option, so digital decoding costs nothing more. A switch to audio
   input takes it out; a switch back to a radio input brings it back if no squelch was set meanwhile.

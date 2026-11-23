@@ -46,10 +46,13 @@ the entry then uses its saved system's gain, else the list's.
 ## Squelch
 
 **The default:** analog FM and AM channels run with the squelch on: **Noise**, at
-+10 dB (`noise+10`). An idle channel stays quiet, and a transmission opens it
-within its first 40 ms. To change it, open Settings, then **Radio defaults · next
-start**, and under **Squelch** choose **Off**, **Auto** or **Noise**, with its
-margin for Auto and Noise. The change applies from the next start.
++10 dB (`noise+10`). An idle channel stays quiet. Noise makes its first decision
+40 ms into a transmission, so on FM a transmission opens the squelch within its
+first 40 ms. AM channels, and NFM at the 8 and 10 kHz widths, run it as Auto
+instead, which has other limits (see below). To change it, open Settings, then
+**Radio defaults · next start**, and under **Squelch** choose **Off**, **Auto**
+or **Noise**, with its margin for Auto and Noise. The change applies from the
+next start.
 
 The app hands the setting to the decoder with every session, and when the input
 is a radio (an RTL-SDR, rtl_tcp, an Airspy, or one that Extra decoder arguments
@@ -77,6 +80,17 @@ file inputs (a switch to one takes it out).
 
 AM has no FM noise to measure, so on AM channels, and on NFM at the 8 and 10 kHz
 widths, Noise runs as **Auto** with the same margin, and the reading says so.
+Auto has two limits there:
+
+- When the stream starts over (a switch between FM and AM, a retune to the same
+  frequency, a PPM change, or a gap in the input), a transmission that goes on
+  through it is muted for up to 40 ms, 80 ms at worst, before it plays again
+  (Noise on FM mutes it for its first 40 ms).
+- Auto first learns the channel's noise. While it is learning, it opens only for
+  what sounds like a carrier, so a transmission already on the air plays at once,
+  and so does a steady carrier or spur (a dongle's birdie, or a distant carrier a
+  few dB over the noise). Auto never learns such a channel's noise and keeps
+  playing it, as with the squelch off: lock the channel out, or use a level.
 
 **What changes when you update** from a version without this setting (an older
 backup restores to this default too):
@@ -87,9 +101,12 @@ backup restores to this default too):
   kept. With **Record calls** on (or per-call recording turned on with `-P` in
   Extra decoder arguments), analog calls are recorded too.
 - Analog scan entries no longer hold the scan on noise.
-- The first 40 ms of a channel's audio after each start or tune stays closed.
+- The first 40 ms of a channel's audio after each start or tune stays closed (up
+  to 80 ms where Auto runs).
 - AM channels, and NFM at the 8 and 10 kHz widths, run it as Auto: Auto learns
-  each new channel's noise in its first moments, and stays quiet meanwhile.
+  each new channel's noise in its first moments. Meanwhile noise stays quiet, but
+  a transmission already on the air plays, and so can a steady carrier or spur
+  (see above).
 - Digital decodes are unchanged.
 
 ## Saved encryption keys
