@@ -21,6 +21,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <string.h>
+#include <utility>
 
 namespace dsd_qt {
 
@@ -168,30 +169,34 @@ DmrChannelsModel::missingRow(uint16_t lpcn, const MissingDetail* detail) {
     ++m_missingRowBuilds;
     if (detail != nullptr) {
         const dsd_ui_dmr_t3_missing_detail& d = detail->grant;
-        return {{QStringLiteral("lpcn"), lpcn},
-                {QStringLiteral("detailed"), true},
-                {QStringLiteral("slot"), (d.slot & 1U) + 1},
-                {QStringLiteral("group"), d.group != 0U},
-                {QStringLiteral("data"), d.data != 0U},
-                {QStringLiteral("unverified"), d.unverified != 0U},
-                {QStringLiteral("caller"), QVariant::fromValue<quint32>(d.caller)},
-                {QStringLiteral("recipient"), QVariant::fromValue<quint32>(d.recipient)},
-                {QStringLiteral("callerName"), detail->callerName},
-                {QStringLiteral("recipientName"), detail->recipientName},
-                {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(static_cast<qint64>(d.last_heard_ms))}};
+        return {
+            {QStringLiteral("lpcn"), lpcn},
+            {QStringLiteral("detailed"), true},
+            {QStringLiteral("slot"), (d.slot & 1U) + 1},
+            {QStringLiteral("group"), d.group != 0U},
+            {QStringLiteral("data"), d.data != 0U},
+            {QStringLiteral("unverified"), d.unverified != 0U},
+            {QStringLiteral("caller"), QVariant::fromValue<quint32>(d.caller)},
+            {QStringLiteral("recipient"), QVariant::fromValue<quint32>(d.recipient)},
+            {QStringLiteral("callerName"), detail->callerName},
+            {QStringLiteral("recipientName"), detail->recipientName},
+            {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(static_cast<qint64>(d.last_heard_ms))},
+        };
     }
     /* Past the ledger's details only the channel is known, and whether a checked grant ever named it. */
-    return {{QStringLiteral("lpcn"), lpcn},
-            {QStringLiteral("detailed"), false},
-            {QStringLiteral("slot"), 0},
-            {QStringLiteral("group"), false},
-            {QStringLiteral("data"), false},
-            {QStringLiteral("unverified"), ((m_ledger.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U) == 0U},
-            {QStringLiteral("caller"), QVariant::fromValue<quint32>(0U)},
-            {QStringLiteral("recipient"), QVariant::fromValue<quint32>(0U)},
-            {QStringLiteral("callerName"), QString()},
-            {QStringLiteral("recipientName"), QString()},
-            {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(0)}};
+    return {
+        {QStringLiteral("lpcn"), lpcn},
+        {QStringLiteral("detailed"), false},
+        {QStringLiteral("slot"), 0},
+        {QStringLiteral("group"), false},
+        {QStringLiteral("data"), false},
+        {QStringLiteral("unverified"), ((m_ledger.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U) == 0U},
+        {QStringLiteral("caller"), QVariant::fromValue<quint32>(0U)},
+        {QStringLiteral("recipient"), QVariant::fromValue<quint32>(0U)},
+        {QStringLiteral("callerName"), QString()},
+        {QStringLiteral("recipientName"), QString()},
+        {QStringLiteral("lastHeardMs"), QVariant::fromValue<qint64>(0)},
+    };
 }
 
 bool
@@ -268,8 +273,11 @@ DmrChannelsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapsh
     if (view == nullptr || view->present == 0U) {
         m_built = false;
         dropLists();
+        /* The view's flags hold whether or not the DMR module recorded anything (review gate b-r7 V5): another
+           system's carrier refuses an edit before the first DMR record, as after it. */
         State none;
         none.trunkScan = opts_snapshot != nullptr && opts_snapshot->trunk_scan_enabled == 1;
+        none.otherSystemHere = view != nullptr && view->other_system_here != 0U;
         none.dmrDecoding = view == nullptr || view->dmr_decoding != 0U;
         publishState(none);
         return;
@@ -321,9 +329,12 @@ DmrChannelsModel::rebuildMissing(const dsd_ui_dmr_t3_view& view, const dsd_state
     const uint8_t details = view.missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view.missing.detail_count : 0U;
     for (uint8_t i = 0; i < details; ++i) {
         const dsd_ui_dmr_t3_missing_detail& d = view.missing.details[i];
-        if (dsd_app_dmr_t3_view_missing_has(&view, d.lpcn) && missingDetail(d.lpcn) == nullptr) {
-            m_details.append({d, radio_name(snapshot, d.caller),
-                              d.group != 0U ? group_name(snapshot, d.recipient) : radio_name(snapshot, d.recipient)});
+        if (dsd_app_dmr_t3_view_missing_has(&view, d.lpcn) != 0 && missingDetail(d.lpcn) == nullptr) {
+            m_details.append({
+                d,
+                radio_name(snapshot, d.caller),
+                d.group != 0U ? group_name(snapshot, d.recipient) : radio_name(snapshot, d.recipient),
+            });
         }
     }
     m_missingCount = static_cast<int>(dsd_app_dmr_t3_view_missing_count(&view));

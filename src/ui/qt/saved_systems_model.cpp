@@ -11,7 +11,8 @@
 #include "site_groups.h"
 
 #include <QByteArray>
-#include <QFile>
+#include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -23,12 +24,16 @@
 #include <QUuid>
 #include <QVariant>
 #include <QtGlobal>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
+#include "platform_path.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
 #include "replay_store.h"
@@ -834,6 +839,27 @@ dmr_channel_edit_valid(int lpcn, int op, qint64 hz) {
     return lpcnOk && hzOk && opOk;
 }
 
+/* Review gate b-r7 V3: whether @p folder, the generated dmr_channels folder, is a real folder, never following a link
+   at it; made first when @p make and it is confirmed absent. */
+bool
+dmr_channels_folder_ready(const QString& folder, bool make) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    int present = dsd_path_type_nofollow(platform_path(folder).constData(), &type);
+    if (present == 0 && make && QDir().mkpath(folder)) {
+        present = dsd_path_type_nofollow(platform_path(folder).constData(), &type);
+    }
+    return present == 1 && type == DSD_PATH_TYPE_DIR;
+}
+
+/* Whether the name @p target can be replaced or removed as a file: absent, a regular file, or a link (the link itself,
+   never what it names). A folder, FIFO or device there is left alone. */
+bool
+dmr_channels_leaf_replaceable(const QByteArray& target) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(target.constData(), &type);
+    return present == 0 || (present == 1 && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK));
+}
+
 QVariantMap
 dmr_channel_edit_result(const char* error) {
     return {{QStringLiteral("ok"), *error == '\0'}, {QStringLiteral("error"), QString::fromLatin1(error)}};
@@ -861,6 +887,51 @@ SavedSystemsModel::validDmrChannels(const QVariant& raw) {
 QString
 SavedSystemsModel::dmrChannelsFilePath(const QString& uid) {
     return json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+}
+
+bool
+SavedSystemsModel::writeDmrChannelsFile(const QString& uid, const QByteArray& csv, QString* reason) {
+    const QString path = dmrChannelsFilePath(uid);
+    if (!dmr_channels_folder_ready(QFileInfo(path).absolutePath(), true)) {
+        *reason = QStringLiteral("the dmr_channels folder is not a folder of the app's");
+        return false;
+    }
+    const QByteArray target = platform_path(path);
+    char temp[4096];
+    FILE* f = dsd_fopen_private_temp_for_replace(target.constData(), temp, sizeof temp, "wb");
+    if (f == nullptr) {
+        *reason = qt_error_string(errno);
+        return false;
+    }
+    const size_t size = static_cast<size_t>(csv.size());
+    bool ok = std::fwrite(csv.constData(), 1, size, f) == size;
+    ok = std::fflush(f) == 0 && dsd_fsync(dsd_fileno(f)) == 0 && ok;
+    ok = std::fclose(f) == 0 && ok;
+    if (ok && !dmr_channels_leaf_replaceable(target)) {
+        *reason = QStringLiteral("something other than a file is in its place");
+        ok = false;
+    } else if (ok && dsd_replace_file_with_temp(temp, target.constData()) != 0) {
+        *reason = qt_error_string(errno);
+        ok = false;
+    } else if (!ok) {
+        *reason = QStringLiteral("the file could not be written");
+    }
+    if (!ok) {
+        (void)dsd_remove_file(temp);
+    }
+    return ok;
+}
+
+void
+SavedSystemsModel::removeDmrChannelsFile(const QString& uid) {
+    const QString path = dmrChannelsFilePath(uid);
+    const QByteArray target = platform_path(path);
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    if (dmr_channels_folder_ready(QFileInfo(path).absolutePath(), false)
+        && dsd_path_type_nofollow(target.constData(), &type) == 1
+        && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK)) {
+        (void)dsd_remove_file(target.constData());
+    }
 }
 
 QVariantList
@@ -1110,7 +1181,7 @@ SavedSystemsModel::remove(int row) {
     endRemoveRows();
     // The Tier III channels file its starts wrote (SessionArgsBuilder) goes with it.
     if (!canonicalUid(uid).isEmpty()) {
-        QFile::remove(dmrChannelsFilePath(uid));
+        removeDmrChannelsFile(uid);
     }
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();

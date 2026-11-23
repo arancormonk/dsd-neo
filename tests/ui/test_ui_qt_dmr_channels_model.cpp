@@ -439,6 +439,30 @@ test_not_decoding_dmr_offers_no_edits() {
     expect("no session is not read as DMR off", model.dmrDecoding());
 }
 
+/* Review gate b-r7 V5: the view names another system (an Auto session that first heard P25, say) before the DMR module
+ * recorded anything for the session. The flags are the view's whatever it holds: the sheet shows the other-system
+ * notice and offers no edit, which the decoder would refuse. */
+void
+test_flags_without_a_record() {
+    seed_view();
+    g_fixture->view.present = 0U;
+    g_fixture->view.tier3 = 0U;
+    g_fixture->view.other_system_here = 1U;
+    dsd_qt::DmrChannelsModel model;
+    model.setActive(true);
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("no record: no rows", !model.present() && model.missingPage().isEmpty() && model.channels().isEmpty());
+    expect("but another system here, and no edit",
+           model.otherSystemHere() && !model.editable() && !model.channel(20).value("valid").toBool());
+    g_fixture->view.other_system_here = 0U;
+    g_fixture->view.dmr_decoding = 0U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("and DMR off is read there too", !model.otherSystemHere() && !model.dmrDecoding() && !model.editable());
+    g_fixture->view.dmr_decoding = 1U;
+    model.refresh(g_fixture->opts.get(), g_fixture->state.get());
+    expect("nothing else: editable", model.editable());
+}
+
 void
 test_origin_keys() {
     expect("no origin has no key", dsd_qt::DmrChannelsModel::originKey(DSD_UI_DMR_T3_ORIGIN_NONE, false).isEmpty());
@@ -465,6 +489,7 @@ main(int argc, char** argv) {
     test_repeated_grant_builds_only_the_missing_rows();
     test_missing_rows_are_built_a_page_at_a_time();
     test_not_decoding_dmr_offers_no_edits();
+    test_flags_without_a_record();
     test_origin_keys();
     g_fixture->state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
     dsd_state_ext_free_all(g_fixture->state.get());

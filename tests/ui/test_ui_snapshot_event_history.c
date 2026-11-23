@@ -910,6 +910,29 @@ test_dmr_t3_view_follows_the_current_system(void) {
     free_session_state(st);
 }
 
+/* Review gate b-r7 V6: a host runs again on the same dsd_state. The engine's cleanup frees the DMR record after the
+   last snapshot, and the next run's record reaches the same revisions with another override row: the first publish of
+   the new run copies its rows, so a frontend shows (and an edit expects) the frequency the decoder uses. */
+static void
+test_dmr_t3_view_keys_on_the_record(void) {
+    dsd_state* st = new_session_state();
+    dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    ext->overlay.op[14] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[14] = 451175000L;
+    ext->overlay.count = 1U;
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->channel_hz[14] == 451175000L && view->overlay[0].hz == 451175000L);
+    dsd_state_ext_free_all(st); /* the run ends: dsd_engine_cleanup() */
+    ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    ext->overlay.op[14] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[14] = 452175000L;
+    ext->overlay.count = 1U;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->revision == 5U && view->missing.revision == 3U);
+    assert(view->channel_hz[14] == 452175000L && view->overlay[0].hz == 452175000L);
+    free_session_state(st);
+}
+
 /* Review Focus 3: two trunk-scan targets whose records sit at equal revisions never alias (A -> B -> A), nor do two
    sessions at equal revisions. */
 static void
@@ -1491,6 +1514,7 @@ main(void) {
     test_dmr_t3_view_carries_the_effective_frequency();
     test_dmr_t3_view_follows_the_current_system();
     test_dmr_t3_view_keys_on_target_and_session();
+    test_dmr_t3_view_keys_on_the_record();
     test_dmr_t3_view_carries_overrides_applied();
     test_dmr_t3_view_carries_dmr_decoding();
     test_vc_freq_reads_the_tier3_channel_dmr_uses();

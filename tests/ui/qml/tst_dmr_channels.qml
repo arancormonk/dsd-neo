@@ -461,6 +461,29 @@ Item {
             compare(commands.dmrChannelRequests().length, 0);
         }
 
+        // Review gate b-r7 V7: read-only rows stay in the keyboard's focus
+        // order, so a keyboard alone can go through every channel (and the
+        // list scrolls to it); a key on one opens nothing.
+        function test_read_only_rows_take_the_keyboard_focus() {
+            openSheet(view({trunkScan: true, channels: manyChannels(30)}));
+            var listed = rows("channelsMissingRow").concat(rows("channelsChannelRow"));
+            verify(listed.length === 34, "every row listed");
+            for (var r of listed)
+                verify(r.activeFocusOnTab, "row " + r.channel + " is in the focus order");
+            var first = rows("channelsMissingRow")[0];
+            first.forceActiveFocus();
+            keyClick(Qt.Key_Tab);
+            verify(rows("channelsMissingRow")[1].activeFocus, "Tab goes to the next row");
+            row("channelsChannelRow", 15).forceActiveFocus();
+            keyClick(Qt.Key_Tab);
+            verify(row("channelsChannelRow", 16).activeFocus, "and on through the channels");
+            keyClick(Qt.Key_Return);
+            keyClick(Qt.Key_Space);
+            wait(50);
+            verify(!edit.visible, "a key on a read-only row opens nothing");
+            compare(commands.dmrChannelRequests().length, 0);
+        }
+
         // Review gate b-r5 U7: a stale refusal closes the editor that sent the edit, and the sheet says so, read out
         // once. Opened again, the editor shows the channel as it is now, and an edit is sent against that.
         function test_stale_closes_the_editor() {

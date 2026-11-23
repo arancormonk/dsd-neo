@@ -521,7 +521,10 @@ ModalSheet {
             if (list)
                 list.place();
         }
-        activeFocusOnTab: (navigationAllowed && visible && acts) || activeFocus
+        // A read-only row (a trunk scan, a save owed) still takes the
+        // keyboard's focus, so the list can be read through by keyboard; it
+        // only does not open the editor.
+        activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
         Accessible.role: sheet.readOnly ? Accessible.StaticText : Accessible.Button
         Accessible.name: navigationAllowed && visible && live ? words : ""
         Accessible.focusable: navigationAllowed && visible && live

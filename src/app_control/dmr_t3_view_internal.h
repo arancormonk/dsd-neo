@@ -23,13 +23,14 @@
 extern "C" {
 #endif
 
-/* The source a part of the body was last copied from: the state instance, the parked trunk-scan target, whether the
- * record was there, the part's revision and (the channel rows only) the channel map's sequence. Zeroed, it holds
- * nothing, so the first copy runs. */
+/* The source a part of the body was last copied from: the state instance, the DMR record (dmr_t3_chan_record_id(): a
+ * run on the same state makes another), the parked trunk-scan target, whether the record was there, the part's revision
+ * and (the channel rows only) the channel map's sequence. Zeroed, it holds nothing, so the first copy runs. */
 typedef struct {
     uint8_t valid;
     uint8_t present;
     uint64_t instance;
+    uint64_t record;
     uint32_t target_id;
     uint32_t revision;
     uint64_t map_seq;

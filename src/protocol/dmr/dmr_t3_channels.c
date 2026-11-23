@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -30,6 +31,10 @@
 #include "dsd-neo/core/state_fwd.h"
 
 enum { DMR_T3_ROWS = 0x1000 };
+
+/* The record ids dmr_ext_get_or_create() draws (dmr_t3_chan_record_id()): only ever counted up, so one never repeats in
+   a process. */
+static dsd_atomic_u64 g_dmr_record_ids;
 
 dmr_ext_t*
 dmr_ext_get(const dsd_state* state) {
@@ -49,6 +54,7 @@ dmr_ext_get_or_create(dsd_state* state) {
     if (ext == NULL) {
         return NULL;
     }
+    ext->instance = dsd_atomic_u64_fetch_add_relaxed(&g_dmr_record_ids, 1U) + 1U;
     if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_DMR_RC, ext, free) != 0) {
         free(ext);
         return NULL;
@@ -350,7 +356,9 @@ dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const
     d->slot = (uint8_t)(slot & 1U);
     d->group = (uint8_t)(cls->group != 0U);
     d->data = (uint8_t)(cls->data != 0U);
-    d->unverified = (uint8_t)!dmr_t3_missing_bit(l->checked, lpcn);
+    /* The details are this grant's, so is their provenance; the checked set keeps whether any grant confirmed the
+       channel (review gate b-r7 V4). */
+    d->unverified = (uint8_t)(unverified != 0);
     d->caller = cls->caller;
     d->recipient = cls->recipient;
     d->last_heard_ms = dsd_decode_now_mono_ms();
@@ -673,6 +681,12 @@ dmr_t3_chan_revision(const dsd_state* state) {
     }
     const dmr_ext_t* ext = dmr_ext_get(state);
     return (ext != NULL ? ext->revision : 0U) + state->dmr_lcn_ota_seq;
+}
+
+uint64_t
+dmr_t3_chan_record_id(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? ext->instance : 0U;
 }
 
 void

@@ -7,8 +7,9 @@
  * The DMR Tier III channel record's two snapshot hops (dmr_t3_view_internal.h). The body is two parts, each with its
  * own key: the ledger (the state instance, the parked trunk-scan target and the ledger's revision) and the channel rows
  * (origins, frequencies, overlay rows: the instance, the target, the channel revision and the channel map's sequence).
- * A grant heard again moves the ledger alone, so only the ledger is copied. A restarted session, or another target
- * whose revisions happen to match, is another key, so no copy keeps a record it does not hold.
+ * A grant heard again moves the ledger alone, so only the ledger is copied. A restarted session, a record made again on
+ * the same state (a host's next run), or another target whose revisions happen to match, is another key, so no copy
+ * keeps a record it does not hold.
  */
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
@@ -104,7 +105,7 @@ dmr_t3_view_note_target(dsd_app_dmr_t3_view_mark* mark, const dsd_state* src) {
 
 static int
 dmr_t3_view_key_moved(const dsd_app_dmr_t3_view_key* key, const dsd_app_dmr_t3_view_key* now) {
-    return !key->valid || key->present != now->present || key->instance != now->instance
+    return !key->valid || key->present != now->present || key->instance != now->instance || key->record != now->record
            || key->target_id != now->target_id || key->revision != now->revision || key->map_seq != now->map_seq;
 }
 
@@ -158,10 +159,12 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     dst->target_id = mark->target_id;
     dst->revision = revision;
     dst->generation = dmr_t3_chan_generation(src);
+    const uint64_t record = dmr_t3_chan_record_id(src);
     const dsd_app_dmr_t3_view_key missing = {
         .valid = 1U,
         .present = present,
         .instance = src->state_instance,
+        .record = record,
         .target_id = mark->target_id,
         .revision = dmr_t3_missing_revision(src),
     };
@@ -169,6 +172,7 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
         .valid = 1U,
         .present = present,
         .instance = src->state_instance,
+        .record = record,
         .target_id = mark->target_id,
         .revision = revision,
         .map_seq = src->trunk_chan_map_seq,

@@ -38,6 +38,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <qflags.h>
+#include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
 #include <utility>
@@ -2469,9 +2471,13 @@ test_dmr_channels_last(void) {
     expect("the saved channels come last of all",
            args.size() >= 2 && args.at(args.size() - 2) == QStringLiteral("--dmr-chan-overrides")
                && args.last() == QStringLiteral("/data/dmr_channels/a.csv"));
-    for (const QString& token :
-         {QStringLiteral("--dmr-chan-overrides=/data/flag.csv"), QStringLiteral("/data/system.csv"),
-          QStringLiteral("--dmr-chan-overrides=/data/app.csv"), QStringLiteral("-fs"), QStringLiteral("-mq")}) {
+    for (const QString& token : {
+             QStringLiteral("--dmr-chan-overrides=/data/flag.csv"),
+             QStringLiteral("/data/system.csv"),
+             QStringLiteral("--dmr-chan-overrides=/data/app.csv"),
+             QStringLiteral("-fs"),
+             QStringLiteral("-mq"),
+         }) {
         expect(qPrintable(QStringLiteral("after the user's '%1'").arg(token)),
                args.contains(token) && args.lastIndexOf(token) < args.size() - 2);
     }
@@ -2572,6 +2578,93 @@ test_dmr_channels_start(void) {
     while (systems.count() > 0 && systems.remove(0)) {}
 }
 
+/* Review gate b-r7 V3: the generated channels file is written and cleaned up without following a link. A link at the
+   file is replaced, never written through; a linked dmr_channels folder is neither written into nor cleaned up in, and
+   the start goes on without the channels. */
+static void
+test_dmr_channels_never_follow_links(void) {
+#ifdef Q_OS_UNIX
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList received;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            return true;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    auto saved = tier3_system();
+    saved.remove("uid");
+    expect("links: a saved Tier III system", systems.add(saved));
+    const QVariantMap sys = systems.get(0);
+    const QString uid = sys.value("uid").toString();
+    const QString path = dsd_qt::SavedSystemsModel::dmrChannelsFilePath(uid);
+    const QString folder = QFileInfo(path).absolutePath();
+    const QString elsewhere = QFileInfo(folder).absolutePath() + QStringLiteral("/elsewhere");
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setSavedSystems(&systems);
+    const auto write = [](const QString& file, const QByteArray& bytes) {
+        QFile out(file);
+        return out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(bytes) == bytes.size();
+    };
+    const auto read = [](const QString& file) {
+        QFile in(file);
+        return in.open(QIODevice::ReadOnly) ? in.readAll() : QByteArray();
+    };
+
+    /* A link at the file: replaced by the file, the file it named left as it was. */
+    const QString victim = QFileInfo(folder).absolutePath() + QStringLiteral("/victim.txt");
+    expect("links: a file elsewhere", write(victim, "keep\n"));
+    QDir(folder).removeRecursively();
+    expect("links: the folder", QDir().mkpath(folder));
+    expect("links: a link at the file", QFile::link(victim, path));
+    auto result = builder.start(sys, &host, QStringLiteral("saved"));
+    expect("links: the start passes the channels", result.value("started").toBool() && host.received.last() == path);
+    expect("links: the linked file is not written", read(victim) == QByteArray("keep\n"));
+    expect("links: the link was replaced by the file",
+           !QFileInfo(path).isSymLink() && read(path) == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
+
+    /* A linked folder: nothing written in the folder it names, and the start goes on without the channels. */
+    expect("links: a folder elsewhere", QDir(folder).removeRecursively() && QDir().mkpath(elsewhere));
+    expect("links: the folder is a link", QFile::link(elsewhere, folder));
+    result = builder.start(sys, &host, QStringLiteral("saved"));
+    expect("links: the start goes on without the channels",
+           result.value("started").toBool() && !host.received.contains(QStringLiteral("--dmr-chan-overrides")));
+    expect("links: nothing written through the folder link",
+           !QFileInfo::exists(elsewhere + QStringLiteral("/") + uid + QStringLiteral(".csv")));
+
+    /* Nor is a file in the folder it names removed: neither by a start with no channels nor with the system. */
+    const QString kept = elsewhere + QStringLiteral("/") + uid + QStringLiteral(".csv");
+    expect("links: a file in the other folder", write(kept, "keep\n"));
+    expect("links: the channels removed", systems.applyDmrChannelEdit(uid, 12, 3, 0).value("ok").toBool()
+                                              && systems.applyDmrChannelEdit(uid, 40, 3, 0).value("ok").toBool());
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("links: a start with none removes nothing through the link", read(kept) == QByteArray("keep\n"));
+    expect("links: the system removed", systems.remove(systems.rowForUid(uid)));
+    expect("links: nor does removing the system", read(kept) == QByteArray("keep\n"));
+    QFile::remove(folder);
+    QDir(elsewhere).removeRecursively();
+    QFile::remove(victim);
+#endif
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -2630,6 +2723,7 @@ main(int argc, char** argv) {
     test_dmr_channels_csv();
     test_dmr_channels_last();
     test_dmr_channels_start();
+    test_dmr_channels_never_follow_links();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

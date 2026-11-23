@@ -68,7 +68,8 @@ typedef struct {
     uint8_t slot;           /**< destination slot, 0 or 1 */
     uint8_t group;          /**< 1 for a group grant, 0 for a private one */
     uint8_t data;           /**< 1 for a data grant */
-    uint8_t unverified;     /**< 1 while no checked grant named the channel (RAS-accepted only) */
+    uint8_t unverified;     /**< 1 when this grant (the details' source) was RAS-accepted only; the checked set says
+                                 whether any grant confirmed the channel */
     uint32_t caller;        /**< the calling radio */
     uint32_t recipient;     /**< the talkgroup (group) or the called radio (private) */
     uint64_t last_heard_ms; /**< dsd_decode_now_mono_ms() when the grant was heard */

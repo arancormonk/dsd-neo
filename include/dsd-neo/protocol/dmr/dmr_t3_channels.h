@@ -92,8 +92,16 @@ uint32_t dmr_t3_chan_generation(const dsd_state* state);
 uint32_t dmr_t3_chan_revision(const dsd_state* state);
 
 /**
+ * Which record the revisions count in: an id the DMR record drew when it was made, never repeated in a process, so a
+ * record made again on the same state (a host's next run after the engine freed it) is another one, whatever its
+ * revisions. 0 while there is none.
+ */
+uint64_t dmr_t3_chan_record_id(const dsd_state* state);
+
+/**
  * One channel of the ledger with the latest grant that named it: its destination slot (0 or 1), the grant's classes and
- * parties, when it was heard (dsd_decode_now_mono_ms()), and whether no checked grant named the channel yet.
+ * parties, when it was heard (dsd_decode_now_mono_ms()), and whether that grant was -F's RAS-accepted one (unverified:
+ * its details are unchecked, whatever an earlier grant confirmed; the ledger's checked set keeps that).
  */
 typedef struct {
     uint16_t lpcn;
@@ -108,7 +116,8 @@ typedef struct {
 
 /**
  * The missing-channel ledger. Bit LPCN & 7 of byte LPCN >> 3 of each set: missing (granted, still no frequency),
- * checked (a checked grant named it), reported (its notice was logged; only a network change clears it). The revision
+ * checked (a checked grant ever named it, sticky while it is missing), reported (its notice was logged; only a network
+ * change clears it). The revision
  * bumps on every change. details holds the detail_count most recent channels, newest first; a channel past them is in
  * the sets only.
  */

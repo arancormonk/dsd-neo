@@ -315,7 +315,7 @@ class DmrChannelsModel : public QObject {
 
     /* A ledger detail (the latest grant that named the channel) with the names the lists gave its parties. */
     struct MissingDetail {
-        dsd_ui_dmr_t3_missing_detail grant;
+        dsd_ui_dmr_t3_missing_detail grant{};
         QString callerName;
         QString recipientName;
     };

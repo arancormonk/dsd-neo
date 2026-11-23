@@ -34,6 +34,8 @@
 #include <functional>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
+class QByteArray;
+
 namespace dsd_qt {
 class ReplayStore;
 
@@ -100,6 +102,18 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Where a start of saved system @p uid (a canonical uid) writes its --dmr-chan-overrides file; remove()
      *  deletes it with the system. */
     static QString dmrChannelsFilePath(const QString& uid);
+
+    /**
+     * @brief Write @p csv as saved system @p uid's channels file (dmrChannelsFilePath()), owner-only, never through a
+     * link (review gate b-r7 V3): the dmr_channels folder must be a real folder (made when absent), and the file is
+     * replaced, a link at it included (the link goes, never what it names), by renaming a private temporary file
+     * written beside it (<dsd-neo/platform/file_compat.h>). False, with @p reason, when it was not written.
+     */
+    static bool writeDmrChannelsFile(const QString& uid, const QByteArray& csv, QString* reason);
+
+    /** @brief Remove saved system @p uid's channels file, only in a real dmr_channels folder: a link at the file goes,
+     *  never what it names, and nothing is removed through a linked folder. */
+    static void removeDmrChannelsFile(const QString& uid);
 
     /** @brief The saved system @p uid's DMR Tier III channels (validDmrChannels()'s form); empty for an unknown uid. */
     Q_INVOKABLE QVariantList dmrChannels(const QString& uid) const;

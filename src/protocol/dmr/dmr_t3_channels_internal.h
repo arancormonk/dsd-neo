@@ -34,6 +34,9 @@ typedef struct {
 } dmr_rc_dedup_t;
 
 typedef struct {
+    /* Drawn when the extension is made, from a counter that only goes up: never repeats in a process, so a record made
+       again on the same state (a host's next run) is told from the one freed (dmr_t3_chan_record_id()). */
+    uint64_t instance;
     dmr_rc_dedup_t rc;
     /* dmr_chan_origin_e per LPCN; a nonzero row with NONE reads as FILE. */
     uint8_t origin[0x1000];

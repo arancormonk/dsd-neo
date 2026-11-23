@@ -5,7 +5,6 @@
 
 #include <QPair>
 #include <utility>
-#include "cli_option_tokens.h"
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
 #include "json_store.h"
@@ -23,15 +22,12 @@
 #include <QByteArray>
 #include <QChar>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
-#include <QIODevice>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
 #include <QRegularExpression>
-#include <QSaveFile>
 #include <QVariant>
 #include <QVariantList>
 #include <Qt>
@@ -42,6 +38,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/tetra_rate.h>
@@ -51,6 +48,12 @@
 namespace dsd_qt {
 
 namespace {
+
+/* Whether the short option @p letter takes a value, by the parser's own option string. */
+bool
+short_takes_value(QChar letter) {
+    return letter.unicode() < 0x80 && dsd_cli_short_option_takes_value(static_cast<char>(letter.unicode())) != 0;
+}
 
 bool
 short_option_grouped(const QString& token) {
@@ -63,16 +66,120 @@ short_option_grouped(const QString& token) {
     return !short_takes_value(token.at(1));
 }
 
+/* Whether getopt knows the short option @p letter, by the parser's own option string (its ':'s are no option). */
+bool
+short_known(QChar letter) {
+    return letter != QLatin1Char(':') && QLatin1String(dsd_cli_short_options()).contains(letter);
+}
+
+/* option_tokens()' first pass: the long options in @p split go to @p options, each with the value it takes stepped
+ * over; @return what is left, from the first "--" on, for getopt. */
+QStringList
+long_option_tokens(const QStringList& split, QStringList* options) {
+    QStringList rest;
+    for (qsizetype i = 0; i < split.size(); ++i) {
+        const QString& token = split.at(i);
+        if (token == QLatin1String("--")) {
+            rest.append(split.mid(i));
+            break;
+        }
+        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
+        if (arity == DSD_CLI_LONG_UNKNOWN) {
+            rest.append(token);
+            continue;
+        }
+        options->append(token);
+        const bool hasNext = i + 1 < split.size();
+        const bool takesNext =
+            arity == DSD_CLI_LONG_NEXT
+            || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
+        if (takesNext && hasNext) {
+            ++i;
+        }
+    }
+    return rest;
+}
+
+/* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options, and with @p values the
+   values getopt hands option @p wanted, in order. */
+void
+short_option_tokens(const QStringList& rest, QStringList* options, QChar wanted = QChar(),
+                    QStringList* values = nullptr) {
+    for (qsizetype i = 0; i < rest.size(); ++i) {
+        const QString& token = rest.at(i);
+        if (token == QLatin1String("--")) {
+            break;
+        }
+        if (token.size() < 2 || !token.startsWith(QLatin1Char('-'))) {
+            continue;
+        }
+        if (token.startsWith(QLatin1String("--"))) {
+            options->append(token);
+            break;
+        }
+        for (qsizetype at = 1; at < token.size(); ++at) {
+            const QChar letter = token.at(at);
+            if (!short_known(letter)) {
+                return;
+            }
+            options->append(QLatin1Char('-') + letter);
+            if (short_takes_value(letter)) {
+                const bool separate = at + 1 == token.size();
+                if (values != nullptr && letter == wanted && (!separate || i + 1 < rest.size())) {
+                    values->append(separate ? rest.at(i + 1) : token.mid(at + 1));
+                }
+                if (separate) {
+                    ++i;
+                }
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * @brief The options the parser reads in @p tokens, found as the decoder finds them, in its two passes.
+ *
+ * First its long options come out of the whole list wherever they stand, a short option's value position included,
+ * each with the value its arity takes (dsd_cli_long_option_arity()), up to the first "--" that is no long option's
+ * value, as dsd_parse_args()' pre-scan and dsd_cli_compact_args() take them; that "--" and everything after it stay, as
+ * the compaction keeps them. Then getopt reads what is left, by its own rules: an element starting with '-' is a group
+ * of short options, and the first of them that takes a value takes the rest of the element, or the next element
+ * whatever it is ("--" included); a "--" that is no value ends the options; an operand is stepped over (glibc's getopt
+ * permutes past it; one that stops there reads fewer options, never more); an unknown option ends the parse with an
+ * error, and nothing after it is read. A long option the first pass does not know reaches getopt as option '-', which
+ * is unknown: it is returned as typed, so its name can still be refused, and ends the parse.
+ *
+ * Long options are returned as typed, short ones as "-" and the letter.
+ */
+QStringList
+option_tokens(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList options;
+    const QStringList rest = long_option_tokens(split, &options);
+    short_option_tokens(rest, &options);
+    return options;
+}
+
 /* Whether the extra options @p tokens pick an I/Q stream input (issue #743): an -i the decoder reads whose value is an
    iqtcp: or iqudp: spec, read as option_tokens() reads the options. */
 bool
 extra_names_iq_stream(const QString& tokens) {
-    const QStringList inputs = short_option_values(
-        tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts), QLatin1Char('i'));
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList options;
+    QStringList inputs;
+    short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('i'), &inputs);
     return std::any_of(inputs.cbegin(), inputs.cend(), [](const QString& input) {
         const QByteArray spec = input.toUtf8();
         return dsd_opts_audio_in_dev_is_iq_stream_spec(spec.constData()) != 0;
     });
+}
+
+/** @brief Whether @p token is the long option @p name, alone or in its "=value" form. */
+bool
+long_option_is(const QString& token, QLatin1String name) {
+    return token == name
+           || (token.startsWith(name) && token.size() > name.size() && token.at(name.size()) == QLatin1Char('='));
 }
 
 /**
@@ -234,6 +341,17 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
     const QString src = system.value(QStringLiteral("srcCsvPath")).toString();
     if (!src.isEmpty()) {
         args << QStringLiteral("--src-csv") << src;
+    }
+}
+
+/* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, appended last, after every
+   option the user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the
+   extra options. */
+void
+append_dmr_channels_args(QStringList& args, const QVariantMap& system) {
+    const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
+    if (!overrides.isEmpty()) {
+        args << QStringLiteral("--dmr-chan-overrides") << overrides;
     }
 }
 
@@ -1077,8 +1195,7 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
 }
 
 /* What the extra options refuse: one that could reveal keys (WP-F5), an I/Q stream input, which every check before the
-   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). @p tokens is every
-   option the user typed, the system's and the app's extras among them. */
+   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). */
 static SessionArgsError
 session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
     if (!session_args_extra_safe(tokens)) {
@@ -1192,12 +1309,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     }
     append_flag_args(args, system, prefs, hangtime);
     radio_settings_append(args, radioSettings);
-    /* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, after every option the
-       user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the extras. */
-    const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
-    if (!overrides.isEmpty()) {
-        args << QStringLiteral("--dmr-chan-overrides") << overrides;
-    }
+    append_dmr_channels_args(args, system);
     return args;
 }
 
@@ -1311,15 +1423,19 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     return validationResult(error);
 }
 
+namespace {
+
 /* Discussion #900 F3: saved system @p uid's channels file could not be written (@p reason), so its start goes on without
    them. Logged, and posted on the notice list Home's card shows, one per system's file. */
-static void
+void
 note_dmr_channels_unwritten(const QString& uid, const QString& reason) {
     const QString name = QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
     LOG_WARN("%s could not be written (%s): the saved system starts without its DMR Tier III channels.\n",
              qUtf8Printable(name), qUtf8Printable(reason));
     json_store_post_notice({name, reason, QString()});
 }
+
+} // namespace
 
 void
 SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
@@ -1331,20 +1447,17 @@ SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
     if (m_systems != nullptr && m_systems->rowForUid(uid) >= 0) {
         input->insert(QStringLiteral("dmrChannels"), m_systems->dmrChannels(uid));
     }
-    const QString path = SavedSystemsModel::dmrChannelsFilePath(uid);
     const QByteArray csv = session_args_dmr_channels_csv(*input);
     if (csv.isEmpty()) {
-        QFile::remove(path);
+        SavedSystemsModel::removeDmrChannelsFile(uid);
         return;
     }
-    QSaveFile file(path);
-    if (!QDir().mkpath(QFileInfo(path).absolutePath()) || !file.open(QIODevice::WriteOnly)
-        || !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) || file.write(csv) != csv.size()
-        || !file.commit()) {
-        note_dmr_channels_unwritten(uid, file.errorString());
+    QString reason;
+    if (!SavedSystemsModel::writeDmrChannelsFile(uid, csv, &reason)) {
+        note_dmr_channels_unwritten(uid, reason);
         return;
     }
-    input->insert(QStringLiteral("dmrChanOverridesPath"), path);
+    input->insert(QStringLiteral("dmrChanOverridesPath"), SavedSystemsModel::dmrChannelsFilePath(uid));
 }
 
 QStringList

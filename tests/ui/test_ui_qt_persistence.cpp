@@ -40,6 +40,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <chrono>

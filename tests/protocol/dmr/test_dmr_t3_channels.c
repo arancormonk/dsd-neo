@@ -1662,14 +1662,23 @@ test_ras_grant_ledger_unverified(void) {
     dmr_t3_missing_log_summary(&g_state);
     assert(strstr(g_missing_summary, "40 (unchecked)") != NULL);
 
-    /* A checked repeat clears the mark, and no second notice; a later RAS one does not bring the mark back. */
+    /* A checked repeat clears the mark, and no second notice. A later RAS one (review gate b-r7 V4) leaves the channel
+       confirmed (the sticky checked bit: the summary names it plainly), but its details are that grant's, so they are
+       marked unchecked; a checked grant after it clears the mark again. */
     g_state.event_crc_invalid[0] = 0U;
     send_grant(49U, 40U, 0U);
     l = missing_copy();
     assert(l->details[0].unverified == 0U && bit_set(l->checked, 40U));
     g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
     send_grant(49U, 40U, 0U);
+    l = missing_copy();
+    assert(l->details[0].unverified == 1U && bit_set(l->checked, 40U));
+    dmr_t3_missing_log_summary(&g_state);
+    assert(strstr(g_missing_summary, "40 (unchecked)") == NULL && strstr(g_missing_summary, "40") != NULL);
+    g_state.event_crc_invalid[0] = 0U;
+    send_grant(49U, 40U, 0U);
     assert(missing_copy()->details[0].unverified == 0U);
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
     assert(g_missing_notices == 1);
 
     /* RAS not confirmed on this carrier, or a failed CRC: nothing recorded. */
