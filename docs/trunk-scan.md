@@ -1406,7 +1406,7 @@ reason is logged once for each channel, and again after that channel, its list o
 setting off and on logs them again. `<channel>` is a target's label (or its id when it has none), or `row N` for a
 `-Y` row, counted from 1:
 
-- `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp or soapy).`,
+- `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp, soapy or airspy).`,
   `... channels in an I/Q replay; it needs a live radio input.`,
   `... channels on an I/Q stream; it needs a radio input DSD-neo tunes.`, or
   `... channels: this build has no radio support.` Use a radio input, live.
@@ -1415,7 +1415,10 @@ setting off and on logs them again. `<channel>` is a target's label (or its id w
   capture that is not centred (which a working native input never gives), `... channels on this native Airspy
   capture: its I/Q is not centred on the tuned frequency, which the check needs.`
 - `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
-  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. An Airspy through
+  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. A native Airspy at a
+  rate its firmware lists beyond those logs `... channels on this native Airspy at 5 Msps, a sample rate it was not
+  calibrated for; it checks 2.5, 3, 6 and 10 Msps: set --airspy-sample-rate to one the Airspy runs, or to 0 for its
+  highest, to have them checked.` An Airspy through
   SoapySDR logs `... channels on an Airspy through SoapySDR; use the native Airspy input (-i airspy) to have them
   checked.`, and a SoapySDR device that may be an Airspy `... channels on this SoapySDR device: it is reached through a
   proxy, or its driver did not say which device it is, so an Airspy, which it cannot check through SoapySDR, cannot be
