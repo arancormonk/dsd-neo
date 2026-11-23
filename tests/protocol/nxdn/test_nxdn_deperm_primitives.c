@@ -2649,6 +2649,40 @@ test_info1_loads_no_key(void) {
     return rc;
 }
 
+/*
+ * A VCALL reports the key selection its loader actually made, never one rerun against the snapshot (issue #903). With
+ * the keyloader on NXDN48 and a key filed under destination 0x0456 (0x4444), a clear VCALL 0x0123 -> 0x0456 opens the
+ * call; a scrambler VCALL from the same source to the null destination 0, naming the absent key ID 9, continues it.
+ * Its loader finds neither key 9 nor a destination key (0 names no destination), so the working key stays 0x1234 and
+ * no key is reported effective, though the call's target is still 0x0456, whose key was never loaded.
+ */
+static int
+test_vcall_reports_the_loaders_choice(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    use_nxdn48_keyloader(opts, state);
+    state->rkey_array[0x0456] = 0x4444ULL;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0U, 1U, 9U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    int rc = expect_int("loader-choice-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("loader-choice-target-kept", (int)call.ota_target_id, 0x0456);
+    rc |= expect_int("loader-choice-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("loader-choice-nothing-loaded", state->R == 0x1234ULL ? 1 : 0, 1);
+    rc |= expect_int("loader-choice-recorded", call.key_selection.valid, 1);
+    rc |= expect_int("loader-choice-no-effective-key", call.key_selection.effective_id, -1);
+    rc |= expect_int("loader-choice-not-the-destination", call.key_selection.source == DSD_CALL_KEY_DESTINATION, 0);
+    free_fixture(opts, state);
+    return rc;
+}
+
 /* No SACCH segment held and no RAN decoded yet. */
 static void
 prepare_sacch_entry_state(dsd_state* state) {
@@ -2856,6 +2890,7 @@ main(void) {
     rc |= test_held_back_vcall_loads_no_key();
     rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
     rc |= test_info1_loads_no_key();
+    rc |= test_vcall_reports_the_loaders_choice();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_epoch_withdraws_party_less_vcall_crypto();
     rc |= test_dcr_key_is_reported_as_the_working_key();

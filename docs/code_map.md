@@ -2038,11 +2038,13 @@ suite runs under this compiler.
   cipher's. An IDAS INFO1 loads no key: the cipher and key ID it applies are reported against the working key a VCALL
   or an assignment loaded, and one heard during a DCR call is neither applied nor kept. With the keyloader on, only a
   publication whose own message loaded the applied pair's key (a VCALL whose pair was applied, a DES or AES VCALL_IV)
-  reports the loaders' choice as the key that decrypts; an INFO1, or a VCALL held back, reports no key selection
+  reports a key selection, and it is what that message's loader returned (`nxdn_load_selected_key()`: its choice, or no
+  key when the scalar chosen did not load), never a choice rerun against the call's snapshot, whose target a VCALL to
+  the null destination leaves as it was; an INFO1, or a VCALL held back, reports no key selection
   (`nxdn_vcall_publish_crypto()`'s `loaded`), so a keyring entry no message loaded is never shown as effective. A DCR
   call's scrambler names no key ID, so its key is reported as the working key (direct, no effective ID), never as the
   signalled key 0 a selection would read as keyring entry 0, by the DCR call's own SACCH-2 publication
-  (`nxdn_publish_sacch2_crypto()`, as `nxdn_vcall_publish_crypto()` reports a DCR scrambler), so a keyloader session
+  (`nxdn_publish_sacch2_crypto()`), so a keyloader session
   never shows a DCR call as using automatic key collection. A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key
   redaction) only when that pair is the one applied (`nxdn_vcall_print_cipher()`), so a held-back VCALL never shows the
   applied pair's key as its own. The DMR talkgroup map reports a matched but unapplied row by the same cells: the mapped ID holds a key of
