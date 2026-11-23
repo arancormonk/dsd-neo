@@ -242,28 +242,29 @@ test_contradiction_of_tentative_replaces(void) {
 /* The applied cipher's origin is the observation's it equals; a held contradiction leaves it (issue #903). */
 static void
 test_origin_follows_the_applied_cipher(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(state != NULL);
 
-    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
-    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    (void)nxdn_cipher_observe_from(state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    (void)nxdn_cipher_observe_from(state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
     // A lone contradiction is held: the scrambler, and its DCR origin, stay.
-    assert(nxdn_cipher_observe(&state, 0U, 0) == 1U);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    assert(nxdn_cipher_observe(state, 0U, 0) == 1U);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
     // Its repeat applies: the clear cipher is the other source's.
-    assert(nxdn_cipher_observe(&state, 0U, 0) == 0U);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    assert(nxdn_cipher_observe(state, 0U, 0) == 0U);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
     // A matching repeat from another source makes the applied cipher that source's.
-    (void)nxdn_cipher_observe_from(&state, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
-    (void)nxdn_cipher_observe(&state, 0U, 0);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    nxdn_cipher_force(&state, 1U);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
-    (void)nxdn_cipher_observe_from(&state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
-    nxdn_cipher_class_reset(&state);
-    assert(state.nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    (void)nxdn_cipher_observe_from(state, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    (void)nxdn_cipher_observe(state, 0U, 0);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    nxdn_cipher_force(state, 1U);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    (void)nxdn_cipher_observe_from(state, 1U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
+    nxdn_cipher_class_reset(state);
+    assert(state->nxdn_cipher_origin == (uint8_t)NXDN_CIPHER_ORIGIN_OTHER);
+    free(state);
 }
 
 /* The applied key goes with the applied cipher: an observation naming its key ID sets it only when its cipher is the
