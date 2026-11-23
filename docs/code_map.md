@@ -2033,7 +2033,9 @@ suite runs under this compiler.
   and VCALL_IV loaders and the key source the call reports share one choice, `nxdn_select_key()`: the signalled ID
   when it holds the cipher's key (a scalar for the scrambler and DES, all four AES-256 segments for AES), else the
   destination's scalar for the NXDN48 scrambler, else key 0 for AES, which loads (`nxdn_load_aes_key_index()`) only at
-  full width. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
+  full width. The destination is the VCALL's, or for an INFO1 and the key report the live NXDN call's known target
+  (`nxdn_live_call_key_destination()`); the Null ID 0 and a call of another protocol, or none, give no destination
+  (`NXDN_KEY_NO_DESTINATION`), never keyring entry 0 or another protocol's talkgroup. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
   cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
   (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
