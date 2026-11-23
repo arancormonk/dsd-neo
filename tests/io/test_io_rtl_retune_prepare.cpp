@@ -1288,58 +1288,50 @@ test_external_backend_landing_waits_for_reconfiguration(void) {
     return failed;
 }
 
-/* Issue #899, "analog starts closed": every new channel on the analog family (a retune landing that names one, through
- * the controller or an external backend, whatever its family did there; a live family request into the analog
- * family; a stream open) starts closed, every block muted, and only a write tagged with that channel opens it. A write
- * for any other channel, the one left or one still outstanding, is dropped. The digital family never starts closed,
- * and runs the gate the decoder last wrote. A retune or request that names no channel stays on the channel and its
- * gate; a retune that retires a queued request drops that request's channel (round 6: the symbol-only request after it
- * no longer lands a stale one closed); of requests that replace one another only the last one's channel starts. */
+/* Issue #899, "closed start, no IDs": every new channel on the analog family (a retune landing the decoder marked,
+ * through the controller or an external backend, whatever its family did there; a live family request into the analog
+ * family or onto another analog kind; a stream open) starts closed, every block muted, until the decoder writes the
+ * gate, which applies to the channel the receiver is on. A width change, or a retune nobody marked, keeps the gate. The
+ * digital family never starts closed: a landing or switch there, or a write that finds the receiver there, runs the
+ * digital gate the decoder gave (round 7: no analog-only default outlives its analog channel). An open starts the
+ * closed-start count and duration over. */
 static int
 test_analog_channel_starts_closed(void) {
     rtl_stream_test_channel_gate_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     int failed = expect_int_eq("channel gate hook", rtl_stream_test_channel_gate(&r), 0);
-    failed |=
-        expect_int_eq("analog landing: a write before it lands is stale", r.early_write_result, RTL_STREAM_GATE_STALE);
-    failed |= expect_int_eq("analog landing: the old channel keeps its gate meanwhile", r.outstanding_open, 1);
+    failed |= expect_int_eq("analog landing: the channel left keeps its gate meanwhile", r.outstanding_open, 1);
     failed |= expect_int_eq("analog landing: starts closed", r.landing_closed, 1);
-    failed |= expect_int_eq("analog landing: on its channel", r.landing_channel_moved, 1);
-    failed |= expect_int_eq("analog landing: a write for the channel left is stale", r.stale_write_result,
-                            RTL_STREAM_GATE_STALE);
-    failed |= expect_int_eq("analog landing: still closed after it", r.stale_write_closed, 1);
-    failed |= expect_int_eq("analog landing: its own write applies", r.write_result, RTL_STREAM_GATE_APPLIED);
+    failed |= expect_int_eq("analog landing: reports the closed start", r.landing_reported, 1);
+    failed |= expect_int_eq("analog landing: the decoder's write opens it", r.write_opened, 1);
     failed |= expect_int_eq("analog landing: runs the write", r.write_mode, DSD_SQUELCH_MODE_NOISE);
     failed |= expect_int_eq("analog landing: the write's margin", r.write_margin, 10);
     failed |= expect_int_eq("analog landing superseded: closed", r.superseded_closed, 1);
-    failed |= expect_int_eq("profile cleared: nothing moves", r.cleared_kept, 1);
+    failed |= expect_int_eq("profile cleared: nothing changes", r.cleared_kept, 1);
     failed |= expect_int_eq("analog landing refused: refused", r.refused, 1);
     failed |= expect_int_eq("analog landing refused: closed, the tuner moved", r.refused_closed, 1);
-    failed |= expect_int_eq("channel alone: closed", r.channel_only_closed, 1);
-    failed |= expect_int_eq("channel alone: symbols and timing stay", r.channel_only_symbols_kept, 1);
-    failed |= expect_int_eq("retune naming no channel: channel and gate stay", r.unnamed_kept, 1);
+    failed |= expect_int_eq("new channel alone: closed", r.mark_only_closed, 1);
+    failed |= expect_int_eq("new channel alone: symbols and timing stay", r.mark_only_symbols_kept, 1);
+    failed |= expect_int_eq("retune nobody marked: the gate stays", r.unmarked_kept, 1);
     failed |= expect_int_eq("external landing: closed", r.external_closed, 1);
-    failed |= expect_int_eq("external channel alone: closed", r.channel_only_external_closed, 1);
-    failed |= expect_int_eq("external channel alone: the family stays", r.channel_only_family_kept, 1);
-    failed |= expect_int_eq("external channel alone: a live request stays queued", r.channel_only_request_kept, 1);
-    failed |= expect_int_eq("family into analog: a request took the channel", r.family_taken, 1);
+    failed |= expect_int_eq("external new channel alone: closed", r.mark_only_external_closed, 1);
+    failed |= expect_int_eq("external new channel alone: the family stays", r.mark_only_family_kept, 1);
+    failed |= expect_int_eq("external new channel alone: a live request stays queued", r.mark_only_request_kept, 1);
     failed |= expect_int_eq("family into analog: switched", r.family_switched, 1);
     failed |= expect_int_eq("family into analog: the first analog block is closed", r.family_closed, 1);
-    failed |= expect_int_eq("family into analog: on the request's channel", r.family_moved, 1);
+    failed |= expect_int_eq("analog width change: the gate stays open", r.width_kept, 1);
+    failed |= expect_int_eq("analog kind change: closed", r.kind_closed, 1);
     failed |= expect_int_eq("family into digital: switched", r.digital_switched, 1);
-    failed |= expect_int_eq("family into digital: not closed", r.digital_not_closed, 1);
-    failed |= expect_int_eq("family into digital: the gate last written", r.digital_runs_written, 1);
-    failed |= expect_int_eq("digital retune: not closed", r.digital_retune_not_closed, 1);
-    failed |= expect_int_eq("family refused at once: no request took the channel", r.refused_taken, 0);
-    failed |= expect_int_eq("family refused at once: the receiver stays", r.refused_kept, 1);
+    failed |= expect_int_eq("family into digital: the digital gate, not the analog one", r.digital_runs_digital, 1);
+    failed |= expect_int_eq("write on digital: the digital gate", r.digital_write_runs_digital, 1);
+    failed |= expect_int_eq("digital hunt from analog: the digital gate", r.hunt_runs_digital, 1);
+    failed |= expect_int_eq("family refused at once: nothing changes", r.refused_kept, 1);
+    failed |= expect_int_eq("family retired by a marked retune: closed", r.retired_closed, 1);
     failed |= expect_int_eq("family retired by a retune: the next symbol request keeps the gate", r.retired_kept, 1);
-    failed |= expect_int_eq("nine stalled requests: the last one's channel starts", r.stalled_last_moved, 1);
-    failed |= expect_int_eq("nine stalled requests: the others are stale", r.stalled_older_stale, 8);
-    failed |= expect_int_eq("nine stalled requests: the last one's write applies", r.stalled_last_applied,
-                            RTL_STREAM_GATE_APPLIED);
+    failed |= expect_int_eq("analog open: closed-start count and duration start over", r.open_counts_reset, 1);
     failed |= expect_int_eq("analog open: closed", r.open_closed, 1);
-    failed |= expect_int_eq("analog open: its write applies", r.open_write_result, RTL_STREAM_GATE_APPLIED);
-    failed |= expect_int_eq("analog open: opened", r.open_opened, 1);
+    failed |= expect_int_eq("analog open: the decoder's write opens it", r.open_opened, 1);
+    failed |= expect_int_eq("analog open: one closed start counted", r.open_counted, 1);
     return failed;
 }
 

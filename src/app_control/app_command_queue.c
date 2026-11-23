@@ -6951,18 +6951,19 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
     }
 }
 
-/* The analog default squelch (issue #899) follows what the session runs now: a command's decode switch, input change,
-   scan leave or explicit edit, or a receive request the front end refused. The committed channel's gate is written
-   when @p changed or the default moved, or once the receiver reaches a channel committed since
-   (dsd_engine_receiver_gate_settle()); an idle drain, nothing changed and nothing due, reads, resolves and writes
-   nothing. */
+/* The analog default squelch (issue #899) follows what the session runs now, when @p changed: a command's decode switch,
+   input change, scan leave or explicit edit, or a receive request the front end refused. The receiver's gate is
+   written then, or when one is due (dsd_engine_receiver_gate_settle()); an idle drain, nothing changed and nothing
+   due, runs no default policy and reads, resolves and writes nothing on a digital session. */
 static void
 ui_settle_squelch(dsd_opts* opts, const dsd_state* state, int changed) {
     if (!opts) {
         return;
     }
-    const int moved = dsd_squelch_analog_default_sync(opts, state);
-    dsd_engine_receiver_gate_settle(opts, state, changed || moved);
+    if (changed) {
+        (void)dsd_squelch_analog_default_sync(opts, state);
+    }
+    dsd_engine_receiver_gate_settle(opts, state, changed);
 }
 
 /* ui_settle_squelch() after a change: a command ran, or settings were put back. */
@@ -11706,8 +11707,10 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
        publish the old mode's profile over it, and dropping the switch would lose the mode to go back to. Neither is a
        monitor request (one would have taken the record over), so the front end has made the switch no more than
        before, and it stays armed. */
-    if (ui_scan_leave_left_to_later(opts, state, &refusal) || ui_settle_refused_row_edit(opts, state, &refusal)) {
-        dsd_engine_receiver_channel_refused();
+    if (ui_scan_leave_left_to_later(opts, state, &refusal)) {
+        return;
+    }
+    if (ui_settle_refused_row_edit(opts, state, &refusal)) {
         return;
     }
     int changed = 0;
@@ -11729,9 +11732,6 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
             changed = 1;
         }
     }
-    /* Reconciled: a refused switch the decoder waited on leaves it on the channel the receiver kept, whose gate the
-       settings put back resolve to (issue #899). */
-    dsd_engine_receiver_channel_refused();
     if (changed) {
         /* The settings put back run their squelch, the analog default where it belongs (issue #899), before the
            frontends see them. */
@@ -12240,9 +12240,9 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
         /* The receiver hears the gate the command leaves once it has run, whole (issue #899). */
-        dsd_engine_receiver_gate_command(1);
+        dsd_engine_receiver_gate_hold(1);
         const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
-        dsd_engine_receiver_gate_command(0);
+        dsd_engine_receiver_gate_hold(0);
         ui_sync_analog_default_squelch(opts, state);
         ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS

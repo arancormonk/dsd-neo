@@ -4287,8 +4287,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
-        /* Its channel is the session's (issue #899): opened, on the analog family, once the decoder writes its gate. */
-        dsd_engine_receiver_channel_opened(opts, state);
+        /* A new channel, closed on the analog family until the decoder writes its gate (issue #899). */
+        dsd_engine_receiver_gate_due();
         dsd_engine_note_run_stream_source(opts, state);
     }
     return 0;

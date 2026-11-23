@@ -78,18 +78,12 @@ typedef struct {
     void (*set_channel_squelch)(double mean_power);
     /** The whole channel squelch setting: a LEVEL threshold or an AUTO margin over the learned floor. */
     void (*set_channel_squelch_setting)(const dsd_squelch_setting* setting);
-    /** The receiver's channels (issue #899): a new number (rtl_stream_new_channel()), the one it produces
-        (rtl_stream_current_channel()), the one the last open started (rtl_stream_channel_gate_opened()), the one the
-        last refused family request named (rtl_stream_refused_channel()), a gate write tagged with one
-        (rtl_stream_write_channel_gate()), and the one the next family request names
-        (rtl_stream_stage_family_channel(), rtl_stream_unstage_family_channel()). */
-    uint32_t (*new_channel)(void);
-    uint32_t (*current_channel)(void);
-    uint32_t (*channel_gate_opened)(void);
-    uint32_t (*refused_channel)(void);
-    int (*write_channel_gate)(uint32_t channel, const dsd_squelch_setting* setting);
-    void (*stage_family_channel)(uint32_t channel);
-    int (*unstage_family_channel)(uint32_t channel);
+    /** The receiver's squelch gate (issue #899): write it for the channel on air (rtl_stream_write_squelch_gate()),
+        whether a new analog channel waits closed for that write (rtl_stream_gate_closed_start()), and whether any
+        receive request the decoder made is still unsettled (rtl_stream_receive_request_outcome()). */
+    void (*write_squelch_gate)(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+    int (*gate_closed_start)(void);
+    int (*receive_requests_pending)(void);
     /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
     int (*apply_analog_profile)(int family, int kind, int width_hz);
     /* A digital family request that lands the digital family's landing whichever family the front end runs
@@ -172,30 +166,18 @@ int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 
-/** What the receiver did with a channel's gate write (issue #899; rtl_stream_write_channel_gate()'s RTL_STREAM_GATE_*). */
-enum {
-    DSD_CHANNEL_GATE_STALE = 0,  /**< not the channel the receiver is on: dropped */
-    DSD_CHANNEL_GATE_APPLIED = 1 /**< the channel the receiver is on: in force from its next block */
-};
-
 /**
- * @brief Write the squelch gate of the receiver's channel @p channel (issue #899, rtl_stream_write_channel_gate()):
- * DSD_CHANNEL_GATE_APPLIED or DSD_CHANNEL_GATE_STALE as the receiver judged it, or -1 when no radio backend is installed
- * or @p setting is NULL.
+ * @brief Write the squelch gate of the receiver's channel on air (issue #899, rtl_stream_write_squelch_gate()): @p gate
+ * on the analog family, @p digital on the digital family. 0, or -1 when no radio backend is installed or @p gate is
+ * NULL.
  */
-int dsd_rtl_stream_metrics_hook_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setting);
-/** @brief A new receiver channel number (rtl_stream_new_channel()); 0 with no radio backend. */
-uint32_t dsd_rtl_stream_metrics_hook_new_channel(void);
-/** @brief The channel the receiver produces (rtl_stream_current_channel()), lock-free; 0 with no radio backend. */
-uint32_t dsd_rtl_stream_metrics_hook_current_channel(void);
-/** @brief The channel the last stream open started on (rtl_stream_channel_gate_opened()); 0 with no radio backend. */
-uint32_t dsd_rtl_stream_metrics_hook_channel_gate_opened(void);
-/** @brief The channel the last family request the receiver refused named (rtl_stream_refused_channel()); 0: none. */
-uint32_t dsd_rtl_stream_metrics_hook_refused_channel(void);
-/** @brief Name @p channel on the next live family request (rtl_stream_stage_family_channel()); nothing without one. */
-void dsd_rtl_stream_metrics_hook_stage_family_channel(uint32_t channel);
-/** @brief Drop a staged family channel no request took (rtl_stream_unstage_family_channel()): 1 when one took it. */
-int dsd_rtl_stream_metrics_hook_unstage_family_channel(uint32_t channel);
+int dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+/** @brief 1 while a new analog channel waits closed for the decoder's write (rtl_stream_gate_closed_start()); 0 with
+ * none or no radio backend. Lock-free. */
+int dsd_rtl_stream_metrics_hook_gate_closed_start(void);
+/** @brief 1 while a receive request the decoder made is unsettled (the demod thread has not applied it); 0 with none or
+ * no radio backend. */
+int dsd_rtl_stream_metrics_hook_receive_requests_pending(void);
 /**
  * @brief Ask the RTL front end for a receive family and, for analog, a demodulator kind and channel width.
  *

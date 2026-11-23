@@ -281,6 +281,9 @@ void dsd_squelch_analog_default_note_written(dsd_opts* opts);
  */
 void dsd_squelch_configured_fields(const dsd_opts* opts, double* level, int* mode, int* margin_db);
 
+/** @brief dsd_squelch_configured_fields() as a whole setting: what a radio receiver's digital family runs (issue #899). */
+dsd_squelch_setting dsd_squelch_setting_configured(const dsd_opts* opts);
+
 /**
  * @brief Publish the dynamic squelch's status into @p state for the frontends (dsd_state::squelch_auto_*,
  * squelch_noise_*). On radio input (or with @p opts NULL) it is the RTL stream's

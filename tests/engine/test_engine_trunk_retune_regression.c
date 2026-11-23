@@ -782,22 +782,20 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     apply_pending_retune_profile(target_freq_hz);
 }
 
-/* The channel a scan retune names (issue #899), the target it was named for, and whether a profile was queued there
-   already, as it must be: a store after it would replace the whole profile, channel and all. A name of 0 after the tune
-   returned (a profile it never took) is counted apart. */
-static uint32_t g_rtl_retune_channel;
+/* The scan retunes marked a new channel (issue #899), the target the last was marked for, and whether a profile was
+   queued there already, as it must be: a store after it would replace the whole profile, mark and all. An unmark after
+   the tune returned (a profile it never took) is counted apart. */
 static uint32_t g_rtl_retune_channel_hz;
 static int g_rtl_retune_channels;
 static int g_rtl_retune_channel_over_profile;
 static int g_rtl_retune_channel_unnamed;
 
 void
-rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
-    if (channel == 0U) {
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
+    if (!new_channel) {
         g_rtl_retune_channel_unnamed++;
         return;
     }
-    g_rtl_retune_channel = channel;
     g_rtl_retune_channel_hz = target_freq_hz;
     g_rtl_retune_channels++;
     g_rtl_retune_channel_over_profile = g_rtl_pending_active && g_rtl_pending_target_freq_hz == target_freq_hz;
@@ -1633,16 +1631,15 @@ test_backend_tune_updates_center_freq_cache(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     g_rtl_retune_channels = 0;
     g_rtl_retune_channel_unnamed = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts->rtlsdr_center_freq == 461556250U);
     assert(g_rtl_retune_channels == 0 && g_rtl_retune_channel_unnamed == 0);
-    /* Issue #899: a scan row's retune names the receiver channel its caller numbered (a -Y row's, committed at the row's
-       commit, or a trunk-scan target's, on air from its switch), attached over the profile its preparation queued and
-       bound to the row's frequency; once the tune returns, a profile it never took names it no more. It carries no
-       gate: the receiver starts an analog channel closed and the decoder opens it. */
+    /* Issue #899: a scan row's retune is marked a new channel (a -Y row's or a trunk-scan target's), attached over the
+       profile its preparation queued and bound to the row's frequency; once the tune returns, a profile it never took is
+       marked no more. It carries no gate: the receiver starts an analog channel closed and the decoder opens it. */
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 17U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_rtl_retune_channels == 1 && g_rtl_retune_channel == 17U && g_rtl_retune_channel_hz == 461556250U);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 1, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_retune_channels == 1 && g_rtl_retune_channel_hz == 461556250U);
     assert(g_rtl_retune_channel_over_profile == 1 && g_rtl_retune_channel_unnamed == 1);
 
     /* A conventional P25 target selects the P25 chain without enabling a trunk SM. */
@@ -1655,7 +1652,7 @@ test_backend_tune_updates_center_freq_cache(void) {
     g_rtl_symbol_levels = 2;
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853000000, 10, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853000000, 10, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_symbol_levels == 4);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
@@ -1671,7 +1668,7 @@ test_backend_tune_updates_center_freq_cache(void) {
     for (int refused = 0; refused <= 1; refused++) {
         g_rtl_tune_result = refused ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_DEFERRED;
         supersedes = g_manual_tune_supersedes;
-        assert(dsd_engine_scan_tune_to_freq(opts, state, 462000000 + refused * 12500, 20, 0U, NULL)
+        assert(dsd_engine_scan_tune_to_freq(opts, state, 462000000 + refused * 12500, 20, 0, NULL)
                == (refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_DEFERRED));
         if (g_manual_tune_supersedes != supersedes + 1) {
             DSD_FPRINTF(stderr, "moved %s: %d supersedes (want 1)\n", refused ? "refusal" : "deferral",
@@ -1721,7 +1718,7 @@ test_backend_tune_refuses_past_the_tuner_limit(void) {
     const int setfreq_before = g_setfreq_calls;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
-    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_setfreq_calls == setfreq_before);
     assert(opts->rtlsdr_center_freq == 111111100U);
     assert(opts->trunk_is_tuned == 0);
@@ -1736,7 +1733,7 @@ test_backend_tune_refuses_past_the_tuner_limit(void) {
     const int rtl_before = g_rtl_tune_calls;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, past, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
-    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, past, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_rtl_tune_calls == rtl_before);
     assert(opts->rtlsdr_center_freq == 111111100U);
 
@@ -1757,7 +1754,7 @@ tune_entry(int entry, dsd_opts* opts, dsd_state* state, uint64_t* scan_request) 
         case 0: return dsd_engine_trunk_tune_to_freq_request(opts, state, 852000000, 10, 0U);
         case 1: return dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U);
         case 2: return dsd_engine_return_to_cc_request(opts, state, 0U);
-        default: return dsd_engine_scan_tune_to_freq(opts, state, 852000000, 10, 0U, scan_request);
+        default: return dsd_engine_scan_tune_to_freq(opts, state, 852000000, 10, 0, scan_request);
     }
 }
 
@@ -1859,7 +1856,7 @@ tune_scan_row(dsd_opts* opts, dsd_state* state, long int freq_hz, int stale_symb
     DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
     g_rtl_analog_prepared_target_hz = 0U;
     const int calls_before = g_rtl_tune_calls;
-    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 10, 0U, NULL);
+    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 10, 0, NULL);
     *tune_calls = g_rtl_tune_calls - calls_before;
     return result;
 }
@@ -1940,7 +1937,7 @@ tune_rigctl_row(dsd_opts* opts, dsd_state* state, long int freq_hz, bool peer_ac
     g_revert_calls = 0;
     g_revert_kind = -2;
     const int setfreq_before = g_setfreq_calls;
-    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 0, 0U, NULL);
+    const dsd_trunk_tune_result result = dsd_engine_scan_tune_to_freq(opts, state, freq_hz, 0, 0, NULL);
     *moved = g_setfreq_calls - setfreq_before;
     g_setmod_result = true;
     return result;
@@ -3314,7 +3311,7 @@ main(void) {
     assert(state->trunk_vc_freq[0] == 0);
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(state->trunk_cc_freq == 851000000);
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 854000000, 0, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 854000000, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_frame_sync_reset_calls == 0);
     assert(g_tune_generation_advance_calls == 0);
 
@@ -3455,10 +3452,10 @@ main(void) {
     opts->use_rigctl = 1;
     g_tune_generation_advance_calls = 0;
     g_setfreq_result = true;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853700000, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_tune_generation_advance_calls == 1);
     g_setfreq_result = false;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853800000, 0, 0, NULL) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_tune_generation_advance_calls == 1);
 
 #ifdef USE_RADIO
@@ -3470,7 +3467,7 @@ main(void) {
     g_rtl_tagged_tune_calls = 0;
     g_rtl_last_request_id = 0U;
     uint64_t scan_request_id = 0U;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0, 0U, &scan_request_id)
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853900000, 0, 0, &scan_request_id)
            == DSD_TRUNK_TUNE_RESULT_PENDING);
     assert(g_tune_generation_advance_calls == 1);
     assert(scan_request_id != 0U && g_tune_request_pending == scan_request_id);
@@ -3593,7 +3590,7 @@ main(void) {
     g_rtl_ted_sps = 10;
     g_rtl_ted_sps_override = 10;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_pending_active == 0);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 2400);
@@ -3643,7 +3640,7 @@ main(void) {
     opts->use_rigctl = 1;
     g_setfreq_result = true;
     const int before_stale_scanner = g_rtl_tune_calls;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_tune_calls == before_stale_scanner);
     assert(g_rtl_symbol_rate_hz == 2400 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
     opts->scanner_mode = 0;
@@ -3655,7 +3652,7 @@ main(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_rtl_ted_sps = 20;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
     assert(g_rtl_ted_sps == 10);
@@ -3667,7 +3664,7 @@ main(void) {
     g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_rtl_ted_sps = 20;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
     assert(g_rtl_ted_sps == 10);
@@ -3695,7 +3692,7 @@ main(void) {
     g_rtl_ted_sps = 20;
     g_rtl_ted_sps_override = 0;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_symbol_levels == 4);
@@ -3753,7 +3750,7 @@ main(void) {
     g_rtl_ted_sps = 8;
     g_rtl_ted_sps_override = 0;
     g_rtl_pending_active = 0;
-    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0U, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, 0, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_rtl_cqpsk_enable == 0);
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_symbol_levels == 4);

@@ -2128,52 +2128,46 @@ typedef struct rtl_stream_test_external_landing_filter_result {
  * on C that had no profile to take (D, then C with no profile, then D). */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
 
-/* The receiver's channels (issue #899): what the receiver runs after each landing, family request and write. */
+/* The receiver's closed starts (issue #899): what the receiver runs after each landing, family request and write. */
 typedef struct rtl_stream_test_channel_gate_result {
-    /* An NFM retune naming a new channel, from an open whose channel the decoder opened under Off: */
-    int early_write_result;    /* a write for the new channel while its retune is outstanding: STALE */
-    int outstanding_open;      /* 1 when the old channel kept its gate (Off) meanwhile */
-    int landing_closed;        /* 1 when the controller's landing started the new channel closed */
-    int landing_channel_moved; /* 1 when the receiver is on the new channel */
-    int stale_write_result;    /* a write for the old channel after the landing: STALE */
-    int stale_write_closed;    /* 1 when the new channel stayed closed */
-    int write_result;          /* the write for the new channel (noise +10): APPLIED */
+    /* An NFM retune marked a new channel, from an open the decoder wrote Off for: */
+    int outstanding_open; /* 1 when the channel left kept its gate (Off) while the retune was outstanding */
+    int landing_closed;   /* 1 when the controller's landing started the new channel closed */
+    int landing_reported; /* 1 when rtl_stream_gate_closed_start() said so */
+    int write_opened;     /* 1 when the decoder's write (noise +10) opened it */
     int write_mode;
     int write_margin;
-    int superseded_closed;         /* a landing whose profile a live family request superseded: closed */
-    int cleared_kept;              /* a profile cleared before the controller took it: channel and gate unchanged */
-    int refused;                   /* 1 when a 200 kHz NFM landing's finalize reported the refusal */
-    int refused_closed;            /* ... which started its channel closed all the same: the tuner moved */
-    int channel_only_closed;       /* the controller's landing of a profile for the channel alone: closed */
-    int channel_only_symbols_kept; /* ... with the symbol rate and TED as it found them */
-    int unnamed_kept;              /* a retune naming no channel: channel and gate (noise +10) unchanged */
-    int external_closed;           /* an external backend's landing: closed */
-    int channel_only_external_closed;
-    int channel_only_family_kept;  /* ... and the family as it found it */
-    int channel_only_request_kept; /* ... and a live analog request queued before it */
+    int superseded_closed;      /* a marked landing whose profile a live family request superseded: closed */
+    int cleared_kept;           /* a profile cleared before the controller took it: gate unchanged */
+    int refused;                /* 1 when a 200 kHz NFM landing's finalize reported the refusal */
+    int refused_closed;         /* ... which started closed all the same: the tuner moved */
+    int mark_only_closed;       /* the controller's landing of a profile for the mark alone: closed */
+    int mark_only_symbols_kept; /* ... with the symbol rate and TED as it found them */
+    int unmarked_kept;          /* a retune nobody marked: the gate (noise +10) unchanged */
+    int external_closed;        /* an external backend's marked landing: closed */
+    int mark_only_external_closed;
+    int mark_only_family_kept;  /* ... and the family as it found it */
+    int mark_only_request_kept; /* ... and a live analog request queued before it */
     /* Live family requests, from a digital open the decoder wrote -40 dB on: */
-    int family_taken;              /* rtl_stream_unstage_family_channel() after the analog request: 1 */
-    int family_switched;           /* 1 when the block boundary switched to the analog family */
-    int family_closed;             /* ... and started the request's channel closed */
-    int family_moved;              /* ... on the request's channel */
-    int digital_switched;          /* a request back to the digital family, naming a channel: switched */
-    int digital_not_closed;        /* ... not closed */
-    int digital_runs_written;      /* ... running the gate the decoder last wrote (-40 dB) */
-    int digital_retune_not_closed; /* a digital retune naming a channel: on it, not closed */
-    int refused_taken;             /* an analog request refused as it is asked for: 0, no request took the channel */
-    int refused_kept;              /* ... and the receiver stays on its channel, not closed */
-    int retired_kept;       /* a retune retired a queued analog request: the symbol-only request after keeps its gate */
-    int stalled_last_moved; /* nine requests replacing one another: the last one's channel, closed */
-    int stalled_older_stale;  /* writes for the other eight: 8 STALE */
-    int stalled_last_applied; /* the write for the last one: APPLIED */
-    int open_closed;          /* an analog stream open: closed */
-    int open_write_result;    /* the write for its channel: APPLIED */
-    int open_opened;          /* ... and in force */
+    int family_switched;            /* 1 when the block boundary switched to the analog family */
+    int family_closed;              /* ... and started closed */
+    int width_kept;                 /* a width change on the same kind: not closed, the gate written (noise +10) kept */
+    int kind_closed;                /* a switch to AM: closed */
+    int digital_switched;           /* a request back to the digital family: switched */
+    int digital_runs_digital;       /* ... running the digital gate (-40 dB), not the analog one (noise +10) */
+    int digital_write_runs_digital; /* a write on the digital family runs its digital gate */
+    int hunt_runs_digital;          /* an unmarked retune landing the digital family from an analog channel: -40 dB */
+    int refused_kept;               /* an analog request refused as it is asked for: not closed, gate kept */
+    int retired_closed;             /* a marked retune that retired a queued analog request: closed */
+    int retired_kept;               /* ... and the symbol-only request after the write keeps the gate written */
+    int open_counts_reset;          /* an open starts the closed-start count and duration over */
+    int open_closed;                /* an analog stream open: closed */
+    int open_opened;                /* ... the decoder's write opens it */
+    int open_counted;               /* ... counted as one closed start */
 } rtl_stream_test_channel_gate_result;
 
-/* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests that name channels, as
- * the controller, an external backend and the demod thread do, reporting what the receiver runs after each (issue
- * #899). */
+/* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
+ * external backend and the demod thread do, reporting what the receiver runs after each (issue #899). */
 int rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out);
 
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */

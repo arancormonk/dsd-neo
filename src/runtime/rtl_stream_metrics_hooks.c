@@ -139,45 +139,23 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_settin
 }
 
 int
-dsd_rtl_stream_metrics_hook_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setting) {
-    if (!setting || !g_rtl_stream_metrics_hooks.write_channel_gate) {
+dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+    if (!gate || !g_rtl_stream_metrics_hooks.write_squelch_gate) {
         return -1;
     }
-    return g_rtl_stream_metrics_hooks.write_channel_gate(channel, setting);
-}
-
-uint32_t
-dsd_rtl_stream_metrics_hook_new_channel(void) {
-    return g_rtl_stream_metrics_hooks.new_channel ? g_rtl_stream_metrics_hooks.new_channel() : 0U;
-}
-
-uint32_t
-dsd_rtl_stream_metrics_hook_current_channel(void) {
-    return g_rtl_stream_metrics_hooks.current_channel ? g_rtl_stream_metrics_hooks.current_channel() : 0U;
-}
-
-uint32_t
-dsd_rtl_stream_metrics_hook_channel_gate_opened(void) {
-    return g_rtl_stream_metrics_hooks.channel_gate_opened ? g_rtl_stream_metrics_hooks.channel_gate_opened() : 0U;
-}
-
-uint32_t
-dsd_rtl_stream_metrics_hook_refused_channel(void) {
-    return g_rtl_stream_metrics_hooks.refused_channel ? g_rtl_stream_metrics_hooks.refused_channel() : 0U;
-}
-
-void
-dsd_rtl_stream_metrics_hook_stage_family_channel(uint32_t channel) {
-    if (g_rtl_stream_metrics_hooks.stage_family_channel) {
-        g_rtl_stream_metrics_hooks.stage_family_channel(channel);
-    }
+    g_rtl_stream_metrics_hooks.write_squelch_gate(gate, digital);
+    return 0;
 }
 
 int
-dsd_rtl_stream_metrics_hook_unstage_family_channel(uint32_t channel) {
-    return g_rtl_stream_metrics_hooks.unstage_family_channel
-               ? g_rtl_stream_metrics_hooks.unstage_family_channel(channel)
-               : 0;
+dsd_rtl_stream_metrics_hook_gate_closed_start(void) {
+    return g_rtl_stream_metrics_hooks.gate_closed_start ? g_rtl_stream_metrics_hooks.gate_closed_start() : 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_receive_requests_pending(void) {
+    return g_rtl_stream_metrics_hooks.receive_requests_pending ? g_rtl_stream_metrics_hooks.receive_requests_pending()
+                                                               : 0;
 }
 
 int

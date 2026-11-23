@@ -28,39 +28,19 @@ int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
-/** The decoder's side of the receiver's channels (issue #899, rtl_stream_new_channel()). The decoder writes the
- * squelch gate only for the receiver channel it has committed, resolved at write time
- * (dsd_scan_mode_channel_squelch()) and tagged with that channel; a new analog channel stays closed until then. All
- * decoder thread; nothing off an RTL-family input. */
-/** A new channel number for a retune the caller will name it on (a -Y row's, committed at the row's commit); 0 off a
- * radio input. */
-uint32_t dsd_engine_receiver_channel_new(const dsd_opts* opts);
-/** An on-air transition (a manual tune, a trunk-scan target, a signal-search visit or restore): its owner is committed
- * now, on a new channel the caller names on the retune that makes it; returns it, 0 off a radio input. */
-uint32_t dsd_engine_receiver_channel_begin(const dsd_opts* opts);
-/** Commit @p channel (0: keep the one committed): a -Y row's at its commit, or the staged row's a release hands the
- * session. */
-void dsd_engine_receiver_channel_commit(uint32_t channel);
-/** The transition that named @p channel will never land (refused or failed before the receiver took it): the decoder
- * goes back to the channel before it. Nothing once the receiver has been seen on it. */
-void dsd_engine_receiver_channel_abandon(uint32_t channel);
-/** A stream opened: its channel is committed, unless a -Y row whose retune landed waits for its commit. */
-void dsd_engine_receiver_channel_opened(const dsd_opts* opts, const dsd_state* state);
-/** A family request the receiver refused where it landed (rtl_stream_refused_channel()), reconciled: when it was the
- * transition the decoder waits for, it goes back to the channel before it. */
-void dsd_engine_receiver_channel_refused(void);
-/** Before a live family request: the channel it names (rtl_stream_stage_family_channel()), a new transition's, or
- * that of one begun whose retune has not landed yet. Returns the new channel, or 0 when it joined one or off a radio
- * input; pass it to dsd_engine_receiver_family_end() once the requests are made, which abandons a new channel no
- * request took. */
-uint32_t dsd_engine_receiver_family_begin(const dsd_opts* opts);
-void dsd_engine_receiver_family_end(uint32_t channel);
-/** The drain applies a command (@p applying 1) or has applied it (0): no gate is written meanwhile, and the drain's
- * settle after it writes the one the command's options resolve to. */
-void dsd_engine_receiver_gate_command(int applying);
-/** Write the committed channel's gate when it is due: the channel was committed or @p changed (a command ran, the
- * session's squelch moved) and the receiver is on it. With nothing due, nothing is read, resolved or written. A write
- * repeats only on a change. */
+/** The decoder's side of the receiver's squelch gate (issue #899). A new analog channel starts closed in the receiver
+ * (rtl_stream_gate_closed_start()), and a write applies to the channel it is on: the decoder writes the gate, resolved at
+ * write time (dsd_scan_mode_channel_squelch(), with the digital family's dsd_scan_mode_digital_squelch()), only when none
+ * of its own tune or family requests is outstanding (a -Y row's, a trunk-scan target's, a timed-out manual tune's, a
+ * signal-search tune, an unsettled receive request). All decoder thread; nothing off an RTL-family input. */
+/** A commit or landing observed, or a family request made: the next settle with nothing outstanding writes. */
+void dsd_engine_receiver_gate_due(void);
+/** A command or coordinator switch begins (@p hold 1) or ends (0): no gate is written meanwhile, and one is due after
+ * the outermost ends. */
+void dsd_engine_receiver_gate_hold(int hold);
+/** Write the gate when it is due (a commit, landing or request observed, or @p changed: a command ran, the session's
+ * squelch moved) or the receiver reports a closed start on an analog session, and nothing of the decoder's own is
+ * outstanding. With nothing due on a digital session, nothing is read, resolved or written. */
 void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
 /** dsd_engine_receiver_gate_settle() with @p changed: what the scan scope's entry points run through
  * dsd_receiver_gate_settle_hook_set() (issue #899). */

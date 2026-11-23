@@ -89,9 +89,9 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
  * from where the receiver is not known. Nothing for any other tune, or one no longer noted. Decoder thread.
  */
 void dsd_engine_manual_tune_note_walk_judge(uint64_t id, int move_judge, long move_from_hz);
-/** The receiver channel the timed-out tune @p id names (issue #899, dsd_engine_receiver_channel_begin()): its late
- * failure leaves the decoder on the channel before it (dsd_engine_receiver_channel_abandon()). Decoder thread. */
-void dsd_engine_manual_tune_note_channel(uint64_t id, uint32_t channel);
+/** Whether a timed-out tune is noted and its completion still awaited (issue #899): the decoder writes no squelch gate
+ * until it lands, fails or is dropped. Decoder thread. */
+int dsd_engine_manual_tune_awaited(void);
 
 /**
  * @brief The row a list tune still awaits on @p state's current list and scan session (dsd_state::lcn_list_rev,

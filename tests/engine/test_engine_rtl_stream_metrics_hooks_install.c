@@ -306,50 +306,35 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     (void)setting;
 }
 
-/* The receiver's channels (issue #899): a write and the channel it named, the numbering, the channels on air, opened
-   and refused, and the family-request staging. */
-static int g_channel_gate_writes;
-static uint32_t g_last_channel_gate_channel;
-static dsd_squelch_setting g_last_channel_gate;
-
-int
-rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* setting) {
-    ++g_channel_gate_writes;
-    g_last_channel_gate_channel = channel;
-    g_last_channel_gate = *setting;
-    return channel == 7U ? RTL_STREAM_GATE_APPLIED : RTL_STREAM_GATE_STALE;
-}
-
-uint32_t
-rtl_stream_new_channel(void) {
-    return 41U;
-}
-
-uint32_t
-rtl_stream_current_channel(void) {
-    return 7U;
-}
-
-uint32_t
-rtl_stream_refused_channel(void) {
-    return 3U;
-}
-
-uint32_t
-rtl_stream_channel_gate_opened(void) {
-    return 5U;
-}
-
-static uint32_t g_staged_family_channel;
+/* The receiver's squelch gate (issue #899): a write with its digital gate, the closed-start report, and the receive
+   requests, the newest of them unsettled while g_request_pending says so. */
+static int g_gate_writes;
+static dsd_squelch_setting g_last_gate;
+static dsd_squelch_setting g_last_digital_gate;
+static int g_closed_start_reads;
+static int g_request_pending;
 
 void
-rtl_stream_stage_family_channel(uint32_t channel) {
-    g_staged_family_channel = channel;
+rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+    ++g_gate_writes;
+    g_last_gate = *gate;
+    g_last_digital_gate = digital ? *digital : *gate;
 }
 
 int
-rtl_stream_unstage_family_channel(uint32_t channel) {
-    return channel == 9U ? 1 : 0;
+rtl_stream_gate_closed_start(void) {
+    ++g_closed_start_reads;
+    return 1;
+}
+
+uint32_t
+rtl_stream_receive_request_seq(void) {
+    return 12U;
+}
+
+int
+rtl_stream_receive_request_outcome(uint32_t seq) {
+    return seq == 12U && g_request_pending ? RTL_STREAM_RX_REQUEST_PENDING : RTL_STREAM_RX_REQUEST_SETTLED;
 }
 
 static int g_replay_batch_calls;
@@ -565,29 +550,26 @@ main(void) {
     assert(level.sample_count == 1024U);
 
     /* Scan rows' squelch (issue #521) and whole settings (issue #518 follow-up) reach the demod's setters only through
-       the engine's channel-tagged writes below (issue #899 round 5): the engine installs no untagged setter, so nothing
-       reaches the demod without naming the channel it is for. */
+       the engine's gate writes below (issue #899): the engine installs no bare setter, so nothing reaches the demod
+       outside the closed-start rules. */
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == -1);
     const dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&auto6) == -1);
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
     assert(g_channel_squelch_setting_calls == 0 && g_channel_squelch_calls == 0);
-    /* A gate write reaches the stream whole with the channel it names, and the stream's verdict comes back (issue
-       #899). */
+    /* A gate write reaches the stream whole, with its digital gate (issue #899). */
     const dsd_squelch_setting noise10 = {DSD_SQUELCH_MODE_NOISE, 0.0, 10};
-    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(7U, &noise10) == DSD_CHANNEL_GATE_APPLIED);
-    assert(g_channel_gate_writes == 1 && g_last_channel_gate_channel == 7U
-           && g_last_channel_gate.mode == DSD_SQUELCH_MODE_NOISE && g_last_channel_gate.margin_db == 10);
-    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(6U, &noise10) == DSD_CHANNEL_GATE_STALE);
-    assert(dsd_rtl_stream_metrics_hook_write_channel_gate(7U, NULL) == -1 && g_channel_gate_writes == 2);
-    assert(dsd_rtl_stream_metrics_hook_new_channel() == 41U);
-    assert(dsd_rtl_stream_metrics_hook_current_channel() == 7U);
-    assert(dsd_rtl_stream_metrics_hook_channel_gate_opened() == 5U);
-    assert(dsd_rtl_stream_metrics_hook_refused_channel() == 3U);
-    dsd_rtl_stream_metrics_hook_stage_family_channel(9U);
-    assert(g_staged_family_channel == 9U);
-    assert(dsd_rtl_stream_metrics_hook_unstage_family_channel(9U) == 1);
-    assert(dsd_rtl_stream_metrics_hook_unstage_family_channel(8U) == 0);
+    const dsd_squelch_setting off = {DSD_SQUELCH_MODE_LEVEL, 0.0, 6};
+    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(&noise10, &off) == 0);
+    assert(g_gate_writes == 1 && g_last_gate.mode == DSD_SQUELCH_MODE_NOISE && g_last_gate.margin_db == 10
+           && g_last_digital_gate.mode == DSD_SQUELCH_MODE_LEVEL);
+    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(NULL, &off) == -1 && g_gate_writes == 1);
+    assert(dsd_rtl_stream_metrics_hook_gate_closed_start() == 1 && g_closed_start_reads == 1);
+    /* The newest receive request unsettled says one is outstanding; settled, none is. */
+    g_request_pending = 1;
+    assert(dsd_rtl_stream_metrics_hook_receive_requests_pending() == 1);
+    g_request_pending = 0;
+    assert(dsd_rtl_stream_metrics_hook_receive_requests_pending() == 0);
 
     test_replay_batch_hook();
     /* The stream's discontinuity count reaches DSP through the table (issue #518). */

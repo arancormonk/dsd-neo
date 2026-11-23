@@ -53,11 +53,12 @@ static dsd_opts* g_stream_opts;
 /* rtl_stream_tune_tagged(), renamed here and in the io/control source this test compiles (see the CMake target). */
 int test_rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
 
-/* The decoder's receiver channels (issue #899; channel_scan.c, not linked here): the late failure of a timed-out tune
-   that named one goes back to the channel before it, which no case here follows. */
+/* The decoder's squelch gate (issue #899; channel_scan.c, not linked here): a settled record marks a write due. */
+static int g_gate_writes_due;
+
 void
-dsd_engine_receiver_channel_abandon(uint32_t channel) {
-    (void)channel;
+dsd_engine_receiver_gate_due(void) {
+    g_gate_writes_due++;
 }
 
 int
@@ -235,14 +236,19 @@ test_late_failure_reverts_the_cached_centre(fixture* f) {
     fixture_end();
 }
 
-/* Timeout, then a late success: the cached centre stays on the frequency asked for, with no toast. */
+/* Timeout, then a late success: the cached centre stays on the frequency asked for, with no toast. The tune is
+   outstanding for the squelch gate until its completion is polled, which marks a gate write due (issue #899). */
 static void
 test_late_success_keeps_the_cached_centre(fixture* f) {
     fixture_begin(f);
     const uint64_t id = enter_frequency(f, ENTRY_A_HZ);
     take_request(id, ENTRY_A_HZ);
+    assert(dsd_engine_manual_tune_awaited());
     assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    assert(dsd_engine_manual_tune_awaited());
+    const int due_before = g_gate_writes_due;
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_LANDED);
+    assert(!dsd_engine_manual_tune_awaited() && g_gate_writes_due == due_before + 1);
     assert(f->opts->rtlsdr_center_freq == ENTRY_A_HZ);
     assert(f->state->ui_msg[0] == '\0');
     assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE);

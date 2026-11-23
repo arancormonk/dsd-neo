@@ -14,9 +14,10 @@ extern "C" {
    leave. */
 void dsd_test_channel_scan_leave_seen(int* scanner_mode, int* row_keys);
 
-/* The stream opens the decoder committed since the last call (dsd_engine_receiver_channel_opened(), issue #899), with
-   the gate the last one resolved to at its commit (dsd_scan_mode_channel_squelch()) in @p out (may be NULL). */
-int dsd_test_channel_scan_opens_committed(dsd_squelch_setting* out);
+/* The gate writes marked due since the last call (dsd_engine_receiver_gate_due(), issue #899: a stream open), with the
+   gate the last one resolved to as it was marked (dsd_scan_mode_channel_squelch(), on the @p opts and @p state given to
+   the call before) in @p out (may be NULL). The options and state are kept for the marks that follow. */
+int dsd_test_channel_scan_gates_due(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* out);
 
 #ifdef __cplusplus
 }

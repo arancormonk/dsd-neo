@@ -865,9 +865,9 @@ scan_squelch_changed(const dsd_squelch_setting* before, const dsd_opts* opts) {
 
 /* Hand the RTL demodulator the squelch now in force. Only the scope's entry points call this:
  * prepare and scan_scope_apply() also run on temporary scopes and never reach the hardware. The engine's settle
- * (dsd_receiver_gate_settle_hook_run(), issue #899) writes each gate for the channel it was resolved for, so a row's
- * edit or commit never lands on a channel a retune has put the receiver on since; a runtime with no engine installed
- * hands the fields over as they are. */
+ * (dsd_receiver_gate_settle_hook_run(), issue #899) writes the gate only while none of the decoder's own tune or family
+ * requests is outstanding, so a row's edit or commit never lands on a channel the receiver has not reached; a runtime
+ * with no engine installed hands the fields over as they are. */
 static void
 scan_squelch_push(const dsd_opts* opts, const dsd_state* state) {
     if (opts->audio_in_type != AUDIO_IN_RTL || dsd_receiver_gate_settle_hook_run(opts, state)) {
@@ -1042,6 +1042,12 @@ dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
         analog = dsd_scan_mode_is_analog(scope->mode) && opts && opts->m17encoder != 1;
     }
     return dsd_squelch_channel_gate(opts, state, &scope->options, analog);
+}
+
+dsd_squelch_setting
+dsd_scan_mode_digital_squelch(const dsd_opts* opts, const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return dsd_squelch_channel_gate(opts, state, scope ? &scope->options : NULL, 0);
 }
 
 int

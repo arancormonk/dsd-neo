@@ -257,45 +257,29 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
-/* The channel a retune names (issue #899): the receiver moves to it where the retune lands. */
-static uint32_t g_retune_channel;
+/* The retunes marked a new channel (issue #899): the receiver starts closed where one lands on the analog family. */
+static int g_retune_marks;
 
 void
-rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
     (void)target_freq_hz;
-    if (channel != 0U) {
-        g_retune_channel = channel;
+    if (new_channel) {
+        g_retune_marks++;
     }
 }
 
-/* The engine's side of the receiver's channels (issue #899; channel_scan.c, not linked here): each transition a visit
-   or restore begins numbers a channel, and a family request's channel is staged through the stream hooks, as the engine
-   stages it; one begun while a retune of the same move is still to land joins it. */
-static uint32_t g_channels_begun;
-static uint32_t g_channel_abandoned;
+/* The engine's side of the receiver's gate (issue #899; channel_scan.c, not linked here): how deep the holds are, so a
+   case sees that a family request or retune went out while the decoder wrote no gate. */
+static int g_gate_hold_depth;
 
-uint32_t
-dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
-    (void)opts;
-    return ++g_channels_begun;
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    g_gate_hold_depth += hold ? 1 : -1;
+    assert(g_gate_hold_depth >= 0);
 }
 
 void
-dsd_engine_receiver_channel_abandon(uint32_t channel) {
-    g_channel_abandoned = channel;
-}
-
-uint32_t
-dsd_engine_receiver_family_begin(const dsd_opts* opts) {
-    (void)opts;
-    dsd_rtl_stream_metrics_hook_stage_family_channel(g_channels_begun);
-    return 0U;
-}
-
-void
-dsd_engine_receiver_family_end(uint32_t channel) {
-    (void)dsd_rtl_stream_metrics_hook_unstage_family_channel(channel != 0U ? channel : g_channels_begun);
-}
+dsd_engine_receiver_gate_due(void) {}
 
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
@@ -303,30 +287,15 @@ rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
     return 0;
 }
 
-/* Issue #899: the channel the decoder staged for the next live family request (rtl_stream_stage_family_channel()), and
-   the one the last request took with it. */
-static uint32_t family_channel_staged;
-static uint32_t family_channel_taken;
-
-static void
-record_family_channel_stage(uint32_t channel) {
-    family_channel_staged = channel;
-}
-
-static int
-record_family_channel_unstage(uint32_t channel) {
-    const int taken = family_channel_staged != channel;
-    family_channel_staged = 0U;
-    return taken;
-}
+/* Issue #899: whether the last live family request went out under the decoder's gate hold. */
+static int family_in_hold;
 
 int
 rtl_stream_request_analog_profile(int f, int kind, int width) {
     (void)kind;
     (void)width;
     family = f;
-    family_channel_taken = family_channel_staged;
-    family_channel_staged = 0U;
+    family_in_hold = g_gate_hold_depth > 0;
     return 0;
 }
 
@@ -810,32 +779,25 @@ test_restore_hands_back_the_analog_default_first(dsd_opts* o, dsd_state* s, dsd_
     o->squelch_default_mode = DSD_SQUELCH_MODE_NOISE;
     o->squelch_default_margin_db = 10;
     assert(dsd_squelch_analog_default_sync(o, s) == 1 && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
-    dsd_rtl_stream_metrics_hooks hooks;
-    DSD_MEMSET(&hooks, 0, sizeof(hooks));
-    hooks.stage_family_channel = record_family_channel_stage;
-    hooks.unstage_family_channel = record_family_channel_unstage;
-    dsd_rtl_stream_metrics_hooks_set(&hooks);
     config->session_id = 53;
     assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
     tick(o, s);
     assert(o->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED);
-    family_channel_taken = 0U;
-    g_channel_abandoned = 0U;
+    family_in_hold = 0;
+    const int marks_before = g_retune_marks;
     act(o, s, DSD_SEARCH_ACTION_STOP);
     land(o, s); // the span tune the start queued; the restore follows it
     const dsd_squelch_setting noise10 = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
-    /* Round 6, "analog starts closed": the session comes back on a channel of its own that the restore's retune and
-       its family request both name, begun before the scope left, so nothing the session resolves to reaches the
-       range's channel; the decoder opens it on the session's gate, the analog default, which the session resolves to
-       once its settings are back. */
-    assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && family_channel_taken != 0U);
-    assert(family_channel_taken == g_retune_channel && g_channel_abandoned == 0U && family_channel_staged == 0U);
+    /* Round 7, "closed start, no IDs": the session comes back on a new channel the restore's retune is marked as, and
+       its family request goes out under the decoder's gate hold, so nothing the session resolves to reaches the range's
+       channel; the decoder writes the session's gate, the analog default, once the retune and request have landed. */
+    assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && family_in_hold);
+    assert(g_retune_marks == marks_before + 1 && g_gate_hold_depth == 0);
     assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
     const dsd_squelch_setting session_gate = dsd_scan_mode_channel_squelch(o, s);
     assert(dsd_squelch_setting_equal(&session_gate, &noise10) == 1);
     land(o, s); // the restore tune
     assert(status.phase == DSD_SEARCH_STOPPED && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
-    dsd_rtl_stream_metrics_hooks_set(NULL);
     (void)dsd_squelch_analog_default_release(o);
     o->squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
     o->squelch_default_state = DSD_SQUELCH_DEFAULT_IDLE;

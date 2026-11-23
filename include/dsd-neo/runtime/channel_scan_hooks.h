@@ -58,10 +58,10 @@ void dsd_channel_walk_settle_hook_set(dsd_channel_walk_settle_fn fn);
 dsd_channel_walk_settle_fn dsd_channel_walk_settle_hook_get(void);
 
 /**
- * Hand a radio receiver the squelch gate of the channel whose samples it produces now, and keep the gate an outstanding
- * retune lands current (issue #899): a -Y row whose retune landed and waits for its commit, else the channel the scan
- * scope, or the session, has on air. The engine installs it (dsd_engine_receiver_gate_settle()) for the scan scope's
- * resume, which with none installed (tests) pushes the gate of the row on air itself.
+ * Hand a radio receiver the squelch gate of the channel the scan scope, or the session, has on air, once none of the
+ * decoder's own tune or family requests is outstanding (issue #899). The engine installs it
+ * (dsd_engine_receiver_gate_settle()) for the scan scope's entry points, which with none installed (tests) push the
+ * gate of the row on air themselves.
  */
 typedef void (*dsd_receiver_gate_settle_fn)(const dsd_opts* opts, const dsd_state* state);
 

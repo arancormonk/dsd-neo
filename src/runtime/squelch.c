@@ -662,6 +662,16 @@ dsd_squelch_configured_fields(const dsd_opts* opts, double* level, int* mode, in
     }
 }
 
+dsd_squelch_setting
+dsd_squelch_setting_configured(const dsd_opts* opts) {
+    double level = 0.0;
+    int mode = DSD_SQUELCH_MODE_LEVEL;
+    int margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    dsd_squelch_configured_fields(opts, &level, &mode, &margin_db);
+    return dsd_squelch_mode_is_dynamic(mode) ? dsd_squelch_setting_dynamic(mode, margin_db)
+                                             : dsd_squelch_setting_of_level(level);
+}
+
 void
 dsd_squelch_standing_capture(const dsd_opts* opts, dsd_squelch_standing* out) {
     if (!out) {

@@ -32,6 +32,12 @@ rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int
                                             0);
 }
 
+/* Whether the newest receive request is still unsettled: requests settle in order, so none is then (issue #899). */
+static int
+rtl_stream_metrics_receive_requests_pending(void) {
+    return rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING;
+}
+
 /* The fields DSP reads of the replay batch tag: the labels, the media span its samples run the decode clock on, the
  * centre they were captured on (issue #575) and the stream gaps recorded before them (issue #518). The decoder thread
  * calls it while the stream is open, the one thread rtl_stream_get_replay_batch() may be called on. */
@@ -86,14 +92,10 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25_timing_proof = rtl_stream_set_p25_timing_proof;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
-    /* No untagged squelch setter (issue #899): every gate the engine hands the receiver names its channel. */
-    hooks.new_channel = rtl_stream_new_channel;
-    hooks.current_channel = rtl_stream_current_channel;
-    hooks.channel_gate_opened = rtl_stream_channel_gate_opened;
-    hooks.refused_channel = rtl_stream_refused_channel;
-    hooks.write_channel_gate = rtl_stream_write_channel_gate;
-    hooks.stage_family_channel = rtl_stream_stage_family_channel;
-    hooks.unstage_family_channel = rtl_stream_unstage_family_channel;
+    /* No bare squelch setter (issue #899): the engine writes the gate through the closed-start rules. */
+    hooks.write_squelch_gate = rtl_stream_write_squelch_gate;
+    hooks.gate_closed_start = rtl_stream_gate_closed_start;
+    hooks.receive_requests_pending = rtl_stream_metrics_receive_requests_pending;
     hooks.replay_batch = rtl_stream_metrics_replay_batch;
     hooks.discontinuity_seq = rtl_stream_discontinuity_seq;
     hooks.monitor_deemph_gain = rtl_stream_monitor_deemph_gain;

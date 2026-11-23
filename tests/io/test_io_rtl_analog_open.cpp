@@ -58,13 +58,13 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "test_support.h"
 
-/* The stream's channel opened by the decoder's write (issue #899): an analog channel starts closed, and nothing here
-   runs a decoder, so each case writes the squelch the options hold for the channel the open started. */
+/* The stream's gate opened by the decoder's write (issue #899): an analog open starts closed, and nothing here runs a
+   decoder, so each case writes the squelch the options hold. */
 static int
 open_the_channel(const dsd_opts* opts) {
     const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
-    return rtl_stream_write_channel_gate(rtl_stream_channel_gate_opened(), &squelch) == RTL_STREAM_GATE_APPLIED ? 0
-                                                                                                                : -1;
+    rtl_stream_write_squelch_gate(&squelch, &squelch);
+    return rtl_stream_gate_closed_start() ? -1 : 0;
 }
 
 static int

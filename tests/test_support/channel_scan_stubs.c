@@ -154,67 +154,39 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return 0;
 }
 
-/* No receiver channel is modelled here (issue #899): a settle after a change hands the gate of the channel on air over
-   through the stream hooks, a level as a threshold and a dynamic setting whole. UI_MENU_SERVICES counts those pushes;
-   the engine's own channel rules are exercised by ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
-uint32_t
-dsd_engine_receiver_channel_new(const dsd_opts* opts) {
-    (void)opts;
-    return 0U;
-}
+/* No receiver closed start is modelled here (issue #899): a settle after a change hands the gate of the channel on air
+   over through the stream hooks, a level as a threshold and a dynamic setting whole. UI_MENU_SERVICES counts those
+   pushes; the engine's own rules are exercised by ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
+static int g_gates_due;
+static dsd_squelch_setting g_due_gate;
+static const dsd_opts* g_due_opts;
+static const dsd_state* g_due_state;
 
-uint32_t
-dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
-    (void)opts;
-    return 0U;
-}
-
+/* A write marked due (a stream open, a family request): resolved at the next settle the stub sees, or at the call of
+   dsd_test_channel_scan_gates_due() with the options the last settle saw. */
 void
-dsd_engine_receiver_channel_commit(uint32_t channel) {
-    (void)channel;
-}
-
-void
-dsd_engine_receiver_channel_abandon(uint32_t channel) {
-    (void)channel;
-}
-
-static int g_opens_committed;
-static dsd_squelch_setting g_open_gate;
-
-void
-dsd_engine_receiver_channel_opened(const dsd_opts* opts, const dsd_state* state) {
-    g_opens_committed++;
-    g_open_gate = dsd_scan_mode_channel_squelch(opts, state);
+dsd_engine_receiver_gate_due(void) {
+    g_gates_due++;
+    if (g_due_opts) {
+        g_due_gate = dsd_scan_mode_channel_squelch(g_due_opts, g_due_state);
+    }
 }
 
 int
-dsd_test_channel_scan_opens_committed(dsd_squelch_setting* out) {
-    const int opens = g_opens_committed;
-    g_opens_committed = 0;
+dsd_test_channel_scan_gates_due(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* out) {
+    const int due = g_gates_due;
+    g_gates_due = 0;
+    g_due_opts = opts;
+    g_due_state = state;
     if (out) {
-        *out = g_open_gate;
+        *out = g_due_gate;
     }
-    return opens;
+    return due;
 }
 
 void
-dsd_engine_receiver_channel_refused(void) {}
-
-uint32_t
-dsd_engine_receiver_family_begin(const dsd_opts* opts) {
-    (void)opts;
-    return 0U;
-}
-
-void
-dsd_engine_receiver_family_end(uint32_t channel) {
-    (void)channel;
-}
-
-void
-dsd_engine_receiver_gate_command(int applying) {
-    (void)applying;
+dsd_engine_receiver_gate_hold(int hold) {
+    (void)hold;
 }
 
 void

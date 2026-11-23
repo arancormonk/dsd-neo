@@ -90,14 +90,11 @@ void dsd_engine_note_rigctl_retune(const dsd_opts* opts, dsd_state* state, uint3
  * runs the analog family or outstanding work lands a family (dsd_engine_scan_retune_attaches_family(), issue #583). A
  * row width the front end refuses at the rate it runs fails the tune before any backend moves.
  *
- * On an RTL-family input the retune names @p channel (issue #899; 0: none), a receiver channel the caller numbered
- * (dsd_engine_receiver_channel_new()), which its landing puts the receiver on (rtl_stream_prepare_retune_channel_for_target()).
+ * On an RTL-family input a retune with @p new_channel is the scanner's move to a new channel (issue #899): its landing
+ * on the analog family starts closed until the decoder writes the gate (rtl_stream_prepare_retune_new_channel_for_target()).
  */
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
-                                                   uint32_t channel, uint64_t* out_request_id);
-/** @brief The receiver channel (issue #899; 0: none) the control-channel retunes made from here on name, as a
- * trunk-scan target's park puts the target on air: the coordinator sets it around the park. Decoder thread. */
-void dsd_engine_trunk_park_names_channel(uint32_t channel);
+                                                   int new_channel, uint64_t* out_request_id);
 /** @brief Whether the rigctl leg of the last dsd_engine_scan_tune_to_freq() on this thread moved the radio, whatever
  * that tune returned. With rigctl and an RTL front end in a conventional scan, a tune whose RTL leg then failed, or
  * went on asynchronously (PENDING) and later fails, has the receiver on another carrier though its row never lands.

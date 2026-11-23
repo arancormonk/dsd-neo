@@ -25,6 +25,8 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_entry.h>
+#include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -54,10 +56,10 @@ dsd_engine_scan_tune_moved(void) {
 
 /* The tune always lands: the scanner commits the row as it would after a real retune. */
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint32_t channel, uint64_t* out) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, int new_channel, uint64_t* out) {
     (void)sps;
     (void)state;
-    (void)channel;
+    (void)new_channel;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     g_tunes++;
     const uint64_t request = dsd_trunk_tuning_request_begin();
@@ -129,6 +131,24 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
     (void)row;
     (void)now;
     return DSD_UNTYPED_STEP_FAILED;
+}
+
+/* No timed-out manual tune, trunk-scan retune or signal-search tune is ever outstanding here (issue #899). */
+int
+dsd_engine_manual_tune_awaited(void) {
+    return 0;
+}
+
+int
+dsd_engine_trunk_scan_retune_pending(const dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
+int
+dsd_engine_signal_search_tune_pending(const dsd_state* state) {
+    (void)state;
+    return 0;
 }
 
 /* No walk off the scan is ever noted here, so a start takes nothing over (issue #644). */

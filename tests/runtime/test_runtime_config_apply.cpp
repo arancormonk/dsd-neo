@@ -699,10 +699,9 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 static int g_wrap_fake_ctx = 0;
 static float g_wrap_last_channel_squelch = -1.0f;
 
-/* The receiver's channels (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream opens on a
-   channel of its own, closed on the analog family, under the options' squelch on the digital one; a retune that names
-   a channel lands it at once; each gate the receiver comes to run reaches the squelch setter wraps below as the stream
-   would set it. */
+/* The receiver's gate (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream opens
+   closed on the analog family, under the options' squelch on the digital one; a retune marked a new channel lands at
+   once; each gate the receiver comes to run reaches the squelch setter wraps below as the stream would set it. */
 static void wrap_rx_runs(const dsd_squelch_setting* gate);
 static dsd_rtl_stream_metrics_hooks g_wrap_rx_hooks;
 
@@ -716,51 +715,29 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     if (opts) {
         /* The demod takes the squelch the stream opens with, on the digital family; the analog family opens closed. */
         const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
-        (void)channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, wrap_rx_runs);
+        channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, wrap_rx_runs);
         wrap_rx_runs(&opened);
     }
     return 0;
 }
 
+/* A retune marked a new channel lands at once, on the family the receiver runs. */
 void
-__wrap_rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
+__wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
     (void)target_freq_hz;
-    channel_gate_fake_land(channel, 0);
-}
-
-int
-__wrap_rtl_stream_write_channel_gate(uint32_t channel, const dsd_squelch_setting* gate) {
-    return g_wrap_rx_hooks.write_channel_gate(channel, gate);
-}
-
-uint32_t
-__wrap_rtl_stream_new_channel(void) {
-    return g_wrap_rx_hooks.new_channel();
-}
-
-uint32_t
-__wrap_rtl_stream_current_channel(void) {
-    return g_wrap_rx_hooks.current_channel();
-}
-
-uint32_t
-__wrap_rtl_stream_channel_gate_opened(void) {
-    return g_wrap_rx_hooks.channel_gate_opened();
-}
-
-uint32_t
-__wrap_rtl_stream_refused_channel(void) {
-    return g_wrap_rx_hooks.refused_channel();
+    if (new_channel) {
+        channel_gate_fake_land(1, channel_gate_fake_analog());
+    }
 }
 
 void
-__wrap_rtl_stream_stage_family_channel(uint32_t channel) {
-    g_wrap_rx_hooks.stage_family_channel(channel);
+__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+    g_wrap_rx_hooks.write_squelch_gate(gate, digital);
 }
 
 int
-__wrap_rtl_stream_unstage_family_channel(uint32_t channel) {
-    return g_wrap_rx_hooks.unstage_family_channel(channel);
+__wrap_rtl_stream_gate_closed_start(void) {
+    return g_wrap_rx_hooks.gate_closed_start();
 }
 
 int

@@ -2043,8 +2043,7 @@ svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* Create and start the stream on the squelch the options hold, the analog default where it belongs (issue #899): on
-   the analog family it opens closed, on a channel of its own the decoder opens with its gate once it commits it
-   (dsd_engine_receiver_channel_opened()). 0, or -1 with no stream. */
+   the analog family it opens closed until the decoder writes its gate. 0, or -1 with no stream. */
 static int
 svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
     (void)dsd_squelch_analog_default_sync(opts, state);
@@ -2055,7 +2054,7 @@ svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
         rc = -1;
     }
     if (rc == 0) {
-        dsd_engine_receiver_channel_opened(opts, state);
+        dsd_engine_receiver_gate_due();
     }
     return rc;
 }
@@ -2839,49 +2838,26 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
 #endif
 
 /* The frequency entry's tune, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
-/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
-   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
-   late failure putting the cached frequency back (issue #671). */
-/* An RTL-family tune puts its channel on air (issue #899): committed now, on a channel of its own its retune names. 0
-   with a rigctl peer tuning in its place or no radio stream. */
-static uint32_t
-svc_rtl_begin_tune_channel(const dsd_opts* opts, const dsd_state* state, uint32_t hz) {
+/* An RTL-family tune is a new channel (issue #899, @p mark 1): its landing on the analog family starts closed until the
+   decoder writes its gate. Once the tune returned (@p mark 0), a profile it never took is marked no more. Nothing with
+   a rigctl peer tuning in its place or no radio stream. */
+static void
+svc_rtl_mark_tune_new_channel(const dsd_opts* opts, const dsd_state* state, uint32_t hz, int mark) {
 #ifdef USE_RADIO
-    if (opts->use_rigctl == 1 || opts->audio_in_type != AUDIO_IN_RTL || !state || !state->rtl_ctx) {
-        return 0U;
+    if (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        rtl_stream_prepare_retune_new_channel_for_target(hz, mark);
     }
-    const uint32_t channel = dsd_engine_receiver_channel_begin(opts);
-    rtl_stream_prepare_retune_channel_for_target(hz, channel);
-    return channel;
 #else
     (void)opts;
     (void)state;
     (void)hz;
-    return 0U;
+    (void)mark;
 #endif
 }
 
-/* The tune returned @p rc: a profile it never took names its channel no more, one refused leaves the decoder on the
-   channel before it, and one that timed out (@p pending_id) does if it fails late. */
-static void
-svc_rtl_end_tune_channel(uint32_t channel, uint32_t hz, int rc, const uint64_t* pending_id) {
-#ifdef USE_RADIO
-    if (channel != 0U) {
-        rtl_stream_prepare_retune_channel_for_target(hz, 0U);
-        if (rc == RTL_STREAM_TUNE_TIMEOUT && pending_id) {
-            dsd_engine_manual_tune_note_channel(*pending_id, channel);
-        } else if (rc != RTL_STREAM_TUNE_OK && rc != RTL_STREAM_TUNE_TIMEOUT) {
-            dsd_engine_receiver_channel_abandon(channel);
-        }
-    }
-#else
-    (void)channel;
-    (void)hz;
-    (void)rc;
-    (void)pending_id;
-#endif
-}
-
+/* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
+   the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
+   late failure putting the cached frequency back (issue #671). */
 int
 svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
     if (!opts) {
@@ -2892,9 +2868,9 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
        answers, and is on the old frequency while it answers a passband request before that. */
     dsd_input_cut mark;
     DSD_MEMSET(&mark, 0, sizeof mark);
-    const uint32_t channel = svc_rtl_begin_tune_channel(opts, state, hz);
+    svc_rtl_mark_tune_new_channel(opts, state, hz, 1);
     const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id, &mark);
-    svc_rtl_end_tune_channel(channel, hz, rc, out_pending_id);
+    svc_rtl_mark_tune_new_channel(opts, state, hz, 0);
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
         dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);

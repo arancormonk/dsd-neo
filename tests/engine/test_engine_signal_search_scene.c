@@ -141,36 +141,21 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
-/* The channel a retune names (issue #899), which no scene here reads. */
+/* The retune's new-channel mark (issue #899), which no scene here reads. */
 void
-rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
     (void)target_freq_hz;
-    (void)channel;
+    (void)new_channel;
 }
 
-/* The engine's side of the receiver's channels (issue #899; channel_scan.c, not linked here), which no scene here
-   reads. */
-uint32_t
-dsd_engine_receiver_channel_begin(const dsd_opts* opts) {
-    (void)opts;
-    return 0U;
+/* The engine's side of the receiver's gate (issue #899; channel_scan.c, not linked here), which no scene here reads. */
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    (void)hold;
 }
 
 void
-dsd_engine_receiver_channel_abandon(uint32_t channel) {
-    (void)channel;
-}
-
-uint32_t
-dsd_engine_receiver_family_begin(const dsd_opts* opts) {
-    (void)opts;
-    return 0U;
-}
-
-void
-dsd_engine_receiver_family_end(uint32_t channel) {
-    (void)channel;
-}
+dsd_engine_receiver_gate_due(void) {}
 
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {

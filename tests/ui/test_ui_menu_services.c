@@ -636,13 +636,6 @@ dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind,
     g_note_pending_row = row;
 }
 
-/* The receiver channel a timed-out tune names (issue #899), which no case here follows. */
-void
-dsd_engine_manual_tune_note_channel(uint64_t id, uint32_t channel) {
-    (void)id;
-    (void)channel;
-}
-
 /* The engine's carrier boundary and the stream-start source note (issue #575), recorded: these services call them at
    their success points, and the engine and config-apply tests run the real ones. */
 static int g_carrier_boundary_calls = 0;
@@ -986,11 +979,12 @@ push_channel_squelch_level(double mean_power) {
     rtl_stream_set_channel_squelch((float)mean_power);
 }
 
-/* The channel a retune names (issue #899), which no case here reads: these services retune through the stubs above. */
+/* The retune's new-channel mark (issue #899), which no case here reads: these services retune through the stubs
+   above. */
 void
-rtl_stream_prepare_retune_channel_for_target(uint32_t target_freq_hz, uint32_t channel) {
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
     (void)target_freq_hz;
-    (void)channel;
+    (void)new_channel;
 }
 
 void
@@ -1684,17 +1678,18 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
     g_rtl_start_result = 0;
     g_rtl_create_squelch_default = -1;
     const int default_state_before = opts->squelch_default_state;
-    (void)dsd_test_channel_scan_opens_committed(NULL);
+    (void)dsd_test_channel_scan_gates_due(opts, state, NULL);
     rc |= expect_int(label, svc_rtl_restart_recovery_locked(opts, state, 1, 0, NULL, NULL), 0);
     dsd_squelch_setting committed;
-    const int opens = dsd_test_channel_scan_opens_committed(&committed);
+    const int opens = dsd_test_channel_scan_gates_due(NULL, NULL, &committed);
     if (opens != 1 || !dsd_squelch_setting_equal(&committed, &want) || g_rtl_create_squelch_default != 0) {
-        DSD_FPRINTF(stderr,
-                    "%s: %d opens committed, the last resolving to mode %d margin %d level %g (the default applied in "
-                    "the options at the open: %d), want 1 resolving to mode %d margin %d level %g with the session's "
-                    "standing\n",
-                    label, opens, committed.mode, committed.margin_db, committed.level, g_rtl_create_squelch_default,
-                    want.mode, want.margin_db, want.level);
+        DSD_FPRINTF(
+            stderr,
+            "%s: %d opens with a gate due, the last resolving to mode %d margin %d level %g (the default applied in "
+            "the options at the open: %d), want 1 resolving to mode %d margin %d level %g with the session's "
+            "standing\n",
+            label, opens, committed.mode, committed.margin_db, committed.level, g_rtl_create_squelch_default, want.mode,
+            want.margin_db, want.level);
         rc |= 1;
     }
     rc |= expect_int(label, opts->squelch_default_state, default_state_before);
