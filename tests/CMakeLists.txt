@@ -28604,7 +28604,9 @@ if(
     )
     target_include_directories(
         dsd-neo_test_ui_airspy_config_apply
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control ${PROJECT_SOURCE_DIR}/src/engine
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/app_control
+            ${PROJECT_SOURCE_DIR}/src/engine
     )
     target_link_libraries(
         dsd-neo_test_ui_airspy_config_apply
