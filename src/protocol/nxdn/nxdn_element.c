@@ -4033,14 +4033,15 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
  * verified, never a previous call's. A message naming another target or class, or any numbered party during a DCR
  * call, is another call: it carries none of the previous call's talker, target text, emergency or crypto
- * (nxdn_scch_names_new_call()). */
-static void
+ * (nxdn_scch_names_new_call()). Returns 1 when the call kept is one that named no target before, and this message gave
+ * it its first (nxdn_scch_reselect_key()). */
+static int
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
-        return;
+        return 0;
     }
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
@@ -4068,6 +4069,20 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
         nxdn_scch_carry_crypto_media(state, &call, new_call);
     }
+    return !new_call && call.ota_target_id == 0U && target_id != 0U;
+}
+
+/* The call kept its cipher (nxdn_scch_enrich_identity() returned 1) and now names its destination: the working key
+   is selected again for the applied pair, the NXDN48 scrambler's destination fallback included, which had no
+   destination to read when the pair applied (nxdn_load_applied_key()), and the call reports it. A clear call keeps its
+   crypto as it is. */
+static void
+nxdn_scch_reselect_key(dsd_opts* opts, dsd_state* state, int first_destination) {
+    if (!first_destination || state->nxdn_cipher_type == 0U) {
+        return;
+    }
+    nxdn_load_applied_key(opts, state);
+    nxdn_vcall_publish_crypto(opts, state, 0U, 0U, DSD_CALL_ENC_OBSERVED_NONE);
 }
 
 static void
@@ -4083,8 +4098,9 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     if (info->acts && info->rep1 != 31U && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
-        nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
-                                  info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        const int first_destination = nxdn_scch_enrich_identity(
+            state, 0U, info->id, info->rep2, info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        nxdn_scch_reselect_key(opts, state, first_destination);
         nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
@@ -4199,13 +4215,13 @@ nxdn_scch_handle_info3(const dsd_opts* opts, dsd_state* state, const struct nxdn
                 info->id);
     if (info->acts && info->now - state->last_vc_sync_time < 1) {
         const uint64_t before = nxdn_live_call_transmission(state);
-        nxdn_scch_enrich_identity(state, info->id, 0U, info->rep2, DSD_CALL_KIND_UNKNOWN);
+        (void)nxdn_scch_enrich_identity(state, info->id, 0U, info->rep2, DSD_CALL_KIND_UNKNOWN);
         nxdn_call_identity_follow_source_update(state, before);
     }
 }
 
 static void
-nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_handle_info2(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     /* An outbound INFO2 has the INFO4 format (NXDN TS 1-E §6.5.3.3; TS 2-E Tables 5.1-2..5.1-4, "OSM INFO4 / INFO2"):
      * its idle, halt, free repeater and site ID messages carry a fixed code where a busy repeater message carries the
      * destination, and name no unit, so they never become the call's target. */
@@ -4234,8 +4250,9 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
     if (info->acts && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
-        nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
-                                  info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        const int first_destination = nxdn_scch_enrich_identity(
+            state, 0U, info->id, info->rep2, info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
+        nxdn_scch_reselect_key(opts, state, first_destination);
         nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
 }

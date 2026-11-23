@@ -2041,7 +2041,9 @@ suite runs under this compiler.
   is another pair's: that key is unloaded, so the call is published with no key and its voice is not decrypted with it. A VCALL loads a key only for the cipher and key ID the classification hysteresis applied
   (`nxdn_vcall_apply_state()`): a lone contradiction it holds back loads none, so the working key stays the applied
   cipher's. An IDAS INFO1 whose cipher and key ID take effect on the live call loads its key the same way
-  (`nxdn_load_applied_key()`, the live call's target as the destination), at once; a held-back INFO1 loads none, nor
+  (`nxdn_load_applied_key()`, the live call's target as the destination), at once, and again, with the call's crypto
+  republished, when an INFO2 or busy INFO4 gives the same call its first target (`nxdn_scch_reselect_key()`), so the
+  destination fallback a call with no target could not read is not lost; a held-back INFO1 loads none, nor
   does one heard during a DCR call, which is neither applied nor kept: the DCR call keeps its working key in R. A DCR
   call's scrambler names no key ID, so its key is reported as the working key (direct, no effective ID), never as the
   signalled key 0 a selection would read as keyring entry 0 (`nxdn_vcall_publish_crypto()`). A VCALL's cipher line prints the cipher and key ID it received, and the working key's value (through the key

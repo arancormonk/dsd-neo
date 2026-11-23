@@ -2399,6 +2399,61 @@ test_missing_key_discards_the_selected_key(void) {
 }
 
 /*
+ * The destination-key fallback runs again once the call learns its destination (issue #903): with the keyloader on
+ * NXDN48, a group call is heard with no destination (a VCALL to the Null ID), and two INFO1s name the scrambler under
+ * key ID 5, which holds no key, so nothing is selected and the direct key stays. An INFO2 on the receiver's repeater
+ * then names the same call's target 123, under which a key is filed: that key is loaded, and the call reports it.
+ */
+static int
+test_info1_key_follows_a_destination_learned_later(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    use_nxdn48_keyloader(opts, state);
+    state->scalar_key_present[0] = 1U; /* the operator's key, 0x1234 */
+    state->rkey_array[5] = 0ULL;       /* key ID 5 holds no key */
+    state->rkey_array[123] = 0x3333ULL;
+    /* The receiver is on repeater 6 (an INFO2 there names its own call). */
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = 851000000L;
+    state->trunk_chan_map[6] = 851000000L;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0000U, 0U, 0U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    send_outbound_info1(opts, state, 1U, 5U);
+    send_outbound_info1(opts, state, 1U, 5U);
+    dsd_call_snapshot call;
+    int rc = expect_int("learned-destination-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("learned-destination-none-yet", (int)call.ota_target_id, 0);
+    rc |= expect_int("learned-destination-scrambler", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("learned-destination-direct-key-first", state->R == 0x1234ULL ? 1 : 0, 1);
+    const uint64_t epoch = call.epoch;
+
+    uint8_t message[32];
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_msb(message, 0U, 2U, 2U);     /* INFO2: the target message */
+    write_bits_msb(message, 3U, 5U, 6U);     /* go to repeater 6 */
+    write_bits_msb(message, 13U, 11U, 123U); /* group 123 */
+    state->last_vc_sync_time = dsd_decode_time();
+    NXDN_decode_scch(opts, state, message, 1U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("learned-destination-target", (int)call.ota_target_id, 123);
+    rc |= expect_int("learned-destination-same-call", call.epoch == epoch, 1);
+    rc |= expect_int("learned-destination-key-loaded", state->R == 0x3333ULL ? 1 : 0, 1);
+    rc |= expect_int("learned-destination-reported", call.key_selection.source, DSD_CALL_KEY_DESTINATION);
+    rc |= expect_int("learned-destination-reported-id", call.key_selection.effective_id, 123);
+    free_fixture(opts, state);
+    return rc;
+}
+
+/*
  * The key an accepted INFO1 selects is the working key, as a VCALL's is (issue #903): with the keyloader on, two INFO1s
  * naming the scrambler under key ID 7 on a numbered call load key 7; a lone INFO1 naming DES under key ID 5 then is
  * held back and loads nothing.
@@ -2580,6 +2635,7 @@ main(void) {
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
     rc |= test_info1_destination_fallback_needs_an_nxdn_target();
     rc |= test_missing_key_discards_the_selected_key();
+    rc |= test_info1_key_follows_a_destination_learned_later();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {
