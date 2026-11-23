@@ -39,6 +39,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <memory>
 #include <mutex>
 #include <netinet/in.h>
@@ -409,6 +410,13 @@ main(int argc, char** argv) {
         return 1;
     }
     state->rtl_ctx = ctx;
+    /* An analog open starts closed until the decoder writes its gate (issue #899); no decoder runs here, so the bench
+       writes the squelch the options hold, as a session's first settle does, before the warmup: --path monitor then
+       measures the running monitor, not a muted pipeline. */
+    {
+        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts.get());
+        rtl_stream_write_squelch_gate(&squelch, &squelch);
+    }
 
     float sink = 0.0f;
     uint64_t interruptions = 0U;
