@@ -5126,9 +5126,12 @@ suite runs under this compiler.
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
-    demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
-    issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
-    back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
+    demodulator a whole squelch setting, bare (`set_channel_squelch_setting`, issue #518 follow-up; a table without it
+    falls back to the level call, `set_channel_squelch`, with an AUTO setting off). The engine installs neither bare
+    setter (issue #899): on a radio it writes the gate only through `write_squelch_gate`
+    (`rtl_stream_write_squelch_gate()`), from its settle (`dsd_receiver_gate_settle_hook_run()`), which a scan scope's
+    push goes through; the bare setters return -1 there and remain the fallback of a runtime with no engine installed.
+    Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
     `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - The P25 timing proof (`p25_timing_proof`, `dsd_rtl_stream_metrics_hook_note_p25_proven()` /
     `dsd_rtl_stream_metrics_hook_forget_p25_proof()`): the decoder thread's word to the CQPSK Gardner that the carrier
@@ -5273,27 +5276,35 @@ suite runs under this compiler.
     resolves it again from the options as they stand. `dsd_scan_mode_channel_squelch()` resolves the channel the scope
     has on air (a typed row's class, an inherited row's configured decoder, the one the options hold while a command
     has the scope suspended, as that command left it; a suspended scope's leave takes the configured settings the
-    command left first). Closed start, no IDs (review round 7): a new channel on the analog family starts closed in the
-    receiver (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches, and every sample flagged closed, so a
+    command left first). Closed start, no IDs (review round 7): a new channel on the analog monitor
+    (`dsd_demod_analog_monitor_active()`) starts closed in the receiver (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches, and every sample flagged closed, so a
     decoder reading the flags neither plays nor learns from it): a stream open (`rtl_stream_gate_open()`), a retune the
     decoder marks as a new channel (`rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
     attached last since a store replaces the whole profile, a profile for the mark alone, `new_channel_only`, when
-    nothing else is queued, unmarked once a tune returned without taking it) landing on the analog family (the
-    controller's finalize and an external backend's landing, whatever the profile's family did there), and a family
-    switch into the analog family or onto another analog kind (the demod thread's take, or a retune profile's family;
-    a width change on the same kind keeps the gate) all go through `rtl_stream_gate_boundary()`. The receiver numbers
-    nothing and checks no tags: a write (`rtl_stream_write_squelch_gate()`, under `g_pending_retune_profile_mutex`)
-    applies to the channel it is on, the analog gate on the analog family and the digital gate it carries on the digital
-    family. A landing or switch onto the digital family runs that digital gate (`g_gate_digital`: the session's own
-    squelch, `dsd_scan_mode_digital_squelch()`, never the analog-only default), so no default outlives its analog
-    channel; a retune nobody marks (a trunking grant or hunt) keeps the gate the receiver runs, as before #899.
+    nothing else is queued, unmarked once a tune returned without taking it) landing on the monitor (the controller's
+    finalize and an external backend's landing, whatever the profile's family did there), a family switch into the
+    analog family or onto another analog kind (the demod thread's take, or a retune profile's family; a width change on
+    the same kind keeps the gate), and any return to the monitor from a symbol profile on the analog family (a typed
+    digital -Y row paused in place on an `-fA`/`-fM` session, whose leave asks the monitor back with neither a family
+    nor a kind change; CQPSK toggled off; review round 8) all go through `rtl_stream_gate_boundary()`, which every
+    landing and every applied family or symbol request reaches. The receiver numbers nothing and checks no tags: it
+    records at each boundary whether it is on the monitor (`g_gate_monitor`, taken from the demodulator by the thread
+    that changed it, under `g_pending_retune_profile_mutex`), and a write (`rtl_stream_write_squelch_gate()`, under the
+    same lock, never reading the demodulator: round 8, TSan) applies to the channel it is on, the analog gate on the
+    monitor and the digital gate it carries off it. Off the monitor (the digital family, or a typed digital row's
+    symbol profile on the analog family, whose landing never starts closed: round 8) a landing or switch runs that
+    digital gate (`g_gate_digital`: `dsd_scan_mode_digital_squelch()`, a digital row's own option or the session's
+    configured squelch, never the analog-only default and never an analog row's own option, round 8), so no analog
+    gate outlives its analog channel; a retune nobody marks (a trunking grant or hunt) keeps the gate the receiver runs,
+    as before #899.
     `rtl_stream_gate_closed_start()` reports a closed start lock-free. The decoder's side (`channel_scan.c`, decoder
     thread, `dsd_engine_receiver_gate_settle()`) writes the gate resolved at write time
     (`dsd_scan_mode_channel_squelch()`) only when none of its own requests is outstanding
     (`receiver_gate_outstanding()`): a -Y row's (requested, retrying, or landed and waiting for its commit,
     `dsd_engine_channel_scan_waiting()`), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
-    tune (`dsd_engine_signal_search_tune_pending()`), and any receive request the demod thread has not settled (the
+    tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
+    a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
     newest's `rtl_stream_receive_request_outcome()`, through the stream hooks). It writes when one is due
     (`dsd_engine_receiver_gate_due()`: a stream open, a family request, a -Y commit or release, a trunk-scan landing, a
     settled manual tune; a command or a change, `changed`), and whenever the receiver reports a closed start on an
@@ -5309,7 +5320,9 @@ suite runs under this compiler.
     gate of the channel the decoder has on air then; trunking grants and hunts behave as before #899. The landing's
     mute is the decoder's time to its next settle (about 100 ms of wall time behind a trunk-scan retune on rtl_tcp,
     ENGINE_TRUNK_SCAN_RUNNING_RECEIVER, over before the new channel's first samples are produced: the receiver counts the
-    monitor samples a closed start mutes where they are produced, `rtl_stream_squelch_status::closed_samples`, 0 there).
+    monitor samples a closed start mutes where they are produced, `rtl_stream_squelch_status::closed_samples`, 0 there;
+    every block that took the closed gate counts, one the demod thread finishes after the opening write included, and
+    only the analog monitor is counted, never the M17 encoder's FM audio, round 8).
     An `[input]` that names no source applies its squelch keys to the input running
     (`apply_squelch_keys_from_config()`), and a radio receiver that keeps running hears them
     (`apply_cfg_rtl_hot_restart()`). It also logs the AM notice each time a NOISE setting starts running as
@@ -5335,7 +5348,9 @@ suite runs under this compiler.
     produced samples), `IO_RTL_RETUNE_PREPARE` (the receiver's closed starts: controller and external landings closed
     whatever the profile's family did, the mark alone, an unmarked retune, a write opening it, family switches into the
     analog family and onto another kind, a width change, the digital gate at a digital switch, write and hunt landing, a
-    refusal, a retired request, an analog open and its counts), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
+    refusal, a retired request, an analog open and its counts, a typed digital row's landing on `-fA` running the
+    digital gate and its pause in place closed, the closed-start count of a block finished after the write, no
+    telemetry on the M17 encoder; and, under TSan, gate writes against landings on another thread), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
     `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
@@ -9889,8 +9904,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target),
   `rtl_stream_prepare_retune_new_channel_for_target()` (issue #899: a retune the decoder marks as a new channel, whose
-  landing on the analog family starts closed), `rtl_stream_write_squelch_gate()` (the gate of the channel the receiver
-  is on, with the digital gate a digital landing runs) and `rtl_stream_gate_closed_start()` (a closed start waits for
+  landing on the analog monitor starts closed), `rtl_stream_write_squelch_gate()` (the gate of the channel the
+  receiver is on, with the digital gate a landing off the monitor runs) and `rtl_stream_gate_closed_start()` (a closed start waits for
   that write), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
@@ -11553,8 +11568,8 @@ Notes:
     and every other spec, counts as before, so a floor is never shared more widely than the spec text allows (a
     different dongle at the same index still shares it). After the block it publishes the tracker's status
     (`rtl_stream_get_squelch_status()`, which also counts the closed starts of new analog channels since the stream
-    opened, how long the last one lasted and the FM monitor samples it muted, and the FM monitor samples produced open
-    with no dynamic squelch judging them, counted where each block is produced, issue #899). Tests: `IO_RTL_SQUELCH_PLUMBING`,
+    opened, how long the last one lasted and the analog monitor samples the latest one muted, and the analog monitor
+    samples produced open with no dynamic squelch judging them, counted where each block is produced, issue #899). Tests: `IO_RTL_SQUELCH_PLUMBING`,
     `IO_RTL_SQUELCH_DEVICE_KEY`.
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:

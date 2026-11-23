@@ -152,17 +152,20 @@ int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
                                                     int channel_profile, int ted_sps);
 /**
- * @brief Hand the demodulator's channel squelch a new threshold.
+ * @brief Hand a demodulator's channel squelch a new threshold, bare: whatever channel it is on, with no closed start.
  *
- * Scan rows and targets that override the squelch (issue #521) reach the RTL demodulator
- * only through this hook; the engine maps it to rtl_stream_set_channel_squelch(). Returns 0
- * when forwarded and -1 when no radio backend is installed.
+ * The engine installs neither bare setter (issue #899): on a radio backend the gate is written only through
+ * dsd_rtl_stream_metrics_hook_write_squelch_gate(), by the engine's settle (dsd_receiver_gate_settle_hook_run()), so
+ * this returns -1 there. It remains the fallback of a runtime with no engine installed (a test's own table, which then
+ * takes the setting as it is). Returns 0 when forwarded and -1 when the table has no such hook.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
 /**
- * @brief Hand the demodulator a whole squelch setting (issue #518 follow-up): through set_channel_squelch_setting, or,
- * when only set_channel_squelch is installed, as a threshold (an AUTO setting is then off). Returns 0 when forwarded and
- * -1 when neither is installed or @p setting is NULL.
+ * @brief Hand a demodulator a whole squelch setting, bare (issue #518 follow-up): through set_channel_squelch_setting,
+ * or, when only set_channel_squelch is installed, as a threshold (an AUTO setting is then off). As for the level
+ * setter, the engine installs neither (issue #899): a scan scope's push reaches a radio through the engine's settle,
+ * and only a runtime with no engine installed falls back to this. Returns 0 when forwarded and -1 when neither is
+ * installed or @p setting is NULL.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 
