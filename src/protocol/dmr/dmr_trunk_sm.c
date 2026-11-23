@@ -3198,27 +3198,6 @@ dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot) {
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
 }
 
-/* The slot of the followed carrier whose known call has @p target: @p slot's own first, else the companion's; -1 for
-   none. */
-static int
-dmr_sm_slot_naming_target(const dmr_sm_ctx_t* ctx, int slot, uint32_t target) {
-    for (int i = 0; i < 2; i++) {
-        const int s = i == 0 ? slot : slot ^ 1;
-        const dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
-        if (dmr_sm_slot_identity_known(rec) && dmr_sm_slot_on_followed_carrier(ctx, rec) && rec->target == target) {
-            return s;
-        }
-    }
-    return -1;
-}
-
-void
-dmr_sm_emit_slot_termination(dsd_opts* opts, dsd_state* state, int slot, uint32_t target) {
-    const int arrival = slot & 1;
-    const int named = dmr_sm_slot_naming_target(dmr_sm_get_ctx(), arrival, target);
-    dmr_sm_emit_release(opts, state, named >= 0 ? named : arrival);
-}
-
 void
 dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src) {
     dmr_sm_emit_group_grant_slot(opts, state, freq_hz, lpcn, -1, tg, src);
