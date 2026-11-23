@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -4214,12 +4215,29 @@ test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_se
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
 }
 
+/* A frame sync of @p sync, as the decoder notes it in the received identity (dsd_rxid_note_sync()): another family's
+   sync drops the record, an M17 CAN included. */
+static void
+rx_sync(dsd_state* s, int sync) {
+    s->synctype = sync;
+    dsd_rxid_note_sync(s, sync);
+}
+
+/* An active M17 call on the stream's sync type with CAN @p can in its service options. */
+static void
+m17_stream_call(uint64_t epoch, uint16_t can) {
+    dsd_call_snapshot* call = put_call(0, epoch, 0.0, DSD_SYNC_M17_STR_POS, 0, 0);
+    call->service_options = can;
+    call->has_service_metadata = 1U;
+}
+
 /* What the M17 decoder reports for a CRC-checked LSF of CAN @p can (m17.c, M17decodeLSF() then
    m17_finalize_lsf_crc()): the CAN it carries through the access hook, then the confirmation and the call note. A
    call-free LSF (stream data type 0) opens no call record, so the call note finds none. */
 static void
 m17_checked_lsf(dsd_state* s, uint16_t can) {
-    s->synctype = DSD_SYNC_M17_LSF_POS;
+    rx_sync(s, DSD_SYNC_M17_LSF_POS);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, can);
     dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, can);
     dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
     dsd_signal_search_note_call(s, 0U);
@@ -4321,7 +4339,8 @@ test_access_note_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_
     // A CAN noted while the hit is still DMR waits for M17, and shows once M17 confirms.
     dmr_evidence(s, 7);
     assert(strcmp(store_status.hit.protocol, "DMR") == 0);
-    s->synctype = DSD_SYNC_M17_LSF_POS;
+    rx_sync(s, DSD_SYNC_M17_LSF_POS);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 9U);
     dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, 9U);
     assert(strcmp(store_status.hit.access, "CC 7") == 0);
     dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
@@ -4330,6 +4349,112 @@ test_access_note_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_
     tick(o, s);
     assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 9") == 0);
     stop_refusal_session(o, s);
+}
+
+/* Start a one-range Auto session (93) and land on its strongest channel. */
+static void
+start_m17_visit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+}
+
+static void
+end_m17_visit(dsd_opts* o, dsd_state* s) {
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    stop_refusal_session(o, s);
+    dsd_rxid_reset(s);
+}
+
+/* An LSF rebuilt from the stream's LICH: its CAN noted in the received identity and carried to the search, its call
+   active under the stream's sync type. */
+static void
+m17_stream_lsf(dsd_state* s, uint64_t epoch, uint16_t can) {
+    rx_sync(s, DSD_SYNC_M17_STR_POS);
+    m17_stream_call(epoch, can);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_STR_POS, DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+}
+
+/* Two clean M17 stream frames confirm M17, with no LSF: the detection shows no CAN. */
+static void
+m17_stream_frames_show_no_can(dsd_state* s) {
+    for (int frame = 0; frame < 2; ++frame) {
+        rx_sync(s, DSD_SYNC_M17_STR_POS);
+        dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+        assert(strcmp(store_status.hit.protocol, "M17") == 0 && store_status.hit.access[0] == '\0');
+    }
+}
+
+/* Issue #748: an M17 CAN shows only while the received identity holds it, which only a checked LSF of the current
+   reception notes and another family's sync drops. An LSF rebuilt from the stream's LICH names CAN 3, its call still
+   active; DMR traffic confirms on colour code 7 while that call stays active; then two clean M17 stream frames confirm
+   M17 again before any new LSF: no CAN, live or ended. A call whose checked LSF named CAN 6 shows it. */
+static void
+test_access_call_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 3") == 0);
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0 && strcmp(store_status.hit.access, "CC 7") == 0);
+    m17_stream_frames_show_no_can(s);
+    // A call whose checked LSF named CAN 6 (noted in the received identity; carried by no note here) names its CAN.
+    m17_stream_call(8, 6U);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 6U);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.access, "CAN 6") == 0);
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 6") == 0);
+    end_m17_visit(o, s);
+}
+
+/* The same with a DMR burst that syncs and never confirms: the hit stays M17, so neither the access text it last
+   carried, the carried note nor the call record may bring CAN 3 back when M17 stream frames confirm without an LSF. */
+static void
+test_access_sync_without_confirm(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    m17_stream_frames_show_no_can(s);
+    advance(100);
+    tick(o, s);
+    assert(!store_status.hit.ended && store_status.hit.access[0] == '\0');
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && store_status.hit.access[0] == '\0');
+    end_m17_visit(o, s);
+}
+
+/* A reacquired call inherits the service options of the epoch it reopens (call_state_seed_reacquired_snapshot()) with
+   a fresh reception generation: a named call on CAN 3 ends on sync loss after DMR control traffic confirms; an LSF that
+   failed its CRC (decoded under -F) names no CAN; two clean stream frames reopen the call, which still carries CAN 3.
+   The next stream confirmation shows no CAN. */
+static void
+test_access_reacquired_call(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    calls[0].phase = DSD_CALL_PHASE_ENDED;
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0);
+    rx_sync(s, DSD_SYNC_M17_STR_POS);
+    m17_stream_call(9, 3U);
+    calls[0].rx_gen = dsd_state_reception_generation(s);
+    m17_stream_frames_show_no_can(s);
+    end_m17_visit(o, s);
 }
 
 static void
@@ -5349,6 +5474,9 @@ main(void) {
     test_failed_start_changes_nothing(o, s, &config);
     test_m17_call_free_lsf_can(o, s, &config);
     test_access_note_left_family(o, s, &config);
+    test_access_call_left_family(o, s, &config);
+    test_access_sync_without_confirm(o, s, &config);
+    test_access_reacquired_call(o, s, &config);
     test_stop_queues_restored_profile(o, s, &config);
     test_tetra_protocol_latched(o, s, &config);
     test_tetra_visit_lands_tetra_profile(o, s, &config);

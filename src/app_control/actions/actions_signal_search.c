@@ -11,9 +11,11 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -87,15 +89,53 @@ format_confirmed_access(dsd_signal_search_hit* hit) {
     }
 }
 
-/* The access code a checked note carried for the hit (issue #748 B14), formatted on every publication, live and ended:
-   the latest checked frame's code, so neither the access the hit last carried nor the call record of an older call
-   still running (format_confirmed_access()) stands over it; DSD_ACCESS_CODE_NONE withdraws the code. */
+/* The access code a checked note carried for the hit (issue #748 B14): the latest checked frame's code, so neither the
+   access the hit last carried nor the call record of an older call still running (format_confirmed_access()) stands
+   over it; DSD_ACCESS_CODE_NONE withdraws the code. */
 static void
 format_noted_access(dsd_signal_search_hit* hit) {
     if (hit->access_noted) {
         /* A kind with no format (DSD_ACCESS_CODE_NONE) leaves the text empty. */
         (void)dsd_app_access_code_format(hit->access_kind, hit->access_value, DSD_APP_ACCESS_CODE_SHORT, hit->access,
                                          sizeof(hit->access));
+    }
+}
+
+/* The M17 CAN the received identity holds: a checked LSF of the current reception noted it (dsd_rxid_note_access(),
+   before its search note and the call it publishes), and a sync of another family drops it (dsd_rxid_note_sync()).
+   1 with @p can set, else 0. */
+static int
+received_m17_can(uint16_t* can) {
+    const dsd_received_identity* const id = &observer.state->rx_id;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_M17 || (id->valid & DSD_RXID_ACCESS) == 0U
+        || id->access_kind != (uint8_t)DSD_ACCESS_CODE_CAN) {
+        return 0;
+    }
+    *can = id->access;
+    return 1;
+}
+
+/* An M17 detection's CAN (issue #748) shows only while the received identity holds that same CAN, whichever source
+   names it: the text the hit last carried, an active call record's service options (format_confirmed_access()) or the
+   carried note. It is judged on each live publication made while the decoder is on M17; a note naming another CAN is
+   not applied, and a note of DSD_ACCESS_CODE_NONE still withdraws the code. The ended publication, and one made while
+   the decoder is on another protocol, keep the text the hit last carried. */
+static void
+judge_m17_can(dsd_signal_search_hit* hit) {
+    if (hit->ended || !sync_is_hit_protocol(hit)) {
+        return;
+    }
+    uint16_t held = 0;
+    const int has = received_m17_can(&held);
+    if (hit->access_noted && (hit->access_kind != (uint8_t)DSD_ACCESS_CODE_CAN || (has && hit->access_value == held))) {
+        format_noted_access(hit);
+    }
+    char text[sizeof(hit->access)];
+    if (hit->access[0] != '\0'
+        && (!has
+            || !dsd_app_access_code_format(DSD_ACCESS_CODE_CAN, held, DSD_APP_ACCESS_CODE_SHORT, text, sizeof(text))
+            || strcmp(text, hit->access) != 0)) {
+        hit->access[0] = '\0';
     }
 }
 
@@ -171,7 +211,11 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
     if (changed && !hit->ended && hit->confirmed && !coordinator_access) {
         format_confirmed_access(hit);
     }
-    format_noted_access(hit);
+    if (dsd_engine_signal_search_family_matches(hit->protocol, DSD_SYNC_M17_LSF_POS)) {
+        judge_m17_can(hit);
+    } else {
+        format_noted_access(hit);
+    }
     /* The ended publication keeps the tone the hit last carried. */
     if (!hit->ended) {
         observe_tone();

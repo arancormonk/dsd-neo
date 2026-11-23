@@ -29128,6 +29128,9 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+        # Frame syncs noted as the decoders note them, which move the reception generation a call record keeps.
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
         # The start command's handler and the observer it installs, publishing to a stubbed store (issue #748 B11).
         ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c

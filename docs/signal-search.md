@@ -243,6 +243,15 @@ after the detection was confirmed, the detection keeps the site and code it show
 transmitter's broadcasts heard before the confirmation never join it. A slot filter alone
 does not keep them off, since the site and the code belong to the whole channel.
 
+When one Auto visit hears two digital protocols on the same channel, the detection
+takes the access code of whichever protocol confirmed last. An M17 CAN shows only
+when a checked link setup named it after the last traffic of another protocol on
+the channel; M17 frames that confirm before such a link setup show no CAN, and an
+ended detection keeps the CAN it last showed. One limit: a DMR colour
+code, NXDN RAN, dPMR colour code or P25 NAC can still show the value that protocol
+last decoded on the channel before the other protocol's traffic, until it decodes
+a new one. Each such value passed its check on that channel.
+
 P25 Phase 2 is confirmed by any Phase 2 MAC message whose CRC passes: on a voice
 channel's FACCH or SACCH (a call's push-to-talk or active message, its hangtime, idle
 or end, among others) as on a control channel's LCCH. A message let through with a

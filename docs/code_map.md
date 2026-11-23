@@ -274,8 +274,8 @@ Generated (do not edit/commit):
     the hit carries (`access_noted`, `access_kind`,
     `access_value`, not persisted) while it is confirmed as a protocol of the note's family, publishing when that
     changes; a note before confirmation waits for it, as a site note does. The observer formats a carried code into
-    `access` at every publication, live and ended, over the access it copied back and over an older call record's CAN;
-    a carried `DSD_ACCESS_CODE_NONE` withdraws it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`,
+    `access` over the access it copied back and over an older call record's CAN (for M17, only while the received
+    identity holds it; see the observer below); a carried `DSD_ACCESS_CODE_NONE` withdraws it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`,
     `M17_STATE_DISPATCH`).
     A site note applies only when the policy does not reject the code of the note's family either
     (`search_site_sync()`: the current sync type when it is of that family, else one of it), before confirmation as
@@ -6620,7 +6620,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
     B1). Nor is it read while the receive policy rejects the code the decoder holds for that sync type
     (`dsd_receive_code_rejects()`, the code alone: a slot filter never applies, and a code still CHECKING passes), so
-    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup
+    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). An M17 hit's CAN, from any
+    source (the text copied back, a call record's service options, the carried note), shows only while the received
+    identity holds that same M17 CAN (`judge_m17_can()`, issue #748): only a checked LSF notes it there (before its
+    search note and its call), and another family's sync drops it, so neither a call left active or reacquired
+    through another protocol's traffic nor a note from before it names a CAN. It is judged on live publications made
+    while the decoder is on M17; the ended one and one made on another protocol keep the text last shown. The other
+    families' codes are read from decoder state as before, so after another family's traffic on the carrier one can
+    still show the value it last decoded there. M17's CAN read at the link setup
     frame is carried through the stream frames after it, whose sync type the LSF's call record does not answer. The
     received tone (issue #802 B3) is read from the rx tone view on every live publication of the hit: the latest
     lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode

@@ -457,6 +457,17 @@ test_tetra_access_is_the_coordinators(dsd_state* state) {
     state->synctype = DSD_SYNC_NONE;
 }
 
+/* The CAN a checked M17 LSF noted in the received identity (dsd_rxid_note_access()): an M17 CAN shows only while it is
+   held there (issue #748). */
+static void
+m17_received(dsd_state* state, uint16_t can) {
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_M17;
+    state->rx_id.valid = DSD_RXID_ACCESS;
+    state->rx_id.access_kind = (uint8_t)DSD_ACCESS_CODE_CAN;
+    state->rx_id.access = can;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -568,6 +579,7 @@ main(void) {
     status.hit.slot = 0;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
     state->synctype = DSD_SYNC_M17_STR_POS;
+    m17_received(state, 7);
     DSD_MEMSET(&call, 0, sizeof(call));
     call.protocol = state->synctype;
     call.phase = DSD_CALL_PHASE_ACTIVE;
@@ -601,6 +613,7 @@ main(void) {
     status.hit.hit_id = 5;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
     state->synctype = DSD_SYNC_M17_LSF_POS;
+    m17_received(state, 5);
     call.protocol = state->synctype;
     call.phase = DSD_CALL_PHASE_ACTIVE;
     call.epoch = 1;
@@ -623,9 +636,11 @@ main(void) {
     status.hit.access_noted = 1;
     status.hit.access_kind = DSD_ACCESS_CODE_CAN;
     status.hit.access_value = 3;
+    m17_received(state, 3);
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 3") == 0);
     status.hit.access_value = 9;
+    m17_received(state, 9);
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 9") == 0);
     observer(&status, NULL, observer_user);
@@ -654,6 +669,7 @@ main(void) {
     status.hit.access_noted = 0;
     status.hit.access_kind = 0;
     status.hit.hit_id = 2;
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
 
     test_rejected_code_access(opts, state);
     test_tetra_access_is_the_coordinators(state);
