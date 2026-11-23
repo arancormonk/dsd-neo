@@ -308,19 +308,19 @@ def confirm_time(record, tx):
 def tetra_site(main, mcc, mnc, la):
     """The whole site line of a TMO cell whose SYSINFO the search took: its main carrier first, then MCC, MNC and the
     location area its fixture's SYSINFO carries."""
-    return re.compile("^" + re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}{DOT}LA {la}") + "$")
+    return re.compile(re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}{DOT}LA {la}"))
 
 
 # id, range digital (0 analog, 1 Auto, 10 TETRA), fixture (None: noise; "dmo traffic" and "dmo presence" the
 # synthetic bursts of build_iq_fixtures.py), frequency Hz, range half-width Hz, step Hz, what the history row must show
-# (protocol, access, site regex or "" for none, confirmed), how long it stays on after the first landing, and how it
-# plays: looped from the scene's start (None), its bursts at a phase against each tune ("phase", the phase at the first
-# tune in eighths of a frame), off from the search's landing tune on ("until landing"), or on until the search leaves
-# its first visit to it, or its time is up ("until departure").
+# (protocol, access, a pattern the whole site line must match or None to skip it, confirmed), how long it stays on
+# after the first landing, and how it plays: looped from the scene's start (None), its bursts at a phase against each
+# tune ("phase", the phase at the first tune in eighths of a frame), off from the search's landing tune on ("until
+# landing"), or on until the search leaves its first visit to it, or its time is up ("until departure").
 # The real-air call (and its AWGN copy) broadcasts LA 1, the marginal control channel LA 1052, the synthetic cell LA
 # 777 (build_iq_fixtures.py tetra_sysinfo_dibits()), in every SYSINFO the decoder reads from them.
 TMO_SITE = tetra_site("426.70000 MHz", 228, 8889, 1)
-DIRECT = re.compile("^Direct$")
+DIRECT = re.compile("Direct")
 CELL_SITE = tetra_site("408.03125 MHz", 460, 4242, 777)
 RUN_A = (
     ("nfm", 0, "nfm_tone_synth", 446100000, 25000, 12500, None, ON_S),
@@ -346,7 +346,7 @@ RUN_B = (
     # A repeater's presence signal train: heard, it confirms as presence only, and the visit leaves while the train is
     # still on (it goes off then, so the next pass does not visit it again); one that ends at the landing tune
     # confirms nothing and ends unresolved.
-    ("pres_on", 10, "dmo presence", 412000000, 25000, 25000, ("TETRA DMO", "", re.compile("^presence signal$"), 1),
+    ("pres_on", 10, "dmo presence", 412000000, 25000, 25000, ("TETRA DMO", "", re.compile("presence signal"), 1),
      PRES_ON_S, ("until departure", 0)),
     ("pres_end", 10, "dmo presence", 414000000, 25000, 25000, (None, None, None, 0), 0.0, ("until landing", 0)),
 )
@@ -565,7 +565,7 @@ def check_row(tx, rows, failures):
         failures.append(f"{tx.id}: protocol {row['protocol']!r}, not {protocol!r}")
     if access is not None and row["access"] != access:
         failures.append(f"{tx.id}: access {row['access']!r}, not {access!r}")
-    if site is not None and not site.match(row["site"]):
+    if site is not None and not site.fullmatch(row["site"]):
         failures.append(f"{tx.id}: site {row['site']!r} does not match {site.pattern!r}")
 
 
