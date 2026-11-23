@@ -1216,6 +1216,12 @@ dmr_cspdu_pf0_p_clear_log_status(const dsd_state* state, int clear, int csbk_fid
     return clear;
 }
 
+/* A P_CLEAR clears the payload channel it is sent on, a timeslot (TS 102 361-4 §7.1.1.3.2: "P_Clear is transmitted by
+   the TS on a payload channel only"; a payload channel is a Logical Physical Channel Number and Logical Channel
+   Number, the channel grants of Tables 7.9-7.15), and the parties its Target Address names there. So it releases
+   that slot alone, never the carrier: a live call on the other slot keeps the receiver, whatever the hangtime. The
+   forced cases (the other slot free, or the Hold talkgroup's call cleared) still return to the control channel at
+   once. */
 static void
 dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear) {
     if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
@@ -1224,7 +1230,7 @@ dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear) 
     if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
         watchdog_event_current(opts, state, 0);
         watchdog_event_current(opts, state, 1);
-        dmr_sm_emit_release(opts, state, -1);
+        dmr_sm_emit_release(opts, state, state->currentslot & 1);
     }
 }
 

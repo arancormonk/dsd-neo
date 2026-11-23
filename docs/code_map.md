@@ -13822,7 +13822,11 @@ Private per-protocol modules worth knowing about:
     Connect Plus slot termination (opcode 0x0C, a target and no slot) releases one slot, never the carrier
     (`dmr_sm_emit_slot_termination()`): the slot of the followed carrier whose known call has its target, else the slot
     it arrived on, so the other slot's followed call or data transfer stays live
-    (`test_con_plus_termination_scoped_to_its_assignment()`).
+    (`test_con_plus_termination_scoped_to_its_assignment()`). A Tier III P_CLEAR (and the one the encryption lockout
+    synthesizes) clears the payload channel it is sent on, a timeslot (TS 102 361-4 §7.1.1.3.2), so its release
+    (`dmr_cspdu_pf0_p_clear_emit_release()`) names that slot alone: a live call on the other slot keeps the carrier,
+    zero hangtime included, while the forced cases (the other slot free, the Hold talkgroup's call cleared) still
+    return to the control channel at once (`test_p_clear_scoped_to_its_slot()`).
   - Decided limits: a candidate preempts only on a repeat after the dwell of every held slot and outside the cooldown;
     a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
     Hold; a followed Connect Plus data call is held as any followed call is (Hold, or a preempt past its dwell, takes
