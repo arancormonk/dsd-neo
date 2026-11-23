@@ -1923,9 +1923,11 @@ nxdn_reconcile_private(const dsd_state* state, const dsd_call_snapshot* call, in
 
 /* The held call is what the canonical call shows once a verified VCALL or an SCCH identity of the receiver's repeater
  * named it: a new call on the same carrier replaces the one followed there. A call whose classification is not known
- * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. @p type_d: a Type-D call. */
+ * (nxdn_reconcile_private()) leaves the held call unknown, so only Hold displaces it. @p type_d: a Type-D call.
+ * @p source: the naming message's own source (0: it names none, and the held call keeps the one it has), never the
+ * canonical call's, which an INFO3 may have renamed since (issue #903). */
 static void
-nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private, int type_d) {
+nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_private, int type_d, uint32_t source) {
     if (opts->trunk_enable != 1) {
         return;
     }
@@ -1940,7 +1942,7 @@ nxdn_call_identity_reconcile(const dsd_opts* opts, dsd_state* state, int msg_pri
         DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
         return;
     }
-    nxdn_call_identity_set(state, call.policy_target_id, call.ota_source_id, private_call, 0, type_d,
+    nxdn_call_identity_set(state, call.policy_target_id, source, private_call, 0, type_d,
                            nxdn_receiver_freq(opts, state), dsd_decode_now_mono_s(), 1);
 }
 
@@ -3240,6 +3242,12 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t received, ui
     }
 }
 
+/* The source a VCALL names: its source unit, unless its Voice Call Option says the field carries none (0). */
+static uint32_t
+nxdn_vcall_source(const struct nxdn_vcall_info* info) {
+    return (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U;
+}
+
 /* A Type-D VCALL's call keeps the 11-bit IDs @p observation holds and names them under their prefixes, so 03-0005 and
  * 07-0005 are two calls judged by one policy row (issue #903 D7). */
 static void
@@ -3275,7 +3283,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .kind = nxdn_call_type_kind(info->call_type, info->idas),
         .ota_target_id = info->destination_id,
         .policy_target_id = info->destination_id,
-        .ota_source_id = (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U,
+        .ota_source_id = nxdn_vcall_source(info),
         .channel = followed_chan,
         .frequency_hz = followed_freq,
         .service_options = info->cc_option,
@@ -3448,7 +3456,7 @@ nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     // Type-D (info->idas): an RTCH2 frame of a value a composite channel shares, with no Type-D evidence, keeps the
     // Type-C layout's full IDs, and its call is judged by its source as a Type-C one.
     const int msg_private = kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : kind == DSD_CALL_KIND_GROUP_VOICE ? 0 : -1;
-    nxdn_call_identity_reconcile(opts, state, msg_private, info->idas != 0U);
+    nxdn_call_identity_reconcile(opts, state, msg_private, info->idas != 0U, nxdn_vcall_source(info));
 }
 
 static void
@@ -4028,7 +4036,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
         nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
-        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1, 0U);
     }
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
@@ -4179,7 +4187,7 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
         /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
         nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
-        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
+        nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1, 0U);
     }
 }
 

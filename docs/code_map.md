@@ -12701,7 +12701,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL its own layout
     verdict read as Type-D, `info->idas`) is judged as Type-D admission judges it, by its target alone
     (`nxdn_held_policy_source()`): no source fallback for a group call and no source for a private one, so an INFO3
-    source, which may misname the talker, never reaches policy. A VCALL on an RTCH2 reading of a value a composite
+    source, which may misname the talker, never reaches policy. Nor does it reach the held call: a naming message's
+    reconcile (`nxdn_call_identity_reconcile()`) gives the held call that message's own source (a VCALL's source unit,
+    none from an SCCH busy or target message), and one that names no source leaves the held call's as it was, never
+    the canonical call's, which an INFO3 may have renamed. A VCALL on an RTCH2 reading of a value a composite
     channel shares, with no Type-D evidence, keeps the Type-C layout's full IDs and names a Type-C call, judged by its
     source. The live lookup (`nxdn_held_call_policy_source()`) takes the verdict of the held call bound to the
     transmission, Type-D or not, even on a followed Type-D repeater's route, and that call's own verified source, never

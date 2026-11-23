@@ -2683,6 +2683,54 @@ test_vcall_reports_the_loaders_choice(void) {
     return rc;
 }
 
+/*
+ * The held call keeps the source a naming message gave it (issue #903): under trunking, a Type-C VCALL (a composite
+ * control channel frame's FACCH1) from 291 to group 0x0456 binds the held call with source 291; an INFO3 (an RTCH2
+ * frame's SCCH) then names talker 03-0123 on the live call, which only the live call takes. A Type-C VCALL of the same
+ * group naming no source (0) reconciles the held call again: it keeps 291, the source its own messages named, and the
+ * bound call is judged with 291, never with the INFO3's 123.
+ */
+static int
+test_info3_source_stays_out_of_the_held_call(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    opts->trunk_enable = 1;
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 291U, 0x0456U, 0U, 0U);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("held-source-bound", (int)state->nxdn_call.valid, 1);
+    rc |= expect_int("held-source-verified", (int)state->nxdn_call.source, 291);
+
+    state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+    state->nxdn_frame_type_d = 1U;
+    send_outbound_scch(opts, state, 1U);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-source-info3-names-the-live-talker", (int)call.ota_source_id, 123);
+
+    make_vcall_elements(bits, 0x01U, 0U, 0x0456U, 0U, 0U);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+    state->nxdn_frame_type_d = 0U;
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-source-same-group", (int)state->nxdn_call.target, 0x0456);
+    rc |= expect_int("held-source-kept", (int)state->nxdn_call.source, 291);
+    rc |= expect_int(
+        "held-source-judged-by-its-own",
+        (int)nxdn_held_call_policy_source(opts, state, dsd_call_snapshot_transmission(&call), call.ota_source_id), 291);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 /* No SACCH segment held and no RAN decoded yet. */
 static void
 prepare_sacch_entry_state(dsd_state* state) {
@@ -2891,6 +2939,7 @@ main(void) {
     rc |= test_info1_during_a_dcr_call_is_neither_applied_nor_held();
     rc |= test_info1_loads_no_key();
     rc |= test_vcall_reports_the_loaders_choice();
+    rc |= test_info3_source_stays_out_of_the_held_call();
     rc |= test_no_other_cipher_is_published_on_a_dcr_call();
     rc |= test_dcr_epoch_withdraws_party_less_vcall_crypto();
     rc |= test_dcr_key_is_reported_as_the_working_key();

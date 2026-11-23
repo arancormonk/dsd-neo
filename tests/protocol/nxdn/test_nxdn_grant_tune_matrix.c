@@ -2287,8 +2287,8 @@ nxdn_run_type_d_followed_new_call_case(void) {
 }
 
 /* A Type-D held call is described as Type-D admission judges it, with no source fallback: an INFO3 source whose own
- * row ranks high never lends that priority to the held, unlisted group, so a preempting call at the source's priority
- * takes the receiver. */
+ * row ranks high never lends that priority to the held, unlisted group (nor does it enter the held call, whose source
+ * only its naming messages give), so a preempting call at the source's priority takes the receiver. */
 static int
 nxdn_run_type_d_held_no_source_fallback_case(void) {
     static const char* const name = "type-d-held-no-source-fallback";
@@ -2316,8 +2316,8 @@ nxdn_run_type_d_held_no_source_fallback_case(void) {
     voice_live();
     nxdn_run_case_decode(&held);
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
-                          && g_state.nxdn_call.source == 1500U,
-                      name, "source", "the held call carries the INFO3 source");
+                          && g_state.nxdn_call.source == 0U,
+                      name, "source", "the INFO3 source stays out of the held call (issue #903)");
 
     nxdn_case other = held;
     other.scch_rep1 = 7U;
