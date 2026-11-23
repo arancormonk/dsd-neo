@@ -65,10 +65,24 @@ Rectangle {
     // The opener while it is still shown and in reach, else the item that
     // takes Escape and Back (issue #902, Navigation.keyOwner()): never a
     // surface by itself, which may pass Escape to nothing (a tab Main anchors
-    // but does not parent, a layer's loaded screen).
-    function restoreFocus(opener) {
+    // but does not parent, a layer's loaded screen). The deferred @p retry
+    // keeps a control in reach that has the keyboard by then first (one the
+    // user or a next sheet gave it since), and hands it on only otherwise.
+    function restoreFocus(opener, retry) {
         if (visible)
             return false;
+        // The keyboard on a control in reach, outside this sheet: not the
+        // window root, nor the app's Back owner, where a closing sheet leaves
+        // it. A local function: the deferred call may outlive the sheet's
+        // context, where another member function cannot be called.
+        var keyboardInReach = function () {
+            var window = sheet.Window.window;
+            var current = window ? window.activeFocusItem : null;
+            return !!current && current !== window.contentItem && current !== sheet && !Navigation.contains(sheet, current) && current !== Navigation.backTarget
+                && Navigation.allows(current) && Navigation.presented(current);
+        };
+        if (retry && keyboardInReach())
+            return true;
         // An opener that is gone may name what stands for it (a combo option
         // its selector, `focusReturnTarget`).
         var standIn = opener && opener.focusReturnTarget ? opener.focusReturnTarget : null;
@@ -80,10 +94,7 @@ Rectangle {
         }
         // The keyboard already on a control in reach (a sheet opened as this
         // one closed has given its field the keyboard) stays where it is.
-        var window = sheet.Window.window;
-        var current = window ? window.activeFocusItem : null;
-        if (current && current !== window.contentItem && current !== sheet && !Navigation.contains(sheet, current) && current !== Navigation.backTarget
-                && Navigation.allows(current) && Navigation.presented(current))
+        if (keyboardInReach())
             return true;
         var owner = Navigation.keyOwner();
         if (owner && owner !== sheet && owner.visible && owner.enabled) {
@@ -123,7 +134,7 @@ Rectangle {
                 sheet.previousFocus = null;
                 sheet.restoreFocus(opener);
                 // Bindings may settle or the confirmed action may hide the opener after dismissal.
-                Qt.callLater(sheet.restoreFocus, opener);
+                Qt.callLater(sheet.restoreFocus, opener, true);
             }
         }
     }

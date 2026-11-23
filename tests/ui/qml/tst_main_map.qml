@@ -155,6 +155,28 @@ Item {
             verify(!app.spectrumOpen, "Escape closes the Spectrum");
         }
 
+        // Issue #902: Resume scan disabled under the keyboard drops it to the Spectrum's loader (its focus scope), not to
+        // the window root; hidden then, it is handed to the Back owner all the same, so Escape still closes the Spectrum.
+        function test_disabled_resume_keeps_back_working_on_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            verify(resume !== null);
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            resume.forceActiveFocus();
+            verify(resume.activeFocus);
+            testContext.setMetric("scanResumable", false);
+            testContext.setMetric("scanPaused", false);
+            tryVerify(function () { return !resume.visible && !resume.activeFocus; }, 1000, "Resume scan hides without the keyboard");
+            wait(50);
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+        }
+
         // "Show on map": the sheet closes first, the map shows the row's pin, and Back opens the sheet again by uid.
         function test_show_on_map_returns_to_the_row() {
             testContext.setLifecyclePhase(0);

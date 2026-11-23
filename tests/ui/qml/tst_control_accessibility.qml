@@ -77,6 +77,21 @@ Item {
             scroll.Accessible.scrollUpAction();
             compare(scroll.contentY, 0);
         }
+        // Issue #902: a hidden pane (a cached node a screen reader still holds) scrolls nothing, page by page either.
+        function test_hidden_pane_scrolls_nothing() {
+            scroll.contentY = 0;
+            scroll.visible = false;
+            try {
+                scroll.Accessible.scrollDownAction();
+                scroll.Accessible.nextPageAction();
+                compare(scroll.contentY, 0, "hidden: nothing scrolled");
+            } finally {
+                scroll.visible = true;
+            }
+            scroll.Accessible.nextPageAction();
+            verify(scroll.contentY > 0, "shown: the next page scrolls");
+            scroll.contentY = 0;
+        }
         function test_add_action_is_accessible() {
             var count = 0;
             function added() {

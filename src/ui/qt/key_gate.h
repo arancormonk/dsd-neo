@@ -17,7 +17,10 @@ namespace dsd_qt {
  * - Closed: the control with the focus, out of reach, takes no key at all (press, release, shortcut check), a key
  *   already queued included, and no input method event but one: if it was composing a word as it turned unreachable,
  *   the commit that finishes it when the app asks for one (InputCommit::committing()), with no new composing text, no
- *   replacement and no offset, once.
+ *   replacement and no offset, once. A key release it takes lets go of the press it would have ended, unacted. A
+ *   composing control losing the focus disabled under it commits through the closed gate too.
+ * - Window leaving: a word composing in the control with the focus is finished first (`finishComposing`), before the
+ *   control ends its edit; the control keeps the stored focus.
  * - Stray: the control with the focus turning unreachable, taking the focus while unreachable, or losing the focus
  *   while unreachable or disabled (an ancestor disabled under it), is told to Navigation (`strayed`) at once, which
  *   commits an editor's word before anything can publish the edit and hands the focus on; a control losing the focus
@@ -48,6 +51,9 @@ class PressGate : public QObject {
     /* @p item, with the focus, turned unreachable, took the focus while unreachable, or is losing it while
      * unreachable or disabled. */
     void strayed(QQuickItem* item);
+    /* @p item, composing a word, is losing the focus to its window leaving: the word is to be finished now, before
+     * the item ends its edit. */
+    void finishComposing(QQuickItem* item);
     /* @p item lost the focus (not to the window leaving), told once that change has settled. */
     void focusLeft(QQuickItem* item);
 
@@ -69,6 +75,8 @@ class PressGate : public QObject {
     int m_focus_index = -1;
     bool m_focus_in_reach = true;
     bool m_composing = false;
+    /* A composing control losing the focus disabled under it: its commit goes through the closed gate. */
+    bool m_closing = false;
     QMetaObject::Connection m_watch;
 };
 } // namespace dsd_qt

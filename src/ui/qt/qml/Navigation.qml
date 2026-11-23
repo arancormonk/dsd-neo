@@ -145,6 +145,10 @@ QtObject {
         function onStrayed(item) {
             navigation.strayed(item);
         }
+        function onFinishComposing(item) {
+            if (navigation.editsText(item))
+                navigation.commitComposingOf(item);
+        }
         function onFocusLeft(item) {
             navigation.focusDropped(item);
         }
@@ -208,16 +212,26 @@ QtObject {
         if (active && edits)
             Qt.inputMethod.hide();
     }
-    // Qt itself can drop a control's focus to the window root (the control or
-    // its panel disabled as it turns unreachable), where Escape and Back
-    // reach nothing; letGo() never runs then (the control no longer holds the
+    // Qt itself can drop a control's focus to the window root or to the focus
+    // scope that encloses it (the Spectrum's loader), the control or its
+    // panel disabled as it turns unreachable, where Escape and Back can reach
+    // nothing; letGo() never runs then (the control no longer holds the
     // focus). Handed on to the key owner, unless the focus moved to another
-    // control (it is not at the root) or the window is away.
+    // control (neither the root nor an item enclosing the control) or the
+    // window is away.
+    function encloses(outer, item) {
+        for (var at = item ? item.parent : null; at; at = at.parent) {
+            if (at === outer)
+                return true;
+        }
+        return false;
+    }
     function focusDropped(item) {
         if (!item || (item.inReach && item.enabled))
             return;
         var window = item.Window.window;
-        if (!window || window.activeFocusItem !== window.contentItem)
+        var dropped = window ? window.activeFocusItem : null;
+        if (!dropped || (dropped !== window.contentItem && !encloses(dropped, item)))
             return;
         var owner = keyOwner();
         if (owner && owner !== item && owner.visible && owner.enabled)

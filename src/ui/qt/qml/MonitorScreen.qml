@@ -1618,7 +1618,7 @@ Item {
         readonly property bool navigationAllowed: Navigation.allows(recentList)
         Accessible.ignored: !navigationAllowed || !visible
         function scrollPage(direction) {
-            if (!enabled || !Navigation.allows(recentList))
+            if (!enabled || !visible || !Navigation.allows(recentList))
                 return;
             contentY = Math.max(originY, Math.min(originY + contentHeight - height, contentY + direction * Math.max(48, height * 0.8)));
         }

@@ -145,21 +145,6 @@ Item {
         }
     }
 
-    // A scrolling pane with a check box in it: a touch drag starting on the box scrolls the pane, which takes
-    // the box's grab.
-    Ui.PlexFlickable {
-        id: pane
-        x: 0
-        y: 1100
-        width: 300
-        height: 120
-        contentHeight: 600
-        Ui.PlexCheckBox {
-            id: paneCheck
-            y: 10
-            text: "In a pane"
-        }
-    }
     // A second sheet, opened as the first closes, giving its field the keyboard (an ActionMenu row opening its
     // own form).
     Ui.ModalSheet {
@@ -502,6 +487,37 @@ Item {
                 {tag: "PlexComboBox", control: function () { return combo; }}
             ];
         }
+        function test_release_taken_while_hidden_lets_the_press_go_data() {
+            return press_data();
+        }
+        function test_release_taken_while_hidden_lets_the_press_go(data) {
+            var control = data.control();
+            control.forceActiveFocus();
+            verify(control.activeFocus);
+            var checked = control.checked;
+            testContext.sendKey(control, Qt.Key_Space, 0, true, false);
+            verify(control.pressed, "Space is down on it");
+            control.visible = false;
+            testContext.sendKey(control, Qt.Key_Space, 0, false, false);
+            control.visible = true;
+            verify(!control.pressed && !control.down, "the press is let go of with its taken release");
+            if (checked !== undefined)
+                compare(control.checked, checked, "and toggled nothing");
+            if (control.popup !== undefined)
+                verify(!control.popup.visible, "and opened nothing");
+            wait(50);
+            control.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            if (checked !== undefined)
+                compare(control.checked, !checked, "the next Space acts as ever");
+            if (control.popup !== undefined) {
+                tryVerify(function () { return control.popup.opened; }, 1000, "the next Space opens the list");
+                control.popup.close();
+                tryVerify(function () { return !control.popup.visible; });
+            } else {
+                control.checked = checked;
+            }
+        }
 
         // Issue #902: a selectable read-only text (the file browser's command, the licenses' texts) can hold the
         // keyboard (a tap, a screen reader's focus). Hidden with it, a queued Ctrl+A selects nothing unseen, and it
@@ -590,6 +606,50 @@ Item {
             compare(field.text, "abcx", "a later commit two places back edits nothing");
             tryVerify(function () { return !field.activeFocus && !field.focus; }, 1000, "the keyboard is given up");
             compare(field.text, "abcx");
+        }
+
+        // Issue #902: the same while the field is disabled under it (a sheet's panel disabling it before the sheet
+        // covers it): still visible and in reach, its word is committed through the closed gate, at the word.
+        function test_disabled_field_commit_lands_at_its_word() {
+            var field = textField.input;
+            field.text = "abc";
+            field.forceActiveFocus();
+            field.cursorPosition = 3;
+            verify(testContext.composeText("x"), "composing");
+            testContext.convertOnCommit(field, "y", -2);
+            textField.enabled = false;
+            try {
+                compare(field.text, "abcx", "the text kept, the word committed where it was composed");
+                compare(field.preeditText, "", "nothing is left composing");
+            } finally {
+                textField.enabled = true;
+            }
+        }
+
+        // Issue #902: the window leaving while a word is composing, the field hidden afterwards: the edit the window's
+        // leave ends (editingFinished) holds the whole word, and the field still gives the stored focus up.
+        function test_window_leaving_publishes_the_whole_word() {
+            var field = textField.input;
+            field.text = "foo";
+            field.forceActiveFocus();
+            field.cursorPosition = 3;
+            verify(testContext.composeText("bar"), "composing");
+            var finished = [];
+            var onFinished = function () {
+                finished.push(field.text);
+            };
+            field.editingFinished.connect(onFinished);
+            try {
+                testContext.sendWindowFocus(holder, false);
+                compare(finished, ["foobar"], "the edit the window's leave ended held the whole word");
+                compare(field.preeditText, "", "nothing is left composing");
+                textField.visible = false;
+                tryVerify(function () { return !field.focus; }, 1000, "the hidden field lets the stored focus go");
+                compare(field.text, "foobar");
+            } finally {
+                field.editingFinished.disconnect(onFinished);
+                testContext.sendWindowFocus(holder, true);
+            }
         }
 
         // Issue #902: a pin whose row StableRows lets go of (no longer live)
@@ -898,6 +958,23 @@ Item {
             keyClick(Qt.Key_7);
             compare(nextField.text, "7", "and typing reaches it");
             nextField.text = "";
+        }
+
+        // Issue #902: the keyboard given to another control in reach as a sheet closes (the user's choice, before the
+        // sheet's deferred hand-back runs) stays there; the opener does not take it back.
+        function test_dismissed_sheet_keeps_a_newer_focus_choice() {
+            combo.forceActiveFocus();
+            sheet.open();
+            verify(!combo.activeFocus, "the sheet takes the keyboard");
+            sheet.visible = false;
+            verify(combo.activeFocus, "dismissed: the keyboard goes back to the opener");
+            textField.input.forceActiveFocus();
+            verify(textField.input.activeFocus);
+            wait(50);
+            verify(textField.input.activeFocus, "the field given the keyboard keeps it");
+            keyClick(Qt.Key_7);
+            compare(textField.text, "7", "and typing reaches it");
+            textField.text = "";
         }
 
         // Issue #902: a list with no option closes on Return, choosing nothing.

@@ -155,7 +155,7 @@ Item {
         d.modalsUnder = [];
         restoreFocus(opener, under);
         // Bindings may settle, or the pick may open another sheet, after the request ends.
-        Qt.callLater(restoreFocus, opener, under);
+        Qt.callLater(restoreFocus, opener, under, true);
     }
     function reset() {
         readingDelay.stop();
@@ -192,14 +192,28 @@ Item {
     // Focus goes back where it was before the browser opened, when that is
     // still on screen and reachable, else to the surface on top. A sheet that
     // took the top since the browser opened (the backup's unlock sheet, after a
-    // pick) keeps the focus it gave itself.
-    function restoreFocus(opener, under) {
+    // pick) keeps the focus it gave itself. The deferred @p retry keeps a
+    // control in reach that has the keyboard by then first (one the user or a
+    // next sheet gave it since), and hands it on only otherwise.
+    function restoreFocus(opener, under, retry) {
         // Read from the token, not `shown`: this runs inside the request's
         // change, before that binding has caught up. A new browse keeps focus.
         if (d.token !== 0)
             return;
+        // The keyboard on a control in reach, outside the browser: not the
+        // window root, nor the app's Back owner, where a closing browser
+        // leaves it. A local function: the deferred call may outlive the
+        // screen's context, where another member function cannot be called.
+        var keyboardInReach = function () {
+            var window = screen.Window.window;
+            var current = window ? window.activeFocusItem : null;
+            return !!current && current !== window.contentItem && !Navigation.contains(screen, current) && current !== Navigation.backTarget && Navigation.allows(current)
+                && Navigation.presented(current);
+        };
         var top = Navigation.topModal;
         if (top && under.indexOf(top) < 0)
+            return;
+        if (retry && keyboardInReach())
             return;
         // An opener that is gone may name what stands for it (a combo option
         // its selector, `focusReturnTarget`).
@@ -212,10 +226,7 @@ Item {
         }
         // The keyboard already on a control in reach (a sheet opened as the
         // browser closed has given its field the keyboard) stays where it is.
-        var window = screen.Window.window;
-        var current = window ? window.activeFocusItem : null;
-        if (current && current !== window.contentItem && !Navigation.contains(screen, current) && current !== Navigation.backTarget && Navigation.allows(current)
-                && Navigation.presented(current))
+        if (keyboardInReach())
             return;
         // Else the item that takes Escape and Back (issue #902,
         // Navigation.keyOwner()), never a surface by itself.

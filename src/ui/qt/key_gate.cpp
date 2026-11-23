@@ -108,16 +108,28 @@ PressGate::filterFocus(QQuickItem* item, const QEvent* event) {
         return;
     }
     const auto* focus = dynamic_cast<const QFocusEvent*>(event);
-    if (focus == nullptr || focus->reason() == Qt::ActiveWindowFocusReason) {
-        return; // The window leaving: the control keeps the stored focus, and stays watched.
+    if (focus == nullptr) {
+        return;
     }
-    // Seen before the control's own handling ends its edit (editingFinished, which a form saves on): a word composing
-    // in a control losing the focus out of reach, or disabled under it (an ancestor disabled as a sheet comes), is
-    // committed first, while the gate still knows the control.
+    // Seen before the control's own handling ends its edit (editingFinished, which a form saves on), so the edit it
+    // publishes holds the whole word.
+    if (focus->reason() == Qt::ActiveWindowFocusReason) {
+        // The window leaving: a word composing is finished first; the control keeps the stored focus, and stays
+        // watched.
+        if (isComposing(item)) {
+            Q_EMIT finishComposing(item);
+        }
+        return;
+    }
+    // A word composing in a control losing the focus out of reach, or disabled under it (an ancestor disabled as a
+    // sheet comes), is committed first, while the gate still knows the control, and through the closed gate: one
+    // commit, at the composing word.
     if ((!focusInReach() || !item->isEnabled()) && isComposing(item)) {
         m_focus_in_reach = false;
         m_composing = true;
+        m_closing = true;
         Q_EMIT strayed(item);
+        m_closing = false;
     }
     setFocusItem(nullptr, -1);
     // Told after the change settles: Qt may drop the focus to the window root (the control disabled), which
@@ -143,6 +155,12 @@ PressGate::filterClosed(QEvent* event) {
     if (finishes) {
         m_composing = false;
         return false;
+    }
+    // A key's release taken from the control its press reached (Space on a check box that hid meanwhile) would leave
+    // it pressed if it is shown again before the focus moves on: the press is let go of with it, unacted.
+    const auto* key = event->type() == QEvent::KeyRelease ? dynamic_cast<const QKeyEvent*>(event) : nullptr;
+    if (key != nullptr && !key->isAutoRepeat()) {
+        cancelPress(m_focus);
     }
     event->accept();
     return true;
@@ -195,7 +213,7 @@ PressGate::eventFilter(QObject* watched, QEvent* event) {
             filterFocus(item, event);
         }
     } else if ((isKeyEvent(type) || type == QEvent::InputMethod) && m_focus && watched == m_focus.data()
-               && !focusInReach() && filterClosed(event)) {
+               && (m_closing || !focusInReach()) && filterClosed(event)) {
         return true;
     }
     return QObject::eventFilter(watched, event);

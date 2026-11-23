@@ -21763,7 +21763,9 @@ it has a name, and each segment), `ToggleRow`, `PlexSwitch` (`accessibleDescript
 `Accessible.focusable` from the same gate, so a covered "Export detections…" is nameless and a covered `IconButton` is
 no stop. Qt 6.11.3 makes a Button, RadioButton, CheckBox, Switch, StaticText and EditableText focusable by default,
 ignored or not, so every such gated node sets it. A scroll pane (`PlexFlickable`, the Monitor's Recent calls) is never
-a stop: only its name follows the gate. A screen's own named parts follow the same rule (the Monitor's pills and rows,
+a stop: only its name follows the gate, and its page and scroll actions scroll nothing while it is hidden or covered
+(`tst_control_accessibility.qml` `test_hidden_pane_scrolls_nothing`, `tst_monitor_recent_calls.qml`
+`test_hidden_list_scrolls_nothing`). A screen's own named parts follow the same rule (the Monitor's pills and rows,
 the Spectrum's tune buttons, the key sheet's lines, Onboarding's text, the wizard's and scan list's Advanced headers);
 a name a `SpeechPacer` gives is gated already, since the pacer's `shown` carries the gate and it empties `spoken`
 when that turns false. What a screen reader holds is Qt's accessible interface, not the attached flags: Qt 6.11.3
@@ -21811,7 +21813,13 @@ word or a commit nobody asked for cannot replace the one composing (`tst_a11y_co
 `test_selectable_text_gives_up_the_keyboard`). A field that loses the focus while composing, out of reach or disabled
 under it (Home's search field, whose panel a card's management menu disables before the menu covers it), commits its
 word as the focus leaves, seen before the field's own handling ends its edit, so `editingFinished` publishes the whole
-word (`tst_home_systems_search_sort.qml` `test_management_menu_commits_the_composing_word_first`). Presses in
+word (`tst_home_systems_search_sort.qml` `test_management_menu_commits_the_composing_word_first`); that commit goes
+through the closed gate even while the field is still in reach, so a disabled field takes only its own word, at the
+word (`test_disabled_field_commit_lands_at_its_word`). The window leaving finishes the word too, before the field's
+edit ends with it, and the field keeps the stored focus (`test_window_leaving_publishes_the_whole_word`,
+`PressGate.finishComposing`). A key release the gate takes lets go of the press it would have ended, unacted (a
+cancelled touch), so a check box or switch that hid under a held Space and shows again before the keyboard moves on is
+not left pressed (`test_release_taken_while_hidden_lets_the_press_go`). Presses in
 progress are not followed (a decided limit, issue #902): a tap, drag or held key already in progress when a sheet
 opens or its control changes may still complete on its release, as before issue #902; covered and hidden controls
 refuse new presses (a cover's barrier, and `GatedTapHandler`'s and `activate()`'s checks, as before), keys and
@@ -21830,11 +21838,12 @@ row, the Spectrum's status and identity, the squelch and bandwidth values) hand 
 `test_covered_controls_offer_nothing` give the text the keyboard by SetFocus, `tst_a11y_text_reach.qml`
 `test_3c_signal_search_now_panel` a Now reading). The release itself runs once the change that hid the control has settled
 (`Qt.callLater`: an edit's end can undo what hid it, as the RadioReference form that hides on a verdict reopens for a
-check, a binding loop). A control whose focus Qt itself drops to the window root as it turns unreachable (it or its
-panel disabled, so the stray hand-off never runs) hands it on too (`PressGate.focusLeft`, told once the change
-has settled; `Navigation.focusDropped()`), unless the focus moved to another control or the window is away
-(`tst_home_systems_search_sort.qml` `test_no_match_reading_hands_the_keyboard_back`: the no-match reading, held for a
-screen reader, then Clear search). A control that still had the active focus hands it to an item that takes Escape and Back
+check, a binding loop). A control whose focus Qt itself drops to the window root, or to the focus scope enclosing it
+(the Spectrum's loader), as it turns unreachable (it or its panel disabled, so the stray hand-off never runs) hands it
+on too (`PressGate.focusLeft`, told once the change has settled; `Navigation.focusDropped()`), unless the focus moved
+to another control or the window is away (`tst_home_systems_search_sort.qml`
+`test_no_match_reading_hands_the_keyboard_back`: the no-match reading, held for a screen reader, then Clear search;
+`tst_main_map.qml` `test_disabled_resume_keeps_back_working_on_the_spectrum`: Resume scan disabled, then hidden). A control that still had the active focus hands it to an item that takes Escape and Back
 (`Navigation.keyOwner()`): the top modal's, else the top layer's, own handler when it declares one (`keyTarget`: a
 `ModalSheet` and the File browser are their own; a `NavigationLayer` may name one, none does), else the app's one
 Back owner, `Navigation.backTarget`, which Main binds to its safe area (its Keys run `requestBack()`). Never a
@@ -21874,8 +21883,11 @@ move nowhere and leave the list and the keyboard as they were; Escape or Back cl
 `test_sheet_over_the_open_list_returns_to_the_selector`; an
 option row names its selector as `focusReturnTarget`, which a sheet or the File browser closing with that row gone
 hands the keyboard to: `test_sheet_over_a_focused_option_returns_to_the_selector`; their hand-back, run again a turn
-later, leaves the keyboard where it is when it already sits on a control in reach (a sheet opened as the first closed,
-its field given the keyboard: `test_next_sheet_keeps_its_fields_keyboard`),
+later, first leaves the keyboard where it is when it already sits on a control in reach, and only then tries the
+opener again (a sheet opened as the first closed, its field given the keyboard:
+`test_next_sheet_keeps_its_fields_keyboard`; a field the user focused meanwhile:
+`test_dismissed_sheet_keeps_a_newer_focus_choice`, `tst_file_browser.qml`
+`test_closed_browser_keeps_a_newer_focus_choice`),
 `test_empty_list_closes_on_return`). These tests run on the Basic controls style the app pins
 (`QT_QUICK_CONTROLS_STYLE=Basic` on `UI_QT_QML_A11Y_CHURN`): a style whose popups animate their close keeps a closing
 list visible a while. The
