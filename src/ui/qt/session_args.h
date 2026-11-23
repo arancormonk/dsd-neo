@@ -157,32 +157,25 @@ enum class SessionArgsError {
     TetraRate,
     /* Issue #743 (D4 a): extra options that pick an I/Q stream input (-i iqtcp:... / -i iqudp:...). Every check before
        the extras describes the saved source, so a start would be judged, and argued, as that source. */
-    IqStreamExtra,
-    /* Discussion #900 F3: the saved system's DMR Tier III channels could not be written for the start. */
-    DmrChannels,
-    /* Discussion #900 F3: the start passes the saved system's channels, and the system's or the app's extra options
-       name a --dmr-chan-overrides file of their own, which the decoder would use instead (it keeps the last one). */
-    DmrChannelsShadowed
+    IqStreamExtra
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::DmrChannelsShadowed;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
 
 /**
  * @brief The --dmr-chan-overrides file a start of @p system passes (discussion #900 F3), or empty for none: a header
  * and one `lpcn,frequency_hz` row per entry of its dmrChannels (SavedSystemsModel::validDmrChannels(), 0 = hidden),
- * by channel. Only for a system whose start decodes DMR (dmr_channels_session_decodes_dmr() over its decode flag,
- * its extra options, the app's and its live radio settings: Auto, DMR, DMR mono, TDMA, in a run mode that decodes
- * frames, so never with MBE playback (-r), the M17 UDP/IP decoder (-fU) or an M17 encoder) with entries, and never when
- * the system's or the app's extra options start a trunk scan (--trunk-scan), which the decoder refuses the option
- * under.
+ * by channel. Whatever the system decodes: the decoder applies the file only to a session that decodes DMR frames
+ * and runs no trunk scan, and starts any other without it, with a notice.
  *
- * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field, and refuses the
- * start (DmrChannelsShadowed) when the system's or the app's extra options name a --dmr-chan-overrides of their own
- * (dmr_channels_extra_names_overrides()); SessionArgsBuilder::start() writes it, for a saved system's start only.
+ * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field last of all, after
+ * the decode flag, the system's and the app's extra options and the live radio settings: the decoder keeps the last
+ * --dmr-chan-overrides, so the saved channels win over one the user typed. SessionArgsBuilder::start() writes it, for a
+ * saved system's start only.
  */
-QByteArray session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs);
+QByteArray session_args_dmr_channels_csv(const QVariantMap& system);
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
@@ -417,9 +410,10 @@ class SessionArgsBuilder : public QObject {
        folder's session begun). */
     QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
                               SessionArgsError* error, bool* recording) const;
-    /* A saved system's start: @p input with its DMR Tier III channels' file written and named, or false when that
-       file could not be written. Writes nothing, and drops a file an earlier start left, when it has none. */
-    bool prepareDmrChannels(QVariantMap* input) const;
+    /* A saved system's start: @p input with its DMR Tier III channels' file written and named. Writes nothing, and
+       drops a file an earlier start left, when it has none. A file that cannot be written names none: the start goes
+       on without the channels, and a notice (json_store_post_notice()) says so. */
+    void prepareDmrChannels(QVariantMap* input) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     /* Both start()s: @p expects says whether the expectations are a roam's. */

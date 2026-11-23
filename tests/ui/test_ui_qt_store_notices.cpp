@@ -225,6 +225,19 @@ test_signal_search_files() {
            shown("signal-search-history.v2").isEmpty() && shown("signal-search-history.v1").isEmpty());
 }
 
+/* Discussion #900 (review gate b-r7 V1): a saved system's DMR Tier III channels file a start could not write is
+   listed as "unwritten", under the channels' own label, whatever was or was not kept. */
+void
+test_dmr_channels_unwritten() {
+    const QString file = QStringLiteral("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv");
+    post_from_worker(file, QString());
+    QCoreApplication::processEvents();
+    expect("channels: unwritten", field(file, "state") == QLatin1String("unwritten"));
+    expect("channels: their own label", field(file, "store") == QLatin1String("dmr-channels"));
+    StoreNotices::instance()->dismiss(file);
+    expect("channels: dismissed", shown(file).isEmpty());
+}
+
 /* A settings file that could not be kept runs on its scratch copy: this run's changes are not saved. */
 void
 test_settings_scratch() {
@@ -285,6 +298,7 @@ main(int argc, char** argv) {
     test_dismiss_and_change();
     test_heard_once();
     test_signal_search_files();
+    test_dmr_channels_unwritten();
     test_settings_scratch();
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

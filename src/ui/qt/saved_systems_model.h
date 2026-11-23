@@ -110,15 +110,12 @@ class SavedSystemsModel : public QAbstractListModel {
      * no other field: never the channel map file or the RadioReference provenance.
      *
      * @return {ok: bool, error: ""} on success, a restore of a channel with no entry included; otherwise ok false and
-     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "not-dmr" (a
-     *         start would not decode DMR, dmr_channels_session_decodes_dmr() over its decode flag, its extra options,
-     *         @p appExtraArgs (the app-wide ones) and its live radio settings: it would never pass the entry),
-     *         "explicit-overrides" (its extra options or @p appExtraArgs name a --dmr-chan-overrides file, which the
-     *         decoder would read instead; checked before a restore that changes nothing), "full" (a 257th channel) or
-     *         "not-saved" (the save failed; nothing changed). One dataChanged follows a change.
+     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "full" (a 257th
+     *         channel) or "not-saved" (the save failed; nothing changed). One dataChanged follows a change. Every start
+     *         of the system passes the entries (SessionArgsBuilder), after every option the user typed, and the decoder
+     *         applies them when the session decodes DMR frames and runs no trunk scan.
      */
-    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz,
-                                                const QString& appExtraArgs = QString());
+    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz);
 
     /** Fills names and county links a place lacks from what is already known (no network); may leave it as it was. */
     using PlaceNameFill = std::function<void(QVariantMap& place)>;

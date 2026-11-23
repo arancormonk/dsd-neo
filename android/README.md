@@ -536,9 +536,10 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   every time that system starts. It never changes your channel map file. In Explore, or anything that is not a saved
   system, a change lasts only until you stop listening, and the sheet says so. If a change could not be saved, the
   sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
-  opens the list. If the system's extra decoder arguments (or the app's) already name
-  a channels file with `--dmr-chan-overrides`, that file is the one used: changes are not saved, and a start of a
-  system that has channels of yours stops and says why.
+  opens the list. If the system's extra decoder arguments (or the app's) also name a channels file with
+  `--dmr-chan-overrides`, the channels you saved with the system are used instead of that file whenever the system
+  has any. If DSD-neo can't write your channels when the system starts (the device is out of storage, say), the
+  system starts without them and Home says so.
 - **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
   session to a mode that does not decode DMR, the channels can't be changed until DMR is decoded again.
 

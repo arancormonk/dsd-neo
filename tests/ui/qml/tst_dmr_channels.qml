@@ -721,9 +721,8 @@ Item {
         // Every save error, in its words.
         function test_save_error_words_data() {
             return [
-                {tag: "not-dmr", text: "this saved system is not set to decode DMR."},
+                {tag: "no-system", text: "this system is no longer in your saved systems."},
                 {tag: "full", text: "this system already keeps 256 channels of yours."},
-                {tag: "explicit-overrides", text: "the extra decoder arguments name another channels file, which dsd-neo uses instead."},
                 {tag: "not-saved", text: "dsd-neo could not save this system."}
             ];
         }

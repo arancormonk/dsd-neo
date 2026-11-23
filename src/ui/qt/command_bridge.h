@@ -31,7 +31,6 @@
 class QTemporaryFile;
 
 namespace dsd_qt {
-class AppPrefs;
 class DecryptionProfileProvider;
 class RecordingStatus;
 class SavedSystemsModel;
@@ -164,9 +163,8 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE QVariantMap saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz);
 
-    /** @brief Where an applied channel edit is kept (the saved systems); nullptr: nowhere, saved is false. @p prefs
-     * (may be null) supplies the app-wide extra options the edit's DMR check reads. */
-    void setSavedSystems(SavedSystemsModel* systems, const AppPrefs* prefs = nullptr);
+    /** @brief Where an applied channel edit is kept (the saved systems); nullptr: nowhere, saved is false. */
+    void setSavedSystems(SavedSystemsModel* systems);
 
     QVariantMap
     dmrChannelResult() const {
@@ -547,7 +545,6 @@ class CommandBridge : public QObject {
     /* The answer map for @p r, the request @p q it answers; an "ok" one kept on its system first. */
     QVariantMap dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const DmrChannelRequest& q);
     QPointer<SavedSystemsModel> m_savedSystems;
-    QPointer<const AppPrefs> m_prefs;
 
     QList<DmrChannelRequest> m_dmrChannelRequests;
     quint64 m_dmrChannelCursor = 0;

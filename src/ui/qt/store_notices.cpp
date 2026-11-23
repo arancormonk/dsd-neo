@@ -23,6 +23,8 @@ namespace {
 
 /* Call history's seen store: the app's own bookkeeping, logged and kept aside like the others but never shown. */
 constexpr const char kSeenStoreFileName[] = "call_history_seen.json";
+/* A saved system's DMR Tier III channels file, which its start writes (SessionArgsBuilder). */
+constexpr const char kDmrChannelsFolder[] = "dmr_channels/";
 
 /* What the card names a settings or store file by: call history's settings file is named after the application. */
 QString
@@ -109,7 +111,11 @@ StoreNotices::sync() {
             continue;
         }
         Notice notice{posted.fileName, store_key(posted.fileName), QString(), posted.keptName, QString()};
-        if (settings_recovery_in_memory(posted.fileName)) {
+        if (posted.fileName.startsWith(QLatin1String(kDmrChannelsFolder))) {
+            /* Discussion #900 F3: a saved system's channels file the start could not write. */
+            notice.store = QStringLiteral("dmr-channels");
+            notice.state = QStringLiteral("unwritten");
+        } else if (settings_recovery_in_memory(posted.fileName)) {
             notice.state = QStringLiteral("defaults");
         } else if (settings_recovery_scratch(posted.fileName)) {
             notice.state = QStringLiteral("unsaved");

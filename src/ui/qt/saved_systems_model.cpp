@@ -28,7 +28,6 @@
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/runtime/log.h>
-#include "dmr_channels_args.h"
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
@@ -871,25 +870,13 @@ SavedSystemsModel::dmrChannels(const QString& uid) const {
 }
 
 QVariantMap
-SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz, const QString& appExtraArgs) {
+SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz) {
     const int row = rowForUid(uid);
     if (row < 0) {
         return dmr_channel_edit_result("no-system");
     }
     if (!dmr_channel_edit_valid(lpcn, op, hz)) {
         return dmr_channel_edit_result("invalid");
-    }
-    // The start passes the entries only for a system that decodes DMR (session_args_dmr_channels_csv()), and refuses
-    // to when the user's own options name a channels file, which the decoder would read instead.
-    const Row& kept = m_rows.at(row);
-    const QVariantMap options{{QStringLiteral("decodeFlag"), kept.decodeFlag},
-                              {QStringLiteral("extraArgs"), kept.extraArgs},
-                              {QStringLiteral("radioSettings"), kept.radioSettings}};
-    if (!dmr_channels_session_decodes_dmr(options, appExtraArgs)) {
-        return dmr_channel_edit_result("not-dmr");
-    }
-    if (dmr_channels_extra_names_overrides(kept.extraArgs, appExtraArgs)) {
-        return dmr_channel_edit_result("explicit-overrides");
     }
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
     if (op == DSD_UI_DMR_T3_OP_RESTORE) {

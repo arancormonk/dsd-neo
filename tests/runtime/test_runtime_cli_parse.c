@@ -10247,6 +10247,54 @@ test_dmr_chan_overrides_long_option_parse(void) {
     return test_rc;
 }
 
+/* Review gate b-r7 V1: a repeated --dmr-chan-overrides keeps the last one, in either spelling and either order, so the
+   app's saved channels, put after every option the user typed, are the file the decoder reads. */
+static int
+test_dmr_chan_overrides_last_wins(void) {
+    static const char k_first[] = "dsdneo_overrides_first.csv";
+    static const char k_last[] = "dsdneo_overrides_last.csv";
+    char arg0[] = "dsd-neo";
+    char arg_bare[] = "--dmr-chan-overrides";
+    char arg_first_value[] = "dsdneo_overrides_first.csv";
+    char arg_last_value[] = "dsdneo_overrides_last.csv";
+    char arg_first_eq[] = "--dmr-chan-overrides=dsdneo_overrides_first.csv";
+    char arg_last_eq[] = "--dmr-chan-overrides=dsdneo_overrides_last.csv";
+    char* argv_pair_eq[] = {arg0, arg_bare, arg_first_value, arg_last_eq, NULL};
+    char* argv_eq_pair[] = {arg0, arg_first_eq, arg_bare, arg_last_value, NULL};
+    char* argv_pairs[] = {arg0, arg_bare, arg_first_value, arg_bare, arg_last_value, NULL};
+
+    struct {
+        char** argv;
+        int argc;
+    } cases[] = {{argv_pair_eq, 4}, {argv_eq_pair, 4}, {argv_pairs, 5}};
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, k_last) != 0
+            || strcmp(opts->dmr_chan_overrides_file, k_first) == 0) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides twice (case %zu): rc=%d exit=%d file=\"%s\"\n", i, rc, exit_rc,
+                        opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 /* A missing value is refused at parse. A missing file is not (review gate b-r4 S4): only the engine, once it knows the
    session takes the file (it decodes DMR and runs no trunk scan), opens it, so a session that ignores the option starts
    whatever the path names. A trunk scan (in either order) is not refused either (b-r2 C1): the path is kept, and the
@@ -13650,6 +13698,7 @@ main(void) {
     rc |= test_src_csv_missing_file_returns_error();
     rc |= test_src_csv_missing_value_returns_error();
     rc |= test_dmr_chan_overrides_long_option_parse();
+    rc |= test_dmr_chan_overrides_last_wins();
     rc |= test_dmr_chan_overrides_refusals();
     rc |= test_dmr_chan_overrides_value_is_not_an_option();
     rc |= test_file_option_values_are_not_options();

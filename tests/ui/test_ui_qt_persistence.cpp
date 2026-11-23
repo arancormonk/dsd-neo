@@ -2185,60 +2185,18 @@ test_dmr_channel_edit() {
            error(model.applyDmrChannelEdit(uid, 40, set, 99999)) == "invalid"
                && error(model.applyDmrChannelEdit(uid, 40, set, 2147483648LL)) == "invalid");
     expect("channel edit: no such operation", error(model.applyDmrChannelEdit(uid, 40, 4, 451150000)) == "invalid");
-    expect("channel edit: a system without DMR", model.add({{"name", "NXDN"}, {"decodeFlag", "-fi"}}));
-    const QString nxdn = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is refused, its starts would never pass the entry",
-           error(model.applyDmrChannelEdit(nxdn, 40, set, 451150000)) == "not-dmr"
-               && model.dmrChannels(nxdn).isEmpty());
-    expect("channel edit: an Auto system whose extras say -fp",
-           model.add({{"name", "Extras"}, {"decodeFlag", ""}, {"extraArgs", "-fp"}}));
-    const QString fpSystem = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is refused too", error(model.applyDmrChannelEdit(fpSystem, 40, set, 451150000)) == "not-dmr");
-    expect("channel edit: and by the app's extras",
-           error(model.applyDmrChannelEdit(uid, 40, set, 451150000, "-fp")) == "not-dmr");
-    expect("channel edit: an -fp system the extras turn to -fs",
-           model.add({{"name", "Back"}, {"decodeFlag", "-fp"}, {"extraArgs", "-fs"}}));
-    expect("channel edit: is kept",
-           ok(model.applyDmrChannelEdit(model.get(model.count() - 1).value("uid").toString(), 40, set, 451150000)));
-    expect("channel edit: an Auto system", model.add({{"name", "Auto"}, {"decodeFlag", ""}}));
-    const QString autoUid = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is kept, Auto decodes DMR",
-           ok(model.applyDmrChannelEdit(autoUid, 40, set, 451150000))
-               && model.dmrChannels(autoUid) == dmr_channels({{40, 451150000}}));
-    expect("channel edit: the extra systems removed",
-           model.remove(model.rowForUid(nxdn)) && model.remove(model.rowForUid(autoUid)));
-
-    /* The decode set is the start's: the last -f the decoder reads, the confirmed live radio setting after the extra
-       options, and getopt's "-f 1" as well as "-f1". */
-    expect("channel edit: a DMR system with a live DMR setting",
-           model.add({{"name", "Live"}, {"decodeFlag", "-fs"}, {"radioSettings", QVariantMap{{"decodeFlag", "-fs"}}}}));
-    const QString live = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is kept over the app's -fi, which the live setting follows",
-           ok(model.applyDmrChannelEdit(live, 40, set, 451150000, "-fi")));
-    expect("channel edit: a DMR system whose extras say -f 1",
-           model.add({{"name", "Apart"}, {"decodeFlag", "-fs"}, {"extraArgs", "-f 1"}}));
-    const QString apart = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is refused, it runs P25 only",
-           error(model.applyDmrChannelEdit(apart, 40, set, 451150000)) == "not-dmr");
-
-    /* The user's own channels file, named in the system's extra options or the app's, is the one the decoder reads:
-       nothing is kept that a start would not use, a restore that changes nothing included. */
-    expect("channel edit: a DMR system with its own channels file",
-           model.add({{"name", "Own file"},
-                      {"decodeFlag", "-fs"},
+    /* Review gate b-r7 V1: kept whatever the system's options say. Every start passes the entries, after the user's
+       own options, and the decoder decides whether the session takes them. */
+    expect("channel edit: an NXDN system with its own channels file",
+           model.add({{"name", "NXDN"},
+                      {"decodeFlag", "-fi"},
                       {"extraArgs", "--dmr-chan-overrides /data/old.csv"},
                       {"dmrChannels", dmr_channels({{12, 0}})}}));
-    const QString own = model.get(model.count() - 1).value("uid").toString();
-    expect("channel edit: is refused",
-           error(model.applyDmrChannelEdit(own, 40, set, 451150000)) == "explicit-overrides"
-               && error(model.applyDmrChannelEdit(own, 40, restore, 0)) == "explicit-overrides"
-               && model.dmrChannels(own) == dmr_channels({{12, 0}}));
-    expect("channel edit: as by the app's, in its = form",
-           error(model.applyDmrChannelEdit(live, 41, hide, 0, "--dmr-chan-overrides=/data/old.csv"))
-               == "explicit-overrides");
-    expect("channel edit: those systems removed", model.remove(model.rowForUid(live))
-                                                      && model.remove(model.rowForUid(apart))
-                                                      && model.remove(model.rowForUid(own)));
+    const QString other = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is kept there too",
+           ok(model.applyDmrChannelEdit(other, 40, set, 451150000))
+               && model.dmrChannels(other) == dmr_channels({{12, 0}, {40, 451150000}}));
+    expect("channel edit: that system removed", model.remove(model.rowForUid(other)));
 
     QVariantList full;
     for (int lpcn = 1; lpcn <= 256; ++lpcn) {

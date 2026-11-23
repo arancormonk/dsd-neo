@@ -387,9 +387,7 @@ ModalSheet {
     }
     function saveErrorText(error) {
         var reason = error === "no-system" ? qsTr("this system is no longer in your saved systems.")
-            : error === "not-dmr" ? qsTr("this saved system is not set to decode DMR.")
             : error === "full" ? qsTr("this system already keeps %1 channels of yours.").arg(channels.maxEntries)
-            : error === "explicit-overrides" ? qsTr("the extra decoder arguments name another channels file, which dsd-neo uses instead.")
             : qsTr("dsd-neo could not save this system.");
         return qsTr("Changed until you stop listening, but not saved: ") + reason;
     }

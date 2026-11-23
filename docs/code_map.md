@@ -17783,19 +17783,15 @@ Qt Quick frontend (`src/ui/qt`):
   RadioReference provenance) before `dmrChannelResultReceived()`; `saveDmrChannelEdit()` runs that save again for a
   captured uid. On Android, an edit still queued when the app quits is applied by the service but not saved to the
   system. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number entries
-  only, never a bool, text or a fraction, the first per channel, at most 256, by channel). `dmr_channels_args.h`
-  judges a system by its start's options, read as the decoder reads them (`cli_option_tokens.h`, shared with
-  `session_args.cpp`): `dmr_channels_session_decodes_dmr()` takes the last `-f` (either getopt form) over the decode
-  flag, the system's and the app's extra options and the live radio settings, in argv order (Auto, DMR, DMR mono, TDMA
-  frame DMR), and none in a run mode that decodes no frames (`dmr_channels_session_frameless()`, as
-  `dsd_engine_run_decodes_frames()`: `-r` MBE playback, `-fU`, `-fZ`, `-fB` or `-fP` anywhere among those options, since
-  each keeps its run mode whatever `-f` follows; review gate b-r6), so such a start neither writes the file nor is
-  refused over the user's own; `dmr_channels_extra_names_overrides()` finds the user's own `--dmr-chan-overrides`. An
-  edit is refused `not-dmr` or `explicit-overrides` by those. Each start of a DMR system with entries writes
+  only, never a bool, text or a fraction, the first per channel, at most 256, by channel). An edit is kept on the system
+  whatever its options say (review gate b-r7 V1). Each start of a saved system with entries writes
   `session_args_dmr_channels_csv()` to `dmr_channels/<uid>.csv` in the app's folder and passes `--dmr-chan-overrides`
-  (never with a trunk scan: `--trunk-scan` or `--trunk-scan-off`, separate or `=` form, in either extra options); a
-  start whose extra options name their own file as well is refused (`SessionArgsError::DmrChannelsShadowed`, category
-  `dmr-channels`), since the decoder keeps the last one. A backup carries those files as generated configuration, and
+  last in the argv, after every option the user typed (the decode flag's tokens, the system's and the app's extra
+  options, the live radio settings): the CLI keeps the last occurrence, so the saved channels win over one the user
+  named, and the engine applies the file only to a session that decodes DMR frames and runs no trunk scan (any other
+  starts without it, with a notice). A file that cannot be written never stops the start: it starts without the
+  option, logs a warning and posts a `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists
+  as `unwritten` (store `dmr-channels`) on Home's notice card. A backup carries those files as generated configuration, and
   removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds; 50 rows, "Show more
   channels without a frequency" adds 50, the ledger can hold 4094) and "Channels" (tap edits; 50 rows by channel, "Show
   more channels" adds 50), each holding rows only up to the pages shown and back to the first page on close, with an

@@ -128,6 +128,15 @@ Item {
                 compare(detail, "Some entries may be missing. The file won't be overwritten.");
         }
 
+        // Discussion #900: a saved system's channels file a start couldn't
+        // write is said as such, not as a file that couldn't be read.
+        function test_b_dmr_channels_unwritten() {
+            testContext.postStoreNotice("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv", "");
+            waitForNotices(1);
+            compare(texts("storeNoticeTitle"), ["A saved system's DMR channels couldn't be written"]);
+            compare(texts("storeNoticeDetail"), ["That system started without them. Check that the device has free storage, then start it again."]);
+        }
+
         // The seen store is the app's own bookkeeping: logged, never on the card.
         function test_c_seen_store_is_not_shown() {
             testContext.postStoreNotice("call_history_seen.json", "");
