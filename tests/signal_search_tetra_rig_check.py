@@ -583,6 +583,13 @@ def check(record):
     fields = ("frequency_hz", "protocol", "access", "site", "confirmed", "ended", "unresolved")
     if [tuple(r[k] for k in fields) for r in history] != [tuple(r[k] for k in fields) for r in reload]:
         failures.append(f"the journal read back {reload}, not {history}")
+    # Every row of a TETRA range has ended, whichever transmitter (if any) it belongs to, live and read back.
+    ranges = ranges_of(record["transmitters"])
+    for kind, rows in (("history", history), ("reload", reload)):
+        for r in rows:
+            index = r["range_index"]
+            if (index >= len(ranges) or ranges[index][5] == 10) and not r["ended"]:
+                failures.append(f"{kind}: the row at {r['frequency_hz']} Hz in TETRA range {index} never ended: {r}")
     for tx in record["transmitters"]:
         check_row(tx, history, failures)
         # Shown confirmed while the visit runs (the Now panel's "TETRA · confirmed"), not only once it ends.
