@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stddef.h>
 #include <vector>
 #include "rtl_fft_cache.h"
 

@@ -1463,10 +1463,12 @@ constexpr double kQuietReferenceSpan = 0.45;
    the -3 dB edges at -0.335 and +0.302 Fs, lopsided; +-0.375 Fs at 6 MS/s is a reviewer's report for a Mini, not a
    flatness bound. Each span is the part of the band the reference is taken over; the calibration
    (docs/signal-search.md "Quiet-channel calibration") keeps or narrows it. */
+namespace {
 struct quiet_centred_span {
     uint32_t rate_hz;
     double span;
 };
+} // namespace
 
 static const quiet_centred_span kQuietAirspyCentredSpans[] = {
     {2500000, 0.25},

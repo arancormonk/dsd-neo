@@ -116,6 +116,7 @@
 #include <mutex>
 #include <numeric>
 #include <sstream>
+#include <stddef.h>
 #include <string>
 #include <thread>
 #include <utility>
@@ -584,8 +585,10 @@ place_waveform(const Waveform& s, uint32_t rate) {
 /* The bytes place_waveform() holds for @p w at @p rate. */
 double
 placed_bytes(const Waveform& w, uint32_t rate) {
-    const double blocks = (double)(w.base.size() / (size_t)(kBlockIn / 2));
-    return blocks * (double)(((int64_t)kBlockIn * rate / kSourceRate) / 2) * sizeof(cf);
+    /* Whole blocks, each placed as a whole number of pairs. */
+    const size_t blocks = w.base.size() / (size_t)(kBlockIn / 2);
+    const int64_t placed_pairs = ((int64_t)kBlockIn * rate / kSourceRate) / 2;
+    return (double)blocks * (double)placed_pairs * sizeof(cf);
 }
 
 /* ------------------------------------------------------------------------------------------------ conditions */
@@ -1312,7 +1315,7 @@ file_sha256(const std::string& path) {
     const auto rotr = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
     const auto block = [&](const unsigned char* p) {
         uint32_t w[64];
-        for (int i = 0; i < 16; ++i) {
+        for (size_t i = 0; i < 16; ++i) {
             w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
         }
         for (int i = 16; i < 64; ++i) {
