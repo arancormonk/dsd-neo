@@ -30,6 +30,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -362,6 +363,9 @@ grant_then_voice_sync_is_not_noted(void) {
     dmr_sm_init(opts, state);
     dmr_sm_event_t grant = dmr_sm_ev_group_grant(852000000L, 0, 100, 200);
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &grant);
+    // The burst's voice passed its gate, so the sync binds the slotless follow to slot 0 and opens the grant's call.
+    state->dmr_confidence_voice_open[0] = 1U;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
     dmr_sm_emit_voice_sync(opts, state, 0);
     dsd_call_snapshot call = slot_call(state, 0U);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 100U);
