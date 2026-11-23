@@ -62,7 +62,7 @@ nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const long int route = state->nxdn_follow.freq_hz;
-    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
+    return (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && state->nxdn_frame_type_d != 0U)
            || (state->nxdn_follow.repeater != 0U && route > 0 && dsd_opts_trunk_vc_followed(opts)
                && state->trunk_vc_freq[0] == route);
 }

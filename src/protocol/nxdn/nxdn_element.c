@@ -3513,9 +3513,11 @@ nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     }
     nxdn_vcall_publish(opts, state, info);
     // Classified as admission classifies its assignment (nxdn_vcall_assgn_should_tune()); a generic voice call names no
-    // class of its own (-1, nxdn_reconcile_private()).
+    // class of its own (-1, nxdn_reconcile_private()). A Type-D call is one the VCALL's own layout verdict read as
+    // Type-D (info->idas): an RTCH2 frame of a value a composite channel shares, with no Type-D evidence, keeps the
+    // Type-C layout's full IDs, and its call is judged by its source as a Type-C one.
     const int msg_private = kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : kind == DSD_CALL_KIND_GROUP_VOICE ? 0 : -1;
-    nxdn_call_identity_reconcile(opts, state, msg_private, nxdn_receiver_on_type_d(opts, state));
+    nxdn_call_identity_reconcile(opts, state, msg_private, info->idas != 0U);
 }
 
 static void

@@ -12690,10 +12690,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     measured from the end, however long ago the identity was last read. A held call known only from the call heard there (no
     valid route: a resident call, no grant tune) ends with that call: a release, DISC or Type-D termination clears it
     (`nxdn_call_identity_end()`), as its canonical end does, so the next call there is unknown until a message names
-    it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL on an RTCH2 or the
-    followed Type-D route) is judged as Type-D admission judges it, by its target alone (`nxdn_held_policy_source()`):
-    no source fallback for a group call and no source for a private one, so an INFO3 source, which may misname the
-    talker, never reaches policy.
+    it. A Type-D held call (`type_d`: followed from a busy message, named by an SCCH, or by a VCALL its own layout
+    verdict read as Type-D, `info->idas`) is judged as Type-D admission judges it, by its target alone
+    (`nxdn_held_policy_source()`): no source fallback for a group call and no source for a private one, so an INFO3
+    source, which may misname the talker, never reaches policy. A VCALL on an RTCH2 reading of a value a composite
+    channel shares, with no Type-D evidence, keeps the Type-C layout's full IDs and names a Type-C call, judged by its
+    source; the live lookup (`nxdn_held_call_policy_source()`, `nxdn_receiver_on_type_d()`) reads the same frame
+    verdict (`dsd_state::nxdn_frame_type_d`), never the RTCH2 channel alone.
   - Call types (`nxdn_call_type_kind()`, `nxdn_call_type_opens_call()` in `nxdn_internal.h`; TS 1-A Table 6.5-8, TS
     1-E Table 6.6-15): one matrix for VCALL, VCALL_ASSGN, TX_REL, the encryption lockout, the reconcile, the
     conventional scan hold and the data call headers. 000/001 are group calls (the group switch); 100 Individual, 110

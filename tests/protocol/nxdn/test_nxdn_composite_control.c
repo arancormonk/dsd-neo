@@ -940,6 +940,43 @@ expect_call_target(const char* tag, const dsd_state* state, long target, long po
 }
 
 /*
+ * The held call's policy source follows the VCALL's own layout (issue #903): on late entry on a composite Type-C channel
+ * (LICH 0x71 read as a Type-D RTCH2, no SCCH of the carrier checked), the VCALL keeps its full 16-bit IDs, so its call
+ * is a Type-C one: under trunking the held call is not marked Type-D and is judged with its source 0x1864. The live
+ * lookup reads the same verdict: a frame read as RTCH2 but in the Type-C layout keeps the source, one in the Type-D
+ * layout drops it.
+ */
+static int
+test_late_entry_policy_source_follows_the_vcall_layout(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    rc |= expect_call_target("late entry policy", state, 0x1805L, 0x1805L, "");
+    rc |= expect_long("late entry policy: held call", (long)state->nxdn_call.valid, 1L);
+    rc |= expect_long("late entry policy: held call is not Type-D", (long)state->nxdn_call.type_d, 0L);
+    dsd_call_snapshot call;
+    const uint64_t transmission = dsd_call_state_get(state, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    rc |= expect_long("late entry policy: held call judged by its source",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D; /* a frame read as RTCH2, Type-C layout */
+    state->nxdn_frame_type_d = 0U;
+    rc |= expect_long("late entry policy: live lookup keeps the source in the Type-C layout",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0x1864L);
+    state->nxdn_frame_type_d = 1U;
+    rc |= expect_long("late entry policy: live lookup drops it in the Type-D layout",
+                      (long)nxdn_held_call_policy_source(opts, state, transmission, 0x1864U), 0L);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
+    state->nxdn_frame_type_d = 0U;
+    return rc;
+}
+
+/*
  * Type-D address evidence is the carrier's (issue #903): the operator retunes from a Type-D repeater, where checked
  * SCCHs split VCALL addresses into prefix and 11-bit ID, to an unrelated Type-C composite carrier. Nothing said Type-C
  * there yet, so its shared LICH value 0x73 reads as a Type-D RTCH2, but no SCCH of this carrier passed: a FACCH1 VCALL
@@ -1808,6 +1845,7 @@ main(void) {
     rc |= test_type_c_drops_the_type_d_misreading(opts, state);
     rc |= test_foreign_sacch_segments_never_complete_a_vcall(opts, state);
     rc |= test_composite_late_entry_keeps_full_ids(opts, state);
+    rc |= test_late_entry_policy_source_follows_the_vcall_layout(opts, state);
     rc |= test_foreign_sacch_segments_never_release_the_call(opts, state);
     rc |= test_type_c_drops_the_type_d_category(opts, state);
     rc |= test_short_site_messages_do_not_say_type_c(opts, state);

@@ -78,7 +78,8 @@ void nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's
- * (dsd_state::nxdn_frame_channel), or the route it followed (dsd_state::nxdn_follow) is a Type-D repeater's and the
+ * (dsd_state::nxdn_frame_channel) read in the Type-D layout (dsd_state::nxdn_frame_type_d; an RTCH2 reading of a value
+ * a composite channel shares, with no Type-D evidence, keeps the Type-C layout and is not), or the route it followed (dsd_state::nxdn_follow) is a Type-D repeater's and the
  * receiver is still tuned there.
  */
 int nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state);
