@@ -1890,9 +1890,14 @@ expect_long_path_identity(void) {
         ok = long_path_op(dirs[i], 0) == 0;
         made += ok;
     }
-    char file[DSD_TEST_PATH_MAX];
-    DSD_SNPRINTF(file, sizeof file, "%s/r.wav", dirs[kLevels - 1]);
-    ok = ok && strlen(file) > 260 && long_path_op(file, 1) == 0;
+    /* The file only once every level is there, and each removed only when this run made it. */
+    char file[DSD_TEST_PATH_MAX] = "";
+    int created = 0;
+    if (ok && made == kLevels) {
+        DSD_SNPRINTF(file, sizeof file, "%s/r.wav", dirs[kLevels - 1]);
+        created = strlen(file) > 260 && long_path_op(file, 1) == 0;
+    }
+    ok = ok && created;
     dsd_file_identity_t id;
     dsd_file_identity_t opened;
     ok = ok && dsd_path_file_identity(file, &id) == 0 && id.size == 4;
@@ -1904,7 +1909,9 @@ expect_long_path_identity(void) {
     if (!ok) {
         DSD_FPRINTF(stderr, "long path identity: a file past MAX_PATH has none, or does not open\n");
     }
-    (void)long_path_op(file, 2);
+    if (created) {
+        ok = long_path_op(file, 2) == 0 && ok;
+    }
     for (int i = made - 1; i >= 0; i--) {
         ok = long_path_op(dirs[i], 3) == 0 && ok;
     }

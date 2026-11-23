@@ -6,12 +6,10 @@
 /*
  * File identities (file_compat.h) on POSIX, in a file of their own: the project does not build with 64-bit file offsets
  * everywhere, and on a 32-bit build without them lstat() fails with EOVERFLOW for a file over 2 GiB, which a recording
- * can be. Defined before any system header, for this file only: no struct stat leaves it, so nothing else sees another
- * layout.
+ * can be. src/platform/CMakeLists.txt compiles this file alone with _FILE_OFFSET_BITS=64 (a definition on the command
+ * line, so it comes before the forced safe_api.h include and every system header). No struct stat or off_t leaves it,
+ * so nothing else sees another layout.
  */
-#ifndef _FILE_OFFSET_BITS
-#define _FILE_OFFSET_BITS 64
-#endif
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
