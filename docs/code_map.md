@@ -13646,13 +13646,18 @@ Private per-protocol modules worth knowing about:
     channel map CSV or filled in by the heuristic (0), or learned on the control channel (2), is acted on anywhere, as
     is any mapping for a grant heard on the control channel. "On the control channel" is one rule for trusting and for
     learning (`dmr_sm_on_control_channel()`): a control channel is known and the receiver follows no call, or follows
-    one on the control channel's own carrier (a composite control channel's payload, followed in place). A checked CSBK
-    that maps an LPCN (an absolute grant's CdefParms, a C_BCAST Chan_Freq or adjacent-site announcement) records the
-    mapping with its provenance (`dmr_chan_map_note()` in `dmr_csbk.c`): 2 on the control channel, else 1. A mapping
-    already held is never rewritten: an unconfirmed one (1) is confirmed (2) when the control channel names the same
-    frequency for it, and an imported or heuristic one (0), or one naming another frequency, stays as it is
-    (`test_control_channel_confirms_learned_lpcn()`, `test_c_bcast_mapping_records_provenance()`,
-    `test_composite_payload_counts_as_control_channel()`). The Tier III CSBK layer therefore hands the machine only
+    one on the control channel's own carrier (a composite control channel's payload, followed in place). A CSBK that
+    maps an LPCN (an absolute grant's CdefParms, a C_BCAST Chan_Freq, Vote_Now or Adjacent site announcement) records
+    the mapping in an empty cell with its provenance (`dmr_chan_map_note()` in `dmr_csbk.c`): 2 on the control channel,
+    else 1, whatever its CRC verdict, as before. A mapping already held is never rewritten: an unconfirmed one (1) is
+    confirmed (2) only when this site's own channel (a grant or a Chan_Freq, never another site's Vote_Now or Adjacent
+    site announcement) names the same frequency for it on the control channel in a CSBK whose own CRC passed
+    (`dmr_csbk_crc_checked()`: never one `-F` accepted as RAS, nor an MBC whose header failed; a mapping learned off the
+    control channel of a RAS site therefore stays unconfirmed, a decided limit), and an imported or heuristic one (0),
+    or one naming another frequency, stays as it is (`test_control_channel_confirms_learned_lpcn()`,
+    `test_unchecked_message_never_confirms()`, `test_other_site_announcement_never_confirms()`,
+    `test_c_bcast_mapping_records_provenance()`, `test_composite_payload_counts_as_control_channel()`). The Tier III
+    CSBK layer therefore hands the machine only
     the frequency a grant states on air (the absolute escape's) and a logical grant's LPCN, never a channel-map lookup
     of its own; its printout, activity row and dispatch check still show the mapping (`dmr_cspdu_pf0_named_freq()`;
     `test_untrusted_lpcn_mapping_names_no_carrier()` in `test_dmr_preempt.c`, through `dmr_cspdu()`, and

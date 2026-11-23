@@ -331,14 +331,16 @@ dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
     dmr_heuristic_report_fill(opts, state, &stats, step, filled);
 }
 
-/* A checked CSBK maps Tier III channel @p lpcn to @p freq: the channel map records it with its provenance
-   (dmr_lcn_trust), 2 when heard on the control channel (dmr_sm_on_control_channel(), a composite control channel's
-   payload included), else 1. An empty cell takes the mapping. A mapping learned off the control channel and still
-   unconfirmed (1) is confirmed (2) when the control channel names the same frequency for it. An imported or heuristic
-   mapping (0) and a mapping to another frequency are never changed. Returns 1 when the cell was empty and now holds
-   the mapping. */
+/* A CSBK maps Tier III channel @p lpcn to @p freq: the channel map records it with its provenance (dmr_lcn_trust), 2
+   when heard on the control channel (dmr_sm_on_control_channel(), a composite control channel's payload included),
+   else 1. An empty cell takes the mapping, as it always has. A mapping learned off the control channel and still
+   unconfirmed (1) is confirmed (2) only by this site's own channel (@p own_site: a grant or a Chan_Freq announcement,
+   never another site's Vote_Now or Adjacent site announcement) naming the same frequency on the control channel in a
+   CSBK whose own CRC passed (dmr_csbk_crc_checked(): never one -F accepted as RAS, nor an MBC whose header failed). An
+   imported or heuristic mapping (0) and a mapping to another frequency are never changed. Returns 1 when the cell was
+   empty and now holds the mapping. */
 static int
-dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
+dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int own_site) {
     // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
     if (!dmr_t3_lpcn_is_channel(lpcn) || freq <= 0) {
         return 0;
@@ -349,7 +351,8 @@ dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long in
         state->dmr_lcn_trust[lpcn] = trust;
         return 1;
     }
-    if (trust == 2U && state->dmr_lcn_trust[lpcn] == 1U && state->trunk_chan_map[lpcn] == freq) {
+    if (own_site && trust == 2U && dmr_csbk_crc_checked(state) && state->dmr_lcn_trust[lpcn] == 1U
+        && state->trunk_chan_map[lpcn] == freq) {
         state->dmr_lcn_trust[lpcn] = 2U;
     }
     return 0;
@@ -357,8 +360,8 @@ dmr_chan_map_note(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, long in
 
 // Conservative auto-learn helper: record LCN -> frequency if empty (dmr_chan_map_note()) and announce in event history
 static inline void
-dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
-    if (!state || !dmr_chan_map_note(opts, state, lpcn, freq)) {
+dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq, int own_site) {
+    if (!state || !dmr_chan_map_note(opts, state, lpcn, freq, own_site)) {
         return;
     }
 
@@ -437,7 +440,7 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq);
+    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq, 1);
     return mbc_lpchannum;
 }
 
@@ -1416,7 +1419,7 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
 
 static void
 dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
-    if (!dmr_chan_map_note(opts, state, a_channel, freqr)) {
+    if (!dmr_chan_map_note(opts, state, a_channel, freqr, 1)) {
         return;
     }
     dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
@@ -1629,7 +1632,7 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, 1);
-    dmr_learn_chan_map(opts, state, abs_freqs.lpchannum, abs_freqs.freqr);
+    dmr_learn_chan_map(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 0); // another site's channel
     const long cand[1] = {abs_freqs.freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }

@@ -277,6 +277,23 @@ c_bcast_chan_freq(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq_hz) {
     dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
 }
 
+/* A CRC-valid C_BCAST of announcement type @p a_type (2 Vote_Now, 6 Adjacent site) with its appended block naming
+   another site's APCN @p apcn on @p freq_hz (TS 102 361-4 Tables 7.85, 7.86): Active_Connection available, Channel
+   0xFFF (absolute). */
+static void
+c_bcast_other_site(dsd_opts* opts, dsd_state* st, uint8_t a_type, uint16_t apcn, long freq_hz) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 40U;
+    write_bits_u32(bits, 16U, a_type, 5U);
+    bits[56] = 1U;
+    write_bits_u32(bits, 68U, 0x0FFFU, 12U);
+    write_abs_channel(bits, apcn, freq_hz);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+}
+
 /* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
 static void
 voice(dsd_opts* opts, dsd_state* st, int slot) {
@@ -1432,6 +1449,68 @@ test_control_channel_confirms_learned_lpcn(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Only a message whose own CRC passed confirms a mapping: an absolute grant or a C_BCAST Chan_Freq heard on the control
+   channel but accepted under -F RAS handling, or an MBC whose header CRC failed, leaves a learned mapping of the same
+   frequency unconfirmed (1), so a Hold grant on it heard off the control channel is still refused. Such a message
+   still teaches an empty cell as it always has (2 on the control channel). */
+static int
+test_unchecked_message_never_confirms(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    const uint16_t lpcn_e = 0x0014U;
+    const uint8_t flags[2] = {(uint8_t)DSD_CRC_RAS_UNVERIFIED, (uint8_t)DSD_CRC_FAILED};
+    int rc = 0;
+    for (int f = 0; f < 2; f++) {
+        for (int announce = 0; announce < 2; announce++) {
+            init_env(opts, st, 2.0);
+            seed_row(st, 2300, "B", 0, 0);
+            st->trunk_chan_map[lpcn_d] = VC_B;
+            st->dmr_lcn_trust[lpcn_d] = 1U;
+            st->event_crc_invalid[0] = flags[f];
+            if (announce) {
+                c_bcast_chan_freq(opts, st, lpcn_d, VC_B);
+                c_bcast_chan_freq(opts, st, lpcn_e, VC_C);
+            } else {
+                abs_tv_grant(opts, st, lpcn_d, VC_B, 1, 2300, 3);
+                abs_tv_grant(opts, st, lpcn_e, VC_C, 1, 2300, 3);
+            }
+            st->event_crc_invalid[0] = 0U;
+            rc |= expect_true("an unchecked message on the control channel confirms no mapping",
+                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
+            rc |= expect_true("an unchecked message on the control channel still teaches an empty cell",
+                              st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+            rc |= expect_true("a hold grant on a mapping an unchecked message named is not followed",
+                              !hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
+        }
+    }
+    return rc;
+}
+
+/* Another site's channel (a C_BCAST Vote_Now or Adjacent site announcement, heard on the control channel) never confirms
+   an entry of this site's map, even at the same LPCN and frequency: it stays unconfirmed (1) and a Hold grant on it
+   heard off the control channel is refused. An announced APCN the map does not hold is still stored as it always has
+   been (2 on the control channel). */
+static int
+test_other_site_announcement_never_confirms(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    const uint16_t lpcn_e = 0x0014U;
+    const uint8_t types[2] = {2U, 6U};
+    int rc = 0;
+    for (int t = 0; t < 2; t++) {
+        init_env(opts, st, 2.0);
+        st->trunk_chan_map[lpcn_d] = VC_B;
+        st->dmr_lcn_trust[lpcn_d] = 1U;
+        c_bcast_other_site(opts, st, types[t], lpcn_d, VC_B);
+        c_bcast_other_site(opts, st, types[t], lpcn_e, VC_C);
+        rc |= expect_true("another site's announcement confirms no mapping of this site",
+                          st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
+        rc |= expect_true("another site's announcement is stored as before",
+                          st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+        rc |= expect_true("a hold grant on a mapping only another site's announcement named is not followed",
+                          !hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
+    }
+    return rc;
+}
+
 /* A C_BCAST Chan_Freq records its mapping's provenance as an absolute grant does: heard while a call is followed off
    the control channel it is unconfirmed (1), so a Hold grant on that LPCN heard there is not followed; heard on the
    control channel it is confirmed (2) and such a grant is followed. */
@@ -2027,6 +2106,8 @@ main(void) {
     rc |= test_untrusted_lpcn_mapping_names_no_carrier(opts, st);
     rc |= test_control_channel_confirms_learned_lpcn(opts, st);
     rc |= test_c_bcast_mapping_records_provenance(opts, st);
+    rc |= test_unchecked_message_never_confirms(opts, st);
+    rc |= test_other_site_announcement_never_confirms(opts, st);
     rc |= test_composite_payload_counts_as_control_channel(opts, st);
     rc |= test_adopted_companion_takes_its_grant_identity(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
