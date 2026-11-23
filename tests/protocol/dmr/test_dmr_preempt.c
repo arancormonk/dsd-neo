@@ -1728,6 +1728,38 @@ test_chan_freq_conflicting_channels_name_nothing(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* The absolute parameters of a grant or a C_BCAST are its MBC's one, last continuation (TS 102 361-4 Tables 7.16 and
+   7.21): with two continuations handed over, both its own CSBKO, the first is not its parameters block, so an
+   absolute TV_GRANT or a Chan_Freq names no channel or frequency from it and is not followed. */
+static int
+test_absolute_parameters_need_one_block(dsd_opts* opts, dsd_state* st) {
+    const uint16_t lpcn_d = 0x0013U;
+    init_env(opts, st, 2.0);
+    uint8_t bits[384];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = 49U;
+    write_bits_u32(bits, 16U, 0x0FFFU, 12U);
+    write_bits_u32(bits, 32U, 2300U, 24U);
+    write_bits_u32(bits, 56U, 3U, 24U);
+    write_abs_channel(bits, 49U, lpcn_d, VC_C);
+    write_bits_u32(bits, 194U, 49U, 6U);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 2U);
+    int rc = expect_true("a grant with two continuations names no channel",
+                         st->trunk_chan_map[lpcn_d] == 0 && sm()->state != DMR_SM_TUNED && g_tunes == 0);
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    bytes[0] = 40U;
+    write_bits_u32(bits, 16U, 5U, 5U);
+    write_bits_u32(bits, 68U, lpcn_d, 12U);
+    write_abs_channel(bits, 40U, lpcn_d, VC_C);
+    write_bits_u32(bits, 194U, 40U, 6U);
+    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 2U);
+    rc |= expect_true("a Chan_Freq with two continuations teaches nothing", st->trunk_chan_map[lpcn_d] == 0);
+    return rc;
+}
+
 /* TS1 is followed on VC_A for TG 300 while TS2 carries voice no LC named; a TD_GRANT for TS1 retires it and the
    receiver stays for TS2. TS1's grant is an absolute one whose block names no usable LPCN (@p absolute_first), else a
    TV_GRANT naming LPCN_A, accepted only under -F RAS handling when @p ras_first. */
@@ -2349,6 +2381,7 @@ main(void) {
     rc |= test_foreign_block_never_confirms(opts, st);
     rc |= test_absolute_chan_freq_names_its_block_channel(opts, st);
     rc |= test_chan_freq_conflicting_channels_name_nothing(opts, st);
+    rc |= test_absolute_parameters_need_one_block(opts, st);
     rc |= test_adopted_companion_takes_its_grant_channel(opts, st);
     rc |= test_adopted_companion_takes_a_repeated_grant(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);

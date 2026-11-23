@@ -13605,12 +13605,18 @@ Private per-protocol modules worth knowing about:
   still run for any FID. Grants are outbound only: opcode 56 on MS data is BS_Dwn_Act (TS 102 361-2 Table 7.5a)
   under any FID and never reaches the grant parser. Fields of an appended MBC block (bit 96 on: an absolute grant's
   or C_MOVE's CdefParms, a C_BCAST's Chan_Freq frequencies and Vote_Now/Adjacent_Site absolute parameters) are read
-  only when the MBC assembler handed the block over (`dmr_cspdu_mbc()`'s `appended_blocks`) and the block carries
-  its header's CSBKO (TS 102 361-4 Tables 7.16, 7.18 and 7.21, `dmr_cspdu_mbc_own_blocks()`: both CRCs passing does not
-  show that the blocks belong together); a header heard as a standalone CSBK (`dmr_cspdu()`), or with another
-  message's block (`test_foreign_block_never_confirms()`, both directions), prints its own fields and teaches,
-  publishes or follows no frequency. A Chan_Freq whose header names one channel and whose block's CdefParms define
-  another concrete one names neither (`test_chan_freq_conflicting_channels_name_nothing()`). Tests:
+  only when the MBC assembler handed the block over (`dmr_cspdu_mbc()`'s `appended_blocks`) as the MBC's one, last
+  continuation and the block carries its header's CSBKO (TS 102 361-4 Tables 7.16, 7.18 and 7.21,
+  `dmr_cspdu_mbc_own_blocks()`: both CRCs passing does not show that the blocks belong together); a header heard as a
+  standalone CSBK (`dmr_cspdu()`), with another message's block (`test_foreign_block_never_confirms()`, both
+  directions) or with more than one continuation (`test_absolute_parameters_need_one_block()`,
+  `test_t3_mbc_grant_reads_only_one_block()`), prints its own fields and teaches, publishes or follows no frequency.
+  Only these absolute-parameter formats (grants and C_BCAST under any FID, C_MOVE under FID 0,
+  `dmr_cspdu_mbc_has_absolute_block()`) repeat the CSBKO in their block, so only they are checked and named
+  `MBC Appended Block of Another Message`; a manufacturer's MBC keeps its continuation whatever its bits 2..7 hold
+  (TS 102 361-1 §7.4.0, `test_t3_foreign_block_check_only_where_repeated()`). A Chan_Freq whose header names one
+  channel and whose block's CdefParms define another concrete one names neither
+  (`test_chan_freq_conflicting_channels_name_nothing()`). Tests:
   `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`), `DMR_GRANT_POLICY` (lone
   C_BCAST headers), `DMR_T3_CMOVE`, `DMR_EVENT_CRC`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
@@ -13795,7 +13801,8 @@ Private per-protocol modules worth knowing about:
     absolute grant heard as a standalone CSBK names no frequency, is not followed and teaches the map nothing,
     `test_t3_absolute_grant_needs_its_block()` in `DMR_T3_CMOVE`; so does one whose appended block carries another
     CSBKO than its header's, another MBC's block, which also ends no followed call,
-    `test_foreign_block_never_confirms()`), a Connect Plus
+    `test_foreign_block_never_confirms()`, or one with more than one continuation,
+    `test_t3_mbc_grant_reads_only_one_block()`), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one

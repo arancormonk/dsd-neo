@@ -419,9 +419,10 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 
 /* An absolute grant's channel (TS 102 361-4 §7.1.1.1.1.1.1): the CdefParms of the block appended to its MBC header.
    Read only when that block was received (@p appended_blocks, the continuation blocks the MBC assembler handed over,
-   which dmr_cspdu_mbc() counts only when the block carries the header's CSBKO, dmr_cspdu_mbc_own_blocks()): a header
-   heard as a standalone CSBK, or with another MBC's block, names no frequency, is not followed, ends no followed call
-   and teaches the channel map nothing (fail closed). */
+   which dmr_cspdu_mbc() counts only when the block is the MBC's one continuation and carries the header's CSBKO,
+   dmr_cspdu_mbc_own_blocks()): a header heard as a standalone CSBK, with another MBC's block or with more than one
+   continuation names no frequency, is not followed, ends no followed call and teaches the channel map nothing (fail
+   closed). */
 static uint16_t
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t appended_blocks,
                                    long int* freq) {
@@ -3242,13 +3243,35 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* The appended blocks an MBC header @p csbk_o may read (@p appended_blocks, those the MBC assembler handed over): its
-   first appended block carries the header's CSBKO (bits 98..103, TS 102 361-4 Tables 7.16, 7.18 and 7.21), else none.
-   The header's and the block's CRCs do not show that they belong together; a block of another message names no
-   channel or frequency for this one, so the header is handled as heard alone. */
+/* The MBCs whose appended block is an absolute-parameters block (a grant's CG_AP, C_MOVE's MV_AP, a C_BCAST's BC_AP
+   or VN_AP: TS 102 361-4 Tables 7.16, 7.18, 7.21 and 7.72), the only appended blocks dmr_cspdu_handle_pf0() reads: the
+   grants and C_BCAST under any FID, C_MOVE under FID 0 (dmr_cspdu_pf0_is_standard_only()), never BS_Dwn_Act. Only these
+   repeat the header's CSBKO in their block; in any other MBC (a manufacturer's) bits 2..7 of a continuation are
+   payload (TS 102 361-1 §7.4.0, Figures 7.12 and 7.13). */
+static int
+dmr_cspdu_mbc_has_absolute_block(const dsd_state* state, int csbk_o, int csbk_fid) {
+    if (csbk_o == 40 || (csbk_o >= 48 && csbk_o <= 55)) {
+        return 1;
+    }
+    if (csbk_o == 56) {
+        return state->synctype != DSD_SYNC_DMR_MS_DATA;
+    }
+    return csbk_o == 57 && csbk_fid == 0;
+}
+
+/* The appended blocks an MBC header @p csbk_o may read (@p appended_blocks, those the MBC assembler handed over). An
+   absolute-parameters block is the MBC's one, last continuation and carries the header's CSBKO (bits 98..103,
+   dmr_cspdu_mbc_has_absolute_block()): such an MBC with any other number of continuations, or whose block carries
+   another CSBKO, is handled as a header heard alone. The header's and the block's CRCs do not show that they belong
+   together, nor do an intermediate block's bits 2..7 make it a parameters block. Other MBCs keep theirs. */
 static uint8_t
-dmr_cspdu_mbc_own_blocks(const uint8_t cs_pdu_bits[], int csbk_o, uint8_t appended_blocks) {
-    if (appended_blocks == 0U) {
+dmr_cspdu_mbc_own_blocks(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid,
+                         uint8_t appended_blocks) {
+    if (appended_blocks == 0U || !dmr_cspdu_mbc_has_absolute_block(state, csbk_o, csbk_fid)) {
+        return appended_blocks;
+    }
+    if (appended_blocks != 1U) {
+        DSD_FPRINTF(stderr, "\n MBC With %u Appended Blocks; Absolute Parameters Need One;", (unsigned)appended_blocks);
         return 0U;
     }
     const int block_o = (int)convert_bits_into_output(&cs_pdu_bits[98], 6);
@@ -3292,7 +3315,7 @@ dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t c
 
         dmr_cspdu_init_cc_anchor(opts, state);
 
-        const uint8_t own_blocks = dmr_cspdu_mbc_own_blocks(cs_pdu_bits, csbk_o, appended_blocks);
+        const uint8_t own_blocks = dmr_cspdu_mbc_own_blocks(state, cs_pdu_bits, csbk_o, csbk_fid, appended_blocks);
         dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid, own_blocks);
         dmr_cspdu_handle_cap_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
         dmr_cspdu_handle_con_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
