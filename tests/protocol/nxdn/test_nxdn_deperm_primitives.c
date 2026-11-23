@@ -1945,7 +1945,7 @@ send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
 /*
  * The DCR provenance stays with the cipher that stays applied (issue #903): a confirmed DCR call is received with the
  * scrambler, then a clear VCALL (an IDAS frame's, whose SCCH failed) contradicts it once: the hysteresis keeps the
- * scrambler. The cipher still applied is the DCR call's, so the next valid INFO3, another call's, forgets it.
+ * scrambler. The cipher still applied is the DCR call's, so the next valid INFO3, naming another call, forgets it.
  */
 static int
 test_quarantined_contradiction_keeps_the_dcr_provenance(void) {
@@ -2172,10 +2172,10 @@ test_info1_during_a_dcr_call_is_neither_applied_nor_held(void) {
 
 /*
  * No cipher but the DCR call's own is published on a DCR call (issue #903): on a numbered call two INFO1s apply DES
- * under key ID 6; that call ends, and the next transmission is a DCR call whose SB0 names the scrambler. The lone
- * scrambler is held back against the established DES, so DES under key 6 is still the cipher applied, but it is the
- * INFO1's, not the DCR call's: neither the SB0 nor a VCALL_IV publishes it there. The SB0's repeat applies the DCR
- * call's scrambler, which is published.
+ * under key ID 6; that call ends, and the next transmission is a DCR call whose SB0 names the scrambler. The DCR call's
+ * opening is a call boundary: the earlier call's DES is forgotten, so the lone scrambler is not held back against it.
+ * It is applied as the DCR call's, and the call is published with it, its checked encryption recorded, never with DES
+ * under key 6 or a key selection of its own. A VCALL_IV heard after it changes none of that.
  */
 static int
 test_no_other_cipher_is_published_on_a_dcr_call(void) {
@@ -2200,8 +2200,15 @@ test_no_other_cipher_is_published_on_a_dcr_call(void) {
     dsd_call_snapshot call;
     rc |= expect_int("dcr-other-cipher-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_str("dcr-other-cipher-dcr-text", call.target_text, "JPN DCR");
-    rc |= expect_int("dcr-other-cipher-scrambler-held-back", (int)state->nxdn_cipher_type, 2);
-    rc |= expect_int("dcr-other-cipher-sb0-no-des", (int)call.algid, 0);
+    rc |= expect_int("dcr-other-cipher-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("dcr-other-cipher-scrambler-origin", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    rc |= expect_int("dcr-other-cipher-key-id-none", (int)state->nxdn_key, 0);
+    rc |= expect_int("dcr-other-cipher-scrambler-published", (int)call.algid, 1);
+    rc |= expect_int("dcr-other-cipher-no-kid", (int)call.kid, 0);
+    rc |= expect_int("dcr-other-cipher-encryption-received", (int)call.enc_received, DSD_CALL_ENC_OBSERVED_ENCRYPTED);
+    rc |= expect_int("dcr-other-cipher-working-key", call.key_selection.source, DSD_CALL_KEY_DIRECT);
+    rc |= expect_int("dcr-other-cipher-no-signalled-key", call.key_selection.signaled_id, 0);
+    rc |= expect_int("dcr-other-cipher-no-effective-key", call.key_selection.effective_id, -1);
 
     uint8_t bits[96];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -2211,15 +2218,9 @@ test_no_other_cipher_is_published_on_a_dcr_call(void) {
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
     (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_str("dcr-other-cipher-iv-still-dcr", call.target_text, "JPN DCR");
-    rc |= expect_int("dcr-other-cipher-iv-no-des", (int)call.algid, 0);
+    rc |= expect_int("dcr-other-cipher-iv-no-des", (int)call.algid, 1);
     rc |= expect_int("dcr-other-cipher-iv-no-kid", (int)call.kid, 0);
-
-    nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
-    (void)dsd_call_state_get(state, 0U, &call);
-    rc |= expect_int("dcr-other-cipher-scrambler-applied", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
-    rc |= expect_int("dcr-other-cipher-scrambler-published", (int)call.algid, 1);
-    rc |= expect_int("dcr-other-cipher-scrambler-no-kid", (int)call.kid, 0);
+    rc |= expect_int("dcr-other-cipher-iv-no-mi", call.mi == 0ULL ? 1 : 0, 1);
     free_fixture(opts, state);
     return rc;
 }
@@ -2305,10 +2306,10 @@ test_vcall_iv_during_a_dcr_call_is_not_the_dcr_calls(void) {
 /*
  * A VCALL opening the next call takes that call's cipher from itself, not the DCR call's (issue #903): a VCALL is never a
  * DCR call's (DCR frames carry no FACCH1), so the scrambler a DCR call received is forgotten before the hysteresis
- * reads it, as at the first SCCH that acts. Trunking with --enc-lockout, the keyloader on NXDN48 holding DES key 7 and
- * no working key: during a scrambled DCR call, a checked VCALL of group 0x0456 names DES under key ID 7. It is applied
- * at once with its key, and its call is published decryptable: never judged against the DCR call's keyless scrambler,
- * which would lock the group out and drop a call it can decrypt.
+ * reads it, as at an SCCH naming another call. Trunking with --enc-lockout, the keyloader on NXDN48 holding DES key 7
+ * and no working key: during a scrambled DCR call, a checked VCALL of group 0x0456 names DES under key ID 7. It is
+ * applied at once with its key, and its call is published decryptable: never judged against the DCR call's keyless
+ * scrambler, which would lock the group out and drop a call it can decrypt.
  */
 static int
 test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
@@ -2346,14 +2347,15 @@ test_vcall_after_a_dcr_call_takes_its_own_cipher(void) {
 }
 
 /*
- * A VCALL ends a DCR call's classification even when the DCR scrambler never became the cipher applied (issue #903).
- * Trunking with --enc-lockout and no key: on a numbered call two INFO1s apply DES under key ID 6, and that call ends.
- * A DCR call's single SB0 naming the scrambler is held back against the established DES, so DES, another call's, is
- * still the cipher applied. A checked VCALL of group 0x0789 then says clear: it is not judged against that DES, so it
- * is applied at once, its call is published clear, and the group is not locked out.
+ * A checked DCR End is a call boundary, as an NXDN release is (issue #903): the cipher the ended call applied is
+ * forgotten there, while the decoder still knows which call ended. Trunking with --enc-lockout and no key: on a
+ * numbered call two INFO1s apply DES under key ID 6, and that call ends. A DCR call follows, whose single SB0 names the
+ * scrambler (its opening forgets the DES, so the scrambler is applied). Its checked single-frame End, whose own cipher
+ * field names @p end_cipher (the End's, never applied), ends the call and leaves no cipher applied. A checked VCALL of
+ * group 0x0789 then says clear: it is applied at once, its call is published clear, and the group is not locked out.
  */
 static int
-test_vcall_after_a_dcr_call_resets_a_held_cipher(void) {
+dcr_end_resets_the_cipher(uint8_t end_cipher) {
     static Event_History_I histories[2];
     static const uint8_t m_data[5] = {0U};
     dsd_opts* opts = NULL;
@@ -2364,7 +2366,7 @@ test_vcall_after_a_dcr_call_resets_a_held_cipher(void) {
     open_clear_numbered_call(opts, state, histories);
     send_outbound_info1(opts, state, 2U, 6U);
     send_outbound_info1(opts, state, 2U, 6U);
-    int rc = expect_int("dcr-reset-des-applied", (int)state->nxdn_cipher_type, 2);
+    int rc = expect_int("dcr-end-des-applied", (int)state->nxdn_cipher_type, 2);
     (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
 
     uint8_t trellis[32];
@@ -2373,24 +2375,124 @@ test_vcall_after_a_dcr_call_resets_a_held_cipher(void) {
     nxdn_confirm_begin_frame(state);
     nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
     dsd_call_snapshot call;
-    rc |= expect_int("dcr-reset-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_str("dcr-reset-dcr-text", call.target_text, "JPN DCR");
-    rc |= expect_int("dcr-reset-scrambler-held-back", (int)state->nxdn_cipher_type, 2);
-    rc |= expect_int("dcr-reset-origin-not-dcr", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_OTHER);
+    rc |= expect_int("dcr-end-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_str("dcr-end-dcr-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-end-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+
+    make_sacch2_trellis(trellis, 1U, 0U, 0x1EU); /* End */
+    write_bits_msb(trellis, 8U, 2U, end_cipher);
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-end-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("dcr-end-call-ended", call.phase != DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("dcr-end-no-cipher", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("dcr-end-unclassified", (int)state->nxdn_cipher_class, 0);
 
     opts->trunk_enable = 1;
     opts->trunk_tune_enc_calls = 0; /* --enc-lockout */
     uint8_t bits[96];
     make_vcall_elements(bits, 0x01U, 0x0123U, 0x0789U, 0U, 0U);
     NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
-    rc |= expect_int("dcr-reset-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
-    rc |= expect_int("dcr-reset-vcall-target", (int)call.ota_target_id, 0x0789);
-    rc |= expect_int("dcr-reset-clear-applied", (int)state->nxdn_cipher_type, 0);
-    rc |= expect_int("dcr-reset-published-clear", (int)call.crypto, DSD_CALL_CRYPTO_CLEAR);
-    rc |= expect_int("dcr-reset-still-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
-    rc |= expect_int("dcr-reset-not-locked-out", dsd_enc_lockout_entry_active(state, 0x0789U, 1), 0);
+    rc |= expect_int("dcr-end-vcall-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("dcr-end-vcall-target", (int)call.ota_target_id, 0x0789);
+    rc |= expect_int("dcr-end-clear-applied", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("dcr-end-published-clear", (int)call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    rc |= expect_int("dcr-end-still-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("dcr-end-not-locked-out", dsd_enc_lockout_entry_active(state, 0x0789U, 1), 0);
     free_fixture(opts, state);
     dsd_decode_clock_use_system();
+    return rc;
+}
+
+static int
+test_dcr_end_resets_the_cipher(void) {
+    return dcr_end_resets_the_cipher(0U) | dcr_end_resets_the_cipher(1U);
+}
+
+/* An outbound repeater status message (direction 1), INFO4 (@p sf 0) or INFO2 (@p sf 2), from repeaters 6 and 3: idle
+ * (@p id 2046), halt (2045) or free repeater (2044). */
+static void
+send_outbound_repeater_status(dsd_opts* opts, dsd_state* state, uint8_t sf, uint16_t id) {
+    uint8_t message[32];
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_msb(message, 0U, 2U, sf);
+    write_bits_msb(message, 3U, 5U, 6U);
+    write_bits_msb(message, 8U, 5U, 3U);
+    write_bits_msb(message, 13U, 11U, id);
+    NXDN_decode_scch(opts, state, message, 1U);
+}
+
+/*
+ * A repeater status message neither names a party nor ends a call (issue #903): heard during a scrambled DCR call
+ * (co-channel IDAS signalling), an INFO4 free repeater, INFO4 halt and INFO2 idle repeater message leave the DCR call's
+ * scrambler applied and the call as it was.
+ */
+static int
+test_repeater_status_keeps_the_dcr_cipher(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot dcr;
+    int rc = establish_scrambled_dcr_call(opts, state, histories, &dcr);
+    send_outbound_repeater_status(opts, state, 0U, 2044U);
+    send_outbound_repeater_status(opts, state, 0U, 2045U);
+    send_outbound_repeater_status(opts, state, 2U, 2046U);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("repeater-status-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("repeater-status-call-active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    rc |= expect_int("repeater-status-scrambler-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("repeater-status-origin-kept", (int)state->nxdn_cipher_origin, NXDN_CIPHER_ORIGIN_DCR);
+    rc |= expect_int("repeater-status-established", nxdn_cipher_established_enc(state), 1);
+    rc |= expect_int("repeater-status-algid", (int)call.algid, 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A DCR call's crypto carries no MI (issue #903): DCR carries no IV, and the IV a call before it received is that
+ * call's. A DES call 0x0123 -> 0x0456 receives a VCALL_IV; the next transmission on the carrier is a DCR call whose
+ * Call message spans four SACCH-2 frames (no frame starts a single-frame message, so none drops the received IV). The
+ * DCR call is published with no MI.
+ */
+static int
+test_dcr_publication_carries_no_preceding_iv(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    open_clear_numbered_call(opts, state, histories);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 6U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits_msb(bits, 2U, 6U, 0x03U); /* VCALL_IV */
+    write_bits_msb(bits, 8U, 32U, 0x00000000U);
+    write_bits_msb(bits, 40U, 32U, 0x000D0000U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(state, 0U, &call);
+    int rc = expect_int("dcr-no-iv-des-call-mi", call.mi == 0xD0000ULL ? 1 : 0, 1);
+
+    uint8_t trellis[32];
+    for (uint8_t sf_num = 4U; sf_num-- > 0U;) {
+        make_sacch2_trellis(trellis, 0U, sf_num, 0x01U); /* part 4 - sf_num of a four-part Call, clear */
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    rc |= expect_int("dcr-no-iv-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_str("dcr-no-iv-dcr-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-no-iv-published-clear", (int)call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    rc |= expect_int("dcr-no-iv-no-mi", call.mi == 0ULL ? 1 : 0, 1);
+    free_fixture(opts, state);
     return rc;
 }
 
@@ -2629,7 +2731,9 @@ main(void) {
     rc |= test_dcr_key_is_reported_as_the_working_key();
     rc |= test_vcall_iv_during_a_dcr_call_is_not_the_dcr_calls();
     rc |= test_vcall_after_a_dcr_call_takes_its_own_cipher();
-    rc |= test_vcall_after_a_dcr_call_resets_a_held_cipher();
+    rc |= test_dcr_end_resets_the_cipher();
+    rc |= test_repeater_status_keeps_the_dcr_cipher();
+    rc |= test_dcr_publication_carries_no_preceding_iv();
     rc |= test_held_back_vcall_prints_no_key_value();
 
     if (rc == 0) {

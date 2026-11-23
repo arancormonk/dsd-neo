@@ -833,6 +833,12 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     state->nxdn_last_ran = 7;
     state->nxdn_last_ran_stand_in = 1U;
     if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
+        /* A DCR call replacing another call is a call boundary: a cipher not the live DCR call's own is the call's
+           before it, a numbered call's, or a DCR call's that ended, and is forgotten before this message's own cipher
+           field is read (nxdn_cipher_forget()). The DCR call's own scrambler, while it is the live call, stays. */
+        if (!nxdn_applied_cipher_is_dcr_calls(state)) {
+            nxdn_cipher_forget(state);
+        }
         /* Call traffic decoded, but DCR names no group or radio this decoder reads: no numeric target or source,
          * never a made-up one, and the text identity "JPN DCR", which names the call as a callsign does and tells it
          * apart from a named NXDN call (issue #903). */
@@ -852,6 +858,9 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         // Release signaling decoded over the air: positive end evidence, distinguishable from an
         // engine retune, so the event layer can keep an audible identity-less epoch it closed.
         (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
+        /* A checked End is a call boundary, as an NXDN release is (nxdn_message_type()): the ended call's cipher goes
+           with it. */
+        nxdn_cipher_forget(state);
     }
     if (fields->sf_fb) {
         state->nxdn_payload_mi = 0;
@@ -871,13 +880,12 @@ nxdn_note_dcr_working_key(dsd_state* state, uint8_t cipher, int has_key) {
     }
 }
 
+/* A Call message's crypto, which carries only the DCR call's own content: the cipher it applied (another call's was
+   forgotten when the DCR call began, nxdn_update_sacch2_identity_state()), no key ID and no MI. */
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
                            uint8_t ota_cipher) {
-    /* A scrambler field publishes the applied cipher, which only the DCR call's own may be: one the hysteresis held
-       back against another source's leaves the call's crypto as it is (nxdn_applied_cipher_is_live_calls()). */
-    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)
-        || (ota_cipher == 1U && !nxdn_applied_cipher_is_live_calls(state))) {
+    if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
         return;
     }
     const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
@@ -887,8 +895,9 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                          : DSD_CALL_CRYPTO_UNKNOWN,
         .algid = cipher,
         .kid = 0U,
-        /* DCR carries no IV; the working register a scrambled call loads from the key is never an MI. */
-        .mi = nxdn_published_mi(state),
+        /* DCR carries no IV: neither the working register a scrambled call loads from the key nor an IV a call before
+           it received is its MI. */
+        .mi = 0U,
         .audio_permitted = (uint8_t)(cipher == 0U || has_key),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
@@ -909,7 +918,7 @@ nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, 
         // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
         // established: hold a contradicting observation until it repeats.
         if (acts) {
-            /* The DCR call's: an SCCH's call forgets it while it is the cipher applied (NXDN_decode_scch()). It names no
+            /* The DCR call's: a numbered call's VCALL, INFO1 or party forgets it (nxdn_cipher_forget()). It names no
                key ID, so once it is the cipher applied the key ID applied is none. */
             state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 0U, 0, (uint8_t)NXDN_CIPHER_ORIGIN_DCR);
         }
@@ -938,7 +947,8 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
        once the transmission is confirmed (nxdn_update_sacch2_identity_state() noted this frame's check). */
     const int acts = nxdn_confirm_is_confirmed(state);
     DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
-    nxdn_sacch2_note_cipher(opts, state, cipher, acts);
+    /* An End's cipher field is the ended call's, whose cipher the End forgot: printed, never applied again. */
+    nxdn_sacch2_note_cipher(opts, state, cipher, acts && fields->sf_mes != 0x1EU);
 
     if (acts) {
         state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
@@ -1420,12 +1430,11 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     if (nxdn_message_type_resets_call(MessageType) && !state->nxdn_frame_foreign && nxdn_confirm_is_confirmed(state)) {
         (void)nxdn_end_live_call(opts, state, DSD_CALL_END_TERMINATOR);
         nxdn_alias_reset(state);
-        state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
-        nxdn_cipher_class_reset(state);
         if (state->keyloader == 1) {
             state->R = 0;
             state->scalar_key_present[0] = 0;
         }
+        nxdn_cipher_forget(state); /* a call boundary; a forced scrambler with its key still loaded stays */
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     }
