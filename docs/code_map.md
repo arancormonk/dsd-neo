@@ -3413,7 +3413,9 @@ suite runs under this compiler.
       registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
     - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a frame the frame decoder classified a
       composite control channel's (once Type-C decoded, or by the frame's own CCH_INFO, whichever FACCH1 half carries
-      the message, issue #903), never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
+      the message, issue #903), never Type-D or a traffic channel; a local frame its own CCH_INFO showed composite drops
+      the IDAS identity an SRV_INFO read with the Type-D layout left (`dsd_nxdn_forget_type_d_identity()`) before
+      either half acts, so its rows take the same reception scope whichever half the CCH_INFO is in; a message shorter than its mandatory part adds no row):
       REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
       carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
       0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration

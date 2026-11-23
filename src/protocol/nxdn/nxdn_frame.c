@@ -994,13 +994,18 @@ nxdn_frame_left(void) {
  * the followed call's cipher (nxdn_step_cipher_before_signalling(), nxdn_handle_sacch(), nxdn_finish_decoded_frame()),
  * and it breaks the SACCH superframe being assembled whatever channels it carries: the followed channel's segments
  * before it and after it are no one superframe. So does a frame its own FACCH1 showed composite, read as Type-D until
- * then whatever the frames before it were.
+ * then whatever the frames before it were. A local such frame disproves that Type-D reading at once: the IDAS identity
+ * an SRV_INFO read with it named (dsd_nxdn_forget_type_d_identity()) is gone before either half's message acts, so the
+ * unit activity of the half before its CCH_INFO is recorded in the scope the half after it would be.
  */
 static void
 nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
     state->nxdn_frame_type_d = (uint8_t)ctx->type_d;
     state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
+    if (ctx->reclassified && !ctx->foreign) {
+        dsd_nxdn_forget_type_d_identity(state);
+    }
     if (ctx->foreign || ctx->reclassified) {
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));

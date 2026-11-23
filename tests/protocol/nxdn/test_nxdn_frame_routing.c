@@ -4,6 +4,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -528,6 +529,11 @@ nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
 
 void
 nxdn_cipher_drop_stale_hold(dsd_state* state) {
+    (void)state;
+}
+
+void
+dsd_rxid_forget_nxdn_typed_system(dsd_state* state) {
     (void)state;
 }
 
