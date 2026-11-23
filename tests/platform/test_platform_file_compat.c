@@ -1708,9 +1708,9 @@ expect_path_file_identity(void) {
     }
     int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0
              && write_text_file(twin, "cccc") == 0;
-    dsd_file_identity_t first;
-    dsd_file_identity_t again;
-    dsd_file_identity_t moved;
+    dsd_file_identity_t first = {0};
+    dsd_file_identity_t again = {0};
+    dsd_file_identity_t moved = {0};
     ok = ok && dsd_path_file_identity(file, &first) == 0 && first.kind != 0 && first.size == 4;
     ok = ok && dsd_path_file_identity(file, &again) == 0 && dsd_file_identity_equal(&first, &again);
     ok =
@@ -1726,7 +1726,7 @@ expect_path_file_identity(void) {
     }
     /* The decided limit: no device, inode or file id is compared (FAT renumbers a file, a remount a volume), so
        another file with exactly the same size and modification time reads as the same one. */
-    dsd_file_identity_t twins[2];
+    dsd_file_identity_t twins[2] = {{0}};
     ok = ok && set_file_mtime(file, 1700000000) == 0 && set_file_mtime(twin, 1700000000) == 0
          && dsd_path_file_identity(file, &twins[0]) == 0 && dsd_path_file_identity(twin, &twins[1]) == 0
          && dsd_file_identity_equal(&twins[0], &twins[1]);
@@ -1737,7 +1737,7 @@ expect_path_file_identity(void) {
        time_t holds it and the file system stored it as set (one may clamp it), read back on its own first. */
     const int64_t year_2300 = 10413792000LL;
     int64_t stored = 0;
-    dsd_file_identity_t late;
+    dsd_file_identity_t late = {0};
     if (set_file_mtime(file, year_2300) == 0 && stored_mtime(file, &stored) == 0 && stored == year_2300) {
         ok = ok && dsd_path_file_identity(file, &late) == 0 && late.mtime_s == year_2300 && late.mtime_ns == 0;
     } else {
@@ -1746,7 +1746,8 @@ expect_path_file_identity(void) {
     ok = ok && dsd_path_file_identity(file, &first) == 0 && dsd_path_file_identity(other, &moved) == 0;
     ok = ok && dsd_replace_file_with_temp(other, file) == 0 && dsd_path_file_identity(file, &again) == 0
          && !dsd_file_identity_equal(&first, &again) && dsd_file_identity_equal(&moved, &again);
-    dsd_file_identity_t none;
+    // Starts as a file's so each failure's kind == 0 shows the call cleared it.
+    dsd_file_identity_t none = {.kind = 1, .size = 1};
     errno = 0;
     ok = ok && dsd_path_file_identity(missing, &none) == -1 && errno == ENOENT && none.kind == 0;
     errno = 0;
@@ -1820,20 +1821,21 @@ expect_file_stream_identity(void) {
         return 1;
     }
     int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0;
-    dsd_file_identity_t named;
-    dsd_file_identity_t opened;
+    dsd_file_identity_t named = {0};
+    dsd_file_identity_t opened = {0};
     FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
     ok = ok && fp != NULL && dsd_path_file_identity(file, &named) == 0 && dsd_file_stream_identity(fp, &opened) == 0
          && dsd_file_identity_equal(&named, &opened);
 #if !DSD_PLATFORM_WIN_NATIVE
-    dsd_file_identity_t after;
+    dsd_file_identity_t after = {0};
     ok = ok && dsd_replace_file_with_temp(other, file) == 0 && dsd_file_stream_identity(fp, &after) == 0
          && dsd_file_identity_equal(&opened, &after) && after.size == 4;
 #endif
     if (fp) {
         (void)fclose(fp);
     }
-    dsd_file_identity_t none;
+    // Starts as a file's so each failure's kind == 0 shows the call cleared it.
+    dsd_file_identity_t none = {.kind = 1, .size = 1};
     errno = 0;
     ok = ok && dsd_file_stream_identity(NULL, &none) == -1 && errno == EINVAL && none.kind == 0;
     if (!ok) {
@@ -1933,8 +1935,8 @@ expect_long_path_identity(void) {
         created = strlen(file) > 260 && long_path_op(file, 1) == 0;
     }
     ok = ok && created;
-    dsd_file_identity_t id;
-    dsd_file_identity_t opened;
+    dsd_file_identity_t id = {0};
+    dsd_file_identity_t opened = {0};
     ok = ok && dsd_path_file_identity(file, &id) == 0 && id.size == 4;
     FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
     ok = ok && fp != NULL && dsd_file_stream_identity(fp, &opened) == 0 && dsd_file_identity_equal(&id, &opened);
