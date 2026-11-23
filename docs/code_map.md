@@ -2413,7 +2413,7 @@ suite runs under this compiler.
   cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
   `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
   `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2
-  (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"). Test:
+  (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup"). Test:
   `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
@@ -12643,6 +12643,25 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
   a retune within a trunked system or a stream gap) forgets it with the foreign control stamp
   (`dsd_nxdn_forget_carrier_system()`).
+- NXDN verified talkgroup (issue #903, `nxdn_element.c`). The producer is a checked VCALL (0x01) of a confirmed
+  transmission whose call type opens a call, at its publication (`nxdn_vcall_publish()` →
+  `nxdn_vcall_note_heard_group()`), for a group call type (000, 001) naming slot 0's call. A VCALL naming no
+  destination, as one continuing a DCR call ("JPN DCR", no numeric ID) does, proves nothing and leaves the call to a
+  later VCALL. The variant needs positive evidence (`nxdn_vcall_heard_variant()`): Type-C on a composite control channel frame, or a traffic channel frame,
+  once `dsd_nxdn_type_c()`; conventional on a traffic channel frame with no Type-C decoded and no grant followed;
+  Type-D for a VCALL read with the Type-D layout on an RTCH2 frame with no Type-C decoded, and only once its
+  transmission's SCCH run is confirmed (`nxdn_confirm_scch_confirmed()`). A Type-D transmission sends its VCALL once,
+  on the header frame beside its first SCCH (TS 2-E Fig 6.1-5), so the group waits in `dsd_state::nxdn_heard_pending`,
+  bound to its transmission, until the next confirmed SCCH (`nxdn_heard_note_pending_type_d()` in
+  `nxdn_scch_prepare_type_d()`), and is dropped if Type-C is decoded meanwhile or the call changed. Before any Type-C
+  message decodes, the LICH values a composite control channel shares with Type-D read as Type-D (above), so a
+  cold-start composite VCALL with either layout is not noted. The ARIB VCALL never is. The classifier gets the 16-bit
+  group (Type-C, conventional) or the full Type-D address `(prefix << 11) | id` (the call state keeps the 11-bit id),
+  the call type and CC Option bit 6. A noted call costs a later VCALL one field check. Known limits: a Type-C traffic
+  channel heard with nothing decoded that says Type-C (trunking off, its control channel never heard) reads as
+  conventional, whose classifier row refuses 000; the SCCH run is two 7-bit CRCs, so a cold-start composite frame
+  whose SACCH passes as an SCCH two frames running (1 in 16384) still reads as Type-D. Tests: `NXDN_COMPOSITE_CONTROL`
+  (`test_heard_*`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
   on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
   `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the

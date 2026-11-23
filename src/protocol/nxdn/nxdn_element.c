@@ -21,6 +21,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
@@ -3318,6 +3319,102 @@ nxdn_vcall_name_type_d(dsd_call_observation* observation, const struct nxdn_vcal
                        (uint16_t)observation->ota_source_id);
 }
 
+/*
+ * The variant on which a checked VCALL proves its group (issue #903), or none while the reading has no positive variant
+ * evidence. The ARIB form never proves one. A frame of a composite control channel, or a traffic channel's, on a
+ * session that decoded Type-C trunking (dsd_nxdn_type_c(): a CAC, a whole CCH_INFO or SITE_INFO) is Type-C's; a
+ * traffic channel's with nothing to say Type-C, and no grant followed, is conventional. A VCALL read with the Type-D
+ * layout is Type-D's only on a frame of Type-D's reading (an RTCH2 LICH) with no Type-C decoded: until then the LICH
+ * values a composite control channel shares with Type-D read as Type-D (nxdn_frame.c), so that reading still waits for
+ * its transmission's SCCH run (nxdn_vcall_note_heard_group()). Any other reading (a VCALL with the Type-C layout on such
+ * a frame, a Type-D category left over on another channel) is ambiguous.
+ */
+static dsd_heard_tg_variant
+nxdn_vcall_heard_variant(const dsd_opts* opts, const dsd_state* state, const struct nxdn_vcall_info* info) {
+    const uint8_t channel = state->nxdn_frame_channel;
+    const int type_c = dsd_nxdn_type_c(state);
+    if (info->has_mfid != 0U) {
+        return DSD_HEARD_TG_NONE; /* the ARIB form, the only one carrying an MFID */
+    }
+    if (info->idas != 0U) {
+        return channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !type_c ? DSD_HEARD_TG_NXDN_D : DSD_HEARD_TG_NONE;
+    }
+    if (type_c
+        && (channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE || channel == (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC)) {
+        return DSD_HEARD_TG_NXDN_C;
+    }
+    if (channel == (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC && !type_c && !dsd_opts_trunk_vc_followed(opts)) {
+        return DSD_HEARD_TG_NXDN_CONV;
+    }
+    return DSD_HEARD_TG_NONE;
+}
+
+/* Note a Type-D group held for @p transmission (dsd_state::nxdn_heard_pending) now that its SCCH run confirmed the
+ * Type-D reading, while no Type-C has been decoded and slot 0 still carries that transmission's call to the group. Once:
+ * the pending group is dropped whatever it finds. */
+static void
+nxdn_heard_note_pending_type_d(dsd_state* state) {
+    dsd_nxdn_heard_pending* const pending = &state->nxdn_heard_pending;
+    if (pending->transmission == 0U) {
+        return;
+    }
+    const dsd_nxdn_heard_pending held = *pending;
+    pending->transmission = 0U;
+    dsd_call_snapshot call;
+    if (dsd_nxdn_type_c(state) || state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
+        || dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol)
+        || dsd_call_snapshot_transmission(&call) != held.transmission
+        || call.ota_target_id != nxdn_typed_low_id(held.full_id)) {
+        return;
+    }
+    dsd_heard_tg_input in;
+    DSD_MEMSET(&in, 0, sizeof in);
+    in.variant = DSD_HEARD_TG_NXDN_D;
+    in.id = held.full_id;
+    in.nxdn_call_type = held.call_type;
+    in.nxdn_inter_system = held.inter_system;
+    dsd_call_state_note_verified_target(state, 0U, held.transmission, &in);
+}
+
+/*
+ * A checked VCALL of a confirmed transmission named a group, which slot 0's call @p call now carries: prove it (issue
+ * #903) on the variant its reading positively shows (nxdn_vcall_heard_variant()). A Type-D group is noted once the
+ * transmission's SCCH run is confirmed, at once when it already is, else when the next SCCH confirms it
+ * (nxdn_heard_note_pending_type_d()): a Type-D transmission sends its VCALL once, on the header frame beside its first
+ * SCCH (NXDN TS 2-E Fig 6.1-5). Only group calls (000, 001) name a group; the classifier judges the rest. A VCALL
+ * naming no destination (one continuing a DCR call, "JPN DCR" with no numeric ID, nxdn_vcall_keep_dcr_description())
+ * proves nothing and leaves the call to a later VCALL of it. Once the call is noted a VCALL costs this field check.
+ */
+static void
+nxdn_vcall_note_heard_group(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info,
+                            const dsd_call_snapshot* call) {
+    if (call->heard_noted != 0U || info->destination_id == 0U
+        || nxdn_call_type_kind(info->call_type, info->idas) != DSD_CALL_KIND_GROUP_VOICE
+        || !DSD_SYNC_IS_NXDN(call->protocol) || call->ota_target_id != info->destination_id) {
+        return;
+    }
+    const dsd_heard_tg_variant variant = nxdn_vcall_heard_variant(opts, state, info);
+    if (variant == DSD_HEARD_TG_NONE) {
+        return;
+    }
+    dsd_heard_tg_input in;
+    DSD_MEMSET(&in, 0, sizeof in);
+    in.variant = variant;
+    in.id = variant == DSD_HEARD_TG_NXDN_D ? nxdn_typed_full_id(info->dst_prefix, info->destination_id)
+                                           : (uint32_t)info->destination_id;
+    in.nxdn_call_type = info->call_type;
+    in.nxdn_inter_system = (uint8_t)((info->cc_option & 0x40U) != 0U);
+    const uint64_t transmission = dsd_call_snapshot_transmission(call);
+    if (variant == DSD_HEARD_TG_NXDN_D && !nxdn_confirm_scch_confirmed(state)) {
+        state->nxdn_heard_pending.transmission = transmission;
+        state->nxdn_heard_pending.full_id = in.id;
+        state->nxdn_heard_pending.call_type = in.nxdn_call_type;
+        state->nxdn_heard_pending.inter_system = in.nxdn_inter_system;
+        return;
+    }
+    dsd_call_state_note_verified_target(state, 0U, transmission, &in);
+}
+
 /* A VCALL naming no party continues a DCR call (dsd_call_state_observe(): it names no other call) but describes it no
  * more than it publishes crypto there (nxdn_vcall_publish_crypto()): @p observation gives the DCR call no class or
  * service metadata of its own (issue #903). */
@@ -3375,6 +3472,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     uint8_t contradicted = 0U;
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) > 0) {
+        nxdn_vcall_note_heard_group(opts, state, info, &call);
         if ((call.crypto_received & DSD_CALL_CRYPTO_RX_ALG) != 0U && call.received_algid != info->cipher_type) {
             contradicted |= (uint8_t)DSD_CALL_CRYPTO_RX_ALG;
         }
@@ -3759,6 +3857,8 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
        identity takes it once the SCCH run itself is confirmed: its 7-bit CRC passes noise one time in 128. */
     if (nxdn_confirm_scch_confirmed(state)) {
         dsd_rxid_note_nxdn_idas_area(state, info->area);
+        /* The SCCH run proves the Type-D reading a header frame's VCALL waits on (issue #903). */
+        nxdn_heard_note_pending_type_d(state);
     }
     state->nxdn_last_ran = info->area;
     state->nxdn_last_ran_stand_in = 1U;

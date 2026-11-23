@@ -1150,6 +1150,15 @@ typedef struct {
     uint32_t source;       /**< the source unit the VCALL named there */
 } dsd_nxdn_tx_source;
 
+/* NXDN Type-D: the group a checked VCALL read with the Type-D layout named (dsd_state::nxdn_heard_pending), held for
+   its own transmission until that transmission's SCCH run confirms the Type-D reading (issue #903, nxdn_element.c). */
+typedef struct {
+    uint64_t transmission; /**< dsd_call_snapshot_transmission() of the call the VCALL named; 0 none pending */
+    uint32_t full_id;      /**< (prefix << 11) | id (nxdn_typed_full_id()) */
+    uint8_t call_type;
+    uint8_t inter_system; /**< CC Option bit 6 */
+} dsd_nxdn_heard_pending;
+
 /* NXDN Type-C: where the channel access parameters (dsd_state::nxdn_rcn, nxdn_base_freq, nxdn_step) came from
    (dsd_state::nxdn_ca). They are a site's, carried only by its SITE_INFO (TS 1-A §6.5.36), so they are kept apart from
    the site identity: <dsd-neo/core/nxdn_channel_access.h> owns every write. */
@@ -3115,6 +3124,9 @@ struct dsd_state {
      * talker never replaces it, its transmission moving with the call the INFO3 continues. Travels with a trunk scan
      * target. */
     dsd_nxdn_tx_source nxdn_tx_source;
+    /* NXDN Type-D: a checked VCALL's group awaiting its transmission's confirmed SCCH run (issue #903). Bound to that
+     * transmission, so one left behind by another call or carrier notes nothing. */
+    dsd_nxdn_heard_pending nxdn_heard_pending;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active
