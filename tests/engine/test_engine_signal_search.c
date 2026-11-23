@@ -2133,7 +2133,13 @@ test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_sign
     live = 0; // the input goes away before the restore tune lands
     tick(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && snapshots == published && tag_clear());
+    /* Issue #899, round 8: the restore tune went with the input; the stopped search, which nothing polls any more,
+       holds no tune the decoder's gate waits for, so a radio reopened in this session gets its gate. */
+    assert(!dsd_engine_signal_search_tune_pending(s));
     live = 1;
+    assert(!dsd_engine_signal_search_tune_pending(s));
+    tick(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
 
     one = tag_config(config, 75, 0, 0);
     start_tag_session(o, s, &one);
@@ -2149,6 +2155,27 @@ test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_sign
     act(o, s, DSD_SEARCH_ACTION_STOP);
     land(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+
+    /* The input goes while a visit's tune is outstanding: the search fails, and the tune went with the input. Once the
+       radio is back, nothing waits on that tune, and a Stop restores at once. */
+    one = tag_config(config, 76, 0, 0);
+    start_tag_session(o, s, &one);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && dsd_engine_signal_search_tune_pending(s));
+    live = 0;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && !dsd_engine_signal_search_tune_pending(s));
+    live = 1;
+    tune_pending = 0;
+    tick(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
+    const uint32_t tickets_before = ticket;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(ticket == tickets_before + 1 && target == 100000000U);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear() && !dsd_engine_signal_search_tune_pending(s));
 }
 
 /* Hold and its release stay on the same visit: the tag does not change. */

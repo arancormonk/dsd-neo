@@ -1814,6 +1814,10 @@ search_end_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
 
 static int
 search_input_lost(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    /* A tune in flight went with the stream: nothing will poll it, and the decoder's gate must not wait on it (issue
+       #899), nor a Stop after the radio comes back. */
+    c->ticket = 0;
+    c->restore_queued = 0;
     if (c->stopping) {
         /* No restore tune can run, but the decoder session goes on: the visit's reception ends here, under its tag,
            which then clears, so nothing the session receives after the Stop is the search's (issue #809). */
@@ -1912,6 +1916,10 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 #else
     (void)opts;
 #endif
+    /* A stopped search polls no tune: one it still held (a decoder session ending under a visit) is no longer its, and
+       the decoder's gate does not wait on it (dsd_engine_signal_search_tune_pending(), issue #899). */
+    c->ticket = 0;
+    c->restore_queued = 0;
     c->status.phase = DSD_SEARCH_STOPPED;
     search_publish(c, 0);
 }
