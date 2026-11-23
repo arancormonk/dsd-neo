@@ -1537,7 +1537,9 @@ history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETR
 `CC 17`, none for DMO) and whole site line, location area included (`Main carrier 426.70000 MHz · MCC 228 · MNC 8889 ·
 LA 1`; LA 1052 for the marginal control channel and LA 777 for the synthetic cell, whose traffic carrier's line names
 408.03125 MHz too; `Direct`), and the live status shows them confirmed while their carrier is on; the noise visit
-confirms nothing and ends unresolved; the reloaded history matches; the source only ever runs at 1.152 MHz; and a
+confirms nothing and ends unresolved, and every row of a TETRA range has ended (the noise's and the switched-off
+presence train's too); the reloaded history matches the live one in each row's frequency, protocol, access code, site
+line and confirmed, ended and unresolved flags; the source only ever runs at 1.152 MHz; and a
 confirmed TETRA visit leaves 2.1 s after its carrier stops (1.8 to 3.6 s; the runs measured 2.0 to 2.15 s, and the
 analog and DMR visits 0.5 to 0.8 s). The departure is the retune that leaves the search's first visit to the
 transmitter, so a visit that leaves too early fails rather than a later range's retune standing in for it. A trunked

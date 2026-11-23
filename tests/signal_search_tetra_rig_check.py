@@ -551,6 +551,8 @@ def check_row(tx, rows, failures):
     row = mine[0]
     if tx.expect is None:
         return
+    if not row["ended"]:
+        failures.append(f"{tx.id}: the history row never ended")
     protocol, access, site, confirmed = tx.expect
     if row["confirmed"] != confirmed:
         failures.append(f"{tx.id}: confirmed {row['confirmed']}, not {confirmed}: {row}")
@@ -565,8 +567,6 @@ def check_row(tx, rows, failures):
         failures.append(f"{tx.id}: access {row['access']!r}, not {access!r}")
     if site is not None and not site.match(row["site"]):
         failures.append(f"{tx.id}: site {row['site']!r} does not match {site.pattern!r}")
-    if not row["ended"]:
-        failures.append(f"{tx.id}: the history row never ended")
 
 
 def check(record):
@@ -580,9 +580,8 @@ def check(record):
     if rates != {CAPTURE_HZ}:
         failures.append(f"the front end ran the source at {sorted(rates)} Hz, not {CAPTURE_HZ} Hz alone")
     history, reload = rig_rows(record, "history"), rig_rows(record, "reload")
-    if [(r["frequency_hz"], r["protocol"], r["access"], r["site"], r["confirmed"]) for r in history] != [
-        (r["frequency_hz"], r["protocol"], r["access"], r["site"], r["confirmed"]) for r in reload
-    ]:
+    fields = ("frequency_hz", "protocol", "access", "site", "confirmed", "ended", "unresolved")
+    if [tuple(r[k] for k in fields) for r in history] != [tuple(r[k] for k in fields) for r in reload]:
         failures.append(f"the journal read back {reload}, not {history}")
     for tx in record["transmitters"]:
         check_row(tx, history, failures)
