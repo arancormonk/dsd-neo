@@ -3144,18 +3144,39 @@ nxdn_select_key(const dsd_opts* opts, const dsd_state* state, uint8_t cipher_typ
     return choice;
 }
 
-// Load what nxdn_select_key() chose: the scalar for the scrambler and DES, the AES key for AES.
+/* Whether the working key R is still the one the key selection last loaded (dsd_state::nxdn_key_selected): nothing
+   wrote another key since (a key command, a release under the keyloader, the no-carrier unload). */
+static int
+nxdn_key_selection_holds(const dsd_state* state) {
+    return state->nxdn_key_selected != 0U && dsd_key_scalar_present(state, 0)
+           && state->nxdn_key_selected_id < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
+           && state->R == state->rkey_array[state->nxdn_key_selected_id];
+}
+
+// Load what nxdn_select_key() chose: the scalar for the scrambler and DES, the AES key for AES. A scrambler or DES pair
+// whose key it finds nowhere keeps a direct key the operator gave as its fallback, but never a key an earlier selection
+// loaded, which is another pair's: that one is unloaded, so the call reads as having no key.
 static void
 nxdn_load_selected_key(const dsd_opts* opts, dsd_state* state, uint8_t cipher_type, int key_id, uint64_t destination) {
     if (state->keyloader != 1) {
         return;
     }
     const nxdn_key_choice choice = nxdn_select_key(opts, state, cipher_type, key_id, destination);
+    if (choice.key_id < 0) {
+        if (cipher_type != 0U && nxdn_key_selection_holds(state)) {
+            DSD_SECURE_ZERO(&state->R, sizeof(state->R));
+            state->scalar_key_present[0] = 0U;
+            state->nxdn_key_selected = 0U;
+        }
+        return;
+    }
     if (cipher_type == 3U) {
         nxdn_load_aes_key_index(state, (uint32_t)choice.key_id);
-    } else if (choice.key_id >= 0) {
+    } else {
         (void)keyring_load_scalar_key(state, 0, choice.key_id);
     }
+    state->nxdn_key_selected = 1U;
+    state->nxdn_key_selected_id = (uint32_t)choice.key_id;
 }
 
 static void

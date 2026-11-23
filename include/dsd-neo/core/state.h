@@ -2044,6 +2044,12 @@ struct dsd_state {
     uint8_t nxdn_data_target_prefix;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
+    /* 1 while the NXDN key selection (nxdn_load_selected_key()) last loaded the working key from keyring entry
+     * nxdn_key_selected_id, and R still holds that entry's value (nxdn_key_selection_holds()): an automatic selection,
+     * which a later pair whose key is missing must not use as its own, as it may a direct key (issue #903). No key
+     * material: R and the keyring hold it. */
+    uint8_t nxdn_key_selected;
+    uint32_t nxdn_key_selected_id;
 
     /* NXDN cipher-classification hysteresis (src/protocol/nxdn/nxdn_enc_class.c). The cipher
      * field reaches the decoder from several channels (VCALL, SACCH-2, SCCH) whose FEC/CRC can
