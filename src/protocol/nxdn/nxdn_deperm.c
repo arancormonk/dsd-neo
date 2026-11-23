@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
@@ -814,6 +815,29 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
     }
 }
 
+/* A DCR call names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the working key, which no
+   selection loaded, and its own SACCH-2 reports it so at once. @p available: whether that key is there (-1: not known,
+   or no key to report, as for a clear call). */
+static void
+nxdn_note_dcr_working_key(dsd_state* state, int available) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0) {
+        (void)dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, DSD_CALL_KEY_DIRECT, 0, -1,
+                                                available, 0);
+    }
+}
+
+/* The live epoch a Call message's first checked segment has just named "JPN DCR", the DCR call now though it was not
+   before, keeps none of what a numbered call's messages published on it (VCALLs naming no party continue an unnamed
+   epoch, issue #903): its ALG ID, key ID, MI and received fields are forgotten, and its key is the DCR call's working
+   key, before the event layer sees the DCR call. The cipher the decoder applies stays: the hysteresis carries it, as
+   on main. The complete Call message publishes the DCR call's own (nxdn_publish_sacch2_crypto()). */
+static void
+nxdn_withdraw_inherited_crypto(dsd_state* state) {
+    (void)dsd_call_state_forget_crypto_values(state, 0U, DSD_SYNC_NXDN_POS);
+    nxdn_note_dcr_working_key(state, -1);
+}
+
 static void
 nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
@@ -842,7 +866,11 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
             .kind = DSD_CALL_KIND_VOICE,
         };
         DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        const int was_dcr = nxdn_live_call_is_dcr(state);
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        if (!was_dcr && nxdn_live_call_is_dcr(state)) {
+            nxdn_withdraw_inherited_crypto(state);
+        }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
@@ -859,38 +887,43 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     }
 }
 
-/* A DCR call names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the working key, which no
-   selection loaded, and its own SACCH-2 reports it so at once. A clear call has no key to report (-1). */
-static void
-nxdn_note_dcr_working_key(dsd_state* state, uint8_t cipher, int has_key) {
-    dsd_call_snapshot call;
-    if (cipher <= 1U && dsd_call_state_get(state, 0U, &call) > 0) {
-        (void)dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, DSD_CALL_KEY_DIRECT, 0, -1,
-                                                cipher != 0U ? has_key : -1, 0);
+/* How the decoder stands toward a DCR Call whose own cipher field is @p ota_cipher: a clear field is published clear
+   and a reserved one unknown, as on main; a scrambler field by the cipher the decoder applies, which the hysteresis
+   may still hold at an earlier call's (issue #903), and its key (dsd_nxdn_voice_crypto_class(), the vocoder's rule). */
+static dsd_call_crypto_state
+nxdn_dcr_crypto_class(const dsd_state* state, uint8_t ota_cipher) {
+    if (ota_cipher == 0U) {
+        return DSD_CALL_CRYPTO_CLEAR;
     }
+    if (ota_cipher != 1U) {
+        return DSD_CALL_CRYPTO_UNKNOWN;
+    }
+    switch (dsd_nxdn_voice_crypto_class(state)) {
+        case DSD_VOICE_CRYPTO_CLEAR: return DSD_CALL_CRYPTO_CLEAR;
+        case DSD_VOICE_CRYPTO_DECRYPTABLE: return DSD_CALL_CRYPTO_DECRYPTABLE;
+        case DSD_VOICE_CRYPTO_UNDECRYPTABLE: return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    }
+    return DSD_CALL_CRYPTO_UNKNOWN;
 }
 
 /* A Call message's crypto carries only the DCR call's own content (issue #903): its own cipher field as the ALG ID, no
    key ID, no MI (DCR carries no IV, and the working register a scrambled call loads from the key is never one), and its
    own key selection, the working key. A received ALG or key ID that a numbered call's message (a VCALL naming no party)
    left on the epoch before the DCR call took it over is withdrawn. The classification and audio permission describe
-   the decoder, as on main: a scrambler field shows the cipher applied, which the hysteresis may still hold at an
-   earlier call's for a few frames. */
+   the decoder (nxdn_dcr_crypto_class()). */
 static void
 nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t ota_cipher) {
     if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
         return;
     }
-    const uint8_t cipher = ota_cipher == 1U ? (uint8_t)state->nxdn_cipher_type : ota_cipher;
-    const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
+    const dsd_call_crypto_state classification = nxdn_dcr_crypto_class(state, ota_cipher);
     const dsd_call_crypto_update crypto = {
-        .classification = cipher == 0U   ? DSD_CALL_CRYPTO_CLEAR
-                          : cipher == 1U ? (has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING)
-                                         : DSD_CALL_CRYPTO_UNKNOWN,
+        .classification = classification,
         .algid = ota_cipher,
         .kid = 0U,
         .mi = 0U,
-        .audio_permitted = (uint8_t)(cipher == 0U || has_key),
+        .audio_permitted =
+            (uint8_t)(classification == DSD_CALL_CRYPTO_CLEAR || classification == DSD_CALL_CRYPTO_DECRYPTABLE),
         .contradicted = (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
@@ -898,7 +931,9 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
                                            : DSD_CALL_ENC_OBSERVED_NONE,
     };
     if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
-        nxdn_note_dcr_working_key(state, ota_cipher, ota_cipher == 1U && dsd_key_scalar_present(state, 0));
+        if (ota_cipher <= 1U) {
+            nxdn_note_dcr_working_key(state, ota_cipher != 0U ? dsd_key_scalar_present(state, 0) : -1);
+        }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }

@@ -12476,8 +12476,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   signalled is published on a DCR call. A DCR SACCH-2's publication (`nxdn_publish_sacch2_crypto()`) carries only the
   DCR call's own content: its own cipher field as the ALG ID, no key ID, no MI (never an IV a call before it received),
   its own key selection (the working key), and it withdraws a received ALG or key ID that VCALLs naming no party left
-  on the epoch before the DCR call took it over; its classification and audio permission describe the decoder, as on
-  main. A numbered call's message (a VCALL, which a VCALL naming no party makes a continuation of the DCR call, a
+  on the epoch before the DCR call took it over. That withdrawal is made as soon as the first checked Call segment
+  names the epoch "JPN DCR" (`nxdn_withdraw_inherited_crypto()`), before the event layer sees the DCR call: the ALG
+  ID, key ID, MI and received fields are forgotten and the key is the working key, so a lost later segment, or a Call
+  naming a reserved cipher, leaves none of the numbered call's on it; the cipher applied is not reset. Its
+  classification and audio permission describe the decoder (`nxdn_dcr_crypto_class()`): a clear field is clear and a
+  reserved one unknown, as on main; a scrambler field takes the cipher the decoder applies (which the hysteresis may
+  still hold at an earlier call's) and its key, by the vocoder's own rule (`dsd_nxdn_voice_crypto_class()`). A numbered call's message (a VCALL, which a VCALL naming no party makes a continuation of the DCR call, a
   VCALL_IV, an INFO1) publishes nothing on a DCR call (`nxdn_vcall_publish_crypto()`). A VCALL_IV
   heard while a DCR call is the live call is another transmission's (DCR carries no IV): it is printed only, never the
   DCR call's MI, never written into the working register the DCR scrambler runs, and it publishes nothing

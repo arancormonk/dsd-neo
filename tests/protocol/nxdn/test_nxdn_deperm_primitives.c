@@ -12,6 +12,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -3083,6 +3084,118 @@ test_vcall_source_learned_before_its_target(void) {
     return vcall_source_learned_before_its_target(0) | vcall_source_learned_before_its_target(1);
 }
 
+/* Two checked DES VCALLs under key ID 7 naming neither party, with the keyloader on NXDN48: they open an unnamed
+ * epoch, apply DES and load keyring entry 7, which the epoch reports as the effective key. */
+static int
+open_party_less_des_epoch(dsd_opts* opts, dsd_state* state, Event_History_I* histories, dsd_call_snapshot* call) {
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->nxdn_confirmed = 1;
+    use_nxdn48_keyloader(opts, state);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0U, 0U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = expect_int("party-less-des-epoch", dsd_call_state_get(state, 0U, call), 1);
+    rc |= expect_int("party-less-des-epoch-algid", (int)call->algid, 2);
+    rc |= expect_int("party-less-des-epoch-effective-key", call->key_selection.effective_id, 7);
+    rc |= expect_int("party-less-des-epoch-key-loaded", state->R == 0x2222ULL ? 1 : 0, 1);
+    return rc;
+}
+
+/*
+ * The epoch a DCR call takes over is withdrawn from what VCALLs naming no party published on it (issue #903) as soon
+ * as the first checked Call segment names it "JPN DCR", before the event layer sees the DCR call: the first of a
+ * four-part scrambled Call publishes no ALG ID, key ID, received field or effective key of the DES VCALLs, though the
+ * decoder still applies DES and its key (the working cipher carries, as on main). A single-frame Call naming a
+ * reserved cipher leaves no effective key either.
+ */
+static int
+test_dcr_identification_withdraws_inherited_crypto(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    int rc = 0;
+    for (int reserved = 0; reserved <= 1; reserved++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (alloc_fixture(&opts, &state) != 0) {
+            return 1;
+        }
+        dsd_call_snapshot call;
+        rc |= open_party_less_des_epoch(opts, state, histories, &call);
+        const uint64_t unnamed = call.epoch;
+        uint8_t trellis[32];
+        if (reserved) {
+            make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+            write_bits_msb(trellis, 8U, 2U, 0x03U); // cipher: reserved
+        } else {
+            make_sacch2_trellis(trellis, 0U, 3U, 0x01U); /* the first of a four-part Call */
+            write_bits_msb(trellis, 8U, 2U, 0x01U);      // cipher: scrambler
+        }
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+        const char* tag = reserved ? "dcr-reserved" : "dcr-first-segment";
+        char sub[96];
+        DSD_SNPRINTF(sub, sizeof sub, "%s-call", tag);
+        rc |= expect_int(sub, dsd_call_state_get(state, 0U, &call), 1);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-same-epoch", tag);
+        rc |= expect_int(sub, call.epoch == unnamed, 1);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-text", tag);
+        rc |= expect_str(sub, call.target_text, "JPN DCR");
+        DSD_SNPRINTF(sub, sizeof sub, "%s-algid", tag);
+        rc |= expect_int(sub, (int)call.algid, reserved ? 3 : 0);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-no-kid", tag);
+        rc |= expect_int(sub, (int)call.kid, 0);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-nothing-received", tag);
+        rc |= expect_int(sub, (int)call.crypto_received, 0);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-no-signalled-key", tag);
+        rc |= expect_int(sub, call.key_selection.signaled_id, 0);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-no-effective-key", tag);
+        rc |= expect_int(sub, call.key_selection.effective_id, -1);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-des-still-applied", tag);
+        rc |= expect_int(sub, (int)state->nxdn_cipher_type, 2);
+        DSD_SNPRINTF(sub, sizeof sub, "%s-key-still-loaded", tag);
+        rc |= expect_int(sub, state->R == 0x2222ULL ? 1 : 0, 1);
+        free_fixture(opts, state);
+    }
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A DCR call's classification and audio permission describe the cipher the decoder applies (issue #903,
+ * dsd_nxdn_voice_crypto_class()), its ALG ID the Call's own field: when a Call names the scrambler while the hysteresis
+ * still applies the DES a party-less VCALL established, with its key loaded, the call is the scrambler's (ALG 1), and
+ * decryptable, audio permitted, as the vocoder plays it.
+ */
+static int
+test_dcr_audio_follows_the_applied_cipher(void) {
+    static Event_History_I histories[2];
+    static const uint8_t m_data[5] = {0U};
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_call_snapshot call;
+    int rc = open_party_less_des_epoch(opts, state, histories, &call);
+    rc |= expect_int("dcr-audio-des-key-present", dsd_key_scalar_present(state, 0), 1);
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_str("dcr-audio-text", call.target_text, "JPN DCR");
+    rc |= expect_int("dcr-audio-des-applied", (int)state->nxdn_cipher_type, 2);
+    rc |= expect_int("dcr-audio-own-algid", (int)call.algid, 1);
+    rc |= expect_int("dcr-audio-decryptable", (int)call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("dcr-audio-permitted", (int)call.audio_permitted, 1);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3136,6 +3249,8 @@ main(void) {
     rc |= test_scan_report_takes_the_calls_own_encryption();
     rc |= test_scan_report_names_only_a_named_source();
     rc |= test_vcall_source_learned_before_its_target();
+    rc |= test_dcr_identification_withdraws_inherited_crypto();
+    rc |= test_dcr_audio_follows_the_applied_cipher();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");
