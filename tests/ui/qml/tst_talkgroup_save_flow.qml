@@ -8,16 +8,8 @@ Item {
         property int registrations: 0
         property int paths: 0
         property bool failRegister: false
-        // Whether a file is at every export path (the decoder wrote it).
-        property bool written: true
-        // Whether a registered list is still listed in Imports (false: the user removed it since).
-        property bool listed: true
         property var registered: []
         property var released: []
-        // Each listed row's identity by path, which no later row at that path takes (entryIdentity()).
-        property var identities: ({})
-        property int identityCount: 0
-        signal entriesChanged()
         function newTalkgroupListPath() {
             paths++;
             return paths === 1 ? "/owned/list.csv" : "/owned/list-" + paths + ".csv";
@@ -27,32 +19,7 @@ Item {
                 return false;
             registrations++;
             registered = registered.concat([path]);
-            identify(path);
             return true;
-        }
-        function identify(path) {
-            var next = Object.assign({}, identities);
-            next[path] = "row-" + (++identityCount);
-            identities = next;
-        }
-        function entryIdentity(path) {
-            return rowForPath(path) >= 0 ? identities[path] : "";
-        }
-        // The user removes the row at @p path in Imports, then (with @p replacement) imports another file that takes
-        // the exact same path.
-        function removeRow(path, replacement) {
-            if (replacement) {
-                identify(path);
-            } else {
-                listed = false;
-            }
-            entriesChanged();
-        }
-        function talkgroupListWritten(path) {
-            return written;
-        }
-        function rowForPath(path) {
-            return listed && registered.indexOf(path) >= 0 ? registered.indexOf(path) : -1;
         }
         function releaseTalkgroupListPath(path) {
             released = released.concat([path]);
@@ -85,17 +52,9 @@ Item {
         id: bridge
         property bool accept: true
         property int calls: 0
-        // The export paths whose result app-control no longer owes (queued, applied or kept unread): lost for good.
-        property var lost: []
-        // Every talkgroupExportOwed() question, oldest first.
-        property var asked: []
         function saveTalkgroupList(context, generation, path) {
             calls++;
             return accept;
-        }
-        function talkgroupExportOwed(context, generation, path, afterSequence) {
-            asked = asked.concat([{context: context, generation: generation, path: path, after: afterSequence}]);
-            return lost.indexOf(path) < 0;
         }
     }
     Loader {
@@ -105,38 +64,32 @@ Item {
     TestCase {
         when: windowShown
         name: "TalkgroupSaveFlow"
+        readonly property var running: ({
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            })
         function init() {
             verify(loader.item !== null, "save flow must load");
             loader.item.library = library;
             loader.item.systems = systems;
             loader.item.bridge = bridge;
             loader.item.pending = null;
-            loader.item.stalled = null;
-            loader.item.abandoned = [];
-            loader.item.owedRegistrations = [];
-            loader.item.owedRetryMs = 2000;
+            loader.item.sessionTuning = running;
             loader.item.lastSequence = "5";
             loader.item.timeoutMs = 15000;
             loader.item.retryAvailable = false;
-            loader.item.exportGone = false;
             loader.item.message = "";
             library.registrations = 0;
             library.paths = 0;
             library.failRegister = false;
-            library.written = true;
-            library.listed = true;
             library.registered = [];
             library.released = [];
-            library.identities = {};
-            library.identityCount = 0;
             systems.updates = 0;
             systems.attempts = 0;
             systems.failSave = false;
             systems.hasList = false;
             bridge.accept = true;
             bridge.calls = 0;
-            bridge.lost = [];
-            bridge.asked = [];
         }
         function result(sequence, context, generation, path, success) {
             return {
@@ -155,7 +108,7 @@ Item {
             };
         }
         function test_waits_for_new_matching_result() {
-            verify(loader.item.save("original", "9007199254740993", 8));
+            verify(loader.item.save("original", "9007199254740993", 8, running));
             compare(library.registrations, 0);
             compare(systems.updates, 0);
             verify(!loader.item.save("another", "7", 1));
@@ -174,16 +127,18 @@ Item {
             compare(loader.item.message, "Talkgroup list saved");
             deliver([result("10", "9007199254740993", 8, "/owned/list.csv", true)]);
             compare(systems.updates, 1);
+            // The row holds the name from now on: nothing is given back.
+            compare(library.released, []);
         }
         function test_failures_do_not_associate() {
             bridge.accept = false;
-            verify(!loader.item.save("original", "7", 1));
+            verify(!loader.item.save("original", "7", 1, running));
             compare(loader.item.pending, null);
             // A request the queue refused will never be written: its name goes back.
             compare(library.released, ["/owned/list.csv"]);
             verify(loader.item.retryAvailable);
             bridge.accept = true;
-            verify(loader.item.save("original", "7", 1));
+            verify(loader.item.save("original", "7", 1, running));
             var path = loader.item.pending.path;
             deliver([result("6", "7", 1, path, false)]);
             compare(library.registrations, 0);
@@ -199,7 +154,7 @@ Item {
             verify(!loader.item.hasOwnProperty("sessionState"));
             for (var round = 0; round < 2; ++round) {
                 library.paths = 0;
-                verify(loader.item.save("original", "7", 1));
+                verify(loader.item.save("original", "7", 1, running));
                 verify(loader.item.pending !== null);
                 deliver([result(String(6 + round), "7", 1, "/owned/list.csv", true)]);
                 compare(systems.updates, 1);
@@ -209,328 +164,106 @@ Item {
                 library.registrations = 0;
             }
         }
+        // No completion in time: Try again replaces the request, whose name goes back and whose late result matches
+        // nothing. Until then the request still takes its own result.
         function test_missing_completion_offers_retry() {
             verify(loader.item.hasOwnProperty("timeoutMs"));
             loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            verify(!loader.item.save("original", "7", 1));
+            verify(loader.item.save("original", "7", 1, running));
+            verify(!loader.item.save("original", "7", 1, running));
             tryCompare(loader.item, "retryAvailable", true);
             verify(loader.item.message.indexOf("Try again") >= 0);
             compare(library.registrations, 0);
             compare(systems.updates, 0);
-            verify(loader.item.save("original", "7", 1));
+            verify(loader.item.save("original", "7", 1, running));
             compare(loader.item.retryAvailable, false);
-            // A late success for the abandoned destination does not complete this retry, and is not attached: the
-            // decoder wrote that file, so it is kept in Imports.
+            compare(library.released, ["/owned/list.csv"]);
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             verify(loader.item.pending !== null);
             compare(systems.updates, 0);
-            compare(library.registrations, 1);
-            compare(library.registered, ["/owned/list.csv"]);
-            deliver([result("7", "7", 1, loader.item.pending.path, false)]);
-            compare(loader.item.pending, null);
-            verify(loader.item.message.indexOf("Try again") >= 0);
-            verify(loader.item.save("original", "7", 1));
-            deliver([result("8", "7", 1, loader.item.pending.path, true)]);
-            compare(systems.updates, 1);
-            // The abandoned export and the retry that completed.
-            compare(library.registrations, 2);
-            compare(loader.item.abandoned.length, 0);
-        }
-        function test_abandoned_failure_releases_its_name() {
-            loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            tryCompare(loader.item, "retryAvailable", true);
-            compare(loader.item.abandoned.length, 1);
-            deliver([result("6", "7", 1, "/owned/list.csv", false)]);
-            compare(loader.item.abandoned.length, 0);
-            compare(library.released, ["/owned/list.csv"]);
             compare(library.registrations, 0);
-        }
-        // Two completions read in one poll: the abandoned request's and the retry's. Each is handled.
-        function test_two_completions_between_polls() {
-            loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            tryCompare(loader.item, "retryAvailable", true);
-            verify(loader.item.save("original", "7", 1));
-            var retry = loader.item.pending.path;
-            deliver([result("6", "7", 1, "/owned/list.csv", true), result("7", "7", 1, retry, true)]);
-            compare(library.registered, ["/owned/list.csv", retry]);
+            deliver([result("7", "7", 1, loader.item.pending.path, true)]);
+            compare(loader.item.pending, null);
             compare(systems.updates, 1);
-            compare(systems.lastPath, retry);
+            compare(library.registered, ["/owned/list-2.csv"]);
+        }
+        function test_late_completion_after_the_timeout_still_finishes() {
+            loader.item.timeoutMs = 50;
+            verify(loader.item.save("original", "7", 1, running));
+            tryCompare(loader.item, "retryAvailable", true);
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            compare(loader.item.pending, null);
+            compare(loader.item.retryAvailable, false);
+            compare(systems.updates, 1);
+            compare(loader.item.message, "Talkgroup list saved");
+        }
+        // Two completions read in one poll: another reader's and this request's.
+        function test_two_completions_between_polls() {
+            verify(loader.item.save("original", "7", 1, running));
+            deliver([result("6", "3", 1, "/other.csv", true), result("7", "7", 1, "/owned/list.csv", true)]);
+            compare(library.registered, ["/owned/list.csv"]);
+            compare(systems.updates, 1);
             compare(loader.item.pending, null);
             compare(loader.item.message, "Talkgroup list saved");
         }
-        // More completions than app-control keeps came between two polls, the request's among them.
+        // More completions than app-control keeps came between two polls, the request's maybe among them: it ends,
+        // reported as not received, its name given back. A result for it read later matches nothing.
         function test_missed_completion_is_reported() {
-            verify(loader.item.save("original", "7", 1));
+            verify(loader.item.save("original", "7", 1, running));
             // A gap below the request's own start says nothing about it.
             deliver([], "4");
             verify(loader.item.pending !== null);
-            // The file is not there (yet): the request is reported and kept for a result still to come.
-            library.written = false;
-            deliver([result("80", "7", 1, "/other.csv", true)], "79");
+            deliver([result("80", "3", 1, "/other.csv", true)], "79");
             compare(loader.item.pending, null);
-            verify(loader.item.message.indexOf("not received") >= 0);
-            verify(loader.item.retryAvailable);
-            compare(loader.item.abandoned.length, 1);
-            compare(systems.attempts, 0);
-            compare(library.registrations, 0);
-            library.written = true;
+            compare(loader.item.message, "The export result was not received: too many exports finished at once.");
+            compare(loader.item.retryAvailable, false);
+            compare(library.released, ["/owned/list.csv"]);
             deliver([result("81", "7", 1, "/owned/list.csv", true)]);
-            compare(library.registered, ["/owned/list.csv"]);
-            compare(systems.updates, 0);
-            compare(loader.item.abandoned.length, 0);
-        }
-        function test_missed_completion_with_its_file_is_kept_in_imports() {
-            verify(loader.item.save("original", "7", 1));
-            deliver([], "70");
-            compare(loader.item.pending, null);
-            compare(library.registered, ["/owned/list.csv"]);
-            compare(loader.item.abandoned.length, 0);
-            compare(systems.attempts, 0);
-            verify(loader.item.message.indexOf("not received") >= 0);
-            verify(loader.item.message.indexOf("Imports") >= 0);
-        }
-        // The file is there but Imports cannot record it now: it is owed, not waiting on a completion that was lost,
-        // and the next poll records it. An abandoned request in the gap is treated the same way.
-        function test_missed_completion_with_unrecorded_file_is_owed() {
-            loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            tryCompare(loader.item, "retryAvailable", true);
-            verify(loader.item.save("original", "7", 1));
-            var retry = loader.item.pending.path;
-            library.failRegister = true;
-            deliver([], "70");
-            compare(loader.item.pending, null);
-            compare(loader.item.abandoned.length, 0);
-            compare(loader.item.owedRegistrations, [retry, "/owned/list.csv"]);
-            verify(loader.item.message.indexOf("adding it to Imports failed") >= 0);
-            compare(systems.attempts, 0);
-            library.failRegister = false;
-            deliver([]);
-            compare(library.registered, [retry, "/owned/list.csv"]);
-            compare(loader.item.owedRegistrations, []);
+            compare(library.registrations, 0);
             compare(systems.attempts, 0);
         }
-        // B8: a failed save of the system keeps the export and offers that step again, not another export.
-        function test_failed_system_save_retries_attachment_only() {
+        // B8: a failed save of the system leaves the list in Imports and says so; the next Save is a new export.
+        function test_failed_system_save_is_reported() {
             systems.failSave = true;
-            verify(loader.item.save("original", "7", 1, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
+            verify(loader.item.save("original", "7", 1, running));
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             compare(library.registrations, 1);
             compare(systems.updates, 0);
-            verify(loader.item.stalled !== null);
-            verify(loader.item.retryAvailable);
-            verify(loader.item.message.indexOf("system could not be saved") >= 0);
-            verify(loader.item.message !== "Talkgroup list saved");
-            systems.failSave = false;
-            verify(loader.item.save("ignored", "8", 2));
-            compare(bridge.calls, 1);
-            compare(library.paths, 1);
-            compare(library.registrations, 1);
-            compare(systems.updates, 1);
-            compare(systems.lastPath, "/owned/list.csv");
-            compare(loader.item.stalled, null);
-            compare(loader.item.retryAvailable, false);
-            compare(loader.item.message, "Talkgroup list saved");
-        }
-        // The attachment is retried in a later session, after the user removed the exported list in Imports (or the
-        // file went): the system is left as it was, the export reads as failed, and the next Try again exports anew.
-        function test_attachment_retry_after_the_list_went_data() {
-            return [{tag: "removed from Imports", written: false, listed: false},
-                    {tag: "file gone, row kept", written: false, listed: true},
-                    {tag: "row gone, file kept", written: true, listed: false}];
-        }
-        function test_attachment_retry_after_the_list_went(data) {
-            systems.failSave = true;
-            verify(loader.item.save("original", "7", 1, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
-            verify(loader.item.stalled !== null);
-            compare(systems.attempts, 1);
-            systems.failSave = false;
-            library.written = data.written;
-            library.listed = data.listed;
-            verify(!loader.item.save("original", "8", 2));
-            compare(systems.attempts, 1, "a list no longer in Imports was attached");
-            compare(systems.updates, 0);
-            compare(bridge.calls, 1, "a new export was started before the next tap");
-            compare(loader.item.stalled, null);
-            verify(loader.item.retryAvailable);
-            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
-            library.written = true;
-            library.listed = true;
-            verify(loader.item.save("original", "8", 2, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
-            compare(bridge.calls, 2, "the next Try again did not export anew");
-            verify(loader.item.pending !== null);
-            compare(loader.item.pending.context, "8");
-            verify(loader.item.pending.path !== "/owned/list.csv");
-            compare(loader.item.retryAvailable, false);
-            deliver([result("7", "8", 2, loader.item.pending.path, true)]);
-            compare(systems.updates, 1);
-            compare(loader.item.message, "Talkgroup list saved");
-        }
-        // The same for a registration retry: a file that went leaves nothing to add to Imports.
-        function test_registration_retry_after_the_file_went() {
-            library.failRegister = true;
-            verify(loader.item.save("original", "7", 1));
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
-            verify(loader.item.stalled !== null);
-            library.failRegister = false;
-            library.written = false;
-            verify(!loader.item.save("original", "7", 1));
-            compare(library.registrations, 0);
-            compare(systems.attempts, 0);
-            compare(bridge.calls, 1);
-            compare(loader.item.stalled, null);
-            verify(loader.item.retryAvailable);
-            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
-            verify(loader.item.save("original", "7", 1));
-            compare(bridge.calls, 2, "the next Try again did not export anew");
-        }
-        // A failure lost with more completions than app-control keeps: app-control no longer owes the request a
-        // result, so it can never come. The request is reported and let go of, with its name.
-        function test_lost_failure_is_let_go() {
-            verify(loader.item.save("original", "7", 1));
-            library.written = false;
-            bridge.lost = ["/owned/list.csv"];
-            deliver([result("80", "3", 1, "/other.csv", true)], "79");
             compare(loader.item.pending, null);
-            verify(loader.item.message.indexOf("not received") >= 0);
-            verify(loader.item.retryAvailable);
-            compare(loader.item.abandoned.length, 0);
-            compare(library.released, ["/owned/list.csv"]);
-            // Asked by its own request, having read every result through the batch's newest.
-            var last = bridge.asked[bridge.asked.length - 1];
-            compare(last.context, "7");
-            compare(Number(last.generation), 1);
-            compare(last.path, "/owned/list.csv");
-            compare(last.after, "80");
-        }
-        // While app-control still owes it a result (its export queued, being applied, or its result kept unread) a
-        // request may still finish: it waits, keeping its name, however far later results run past it. A request given
-        // up on by the timeout is let go of the same way.
-        function test_owed_failure_waits_for_its_result_data() {
-            return [{tag: "missed", timeout: false}, {tag: "timed out", timeout: true}];
-        }
-        function test_owed_failure_waits_for_its_result(data) {
-            loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            library.written = false;
-            if (data.timeout)
-                tryCompare(loader.item, "retryAvailable", true);
-            deliver([result("80", "3", 1, "/other.csv", true)], "79");
-            compare(loader.item.abandoned.length, 1);
+            compare(loader.item.retryAvailable, false);
+            compare(loader.item.message, "Talkgroup list saved in Imports, but the system could not be saved");
             compare(library.released, []);
-            deliver([result("900", "3", 1, "/other.csv", true)], "899");
-            compare(loader.item.abandoned.length, 1, "a request that can still finish was let go of");
-            bridge.lost = ["/owned/list.csv"];
-            deliver([result("901", "3", 1, "/other.csv", true)]);
-            compare(loader.item.abandoned.length, 0);
-            compare(library.released, ["/owned/list.csv"]);
-            compare(library.registrations, 0);
-        }
-        // A late success Imports could not take is asked again on its own, at a growing interval: the list it exported
-        // is the decoder's, so Save hides and no later export or poll may come to retry it.
-        function test_owed_registration_retries_on_its_own() {
-            loader.item.owedRetryMs = 20;
-            loader.item.timeoutMs = 50;
-            verify(loader.item.save("original", "7", 1));
-            tryCompare(loader.item, "retryAvailable", true);
-            library.failRegister = true;
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
-            compare(loader.item.owedRegistrations, ["/owned/list.csv"]);
-            // Refused again, it is asked later still.
-            wait(60);
-            compare(library.registrations, 0);
-            library.failRegister = false;
-            tryCompare(library, "registrations", 1, 2000);
-            compare(library.registered, ["/owned/list.csv"]);
-            compare(loader.item.owedRegistrations, []);
-            compare(systems.attempts, 0);
-        }
-        // The attachment retried after the user removed the export in Imports and imported another file that took
-        // its exact path: only the row the export was registered as is attached, never the one now at that path. The
-        // retry checks that itself, whether or not the flow heard of the change (here it does not).
-        function test_attachment_retry_checks_the_registered_row() {
-            systems.failSave = true;
-            verify(loader.item.save("original", "7", 1, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
-            verify(loader.item.stalled !== null);
             systems.failSave = false;
-            library.identify("/owned/list.csv");
-            verify(!loader.item.save("original", "8", 2));
-            compare(systems.attempts, 1, "the file now at the export's path was attached");
-            compare(systems.updates, 0);
-            compare(loader.item.stalled, null);
-            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
+            verify(loader.item.save("original", "8", 2, running));
+            compare(bridge.calls, 2, "Save did not export anew");
+            compare(loader.item.pending.path, "/owned/list-2.csv");
         }
-        // Removing the registered row in Imports (or replacing it with another file at its path) cancels the stalled
-        // attachment at once: nothing is left to attach, and the next Try again exports anew.
-        function test_removed_row_cancels_the_stalled_attachment_data() {
-            return [{tag: "removed", replacement: false}, {tag: "replaced at its path", replacement: true}];
-        }
-        function test_removed_row_cancels_the_stalled_attachment(data) {
-            systems.failSave = true;
-            verify(loader.item.save("original", "7", 1, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
-            verify(loader.item.stalled !== null);
-            systems.failSave = false;
-            library.removeRow("/owned/list.csv", data.replacement);
-            compare(loader.item.stalled, null, "the attachment of a removed row was still offered");
-            verify(loader.item.retryAvailable);
-            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
-            compare(systems.attempts, 1);
-            library.listed = true;
-            verify(loader.item.save("original", "8", 2, {
-                freqMhz: "851.0125",
-                groupCsvPath: ""
-            }));
-            compare(bridge.calls, 2, "the next Try again did not export anew");
-        }
-        function test_failed_registration_retries_registration_only() {
+        // A failed registration leaves the exported file where it is and attaches nothing; the name goes back.
+        function test_failed_registration_is_reported() {
             library.failRegister = true;
-            verify(loader.item.save("original", "7", 1));
+            verify(loader.item.save("original", "7", 1, running));
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             compare(systems.attempts, 0);
-            verify(loader.item.stalled !== null);
-            verify(loader.item.message.indexOf("Imports failed") >= 0);
-            compare(library.released, []);
-            library.failRegister = false;
-            verify(loader.item.save("original", "7", 1));
-            compare(bridge.calls, 1);
-            compare(library.registered, ["/owned/list.csv"]);
-            compare(systems.updates, 1);
-            compare(loader.item.message, "Talkgroup list saved");
+            compare(loader.item.pending, null);
+            compare(loader.item.retryAvailable, false);
+            compare(loader.item.message, "Talkgroup list exported, but adding it to Imports failed; system association was not changed");
+            compare(library.released, ["/owned/list.csv"]);
         }
         function test_refused_attachment_names_it() {
-            verify(loader.item.save("original", "7", 1, {
+            var changed = {
                 freqMhz: "changed",
                 groupCsvPath: ""
-            }));
+            };
+            loader.item.sessionTuning = changed;
+            verify(loader.item.save("original", "7", 1, changed));
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             compare(library.registrations, 1);
             compare(systems.updates, 0);
-            compare(loader.item.stalled, null);
             compare(loader.item.retryAvailable, false);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);
+            loader.item.sessionTuning = running;
             systems.hasList = true;
-            verify(loader.item.save("original", "7", 2));
+            verify(loader.item.save("original", "7", 2, running));
             deliver([result("7", "7", 2, loader.item.pending.path, true)]);
             compare(systems.updates, 0);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);
@@ -544,7 +277,7 @@ Item {
             compare(loader.item.message, "Talkgroup list saved in Imports; system association was not changed");
         }
         function test_deleted_system_does_not_modify_replacement_row() {
-            verify(loader.item.save("deleted", "7", 1));
+            verify(loader.item.save("deleted", "7", 1, running));
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             compare(library.registrations, 1);
             compare(systems.updates, 0);

@@ -1885,12 +1885,6 @@ class CommandRecorder : public QObject {
         return true;
     }
 
-    /* No export result ever comes here: every request is still owed one, which never lets it go. */
-    Q_INVOKABLE static bool
-    talkgroupExportOwed(const QString&, unsigned int, const QString&, const QString&) {
-        return true;
-    }
-
     Q_INVOKABLE QVariantList
     lastTalkgroupEdit() const {
         return m_talkgroupEdit;

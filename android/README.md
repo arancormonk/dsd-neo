@@ -119,19 +119,19 @@ decoder's retained successful result, then adds the file to Imports, then sets i
 as the saved system's group list. Setting the list changes nothing else about
 the system: a RadioReference site keeps its site details, group and avoid. Later
 edits write that same file. Each step reports its own result. If a step after
-the export fails, the message says which, and **Try again** repeats only that
-step, keeping the file the decoder already writes to. The Talkgroups screen is
-open only while a session runs, so a step that failed just before Stop is
-retried from the Talkgroups screen of the next session. If the saved system was
-deleted, retuned or acquired another group file while saving, the export remains
-in Imports without changing that system. Explore sessions, scan lists and
-operator holds save to Imports for later selection in a saved system. Scan-row
-exports are refused by the decoder, so Save is not offered there. A pending save
-survives the session ending: a result that arrives after Stop still completes
-it. After 15 seconds without a result, **Try again** allows a new request with a
-new path. A late success for an abandoned request is added to Imports but never
-attached to a system. If more exports finish at once than the app can read back,
-the message says the result was not received.
+the export fails, the message says which and where the list got to: the
+exported file, and Imports if adding it there worked. Nothing is retried. If
+the saved system was deleted, retuned or acquired another
+group file while saving, or the session stopped running the tuning it started
+with (a decode mode applied from the control API, or a frequency you tuned by
+hand), the export remains in Imports without changing that system.
+Explore sessions, scan lists and operator holds save to Imports for later
+selection in a saved system. Scan-row exports are refused by the decoder, so
+Save is not offered there. A pending save survives the session ending: a result
+that arrives after Stop still completes it. After 15 seconds without a result,
+**Try again** allows a new request with a new path, and the earlier request's
+late result is ignored. If more exports finish at once than the app can read
+back, the message says the result was not received.
 
 Removing a talkgroup list you saved from Imports clears it from the systems that
 use it and keeps their RadioReference site details. Removing a RadioReference

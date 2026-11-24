@@ -340,9 +340,10 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     // Reconciled here because the library cannot: it loads in its constructor,
     // and it has no business knowing what references it.
     QStringList gone = importedFiles->takePrunedPaths();
-    // Every reference into the library to a file that is gone is cleared as well, whether or not the index still had
-    // a row for it (issue #801). Files outside the library are the user's own and stay named, and so does a file whose
-    // absence is not confirmed (a folder that cannot be searched for now, issue #828).
+    // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
+    // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
+    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named, and so
+    // does a file whose absence is not confirmed (a folder that cannot be searched for now, issue #828).
     const QString root = QDir::cleanPath(ImportedFilesModel::libraryRoot()) + QLatin1Char('/');
     for (const QString& path : systems->csvPaths() + scanLists->csvPaths()) {
         if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && json_store_definitely_missing(path)) {
@@ -351,14 +352,12 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     }
     bool saved = true;
     for (const QString& path : gone) {
-        // A pruned file the user made (a saved talkgroup list) never described a site: its systems keep theirs. The
-        // library kept the origin with the pruned row (issue #903); a file it holds no row for counts as RadioReference's.
+        // A pruned file the user made (a saved talkgroup list) never described a site: its systems keep theirs. Only
+        // the launch that prunes a row knows its origin (issue #903); any other file counts as RadioReference's.
         saved = systems->clearCsvPath(path, !importedFiles->prunedUserFile(path)) && saved;
         saved = scanLists->clearCsvPath(path) && saved;
     }
-    // The index keeps the pruned rows, origin and all, until every clear is saved: a launch whose clear fails prunes
-    // them again at the next.
-    if (!saved || !importedFiles->settlePrunedFiles()) {
+    if (!saved) {
         LOG_WARN("Could not clear references to removed library files; they are retried at the next launch.\n");
     }
 }

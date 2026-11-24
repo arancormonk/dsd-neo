@@ -6673,13 +6673,6 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
     `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
     completion (the control API, which reports a `result_gap` when more completed than the history held).
-    `dsd_app_tg_export_result_owed()` says whether an export request (its context, generation and path) can still get
-    a result its reader has not read: while it is queued, while the drain applies it (the drain records the export it
-    took off the queue in the same critical section, and clears it in the one that publishes its result), or while its
-    result is kept above the reader's newest sequence. Every export the queue takes gets exactly one result, so a 0 is
-    final (issue #903: Save talkgroup list lets go of a request whose result was lost). Tests: `APP_COMMAND_QUEUE`
-    (`test_talkgroup_export_result_owed`, `test_talkgroup_export_in_flight_outlives_evictions`: later exports evicted
-    from a full queue publish their failures while an earlier one is applied, which stays owed).
     `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
     open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
     sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
@@ -18485,12 +18478,11 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
-  An export name stays reserved while the decoder may still write it (issue #903): a registration hands it to its row,
-  and `releaseTalkgroupListPath()` gives back the name of an export that failed or was never queued; an export whose
-  answer is late keeps it. `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an
-  update in place and a removal read. Load keeps each pruned row, origin and all, in the stored index (every save
-  writes it back, unless a live row took its path) until `settlePrunedFiles()`; `prunedUserFile(path)` reads its
-  origin, never the file's name (issue #903).
+  An export name stays reserved while its Save talkgroup list request lasts (issue #903): a registration hands it to
+  its row, and `releaseTalkgroupListPath()` gives it back when the request ends any other way.
+  `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an update in place and a
+  removal read. Load saves its prune at once and keeps, for that launch only, which pruned rows were the user's own
+  files: `prunedUserFile(path)` reads their origin, never the file's name (issue #903).
   Document probes (#831): a document opened from another app is told apart before anything is asked.
   `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
   the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
@@ -19150,16 +19142,16 @@ Qt Quick frontend (`src/ui/qt`):
   when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
   every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. A
-  saved system naming a pruned user's file (`prunedUserFile()`) as its group list keeps its site; one the library holds
-  no row for counts as RadioReference's. The library keeps the pruned rows in its index until every clear is saved
-  (`settlePrunedFiles()`), so a launch whose clear fails prunes them again at the next with their origin (issue #903:
-  a picked list, or an export a backup restore renamed, keeps its site); the second rule covers a reference to a
-  library file the index never held. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
+  saved system naming a pruned user's file (`prunedUserFile()`: an exported list, a picked list, or an export a backup
+  restore renamed) as its group list keeps its site (issue #903); any other file counts as RadioReference's, including
+  one whose clear failed at an earlier launch (only the launch that prunes a row knows its origin). The second rule
+  covers a reference to a library file the index never held, and retries a failed clear at each launch. A missing file
+  outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
   library's load and in that cleanup alike (`json_store_definitely_missing()`, issue #828): a file whose stat fails
   any other way (a folder that cannot be searched for now) keeps its row and every reference. Tests:
   `UI_QT_IMPORTED_FILES` (`test_remove_finishes_on_retry`, `test_unsearchable_copy_is_not_pruned`),
   `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
-  `test_startup_retry_keeps_a_user_file_origin`, `test_startup_keeps_paths_it_cannot_check`),
+  `test_startup_prune_keeps_a_user_file_site`, `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - Replacing a library file in place (discussion #748): an update (`beginImport()` with the row's `replacePath`, Update
   from file) and `refreshGeneratedFile()` (RadioReference refresh) validate the staged copy on the import worker first
@@ -19283,25 +19275,13 @@ Qt Quick frontend (`src/ui/qt`):
   frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted, and
   emptied by `followRunningTuning()` once the decoder's snapshots show a change applied live that the saved row does not
   carry: a decode mode other than the run's first snapshot's, set from the control API or from the Radio sheet with its
-  save failed, or an operator hold, released or not). The
-  flow reads every completion since the last poll (`UiController::talkgroupExportResults`, from
-  `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
-  registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step
-  keeps the exported file (the decoder writes to it already) and Try again repeats that step only, while that file is
-  still there (and, to attach it, still the Imports row it was added as: `ImportedFilesModel::entryIdentity()`, the
-  row's revision, which a later import at the same path does not share). One removed since leaves the system unchanged
-  and reads as a failed export, so the next Try again exports anew; removing that row in Imports cancels a stalled
-  attachment at once (`entriesChanged`). `retryOffered` (a stalled step, or the new export a lost one leaves) keeps
-  `Main.qml`'s Save enabled though the decoder still names the exported file and the list reads as persistent. A
-  request given up
-  on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
-  export releases its reserved name. A completion lost in a gap is recovered from the file
-  (`ImportedFilesModel::talkgroupListWritten()`: the decoder writes it only on success): an existing file is registered,
-  or owed to Imports when the index cannot be saved: retried at each later poll and request, and on its own after 2 s,
-  doubling to a minute (a late success makes the list persistent, which hides Save). A failure lost in a gap leaves no
-  file: the request waits while its result can still come, asked at each batch of app-control itself
-  (`CommandBridge::talkgroupExportOwed()`, `dsd_app_tg_export_result_owed()`: the export is queued or being applied, or
-  its result is kept above the newest sequence the flow read); once it is not, it is let go of with its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  save failed, or an operator hold, released or not). The flow reads every completion since the last poll
+  (`UiController::talkgroupExportResults`, from `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap
+  past the 64 kept). A request's completion runs registration in Imports, then `SavedSystemsModel::attachGroupList()`; each step reports its own result, and a failed
+  one ends the request where the list got to (the exported file, and its Imports row if that worked), with no step
+  offered again: the user saves again if they want. A request with no completion in 15 s offers Try again, which
+  replaces it (its late result matches nothing); one whose completion may be in a gap ends, reported as not received.
+  A request that ends with no Imports row for its file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares

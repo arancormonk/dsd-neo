@@ -265,19 +265,6 @@ CommandBridge::saveTalkgroupList(const QString& context, unsigned int generation
         dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, payload.constData(), static_cast<size_t>(payload.size())));
 }
 
-bool
-CommandBridge::talkgroupExportOwed(const QString& context, unsigned int generation, const QString& path,
-                                   const QString& afterSequence) {
-    bool contextOk = false;
-    bool sequenceOk = false;
-    const uint64_t version = context.toULongLong(&contextOk);
-    const uint64_t after = afterSequence.toULongLong(&sequenceOk);
-    if (!contextOk || !sequenceOk) {
-        return true;
-    }
-    return dsd_app_tg_export_result_owed(version, generation, path.toUtf8().constData(), after) != 0;
-}
-
 // End WP-D1.
 
 bool

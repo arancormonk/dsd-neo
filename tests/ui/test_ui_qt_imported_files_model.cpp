@@ -514,8 +514,6 @@ test_imported_files_model(void) {
         const QStringList pruned = model.takePrunedPaths();
         expect("prune reports the vanished path", pruned == QStringList{storedGroupPath});
         expect("prune is reported only once", model.takePrunedPaths().isEmpty());
-        // Issue #903: the owner cleared what named it; only then does the stored index let the row go.
-        expect("the settled prune is saved", model.settlePrunedFiles());
     }
 
     {
@@ -1055,10 +1053,8 @@ test_export_registration_in_place() {
     expect("generated path is unique", path != model.newTalkgroupListPath());
     expect("destination is not registered before completion", model.count() == before && !QFile::exists(path));
     expect("missing export cannot be registered", !model.registerTalkgroupList(path));
-    expect("issue #903: a missing export is not written", !model.talkgroupListWritten(path));
     const QByteArray csv("id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n");
     expect("write canonical export", write_file(path, csv));
-    expect("issue #903: a written export is seen before its registration", model.talkgroupListWritten(path));
     expect("register existing export", model.registerTalkgroupList(path));
     expect("same path and bytes retained", model.get(model.rowForPath(path)).value("path").toString() == path
                                                && read_file(path) == csv && model.count() == before + 1);
@@ -1068,7 +1064,6 @@ test_export_registration_in_place() {
     expect("write outside fixture", write_file(external, csv));
     expect("outside path refused without deleting it",
            !model.registerTalkgroupList(external) && QFile::exists(external));
-    expect("issue #903: a file outside the library is no export", !model.talkgroupListWritten(external));
     model.remove(model.rowForPath(path));
 }
 
@@ -1798,7 +1793,6 @@ test_register_unsaved_export() {
     expect("unsaved export fixture", write_file(stored, "id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n"));
     expect("block the index for registration", blockIndex());
     const bool registered = model.registerTalkgroupList(stored);
-    expect("issue #903: an export the index cannot record is still written", model.talkgroupListWritten(stored));
     expect("unblock the index after registration", unblockIndex());
     expect("an export the index cannot record is not registered", !registered);
     expect("an unrecorded export adds no row", model.count() == before && model.rowForPath(stored) < 0);
@@ -1807,8 +1801,8 @@ test_register_unsaved_export() {
     model.remove(model.rowForPath(stored));
 }
 
-/* Issue #903 (S1): an export's name is held only while the decoder may still write it. A release (the export failed or
- * was never queued) gives it back, and so does a registration: from then on the library row holds the name. */
+/* Issue #903 (S1): an export's name is held only while its Save request lasts. A release (the request ended with no row
+ * for it) gives it back, and so does a registration: from then on the library row holds the name. */
 void
 test_export_reservations_released() {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
@@ -1833,16 +1827,9 @@ test_export_reservations_released() {
     const QString exported = model.newTalkgroupListPath();
     expect("released: export written", write_file(exported, "id,mode,name\n42,A,Dispatch\n"));
     expect("released: export registered", model.registerTalkgroupList(exported));
-    const QString registration = model.entryIdentity(exported);
-    expect("released: the registered row has an identity",
-           !registration.isEmpty() && model.entryIdentity(exported) == registration);
     expect("released: the row goes with its file",
            model.remove(model.rowForPath(exported)) && !QFile::exists(exported));
-    expect("released: no row, no identity", model.entryIdentity(exported).isEmpty());
     expect("a registered export no longer holds its name", importNamed(exported) == exported);
-    // Issue #903: the file now at the export's path is another row, which the export's registration does not name.
-    expect("released: another row at the same path is another identity",
-           !model.entryIdentity(exported).isEmpty() && model.entryIdentity(exported) != registration);
     model.remove(model.rowForPath(exported));
 
     const QString held = model.newTalkgroupListPath();
@@ -1895,21 +1882,9 @@ test_file_origin_through_removal() {
                model.prunedUserFile(exported) && !model.prunedUserFile(radioReference));
         expect("origin: a path no pruned row held is no user's file",
                !model.prunedUserFile(fixtures.filePath("x.csv")));
-        // Issue #903: kept, origin and all, until the owner settles the prune; a save before then keeps them stored.
-        const QString later = model.newTalkgroupListPath();
-        expect("origin: a save before the settle",
-               write_file(later, "id,mode,name\n44,A,Later\n") && model.registerTalkgroupList(later));
-    }
-    {
-        dsd_qt::ImportedFilesModel model(&host);
-        expect("origin: the next load still has both, and whose each was",
-               model.takePrunedPaths().size() == 2 && model.prunedUserFile(exported)
-                   && !model.prunedUserFile(radioReference));
-        expect("origin: settled", model.settlePrunedFiles() && !model.prunedUserFile(exported));
     }
     dsd_qt::ImportedFilesModel model(&host);
-    expect("origin: a settled prune is gone from the index",
-           model.takePrunedPaths().isEmpty() && !model.prunedUserFile(exported));
+    expect("origin: the prune is saved at once", model.takePrunedPaths().isEmpty() && !model.prunedUserFile(exported));
 }
 
 /* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the

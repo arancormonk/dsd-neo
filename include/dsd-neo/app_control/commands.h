@@ -803,13 +803,6 @@ enum { DSD_APP_RESULT_HISTORY = 64 };
  * count. Only the last DSD_APP_RESULT_HISTORY are kept, so a reader that falls further behind sees a gap in the
  * sequence numbers. For a consumer that must see every result, not just the latest (the control API). */
 int dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_result* out, int cap);
-/** Whether the export a reader submitted with @p context, @p generation and @p path, having read every result through
- * @p after_sequence without finding its own, can still get a result to read (issue #903): 1 while that export is
- * queued or the decoder is applying it, or its result is kept above @p after_sequence; 0 once none of these holds,
- * which is final (its result was published and is gone, or it was never queued). Each export the queue takes gets
- * exactly one result, published in the same critical section that ends its queued or applying state, so no answer of
- * 0 is ever followed by its result. 0 for a NULL @p path. */
-int dsd_app_tg_export_result_owed(uint64_t context, unsigned int generation, const char* path, uint64_t after_sequence);
 uint64_t dsd_app_command_session_generation(void);
 int dsd_app_decryption_result_get(dsd_app_decryption_result* out);
 /** dsd_app_tg_export_results_since() for decryption results. */

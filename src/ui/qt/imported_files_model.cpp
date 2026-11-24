@@ -531,23 +531,17 @@ ImportedFilesModel::newTalkgroupListPath() const {
 }
 
 bool
-ImportedFilesModel::talkgroupListWritten(const QString& path) const {
+ImportedFilesModel::registerTalkgroupList(const QString& path) {
     const QFileInfo file(path);
     const QDir dir(libraryRoot());
-    return file.isFile() && !file.isSymLink()
-           && file.canonicalPath() == QFileInfo(dir.absolutePath()).canonicalFilePath();
-}
-
-bool
-ImportedFilesModel::registerTalkgroupList(const QString& path) {
-    if (!talkgroupListWritten(path)) {
+    if (!file.isFile() || file.isSymLink()
+        || file.canonicalPath() != QFileInfo(dir.absolutePath()).canonicalFilePath()) {
         return false;
     }
     if (rowForPath(path) >= 0) {
         reserved_exports().remove(path);
         return true;
     }
-    const QFileInfo file(path);
     Row row;
     row.path = path;
     row.name = file.fileName();
@@ -1309,12 +1303,6 @@ ImportedFilesModel::rowForPath(const QString& path) const {
     return -1;
 }
 
-QString
-ImportedFilesModel::entryIdentity(const QString& path) const {
-    const int row = rowForPath(path);
-    return row < 0 ? QString() : QString::number(m_rows.at(row).revision);
-}
-
 QVariantMap
 ImportedFilesModel::groupListCounts(const QString& path) const {
     int accepted = 0;
@@ -1387,7 +1375,10 @@ ImportedFilesModel::load() {
         if (row.path.isEmpty() || json_store_definitely_missing(row.path)) {
             if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
                 m_pruned_paths.append(row.path);
-                m_pruned_rows.append(row);
+                // Issue #903: whose file it was, for this launch's cleanup of what names it (prunedUserFile()).
+                if (!rowFromRadioReference(row)) {
+                    m_pruned_user_paths.append(row.path);
+                }
             }
             continue;
         }
@@ -1397,15 +1388,15 @@ ImportedFilesModel::load() {
         row.revision = ++m_revision;
         rows.append(row);
     }
-    // A row with no path, or no row at all, names nothing: its drop is saved now. A row whose file is gone stays
-    // stored, its origin with it, until settlePrunedFiles() (issue #903).
-    const bool dropped = rows.size() + m_pruned_rows.size() != array.size();
+    const bool pruned = rows.size() != array.size();
     beginResetModel();
     m_rows = std::move(rows);
     endResetModel();
     Q_EMIT countChanged();
     Q_EMIT entriesChanged();
-    if (dropped) {
+    if (pruned) {
+        // Persist the prune, or every launch re-stats files that are gone and
+        // the index keeps advertising rows the library no longer has.
         save();
     }
     reclaimRevisions(bundles);
@@ -1489,19 +1480,7 @@ ImportedFilesModel::takePrunedPaths() {
 
 bool
 ImportedFilesModel::prunedUserFile(const QString& path) const {
-    return std::any_of(m_pruned_rows.cbegin(), m_pruned_rows.cend(),
-                       [&path](const Row& row) { return row.path == path && !rowFromRadioReference(row); });
-}
-
-bool
-ImportedFilesModel::settlePrunedFiles() {
-    if (m_pruned_rows.isEmpty()) {
-        return true;
-    }
-    // Persist the prune, or every launch re-stats files that are gone and the index keeps advertising rows the
-    // library no longer has.
-    m_pruned_rows.clear();
-    return save();
+    return m_pruned_user_paths.contains(path);
 }
 
 bool
@@ -1514,14 +1493,6 @@ ImportedFilesModel::saveRows(const QList<Row>& rows) const {
     QJsonArray array;
     for (const Row& row : rows) {
         array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
-    }
-    // A pruned row stays stored until settlePrunedFiles(), unless a row of the library took its path since.
-    for (const Row& row : m_pruned_rows) {
-        const bool taken =
-            std::any_of(rows.cbegin(), rows.cend(), [&row](const Row& live) { return live.path == row.path; });
-        if (!taken) {
-            array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
-        }
     }
     return json_store_save_array(QLatin1String(kStoreFileName), array);
 }

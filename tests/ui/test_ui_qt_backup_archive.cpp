@@ -294,9 +294,8 @@ test_startup_clears_missing_library_paths_twice() {
                                                                   && fallback(scans).value("groupCsvPath") == gone);
         expect("launch 1: stores unblocked", unblock_store("saved_systems.json") && unblock_store("scan_lists.json"));
     }
-    // Issue #903: the gone file's row, and its origin, stay stored until what names it is cleared.
-    expect("the index keeps the gone file's row while its references are left",
-           QJsonDocument(dsd_qt::json_store_load_array("imported_files.json")).toJson().contains("gone.csv"));
+    expect("the index no longer names the gone file",
+           !QJsonDocument(dsd_qt::json_store_load_array("imported_files.json")).toJson().contains("gone.csv"));
     {
         TestHost host;
         dsd_qt::ImportedFilesModel library(&host);
@@ -309,8 +308,6 @@ test_startup_clears_missing_library_paths_twice() {
         expect("launch 2: the gone fallback file is cleared, and the list is no draft",
                fallback(scans).value("groupCsvPath") == "" && !fallback(scans).value("isDraft").toBool());
     }
-    expect("the index lets the gone file go once its references are cleared",
-           !QJsonDocument(dsd_qt::json_store_load_array("imported_files.json")).toJson().contains("gone.csv"));
     {
         const dsd_qt::SavedSystemsModel systems;
         const dsd_qt::ScanListsModel scans;
@@ -328,13 +325,11 @@ test_startup_clears_missing_library_paths_twice() {
     }
 }
 
-/* Issue #903 (B2): a gone file's origin outlives a startup clear that could not be saved. The library keeps the pruned
- * row, and with it the file's origin, in its index until the references to it are cleared, so the next launch still
- * knows whose file it was, whatever its name: an exported list, a list the user picked, an export a backup restore
- * renamed. Each site that names a user's file keeps its ids and avoid. A RadioReference file the library prunes still
- * clears its site's provenance. */
+/* Issue #903 (B2): the launch that prunes a gone file knows whose it was. Each site that names a user's file as its
+ * group list (an exported list, a list the user picked, an export a backup restore renamed) lets go of the file and
+ * keeps its ids and avoid; a RadioReference file the library prunes still clears its site's provenance. */
 void
-test_startup_retry_keeps_a_user_file_origin() {
+test_startup_prune_keeps_a_user_file_site() {
     const QStringList stores{"imported_files.json", "saved_systems.json", "scan_lists.json"};
     QMap<QString, QJsonArray> before;
     for (const QString& store : stores) {
@@ -354,66 +349,43 @@ test_startup_retry_keeps_a_user_file_origin() {
         return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == id
                && row.value("avoidSite").toBool() && row.value("siteName") == "North";
     };
-    expect("origin retry: the RadioReference file is there", write_file(generated, "TG,Mode,Name\n1,D,Dispatch\n"));
     QJsonArray index;
     {
         dsd_qt::SavedSystemsModel systems;
         for (int i = 0; i < userFiles.size(); ++i) {
-            expect("origin retry: a site names the user's file", systems.add(site(3 + i, userFiles.at(i))));
+            expect("user prune: a site names the user's file", systems.add(site(3 + i, userFiles.at(i))));
             index.append(QJsonObject{
                 {"name", QFileInfo(userFiles.at(i)).fileName()}, {"path", userFiles.at(i)}, {"type", "group"}});
         }
-        expect("origin retry: a site names the RadioReference file", systems.add(site(6, generated)));
+        expect("user prune: a site names the RadioReference file", systems.add(site(6, generated)));
     }
     index.append(QJsonObject{{"name", "Metro group.csv"},
                              {"path", generated},
                              {"type", "group"},
                              {"origin", "radioreference"},
                              {"rrSid", 12}});
-    expect("origin retry: the index names every file", dsd_qt::json_store_save_array("imported_files.json", index));
-    // The site naming file @p i of userFiles (the RadioReference one at userFiles.size()).
-    const auto row = [&userFiles](const dsd_qt::SavedSystemsModel& systems, int i) {
-        return systems.get(systems.count() - static_cast<int>(userFiles.size()) - 1 + i);
-    };
-    {
-        TestHost host;
-        dsd_qt::ImportedFilesModel library(&host);
-        dsd_qt::SavedSystemsModel systems;
-        dsd_qt::ScanListsModel scans;
-        expect("origin retry: launch 1 store blocked", block_store("saved_systems.json"));
-        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
-        expect("origin retry: launch 1 store unblocked", unblock_store("saved_systems.json"));
-    }
+    expect("user prune: the index names every file", dsd_qt::json_store_save_array("imported_files.json", index));
     {
         TestHost host;
         dsd_qt::ImportedFilesModel library(&host);
         dsd_qt::SavedSystemsModel systems;
         dsd_qt::ScanListsModel scans;
         dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        // The site naming file @p i of userFiles (the RadioReference one at userFiles.size()).
+        const auto row = [&](int i) {
+            return systems.get(systems.count() - static_cast<int>(userFiles.size()) - 1 + i);
+        };
         for (int i = 0; i < userFiles.size(); ++i) {
             const QString name = QFileInfo(userFiles.at(i)).fileName();
-            expect(qPrintable("origin retry: launch 2 lets go of " + name),
-                   row(systems, i).value("groupCsvPath") == "");
-            expect(qPrintable("origin retry: launch 2 keeps the site that named " + name),
-                   kept(row(systems, i), 3 + i));
+            expect(qPrintable("user prune: lets go of " + name), row(i).value("groupCsvPath") == "");
+            expect(qPrintable("user prune: keeps the site that named " + name), kept(row(i), 3 + i));
         }
-    }
-    expect("origin retry: the RadioReference file goes", QFile::remove(generated));
-    {
-        TestHost host;
-        dsd_qt::ImportedFilesModel library(&host);
-        dsd_qt::SavedSystemsModel systems;
-        dsd_qt::ScanListsModel scans;
-        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
-        const QVariantMap cleared = row(systems, static_cast<int>(userFiles.size()));
-        expect("origin retry: a pruned RadioReference file still ends its site",
+        const QVariantMap cleared = row(static_cast<int>(userFiles.size()));
+        expect("user prune: a pruned RadioReference file still ends its site",
                cleared.value("groupCsvPath") == "" && cleared.value("rrSid").toInt() == 0
                    && !cleared.value("avoidSite").toBool());
-        expect("origin retry: the user's sites are still kept",
-               kept(row(systems, 0), 3) && kept(row(systems, 1), 4) && kept(row(systems, 2), 5));
     }
-    expect("origin retry: the index lets every file go once its references are cleared",
-           dsd_qt::json_store_load_array("imported_files.json").isEmpty());
+    expect("user prune: the index lets every file go", dsd_qt::json_store_load_array("imported_files.json").isEmpty());
     for (const QString& store : stores) {
         expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
     }
@@ -2430,7 +2402,7 @@ main(int argc, char** argv) {
     test_incoming_classification();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
-    test_startup_retry_keeps_a_user_file_origin();
+    test_startup_prune_keeps_a_user_file_site();
 #ifndef _WIN32
     test_startup_keeps_paths_it_cannot_check();
 #endif

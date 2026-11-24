@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 
-// Match one export at a time; abandoned requests can never associate a later result.
+// Match one export at a time; a request replaced or ended can never associate a later result.
 // Each step after the export reports its own outcome: adding the file to Imports, then attaching it to the saved
-// system the request named. A failed step keeps the exported file and offers that step again, never a new export:
-// the decoder already writes its edits to that file, and only while that file is still there (and, to attach it, still
-// the Imports row it was added as; removing that row cancels the attachment). A request given up on (no completion in time, or its completion missed) is kept until its result comes,
-// and a late success is then only added to Imports; once app-control says its result can no longer come (lost with more
-// completions than it keeps), it is let go of and its name given back.
+// system the request named. A failed step ends the request where the list got to (the exported file, and its Imports
+// row if that step worked) and says so; no step is offered again, and the user saves again if they want.
 Item {
     id: flow
     property var bridge: commands
@@ -16,25 +13,9 @@ Item {
     // Every completion the controller's last poll read, oldest first, and the newest sequence it could not read.
     property var results: uiController.talkgroupExportResults
     property var pending: null
-    // A successful export whose later step failed: {step: "register" or "attach", uid, tuning, path, registration},
-    // registration being the Imports row's ImportedFilesModel::entryIdentity() once it was added.
-    property var stalled: null
-    // Requests given up on: {path, context, generation, sequence}, each until its completion is read or lost.
-    property var abandoned: []
-    // Late successes Imports could not take yet: retried at each later poll and request, and on their own after
-    // owedRetryMs, then twice as long after each refusal up to a minute. A late success makes the decoder's list
-    // persistent, which hides Save, so nothing else may come to retry them once storage recovers.
-    property var owedRegistrations: []
-    property int owedRetryMs: 2000
-    property int owedRetryWaitMs: 0
     property string lastSequence: "0"
     property int timeoutMs: 15000
     property bool retryAvailable: false
-    // A stalled step's exported file went (or its Imports row): Try again starts a new export, which a persistent list
-    // (the decoder still names that file) must not hide.
-    property bool exportGone: false
-    // Whether Try again has a step or a new export to run that the decoder's persistent list must not hide.
-    readonly property bool retryOffered: stalled !== null || exportGone
     property string message: ""
     signal saved(string uid, string path)
 
@@ -43,36 +24,19 @@ Item {
         interval: Math.max(1, Math.min(flow.timeoutMs, 15000))
         onTriggered: {
             if (flow.pending !== null) {
-                flow.abandon(flow.pending);
-                flow.pending = null;
                 flow.retryAvailable = true;
                 flow.message = qsTr("No export completion received. Try again.");
             }
         }
     }
     // The request survives the session ending (Idle or Failed): its export may complete between the controller's
-    // result poll and the host's refresh, and the result read later still belongs to it.
+    // result poll and the host's refresh, and the result read later still belongs to it. The timeout only permits a
+    // retry, which replaces it.
     onPendingChanged: {
         if (pending === null)
             completionTimeout.stop();
     }
     Component.onCompleted: lastSequence = flow.newestIn(results, "0")
-    onOwedRegistrationsChanged: scheduleOwedRetry()
-    Timer {
-        id: owedRetry
-        onTriggered: flow.retryOwedRegistrations()
-    }
-    // Removing the Imports row a stalled attachment was added as leaves it nothing to attach.
-    Connections {
-        target: flow.library
-        ignoreUnknownSignals: true
-        function onEntriesChanged() {
-            if (flow.stalled !== null && flow.stalled.step === "attach" && !flow.stepFileKept(flow.stalled)) {
-                flow.stalled = null;
-                flow.exportLost();
-            }
-        }
-    }
 
     function newer(a, b) {
         a = String(a);
@@ -100,16 +64,21 @@ Item {
             tuning[fields[i]] = system[fields[i]];
         return tuning;
     }
+    // The request ends with no Imports row for its file: its name goes back.
+    function end(request) {
+        library.releaseTalkgroupListPath(request.path);
+    }
     // @p uid is the standalone saved system the session runs (empty for Explore, a scan list or a hold: Imports only)
-    // and @p tuning its tuning when the request was made. With a step to retry, any call retries that step alone.
+    // and @p tuning its tuning when the request was made.
     function save(uid, context, generation, tuning) {
-        retryOwedRegistrations();
-        if (stalled !== null)
-            return retryStep();
-        if (pending !== null)
+        if (pending !== null && !retryAvailable)
             return false;
+        // A retry replaces the request given up on: its late result matches nothing.
+        if (pending !== null) {
+            end(pending);
+            pending = null;
+        }
         retryAvailable = false;
-        exportGone = false;
         message = "";
         var path = library.newTalkgroupListPath();
         if (path.length === 0) {
@@ -125,9 +94,8 @@ Item {
             sequence: lastSequence
         };
         if (!bridge.saveTalkgroupList(context, generation, path)) {
+            end(pending);
             pending = null;
-            // Never queued, so never written: the name goes back.
-            library.releaseTalkgroupListPath(path);
             retryAvailable = true;
             message = qsTr("Talkgroup list export was not queued. Try again.");
             return false;
@@ -136,179 +104,42 @@ Item {
         completionTimeout.restart();
         return true;
     }
-    function abandon(request) {
-        abandoned = abandoned.concat([{
-                path: request.path,
-                context: request.context,
-                generation: request.generation,
-                sequence: request.sequence
-            }]);
-    }
     function matches(request, r) {
         return newer(r.sequence || "0", request.sequence) && String(r.policyContext) === String(request.context) && (Number(r.policyGeneration) >>> 0) === (Number(request.generation) >>> 0) && r.path === request.path;
     }
-    function idle() {
-        return pending === null && stalled === null;
-    }
 
     onResultsChanged: {
-        retryOwedRegistrations();
         var list = results && results.results ? results.results : [];
-        for (var i = 0; i < list.length; ++i)
-            accept(list[i]);
-        var missed = results && results.missedThrough ? String(results.missedThrough) : "0";
-        var newest = newestIn(results, lastSequence);
-        recoverMissed(missed, newest);
-        lastSequence = newest;
-    }
-    function accept(r) {
-        if (pending !== null && matches(pending, r)) {
-            var request = pending;
-            pending = null;
-            finish(request, r.success === true);
-            return;
-        }
-        for (var i = 0; i < abandoned.length; ++i) {
-            if (matches(abandoned[i], r)) {
-                var old = abandoned[i];
-                abandoned = abandoned.slice(0, i).concat(abandoned.slice(i + 1));
-                settleAbandoned(old.path, r.success === true);
-                return;
+        for (var i = 0; i < list.length; ++i) {
+            if (pending !== null && matches(pending, list[i])) {
+                var request = pending;
+                pending = null;
+                finish(request, list[i].success === true);
             }
         }
+        // More completions finished between two polls than app-control keeps; the request's may have been among them.
+        var missed = results && results.missedThrough ? String(results.missedThrough) : "0";
+        if (pending !== null && newer(missed, pending.sequence)) {
+            end(pending);
+            pending = null;
+            retryAvailable = false;
+            message = qsTr("The export result was not received: too many exports finished at once.");
+        }
+        lastSequence = newestIn(results, lastSequence);
     }
     function finish(request, ok) {
+        retryAvailable = false;
         if (!ok) {
-            library.releaseTalkgroupListPath(request.path);
+            end(request);
             retryAvailable = true;
             message = qsTr("Talkgroup list export failed or was canceled. Try again.");
             return;
         }
-        register(request);
-    }
-    // A late success: written by the decoder, so kept in Imports, but no system is changed for it.
-    function settleAbandoned(path, ok) {
-        if (!ok) {
-            library.releaseTalkgroupListPath(path);
-            return;
-        }
-        if (!library.registerTalkgroupList(path)) {
-            owedRegistrations = owedRegistrations.concat([path]);
-            return;
-        }
-        if (idle())
-            message = qsTr("An earlier talkgroup list export finished late. It was saved in Imports; system association was not changed");
-    }
-    function retryOwedRegistrations() {
-        var owed = [];
-        for (var i = 0; i < owedRegistrations.length; ++i) {
-            if (!library.registerTalkgroupList(owedRegistrations[i]))
-                owed.push(owedRegistrations[i]);
-        }
-        if (owed.length !== owedRegistrations.length)
-            owedRegistrations = owed;
-        scheduleOwedRetry();
-    }
-    // Ask Imports again for owedRegistrations later, each time later than the last, or stop when none is owed.
-    function scheduleOwedRetry() {
-        if (owedRegistrations.length === 0) {
-            owedRetry.stop();
-            owedRetryWaitMs = 0;
-        } else if (!owedRetry.running) {
-            owedRetryWaitMs = owedRetryWaitMs > 0 ? Math.min(owedRetryWaitMs * 2, 60000) : Math.max(1, owedRetryMs);
-            owedRetry.interval = owedRetryWaitMs;
-            owedRetry.start();
-        }
-    }
-    // A missed success: kept in Imports (never attached), or owed there when Imports cannot record it now.
-    function keepMissed(path) {
-        if (library.registerTalkgroupList(path))
-            return true;
-        owedRegistrations = owedRegistrations.concat([path]);
-        return false;
-    }
-    // Whether @p request's result, not among those read through @p newest (the newest sequence read or missed), can
-    // never come: app-control no longer queues or applies its export, nor keeps a result for it above @p newest.
-    function resultLost(request, newest) {
-        return !bridge.talkgroupExportOwed(request.context, request.generation, request.path, String(newest));
-    }
-    // More completions finished between two polls than app-control keeps (@p missed is the newest one lost, else "0");
-    // a request older than it may have been among them. A file at its path means its export succeeded (the decoder
-    // writes it only then). A request with no file stays waiting while its completion may still come; once it cannot
-    // (resultLost()), its export failed with the result lost, and the request is let go of with its name. Each batch
-    // asks again for every request given up on.
-    function recoverMissed(missed, newest) {
-        if (pending !== null && newer(missed, pending.sequence)) {
-            var request = pending;
-            pending = null;
-            if (!library.talkgroupListWritten(request.path)) {
-                abandon(request);
-                retryAvailable = true;
-                message = qsTr("The export result was not received: too many exports finished at once. Try again.");
-            } else if (keepMissed(request.path)) {
-                message = qsTr("The export result was not received, but the list was saved in Imports; system association was not changed");
-            } else {
-                message = qsTr("The export result was not received. The list was exported, but adding it to Imports failed; it is tried again later");
-            }
-        }
-        var kept = [];
-        for (var i = 0; i < abandoned.length; ++i) {
-            var old = abandoned[i];
-            var lost = resultLost(old, newest);
-            if ((lost || newer(missed, old.sequence)) && library.talkgroupListWritten(old.path))
-                keepMissed(old.path);
-            else if (lost)
-                library.releaseTalkgroupListPath(old.path);
-            else
-                kept.push(old);
-        }
-        if (kept.length !== abandoned.length)
-            abandoned = kept;
-    }
-    function stallAt(step, request, text) {
-        stalled = {
-            step: step,
-            uid: request.uid,
-            tuning: request.tuning,
-            path: request.path,
-            registration: request.registration || ""
-        };
-        retryAvailable = true;
-        message = text;
-    }
-    // Whether the exported file @p request (a stalled step) finishes with is still there: written, and to attach it,
-    // still the Imports row it was added as (not one a later import put at its path). Removed since (in Imports,
-    // possibly in a later session), it leaves nothing to finish.
-    function stepFileKept(request) {
-        return library.talkgroupListWritten(request.path) && (request.step === "register" || (request.registration.length > 0 && library.entryIdentity(request.path) === request.registration));
-    }
-    // No system is changed for a file that is gone, and its name stays reserved: the decoder may still write it. The
-    // export is lost with it, so the next Try again starts a new one, as after a failed export.
-    function exportLost() {
-        retryAvailable = true;
-        exportGone = true;
-        message = qsTr("Talkgroup list export failed or was canceled. Try again.");
-    }
-    function retryStep() {
-        var request = stalled;
-        stalled = null;
-        retryAvailable = false;
-        if (!stepFileKept(request)) {
-            exportLost();
-            return false;
-        }
-        if (request.step === "register")
-            register(request);
-        else
-            attach(request);
-        return true;
-    }
-    function register(request) {
         if (!library.registerTalkgroupList(request.path)) {
-            stallAt("register", request, qsTr("Talkgroup list exported, but adding it to Imports failed. Try again."));
+            end(request);
+            message = qsTr("Talkgroup list exported, but adding it to Imports failed; system association was not changed");
             return;
         }
-        request.registration = library.entryIdentity(request.path);
         attach(request);
     }
     function attach(request) {
@@ -322,7 +153,7 @@ Item {
             return;
         }
         if (!systems.attachGroupList(request.uid, request.path, request.tuning)) {
-            stallAt("attach", request, qsTr("Talkgroup list saved in Imports, but the system could not be saved. Try again."));
+            message = qsTr("Talkgroup list saved in Imports, but the system could not be saved");
             return;
         }
         saved(request.uid, request.path);

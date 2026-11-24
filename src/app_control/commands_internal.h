@@ -65,9 +65,6 @@ void dsd_app_command_test_set_tune_leg(int (*tune_leg)(dsd_opts* opts, dsd_state
    scripts a list whose rows answer differently (issue #666). */
 void dsd_app_command_test_set_manual_tune_leg(int (*tune_leg)(dsd_opts* opts, const dsd_state* state, uint32_t hz,
                                                               uint64_t* out_pending_id));
-/* Run @p hook (NULL for none) on the decoder thread each time the drain has taken a command off the queue, before it
-   applies it: outside the queue lock, while that command is the one being applied. */
-void dsd_app_command_test_set_before_apply(void (*hook)(int cmd_id));
 #endif
 
 #ifdef __cplusplus
