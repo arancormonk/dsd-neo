@@ -290,10 +290,13 @@ static int framing_counter = 0;
 
 static int isch_decoded = -1;
 static uint8_t p2_duid[8] = {0};
+/* p2_duid as one byte, MSB first, as p25p2_duid_read() assembled it for its lookup. */
+static uint8_t p2_duid_received = 0U;
 static int16_t duid_decoded = -1;
-/* 1 only while the DUID dispatch runs a voice burst whose DUID bits were its codeword exactly, with no hard or soft
-   correction (p25p2_duid_dispatch_voice()): the only traffic that proves a voice user's group (issue #903). */
-static int s_voice_duid_exact = 0;
+/* 1 only while the DUID dispatch runs a voice burst (p25p2_duid_dispatch_voice()): a burst run outside it carries no
+   DUID verdict. Such a burst whose DUID bits were its codeword exactly, with no hard or soft correction, is the only
+   traffic that proves a voice user's group (issue #903). */
+static int s_voice_dispatched = 0;
 
 static int ess_b[2][96] = {0}; //96 bits for 4 - 24 bit ESS_B fields starting bit 168 (RS 44,16,29)
 int ess_a[2][168] = {0};       //ESS_A 1 (96 bit) and 2 (72 bit) fields, starting at bit 168 and bit 266 (RS Parity)
@@ -371,6 +374,7 @@ p25_p2_frame_reset(void) {
     // Reset decoded state
     isch_decoded = -1;
     DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
+    p2_duid_received = 0U;
     duid_decoded = -1;
 
     // Nothing in the buffers was descrambled with any seed now, or collected on any carrier (issue #575).
@@ -839,8 +843,10 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_sm_emit_active(opts, state, slot);
-    /* Traffic whose DUID matched exactly proves the group a voice user of its call named (issue #903). */
-    if (s_voice_duid_exact) {
+    /* Traffic whose DUID matched exactly proves the group a voice user of its call named (issue #903). Asked only while
+       one waits on the slot: a burst otherwise costs this field check. */
+    if (s_voice_dispatched && state->p25_p2_heard_vu_epoch[slot] != 0U
+        && p25p2_duid_is_exact(p2_duid_received, duid_decoded)) {
         p25p2_heard_tg_traffic(opts, state, (uint8_t)slot);
     }
     /* Only traffic the receive policy admits holds the voice channel (issue #637). */
@@ -1541,10 +1547,10 @@ p25p2_duid_has_valid_site(const dsd_state* state) {
            && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF;
 }
 
-/* The DUID bits of window timeslot @p timeslot_index (0-3) in @p bits, their reliabilities in @p reliab8, and its soft
-   lookup. */
+/* The DUID bits of window timeslot @p timeslot_index (0-3) in @p bits and as one byte (MSB first) in @p received, their
+   reliabilities in @p reliab8, and its soft lookup. */
 static int
-p25p2_duid_read(int timeslot_index, uint8_t bits[8], uint8_t reliab8[8]) {
+p25p2_duid_read(int timeslot_index, uint8_t bits[8], uint8_t reliab8[8], uint8_t* received) {
     static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
     int complete = 0;
     for (int i = 0; i < 8; i++) {
@@ -1553,6 +1559,7 @@ p25p2_duid_read(int timeslot_index, uint8_t bits[8], uint8_t reliab8[8]) {
         reliab8[i] = p25p2_llr_reliability(p2llr, abs_bit);
         complete = (complete << 1) | bits[i];
     }
+    *received = (uint8_t)complete;
     return p25p2_duid_lookup_soft((uint8_t)complete, reliab8);
 }
 
@@ -1563,7 +1570,8 @@ p25p2_window_duid(int timeslot_index) {
     }
     uint8_t bits[8];
     uint8_t reliab8[8];
-    return p25p2_duid_read(timeslot_index, bits, reliab8);
+    uint8_t received = 0U;
+    return p25p2_duid_read(timeslot_index, bits, reliab8, &received);
 }
 
 static void
@@ -1571,10 +1579,11 @@ p25p2_duid_collect_and_decode(int timeslot_index) {
     uint8_t p2_duid_reliab[8];
     if (timeslot_index < 0 || timeslot_index >= 4) {
         DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
+        p2_duid_received = 0U;
         duid_decoded = -1;
         return;
     }
-    duid_decoded = (int16_t)p25p2_duid_read(timeslot_index, p2_duid, p2_duid_reliab);
+    duid_decoded = (int16_t)p25p2_duid_read(timeslot_index, p2_duid, p2_duid_reliab, &p2_duid_received);
 }
 
 static void
@@ -1689,16 +1698,6 @@ p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t n
    descrambler offset are guesses, and no slot-attributed burst may act. */
 static int s_window_proven = 1;
 
-/* 1 when the DUID bits of the timeslot being dispatched (p2_duid) are the codeword it decoded to exactly. */
-static int
-p25p2_duid_read_exact(void) {
-    uint8_t received = 0U;
-    for (int i = 0; i < 8; i++) {
-        received = (uint8_t)((received << 1) | (p2_duid[i] & 1U));
-    }
-    return p25p2_duid_is_exact(received, duid_decoded);
-}
-
 // A voice burst (DUID 0: 4V, 6: 2V), decoded only on a site whose descrambler seed is set.
 static void
 p25p2_duid_dispatch_voice(dsd_opts* opts, dsd_state* state, time_t now, int valid_site) {
@@ -1711,13 +1710,13 @@ p25p2_duid_dispatch_voice(dsd_opts* opts, dsd_state* state, time_t now, int vali
         return;
     }
     p25p2_duid_refresh_recent_voice(opts, state, now);
-    s_voice_duid_exact = p25p2_duid_read_exact();
+    s_voice_dispatched = 1;
     if (duid_decoded == 0) {
         process_4V(opts, state);
     } else {
         process_2V(opts, state);
     }
-    s_voice_duid_exact = 0;
+    s_voice_dispatched = 0;
 }
 
 // Return to the control channel, and tear the call down only once the receiver has left the voice channel: a return

@@ -14055,10 +14055,11 @@ Private per-protocol modules worth knowing about:
   a CRC-passed MAC_PTT naming a non-zero group (`p25p2_xcch_emit_ptt()` → `p25p2_heard_tg_ptt()`), or a CRC-passed
   live group voice user (`p25p2_vpdu_observe_voice()` → `p25p2_heard_tg_voice_user()`), which only waits on its call
   (`dsd_state::p25_p2_heard_vu_epoch` and its group) until a 4V/2V burst of that same epoch on the slot proves it
-  (`p25p2_emit_voice_activity()` → `p25p2_heard_tg_traffic()`, a field check while nothing waits): BBAC §7.3.1 sends
-  voice users for setups that fail. Only a burst the DUID dispatch ran with its DUID bits exactly the codeword counts
-  (`s_voice_duid_exact` in `p25p2_frame.c`); a hard- or soft-corrected DUID, or a burst run outside the dispatch, is
-  voice but no proof. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
+  (`p25p2_emit_voice_activity()` → `p25p2_heard_tg_traffic()`): BBAC §7.3.1 sends voice users for setups that fail.
+  Only a burst the DUID dispatch ran (`s_voice_dispatched` in `p25p2_frame.c`) with its DUID bits exactly the codeword
+  counts, judged from the byte the DUID read already assembled and only while a voice user waits on the slot, so a
+  burst otherwise costs one field check; a hard- or soft-corrected DUID, or a burst run outside the dispatch, is voice
+  but no proof. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
   epoch an addressless start reopens after a clean END is another epoch. Supergroup evidence is the message's own (a
   regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
   updates the patch table), an active patch entry naming the group, or a checked regroup grant of the group the slot
