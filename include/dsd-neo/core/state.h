@@ -749,6 +749,8 @@ typedef struct {
     char src_home[24];   //display only: a roaming P25 radio's home identity, unit@system (never a source)
     uint64_t
         src_home_key; //the talker's full P25 home SUID (WACN, System ID, unit) when named, 0 otherwise: which radio's home the row shows
+    // 1 when the call withdrew a home an earlier talker named (dsd_call_source_home::withdrawn)
+    uint8_t src_home_withdrawn;
     char tgt_str[200]; //target, expressed as a string for M17, YSF, DSTAR, dPMR
     char t_name[200];  //this is the string present from any csv groupName import
     char s_name[200];  //same as above, but if loaded from a src value and not tg value

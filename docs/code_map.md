@@ -9736,9 +9736,32 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`rtl_stream_apply_pending_retune_profile_for_target()`, which has no finalize) itself when it lands on another
   frequency than the last external landing that took a profile, whatever its width. A landing with no profile queued
   (a DMR or NXDN voice-channel tune) and every finalize (a stream open, a controller retune) forget that landing, so
-  the next one starts the filters over even on the same frequency. Tests:
+  the next one starts the filters over even on the same frequency. The output ring follows the tuner on its own record
+  (`g_external_output_freq_hz`): every external landing, with a profile or without, parks the demod thread under the
+  reconfigure gate (so no block's output write can publish a head loaded before the flush) and flushes the output,
+  moving its generation, and purges the input I/Q captured before it (`controller_request_input_purge()`, as a
+  controller retune does). Before the purge, an rtl_tcp reader restarts (`rtl_device_discard_staged_input()`): as for
+  the device's own retune it drops its partial slice, and it also drops the I byte it holds and the whole chunk it
+  next takes, keeping the pair phase; a chunk it is already writing lands before the flush goes on (the reader marks
+  each chunk's processing, `tcp_chunk_seq`), so the purge takes it. The device's own retune
+  (`rtl_device_set_frequency()`) restarts the reader the same way short of the chunk drop: the staged slice and the I/Q
+  pair a held byte straddles go, and the controller's purge waits for a chunk in progress too. The wait is bounded;
+  one that runs out poisons that chunk (its remaining writes fail as stale) and moves the ring's discard generation,
+  so none of it survives. No byte received before the next chunk boundary reaches the ring; the cost is that one
+  chunk of the new channel, a few milliseconds. A landing with no profile also starts the demodulator over as a
+  retune does: filters and their held-back samples, the output resampler, the FSK modem, the discriminator's previous
+  sample, the CQPSK Gardner delay line, differential decoder and band-edge FLL delay line, and the FSK voice lane's
+  de-emphasis), unless the last external landing was on the same frequency since the last finalize; a
+  repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache, and since it has
+  nothing to rewrite it takes the gate without raising its flag, so a block in flight keeps its whole output. The
+  engine also says whether the peer moved (`peer_moved`: it was sent another frequency than
+  `dsd_opts::rigctl_sent_freq_hz`, or `RigctlFrequencyMoves()`, which every rigctl leg's request counts, moved since
+  the last landing), and a landing that moved it flushes and starts the filters over whatever the records say, since a
+  leg that lands nothing (a manual tune, the legacy direct return to the control channel) can move the peer between
+  two landings, even away and back. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
-  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
+  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`,
+  `rtl_stream_test_external_profileless_landing_against_block()`), `ENGINE_TRUNK_RETUNE_REGRESSION` (`peer_moved`).
 - TETRA receive chain (`demod_pipeline.cpp`, `costas.cpp`, `firdes.cpp`; user view in `docs/cli.md`, `-fT`). A
   TETRA downlink runs a chain of its own; every other stream, and a TETRA profile whose chain cannot run, runs the
   generic CQPSK path exactly as before the chain existed.
@@ -14054,7 +14077,8 @@ Private per-protocol modules worth knowing about:
   Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
   LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
-  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, and Motorola's Group Regroup Voice Channel
+  User - Extended, MFID90 0xA0, whose Source SUID is octets 10-16, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
   carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
   Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
@@ -14067,7 +14091,19 @@ Private per-protocol modules worth knowing about:
   re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
   alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
   home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
-  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  earlier radio's call showed. The home is bound to the working address the voice user that named it carried
+  (`dsd_call_source_home::source`, 0 for none): a later checked voice user that names another working address and no
+  home (an abbreviated form, which fills the call's absent working address without a new epoch) takes the home away
+  and drops that alias too (`dsd_call_state_note_source_address()`), so the call's talker is matched by its working
+  address from then on; the call records the withdrawal (`dsd_call_source_home::withdrawn`, carried to the history row
+  as `Event_History::src_home_withdrawn`), so a row merged across a sync loss drops the earlier radio's home and alias
+  too (`watchdog_event_merge_home_and_alias()`). A repeat of the same full SUID with no working address keeps the
+  binding it had. A 0xA0 is segmented by its declared length (so the next message starts after it), but it names an
+  identity, in the voice-user pass and in the MAC_ACTIVE parse alike, only when it declares the 16 octets of the one
+  layout the decoder knows (or 0, the table's 16) and the segment and the span hold them all; its SUID only when it
+  declares 16. Every other voice identity form is read only when the span holds the whole structure (the MAC_ACTIVE pass parses
+  within the LCCH's span on an LCCH, `p25p2_mac_decode_voice_identity_span()`); such an addressless voice user is
+  `source_nonlocal` to the trunk state machine, so a
   working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
   source the state machine's identity record positively checks under the reception now: every publication of that record
   mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in

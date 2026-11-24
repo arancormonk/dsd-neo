@@ -255,6 +255,19 @@ int rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_co
 void rtl_device_destroy(struct rtl_device* dev);
 
 /**
+ * @brief Restart the device's reader for an external backend's retune (a rigctl peer that moved the radio feeding this
+ * input), whose boundary the device never saw: an rtl_tcp reader drops its partial slice and byte carry, as for a
+ * retune of the device's own, and also the I byte it holds and the whole chunk it next takes (any byte received
+ * before that chunk boundary may be the channel left's). A chunk the reader is already writing lands before this
+ * returns (a bounded wait; a chunk's processing never waits on the network), so an input purge requested after it
+ * takes that chunk too; a wait that runs out poisons that chunk instead, so none of its writes survives. Other
+ * backends stage nothing: a no-op there.
+ *
+ * @param dev Device handle (NULL: no-op).
+ */
+void rtl_device_discard_staged_input(struct rtl_device* dev);
+
+/**
  * @brief Set device center frequency.
  *
  * An I/Q replay has no tuner: this setter and every other tuner setter below (sample rate, gain, nearest gain, PPM,

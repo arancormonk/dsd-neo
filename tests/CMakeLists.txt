@@ -11410,8 +11410,14 @@ add_test(
 set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
 
 # The received identity across the P25 watchdog's retunes and the decoder's passes, run on two threads at once (a
-# ThreadSanitizer build checks them). The rigctl peer is replaced through the linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# ThreadSanitizer build checks them). Both tests here replace the rigctl peer through the linker, so GNU ld and lld
+# only, and only with static libraries: --wrap rewrites the calls dsd-neo_engine's archive members make, never those
+# already bound inside a shared libdsd-neo_engine.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_rxid_watchdog_race
         engine/test_engine_rxid_watchdog_race.c
@@ -11471,8 +11477,13 @@ endif()
 
 # The P25 watchdog thread is a beat and the decoder thread runs its ticks: a release the beat paces tunes from the decoder
 # thread, beside the hunt's writes and reads (run it under tsan-debug too). The rigctl peer is replaced through the
-# linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# linker, so GNU ld and lld only, and only with static libraries: --wrap never reaches the calls inside a shared
+# libdsd-neo_engine, which would reach the real rigctl client instead.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_p25_watchdog_decoder_tick
         engine/test_engine_p25_watchdog_decoder_tick.c
