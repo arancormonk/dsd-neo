@@ -2577,8 +2577,11 @@ class CallLogStore : public QAbstractListModel, public dsd_qt::HeardTalkgroupSou
         QVariantList recordings;
         /* Issue #800: the saved fix as CallHistoryModel's position role reads it, {} without one. */
         QVariantMap position;
-        /* Issue #903: the saved system the fragment is owned by (CallHistoryModel's "vo"), empty for none. */
+        /* Issue #903: the saved system the fragment is owned by (CallHistoryModel's "vo"), empty for none, and the -Y
+           scan-list row it was heard on (CallHistoryModel's "slr", "sll"), 0 and 0 for none. */
         QString heardOwner;
+        quint32 scanListRow = 0;
+        quint64 scanListRev = 0;
     };
 
     /* Issue #903: HeardTalkgroupSource, as CallHistoryModel answers it, over these rows. */
@@ -2587,9 +2590,9 @@ class CallLogStore : public QAbstractListModel, public dsd_qt::HeardTalkgroupSou
         QHash<uint32_t, dsd_qt::HeardTalkgroupRow> heard;
         for (const StoreRow& row : m_rows) {
             if (row.kind != CallHistoryModel::KindVoice || (forSession > 0 && row.session != forSession)
-                || row.heardOwner != owner || row.channel != target.channel
-                || (target.scanListRow && row.freqHz != target.freqHz) || row.tg == 0 || row.tg > UINT32_MAX
-                || row.gi == 1) {
+                || row.heardOwner != owner || row.channel != target.channel || row.scanListRow != target.scanListRow
+                || (row.scanListRow != 0U && row.scanListRev != target.scanListRev) || row.tg == 0
+                || row.tg > UINT32_MAX || row.gi == 1) {
                 continue;
             }
             dsd_qt::HeardTalkgroupRow& entry = heard[static_cast<uint32_t>(row.tg)];

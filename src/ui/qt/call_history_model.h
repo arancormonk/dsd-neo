@@ -400,8 +400,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     }
 
     /** @brief HeardTalkgroupSource: read straight from the rows and their parts, no QVariant per row (issue #718),
-     * each fragment by its own session and owner (Row::viewOwner), on its row's scan target (Row::channel, and for a
-     * -Y row the fragment's own frequency, FragmentPart::freqHz). */
+     * each fragment by its own session and owner (Row::viewOwner), on its row's scan target (Row::channel) and its own
+     * -Y scan-list row (Row::scanListRow, none off it). */
     QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner,
                                              const HeardTarget& target) const override;
 
@@ -671,6 +671,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Issue #903: the saved system that owns the fragment, and its ingest serial (Row::viewOwner, heardSerial). */
         QString viewOwner;
         quint64 heardSerial = 0;
+        /* Issue #903: the -Y scan-list row the fragment was heard on (Row::scanListRow, scanListRev). */
+        quint32 scanListRow = 0;
+        quint64 scanListRev = 0;
     };
 
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -802,6 +805,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint64 rxRing = 0;
         quint64 rxGen = 0;
         bool rxGenKnown = false;
+        /* Issue #903: the -Y scan-list row the fragment was heard on (Event_History::scan_list_row, scan_list_rev): 1 +
+         * the row and its list's identity (scanListRev), 0 and 0 off any -Y row. Each part keeps its own; the row shows
+         * its first part's. Persisted (`slr`, `sll`, also per part); rows older builds stored read none. */
+        quint32 scanListRow = 0;
         /* Issue #800. The tuned frequency rxScope was read with (Event_History::rx_scope.tuned_hz; 0 when unknown):
          * two carriers are two receptions, also of one system whose scope names no carrier. Unlike freqHz, which a
          * merge takes from the newest fragment, it goes with rxScope. Persisted (`rxHz`) while known. */
@@ -848,6 +855,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * part keeps its own, and an update of a fragment keeps the serial it had; the row's is its parts' newest. Not
          * persisted. */
         quint64 heardSerial = 0;
+        /* Issue #903: the identity of the list of the -Y scan-list row the fragment was heard on (scanListRow). */
+        quint64 scanListRev = 0;
     };
 
     /**

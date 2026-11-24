@@ -817,10 +817,12 @@ heard_talkgroup_row(const CallHistoryModel::Row& row, const HeardTarget& target)
            && row.channel == target.channel;
 }
 
-/* Whether a fragment heard on @p freqHz was heard on @p target: a -Y row is named by its frequency too (issue #903). */
+/* Whether a fragment heard on -Y scan-list row @p scanListRow of list @p scanListRev (0 and 0: off any -Y row) was heard
+   on @p target: a -Y row by the row itself, never its name or frequency alone, and off any -Y row only off one (issue
+   #903). */
 bool
-heard_on_target(const HeardTarget& target, qint64 freqHz) {
-    return !target.scanListRow || freqHz == target.freqHz;
+heard_on_target(const HeardTarget& target, quint32 scanListRow, quint64 scanListRev) {
+    return scanListRow == target.scanListRow && (scanListRow == 0U || scanListRev == target.scanListRev);
 }
 
 } // namespace
@@ -833,18 +835,18 @@ CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner, const
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);
-        // Issue #903: each fragment by its own session, owner and frequency; a row of one fragment a reload gave is its
-        // own part.
+        // Issue #903: each fragment by its own session, owner and -Y row; a row of one fragment a reload gave is its own
+        // part.
         if (row.parts.isEmpty()) {
             if ((forSession <= 0 || row.session == forSession) && row.viewOwner == owner
-                && heard_on_target(target, row.freqHz)) {
+                && heard_on_target(target, row.scanListRow, row.scanListRev)) {
                 note_heard_fragment(heard, tg, row.when, row.end, row.heardSerial);
             }
             continue;
         }
         for (const FragmentPart& part : row.parts) {
             if (!part.withdrawn && (forSession <= 0 || part.session == forSession) && part.viewOwner == owner
-                && heard_on_target(target, part.freqHz)) {
+                && heard_on_target(target, part.scanListRow, part.scanListRev)) {
                 note_heard_fragment(heard, tg, part.when, part.end, part.heardSerial);
             }
         }
@@ -1385,6 +1387,9 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
         row.systemUid = item->scan_member == 0U && item->channel_label[0] == '\0' ? systemUid : QString();
     }
     row.channel = QString::fromUtf8(item->channel_label);
+    // Issue #903: the -Y scan-list row is a pair, or none.
+    row.scanListRow = item->scan_list_row;
+    row.scanListRev = item->scan_list_row != 0U ? static_cast<quint64>(item->scan_list_rev) : 0U;
     row.service = QString::fromUtf8(item->service_label);
     row.analog = item->systype == DSD_SYNC_ANALOG;
     row.analogMode = row.analog && dsd_analog_mode_known(item->analog_mode) != 0
@@ -2140,6 +2145,8 @@ fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
     part.liveInput = row.liveInput;
     part.viewOwner = row.viewOwner;
     part.heardSerial = row.heardSerial;
+    part.scanListRow = row.scanListRow;
+    part.scanListRev = row.scanListRev;
     return part;
 }
 
@@ -2199,6 +2206,8 @@ row_of_part(const FragmentPart& part) {
     row.liveInput = part.liveInput;
     row.viewOwner = part.viewOwner;
     row.heardSerial = part.heardSerial;
+    row.scanListRow = part.scanListRow;
+    row.scanListRev = part.scanListRev;
     return row;
 }
 
@@ -2539,6 +2548,8 @@ take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& r
     existing.liveInput = rebuilt.liveInput;
     existing.viewOwner = rebuilt.viewOwner;
     existing.heardSerial = rebuilt.heardSerial;
+    existing.scanListRow = rebuilt.scanListRow;
+    existing.scanListRev = rebuilt.scanListRev;
 }
 
 /** @brief The index of the first part not withdrawn in @p parts that names a source, and the radio @p radio names when
@@ -3859,12 +3870,17 @@ heard_from_json(const QJsonObject& obj) {
     return heard;
 }
 
-/** @brief A row's or part's proof and latch (heard_to_json()), and its owner (`vo`) when it has one. */
+/** @brief A row's or part's proof and latch (heard_to_json()), its owner (`vo`) when it has one, and its -Y scan-list
+ * row (`slr`, and its list's identity `sll` as hex text, which can use all 64 bits) when on one. */
 void
 row_heard_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
     heard_to_json(StoredHeard{row.heardVariant, row.heardId, row.liveInput}, obj);
     if (!row.viewOwner.isEmpty()) {
         obj.insert(QLatin1String("vo"), row.viewOwner);
+    }
+    if (row.scanListRow != 0U) {
+        obj.insert(QLatin1String("slr"), static_cast<qint64>(row.scanListRow));
+        obj.insert(QLatin1String("sll"), QString::number(row.scanListRev, 16));
     }
 }
 
@@ -3875,6 +3891,14 @@ row_heard_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.heardId = heard.id;
     row.liveInput = heard.live;
     row.viewOwner = obj.value(QLatin1String("vo")).toString();
+    // A row whose pair does not read whole is on none.
+    bool revOk = false;
+    const quint64 rev = obj.value(QLatin1String("sll")).toString().toULongLong(&revOk, 16);
+    quint32 scanListRow = 0U;
+    if (json_field_fits(obj, "slr", &scanListRow) && scanListRow != 0U && revOk) {
+        row.scanListRow = scanListRow;
+        row.scanListRev = rev;
+    }
 }
 
 /** @brief One stored fragment part (row_parts_to_json()), read as the row's own fields are. A part stored without its

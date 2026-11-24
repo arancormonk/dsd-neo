@@ -604,6 +604,35 @@ test_live_input_proof_latches_staged_row(void) {
     fixture_close(&f);
 }
 
+/* The -Y scan-list row a call is heard on rides its row (Event_History::scan_list_row, scan_list_rev): stamped at the
+   row's first render from the row the label is taken from, kept through later renders and the commit, and none while
+   the scan is paused. */
+static void
+test_scan_list_row_stamp(void) {
+    proof_fixture f;
+    fixture_open(&f, AUDIO_IN_RTL);
+    f.opts->scanner_mode = 1;
+    f.state->lcn_freq_count = 2;
+    f.state->trunk_lcn_freq[0] = 451000000L;
+    f.state->trunk_lcn_freq[1] = 451000000L;
+    f.state->lcn_list_rev = 0x903CU;
+    f.state->lcn_freq_roll = 2;
+    dsd_state_lcn_on_air_note(f.state, 1);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(row(&f, 0)->scan_list_row == 2U && row(&f, 0)->scan_list_rev == 0x903CU);
+    dsd_state_lcn_on_air_note(f.state, 0); /* the scan moves on before the call ends: the row keeps its stamp */
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 1)->scan_list_row == 2U && row(&f, 1)->scan_list_rev == 0x903CU);
+    /* Paused: a call heard is on no row. */
+    f.opts->scanner_mode = 0;
+    f.state->operator_tuned = 1U;
+    assert(observe(&f, 101U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 1)->target_id == 101U && row(&f, 1)->scan_list_row == 0U && row(&f, 1)->scan_list_rev == 0U);
+    fixture_close(&f);
+}
+
 /* ---- Receive filters (issue #903): traffic a filter says is not this system proves no talkgroup ---- */
 
 /* One access-code filter and the protocol it judges: the code the carrier is decoded with (@ref set_code, known or
@@ -862,6 +891,7 @@ main(void) {
     test_live_input_committed_revision();
     test_live_input_revision_reads_current_input();
     test_live_input_proof_latches_staged_row();
+    test_scan_list_row_stamp();
     test_receive_filter_rejects();
     test_receive_filter_checking();
     test_receive_filter_rejects_midcall();

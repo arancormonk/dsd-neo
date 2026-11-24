@@ -1019,52 +1019,98 @@ test_transient_scoped_to_the_scan_list_row() {
     constexpr long kRowB = 451012500L;
     fixture.opts->scanner_mode = 1;
     fixture.opts->audio_in_type = AUDIO_IN_RTL;
-    fixture.state->lcn_freq_count = 2;
+    fixture.state->lcn_freq_count = 3;
     fixture.state->trunk_lcn_freq[0] = kRowA;
     fixture.state->trunk_lcn_freq[1] = kRowB;
+    fixture.state->trunk_lcn_freq[2] = kRowA; // the first row's frequency again, as a row of another mode
+    fixture.state->lcn_list_rev = 0x903A;
     CallHistoryModel history;
     TalkgroupListModel model(&history);
     history.beginSession();
     history.setSessionOwners(history.session(), QString(), {});
     model.setHistorySession(history.session());
     const time_t now = time(nullptr);
-    // The scanner on the first row, which hears group 42, then on the second.
+    // The scanner on a row, as a step lands it.
     const auto onRow = [&fixture](int row) {
+        fixture.opts->scanner_mode = 1;
+        fixture.state->operator_tuned = 0U;
         fixture.state->lcn_freq_roll = row + 1;
+        dsd_state_lcn_on_air_note(fixture.state, row);
         fixture.opts->rtlsdr_center_freq = static_cast<uint32_t>(*dsd_state_trunk_lcn_slot(fixture.state, row));
     };
-    const auto heardOnRow = [&fixture](uint32_t tg, time_t when, int row) {
+    // The scan paused in place (dsd_engine_channel_scan_pause()): the receiver stays, the operator holds it.
+    const auto pauseInPlace = [&fixture]() {
+        fixture.opts->scanner_mode = 0;
+        fixture.state->operator_tuned = 1U;
+    };
+    // A call heard now, stamped as the producer stamps it (watchdog_event_stamp_tuner_owner(),
+    // watchdog_event_stamp_scan_list_row()).
+    const auto heard = [&fixture](uint32_t tg, time_t when) {
         char label[DSD_CHANNEL_LABEL_SIZE] = {0};
         (void)dsd_channel_label_current(fixture.opts, fixture.state, label, sizeof(label));
-        fixture.commitOn(tg, when, label, true, false);
-        fixture.rings[0].Event_History_Items[1].freq_hz = *dsd_state_trunk_lcn_slot(fixture.state, row);
+        fixture.commitOn(tg, when, label, fixture.opts->scanner_mode == 1, fixture.state->operator_tuned != 0U);
+        Event_History* item = &fixture.rings[0].Event_History_Items[1];
+        const int row = dsd_channel_label_scan_list_row(fixture.opts, fixture.state);
+        item->scan_list_row = row >= 0 ? static_cast<uint32_t>(row) + 1U : 0U;
+        item->scan_list_rev = row >= 0 ? fixture.state->lcn_list_rev : 0U;
+        item->freq_hz = fixture.opts->rtlsdr_center_freq;
+    };
+    const auto refresh = [&]() {
+        history.refresh(fixture.state, fixture.opts);
+        model.refresh(fixture.opts, fixture.state);
     };
     onRow(0);
-    heardOnRow(42, now, 0);
-    history.refresh(fixture.state, fixture.opts);
-    model.refresh(fixture.opts, fixture.state);
+    heard(42, now);
+    refresh();
     expect("903 -Y unnamed: the first row's call is its card", model.count() == 1 && find(model, 42).isValid());
     onRow(1);
-    model.refresh(fixture.opts, fixture.state);
+    refresh();
     expect("903 -Y unnamed: another unnamed row heard nothing", model.count() == 0);
-    heardOnRow(43, now + 5, 1);
-    history.refresh(fixture.state, fixture.opts);
-    model.refresh(fixture.opts, fixture.state);
+    heard(43, now + 5);
+    refresh();
     expect("903 -Y unnamed: the second row's own call only", model.count() == 1 && find(model, 43).isValid());
     onRow(0);
-    model.refresh(fixture.opts, fixture.state);
+    refresh();
     expect("903 -Y unnamed: back on the first row, its call only", model.count() == 1 && find(model, 42).isValid());
 
-    // Two rows named alike: the name is the label, the frequency still tells them apart.
+    // Paused in place on the first row: the view is Exploring's, which heard nothing yet, though the receiver, the
+    // empty label and the empty owner are the row's.
+    pauseInPlace();
+    refresh();
+    expect("903 -Y paused: the row's call is not Exploring's card", model.count() == 0);
+    heard(45, now + 7);
+    refresh();
+    expect("903 -Y paused: a call heard while paused is Exploring's card",
+           model.count() == 1 && find(model, 45).isValid());
+    onRow(0); // resumed on the same row
+    refresh();
+    expect("903 -Y paused: back on the row, the call heard while paused is not its card",
+           model.count() == 1 && find(model, 42).isValid());
+
+    // Two rows on one frequency (the third row repeats the first's, as a row of another mode): each is its own.
+    onRow(2);
+    refresh();
+    expect("903 -Y same frequency: the other row on the frequency heard nothing", model.count() == 0);
+    heard(46, now + 8);
+    refresh();
+    expect("903 -Y same frequency: its own call only", model.count() == 1 && find(model, 46).isValid());
+
+    // Two rows named alike: the name is the label, the row still tells them apart.
     expect("903 -Y named: the rows are named", dsd_state_trunk_lcn_name_set(fixture.state, 0, "Dispatch") == 0
                                                    && dsd_state_trunk_lcn_name_set(fixture.state, 1, "Dispatch") == 0);
-    heardOnRow(44, now + 10, 0);
-    history.refresh(fixture.state, fixture.opts);
-    model.refresh(fixture.opts, fixture.state);
+    onRow(0);
+    heard(44, now + 10);
+    refresh();
     expect("903 -Y named: the first Dispatch row's call is its card", model.count() == 1 && find(model, 44).isValid());
     onRow(1);
-    model.refresh(fixture.opts, fixture.state);
+    refresh();
     expect("903 -Y named: the other Dispatch row heard nothing", model.count() == 0);
+
+    // Another list (a new identity) whose first row is on the same frequency is another row.
+    fixture.state->lcn_list_rev = 0x903B;
+    onRow(0);
+    refresh();
+    expect("903 -Y list: another list's first row heard nothing", model.count() == 0);
     dsd_state_trunk_lcn_free(fixture.state);
 }
 

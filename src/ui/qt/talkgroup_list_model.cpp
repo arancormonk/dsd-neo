@@ -294,9 +294,13 @@ TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* s
     const quint64 ring =
         snapshot->event_history_s != nullptr ? static_cast<quint64>(snapshot->event_history_s[0].instance) : 0U;
     target->channel = QString::fromUtf8(label, static_cast<qsizetype>(qstrnlen(label, sizeof(label))));
-    // A -Y row's name is only a label, which two rows may share or lack: the row is the frequency it is tuned on.
-    target->scanListRow = opts_snapshot->scanner_mode == 1 && !trunkScan;
-    target->freqHz = target->scanListRow ? static_cast<qint64>(dsd_opts_tuned_freq_hz(opts_snapshot)) : 0;
+    // A -Y row's name is only a label, which two rows may share or lack: the row is the one the label is taken from,
+    // stamped as a call heard now stamps it (Event_History::scan_list_row, scan_list_rev).
+    const int scanListRow = dsd_channel_label_scan_list_row(opts_snapshot, snapshot);
+    if (scanListRow >= 0) {
+        target->scanListRow = static_cast<quint32>(scanListRow) + 1U;
+        target->scanListRev = snapshot->lcn_list_rev;
+    }
     return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U, scanMember, target->channel);
 }
 

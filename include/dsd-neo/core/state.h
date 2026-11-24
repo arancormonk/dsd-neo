@@ -780,6 +780,12 @@ typedef struct {
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
+    // The -Y scan-list row the call was heard on (issue #903), stamped and frozen with channel_label: 1 + its index
+    // (dsd_channel_label_scan_list_row()) and the identity of the list it is a row of (dsd_state::lcn_list_rev); 0 and
+    // 0 off any -Y row (no scan, a paused one, a --trunk-scan target). Two rows that share a name, a frequency or
+    // neither stay two rows, and a call heard while a scan is paused is on none.
+    uint32_t scan_list_row;
+    uint64_t scan_list_rev;
     // The verified talkgroup proof of the row's transmission (issue #903; dsd_call_snapshot::heard_variant, heard_id):
     // a dsd_heard_tg_variant (<dsd-neo/core/heard_talkgroup.h>) and the over-the-air id a checked message of this
     // fragment's own call epoch proved, or DSD_HEARD_TG_NONE (0) and 0. Copied from the call, never from a grant or an

@@ -2426,11 +2426,13 @@ suite runs under this compiler.
   noted while the input is not live closes it for good on the row that carries it: the note records the verdict on
   the call (`dsd_call_snapshot::heard_live_input`), closes the epoch's staged row's latch at once (so a commit after a
   switch back to live input, with no render between, reads it shut), and every render that copies the proof ANDs it
-  in, including the render that begins a row after the note. All three ride `push_event_history()`,
-  `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot, `dsd_app_history_tap_copy()`).
-  Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2 (Protocols, "P25 verified
-  talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup"). Test: `CORE_HEARD_TALKGROUP` (its
-  build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
+  in, including the render that begins a row after the note. `Event_History::scan_list_row` and `scan_list_rev` record
+  the `-Y` scan-list row the call was heard on (`dsd_channel_label_scan_list_row()`, 1 + its index, and the list's
+  `lcn_list_rev`; 0 and 0 off any `-Y` row, including a paused scan), stamped and frozen with the channel label. These
+  all ride `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI
+  snapshot, `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and
+  Phase 2 (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup").
+  Test: `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
@@ -19209,10 +19211,12 @@ Qt Quick frontend (`src/ui/qt`):
     saved system owns. Its cards are that owner's store entries (`entriesFor()`) plus this session's history fragments
     whose `viewOwner` (resolved where the ring was read, from the ring's own session, whatever their proof) is that
     owner, or for an empty owner the fragments no system owns, on the scan target on air (the row's channel, the
-    snapshot's `dsd_channel_label_current()`; empty off any scan target; `HeardTarget`), and on a `-Y` row also the
-    frequency the fragment was heard on (`FragmentPart::freqHz`) against the tuned frequency (`dsd_opts_tuned_freq_hz()`):
-    a `-Y` row's name is only a label, which two rows may share or lack, so two unnamed rows, or two named alike, are
-    two targets (a legacy rigctl `-Y` scan writes no tuned frequency, so its rows are told apart by name only).
+    snapshot's `dsd_channel_label_current()`; empty off any scan target; `HeardTarget`), and always the `-Y` scan-list
+    row each fragment was heard on (`FragmentPart::scanListRow`, `scanListRev`, from `Event_History::scan_list_row`,
+    `scan_list_rev`, persisted `slr`/`sll`) against the snapshot's (`dsd_channel_label_scan_list_row()` and
+    `lcn_list_rev`; none off a `-Y` row): a `-Y` row's name is only a label, which two rows may share or lack, and two
+    rows of different modes may share a frequency, so each row is its own target, and a paused scan (Explore) or a
+    call heard during the pause never shares a card with a row.
     Non-learnable traffic still shows for the
     session, and another target's (two unowned targets, or two entries of one saved system, included) or an Explore
     stretch's calls never do; the remembered entries are the owner's, whatever target. One card per number:

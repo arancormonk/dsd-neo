@@ -130,6 +130,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].stream_blocked = 0U;
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
+        event_struct->Event_History_Items[i].scan_list_row = 0U;
+        event_struct->Event_History_Items[i].scan_list_rev = 0U;
         /* No verified talkgroup proof, and not known to be live input (issue #903). */
         event_struct->Event_History_Items[i].heard_variant = (uint8_t)DSD_HEARD_TG_NONE;
         event_struct->Event_History_Items[i].heard_id = 0U;
@@ -167,6 +169,16 @@ watchdog_event_copy_proof(Event_History* dst, const Event_History* src) {
     dst->heard_variant = src->heard_variant;
     dst->heard_id = src->heard_id;
     dst->live_input = src->live_input;
+}
+
+// Who held the tuner and the -Y scan-list row the row's call was heard on (issue #671, #903), copied whole as a row
+// moves.
+static void
+watchdog_event_copy_tuner_stamps(Event_History* dst, const Event_History* src) {
+    dst->operator_tuned = src->operator_tuned;
+    dst->scan_member = src->scan_member;
+    dst->scan_list_row = src->scan_list_row;
+    dst->scan_list_rev = src->scan_list_rev;
 }
 
 void
@@ -229,8 +241,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
-        event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
-        event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
+        watchdog_event_copy_tuner_stamps(&event_struct->Event_History_Items[i],
+                                         &event_struct->Event_History_Items[i - 1]);
         watchdog_event_copy_proof(&event_struct->Event_History_Items[i], &event_struct->Event_History_Items[i - 1]);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].call_channel_kind =
@@ -1072,6 +1084,8 @@ watchdog_event_merge_channel_label(Event_History* retained, const Event_History*
     retained->channel_label_resolved = 1U;
     retained->operator_tuned = staged->operator_tuned;
     retained->scan_member = staged->scan_member;
+    retained->scan_list_row = staged->scan_list_row;
+    retained->scan_list_rev = staged->scan_list_rev;
     /* A row that never resolved its stamps (staged directly) takes the segment's, as it takes its tuner owner. */
     retained->live_input = staged->live_input;
 }
@@ -1731,8 +1745,9 @@ typedef struct {
     uint32_t source_id;
     uint32_t target_id;
     char src_str[200];
-    char src_home[24];     /* a roaming P25 radio's display-only home identity (dsd_call_state_format_home_source()) */
-    uint64_t src_home_key; /* the talker's full home SUID when one was named (any working address), 0 otherwise */
+    char src_home[24];      /* a roaming P25 radio's display-only home identity (dsd_call_state_format_home_source()) */
+    uint64_t src_home_key;  /* the talker's full home SUID when one was named (any working address), 0 otherwise */
+    uint64_t scan_list_rev; /* Event_History::scan_list_rev, and scan_list_row below */
     char tgt_str[200];
     char t_name[200];
     char s_name[200];
@@ -1778,6 +1793,7 @@ typedef struct {
     uint8_t priority;
     uint8_t alg_id;
     uint16_t key_id;
+    uint32_t scan_list_row;
     unsigned long long int mi;
     char sysid_string[200];
     uint8_t t_name_loaded;
@@ -2345,6 +2361,15 @@ watchdog_event_stamp_tuner_owner(const dsd_opts* opts, const dsd_state* state, u
     *scan_member = (opts != NULL && (opts->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts, state))) ? 1U : 0U;
 }
 
+// The -Y scan-list row a call heard now is heard on (issue #903; Event_History::scan_list_row, scan_list_rev): the row
+// the channel label is taken from, by its index and its list's identity. Read with the label, as the tuner owner is.
+static void
+watchdog_event_stamp_scan_list_row(const dsd_opts* opts, const dsd_state* state, uint32_t* row, uint64_t* rev) {
+    const int heard = dsd_channel_label_scan_list_row(opts, state);
+    *row = heard >= 0 ? (uint32_t)heard + 1U : 0U;
+    *rev = heard >= 0 ? state->lcn_list_rev : 0U;
+}
+
 // The verdict is carried by its own flag rather than inferred from a non-empty label, because an
 // unnamed scan-list row resolves to an empty label and that is an answer too: a -Y list with only
 // some rows named is the ordinary case, and keying on emptiness would leave those epochs asking
@@ -2359,6 +2384,8 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
         ctx->channel_label_resolved = 1U;
         ctx->operator_tuned = staged->operator_tuned;
         ctx->scan_member = staged->scan_member;
+        ctx->scan_list_row = staged->scan_list_row;
+        ctx->scan_list_rev = staged->scan_list_rev;
         /* A latch (issue #903): live only while the input was live when the row began and at every render since. */
         ctx->live_input = (uint8_t)(staged->live_input != 0U && dsd_opts_input_is_live(opts));
         return;
@@ -2366,6 +2393,7 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
     ctx->channel_label_resolved = 1U;
     watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member);
+    watchdog_event_stamp_scan_list_row(opts, state, &ctx->scan_list_row, &ctx->scan_list_rev);
     /* Whether the input is live as the row begins (issue #903); later renders and the commit only clear it. */
     ctx->live_input = (uint8_t)dsd_opts_input_is_live(opts);
 }
@@ -2563,6 +2591,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel_label_resolved = ctx->channel_label_resolved;
     item->operator_tuned = ctx->operator_tuned;
     item->scan_member = ctx->scan_member;
+    item->scan_list_row = ctx->scan_list_row;
+    item->scan_list_rev = ctx->scan_list_rev;
     item->heard_variant = ctx->heard_variant;
     item->heard_id = ctx->heard_id;
     item->live_input = ctx->live_input;
@@ -3249,6 +3279,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->operator_tuned = item->operator_tuned;
     ctx->scan_member = item->scan_member;
+    ctx->scan_list_row = item->scan_list_row;
+    ctx->scan_list_rev = item->scan_list_rev;
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
 }
@@ -4700,6 +4732,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
     watchdog_event_stamp_tuner_owner(opts, state, &item->operator_tuned, &item->scan_member);
+    watchdog_event_stamp_scan_list_row(opts, state, &item->scan_list_row, &item->scan_list_rev);
     // Live for the same reason: the notice's own frequency when the PDU named one, else the tuned
     // frequency, and the carrier's access code. Neither is taken playing back files, where the
     // decoder state describes no carrier (see watchdog_event_current_load_tuning()).

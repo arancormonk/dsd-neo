@@ -38,21 +38,22 @@ struct HeardTalkgroupRow {
 
 /**
  * @brief The scan target a session's heard talkgroups are scoped to (HeardTalkgroupSource::heardTalkgroups()): a
- *        trunk-scan target by its id, a `-Y` scan-list row by the frequency it is tuned on (its label is only a display
- *        name: two rows may share one, or have none), or none, off any scan target.
+ *        trunk-scan target by its id, a `-Y` scan-list row by the row itself (its label is only a display name: two
+ *        rows may share one, a frequency, or neither), or none, off any scan target (a paused scan among them).
  */
 struct HeardTarget {
     /* The channel label a call heard on it takes (a row's ChannelRole): the trunk-scan target id, the -Y row's name
        (empty for an unnamed row), empty off any scan target. */
     QString channel;
-    /* A -Y scan-list row: its frequency (dsd_opts_tuned_freq_hz(); 0 when not known) names the row as well. */
-    bool scanListRow = false;
-    qint64 freqHz = 0;
+    /* The -Y scan-list row a call heard on it is stamped with (Event_History::scan_list_row, scan_list_rev): 1 + the
+       row and its list's identity; 0 and 0 off any -Y row. */
+    quint32 scanListRow = 0;
+    quint64 scanListRev = 0;
 };
 
 inline bool
 operator==(const HeardTarget& a, const HeardTarget& b) {
-    return a.channel == b.channel && a.scanListRow == b.scanListRow && a.freqHz == b.freqHz;
+    return a.channel == b.channel && a.scanListRow == b.scanListRow && a.scanListRev == b.scanListRev;
 }
 
 inline bool
@@ -66,8 +67,8 @@ class HeardTalkgroupSource {
 
     /**
      * @brief The distinct talkgroups of the voice rows logged by decode session @p forSession (0 = every session)
-     *        on scan target @p target (a row's ChannelRole id, and for a -Y row the frequency each fragment was heard
-     *        on; empty: off any scan target) whose fragments the saved system @p owner owns (empty: the fragments no
+     *        on scan target @p target (a row's ChannelRole id, and the -Y scan-list row each fragment was heard on,
+     *        none off it; empty: off any scan target) whose fragments the saved system @p owner owns (empty: the fragments no
      *        saved system owns), in no order.
      *
      * A fragment's owner is resolved where its ring was read, from the ring's own session (issue #903), whether or not
@@ -90,7 +91,7 @@ class HeardTalkgroupSource {
 
 } // namespace dsd_qt
 
-#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/4"
+#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/5"
 Q_DECLARE_INTERFACE(dsd_qt::HeardTalkgroupSource, DSD_QT_HEARD_TALKGROUP_SOURCE_IID)
 
 #endif /* DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_SOURCE_H_ */
