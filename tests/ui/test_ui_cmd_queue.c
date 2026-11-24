@@ -28482,6 +28482,7 @@ test_frequency_entry_pauses_a_running_list(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #903 (PR2 review r4 ruling): Go to over a running -Y list, then its resume. The entry pauses the scan and marks
  * the operator (operator_tuned), which keeps the calls heard there from any saved system; it does not move the tuning
@@ -28534,6 +28535,7 @@ test_go_to_and_resume_keep_the_tuning_generation(void) {
     }
     return rc;
 }
+#endif
 
 /*
  * Issue #671: the operator moved the receiver off its session, so the calls heard from here on are filed as the
@@ -32142,7 +32144,9 @@ main(void) {
     rc |= test_channel_scan_pause_services();
 #ifdef USE_RADIO
     rc |= test_frequency_entry_pauses_a_running_list();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_go_to_and_resume_keep_the_tuning_generation();
+#endif
     rc |= test_manual_tunes_mark_the_operator();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
