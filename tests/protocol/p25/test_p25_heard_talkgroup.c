@@ -14,7 +14,8 @@
  * call is decoded on the slot. A voice user alone (a setup that fails, TIA-102.BBAC §7.3.1), one in an IDLE or
  * HANGTIME PDU, a repeat of a recent end, and a clean end followed by an addressless voice start prove nothing. A
  * regroup voice user's own supergroup evidence counts on its first packet, before its handler updates the patch table,
- * and the frozen verdict survives the patch expiring.
+ * and the frozen verdict survives the patch expiring. A followed regroup grant's evidence lasts only for the call it
+ * assigned: a standard repeat that starts the slot's next call (after an end, or naming another talker) spends it.
  *
  * The messages run through the real link control and MAC decoders, trunk state machine and call state; traffic is a
  * 4V burst through the frame decoder's DUID dispatch, whose DUID must match its codeword exactly.
@@ -339,17 +340,23 @@ facch(uint8_t slot, int opcode, const uint8_t* body, int body_len) {
     process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
 }
 
-/* MAC_PTT naming @p group from TEST_SRC, clear (ALGID 0x80). */
+/* MAC_PTT naming @p group from @p src, clear (ALGID 0x80). */
 static void
-p2_ptt(uint8_t slot, uint32_t group) {
+p2_ptt_from(uint8_t slot, uint32_t group, uint32_t src) {
     uint8_t body[17] = {0};
     body[9] = 0x80; /* octet 10: ALGID */
-    body[12] = (uint8_t)(TEST_SRC >> 16);
-    body[13] = (uint8_t)(TEST_SRC >> 8);
-    body[14] = (uint8_t)TEST_SRC;
+    body[12] = (uint8_t)(src >> 16);
+    body[13] = (uint8_t)(src >> 8);
+    body[14] = (uint8_t)src;
     body[15] = (uint8_t)(group >> 8);
     body[16] = (uint8_t)group;
     facch(slot, MAC_PTT, body, (int)sizeof(body));
+}
+
+/* MAC_PTT naming @p group from TEST_SRC. */
+static void
+p2_ptt(uint8_t slot, uint32_t group) {
+    p2_ptt_from(slot, group, TEST_SRC);
 }
 
 static void
@@ -608,6 +615,105 @@ test_p2_followed_regroup_grant_outside_patch_table(void) {
     return rc;
 }
 
+/* The control channel's standard Group Voice Channel Grant Update - Implicit (0x42) of @p group on TEST_CHANNEL, a
+   CRC-passed MAC_SIGNAL. */
+static void
+p2_signal_group_grant_update(uint32_t group) {
+    unsigned long long int mac[24] = {0};
+    mac[1] = 0x42;
+    mac[2] = (TEST_CHANNEL >> 8) & 0xFFU;
+    mac[3] = TEST_CHANNEL & 0xFFU;
+    mac[4] = (group >> 8) & 0xFFU;
+    mac[5] = group & 0xFFU;
+    mac[6] = mac[2];
+    mac[7] = mac[3];
+    mac[8] = mac[4];
+    mac[9] = mac[5];
+    g_state.currentslot = 0;
+    process_MAC_VPDU_crc(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac, 1);
+}
+
+/* A regroup grant's supergroup evidence belongs to the call it assigned. After that call ends and its patch is
+   removed, a standard grant update reusing the slot on the same carrier within the hangtime starts an ordinary call of
+   the same group: its MAC_PTT proves the group (remembered). One session throughout, so the slot keeps the regroup
+   assignment; the update comes once the ended call's stale-regrant hold allows it a probe. */
+static int
+test_p2_regroup_evidence_expires_with_its_call(void) {
+    int rc = 0;
+    on_tdma_control_channel();
+    g_opts.trunk_hangtime = 5.0f;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+    p2_signal_regroup_grant(TEST_SG);
+    rc |= expect("P2 regroup grant followed", g_opts.trunk_is_tuned == 1 && p25_sm_get_ctx()->vc_tg == TEST_SG);
+    p2_ptt(0U, TEST_SG);
+    const dsd_call_snapshot first = slot_call(0U);
+    rc |= expect("P2 regroup call is a supergroup", active_on(0U, TEST_SG) && noted_not_remembered(0U));
+    advance_ms(30U);
+    p2_end(0U, TEST_SG);
+    p25_patch_clear_sg(&g_state, TEST_SG);
+    advance_ms(2100U);
+    p2_signal_group_grant_update(TEST_SG);
+    rc |= expect("P2 standard update keeps the same carrier",
+                 g_opts.trunk_is_tuned == 1 && p25_sm_get_ctx()->vc_freq_hz == TEST_FREQ);
+    advance_ms(30U);
+    p2_ptt(0U, TEST_SG);
+    const dsd_call_snapshot second = slot_call(0U);
+    rc |= expect("P2 standard update's MAC_PTT opens another call",
+                 active_on(0U, TEST_SG) && second.epoch != first.epoch);
+    rc |= expect("P2 standard update's call proves the group", remembered(0U, TEST_SG));
+
+    /* A regroup grant after that end names the next call a supergroup again. */
+    advance_ms(30U);
+    p2_end(0U, TEST_SG);
+    advance_ms(600U);
+    p2_signal_regroup_grant(TEST_SG);
+    p25_patch_clear_sg(&g_state, TEST_SG);
+    advance_ms(600U);
+    p2_ptt(0U, TEST_SG);
+    rc |= expect("P2 regroup grant's next call is a supergroup again", noted_not_remembered(0U));
+    return rc;
+}
+
+/* The control channel's standard Group Voice Channel Grant - Implicit (0x40) of @p group from @p src on TEST_CHANNEL,
+   a CRC-passed MAC_SIGNAL. */
+static void
+p2_signal_group_grant_from(uint32_t group, uint32_t src) {
+    unsigned long long int mac[24] = {0};
+    mac[1] = 0x40;
+    mac[3] = (TEST_CHANNEL >> 8) & 0xFFU;
+    mac[4] = TEST_CHANNEL & 0xFFU;
+    mac[5] = (group >> 8) & 0xFFU;
+    mac[6] = group & 0xFFU;
+    mac[7] = (src >> 16) & 0xFFU;
+    mac[8] = (src >> 8) & 0xFFU;
+    mac[9] = src & 0xFFU;
+    g_state.currentslot = 0;
+    process_MAC_VPDU_crc(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac, 1);
+}
+
+/* A standard grant repeat naming another talker while the regroup call is live starts that talker's call on the
+   slot (p25_grant_duplicate_start_new_call()); the regroup grant's evidence was the earlier call's, so with the patch
+   removed the new talker's MAC_PTT proves the group. */
+static int
+test_p2_regroup_evidence_ends_with_a_new_talker(void) {
+    int rc = 0;
+    on_tdma_control_channel();
+    p2_signal_regroup_grant(TEST_SG);
+    p2_ptt(0U, TEST_SG);
+    const dsd_call_snapshot first = slot_call(0U);
+    rc |= expect("P2 regroup call is a supergroup", active_on(0U, TEST_SG) && noted_not_remembered(0U));
+    p25_patch_clear_sg(&g_state, TEST_SG);
+    advance_ms(100U);
+    p2_signal_group_grant_from(TEST_SG, TEST_SRC + 1U);
+    const dsd_call_snapshot second = slot_call(0U);
+    rc |= expect("P2 standard grant naming another talker starts another call",
+                 second.epoch != first.epoch && second.ota_source_id == TEST_SRC + 1U);
+    advance_ms(30U);
+    p2_ptt_from(0U, TEST_SG, TEST_SRC + 1U);
+    rc |= expect("P2 new talker's standard call proves the group", remembered(0U, TEST_SG));
+    return rc;
+}
+
 /* A voice burst run outside the DUID dispatch carries no DUID verdict and proves nothing. */
 static int
 test_p2_voice_outside_dispatch_proves_nothing(void) {
@@ -824,6 +930,8 @@ main(void) {
     rc |= test_p2_corrected_duid_traffic_proves_nothing();
     rc |= test_p2_voice_outside_dispatch_proves_nothing();
     rc |= test_p2_followed_regroup_grant_outside_patch_table();
+    rc |= test_p2_regroup_evidence_expires_with_its_call();
+    rc |= test_p2_regroup_evidence_ends_with_a_new_talker();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();

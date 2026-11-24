@@ -2835,6 +2835,7 @@ p25_grant_duplicate_start_new_call(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     slot_ctx->enc_override_clear = force_clear ? 1 : 0;
     slot_ctx->algid = 0;
     slot_ctx->keyid = 0;
+    slot_ctx->regroup_sg = 0U;
     if (data_call) {
         return;
     }
@@ -2943,6 +2944,20 @@ p25_grant_duplicate_refresh_call(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     }
 }
 
+/* A repeat accepted on logical slot @p slot after the call its assignment carried ended (no epoch open, and voice came
+ * since the assignment's wait began) assigns the slot's next call: the ended call's regroup evidence is spent, and only
+ * a regroup grant naming the next call marks it again (p25_sm_note_regroup_grant(), after the repeat's dispatch). */
+static void
+p25_grant_duplicate_spend_ended_call(p25_sm_ctx_t* ctx, int slot) {
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (!p25_voice_slot_epoch_active(slot_ctx) && (!slot_ctx->grant_active || slot_ctx->acquire_ended)) {
+        slot_ctx->regroup_sg = 0U;
+    }
+}
+
 static int
 p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                            const dsd_tg_policy_call_route* route, const dsd_tg_policy_decision* decision, long freq,
@@ -2962,6 +2977,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 
     // The repeat is accepted: the clear-bit release it planned is spent now, before anything re-reads the ledger.
     p25_grant_commit_enc_release(ctx, state, eval_ctx);
+    p25_grant_duplicate_spend_ended_call(ctx, p25_grant_logical_slot(ctx, route->slot));
     // An update accepted after the slot's conversation lapsed (a new talker on a held destination) is a new call.
     p25_slot_forget_lapsed_follow(ctx, state, p25_grant_logical_slot(ctx, route->slot), now_m);
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
