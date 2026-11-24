@@ -95,10 +95,24 @@ static int g_scan_ext_lookups;
 /* What a healthy digital -Y pass of test_healthy_digital_pass_costs() makes of each. */
 static const int kHealthyPassMonoReads = 1;
 static const int kHealthyPassScanLookups = 1;
+/* And what its -Y timing tick makes of them (the tick is handed its clock samples). */
+static const int kHealthyTickMonoReads = 0;
+static const int kHealthyTickScanLookups = 1;
 double __real_dsd_decode_now_mono_s(void);
 double __wrap_dsd_decode_now_mono_s(void);
 void* __real_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
 void* __wrap_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
+
+/* Every call the -Y timing tick makes for the owed recovery's window (issue #899 r14t: none on a healthy row). */
+static int g_owed_window_calls;
+int __real_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
+int __wrap_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
+
+int
+__wrap_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s) {
+    ++g_owed_window_calls;
+    return __real_dsd_engine_channel_scan_owed_recovery_window(state, deadline_m, span_s);
+}
 
 double
 __wrap_dsd_decode_now_mono_s(void) {
@@ -733,6 +747,21 @@ test_healthy_digital_pass_costs(void) {
     if (reads != kHealthyPassMonoReads || lookups != kHealthyPassScanLookups) {
         DSD_FPRINTF(stderr, "a healthy digital -Y pass: %d decode clock reads and %d -Y scan lookups, want %d and %d\n",
                     reads, lookups, kHealthyPassMonoReads, kHealthyPassScanLookups);
+        assert(0);
+    }
+    /* The pass's -Y timing publication: no call for the owed recovery's window, and its own lookups and reads. */
+    g_mono_reads = 0;
+    g_scan_ext_lookups = 0;
+    g_owed_window_calls = 0;
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    const int tick_reads = g_mono_reads - 1;
+    if (g_owed_window_calls != 0 || tick_reads != kHealthyTickMonoReads
+        || g_scan_ext_lookups != kHealthyTickScanLookups) {
+        DSD_FPRINTF(stderr,
+                    "a healthy digital -Y tick: %d owed-window calls, %d decode clock reads and %d -Y scan lookups, "
+                    "want 0, %d and %d\n",
+                    g_owed_window_calls, tick_reads, g_scan_ext_lookups, kHealthyTickMonoReads,
+                    kHealthyTickScanLookups);
         assert(0);
     }
     dsd_engine_channel_scan_leave(opts, state);
