@@ -44,24 +44,24 @@
 
 // Stubs and helpers (same pattern as other DMR tests)
 void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    (void)opts;
-    (void)state;
+watchdog_event_history(dsd_opts* o, dsd_state* s, uint8_t slot) {
+    (void)o;
+    (void)s;
     (void)slot;
 }
 
 void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    (void)opts;
-    (void)state;
+watchdog_event_current(const dsd_opts* o, dsd_state* s, uint8_t slot) {
+    (void)o;
+    (void)s;
     (void)slot;
 }
 
 int
-dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+dsd_event_emit_data_notice(dsd_opts* o, dsd_state* s, uint8_t slot, const dsd_call_observation* observation,
                            const char* notice) {
-    (void)opts;
-    (void)state;
+    (void)o;
+    (void)s;
     (void)observation->ota_source_id;
     (void)observation->ota_target_id;
     (void)notice;
@@ -91,25 +91,25 @@ crc8(uint8_t bits[], unsigned int len) {
 }
 
 static dsd_trunk_tune_result
-test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+test_tune_to_freq(dsd_opts* o, dsd_state* s, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
     (void)ted_sps;
-    if (!opts || !state || freq <= 0) {
+    if (!o || !s || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
-    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-    opts->trunk_is_tuned = 1;
+    s->trunk_vc_freq[0] = s->trunk_vc_freq[1] = freq;
+    o->trunk_is_tuned = 1;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static dsd_trunk_tune_result
-test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+test_return_to_cc(dsd_opts* o, dsd_state* s, uint64_t request_id) {
     (void)request_id;
-    if (opts) {
-        opts->trunk_is_tuned = 0;
+    if (o) {
+        o->trunk_is_tuned = 0;
     }
-    if (state) {
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    if (s) {
+        s->trunk_vc_freq[0] = s->trunk_vc_freq[1] = 0;
     }
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
