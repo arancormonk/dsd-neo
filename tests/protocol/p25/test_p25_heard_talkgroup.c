@@ -753,6 +753,37 @@ test_p2_regroup_evidence_survives_unchecked_new_talker(void) {
     return rc;
 }
 
+/* A checked repeat is judged against the talker the last checked message named, not one a failed-CRC repeat (-F) put
+   on the slot: after a failed-CRC repeat naming talker B, a checked standard grant for B starts B's call and spends the
+   regroup evidence (B's MAC_PTT proves the group), and a checked repeat for the regroup grant's own talker spends
+   nothing (its MAC_PTT is still a supergroup). */
+static int
+test_p2_regroup_evidence_judged_by_the_checked_talker(void) {
+    int rc = 0;
+    for (int back = 0; back < 2; back++) {
+        on_tdma_control_channel();
+        fill_patch_table();
+        p2_signal_regroup_grant(TEST_SG);
+        p2_ptt(0U, TEST_SG);
+        rc |= expect("P2 regroup call is a supergroup", active_on(0U, TEST_SG) && noted_not_remembered(0U));
+        advance_ms(100U);
+        p2_signal_group_grant_from_crc(TEST_SG, TEST_SRC + 1U, 0);
+        advance_ms(30U);
+        const uint32_t talker = back ? TEST_SRC : TEST_SRC + 1U;
+        p2_signal_group_grant_from(TEST_SG, talker);
+        advance_ms(30U);
+        p2_ptt_from(0U, TEST_SG, talker);
+        if (back) {
+            rc |= expect("P2 checked repeat for the regroup talker after a failed-CRC one keeps the regroup evidence",
+                         active_on(0U, TEST_SG) && noted_not_remembered(0U));
+        } else {
+            rc |= expect("P2 checked grant for the failed-CRC repeat's talker spends the regroup evidence",
+                         active_on(0U, TEST_SG) && remembered(0U, TEST_SG));
+        }
+    }
+    return rc;
+}
+
 /* The same for a failed-CRC update accepted after the regroup call ended: it spends nothing, so the next MAC_PTT of
    the group is still a supergroup. */
 static int
@@ -1012,6 +1043,7 @@ main(void) {
     rc |= test_p2_regroup_evidence_ends_with_a_new_talker();
     rc |= test_p2_regroup_evidence_survives_unchecked_new_talker();
     rc |= test_p2_regroup_evidence_survives_unchecked_update_after_end();
+    rc |= test_p2_regroup_evidence_judged_by_the_checked_talker();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();

@@ -263,6 +263,10 @@ typedef struct {
        the patch table, which may hold no row for it. A checked grant or repeat that starts the slot's next call spends
        it; one whose check failed (-F) spends nothing. */
     uint32_t regroup_sg;
+    /* The talker the last message whose source check passed named for this assignment's call, 0 none: a checked
+       repeat naming another talker than this one starts the slot's next call and spends regroup_sg (issue #903). Kept
+       apart from src, which a failed-CRC message (-F) also sets for the follow. */
+    uint32_t checked_src;
     p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
@@ -1051,7 +1055,8 @@ int p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, i
  *
  * Called by a decoder after it dispatched the grant: each slot's accepted group assignment for @p sg keeps the word
  * (p25_sm_slot_ctx_t::regroup_sg) until the assignment is cleared or a checked grant replaces it, or a checked repeat
- * starts the slot's next call (one naming another talker, or one accepted after the assignment's call ended); a grant
+ * starts the slot's next call (one naming another talker than the last checked one, p25_sm_slot_ctx_t::checked_src,
+ * or one accepted after the assignment's call ended); a grant
  * or repeat whose check failed (-F) spends nothing. It is kept whether or not the patch table has a
  * row for the supergroup (a full table of live member-bearing patches takes no memberless row). A regroup repeat marks
  * that next call again: this runs after its dispatch.

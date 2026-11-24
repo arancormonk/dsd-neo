@@ -1603,6 +1603,15 @@ p25_sm_claim_withdraws(const p25_sm_identity_claim* claim, uint8_t checked) {
     return checked;
 }
 
+/* A message naming @p claim whose source check passed names the assignment's last checked talker
+ * (p25_sm_slot_ctx_t::checked_src). */
+static void
+p25_slot_note_checked_talker(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_identity_claim* claim) {
+    if (claim->source != 0U && (claim->checked & P25_SM_IDENTITY_CHECKED_SOURCE) != 0U) {
+        slot_ctx->checked_src = claim->source;
+    }
+}
+
 /* A message naming @p claim leaves the slot's assignment as it is: each field it names with the assignment's own
  * value gains the message's verdict, and no flag is cleared but the source's by a special address. Applied under the
  * current reception (p25_slot_bind_reception()). */
@@ -1614,6 +1623,7 @@ p25_slot_promote_identity(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, c
     slot_ctx->identity_checked =
         p25_sm_claim_withdraws(claim, (uint8_t)((p25_slot_verdicts_now(slot_ctx, state) | (claim->checked & named))
                                                 & P25_SM_IDENTITY_CHECKED_ALL));
+    p25_slot_note_checked_talker(slot_ctx, claim);
 }
 
 /* A message naming @p claim about the call the slot's assignment already holds (a repeated grant): each field it names
@@ -1649,6 +1659,7 @@ p25_slot_apply_identity_claim(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* stat
         }
     }
     slot_ctx->identity_checked = p25_sm_claim_withdraws(claim, checked);
+    p25_slot_note_checked_talker(slot_ctx, claim);
 }
 
 /* A voice user observing the slot's call names who is talking now. Within the assignment it describes (the same kind
@@ -2267,6 +2278,7 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].enc_override_clear = 0;
     ctx->slots[slot].enc_lockout_reprobe = 0;
     ctx->slots[slot].regroup_sg = 0U;
+    ctx->slots[slot].checked_src = 0U;
     // last_followed_m is deliberately NOT cleared here. It is carrier history,
     // not assignment state, and this helper also runs for slots that are merely
     // being vacated (p25_grant_clear_moved_target_slots) -- wiping the countdown
@@ -2409,6 +2421,9 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
     slot_ctx->enc_lockout_reprobe = (eval_ctx && eval_ctx->enc_lockout_reprobe) ? 1 : 0;
     /* A new assignment: a regroup grant names its supergroup after its dispatch (p25_sm_note_regroup_grant()). */
     slot_ctx->regroup_sg = 0U;
+    slot_ctx->checked_src = 0U;
+    const p25_sm_identity_claim claim = p25_sm_event_claim(ev);
+    p25_slot_note_checked_talker(slot_ctx, &claim);
     p25_slot_note_grant(slot_ctx, now_m);
     slot_ctx->tg = target_id;
 }
@@ -2815,9 +2830,7 @@ p25_grant_duplicate_crypto_needs_restart(int previous_svc, int current_svc, int 
  * talker where both name one, or another kind or target. A source the assignment did not have is learned, not a
  * change. */
 static int
-p25_grant_duplicate_names_another_call(const p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state,
-                                       const p25_sm_event_t* ev) {
-    const p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx, state);
+p25_grant_duplicate_names_another_call_than(const p25_sm_identity_claim held, const p25_sm_event_t* ev) {
     const p25_sm_identity_claim claim = p25_sm_event_claim(ev);
     const uint8_t named = p25_sm_claim_names(&claim, held.source, held.target, held.kind);
     const int talker_changed =
@@ -2826,6 +2839,27 @@ p25_grant_duplicate_names_another_call(const p25_sm_slot_ctx_t* slot_ctx, const 
         claim.kind != (uint8_t)DSD_CALL_KIND_UNKNOWN && (named & P25_SM_IDENTITY_CHECKED_KIND) == 0U;
     const int target_changed = claim.target != 0U && (named & P25_SM_IDENTITY_CHECKED_TARGET) == 0U;
     return talker_changed || kind_changed || target_changed;
+}
+
+static int
+p25_grant_duplicate_names_another_call(const p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state,
+                                       const p25_sm_event_t* ev) {
+    return p25_grant_duplicate_names_another_call_than(p25_sm_slot_claim(slot_ctx, state), ev);
+}
+
+/* A checked repeat @p ev naming another call than the assignment's as its checked messages named it (its talker the
+ * last checked one, p25_sm_slot_ctx_t::checked_src) starts the slot's next call: the regroup evidence is spent. One
+ * whose check failed, or the talker a failed-CRC repeat put on the slot, decides nothing. */
+static void
+p25_grant_duplicate_spend_another_call(p25_sm_slot_ctx_t* slot_ctx, const dsd_state* state, const p25_sm_event_t* ev) {
+    if (!p25_grant_spends_regroup_evidence(ev)) {
+        return;
+    }
+    p25_sm_identity_claim held = p25_sm_slot_claim(slot_ctx, state);
+    held.source = slot_ctx->checked_src;
+    if (p25_grant_duplicate_names_another_call_than(held, ev)) {
+        slot_ctx->regroup_sg = 0U;
+    }
 }
 
 /* A repeat naming another call (p25_grant_duplicate_names_another_call()) starts that call with nothing of the earlier
@@ -2843,9 +2877,6 @@ p25_grant_duplicate_start_new_call(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     slot_ctx->enc_override_clear = force_clear ? 1 : 0;
     slot_ctx->algid = 0;
     slot_ctx->keyid = 0;
-    if (p25_grant_spends_regroup_evidence(ev)) {
-        slot_ctx->regroup_sg = 0U;
-    }
     if (data_call) {
         return;
     }
@@ -2866,6 +2897,7 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[crypto_slot];
+    p25_grant_duplicate_spend_another_call(slot_ctx, state, ev);
     if (p25_grant_duplicate_names_another_call(slot_ctx, state, ev)) {
         p25_grant_duplicate_start_new_call(ctx, state, ev, route, eval_ctx, crypto_slot, data_call, now_m);
         return;
@@ -3244,6 +3276,7 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
     /* A grant whose check failed replaces the assignment but spends no regroup evidence it held for the same group. */
     const uint32_t kept_regroup_sg =
         (slot >= 0 && slot <= 1 && !p25_grant_spends_regroup_evidence(ev)) ? ctx->slots[slot].regroup_sg : 0U;
+    const uint32_t kept_checked_src = kept_regroup_sg != 0U ? ctx->slots[slot].checked_src : 0U;
     if (grant->clear_policy_slot_only) {
         // A slot whose conversation lapsed while the companion kept the carrier starts a new one: read it before the
         // clear wipes the slot's last stop.
@@ -3268,6 +3301,7 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
                                grant->reused_carrier);
     if (kept_regroup_sg != 0U && ctx->slots[slot].is_group && (uint32_t)ctx->slots[slot].ota_tg == kept_regroup_sg) {
         ctx->slots[slot].regroup_sg = kept_regroup_sg;
+        ctx->slots[slot].checked_src = kept_checked_src;
     }
 }
 
