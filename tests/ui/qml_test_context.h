@@ -4563,9 +4563,19 @@ class Setup : public QObject {
                               m_applied_table != nullptr ? m_applied_table : m_talkgroup_state.get());
     }
 
+    /**
+     * @brief Have the store's before-edit hook refuse (@p refused) or allow every Forget and Clear, as History's
+     *        spillSettler() does while it cannot save its log (qt_ui.cpp wires that hook).
+     */
+    Q_INVOKABLE void
+    setRememberedEditsRefused(bool refused) {
+        m_heard_store->setBeforeEdit([refused]() { return !refused; });
+    }
+
     /** @brief Forget every owner a case remembered for, learn for none, and put no owner on air. */
     Q_INVOKABLE void
     resetRememberedTalkgroups() {
+        m_heard_store->setBeforeEdit({});
         for (const QString& owner : std::as_const(m_remembered_owners)) {
             m_heard_store->clear(owner);
         }

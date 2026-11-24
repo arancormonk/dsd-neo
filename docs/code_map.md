@@ -19236,7 +19236,12 @@ Qt Quick frontend (`src/ui/qt`):
     the viewed owner has an entry, remembering or not), side by side as the bulk actions are. With a screen reader on
     (#860) neither is shown or hidden by a scan hop: both stay while the decoder runs, each disabled where it does not
     apply. Clear asks first ("Forget the talkgroups remembered for %1?", naming the saved system through
-    `savedSystems.getByUid()`), and clears the owner it captured when it asked. With `remembering` on in session scope,
+    `savedSystems.getByUid()`), and clears the owner it captured when it asked. A Forget or Clear the list refuses
+    (`forgetTalkgroupOf()`/`clearRememberedOf()` false: History could not settle its spill) leaves the sheet or the
+    confirmation open with one line in the alert colour as `ConfirmDialog`'s error (`forgetTalkgroupError`,
+    `clearRememberedError`, `Accessible.AlertMessage`, read out through `Navigation.announce()`): "Call history could
+    not be saved, so this talkgroup is still remembered." / "... so these talkgroups are still remembered."; tapping
+    again retries, and a reopen starts without it. With `remembering` on in session scope,
     the session-only note says heard talkgroups are remembered and the scope note gives way to it (a scan row keeps its
     own). `hasRemembered` follows the remembered numbers the model holds: read with them, and dropped at once by a
     forget or clear of the viewed owner (`noteHasRemembered()`). The saved-system editor (`WizardScreen.qml`, Trunking

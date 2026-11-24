@@ -387,6 +387,69 @@ Item {
             verify(!sheet.visible);
         }
 
+        // Issue #903 (PR2 review r2, P2): a Forget History refuses (it cannot save its log) leaves the sheet open with the
+        // card still remembered, and says why; once History saves, tapping again forgets it.
+        function test_refused_forget_stays_in_the_sheet() {
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            var sheet = findChild(screenLoader.item, "talkgroupEditSheet");
+            var forget = findChild(sheet, "forgetTalkgroup");
+            var error = findChild(sheet, "forgetTalkgroupError");
+            var card = cardFor(4242);
+            tap(findChild(card, "talkgroupEditButton"));
+            tryCompare(sheet, "visible", true);
+            verify(!error.visible);
+            testContext.setRememberedEditsRefused(true);
+            tap(forget);
+            tap(forget);
+            compare(testContext.rememberedTalkgroupCount(uid), 1, "nothing was forgotten");
+            verify(sheet.visible, "the sheet stays open");
+            verify(error.visible);
+            compare(error.text, "Call history could not be saved, so this talkgroup is still remembered.");
+            testContext.setRememberedEditsRefused(false);
+            tap(forget);
+            tap(forget);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+            verify(!sheet.visible);
+        }
+
+        // Issue #903 (PR2 review r2, P2): a Clear History refuses keeps its confirmation open, with the list still
+        // remembered, and says why there, read out; tapping again once History saves clears it, and asking again starts
+        // without the refusal.
+        function test_refused_clear_stays_in_the_confirmation() {
+            var screen = screenLoader.item;
+            var clear = findChild(screen, "clearRememberedTalkgroups");
+            var confirm = findChild(screen, "clearRememberedConfirm");
+            var error = findChild(confirm, "clearRememberedError");
+            var yes = findChild(confirm, "confirmClearRemembered");
+            verify(error !== null);
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            tryCompare(clear, "visible", true);
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            verify(!error.visible);
+            testContext.setRememberedEditsRefused(true);
+            var heard = confirm.announcements;
+            tap(yes);
+            compare(testContext.rememberedTalkgroupCount(uid), 1, "nothing was cleared");
+            verify(confirm.visible, "the confirmation stays open");
+            verify(error.visible);
+            compare(error.text, "Call history could not be saved, so these talkgroups are still remembered.");
+            compare(error.Accessible.role, Accessible.AlertMessage);
+            compare(confirm.announcements, heard + 1, "TalkBack hears the refusal");
+            compare(confirm.announced, error.text);
+            tap(findChild(confirm, "cancelClearRemembered"));
+            verify(!confirm.visible);
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            verify(!error.visible, "asking again starts without the refusal");
+            testContext.setRememberedEditsRefused(false);
+            tap(yes);
+            verify(!confirm.visible);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+        }
+
         // Issue #903: Clear is offered while the saved system on air has something remembered (remembering or not), asks
         // first naming that system, and clears that system's list.
         function test_clear_remembered_talkgroups() {

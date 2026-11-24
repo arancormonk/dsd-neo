@@ -60,16 +60,22 @@ Item {
     // Issue #903: the system whose remembered talkgroups Clear asks about, captured when it asks, and its name.
     property string clearOwner: ""
     property string clearOwnerName: ""
+    // A Clear History refused (it could not save its log): said in the confirmation, which stays open.
+    property string clearError: ""
     function requestClearRemembered() {
         clearOwner = talkgroups.viewedOwner;
         var system = typeof savedSystems !== "undefined" ? savedSystems.getByUid(clearOwner) : ({});
         clearOwnerName = system && system.name ? system.name : screen.systemName;
+        clearError = "";
         clearConfirm.visible = true;
     }
     ModalSheet {
         id: clearConfirm
         objectName: "clearRememberedConfirm"
         accessibleName: qsTr("Forget remembered talkgroups")
+        // What the confirmation last read out, and how many (Navigation.announce()).
+        property string announced: ""
+        property int announcements: 0
         ReadableText {
             objectName: "clearRememberedQuestion"
             width: parent.width
@@ -86,13 +92,30 @@ Item {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(13)
         }
+        ReadableText {
+            objectName: "clearRememberedError"
+            width: parent.width
+            visible: text.length > 0
+            text: screen.clearError
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.alert
+            Accessible.role: Accessible.AlertMessage
+        }
         OutlineButton {
+            id: confirmClear
             objectName: "confirmClearRemembered"
             width: parent.width
             height: Math.max(48, implicitHeight)
             text: qsTr("Forget remembered talkgroups")
             onClicked: {
-                talkgroups.clearRememberedOf(screen.clearOwner);
+                if (!talkgroups.clearRememberedOf(screen.clearOwner)) {
+                    // Refused: nothing was cleared. The confirmation stays, and says why; tapping again retries.
+                    screen.clearError = qsTr("Call history could not be saved, so these talkgroups are still remembered.");
+                    Navigation.announce(clearConfirm, confirmClear, screen.clearError);
+                    return;
+                }
                 clearConfirm.visible = false;
             }
         }

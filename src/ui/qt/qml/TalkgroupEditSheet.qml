@@ -27,6 +27,8 @@ ModalSheet {
     property bool remembered: false
     property string owner: ""
     property bool forgetArmed: false
+    // A Forget History refused (it could not save its log): said in the sheet, which stays open.
+    property string forgetError: ""
     // What the sheet last read out, and how many (Navigation.announce()).
     property string announced: ""
     property int announcements: 0
@@ -74,6 +76,7 @@ ModalSheet {
         remembered = isRemembered === true;
         owner = heardOwner || "";
         forgetArmed = false;
+        forgetError = "";
         submitted = false;
         localMessage = "";
         visible = true;
@@ -281,11 +284,27 @@ ModalSheet {
                 return;
             }
             sheet.forgetArmed = false;
-            sheet.heardList.forgetTalkgroupOf(sheet.owner, Number(sheet.idStart));
+            if (!sheet.heardList.forgetTalkgroupOf(sheet.owner, Number(sheet.idStart))) {
+                // Refused: nothing was forgotten. The sheet stays, and says why; tapping again retries.
+                sheet.forgetError = qsTr("Call history could not be saved, so this talkgroup is still remembered.");
+                Navigation.announce(sheet, forgetButton, sheet.forgetError);
+                return;
+            }
             sheet.submitted = true;
             sheet.visible = false;
             Qt.inputMethod.hide();
         }
+    }
+    ReadableText {
+        objectName: "forgetTalkgroupError"
+        width: parent.width
+        visible: sheet.remembered && text.length > 0
+        text: sheet.forgetError
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.alert
+        Accessible.role: Accessible.AlertMessage
     }
     OutlineButton {
         objectName: "saveTalkgroupList"
