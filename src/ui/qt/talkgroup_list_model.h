@@ -33,6 +33,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <array>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <memory>
@@ -229,6 +230,10 @@ class TalkgroupListModel : public QAbstractListModel {
     void updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
                            bool allowListedOnly);
     void observeDecryption(const dsd_state* snapshot);
+    /** @brief The owner whose encryption cache the call slot @p slot holds (ring @p ring's epoch @p epoch, @p active or
+     * ended) is recorded under, into @p owner: the viewed owner when the call was first seen active; false for an ended
+     * call never seen active. */
+    bool cryptoOwnerOf(quint64 ring, uint8_t slot, quint64 epoch, bool active, QString* owner);
 
     struct Row {
         uint32_t idStart = 0; /* 0/0 on a pattern row, which is matched by its pattern, never by these bounds. */
@@ -396,6 +401,16 @@ class TalkgroupListModel : public QAbstractListModel {
     QHash<QString, quint64> m_clearedThrough;
     /* Per viewed owner: what was last observed of each talkgroup's encryption. */
     QHash<QString, QHash<quint32, QVariantMap>> m_observedCrypto;
+
+    /* Per call slot: the call last seen on the air (its ring and epoch) and the owner it was seen under. */
+    struct CryptoCall {
+        bool known = false;
+        quint64 ring = 0U;
+        quint64 epoch = 0U;
+        QString owner;
+    };
+
+    std::array<CryptoCall, 2> m_cryptoCalls;
     QString m_persistenceScope = QStringLiteral("session");
 #ifdef DSD_NEO_TEST_HOOKS
     mutable WorkCounts m_work;

@@ -19211,7 +19211,10 @@ Qt Quick frontend (`src/ui/qt`):
     `HeardTalkgroupStore::policyId()` (NXDN Type-D by its 11-bit id, as the call state numbers it) collapses variants. `LastHeardRole` is the newest of
     the entry's `last` and this session's fragments (each its end, else its start); `RememberedRole` marks a card the
     store holds; listed rows have neither. `remembering` is `HeardTalkgroupStore::remembering(viewedOwner)`; entries
-    show while it is off. `observedDecryption()` is kept per viewed owner.
+    show while it is off. `observedDecryption()` is kept per viewed owner: a call's encryption goes to the owner it was
+    first seen active under (`cryptoOwnerOf()`, per slot by the ring and call epoch), an ended call keeps that owner (a
+    release to manual tuning ends the calls but keeps their snapshots), and an ended call never seen active is
+    recorded nowhere.
   - Forget and Clear (`forgetTalkgroup()`/`clearRemembered()` for the viewed owner, `forgetTalkgroupOf()`/
     `clearRememberedOf()` for an owner an edit sheet captured) remove every variant of the number from the store
     (`HeardTalkgroupStore::forget()` matches by `policyId()`; a forget or clear the store refuses changes nothing and
@@ -19257,7 +19260,8 @@ Qt Quick frontend (`src/ui/qt`):
     target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads, entries read, numbers merged and whole-list updates. Tests:
     `UI_QT_TALKGROUP_LIST_MODEL` (`test_remembered_cards_at_session_start`, `test_transient_follows_the_target_on_air`
     with a relaunch, `test_transient_scoped_to_the_target`, `test_variants_one_card_and_forget`,
-    `test_listed_rows_cover_remembered`, `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`),
+    `test_listed_rows_cover_remembered`, `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`,
+    `test_transient_scoped_to_the_scan_list_row`, `test_ended_call_crypto_keeps_its_owner`),
     `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`: a row added while hidden keeps the reader's card).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor session menu's **Talkgroups** entry. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the

@@ -319,29 +319,51 @@ TalkgroupListModel::setViewedOwner(const QString& owner, const HeardTarget& targ
     }
 }
 
+bool
+TalkgroupListModel::cryptoOwnerOf(quint64 ring, uint8_t slot, quint64 epoch, bool active, QString* owner) {
+    // Issue #903: a call is the owner's it was first seen on the air under (the viewed owner then), identified by its
+    // decoder run's ring and its epoch. An ended call keeps that owner, even once the owner on air has moved on (a
+    // release to manual tuning ends the calls but keeps their snapshots); one never seen on the air is no one's.
+    static_assert(DSD_CALL_STATE_SLOT_COUNT == 2, "one CryptoCall per call slot");
+    CryptoCall& seen = m_cryptoCalls.at(slot);
+    const bool same = seen.known && seen.ring == ring && seen.epoch == epoch;
+    if (!same && active) {
+        seen.known = true;
+        seen.ring = ring;
+        seen.epoch = epoch;
+        seen.owner = m_viewedOwner;
+    } else if (!same) {
+        return false;
+    }
+    *owner = seen.owner;
+    return true;
+}
+
 void
 TalkgroupListModel::observeDecryption(const dsd_state* snapshot) {
-    // Issue #903: a call on the air now is the viewed owner's (heardOwnerOnAir()), and its encryption is looked up there.
-    QHash<quint32, QVariantMap>* observed = nullptr;
+    const quint64 ring =
+        snapshot->event_history_s != nullptr ? static_cast<quint64>(snapshot->event_history_s[0].instance) : 0U;
     for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
         dsd_call_snapshot call = {};
-        if (dsd_call_state_get(snapshot, slot, &call) > 0 && call.kind == DSD_CALL_KIND_GROUP_VOICE
-            && call.ota_target_id && call.ota_target_id <= UINT32_MAX) {
+        if (dsd_call_state_get(snapshot, slot, &call) <= 0 || call.phase == DSD_CALL_PHASE_IDLE) {
+            continue;
+        }
+        QString owner;
+        if (cryptoOwnerOf(ring, slot, call.epoch, call.phase == DSD_CALL_PHASE_ACTIVE, &owner)
+            && call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id != 0U && call.ota_target_id <= UINT32_MAX) {
             const bool dmr = DSD_SYNC_IS_DMR(call.protocol);
-            if (observed == nullptr) {
-                observed = &m_observedCrypto[m_viewedOwner];
-            }
-            observed->insert(static_cast<quint32>(call.ota_target_id),
-                             {{"algorithm", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING
-                                                ? QString::number(call.algid, 16).toUpper()
-                                                : QString()},
-                              {"crypto", static_cast<int>(call.crypto)},
-                              {"keyId", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING && (!dmr || call.kid <= 255)
-                                            ? QString::number(call.kid, 16).toUpper()
-                                            : QString()},
-                              {"dmr", dmr},
-                              {"profileRef", QString::fromUtf8(call.key_selection.profile_ref)},
-                              {"lastObserved", true}});
+            m_observedCrypto[owner].insert(
+                static_cast<quint32>(call.ota_target_id),
+                {{"algorithm", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING
+                                   ? QString::number(call.algid, 16).toUpper()
+                                   : QString()},
+                 {"crypto", static_cast<int>(call.crypto)},
+                 {"keyId", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING && (!dmr || call.kid <= 255)
+                               ? QString::number(call.kid, 16).toUpper()
+                               : QString()},
+                 {"dmr", dmr},
+                 {"profileRef", QString::fromUtf8(call.key_selection.profile_ref)},
+                 {"lastObserved", true}});
         }
     }
 }

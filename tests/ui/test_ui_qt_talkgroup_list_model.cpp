@@ -1335,6 +1335,56 @@ test_crypto_lookup_scoped_to_owner() {
     model.refresh(fixture.opts, fixture.state);
     expect("903 crypto: A's is still A's", model.observedDecryption(55).value("lastObserved").toBool());
 }
+
+/* Issue #903 (PR2 review r2, P2): an ended call's encryption stays with the owner it was on the air under. Releasing a
+ * saved system to manual tuning ends its calls but keeps their snapshots: the Explore context the release views learns
+ * nothing of them, and the system keeps what it saw. An ended call never seen on the air is no one's. */
+void
+test_ended_call_crypto_keeps_its_owner() {
+    const Fixture fixture;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.slot = 0U;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 56;
+    call.policy_target_id = 56;
+    call.ota_source_id = 1;
+    call.observed_m = dsd_decode_now_mono_s();
+    expect("903 ended crypto: a call on the air",
+           dsd_call_state_observe(fixture.state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 ended crypto: observed for the saved system",
+           model.viewedOwner() == kSysA && model.observedDecryption(56).value("lastObserved").toBool());
+    // A release to manual tuning: the operator holds the tuner and the call ends, its snapshot kept.
+    fixture.state->operator_tuned = 1U;
+    expect("903 ended crypto: the call ends", dsd_call_state_end(fixture.state, 0U, call.observed_m + 1.0) == 1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 ended crypto: the release views no system", model.viewedOwner().isEmpty());
+    expect("903 ended crypto: the Explore context learns nothing of the ended call",
+           model.observedDecryption(56).isEmpty());
+    fixture.state->operator_tuned = 0U;
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 ended crypto: the saved system keeps what it saw",
+           model.viewedOwner() == kSysA && model.observedDecryption(56).value("lastObserved").toBool());
+
+    // A call that began and ended between two refreshes was never seen on the air.
+    const Fixture quick;
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysB, {});
+    model.setHistorySession(history.session());
+    call.ota_target_id = 57;
+    call.policy_target_id = 57;
+    expect("903 ended crypto: a short call", dsd_call_state_observe(quick.state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1
+                                                 && dsd_call_state_end(quick.state, 0U, call.observed_m + 1.0) == 1);
+    model.refresh(quick.opts, quick.state);
+    expect("903 ended crypto: a call never seen on the air is no one's",
+           model.viewedOwner() == kSysB && model.observedDecryption(57).isEmpty());
+}
 } // namespace
 
 int
@@ -1375,6 +1425,7 @@ main(int argc, char** argv) {
     test_incremental_updates();
     test_two_thousand_remembered();
     test_crypto_lookup_scoped_to_owner();
+    test_ended_call_crypto_keeps_its_owner();
     QDir(dataDir).removeRecursively();
     if (failures != 0) {
         return 1;
