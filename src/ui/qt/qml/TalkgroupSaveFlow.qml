@@ -18,6 +18,9 @@ Item {
     property string lastSequence: "0"
     property int timeoutMs: 15000
     property bool retryAvailable: false
+    // The file the last request exported but could not add to Imports (empty: none). While the decoder's list is that
+    // file, a new Save is the user's to make; nothing of that request is tried again.
+    property string unregisteredPath: ""
     property string message: ""
     signal saved(string uid, string path)
 
@@ -81,6 +84,7 @@ Item {
             pending = null;
         }
         retryAvailable = false;
+        unregisteredPath = "";
         message = "";
         var path = library.newTalkgroupListPath();
         if (path.length === 0) {
@@ -143,6 +147,7 @@ Item {
         }
         if (!library.registerTalkgroupList(request.path)) {
             end(request);
+            unregisteredPath = request.path;
             message = qsTr("Talkgroup list exported, but adding it to Imports failed; system association was not changed");
             return;
         }

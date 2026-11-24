@@ -874,6 +874,51 @@ Item {
                 savedSystems.remove(savedSystems.rowForUid(uid));
             }
         }
+        // Issue #903: an export whose file could not be added to Imports leaves the decoder's list that file. While it
+        // is, the Talkgroups screen offers a new Save; a list file of any other origin still takes none.
+        function test_a_save_whose_registration_failed_can_be_made_again() {
+            testContext.setLifecyclePhase(0);
+            var flow = findChild(app, "talkgroupSave");
+            var screen = findChild(app, "talkgroupsScreen");
+            verify(flow !== null && screen !== null);
+            var library = flow.library;
+            var recorder = Qt.createQmlObject("import QtQuick; QtObject { property int paths: 0; function newTalkgroupListPath() { paths++; return '/owned/unregistered-' + paths + '.csv'; } function registerTalkgroupList(path) { return false; } function releaseTalkgroupListPath(path) {} }", loader);
+            flow.library = recorder;
+            try {
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, decodeMode: 1, carrierSeq: 0});
+                testContext.setGroupFile("");
+                verify(screen.canSaveList, "Save is not offered without a list file");
+                screen.saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                var request = flow.pending;
+                flow.results = {results: [{sequence: String(Number(request.sequence) + 1), policyContext: request.context,
+                                           policyGeneration: request.generation, path: request.path, success: true}],
+                                missedThrough: "0"};
+                compare(flow.pending, null);
+                verify(flow.message.indexOf("adding it to Imports failed") >= 0, flow.message);
+                testContext.setGroupFile(request.path);
+                verify(talkgroups.persistent);
+                verify(screen.canSaveList, "Save is not offered while the list is the export Imports could not add");
+                testContext.setGroupFile("/owned/other.csv");
+                verify(!screen.canSaveList, "Save is offered over a list file of another origin");
+                testContext.setGroupFile(request.path);
+                screen.saveListRequested("7", 1);
+                verify(flow.pending !== null, "the new Save was not made");
+                compare(flow.unregisteredPath, "");
+            } finally {
+                if (flow.pending !== null)
+                    recorder.releaseTalkgroupListPath(flow.pending.path);
+                flow.library = library;
+                recorder.destroy();
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                flow.unregisteredPath = "";
+                testContext.setGroupFile("");
+                testContext.setMetrics({decodeMode: 1, carrierSeq: 0, operatorTuned: false, optionsKnown: false});
+            }
+        }
         // A recreated Activity finds the tuner held: no session map came with it,
         // so it names the session Exploring until the resume, then by the label
         // the history kept.

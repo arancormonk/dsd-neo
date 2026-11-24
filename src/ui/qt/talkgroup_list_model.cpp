@@ -384,9 +384,13 @@ TalkgroupListModel::updatePersistence(const dsd_opts* opts_snapshot, const dsd_s
         m_persistenceScope = scope;
         Q_EMIT policyChanged();
     }
-    if (allowListChanged || hasGroupFile != m_persistent) {
+    const QString file = QString::fromUtf8(
+        opts_snapshot->group_in_file,
+        static_cast<qsizetype>(qstrnlen(opts_snapshot->group_in_file, sizeof(opts_snapshot->group_in_file))));
+    if (allowListChanged || hasGroupFile != m_persistent || file != m_groupFile) {
         m_allowListMode = allowListedOnly;
         m_persistent = hasGroupFile;
+        m_groupFile = file;
         Q_EMIT policyChanged();
     }
 }
@@ -1078,6 +1082,7 @@ TalkgroupListModel::clear() {
     if (m_allowListMode || m_persistent || versionChanged) {
         m_allowListMode = false;
         m_persistent = false;
+        m_groupFile.clear();
         Q_EMIT policyChanged();
     }
     m_shownContextId = 0;

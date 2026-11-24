@@ -2517,7 +2517,8 @@ Window {
         objectName: "talkgroupsScreen"
         anchors.fill: safeArea
         systemName: monitor.systemName
-        canSaveList: !talkgroups.persistent && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
+        // A list persistent only as the file a Save exported but could not add to Imports takes a new Save.
+        canSaveList: (!talkgroups.persistent || talkgroups.groupFile === talkgroupSave.unregisteredPath) && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
         saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
         saveMessage: talkgroupSave.message
         // The sheet's own policy version; the standalone saved system (none for Explore, a scan list or a hold) and the

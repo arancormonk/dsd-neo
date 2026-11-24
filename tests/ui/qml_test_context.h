@@ -4495,8 +4495,14 @@ class Setup : public QObject {
 
     Q_INVOKABLE void
     setGroupFileConfigured(bool configured) {
+        setGroupFile(configured ? QStringLiteral("fixture-talkgroups.csv") : QString());
+    }
+
+    /* Issue #903: the decoder's talkgroup list file is @p path (empty: none), as an export leaves it. */
+    Q_INVOKABLE void
+    setGroupFile(const QString& path) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
-                     configured ? "fixture-talkgroups.csv" : "");
+                     path.toUtf8().constData());
         m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
     }

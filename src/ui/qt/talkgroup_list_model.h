@@ -62,6 +62,8 @@ class TalkgroupListModel : public QAbstractListModel {
     Q_PROPERTY(QStringList categories READ categories NOTIFY categoriesChanged)
     Q_PROPERTY(bool allowListMode READ allowListMode NOTIFY policyChanged)
     Q_PROPERTY(bool persistent READ persistent NOTIFY policyChanged)
+    /* The decoder's talkgroup list file (empty: none), which makes the list persistent. */
+    Q_PROPERTY(QString groupFile READ groupFile NOTIFY policyChanged)
     Q_PROPERTY(QString persistenceScope READ persistenceScope NOTIFY policyChanged)
     Q_PROPERTY(qint64 historySession READ historySession WRITE setHistorySession NOTIFY historySessionChanged)
     /* Issue #903: the saved system whose talkgroups the heard cards are (empty: none, the Explore context). */
@@ -123,6 +125,11 @@ class TalkgroupListModel : public QAbstractListModel {
     bool
     persistent() const {
         return m_persistent;
+    }
+
+    QString
+    groupFile() const {
+        return m_groupFile;
     }
 
     /**
@@ -369,6 +376,7 @@ class TalkgroupListModel : public QAbstractListModel {
     int m_notTunedCount = 0;
     bool m_allowListMode = false;
     bool m_persistent = false;
+    QString m_groupFile;
     qint64 m_historySession = 0;
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;

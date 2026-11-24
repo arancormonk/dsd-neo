@@ -87,6 +87,7 @@ Item {
             loader.item.lastSequence = "5";
             loader.item.timeoutMs = 15000;
             loader.item.retryAvailable = false;
+            loader.item.unregisteredPath = "";
             loader.item.message = "";
             library.registrations = 0;
             library.paths = 0;
@@ -272,6 +273,11 @@ Item {
             compare(loader.item.retryAvailable, false);
             compare(loader.item.message, "Talkgroup list exported, but adding it to Imports failed; system association was not changed");
             compare(library.released, ["/owned/list.csv"]);
+            // The exported file Imports does not have: a new Save may be made while the decoder's list is that file.
+            compare(loader.item.unregisteredPath, "/owned/list.csv");
+            library.failRegister = false;
+            verify(loader.item.save("original", "7", 1, running));
+            compare(loader.item.unregisteredPath, "");
         }
         function test_refused_attachment_names_it() {
             var changed = {

@@ -19321,11 +19321,14 @@ Qt Quick frontend (`src/ui/qt`):
   `SavedSystemsModel::attachGroupList()` only when it says the export ran on the start tuning (a completion that does
   not say is refused); each step reports its own result, and a failed one ends the request where the list got to (the
   exported file, and its Imports row if that worked), with no step offered again: the user saves again if they want.
-  A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing); one
-  whose completion may be in a gap ends, reported as not received. A request that ends with no Imports row for its
+  An export Imports could not add leaves the decoder's list that file (`TalkgroupListModel::persistent`), so while
+  `groupFile` is still the flow's `unregisteredPath` the screen offers a new Save; any other list file still takes
+  none. A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing);
+  one whose completion may be in a gap ends, reported as not received. A request that ends with no Imports row for its
   file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export. Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroup_save_flow.qml`),
-  `UI_QT_CONTROLLER` (`test_export_results_between_polls`).
+  `UI_QT_QML_SESSION_TOOLS` (`test_a_save_whose_registration_failed_can_be_made_again`), `UI_QT_CONTROLLER`
+  (`test_export_results_between_polls`).
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
