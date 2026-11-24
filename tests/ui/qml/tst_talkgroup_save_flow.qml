@@ -57,6 +57,14 @@ Item {
             return accept;
         }
     }
+    // The newest export result app-control holds when Save is pressed, as UiController reads it.
+    QtObject {
+        id: exportsNow
+        property string sequence: "0"
+        function talkgroupExportSequenceNow() {
+            return sequence;
+        }
+    }
     Loader {
         id: loader
         source: uiDir + "/TalkgroupSaveFlow.qml"
@@ -73,6 +81,8 @@ Item {
             loader.item.library = library;
             loader.item.systems = systems;
             loader.item.bridge = bridge;
+            loader.item.controller = exportsNow;
+            exportsNow.sequence = "5";
             loader.item.pending = null;
             loader.item.lastSequence = "5";
             loader.item.timeoutMs = 15000;
@@ -223,6 +233,18 @@ Item {
             deliver([result("81", "7", 1, "/owned/list.csv", true)]);
             compare(library.registrations, 0);
             compare(systems.attempts, 0);
+        }
+        // Issue #903: more completions than app-control keeps finished before Save was pressed, none polled yet. The
+        // request's baseline is the newest result held when it was queued, so a gap wholly before it cannot end it.
+        function test_gap_before_the_request_keeps_it() {
+            exportsNow.sequence = "90";
+            verify(loader.item.save("original", "7", 1, running));
+            deliver([result("90", "3", 1, "/other.csv", true)], "89");
+            verify(loader.item.pending !== null, "a gap before the request ended it");
+            deliver([result("91", "7", 1, "/owned/list.csv", true)]);
+            compare(loader.item.pending, null);
+            compare(library.registered, ["/owned/list.csv"]);
+            compare(loader.item.message, "Talkgroup list saved");
         }
         // B8: a failed save of the system leaves the list in Imports and says so; the next Save is a new export.
         function test_failed_system_save_is_reported() {

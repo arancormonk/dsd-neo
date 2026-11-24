@@ -206,6 +206,13 @@ UiController::clearLiveModels() {
     // Diagnostics are also exempt so a stopped/failed session retains its context.
 }
 
+QString
+UiController::talkgroupExportSequenceNow() const {
+    dsd_app_tg_export_result newest = {};
+    const quint64 held = dsd_app_tg_export_result_get(&newest) != 0 ? newest.sequence : 0U;
+    return QString::number(std::max<quint64>(held, m_talkgroupExportSequence));
+}
+
 void
 UiController::pollTalkgroupExport() {
     // WP-D1: retained export completion is independent of redraw and host lifecycle. The newest one first, so an

@@ -2460,11 +2460,13 @@ test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt
                                        dir + QStringLiteral("/burst-%1.csv").arg(i)));
         check(dsd_app_drain_cmds(opts, state) == 1);
     }
+    const quint64 newest = before + 3 + burst;
+    // Issue #903: a Save pressed now takes the newest result held as its baseline, though no poll has read it yet.
+    check(controller.talkgroupExportSequenceNow() == QString::number(newest));
     run();
     batch = controller.talkgroupExportResults();
     results = batch.value("results").toList();
     check(results.size() == DSD_APP_RESULT_HISTORY);
-    const quint64 newest = before + 3 + burst;
     check(results.constLast().toMap().value("sequence").toString() == QString::number(newest));
     check(results.constFirst().toMap().value("sequence").toString()
           == QString::number(newest - DSD_APP_RESULT_HISTORY + 1));

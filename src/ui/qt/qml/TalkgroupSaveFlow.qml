@@ -12,6 +12,8 @@ Item {
     property var systems: savedSystems
     // Every completion the controller's last poll read, oldest first, and the newest sequence it could not read.
     property var results: uiController.talkgroupExportResults
+    // Reads the newest result app-control holds now (talkgroupExportSequenceNow()), a request's baseline.
+    property var controller: uiController
     property var pending: null
     property string lastSequence: "0"
     property int timeoutMs: 15000
@@ -85,13 +87,15 @@ Item {
             message = qsTr("Could not create talkgroup list path");
             return false;
         }
+        // Read before the export is queued: its result is newer, and a gap no newer than this predates it.
+        var held = String(controller.talkgroupExportSequenceNow());
         pending = {
             uid: uid,
             tuning: tuning || ({}),
             context: String(context),
             generation: generation,
             path: path,
-            sequence: lastSequence
+            sequence: newer(held, lastSequence) ? held : lastSequence
         };
         if (!bridge.saveTalkgroupList(context, generation, path)) {
             end(pending);

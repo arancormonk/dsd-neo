@@ -1375,6 +1375,12 @@ class TestUiController : public QObject {
 
     QVariantMap decryptionResult;
 
+    /* Issue #903: no export result held, like the real controller before any export. */
+    Q_INVOKABLE QString
+    talkgroupExportSequenceNow() const {
+        return heldExportSequence;
+    }
+
     Q_INVOKABLE void
     finishDecryption(const QString& id, int status) {
         decryptionResult = {{"requestId", id}, {"session", "1"}, {"status", status}, {"scope", 0}};
@@ -1382,6 +1388,7 @@ class TestUiController : public QObject {
     }
 
     bool autoStartBlocked = true;
+    QString heldExportSequence = QStringLiteral("0");
 
     /* Issue #697: @p companions, the other lists a scan target was last started with, ride along as the real
        controller's do. */

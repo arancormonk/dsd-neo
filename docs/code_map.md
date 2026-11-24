@@ -19315,14 +19315,17 @@ Qt Quick frontend (`src/ui/qt`):
   the operator held the tuner, when the decoder ran the export, or the export never ran), decoder provenance read with the result itself, whatever the
   snapshots showed by then and also after a Stop. The flow reads every completion since the last poll
   (`UiController::talkgroupExportResults`, from `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap
-  past the 64 kept). A request's completion runs registration in Imports, then `SavedSystemsModel::attachGroupList()`
-  only when it says the export ran on the start tuning (a completion that does not say is refused); each step reports
-  its own result, and a failed one ends the request where the list got to (the exported file, and its Imports row if
-  that worked), with no step offered again: the user saves again if they want. A request with no completion in 15 s
-  offers Try again, which replaces it (its late result matches nothing); one whose completion may be in a gap ends,
-  reported as not received. A request that ends with no Imports row for its file releases its reserved name. The
-  screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save button where the decoder refuses the
-  export.
+  past the 64 kept). A request's baseline is the newest result app-control holds when it is queued
+  (`UiController::talkgroupExportSequenceNow()`, read before the submit), not the last one polled, so a gap wholly
+  before it cannot end it. A request's completion runs registration in Imports, then
+  `SavedSystemsModel::attachGroupList()` only when it says the export ran on the start tuning (a completion that does
+  not say is refused); each step reports its own result, and a failed one ends the request where the list got to (the
+  exported file, and its Imports row if that worked), with no step offered again: the user saves again if they want.
+  A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing); one
+  whose completion may be in a gap ends, reported as not received. A request that ends with no Imports row for its
+  file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  button where the decoder refuses the export. Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroup_save_flow.qml`),
+  `UI_QT_CONTROLLER` (`test_export_results_between_polls`).
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session

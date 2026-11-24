@@ -76,6 +76,10 @@ class UiController : public QObject {
         return m_talkgroupExportResults;
     }
 
+    /** @brief Issue #903: the sequence of the newest talkgroup list export result app-control holds now ("0": none), never
+     * older than the last poll read. An export queued after this read completes with a newer one. */
+    Q_INVOKABLE QString talkgroupExportSequenceNow() const;
+
     int pollIntervalMs() const;
     void setPollIntervalMs(int interval_ms);
 
