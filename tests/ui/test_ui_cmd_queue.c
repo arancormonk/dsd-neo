@@ -69,6 +69,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -6619,9 +6620,9 @@ test_scan_avoid_counts_width_skipped_rows_out(void) {
 }
 
 /*
- * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Channels a DMR site announces are then
- * appended to the list (dmr_cspdu_pf0_c_bcast_track_freq()), and they are no list to scan: neither the per-visit cap nor
- * the voice gate ends a reception for them, and none of them is somewhere to go.
+ * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Rows another source then puts in the list (a
+ * protocol's control channel seed) are no list to scan: neither the per-visit cap nor the voice gate ends a reception
+ * for them, and none of them is somewhere to go.
  */
 static int
 test_clear_channel_map_leaves_learned_channels_unscanned(void) {
@@ -8630,12 +8631,14 @@ test_scoped_mode_commands_and_config(void) {
 
 static int g_quiet_setting_calls;
 static int g_quiet_setting_turned_on;
+static int g_quiet_setting_reading_changed;
 
 static void
-count_quiet_setting_changed(dsd_state* state, int turned_on) {
+count_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed) {
     (void)state;
     g_quiet_setting_calls++;
     g_quiet_setting_turned_on = turned_on;
+    g_quiet_setting_reading_changed = reading_changed;
 }
 
 /* Session-wide skip-silent (#834): a plain int32 setter that tells the engine through the runtime hook, never
@@ -8663,6 +8666,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent applied", opts.scan_skip_silent, 1);
     rc |= expect_int("skip-silent told the engine", g_quiet_setting_calls, 1);
     rc |= expect_int("skip-silent off to on: turned on", g_quiet_setting_turned_on, 1);
+    rc |= expect_int("skip-silent off to on: changed", g_quiet_setting_reading_changed, 1);
     rc |= expect_contains("skip-silent toast", state.ui_msg, "Silent channel skip -> On");
 
     /* A scan-mode row enter and leave neither captures nor restores it. */
@@ -8674,6 +8678,7 @@ test_scan_skip_silent_command(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("skip-silent off drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("skip-silent on to off: not turned on", g_quiet_setting_turned_on, 0);
+    rc |= expect_int("skip-silent on to off: changed", g_quiet_setting_reading_changed, 1);
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_int("row leave does not restore skip-silent", opts.scan_skip_silent, 0);
     rc |= expect_contains("skip-silent off toast", state.ui_msg, "Silent channel skip -> Off");
@@ -8693,6 +8698,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
     rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
     rc |= expect_int("skip-silent on to on: not turned on", g_quiet_setting_turned_on, 0);
+    rc |= expect_int("skip-silent on to on: unchanged", g_quiet_setting_reading_changed, 0);
 
     /* The table outlives the trunk-scan coordinator: installing and clearing the coordinator's hooks (what its init
      * and teardown do) leaves the slot in place. */
@@ -8716,12 +8722,23 @@ test_scan_skip_silent_command(void) {
         rc |= expect_int("config apply drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("config apply told the engine", g_quiet_setting_calls, 1);
         rc |= expect_int("config apply off to on: turned on", g_quiet_setting_turned_on, 1);
+        rc |= expect_int("config apply off to on: changed", g_quiet_setting_reading_changed, 1);
         rc |=
             expect_int("config apply again queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
                        DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int("config apply again drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("config apply on to on: told, not turned on",
                          g_quiet_setting_calls == 2 && g_quiet_setting_turned_on == 0, 1);
+        rc |= expect_int("config apply on to on: unchanged", g_quiet_setting_reading_changed, 0);
+        cfg.trunk_scan_skip_silent_ms = 30;
+        rc |=
+            expect_int("config apply length queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                       DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply length drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply length: changed",
+                         opts.scan_skip_silent_ms == 30 && g_quiet_setting_turned_on == 0
+                             && g_quiet_setting_reading_changed == 1,
+                         1);
     }
 
     dsd_frame_sync_hooks_set(NULL);
@@ -13185,11 +13202,17 @@ test_user_moves_while_trunking_forget_the_record(void) {
     seed_p25_record(&state);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
     state.dmr_ras_signatures = 1U; /* the carrier left's RAS evidence */
+    rc |= expect_int("a DMR channel learned before the return",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
     rc |= expect_int("a user return-to-CC forgets the RAS evidence", (int)state.dmr_ras_signatures, 0);
+    /* The same network's control channel: what its site taught stays (discussion #900 F2). */
+    rc |=
+        expect_true("a user return-to-CC keeps the learned DMR channel",
+                    state.trunk_chan_map[12] == 451012500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_SITE);
     rc |= expect_true("the ended call keeps the system it ended with",
                       state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
     freeState(&state);
@@ -13202,13 +13225,34 @@ test_user_moves_while_trunking_forget_the_record(void) {
     state.trunk_lcn_freq[0] = 851000000L;
     state.trunk_lcn_freq[1] = 851500000L;
     seed_p25_record(&state);
+    rc |= expect_int("a DMR channel learned before the cycle",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |= expect_int("trunked channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunked channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("trunked channel cycle tuned", g_io_control_tune_calls, 1);
     rc |= expect_int("a trunked channel cycle forgets the record", (int)state.rx_id.valid, 0);
+    /* The move can land on another network: what the air taught goes, its trust with it (discussion #900 F2). */
+    rc |= expect_true("a trunked channel cycle drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
     freeState(&state);
+
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    /* A frequency entry runs the operator's carrier boundary (svc_operator_carrier_boundary()): the same. */
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    rc |= expect_int("a DMR channel learned before the frequency entry",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("frequency entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("frequency entry tuned", g_io_control_tune_calls, 1);
+    rc |= expect_true("an operator tune's boundary drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
+    freeState(&state);
+#endif
     return rc;
 }
 
@@ -26327,6 +26371,47 @@ test_channel_map_reload_expected_path(void) {
     return rc;
 }
 
+/*
+ * Issue #900: a map whose only usable rows are positional (a Tier III control frequency under key 0, which names no
+ * channel) is a hunt list and loads; a file of zero-frequency placeholders has nothing to load and leaves the live map.
+ */
+static int
+test_channel_map_import_positional_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX], seed[DSD_TEST_PATH_MAX], blank[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_positional_map", "channel,freq\n1,851012500\n2,851512500\n");
+    rc |= make_group_file(seed, sizeof seed, "dsd_positional_seed", "channel,freq,note\n0,452012500,default cc\n");
+    rc |= make_group_file(blank, sizeof blank, "dsd_positional_blank", "channel,freq\n1,0\n2,0\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("positional: map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("positional: map loaded", state.trunk_chan_map[1] == 851012500, 1);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, seed);
+    rc |= expect_int("positional: seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: seed adopted", opts.chan_in_file, seed);
+    rc |= expect_true("positional: old rows gone", state.trunk_chan_map[1] == 0 && state.trunk_chan_map[2] == 0);
+    rc |= expect_true("positional: seed is the hunt list",
+                      state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, blank);
+    rc |= expect_int("positional: placeholder import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: placeholders refused", opts.chan_in_file, seed);
+    rc |= expect_true("positional: seed kept", state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(map);
+    (void)remove(seed);
+    (void)remove(blank);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* Where the followed call and its list stand when a group list command runs (spec R3). */
 enum {
@@ -32157,6 +32242,7 @@ main(void) {
     rc |= test_group_reload_expected_path();
     rc |= test_group_reload_under_a_row_list();
     rc |= test_channel_map_reload_expected_path();
+    rc |= test_channel_map_import_positional_rows();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     for (int scenario = GROUP_RELEASE_IMPORT; scenario <= GROUP_RELEASE_RETURN_FAILS; scenario++) {
         rc |= test_group_list_command_releases_blocked_calls(scenario);

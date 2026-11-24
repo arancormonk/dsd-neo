@@ -22,9 +22,14 @@ SPEC.loader.exec_module(legal)
 MBE_NOTICES = (
     "LICENSE", "GPL-2.0-or-later.txt", "ISC.txt", "LicenseRef-PFFFT.txt",
     "LicenseRef-ETSI-EN-300-395-2-data.txt", "upstream-mbelib-attribution.md",
-    "pffft/LICENSE.txt", "pffft/PFFFT-NOTICES.txt", "legal/components.json",
+    "pffft-neo/LICENSE", "pffft-neo/README.md", "pffft-neo/third_party/pffft/LICENSE.txt",
+    "pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt", "legal/components.json",
     "legal/status.md", "legal/patents.md",
 )
+# mbelib 2.6.0-2.6.11 install the PFFFT fork's notices in place of pffft-neo's.
+MBE_FORK_NOTICES = ("pffft/LICENSE.txt", "pffft/PFFFT-NOTICES.txt")
+# The installed component inventory names the FFT that mbelib embeds; MbelibNotices.cmake reads it.
+MBE_COMPONENTS = '{\n  "components": [\n    {\n      "id": "%s",\n      "name": "FFT"\n    }\n  ]\n}\n'
 
 # LICENSES/Apache-2.0.txt is the apache.org text; every record that names Apache-2.0 retains this one file.
 APACHE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
@@ -45,6 +50,7 @@ def mbelib_notice_fixture(directory):
         path = directory / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("Retained dependency notice fixture: " + name + "\n", encoding="utf-8")
+    (directory / "legal/components.json").write_text(MBE_COMPONENTS % "pffft-neo", encoding="utf-8")
     return directory
 
 
@@ -662,6 +668,46 @@ class NoticeStagingTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
             result = self.run_cmake(f"-Dmbe-neo_DIR={directory}", "-P", ROOT / "cmake/MbelibNotices.cmake")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        notice = self.mbe / "pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt"
+        notice.unlink()
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt", result.stderr)
+        # The PFFFT fork's notices an earlier install left behind do not stand in for pffft-neo's.
+        shutil.rmtree(self.mbe / "pffft-neo")
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("Retained dependency notice fixture: " + name + "\n", encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pffft-neo/LICENSE", result.stderr)
+        # An mbelib from before pffft-neo (its inventory names "pffft") needs the fork's notices instead.
+        (self.mbe / "legal/components.json").write_text(MBE_COMPONENTS % "pffft", encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (self.mbe / "pffft/PFFFT-NOTICES.txt").unlink()
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pffft/PFFFT-NOTICES.txt", result.stderr)
+        (self.mbe / "pffft/PFFFT-NOTICES.txt").write_text("restored\n", encoding="utf-8")
+        # An inventory that names neither FFT does not fall back to the fork's notices.
+        (self.mbe / "legal/components.json").write_text('{"components": []}\n', encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("names neither", " ".join(result.stderr.split()))
+        # Notices of a different mbelib release than the one linked are refused.
+        (self.mbe / "legal/components.json").write_text(
+            MBE_COMPONENTS.replace('"components"', '"release": "2.6.11",\n  "components"') % "pffft",
+            encoding="utf-8")
+        for version, accepted in (("2.6.11", True), ("2.6.12", False)):
+            result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", f"-Dmbe-neo_VERSION={version}", "-P",
+                                    ROOT / "cmake/MbelibNotices.cmake")
+            self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+        # With the linked version known, an inventory that names no release is refused too.
+        (self.mbe / "legal/components.json").write_text(MBE_COMPONENTS % "pffft", encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-Dmbe-neo_VERSION=2.6.11", "-P",
+                                ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
         notice = self.mbe / "LicenseRef-ETSI-EN-300-395-2-data.txt"
         notice.unlink()
         result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
@@ -672,7 +718,8 @@ class NoticeStagingTests(unittest.TestCase):
         package = self.work / "package"
         package.mkdir()
         build = self.work / "build"
-        for name in ("pffft-licenses/pffft-LICENSE.txt", "pffft-licenses/pffft-NOTICES.txt",
+        for name in ("pffft-licenses/pffft-neo-README.md", "pffft-licenses/pffft-neo-LICENSE.txt",
+                     "pffft-licenses/pffft-LICENSE.txt",
                      "tetra_crypto-licenses/tetra_crypto-LICENSE.txt", "qt-source/qt-source.txt"):
             (build / name).parent.mkdir(parents=True, exist_ok=True)
             (build / name).write_text(name + "\n", encoding="utf-8")
@@ -685,6 +732,33 @@ class NoticeStagingTests(unittest.TestCase):
                 f"-DMBELIB_NOTICE_DIR={self.mbe}", f"-DVCPKG_SHARE_DIR={share}", "-P",
                 ROOT / "cmake/stage_android_package.cmake"]
         return build, share, stage / "assets/doc/dsd-neo", args
+
+    def test_installed_notices_leave_out_the_other_fft_notice_tree(self):
+        # Selected by name at the notice root, whatever the override's spelling (here a trailing slash).
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("stale\n", encoding="utf-8")
+        script = self.work / "list.cmake"
+        script.write_text(f'include("{(ROOT / "cmake/MbelibNotices.cmake").as_posix()}")\n'
+                          'message(STATUS "DIRS=${DSD_MBELIB_NOTICE_DIRS}")\n'
+                          'message(STATUS "FILES=${DSD_MBELIB_NOTICE_FILES}")\n', encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe.as_posix()}/", "-P", script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        listed = {Path(path.rstrip("/")).name for line in result.stdout.splitlines() if "=" in line
+                  for path in line.split("=", 1)[1].split(";") if path}
+        self.assertEqual(listed, {name.split("/")[0] for name in MBE_NOTICES})
+        self.assertNotIn("pffft", listed)
+
+    def test_android_assets_leave_out_the_other_fft_notice_tree(self):
+        build, share, docs, args = self.android_fixture()
+        # A PFFFT fork tree an in-place upgrade left beside pffft-neo's, whose inventory names pffft-neo.
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("stale\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((docs / "licenses/mbelib-neo/pffft").exists())
+        self.assertTrue((docs / "licenses/mbelib-neo/pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt").is_file())
 
     def test_android_assets_retain_full_notice_tree_and_fail_on_missing_dependency_text(self):
         build, share, docs, args = self.android_fixture()
@@ -714,9 +788,9 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
         (share / "mpg123/copyright").write_text("restored\n", encoding="utf-8")
         self.assertEqual(self.run_cmake(*args).returncode, 0)
-        (build / "pffft-licenses/pffft-NOTICES.txt").unlink()
+        (build / "pffft-licenses/pffft-LICENSE.txt").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
-        (build / "pffft-licenses/pffft-NOTICES.txt").write_text("restored\n", encoding="utf-8")
+        (build / "pffft-licenses/pffft-LICENSE.txt").write_text("restored\n", encoding="utf-8")
         (self.mbe / "legal/status.md").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
 

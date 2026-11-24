@@ -254,6 +254,23 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
 int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
 
 /**
+ * @brief Give the file at @p existing a second name, @p new_path (a hard link): link() on POSIX, CreateHardLink() on
+ * Windows.
+ *
+ * Both names then name one file, so removing either leaves the other with every byte. Never copies and never replaces
+ * an existing @p new_path (EEXIST). A file system without hard links (FAT, exFAT, some network and Android shared
+ * storage) or another volume fails, with errno set (EXDEV, EPERM, ENOTSUP, EMLINK on POSIX; on Windows a code from the
+ * native error, EIO for one with no POSIX counterpart): a caller that needs the bytes there copies them instead. On
+ * Windows the pair takes one call, as dsd_win32_path_wide() picks: CreateHardLinkW() when both names are UTF-8,
+ * CreateHardLinkA() otherwise.
+ *
+ * @param existing  Existing file.
+ * @param new_path  New name, on the same volume.
+ * @return 0 on success, -1 on error with errno set (EINVAL for NULL or an empty path).
+ */
+int dsd_hard_link(const char* existing, const char* new_path);
+
+/**
  * @brief Whether a name exists, without following a symbolic link at it.
  *
  * Answers for the name itself: lstat() on POSIX, GetFileAttributes() on Windows, both of which describe a link or
@@ -320,6 +337,57 @@ int dsd_path_canonical(const char* path, char* out, size_t out_size);
  *         which do not compare); @p same is then 0.
  */
 int dsd_path_same_file(const char* a, const char* b, int* same);
+
+/**
+ * @brief A regular file as one read saw it (dsd_path_file_identity()): its size and modification time then. Two reads
+ * of one unchanged file give equal identities (dsd_file_identity_equal()); a file written to since, or another file at
+ * the path with its own size or time, gives another. The device, inode, volume and file id are not part of it: FAT
+ * and exFAT number a file anew when it is read again from disk, and a remount numbers a volume anew, so another file
+ * with exactly the same size and modification time reads as the same one. Zero-filled, it is no file's.
+ */
+typedef struct {
+    int kind;         /**< 0 none; 1 a regular file was read */
+    int64_t size;     /**< bytes */
+    int64_t mtime_s;  /**< last write, whole seconds since the Unix epoch (any date the file system keeps) */
+    int32_t mtime_ns; /**< and its nanoseconds past that second, 0 to 999999999 */
+} dsd_file_identity_t;
+
+/**
+ * @brief The identity of the regular file at @p path, never following a link at it.
+ *
+ * POSIX reads lstat() (size, modification time to the nanosecond where the system keeps it, seconds and nanoseconds
+ * held apart so no date the file system keeps overflows); Windows opens the name itself (FILE_FLAG_OPEN_REPARSE_POINT,
+ * every share mode, attributes only, so it never stands in a writer's or a delete's way) and reads
+ * GetFileInformationByHandle()'s attributes, size and last write time. A link, a folder or anything else that is not a
+ * regular file has none.
+ *
+ * @param path  Path (UTF-8 on Windows, as the file note says).
+ * @param out   Receives the identity; zero-filled on failure.
+ * @return 0 for a regular file; -1 with errno set otherwise (ENOENT for a missing name, ENOTDIR for a parent that is no
+ *         folder, EINVAL for NULL or an empty path or an @p out of NULL, ELOOP for a link at the name itself (a Windows
+ *         reparse point, a folder one included; a lookup that met too many links resolving a parent is EMLINK, its type
+ *         never read), EISDIR for a folder, ENODEV for anything else read and known not to be a regular file (a FIFO, a socket, a
+ *         device), and the system's own errno when the name cannot be read: EACCES, EPERM or EIO, for one, says
+ *         nothing about whether a file is there).
+ */
+int dsd_path_file_identity(const char* path, dsd_file_identity_t* out);
+
+/**
+ * @brief The identity of the file open as @p fp, as dsd_path_file_identity() reads it of a name: what was opened, so a
+ * name replaced after the open does not change it.
+ *
+ * POSIX reads fstat(); Windows the stream's handle (GetFileInformationByHandle()).
+ *
+ * @param fp   An open stream (dsd_fopen_existing_regular_file()).
+ * @param out  Receives the identity; zero-filled on failure.
+ * @return 0 for a regular file; -1 with errno set otherwise, as dsd_path_file_identity() (EINVAL for a NULL stream or
+ *         @p out).
+ */
+int dsd_file_stream_identity(FILE* fp, dsd_file_identity_t* out);
+
+/** @brief Whether @p a and @p b are one regular file unchanged, as far as a read can tell: both read, with the same
+ * size and modification time (seconds and nanoseconds). Two zero-filled identities are not equal. */
+int dsd_file_identity_equal(const dsd_file_identity_t* a, const dsd_file_identity_t* b);
 
 /**
  * @brief The bytes free to this user on the volume that holds @p path.

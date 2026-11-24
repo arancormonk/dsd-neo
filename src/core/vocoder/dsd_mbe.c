@@ -2569,31 +2569,31 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
     }
 }
 
-// Each file replays its own traffic. An SDRTrunk JSON export leaves its last
-// call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
-// publishes neither, so the output gates would judge it on the previous file's
-// talkgroup, or as an unclassified live P25 call. Start each file as a fresh
-// -r run does: no call and no protocol.
+/* Plays the open raw .imb/.amb/.dmb file's frames to its end, or until the exit flag is set. */
 static void
-mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
-    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
+play_mbe_file_frames(dsd_opts* opts, dsd_state* state, int want_static_wav) {
+    char imbe_d[88];
+    char ambe_d[49];
+    char file_err_str[260];
+    while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
+        if (state->mbe_file_type == 0) {
+            if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        } else if (state->mbe_file_type > 0) {
+            if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        }
+        if (dsd_exitflag_load() == 1) {
+            dsd_request_shutdown(opts, state);
+            break;
+        }
     }
-    state->synctype = DSD_SYNC_NONE;
-    state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
-    // gain (issue #518).
-    dsd_voice_hpf_reset(state, -1);
-    dsd_voice_level_reset(state, -1);
 }
 
 void
 playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
-
-    char imbe_d[88];
-    char ambe_d[49];
-    char file_err_str[260];
-
     // Playback mode: keep static WAV writing functional even when audio output is disabled (-o null).
     const int want_static_wav = (opts->wav_out_f != NULL && opts->static_wav_file == 1) ? 1 : 0;
 
@@ -2603,25 +2603,20 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         if (opts->mbe_in_f == NULL) {
             continue;
         }
-        mbe_file_end_replayed_call(opts, state);
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+        if (state->mbe_file_type != 3) {
+            dsd_mbe_file_end_replayed_call(opts, state);
+        }
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
-        while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
-            if (state->mbe_file_type == 0) {
-                if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            } else if (state->mbe_file_type == 3) {
-                read_sdrtrunk_json_format(opts, state);
-            } else if (state->mbe_file_type > 0) {
-                if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            }
+        if (state->mbe_file_type == 3) {
+            // The reader takes the whole SDRTrunk file, or refuses it, in one call: it is never read again from the
+            // start, and it ends the earlier file's call, and resets the speech decoder, only once it has read and
+            // checked the file with no Stop (issue #888).
+            read_sdrtrunk_json_format(opts, state);
             if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);
-                break;
             }
+        } else {
+            play_mbe_file_frames(opts, state, want_static_wav);
         }
         if (opts->mbe_in_f != NULL) {
             fclose(opts->mbe_in_f); //close file after playing it

@@ -726,6 +726,36 @@ test_bs_voice_sync_refreshes_when_trunk_tuned(void) {
     assert(state.last_cc_sync_time_m > 0.0);
 }
 
+/* Discussion #900 B7: an MBC is consecutive bursts on one slot, so a voice burst on a slot ends the MBC being assembled
+   there (dsd_state::dmr_mbc_armed): read by the loop and by the bootstrap. */
+static void
+test_bs_voice_burst_disarms_its_slots_mbc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.dmr_color_code = 16;
+    state.dmr_mbc_armed[1] = 1U;
+    load_single_burst_stream(1, DMR_BS_VOICE_SYNC);
+
+    dmrBS(&opts, &state);
+
+    assert(state.dmr_mbc_armed[1] == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    state.dmr_color_code = 16;
+    state.dmr_payload_p = g_bootstrap_payload + 90U;
+    state.dmr_mbc_armed[1] = 1U;
+    load_bootstrap_voice_stream(1);
+
+    dmrBSBootstrap(&opts, &state);
+
+    assert(state.dmr_mbc_armed[1] == 0U);
+}
+
 static void
 test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks(void) {
     static dsd_opts opts;
@@ -1429,6 +1459,7 @@ main(void) {
     dsd_decode_clock_use_test(1234567890ULL);
     test_continuous_voice_yields_at_burst_boundary();
     test_bs_voice_sync_refreshes_when_trunk_tuned();
+    test_bs_voice_burst_disarms_its_slots_mbc();
     test_bs_rejected_voice_does_not_hold_the_channel();
     test_mono_lane_slot_proof();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();

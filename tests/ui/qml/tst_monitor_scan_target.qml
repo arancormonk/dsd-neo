@@ -134,8 +134,14 @@ Item {
             tryCompare(title, "text", "Security + 1 list");
             screen.system = {name: "Countywide public safety and municipal services", sourceType: "usb"};
             screen.otherListCount = 7;
+            // A phone at 2x text, tall enough for the stacked header, where the
+            // title has the row to itself. Checked once the layout has settled:
+            // the tier follows the text size a turn of the event loop later.
             root.width = 320;
+            root.height = 1300;
             Ui.Theme.fontScale = 2;
+            waitForRendering(screen);
+            tryVerify(function () { return screen.tier === 0 && screen.headerStacked; }, 1000, "the stacked header");
             tryVerify(function () { return title.text.endsWith(" + 7 lists"); });
             verify(title.text.indexOf("…") > 0, title.text);
             verify(!title.truncated, "the count was elided");
@@ -143,6 +149,374 @@ Item {
             screen.otherListCount = 0;
             Ui.Theme.resetFontScale();
             root.width = 420;
+            root.height = 900;
+        }
+
+        // Stacked over the actions (tier 0) on a 290 dp window at 2x text, the title's room is the heading's, which
+        // keeps a 12 px margin at its right: the form decided with that room keeps a readable name, at least three
+        // letters before the ellipsis, and the count whole, on the title's line or its own.
+        function test_stacked_multi_list_title_keeps_the_name() {
+            var name = "Countywide public safety and municipal services";
+            screen.system = {name: name, sourceType: "usb"};
+            screen.otherListCount = 7;
+            testContext.setHostRunning(true);
+            root.width = 290;
+            root.height = 1600;
+            Ui.Theme.fontScale = 2;
+            try {
+                waitForRendering(screen);
+                tryVerify(function () { return screen.tier === 0 && screen.headerStacked; }, 1000, "tier 0, stacked");
+                var title = findChild(screen, "monitorHeaderTitle");
+                var count = findChild(screen, "monitorHeaderTitleCount");
+                waitForRendering(screen);
+                var cut = title.text.indexOf("…");
+                verify(cut >= 3 && name.indexOf(title.text.substring(0, cut)) === 0, "the name shown: '" + title.text + "'");
+                verify(!title.truncated, "the title line overflows");
+                var heading = title.parent;
+                verify(title.x + title.width <= heading.width + 0.5, "the title runs past its heading");
+                if (count.visible)
+                    verify(!count.truncated && count.text === "+ 7 lists", "the count's line: " + count.text);
+                else
+                    verify(title.text.indexOf(" + 7 lists") > 0, "the count is on the title's line: " + title.text);
+                compare(title.Accessible.name.indexOf(" + 7 lists") > 0, true);
+                // Read whole: the name the line cuts, then the count (r2 C1).
+                compare(title.Accessible.name, name + " + 7 lists");
+                compare(findChild(screen, "monitorHeader").height, screen.headerBarHeight(screen.tier));
+            } finally {
+                screen.otherListCount = 0;
+                Ui.Theme.resetFontScale();
+                root.width = 420;
+                root.height = 900;
+            }
+        }
+
+        // Issue #901 B12: beside the header actions on a narrow phone at large
+        // text the title has no room for "+ 7 lists" and a readable part of the
+        // name, so the count takes a second line of the header's whole width
+        // below the actions, and the name the first line, elided. The heading
+        // is read as one, and the budget's header is the one drawn.
+        function test_multi_list_title_two_lines_data() {
+            return [{tag: "320x900@2", width: 320, height: 900, scale: 2},
+                    {tag: "320x900@1.6", width: 320, height: 900, scale: 1.6},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6}];
+        }
+        function test_multi_list_title_two_lines(data) {
+            var name = "Countywide public safety and municipal services";
+            screen.system = {name: name, sourceType: "usb"};
+            screen.otherListCount = 7;
+            testContext.setHostRunning(true);
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            waitForRendering(screen);
+            tryVerify(function () { return screen.tier >= 1 && !screen.headerStacked; }, 1000, "the header actions share the title's line");
+            var header = findChild(screen, "monitorHeader");
+            var title = findChild(screen, "monitorHeaderTitle");
+            waitForRendering(screen);
+            // A readable part of the name: at least three letters before the ellipsis.
+            var cut = title.text.indexOf("…");
+            verify(cut >= 3 && name.indexOf(title.text.substring(0, cut)) === 0, "the name shown: '" + title.text + "'");
+            verify(!title.truncated, "the title line overflows");
+            var count = findChild(screen, "monitorHeaderTitleCount");
+            verify(count !== null, "no line for the count");
+            tryVerify(function () { return count.visible; }, 1000, "the count's line");
+            compare(count.text, "+ 7 lists");
+            verify(!count.truncated, "the count was cut");
+            // Read whole: the name the line cuts, then the count (r2 C1).
+            compare(title.Accessible.name, name + " + 7 lists");
+            // Inside the header, and clear of the actions and of each other.
+            var parts = [title, count, findChild(screen, "sessionOptionsButton"), findChild(screen, "monitorLiveStatus")];
+            var rects = parts.map(function (part) {
+                var at = part.mapToItem(header, 0, 0);
+                return {name: part.objectName, x: at.x, y: at.y, w: part.width, h: part.height};
+            });
+            for (var r of rects)
+                verify(r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= header.width + 0.5 && r.y + r.h <= header.height + 0.5,
+                       r.name + " inside the header: " + JSON.stringify(r) + " in " + header.width + "x" + header.height);
+            for (var i = 0; i < rects.length; ++i) {
+                for (var j = i + 1; j < rects.length; ++j) {
+                    var a = rects[i], b = rects[j];
+                    var clear = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) <= 0.5 || Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) <= 0.5;
+                    verify(clear, a.name + " overlaps " + b.name);
+                }
+            }
+            // The budget's header is the drawn one.
+            compare(header.height, screen.headerBarHeight(screen.tier));
+            var heading = title.parent;
+            var pill = findChild(screen, "monitorLiveStatus");
+            verify(waitForPolish(pill.parent));
+            var drawn = Math.max(heading.mapToItem(header, 0, heading.height).y, pill.mapToItem(header, 0, pill.height).y);
+            verify(Math.abs(drawn - header.height) < 0.5, "header " + header.height + " vs drawn " + drawn);
+            // One list: one line again.
+            screen.otherListCount = 0;
+            tryVerify(function () { return !count.visible; }, 1000, "the count's line stays for one list");
+            compare(header.height, screen.headerBarHeight(screen.tier));
+        }
+
+        // Issue #901 r2 E1: a multi-list title that fits whole beside the actions keeps one line. The split reserved
+        // at least 96 px for the name even when the name was far shorter: "PD + 1 list" (93 px in 105) grew a
+        // 320 dp compact header from 48 to 95 px, nearly a call row, and showed nothing more.
+        function test_short_multi_list_title_keeps_one_line_data() {
+            return [{tag: "320x914 compact", width: 320, height: 914, scale: 1, compact: true},
+                    {tag: "411x914 compact", width: 411, height: 914, scale: 1, compact: true},
+                    {tag: "320x560", width: 320, height: 560, scale: 1, compact: false}];
+        }
+        function test_short_multi_list_title_keeps_one_line(data) {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: true; property bool compactView: " + data.compact + " }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            try {
+                screen.system = {name: "PD", sourceType: "usb"};
+                testContext.setHostRunning(true);
+                root.width = data.width;
+                root.height = data.height;
+                Ui.Theme.fontScale = data.scale;
+                waitForRendering(screen);
+                tryVerify(function () { return !screen.headerStacked; }, 1000, "the actions share the title's line");
+                var header = findChild(screen, "monitorHeader");
+                var title = findChild(screen, "monitorHeaderTitle");
+                var oneList = header.height;
+                screen.otherListCount = 1;
+                waitForRendering(screen);
+                compare(title.text, "PD + 1 list");
+                verify(!title.truncated, "the title is cut");
+                verify(!findChild(screen, "monitorHeaderTitleCountLine").visible, "a short title that fits took a second line");
+                compare(header.height, oneList, "the header grew for a title that fits");
+                compare(header.height, screen.headerBarHeight(screen.tier));
+                compare(title.Accessible.name, "PD + 1 list");
+                // A name too long to fit with its count still takes the two-line form.
+                if (data.width === 320) {
+                    screen.system = {name: "Countywide public safety and municipal services", sourceType: "usb"};
+                    screen.otherListCount = 7;
+                    waitForRendering(screen);
+                    tryVerify(function () { return findChild(screen, "monitorHeaderTitleCountLine").visible; }, 1000, "the long title's count line");
+                }
+            } finally {
+                screen.prefsStore = kept;
+                store.destroy();
+            }
+        }
+
+        // Issue #901 r2 C1: the heading is read whole. Compact view at 320 x 914 cut the name on the title's line
+        // ("County Fire E… + 7 lists"), and the spoken heading lost the words that tell similar lists apart.
+        function test_cut_title_is_read_whole() {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: false; property bool compactView: true }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            try {
+                screen.system = {name: "County Fire East", sourceType: "usb"};
+                screen.otherListCount = 7;
+                testContext.setHostRunning(true);
+                root.width = 320;
+                root.height = 914;
+                waitForRendering(screen);
+                var title = findChild(screen, "monitorHeaderTitle");
+                verify(title.text.indexOf("…") > 0, "the name is cut on the line: " + title.text);
+                compare(title.Accessible.name, "County Fire East + 7 lists");
+            } finally {
+                screen.prefsStore = kept;
+                store.destroy();
+            }
+        }
+
+        // Issue #901 r3 M2: a header line that sits below the header actions (the scan target and timing lines under a
+        // two-line multi-list title, at large text) has the header's whole width, as the roaming line has. At 320 dp
+        // compact and text 2.0 they kept the actions' column, 119 of 284 px: "SCANNING · 2/3 · Dispatch" lost its
+        // ordinal ("SCANNIN…") and "Following call" read "Followi…". Each line beside the actions keeps the column.
+        // Both fit, the header's height is the budget's, and nothing meets the actions.
+        function test_lines_below_the_actions_take_the_whole_width_data() {
+            return [{tag: "320 compact at 2.0", width: 320, scale: 2.0, compact: true},
+                    {tag: "320 at 2.0", width: 320, scale: 2.0, compact: false},
+                    {tag: "360 compact at 1.6", width: 360, scale: 1.6, compact: true},
+                    {tag: "411 at 1.0", width: 411, scale: 1.0, compact: false}];
+        }
+        function test_lines_below_the_actions_take_the_whole_width(data) {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: false; property bool compactView: " + data.compact + " }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
+            try {
+                screen.system = {name: "Countywide public safety", sourceType: "usb"};
+                screen.otherListCount = 7;
+                screen.scanTargetName = "Dispatch";
+                testContext.setHostRunning(true);
+                testContext.setMetric("scanRotationActive", true);
+                testContext.setMetric("scanTargetOrdinal", 2);
+                testContext.setMetric("scanTargetCount", 3);
+                testContext.setMetric("scanTimingVisible", true);
+                testContext.setMetric("scanStayPhrase", "Following call");
+                root.width = data.width;
+                root.height = 900;
+                Ui.Theme.fontScale = data.scale;
+                waitForRendering(screen);
+                var header = findChild(screen, "monitorHeader");
+                var actions = findChild(screen, "sessionOptionsButton").parent; // the header's actions row
+                verify(waitForPolish(actions));
+                var actionsRect = {x: actions.mapToItem(header, 0, 0).x, y: actions.mapToItem(header, 0, 0).y, w: actions.width, h: actions.height};
+                var below = 0;
+                var faces = {};
+                for (var name of ["scanTargetHeader", "scanTimingRow"]) {
+                    var line = findChild(screen, name);
+                    verify(line.visible, name);
+                    var at = line.mapToItem(header, 0, 0);
+                    var under = header.stacked || at.y >= actionsRect.y + actionsRect.h - 0.5;
+                    below += under ? 1 : 0;
+                    compare(line.width, under ? header.width : line.parent.width, data.tag + ": " + name + "'s width, "
+                            + (under ? "below" : "beside") + " the actions");
+                    verify(at.x >= -0.5 && at.x + line.width <= header.width + 0.5, name + " inside the header");
+                    verify(under || at.x + line.width <= actionsRect.x + 0.5, name + " clear of the actions");
+                    drawn.font = line.font;
+                    drawn.text = line.text;
+                    drawn.elideWidth = line.width;
+                    faces[name] = drawn.elidedText;
+                }
+                if (data.width === 320 && data.scale === 2.0) {
+                    verify(findChild(screen, "monitorHeaderTitleCount").visible, "the count has its own line");
+                    compare(below, 2, "both lines sit below the actions");
+                    // What the reviewer's case lost: the ordinal and the stay phrase (the target's name may still be
+                    // cut at the end of the whole width).
+                    compare(findChild(screen, "scanTargetHeader").text, "SCANNING · 2/3 · Dispatch");
+                    verify(faces.scanTargetHeader.indexOf("SCANNING · 2/3 · ") === 0, "the ordinal is cut: " + faces.scanTargetHeader);
+                    compare(faces.scanTimingRow, "Following call", "the stay is cut");
+                }
+                compare(header.height, screen.headerBarHeight(screen.tier), "the budget's header is the drawn one");
+            } finally {
+                drawn.destroy();
+                screen.prefsStore = kept;
+                store.destroy();
+            }
+        }
+
+        // Issue #901 r2 B1: every header line is one line in its fixed box. A line break in a session name, a scan
+        // target's name or a stay phrase (U+2028, U+2029, a newline) is drawn as a space: the header keeps its height,
+        // each line holds one line, and the title is read with every word.
+        function test_header_lines_draw_one_line_data() {
+            return [{tag: "U+2028", sep: "\u2028"}, {tag: "U+2029", sep: "\u2029"}, {tag: "newline", sep: "\n"}];
+        }
+        function test_header_lines_draw_one_line(data) {
+            var sep = data.sep;
+            testContext.setHostRunning(true);
+            root.width = 360;
+            root.height = 900;
+            screen.system = {name: "County Fire", sourceType: "usb"};
+            testContext.setMetric("scanRotationActive", true);
+            testContext.setMetric("scanTargetOrdinal", 2);
+            testContext.setMetric("scanTargetCount", 3);
+            testContext.setMetric("scanTimingVisible", true);
+            testContext.setMetric("scanStayPhrase", "Following call");
+            screen.scanTargetName = "East";
+            var header = findChild(screen, "monitorHeader");
+            var title = findChild(screen, "monitorHeaderTitle");
+            var target = findChild(screen, "scanTargetHeader");
+            var timing = findChild(screen, "scanTimingRow");
+            tryCompare(target, "text", "SCANNING · 2/3 · East");
+            waitForRendering(screen);
+            var height = header.height;
+            var tier = screen.tier;
+            screen.system = {name: "County" + sep + "Fire" + sep + "East", sourceType: "usb"};
+            screen.scanTargetName = "East" + sep + "Gate";
+            testContext.setMetric("scanStayPhrase", "Following" + sep + "call");
+            waitForRendering(screen);
+            compare(title.text, "County Fire East");
+            compare(target.text, "SCANNING · 2/3 · East Gate");
+            compare(timing.text, "Following call");
+            for (var line of [title, target, timing]) {
+                compare(line.lineCount, 1, line.objectName + " draws one line");
+                verify(line.contentHeight <= line.height + 1, line.objectName + " stays in its box: " + line.contentHeight + " in " + line.height);
+            }
+            compare(header.height, height, "the header's height");
+            compare(screen.tier, tier, "the tier");
+            compare(title.Accessible.name, "County Fire East");
+            // Several lists: the name's line and the count's.
+            screen.otherListCount = 2;
+            waitForRendering(screen);
+            compare(title.lineCount, 1);
+            compare(title.Accessible.name, "County Fire East + 2 lists");
+        }
+
+        // Issue #901 B9: the header's lines are fixed line boxes, so a scan
+        // target or a timing phrase in a script whose line is taller (Burmese)
+        // changes neither the header's height nor the tier.
+        function test_header_lines_ignore_the_script_data() {
+            return [{tag: "420x900@1", width: 420, height: 900, scale: 1},
+                    {tag: "320x900@1", width: 320, height: 900, scale: 1},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6}];
+        }
+        function test_header_lines_ignore_the_script(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            testContext.setHostRunning(true);
+            testContext.setMetric("scanRotationActive", true);
+            testContext.setMetric("scanTargetOrdinal", 2);
+            testContext.setMetric("scanTargetCount", 3);
+            testContext.setMetric("scanTimingVisible", true);
+            testContext.setMetric("scanStayPhrase", "Following call");
+            screen.scanTargetName = "East";
+            var target = findChild(screen, "scanTargetHeader");
+            var header = findChild(screen, "monitorHeader");
+            tryCompare(target, "text", "SCANNING · 2/3 · East");
+            waitForRendering(screen);
+            var height = header.height;
+            var tier = screen.tier;
+            var steps = [{name: "က", phrase: "Following call"}, {name: "East", phrase: "က"}, {name: "East", phrase: "Following call"}];
+            for (var step of steps) {
+                screen.scanTargetName = step.name;
+                testContext.setMetric("scanStayPhrase", step.phrase);
+                tryCompare(target, "text", "SCANNING · 2/3 · " + step.name);
+                waitForRendering(screen);
+                compare(header.height, height, "the header with " + step.name + " / " + step.phrase);
+                compare(screen.tier, tier, "the tier with " + step.name + " / " + step.phrase);
+            }
+        }
+
+        // Issue #901 r4 F1: the title's box holds the session's own name. It was the Latin "Ag" line, so in tier 5,
+        // where the title sits flush with the clipped top of the list, the top 5 px of a Burmese session name
+        // ("မြို့", 360x560 at text 1.6) were cut away. The box is measured from the name in the title font (at
+        // least the Latin line), the name being the session's, never traffic, and the budget uses it: the header is
+        // the drawn one. A Latin name keeps the Latin box.
+        function test_title_box_holds_the_session_name_data() {
+            return [{tag: "Burmese 360x560@1.6", name: "မြို့", width: 360, height: 560, scale: 1.6},
+                    {tag: "Latin 360x560@1.6", name: "County Fire", width: 360, height: 560, scale: 1.6},
+                    {tag: "Burmese 411x914@1", name: "မြို့", width: 411, height: 914, scale: 1}];
+        }
+        function test_title_box_holds_the_session_name(data) {
+            var probe = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            var latin = Qt.createQmlObject("import QtQuick; Text { visible: false; text: \"Ag\"; textFormat: Text.PlainText }", root);
+            try {
+                screen.system = {name: data.name, sourceType: "usb"};
+                testContext.setHostRunning(true);
+                root.width = data.width;
+                root.height = data.height;
+                Ui.Theme.fontScale = data.scale;
+                var title = findChild(screen, "monitorHeaderTitle");
+                tryCompare(title, "text", data.name);
+                waitForRendering(screen);
+                var list = findChild(screen, "recentCallsList");
+                list.positionViewAtBeginning();
+                waitForRendering(screen);
+                probe.font = title.font;
+                probe.text = data.name;
+                latin.font = title.font;
+                verify(title.height >= probe.implicitHeight - 0.5, data.tag + ": the title's box " + title.height
+                       + " under the name's line " + probe.implicitHeight);
+                verify(title.height >= latin.implicitHeight - 0.5, data.tag + ": under the Latin line");
+                if (data.name === "County Fire")
+                    compare(title.height, Math.ceil(latin.implicitHeight), "a Latin name keeps the Latin box");
+                // What it paints, centred in its box, is inside the list's view where the header scrolls with it.
+                var paintedTop = title.mapToItem(list, 0, (title.height - title.contentHeight) / 2).y;
+                if (screen.scrollAll) {
+                    verify(paintedTop >= -0.5, data.tag + ": the name painted from " + paintedTop + ", above the list's top");
+                    verify(title.mapToItem(list, 0, 0).y >= -0.5, data.tag + ": the title above the list's top");
+                }
+                if (data.height === 560)
+                    compare(screen.tier, 5, "the tier where the header scrolls with the calls");
+                var header = findChild(screen, "monitorHeader");
+                compare(header.height, screen.headerBarHeight(screen.tier), data.tag + ": the budget's header is the drawn one");
+            } finally {
+                probe.destroy();
+                latin.destroy();
+            }
         }
 
         // Issue #671: a paused scan is named as one, apart from the rotation's
@@ -196,6 +570,20 @@ Item {
             root.width = 420;
             tryCompare(header, "text", "SCAN PAUSED · 12 channels");
             verify(!header.truncated);
+        }
+
+        // Issue #901 r2 C1 (the class): a paused scan's line drops the noun, then the count, to fit, but a screen
+        // reader hears the whole line, which has no width to fit.
+        function test_paused_header_is_read_whole() {
+            var header = findChild(screen, "scanTargetHeader");
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            testContext.setMetric("scanKind", 1);
+            testContext.setMetric("scanEntryCount", 12);
+            testContext.setMetric("scanResumable", true);
+            testContext.setMetric("scanPaused", true);
+            tryCompare(header, "text", "SCAN PAUSED");
+            tryCompare(header.Accessible, "name", "SCAN PAUSED · 12 channels");
         }
 
         // Issue #575: the tuned frequency is the signal strip's first reading in

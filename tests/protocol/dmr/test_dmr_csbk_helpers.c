@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -131,6 +132,7 @@ test_parse_and_handle_group_grant(void) {
     assert(result.st3 == 1U);
     assert(result.target == 0x123456U);
     assert(result.source == 0x654321U);
+    assert(result.group_call == 1 && result.data_call == 0);
 
     result.policy_valid = 1;
     result.policy.tune_allowed = 1;
@@ -156,8 +158,8 @@ test_parse_and_handle_group_grant(void) {
     assert(g_last_event.policy.preempt_requested == 1);
 }
 
-/* A Tier III data grant followed as a group (data tuning on: the opcode was rewritten to 49) keeps its data
-   classification, which its policy was judged with. */
+/* A Tier III group data grant (TD_GRANT) is a group call with its data classification, which its policy was judged
+   with; a private data grant (PD_GRANT) an individual one. */
 static void
 test_handle_data_grant_keeps_classification(void) {
     static dsd_opts opts;
@@ -165,7 +167,8 @@ test_handle_data_grant_keeps_classification(void) {
     struct dmr_csbk_result result = {0};
     reset_grant_spy();
 
-    result.opcode = 49U;
+    result.opcode = 52U;
+    result.group_call = 1;
     result.freq_hz = 851025000L;
     result.lpcn = 7U;
     result.lcn = 0U;
@@ -182,9 +185,10 @@ test_handle_data_grant_keeps_classification(void) {
     assert(g_last_event.policy.data_call == 1);
     assert(g_last_slot == 0);
 
-    // A private grant with data tuning off stays individual, with its data classification.
+    // A private data grant is individual, with its data classification.
     reset_grant_spy();
     result.opcode = 51U;
+    result.group_call = 0;
     result.policy.private_call = 1;
     dmr_csbk_handle(&result, &opts, &state);
     assert(g_indiv_calls == 1);
@@ -248,6 +252,7 @@ test_handle_grant_channel_kind(void) {
         struct dmr_csbk_result result = {0};
         reset_grant_spy();
         result.opcode = 49U;
+        result.group_call = 1;
         result.freq_hz = 851025000L;
         result.lpcn = cases[i].lpcn;
         result.target = 1300U;
@@ -257,6 +262,65 @@ test_handle_grant_channel_kind(void) {
         assert(g_last_event.lpcn == cases[i].channel);
         assert(g_last_event.channel_kind == cases[i].kind);
     }
+}
+
+/* TS 102 361-4 Tables 7.9-7.15: group {49, 50, 52, 56 outbound}, private {48, 51, 53, 54, 55}, data {51, 52, 54, 55,
+   56}; 56 inbound is BS_Dwn_Act. A duplex grant's Call Direction (bit 31) says whether bits 32-55 name the caller. */
+static void
+test_grant_classify(void) {
+    static const struct {
+        int opcode;
+        uint8_t group;
+        uint8_t data;
+    } cases[] = {
+        {48, 0U, 0U}, {49, 1U, 0U}, {50, 1U, 0U}, {51, 0U, 1U}, {52, 1U, 1U},
+        {53, 0U, 0U}, {54, 0U, 1U}, {55, 0U, 1U}, {56, 1U, 1U},
+    };
+
+    uint8_t bits[80] = {0};
+    dmr_t3_grant_class grant;
+    set_bits(bits, 32U, 24U, 0x00AB01U);
+    set_bits(bits, 56U, 24U, 0x00CD02U);
+    bits[31] = 1U;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const int duplex = cases[i].opcode == 53 || cases[i].opcode == 54;
+        assert(dmr_t3_grant_classify(cases[i].opcode, bits, 1, &grant) == 1);
+        assert(grant.group == cases[i].group && grant.data == cases[i].data);
+        // Bit 31 is Call Direction only on a duplex grant (Emergency/Offset neighbours elsewhere).
+        assert(grant.caller == (duplex ? 0x00AB01U : 0x00CD02U));
+        assert(grant.recipient == (duplex ? 0x00CD02U : 0x00AB01U));
+    }
+    bits[31] = 0U;
+    assert(dmr_t3_grant_classify(53, bits, 1, &grant) == 1);
+    assert(grant.caller == 0x00CD02U && grant.recipient == 0x00AB01U);
+    assert(dmr_t3_grant_classify(54, bits, 1, &grant) == 1);
+    assert(grant.caller == 0x00CD02U && grant.recipient == 0x00AB01U);
+
+    // Inbound 56 is BS_Dwn_Act; inbound 48-55 stay grants. Non-grant opcodes and NULL arguments are refused.
+    assert(dmr_t3_grant_classify(56, bits, 0, &grant) == 0 && grant.recipient == 0U && grant.group == 0U);
+    assert(dmr_t3_grant_classify(52, bits, 0, &grant) == 1 && grant.group == 1U);
+    assert(dmr_t3_grant_classify(47, bits, 1, &grant) == 0);
+    assert(dmr_t3_grant_classify(57, bits, 1, &grant) == 0);
+    assert(dmr_t3_grant_classify(49, NULL, 1, &grant) == 0);
+    assert(dmr_t3_grant_classify(49, bits, 1, NULL) == 0);
+}
+
+/* dmr_csbk_parse() takes a duplex grant's parties from its Call Direction. */
+static void
+test_parse_duplex_grant_direction(void) {
+    uint8_t bits[80] = {0};
+    uint8_t bytes[10] = {0};
+    struct dmr_csbk_result result;
+    bytes[0] = 0x80U | 54U;
+    set_bits(bits, 32U, 24U, 501U);
+    set_bits(bits, 56U, 24U, 502U);
+    bits[31] = 1U;
+    assert(dmr_csbk_parse(bits, bytes, &result) == 0);
+    assert(result.target == 502U && result.source == 501U);
+    assert(result.group_call == 0 && result.data_call == 1);
+    bits[31] = 0U;
+    assert(dmr_csbk_parse(bits, bytes, &result) == 0);
+    assert(result.target == 501U && result.source == 502U);
 }
 
 static void
@@ -282,6 +346,8 @@ main(void) {
     test_handle_data_grant_keeps_classification();
     test_handle_grant_channel_kind();
     test_opcode_names_cover_grant_table();
+    test_grant_classify();
+    test_parse_duplex_grant_direction();
     DSD_FPRINTF(stdout, "DMR_CSBK_HELPERS: OK\n");
     return 0;
 }

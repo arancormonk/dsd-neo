@@ -381,6 +381,13 @@ tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id) {
 }
 
 void
+tetra_voice_call_admitted(tetra_voice_t* voice) {
+    if (voice) {
+        voice_speech_reset(voice);
+    }
+}
+
+void
 tetra_voice_forget_carrier(tetra_voice_t* voice) {
     if (!voice) {
         return;

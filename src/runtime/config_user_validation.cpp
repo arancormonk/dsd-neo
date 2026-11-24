@@ -225,13 +225,14 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
     return 1;
 }
 
-/* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756), and
-   the NFM pre-roll and rdio-scanner keys (issue #668). */
+/* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756), the
+   NFM pre-roll and rdio-scanner analog keys (issue #668), and the rdio-scanner unknown talkgroup (issue #888). */
 namespace {
 bool
 recording_key_is_refused_out_of_range(const char* key) {
     return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "analog_preroll_ms") == 0
-           || strcmp(key, "rdio_analog_system_id") == 0 || strcmp(key, "rdio_analog_talkgroup") == 0;
+           || strcmp(key, "rdio_analog_system_id") == 0 || strcmp(key, "rdio_analog_talkgroup") == 0
+           || strcmp(key, "rdio_unknown_talkgroup") == 0;
 }
 
 /* A refused key (above) outside the schema's range is an error rather than the schema walk's warning, as an analog
@@ -253,6 +254,26 @@ validate_refused_range_entry(const dsdcfg_schema_entry_t* entry, const char* val
     return true;
 }
 } // namespace
+
+/* The skip-silent reading length (#834) takes 0 or 10..500, a window with a gap the schema's range cannot hold. The
+   loader refuses any other whole number and keeps the value it had, so that is an error, at the top level and in a
+   profile alike. Text that is no integer is left to the schema walk's integer check, which is an error already. */
+static int
+validate_scan_skip_silent_ms_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                                   int line_num, const char* diag_section, const char* diag_key) {
+    int value = 0;
+    if (strcmp(entry->section, "trunking") != 0 || strcmp(entry->key, "scan_skip_silent_ms") != 0
+        || user_config_parse_int_value(val, &value) != 0) {
+        return 0;
+    }
+    if (!dsd_scan_skip_silent_ms_is_valid(value)) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Value %d is refused, not clamped; use 0 for the calibrated reading or %d..%d",
+                     value, DSD_SCAN_SKIP_SILENT_MS_MIN, DSD_SCAN_SKIP_SILENT_MS_MAX);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
 
 /* lists_off (issue #697) is refused whole by the loader when it is not a list of list numbers, so that is an error;
    whether each number has a list is the composed check's question. */
@@ -291,18 +312,27 @@ validate_path_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_
     return 1;
 }
 
+/* The keys with a check of their own instead of the schema walk's: nonzero once one of them took @p entry. Factored out
+   of validate_entry_value() so it stays under the CCN 15 gate tools/lizard.sh --strict enforces. */
+static int
+validate_keyed_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                     const char* diag_section, const char* diag_key) {
+    return validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_scan_skip_silent_ms_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key);
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
         return;
     }
-    if (validate_analog_width_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_analog_tone_list_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_rtl_bw_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
-        || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key)) {
+    if (validate_keyed_entry(entry, val, diags, line_num, diag_section, diag_key)) {
         return;
     }
     if (strcmp(entry->section, "receive") == 0) {
@@ -407,17 +437,17 @@ validate_profile_key_value(char* key, const char* val, dsdcfg_diagnostics_t* dia
         return;
     }
 
+    /* The schema is looked up by section and key, and the diagnostic names the whole section.key, as the composed
+       profile checks do. */
     *dot = '\0';
-    const char* target_sec = key;
-    const char* target_key = dot + 1;
-    const dsdcfg_schema_entry_t* entry = dsdcfg_schema_find(target_sec, target_key);
+    const dsdcfg_schema_entry_t* entry = dsdcfg_schema_find(key, dot + 1);
+    *dot = '.';
     if (!entry) {
-        std::string msg = std::string("Unknown key '") + target_sec + "." + target_key + "' in profile";
+        std::string msg = std::string("Unknown key '") + key + "' in profile";
         dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, current_section, key, msg.c_str());
     } else {
         validate_entry_value(entry, val, diags, line_num, current_section, key);
     }
-    *dot = '.';
 }
 
 static void

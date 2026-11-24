@@ -782,7 +782,8 @@ test_positional_rows() {
 
 /* One system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
    RTL-TCP server's address, an Airspy's serial), and a card whose title no other shown card has names none. A
-   TCP or UDP source's meta already says its address, so it names none either. */
+   TCP or UDP source's meta already says its address, so it names none either. Both cards of a shared title are
+   marked as such, which has Home draw every line of the full card for them (issue #901 r3 S1). */
 void
 test_receiver_label_for_shared_titles() {
     Fixture f;
@@ -806,6 +807,10 @@ test_receiver_label_for_shared_titles() {
           f.column(SavedSystemCards::ReceiverLabelRole)
               == QStringList({QStringLiteral("USB"), QStringLiteral("RTL-TCP 192.168.1.5:1234"),
                               QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"), QString(), QString()}));
+    check("receiver: the shared titles are marked",
+          f.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("true"),
+                              QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false")}));
     f.cards->setQuery(QStringLiteral("marine"));
     settle();
     check("receiver: a USB card named apart from a TCP one",
@@ -814,6 +819,89 @@ test_receiver_label_for_shared_titles() {
     settle();
     check("receiver: alone in the list, a card names none",
           f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QString()}));
+    check("receiver: alone in the list, a card shares no title",
+          f.column(SavedSystemCards::SharedTitleRole) == QStringList({QStringLiteral("false")}));
+}
+
+/* Issue #901 r3 S1: titles are compared as Home draws them, a run of line breaks (a newline, U+2028, U+2029, CR LF)
+   read as one space. An imported "Fire\nDispatch" and a typed "Fire Dispatch" are drawn alike, so both are shared
+   titles; "Fire  Dispatch" (two spaces) and "FireDispatch" are not the same title. */
+void
+test_shared_title_compares_the_drawn_title() {
+    Fixture f;
+    QVariantMap typed = plain(QStringLiteral("Fire Dispatch"), QStringLiteral("851.0"));
+    typed.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    typed.insert(QStringLiteral("host"), QStringLiteral("10.0.0.1"));
+    typed.insert(QStringLiteral("port"), 7355);
+    QVariantMap imported = typed;
+    imported.insert(QStringLiteral("name"), QStringLiteral("Fire\nDispatch"));
+    imported.insert(QStringLiteral("host"), QStringLiteral("10.0.0.2"));
+    f.add({typed, imported, plain(QStringLiteral("Harbor\u2028Watch"), QStringLiteral("151.0")),
+           plain(QStringLiteral("Harbor\r\nWatch"), QStringLiteral("152.0")),
+           plain(QStringLiteral("Harbor\u2029\nWatch"), QStringLiteral("153.0")),
+           plain(QStringLiteral("Fire  Dispatch"), QStringLiteral("154.0")),
+           plain(QStringLiteral("FireDispatch"), QStringLiteral("155.0"))});
+    check("drawn title: seven cards", f.cards->shownCount() == 7);
+    check("drawn title: line breaks read as a space",
+          f.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("true"),
+                              QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false"),
+                              QStringLiteral("false")}));
+    check("drawn title: the stored names are kept",
+          f.at(1, SavedSystemCards::TitleRole).toString() == QStringLiteral("Fire\nDispatch"));
+    /* Issue #901 r5 H4: a precomposed "Café" and "Cafe" with a combining acute draw alike, so they share a title
+       (compared in NFC); each keeps its stored spelling. */
+    Fixture g;
+    g.add({plain(QStringLiteral("Caf\u00e9 Dispatch"), QStringLiteral("151.0")),
+           plain(QStringLiteral("Cafe\u0301 Dispatch"), QStringLiteral("152.0")),
+           plain(QStringLiteral("Cafe Dispatch"), QStringLiteral("153.0"))});
+    check("drawn title: composed and decomposed accents share a title",
+          g.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false")}));
+    check("drawn title: the decomposed name is kept",
+          g.at(1, SavedSystemCards::TitleRole).toString() == QStringLiteral("Cafe\u0301 Dispatch"));
+}
+
+/* Issue #901 r3 S1: marking shared titles counts each title once, so a rebuild over 1000 cards of one title costs
+   about what one over 1000 titles does. Each rebuild below is a search keystroke that keeps every card (two queries
+   that match them all, in turn); the fastest of nine per case (after a first) is compared, so one slow turn on a
+   loaded machine does not decide. The bound is 3x plus 15 ms: a linear mark stays well inside it (the cards' other
+   work is the same in both cases), while the per-pair comparison it replaced cost ~30-100x (137-430 ms against
+   4 ms in a debug build). */
+void
+test_shared_titles_rebuild_linearly() {
+    const auto fastest_rebuild = [](bool sameTitle) {
+        Fixture f;
+        QVariantList rows;
+        for (int i = 0; i < 1000; ++i) {
+            const QString name =
+                sameTitle ? QStringLiteral("Dispatch") : QStringLiteral("Dispatch %1").arg(i, 4, 10, QLatin1Char('0'));
+            rows.append(plain(name, QStringLiteral("85%1.%2").arg(i % 10).arg(i)));
+        }
+        f.add(rows);
+        check("linear: 1000 cards", f.cards->shownCount() == 1000);
+        check("linear: shared titles marked",
+              f.at(0, SavedSystemCards::SharedTitleRole).toBool() == sameTitle
+                  && f.at(999, SavedSystemCards::SharedTitleRole).toBool() == sameTitle);
+        qint64 best = -1;
+        for (int round = 0; round < 10; ++round) {
+            QElapsedTimer timer;
+            timer.start();
+            f.cards->setQuery(round % 2 == 0 ? QStringLiteral("dispatch") : QStringLiteral("dispat"));
+            settle();
+            const qint64 ns = timer.nsecsElapsed();
+            check("linear: the search keeps every card", f.cards->shownCount() == 1000);
+            if (round > 0 && (best < 0 || ns < best)) {
+                best = ns;
+            }
+        }
+        return best;
+    };
+    const qint64 distinct = fastest_rebuild(false);
+    const qint64 same = fastest_rebuild(true);
+    DSD_FPRINTF(stderr, "timing (1000 cards): rebuild with distinct titles %.1f ms, with one shared title %.1f ms\n",
+                static_cast<double>(distinct) / 1e6, static_cast<double>(same) / 1e6);
+    check("linear: one shared title rebuilds within 3x of distinct titles", same <= 3 * distinct + 15000000);
 }
 
 void
@@ -1448,6 +1536,8 @@ main(int argc, char** argv) {
     test_sort_signals();
     test_positional_rows();
     test_receiver_label_for_shared_titles();
+    test_shared_title_compares_the_drawn_title();
+    test_shared_titles_rebuild_linearly();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();

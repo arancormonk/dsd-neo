@@ -261,6 +261,9 @@ Item {
                 var title = findChild(card, "savedSystemTitle");
                 compare(title.text, "<b>Dock</b>");
                 verifyDrawnAsWritten(title, "the saved system's name");
+                // Issue #901 B11: Play is named only while it is shown, so on the Systems tab.
+                findChild(appLoader.item, "homeScreen").showSection("systems");
+                tryCompare(findChild(card, "savedSystemPlay"), "visible", true);
                 compare(findChild(card, "savedSystemPlay").accessibleName, "Listen to <b>Dock</b>");
                 var listCard = visualChild(appLoader.item, "scanListCard");
                 tryCompare(listCard, "listName", "<b>Yard</b> &lt;2&gt;");

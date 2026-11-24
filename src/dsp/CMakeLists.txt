@@ -1,5 +1,5 @@
 # DSP module library
-add_library(dsd-neo_dsp)
+add_library(dsd-neo_dsp STATIC)
 
 target_sources(
     dsd-neo_dsp
@@ -287,10 +287,3 @@ if(BUILD_TESTING)
         PRIVATE dsd-neo_warnings dsd-neo_feature_pvc
     )
 endif()
-
-install(
-    TARGETS dsd-neo_dsp
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
