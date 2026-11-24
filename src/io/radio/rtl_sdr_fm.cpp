@@ -21689,21 +21689,31 @@ struct GateWriteRace {
     const dsd_opts* digital_opts = nullptr;
     int rounds = 0;
     std::atomic<int> landings{0};
-    /* The decoder thread's writes so far: each landing waits for one more, so the writer takes part however the two
-       threads are scheduled (one core included), and its writes still race the landings around them. */
     std::atomic<int> writes{0};
-    std::atomic<int> done{0};
+    /* The round each thread has reached (round 10): both meet at every round before its write and its landing, so
+       neither banks progress for later rounds however the two are scheduled (one core included). The same round's
+       write and landing are then ordered by nothing but the gate's lock, which is what TSan checks; a round's
+       operations happen-before the next round's, only through this meeting. */
+    std::atomic<int> writer_round{0};
+    std::atomic<int> lander_round{0};
 };
 } // namespace
+
+/* Arrive at @p round on @p mine and wait until @p theirs has too. */
+static void
+gate_write_race_meet(std::atomic<int>* mine, const std::atomic<int>* theirs, int round) {
+    mine->store(round, std::memory_order_release);
+    while (theirs->load(std::memory_order_acquire) < round) {
+        dsd_thread_yield();
+    }
+}
 
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 gate_write_race_lander(void* arg) {
     GateWriteRace* race = static_cast<GateWriteRace*>(arg);
     const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 0};
     for (int i = 0; i < race->rounds; i++) {
-        while (race->writes.load(std::memory_order_acquire) <= i) {
-            dsd_thread_yield();
-        }
+        gate_write_race_meet(&race->lander_round, &race->writer_round, i + 1);
         /* Digital first, so the last landing is the marked NFM one. */
         const uint32_t hz = kFamilyTestRetuneHz + 25000U * (uint32_t)(i % 8);
         const int analog = (i % 2) != 0;
@@ -21713,9 +21723,8 @@ gate_write_race_lander(void* arg) {
             (void)rtl_stream_prepare_retune_analog_profile_for_target(hz, &digital);
         }
         (void)channel_gate_test_controller_land(analog ? race->analog_opts : race->digital_opts, hz);
-        race->landings.fetch_add(1, std::memory_order_release);
+        race->landings.fetch_add(1, std::memory_order_relaxed);
     }
-    race->done.store(1, std::memory_order_release);
     DSD_THREAD_RETURN;
 }
 
@@ -21744,9 +21753,10 @@ gate_write_race_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, 
         c->rc = -3;
         return;
     }
-    while (!race.done.load(std::memory_order_acquire)) {
+    for (int i = 0; i < race.rounds; i++) {
+        gate_write_race_meet(&race.writer_round, &race.lander_round, i + 1);
         rtl_stream_write_squelch_gate(&noise10, &off, NULL);
-        race.writes.fetch_add(1, std::memory_order_release);
+        race.writes.fetch_add(1, std::memory_order_relaxed);
     }
     (void)dsd_thread_join(lander);
     out->landings = race.landings.load(std::memory_order_acquire);

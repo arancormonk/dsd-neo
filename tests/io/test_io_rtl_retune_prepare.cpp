@@ -1458,16 +1458,15 @@ test_pause_against_hunt(void) {
 
 /* Issue #899, round 8: the decoder's gate write reads only what the gate keeps under its own lock, never the
  * demodulator's family, which the controller changes at a landing on its thread. Run under TSan (tsan-debug), a write
- * that read the family would be reported here. Each landing waits for one more write, so the writer takes part on a
- * single core too (taskset -c 0), with its writes still racing the landings. */
+ * that read the family would be reported here. The two threads meet at every round before its write and its landing
+ * (round 10), so neither runs ahead on a single core either (taskset -c 0), and each round's write races its landing. */
 static int
 test_gate_write_during_landings(void) {
     rtl_stream_test_gate_write_race_result r;
     DSD_MEMSET(&r, 0, sizeof r);
     int failed = expect_int_eq("gate write race hook", rtl_stream_test_gate_write_during_landings(40, &r), 0);
     failed |= expect_int_eq("gate write race: every landing ran", r.landings, 40);
-    failed |=
-        expect_int_eq("gate write race: the decoder wrote before each landing", r.writes >= r.landings ? 1 : 0, 1);
+    failed |= expect_int_eq("gate write race: the decoder wrote once in each landing's round", r.writes, r.landings);
     failed |= expect_int_eq("gate write race: the last write opens the analog channel", r.final_open, 1);
     return failed;
 }
