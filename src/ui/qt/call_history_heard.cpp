@@ -12,8 +12,10 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QString>
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <string.h>
 
 namespace dsd_qt {
@@ -29,20 +31,31 @@ pending_key(const QString& owner, int variant, quint32 id) {
     return owner + QLatin1Char('\n') + QString::number(variant) + QLatin1Char('\n') + QString::number(id);
 }
 
-/* Drop the rings bound to sessions older than every session kept, then the oldest sessions' rings past the bound. */
+/* A ring generation's whole form in the settings: [session, from slot 0, from slot 1]. */
+constexpr qsizetype kHeardGenerationFields = 3;
+
+/* The newest session a ring's generations name. */
+qint64
+newest_session(const QList<HeardRingGeneration>& generations) {
+    return generations.isEmpty() ? std::numeric_limits<qint64>::min() : generations.constLast().session;
+}
+
+/* Drop the generations of sessions older than every session kept, a ring left with none, then the rings whose newest
+   session is oldest past the bound. */
 void
 bound_rings(HeardOwners* owners) {
     if (!owners->sessions.isEmpty()) {
         const QList<qint64> kept = owners->sessions.keys();
         const qint64 oldest = *std::min_element(kept.cbegin(), kept.cend());
         for (auto it = owners->rings.begin(); it != owners->rings.end();) {
-            it = it.value() < oldest ? owners->rings.erase(it) : std::next(it);
+            it->removeIf([oldest](const HeardRingGeneration& generation) { return generation.session < oldest; });
+            it = it->isEmpty() ? owners->rings.erase(it) : std::next(it);
         }
     }
     while (owners->rings.size() > kHeardOwnerRings) {
         auto oldest = owners->rings.begin();
         for (auto it = owners->rings.begin(); it != owners->rings.end(); ++it) {
-            if (it.value() < oldest.value()) {
+            if (newest_session(it.value()) < newest_session(oldest.value())) {
                 oldest = it;
             }
         }
@@ -65,23 +78,143 @@ channel_of(const Event_History* item) {
                              static_cast<qsizetype>(strnlen(item->channel_label, sizeof(item->channel_label))));
 }
 
+/* A generation as heard_owners_to_text() writes it; false for anything else. */
+bool
+generation_from_json(const QJsonValue& value, HeardRingGeneration* generation) {
+    const QJsonArray fields = value.toArray();
+    if (fields.size() != kHeardGenerationFields) {
+        return false;
+    }
+    if (!std::all_of(fields.cbegin(), fields.cend(),
+                     [](const QJsonValue& field) { return field.isDouble() && field.toInteger(-1) >= 0; })) {
+        return false;
+    }
+    generation->session = fields.at(0).toInteger();
+    generation->from[0] = static_cast<quint64>(fields.at(1).toInteger());
+    generation->from[1] = static_cast<quint64>(fields.at(2).toInteger());
+    return true;
+}
+
+/* A ring's generations as heard_owners_to_text() writes them, oldest first; empty for anything else. */
+QList<HeardRingGeneration>
+generations_from_json(const QJsonValue& value) {
+    QList<HeardRingGeneration> generations;
+    for (const auto& entry : value.toArray()) {
+        HeardRingGeneration generation;
+        if (!generation_from_json(entry, &generation)
+            || (!generations.isEmpty() && generation.session <= generations.constLast().session)) {
+            return {};
+        }
+        generations.append(generation);
+    }
+    return generations;
+}
+
+QJsonValue
+mark_to_json(const HeardRingMark& mark) {
+    if (mark.ring == 0U) {
+        return QJsonValue();
+    }
+    return QJsonObject{
+        {QLatin1String("r"), QString::number(mark.ring, 16)},
+        {QLatin1String("n"), mark.session},
+        {QLatin1String("t"), QJsonArray{static_cast<qint64>(mark.through[0]), static_cast<qint64>(mark.through[1])}}};
+}
+
+HeardRingMark
+mark_from_json(const QJsonValue& value) {
+    const QJsonObject entry = value.toObject();
+    const QJsonArray through = entry.value(QLatin1String("t")).toArray();
+    bool ok = false;
+    const quint64 ring = entry.value(QLatin1String("r")).toString().toULongLong(&ok, 16);
+    HeardRingMark mark;
+    if (!ok || ring == 0U || !entry.value(QLatin1String("n")).isDouble() || through.size() != 2
+        || through.at(0).toInteger(-1) < 0 || through.at(1).toInteger(-1) < 0) {
+        return mark;
+    }
+    mark.ring = ring;
+    mark.session = entry.value(QLatin1String("n")).toInteger();
+    mark.through[0] = static_cast<quint64>(through.at(0).toInteger());
+    mark.through[1] = static_cast<quint64>(through.at(1).toInteger());
+    return mark;
+}
+
 } // namespace
 
+bool
+operator==(const HeardRingGeneration& a, const HeardRingGeneration& b) {
+    return a.session == b.session && a.from[0] == b.from[0] && a.from[1] == b.from[1];
+}
+
+bool
+operator==(const HeardRingMark& a, const HeardRingMark& b) {
+    return a.ring == b.ring && a.session == b.session && a.through[0] == b.through[0] && a.through[1] == b.through[1];
+}
+
+void
+heard_owners_mark_start(HeardOwners* owners, qint64 session, quint64 ring, const quint64 through[2]) {
+    owners->mark = HeardRingMark();
+    if (ring == 0U || !owners->rings.contains(ring)) {
+        return;
+    }
+    owners->mark.ring = ring;
+    owners->mark.session = session;
+    owners->mark.through[0] = through[0];
+    owners->mark.through[1] = through[1];
+}
+
+bool
+heard_owners_ring_bound(const HeardOwners& owners, quint64 ring) {
+    return ring == 0U || owners.rings.contains(ring);
+}
+
+void
+heard_owners_bind_ring(HeardOwners* owners, quint64 ring, int slot, quint64 pushSeq, qint64 session) {
+    if (owners == nullptr || ring == 0U || slot < 0 || slot > 1) {
+        return;
+    }
+    const bool marked = owners->mark.ring != 0U && owners->mark.session == session;
+    const auto bound = owners->rings.find(ring);
+    if (bound == owners->rings.end()) {
+        owners->rings.insert(ring, {HeardRingGeneration{session, {0U, 0U}}});
+    } else if (marked && owners->mark.ring == ring && pushSeq > owners->mark.through[slot]) {
+        // The run reuses the ring the last read found: what it pushes after that read is its own.
+        if (newest_session(bound.value()) < session) {
+            bound->append(HeardRingGeneration{session, {owners->mark.through[0], owners->mark.through[1]}});
+        }
+    } else {
+        return;
+    }
+    if (marked) {
+        owners->mark = HeardRingMark();
+    }
+    bound_rings(owners);
+}
+
 qint64
-heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session, bool bind) {
+heard_owners_session_of(const HeardOwners* owners, quint64 ring, int slot, quint64 seq, qint64 session) {
     if (owners == nullptr || ring == 0U) {
         return session;
     }
     const auto bound = owners->rings.constFind(ring);
-    if (bound != owners->rings.constEnd()) {
-        return bound.value();
-    }
-    if (!bind) {
+    if (bound == owners->rings.constEnd() || slot < 0 || slot > 1) {
         return kHeardNoSession;
     }
-    owners->rings.insert(ring, session);
-    bound_rings(owners);
-    return session;
+    for (auto it = bound->crbegin(); it != bound->crend(); ++it) {
+        if (seq > it->from[slot]) {
+            return it->session;
+        }
+    }
+    return kHeardNoSession;
+}
+
+qint64
+heard_owners_on_air_session(const HeardOwners& owners, quint64 ring, qint64 current) {
+    if (ring == 0U || (owners.mark.ring == ring && owners.mark.session == current)) {
+        return current;
+    }
+    const auto bound = owners.rings.constFind(ring);
+    return bound == owners.rings.constEnd() || bound->isEmpty() ? current : bound->constLast().session;
 }
 
 HeardProof
@@ -127,13 +260,27 @@ heard_owners_set_session(HeardOwners* owners, qint64 session, const HeardSession
 }
 
 bool
-heard_owners_adopt_rings(HeardOwners* owners, const QHash<quint64, qint64>& rings) {
+heard_owners_adopt_rings(HeardOwners* owners, const HeardOwners& tapped) {
     bool adopted = false;
-    for (auto it = rings.constBegin(); it != rings.constEnd(); ++it) {
-        if (it.key() != 0U && !owners->rings.contains(it.key())) {
-            owners->rings.insert(it.key(), it.value());
-            adopted = true;
+    for (auto it = tapped.rings.constBegin(); it != tapped.rings.constEnd(); ++it) {
+        if (it.key() == 0U || it->isEmpty()) {
+            continue;
         }
+        QList<HeardRingGeneration>& generations = owners->rings[it.key()];
+        for (const HeardRingGeneration& generation : it.value()) {
+            if (!generations.contains(generation)) {
+                generations.append(generation);
+                adopted = true;
+            }
+        }
+        std::sort(generations.begin(), generations.end(),
+                  [](const HeardRingGeneration& a, const HeardRingGeneration& b) { return a.session < b.session; });
+    }
+    // The model changes no session while the tap runs (it hands the tap off first): a mark the tap left otherwise is
+    // one its reads consumed.
+    if (!(owners->mark == tapped.mark)) {
+        owners->mark = tapped.mark;
+        adopted = true;
     }
     if (adopted) {
         bound_rings(owners);
@@ -155,9 +302,18 @@ heard_owners_to_text(const HeardOwners& owners) {
     // Ring identities in hex: a nonce can use all 64 bits, more than a JSON number holds exactly.
     QJsonObject rings;
     for (auto it = owners.rings.constBegin(); it != owners.rings.constEnd(); ++it) {
-        rings.insert(QString::number(it.key(), 16), it.value());
+        QJsonArray generations;
+        for (const HeardRingGeneration& generation : it.value()) {
+            generations.append(QJsonArray{generation.session, static_cast<qint64>(generation.from[0]),
+                                          static_cast<qint64>(generation.from[1])});
+        }
+        rings.insert(QString::number(it.key(), 16), generations);
     }
-    const QJsonObject root{{QLatin1String("s"), sessions}, {QLatin1String("r"), rings}};
+    QJsonObject root{{QLatin1String("s"), sessions}, {QLatin1String("r"), rings}};
+    const QJsonValue mark = mark_to_json(owners.mark);
+    if (!mark.isNull()) {
+        root.insert(QLatin1String("m"), mark);
+    }
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
@@ -185,10 +341,12 @@ heard_owners_from_text(const QString& text) {
     for (auto it = rings.constBegin(); it != rings.constEnd(); ++it) {
         bool ok = false;
         const quint64 ring = it.key().toULongLong(&ok, 16);
-        if (ok && ring != 0U && it.value().isDouble()) {
-            owners.rings.insert(ring, it.value().toInteger());
+        const QList<HeardRingGeneration> generations = generations_from_json(it.value());
+        if (ok && ring != 0U && !generations.isEmpty()) {
+            owners.rings.insert(ring, generations);
         }
     }
+    owners.mark = mark_from_json(root.value(QLatin1String("m")));
     prune_sessions(&owners);
     bound_rings(&owners);
     return owners;

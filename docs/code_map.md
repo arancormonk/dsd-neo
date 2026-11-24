@@ -17082,14 +17082,24 @@ Qt Quick frontend (`src/ui/qt`):
     saved-system start, or for a scan-list start each target id one saved system's entry gives (`KnownFrequencyIndex::sessionTargetOwners()`: every launched
     target file read before the engine's id dedupe; an id an imported file, a frequency entry or another saved system
     also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owner()`). Explore and Signal
-    search own nothing. Owners are bound to the decoder ring (`HeardOwners::rings`): a ring belongs to the session it
-    was first walked in, by the model or the tap (`heard_owners_bind_ring()`; the tap returns its bindings in
-    `Result::heardRings`), so the last call of A's ring read after B began stays A's. Before Main asks the host for a
+    search own nothing. Owners are bound to ring generations (`HeardOwners::rings`, `HeardRingGeneration`): a row's
+    session is that of the generation holding its push stamp (`heard_owners_session_of()`; none, so no owner, for a
+    stamp no generation holds). A ring's first generation is the session it was first walked in, by the model or the
+    tap (`heard_owners_bind_ring()`; the tap returns its owners in `Result::heardOwners`, adopted with
+    `heard_owners_adopt_rings()`), so the last call of A's ring read after B's own ring is A's. Every session's start
+    marks the ring read last at the position read (`heard_owners_mark_start()`, `HeardRingMark`): a run that reuses
+    the last run's state (an embedding host) reuses its ring, and the new session's first read of that ring that finds
+    it pushed past the mark opens the new session's generation there, so its calls are its own while the old rows and
+    their revisions stay the old session's; the new session binding a ring of its own drops the mark (that ring was
+    not reused), and a re-read of the marked ring with nothing new leaves it. The call on the air
+    (`heardOwnerOnAir()`, `heard_owners_on_air_session()`) is the marking session's on a marked ring, else the ring's
+    newest generation's. Before Main asks the host for a
     start it calls `holdCaptureForStart()` (the tap handed off, its last poll binding the old run's ring to the session
     ending, and kept stopped) and `flushHistory()` (the GUI's read binds it too, even a ring no read had met during its
     run). No starting run's ring exists yet, so both bind only the old run's. The flush after the host's accept
-    (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`) binds no ring no session owns yet: such a ring
-    can only be the starting run's, whose rows then get no owner until the new session binds it. The next
+    (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`) reads nothing of a snapshot whose ring no
+    session owns (`heard_owners_ring_bound()`), its commit revision included: such a ring can only be the starting
+    run's, and the first read after the new session begins takes in what it committed under that session. The next
     `beginSession*()` consumes the hold and starts the tap on the new session when the app is away
     (`onApplicationStateChanged()` keeps that state); a start that begins none releases it (`releaseCaptureHold()` on
     Main's refused and failed starts, and a `QTimer::singleShot(0)` safety release a begun session retires), and a hold
@@ -17097,8 +17107,9 @@ Qt Quick frontend (`src/ui/qt`):
     the new session, no read binds the starting run's ring to the old session. A row heard off any scan is the
     single owner's; a scan member is its target's (`channel_label`), and an unnamed scan member (`-Y`) or any scan row
     of a saved-system start is no one's; a read without published options resolves none. The tap resolves the owner
-    where it reads and the spill line carries it (`ho`). The newest 8 sessions' owners and their rings (at most 32) are
-    persisted (`callHistory/heardOwners`, JSON), so a relaunched UI rejoining the running session keeps them.
+    where it reads and the spill line carries it (`ho`). The newest 8 sessions' owners, their ring generations (at most
+    32 rings) and the start mark are persisted (`callHistory/heardOwners`, JSON), so a relaunched UI rejoining the
+    running session keeps them.
     `clearAll()` while the tap runs hands it off first (its spill folded, so what it found is observed, its rings
     adopted), then clears. History's Clear hides rows and un-hears nothing: a row the clear covers whose proof arrives
     after the clear is learnt once (`noteClearedProof()`; the tap spills it as a `clearedProofLine()`, folded by
@@ -17119,11 +17130,13 @@ Qt Quick frontend (`src/ui/qt`):
     could not settle would bring the entries back after a death. Tests: `UI_QT_CALL_HISTORY_MODEL`
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
-    ring at the pre-start flush, an old ring no read met during its run, a cleared row's late proof),
+    ring at the pre-start flush, with a call committed before it, an old ring no read met during its run, a reused
+    ring's generations, a cleared row's late proof),
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
     teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot
-    save; the start's hold; a Clear while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
+    save; a reused ring through the tap; the start's hold; a Clear while the tap runs; a cleared row's late proof),
+    `UI_QT_HEARD_TALKGROUP_STORE`
     (`test_before_edit_hook`, `test_before_edit_hook_refusal`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits

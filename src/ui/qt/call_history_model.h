@@ -426,9 +426,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * call heard while the operator held the tuner is filed as Exploring.
      *
      * Issue #903: without @p bindNewRings (the flush after the host accepted a start, before the session begins:
-     * UiController::flushHistoryBeforeStart()), a ring no session owns yet stays unbound and its rows get no owner: the
-     * flush before the host was asked bound the old run's (holdCaptureForStart()), so such a ring can only be the
-     * starting run's, which the coming session owns.
+     * UiController::flushHistoryBeforeStart()), a snapshot of a ring no session owns is not read at all, its commits
+     * left for the next read: the flush before the host was asked bound the old run's (holdCaptureForStart()), so such
+     * a ring can only be the starting run's, whose calls the coming session owns.
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr, bool bindNewRings = true);
 
@@ -993,7 +993,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QList<QString>* settledKeys = nullptr; // the keys of those entries, for the background tap to spill
         HeardOwners* heardOwners = nullptr;    // issue #903: the owners, and the rings bound to their sessions
         bool optsPublished = false;            // options were published: a row's owner can be established
-        bool bindNewRings = true;              // a ring no session owns yet is bound to this one (refresh())
     };
 
     /** @brief noteSeen() verdicts. */
@@ -1041,9 +1040,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     static void walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh);
 
-    /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
-    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
-                                 const RingWalk& heard, bool* seenSettled);
+    /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced, binding the rings they
+     * come from to their sessions (issue #903; saved when that changed). @p optsPublished: the snapshot's options were
+     * published, so a row's identity and owner can be established. */
+    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], bool optsPublished, bool* seenSettled);
 
     /**
      * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two

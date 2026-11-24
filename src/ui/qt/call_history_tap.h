@@ -176,8 +176,9 @@ class CallHistoryTap {
         quint64 ring = 0U;
         /* Every ring's session ordinal as the tap left them, the ones it gave included (issue #800). */
         QHash<quint64, qint64> ordinals;
-        /* Issue #903: every ring's History session as the tap left them, the ones it bound included. */
-        QHash<quint64, qint64> heardRings;
+        /* Issue #903: the owners as the tap left them: its rings' generations, the ones it bound included, and the
+         * start mark its reads may have consumed. */
+        HeardOwners heardOwners;
         /* Spill lines, oldest first, that never reached the spill (it was still unwritable at stop). Only the model
          * has them now: the next start clears what the tap holds. */
         QByteArray unwritten;

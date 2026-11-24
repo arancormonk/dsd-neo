@@ -205,7 +205,7 @@ CallHistoryTap::stop() {
     m_running = false;
     m_rings.reset();
     m_result.ordinals = m_context.ordinals.rings;
-    m_result.heardRings = m_context.heardOwners.rings;
+    m_result.heardOwners = m_context.heardOwners;
     m_context = Context();
     // The final append failed too (the spill is still unwritable): the rows go to the model with the rest of the
     // result, since the next start clears what the tap holds.

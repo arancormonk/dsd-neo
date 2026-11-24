@@ -1798,6 +1798,36 @@ test_heard_forget_refused_while_history_cannot_save(void) {
     }
 }
 
+/* Issue #903 (PR2 review r1, P2): a start that completes while the app is away, on the state the last run used (an
+ * embedding host that reuses it): the tap reads the reused ring for the new session, whose calls are its own. */
+void
+test_heard_reused_ring_through_the_tap(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755630000;
+    Decoder decoder;
+    decoder.commit(0, 44600U, 99U, when);
+    prove_newest(decoder, 0, 44600U);
+    decoder.publish();
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationHidden);
+    model.waitForBackgroundPollForTest();
+    start_saved(model, QStringLiteral("sys-b"));
+    decoder.commit(0, 44601U, 100U, when + 60);
+    prove_newest(decoder, 0, 44601U);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("reused ring tap: A's call is A's", sink.count(QStringLiteral("sys-a"), 44600U) == 1);
+    expect("reused ring tap: B's call on A's ring is B's",
+           sink.count(QStringLiteral("sys-b"), 44601U) == 1 && sink.seen.size() == 2);
+}
+
 /* Issue #903 (r2 finding 2): the backlog the tap could not spill reaches the remembered talkgroups at the model's
  * teardown, before its last save; the sink outlives the model, as the app builds them. */
 void
@@ -1881,6 +1911,7 @@ main(int argc, char** argv) {
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
     test_heard_forget_refused_while_history_cannot_save();
+    test_heard_reused_ring_through_the_tap();
     test_heard_hold_for_start();
     test_heard_clear_while_the_tap_runs();
     test_heard_cleared_row_proof_through_the_tap();

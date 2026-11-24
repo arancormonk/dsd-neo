@@ -845,10 +845,9 @@ CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner, const
 
 QString
 CallHistoryModel::heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember, const QString& channel) const {
-    // The session the ring belongs to, as a call it commits would be read in (walkRing()).
-    const auto bound = m_heardOwners.rings.constFind(ring);
-    const qint64 ringSession = ring != 0U && bound != m_heardOwners.rings.constEnd() ? bound.value() : m_session;
-    return heard_owner_for(m_heardOwners, ringSession, operatorTuned, scanMember, channel);
+    // The session a call the ring commits now would be read in (walkRing()).
+    return heard_owner_for(m_heardOwners, heard_owners_on_air_session(m_heardOwners, ring, m_session), operatorTuned,
+                           scanMember, channel);
 }
 
 QHash<int, QByteArray>
@@ -974,9 +973,12 @@ CallHistoryModel::changeSession(const QString& label, const QString& uid, bool b
     }
     if (begin) {
         advanceSession();
-    }
-    if (begin && owners != nullptr) {
-        heard_owners_set_session(&m_heardOwners, m_session, *owners);
+        // Issue #903: the ring read last, where the start found it: a run that reuses it owns what it pushes after.
+        const quint64 through[2] = {m_ringPushSeq[0], m_ringPushSeq[1]};
+        heard_owners_mark_start(&m_heardOwners, m_session, m_ringPushSeqRing, through);
+        if (owners != nullptr) {
+            heard_owners_set_session(&m_heardOwners, m_session, *owners);
+        }
         saveHeardOwners();
     }
     resumeBackgroundCapture(resumeTap);
@@ -1635,8 +1637,9 @@ void
 CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh) {
     const qulonglong pushSeq = static_cast<qulonglong>(ring.push_seq);
     const quint64 instance = static_cast<quint64>(ring.instance);
-    // Issue #903: the ring belongs to the session it was first read in, so its late rows keep that session's owners.
-    const qint64 heardSession = heard_owners_bind_ring(walk.heardOwners, instance, walk.session, walk.bindNewRings);
+    // Issue #903: a ring's rows belong to the session of the generation they were pushed in: the session the ring was
+    // first read in, or a later one whose run reused it. So a ring's late rows keep their session's owners.
+    heard_owners_bind_ring(walk.heardOwners, instance, slot, static_cast<quint64>(pushSeq), walk.session);
     // Index 0 is the still-active staged row; only committed rows are finished
     // calls that belong in a log.
     for (int idx = 1; idx < DSD_EVENT_HISTORY_LEN; idx++) {
@@ -1655,9 +1658,11 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
             // new, however old its stamps (a replay's are the capture's). A call still
             // airing when Clear was tapped commits later, and so it is new activity.
             // Issue #903: a proof that came after the clear is still a talkgroup heard.
-            noteClearedProof(item, slot, seq, instance, walk, heardSession, fresh);
+            noteClearedProof(item, slot, seq, instance, walk,
+                             heard_owners_session_of(walk.heardOwners, instance, slot, seq, walk.session), fresh);
             continue;
         }
+        const qint64 heardSession = heard_owners_session_of(walk.heardOwners, instance, slot, seq, walk.session);
         const SeenState read = seenReadOf(item);
         // Must match keyFor() on the equivalent Row, or a relaunched UI would
         // re-ingest every row its predecessor already logged.
@@ -1699,18 +1704,21 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
 }
 
 QList<CallHistoryModel::FreshRow>
-CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
-                               const RingWalk& heard, bool* seenSettled) {
+CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], bool optsPublished, bool* seenSettled) {
+    const auto ringsBound = m_heardOwners.rings;
+    const HeardRingMark markBound = m_heardOwners.mark;
     QList<FreshRow> fresh;
     RingWalk walk;
     walk.seen = &m_seen;
-    walk.heardOwners = heard.heardOwners;
-    walk.optsPublished = heard.optsPublished;
-    walk.bindNewRings = heard.bindNewRings;
+    walk.heardOwners = &m_heardOwners;
+    walk.optsPublished = optsPublished;
     walk.seenSettled = seenSettled;
     walk.session = m_session;
     walk.sessionLabel = m_sessionLabel;
-    walk.systemUid = systemUid;
+    // Whether a row may carry the saved system's UID is its own stamp (row_from_item()), which covers scans started
+    // from a saved system's extra arguments as well as the list UI. A snapshot read without its options cannot
+    // establish identity.
+    walk.systemUid = optsPublished ? m_sessionUid : QString();
     walk.cleared = clearApplies();
     for (int slot = 0; slot < 2; slot++) {
         if (!scan[slot]) {
@@ -1719,6 +1727,10 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
         walk.clearedThrough = m_clear.pushSeq[slot];
         walk.sessionOrd = sessionOrdinal(static_cast<quint64>(snapshot->event_history_s[slot].instance));
         walkRing(snapshot->event_history_s[slot], slot, walk, fresh);
+    }
+    if (m_heardOwners.rings != ringsBound || !(m_heardOwners.mark == markBound)) {
+        // A ring read for the first time, or again by a run that reused it, is bound to this session (issue #903).
+        saveHeardOwners();
     }
     return fresh;
 }
@@ -3371,6 +3383,12 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
         return;
     }
 
+    // Issue #903: before the session that owns it, nothing of the starting run's ring is read, its commit revision
+    // included: the next read takes it in under the session that begins.
+    if (!bindNewRings
+        && !heard_owners_ring_bound(m_heardOwners, static_cast<quint64>(snapshot->event_history_s[0].instance))) {
+        return;
+    }
     bool scan[2];
     if (!noteCommitRevs(snapshot, scan)) {
         return;
@@ -3388,21 +3406,8 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     m_ringRead = true;
     settleClear(pushSeq, ring);
 
-    // Whether a row may carry the saved system's UID is its own stamp (row_from_item()), which covers scans started
-    // from a saved system's extra arguments as well as the list UI. A snapshot read without its options cannot
-    // establish identity.
     bool seenSettled = false;
-    const QHash<quint64, qint64> ringsBound = m_heardOwners.rings;
-    RingWalk heard;
-    heard.heardOwners = &m_heardOwners;
-    heard.optsPublished = opts_snapshot != nullptr;
-    heard.bindNewRings = bindNewRings;
-    const QList<FreshRow> fresh =
-        collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString(), heard, &seenSettled);
-    if (m_heardOwners.rings != ringsBound) {
-        // A ring read for the first time is bound to this session (issue #903), for good.
-        saveHeardOwners();
-    }
+    const QList<FreshRow> fresh = collectFresh(snapshot, scan, opts_snapshot != nullptr, &seenSettled);
 
     if (fresh.isEmpty()) {
         if (seenSettled) {
@@ -4648,7 +4653,7 @@ CallHistoryModel::stopBackgroundCapture() {
     // Before any spill line folds: the ordinals the tap gave are the rings' for good, and so are the sessions it bound
     // them to (issue #903).
     adoptSessionOrdinals(tapped.ordinals);
-    if (heard_owners_adopt_rings(&m_heardOwners, tapped.heardRings)) {
+    if (heard_owners_adopt_rings(&m_heardOwners, tapped.heardOwners)) {
         saveHeardOwners();
     }
     // A clear this model made before it had read any ring binds to what the first read finds (settleClear()). The
