@@ -260,7 +260,8 @@ typedef struct {
     uint64_t identity_rx_gen;
     /* The group of this assignment when a checked regroup grant named it a supergroup (p25_sm_note_regroup_grant()),
        0 none: the verified talkgroup proof's supergroup evidence for the followed call (issue #903), kept apart from
-       the patch table, which may hold no row for it. A repeat that starts the slot's next call spends it. */
+       the patch table, which may hold no row for it. A checked grant or repeat that starts the slot's next call spends
+       it; one whose check failed (-F) spends nothing. */
     uint32_t regroup_sg;
     p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
@@ -1049,8 +1050,9 @@ int p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, i
  * @brief A checked regroup grant or grant update named @p sg a supergroup (issue #903).
  *
  * Called by a decoder after it dispatched the grant: each slot's accepted group assignment for @p sg keeps the word
- * (p25_sm_slot_ctx_t::regroup_sg) until the assignment is cleared or replaced, or a repeat starts the slot's next call
- * (one naming another talker, or one accepted after the assignment's call ended), whether or not the patch table has a
+ * (p25_sm_slot_ctx_t::regroup_sg) until the assignment is cleared or a checked grant replaces it, or a checked repeat
+ * starts the slot's next call (one naming another talker, or one accepted after the assignment's call ended); a grant
+ * or repeat whose check failed (-F) spends nothing. It is kept whether or not the patch table has a
  * row for the supergroup (a full table of live member-bearing patches takes no memberless row). A regroup repeat marks
  * that next call again: this runs after its dispatch.
  *

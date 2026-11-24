@@ -2375,6 +2375,14 @@ p25_slot_note_grant(p25_sm_slot_ctx_t* slot_ctx, double now_m) {
     slot_ctx->grant_seq = ++g_p25_grant_seq;
 }
 
+/* Whether @p ev may spend a slot's regroup evidence (p25_sm_slot_ctx_t::regroup_sg; issue #903): only a message whose
+ * own check passed establishes the call that replaces the regroup grant's. A failed-CRC grant -F lets through can still
+ * drive the follow, but the checked evidence stays until checked input replaces it. */
+static int
+p25_grant_spends_regroup_evidence(const p25_sm_event_t* ev) {
+    return ev != NULL && (ev->identity_checked & P25_SM_IDENTITY_CHECKED_ALL) != 0U;
+}
+
 static void
 p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev, long freq,
                              int target_id, const p25_grant_eval_ctx_t* eval_ctx, int slot, double now_m) {
@@ -2835,7 +2843,9 @@ p25_grant_duplicate_start_new_call(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     slot_ctx->enc_override_clear = force_clear ? 1 : 0;
     slot_ctx->algid = 0;
     slot_ctx->keyid = 0;
-    slot_ctx->regroup_sg = 0U;
+    if (p25_grant_spends_regroup_evidence(ev)) {
+        slot_ctx->regroup_sg = 0U;
+    }
     if (data_call) {
         return;
     }
@@ -2944,12 +2954,13 @@ p25_grant_duplicate_refresh_call(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_st
     }
 }
 
-/* A repeat accepted on logical slot @p slot after the call its assignment carried ended (no epoch open, and voice came
- * since the assignment's wait began) assigns the slot's next call: the ended call's regroup evidence is spent, and only
- * a regroup grant naming the next call marks it again (p25_sm_note_regroup_grant(), after the repeat's dispatch). */
+/* A checked repeat (@p ev) accepted on logical slot @p slot after the call its assignment carried ended (no epoch
+ * open, and voice came since the assignment's wait began) assigns the slot's next call: the ended call's regroup
+ * evidence is spent, and only a regroup grant naming the next call marks it again (p25_sm_note_regroup_grant(), after
+ * the repeat's dispatch). A repeat whose check failed spends nothing (p25_grant_spends_regroup_evidence()). */
 static void
-p25_grant_duplicate_spend_ended_call(p25_sm_ctx_t* ctx, int slot) {
-    if (slot < 0 || slot > 1) {
+p25_grant_duplicate_spend_ended_call(p25_sm_ctx_t* ctx, const p25_sm_event_t* ev, int slot) {
+    if (slot < 0 || slot > 1 || !p25_grant_spends_regroup_evidence(ev)) {
         return;
     }
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
@@ -2977,7 +2988,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 
     // The repeat is accepted: the clear-bit release it planned is spent now, before anything re-reads the ledger.
     p25_grant_commit_enc_release(ctx, state, eval_ctx);
-    p25_grant_duplicate_spend_ended_call(ctx, p25_grant_logical_slot(ctx, route->slot));
+    p25_grant_duplicate_spend_ended_call(ctx, ev, p25_grant_logical_slot(ctx, route->slot));
     // An update accepted after the slot's conversation lapsed (a new talker on a held destination) is a new call.
     p25_slot_forget_lapsed_follow(ctx, state, p25_grant_logical_slot(ctx, route->slot), now_m);
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
@@ -3230,6 +3241,9 @@ static void
 p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t* ev, const p25_grant_route_ctx_t* grant,
                       const p25_grant_eval_ctx_t* eval_ctx) {
     const int slot = grant->logical_slot;
+    /* A grant whose check failed replaces the assignment but spends no regroup evidence it held for the same group. */
+    const uint32_t kept_regroup_sg =
+        (slot >= 0 && slot <= 1 && !p25_grant_spends_regroup_evidence(ev)) ? ctx->slots[slot].regroup_sg : 0U;
     if (grant->clear_policy_slot_only) {
         // A slot whose conversation lapsed while the companion kept the carrier starts a new one: read it before the
         // clear wipes the slot's last stop.
@@ -3252,6 +3266,9 @@ p25_grant_claim_slots(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_event_t*
     }
     p25_grant_store_vc_context(ctx, state, ev, grant->freq, grant->target_id, eval_ctx, grant->now_m, grant->slot,
                                grant->reused_carrier);
+    if (kept_regroup_sg != 0U && ctx->slots[slot].is_group && (uint32_t)ctx->slots[slot].ota_tg == kept_regroup_sg) {
+        ctx->slots[slot].regroup_sg = kept_regroup_sg;
+    }
 }
 
 /* A grant allowed through as the stale-regrant guard's one validation probe was accepted (followed, or taken as a

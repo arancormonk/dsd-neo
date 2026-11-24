@@ -14064,10 +14064,13 @@ Private per-protocol modules worth knowing about:
   regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
   updates the patch table), an active patch entry naming the group, or a checked regroup grant of the group the slot
   follows (`p25_sm_note_regroup_grant()`, called by each regroup grant and grant update decoder after its dispatch,
-  keeps `p25_sm_slot_ctx_t::regroup_sg` on the accepted assignment for that group until it is cleared or replaced, or
-  a repeat starts the slot's next call: one naming another talker (`p25_grant_duplicate_start_new_call()`) or one
-  accepted after the assignment's call ended (`p25_grant_duplicate_spend_ended_call()`); a regroup repeat marks the
-  next call again after its dispatch; `p25_sm_followed_regroup()`), when the proof is noted, frozen there with it. The grant's word needs no patch row: a
+  keeps `p25_sm_slot_ctx_t::regroup_sg` on the accepted assignment for that group until it is cleared or a checked
+  grant replaces it, or a checked repeat starts the slot's next call: one naming another talker
+  (`p25_grant_duplicate_start_new_call()`) or one accepted after the assignment's call ended
+  (`p25_grant_duplicate_spend_ended_call()`); a grant or repeat whose CRC failed (`-F`) spends nothing
+  (`p25_grant_spends_regroup_evidence()`; an unchecked grant that reassigns the slot to the same group keeps the mark,
+  `p25_grant_claim_slots()`), though it can still drive the follow; a regroup repeat marks the next call again after
+  its dispatch; `p25_sm_followed_regroup()`), when the proof is noted, frozen there with it. The grant's word needs no patch row: a
   full table of live member-bearing patches takes no memberless row. Documented limit: a MAC_PTT names no supergroup
   itself, so one naming a supergroup no followed regroup grant named, that no regroup grant or voice user has put in
   the patch table (and no regroup voice user waiting on the same epoch) is remembered as an ordinary group. Test:
