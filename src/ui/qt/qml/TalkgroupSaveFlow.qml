@@ -4,8 +4,9 @@ import QtQuick
 // Match one export at a time; abandoned requests can never associate a later result.
 // Each step after the export reports its own outcome: adding the file to Imports, then attaching it to the saved
 // system the request named. A failed step keeps the exported file and offers that step again, never a new export:
-// the decoder already writes its edits to that file. A request given up on (no completion in time, or its completion
-// missed) is kept until its result comes, and a late success is then only added to Imports.
+// the decoder already writes its edits to that file, and only while that file is still there (and, to attach it, still
+// in Imports). A request given up on (no completion in time, or its completion missed) is kept until its result comes,
+// and a late success is then only added to Imports.
 Item {
     id: flow
     property var bridge: commands
@@ -224,10 +225,20 @@ Item {
         retryAvailable = true;
         message = text;
     }
+    // Whether the exported file @p request (a stalled step) finishes with is still there: written, and to attach it,
+    // still in Imports. Removed since (in Imports, possibly in a later session), it leaves nothing to finish.
+    function stepFileKept(request) {
+        return library.talkgroupListWritten(request.path) && (request.step === "register" || library.rowForPath(request.path) >= 0);
+    }
     function retryStep() {
         var request = stalled;
         stalled = null;
         retryAvailable = false;
+        // No system is changed for a file that is gone, and its name stays reserved: the decoder may still write it.
+        if (!stepFileKept(request)) {
+            message = "";
+            return false;
+        }
         if (request.step === "register")
             register(request);
         else

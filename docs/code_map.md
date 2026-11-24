@@ -19249,7 +19249,8 @@ Qt Quick frontend (`src/ui/qt`):
   flow reads every completion since the last poll (`UiController::talkgroupExportResults`, from
   `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
   registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step
-  keeps the exported file (the decoder writes to it already) and Try again repeats that step only. A request given up
+  keeps the exported file (the decoder writes to it already) and Try again repeats that step only, while that file is
+  still there (and, to attach it, still in Imports): one removed since leaves the system unchanged. A request given up
   on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
   export releases its reserved name. A completion lost in a gap is recovered from the file
   (`ImportedFilesModel::talkgroupListWritten()`: the decoder writes it only on success): an existing file is registered,

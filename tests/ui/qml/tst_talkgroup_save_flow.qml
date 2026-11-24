@@ -10,6 +10,8 @@ Item {
         property bool failRegister: false
         // Whether a file is at every export path (the decoder wrote it).
         property bool written: true
+        // Whether a registered list is still listed in Imports (false: the user removed it since).
+        property bool listed: true
         property var registered: []
         property var released: []
         function newTalkgroupListPath() {
@@ -25,6 +27,9 @@ Item {
         }
         function talkgroupListWritten(path) {
             return written;
+        }
+        function rowForPath(path) {
+            return listed && registered.indexOf(path) >= 0 ? registered.indexOf(path) : -1;
         }
         function releaseTalkgroupListPath(path) {
             released = released.concat([path]);
@@ -86,6 +91,7 @@ Item {
             library.paths = 0;
             library.failRegister = false;
             library.written = true;
+            library.listed = true;
             library.registered = [];
             library.released = [];
             systems.updates = 0;
@@ -294,6 +300,48 @@ Item {
             compare(loader.item.stalled, null);
             compare(loader.item.retryAvailable, false);
             compare(loader.item.message, "Talkgroup list saved");
+        }
+        // The attachment is retried in a later session, after the user removed the exported list in Imports (or the
+        // file went): the system is left as it was, and no step or export is started for it.
+        function test_attachment_retry_after_the_list_went_data() {
+            return [{tag: "removed from Imports", written: false, listed: false},
+                    {tag: "file gone, row kept", written: false, listed: true},
+                    {tag: "row gone, file kept", written: true, listed: false}];
+        }
+        function test_attachment_retry_after_the_list_went(data) {
+            systems.failSave = true;
+            verify(loader.item.save("original", "7", 1, {
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            }));
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            verify(loader.item.stalled !== null);
+            compare(systems.attempts, 1);
+            systems.failSave = false;
+            library.written = data.written;
+            library.listed = data.listed;
+            verify(!loader.item.save("original", "8", 2));
+            compare(systems.attempts, 1, "a list no longer in Imports was attached");
+            compare(systems.updates, 0);
+            compare(bridge.calls, 1, "a new export was started");
+            compare(loader.item.stalled, null);
+            compare(loader.item.retryAvailable, false);
+            compare(loader.item.message, "");
+        }
+        // The same for a registration retry: a file that went leaves nothing to add to Imports.
+        function test_registration_retry_after_the_file_went() {
+            library.failRegister = true;
+            verify(loader.item.save("original", "7", 1));
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            verify(loader.item.stalled !== null);
+            library.failRegister = false;
+            library.written = false;
+            verify(!loader.item.save("original", "7", 1));
+            compare(library.registrations, 0);
+            compare(systems.attempts, 0);
+            compare(bridge.calls, 1);
+            compare(loader.item.stalled, null);
+            compare(loader.item.retryAvailable, false);
         }
         function test_failed_registration_retries_registration_only() {
             library.failRegister = true;
