@@ -32,8 +32,8 @@ Item {
         property string lastPath: ""
         property bool failSave: false
         property bool hasList: false
-        function tuningProvenanceFields() {
-            return ["freqMhz", "groupCsvPath"];
+        function groupListTuningFields() {
+            return ["freqMhz", "groupCsvPath", "host"];
         }
         // Only "original" exists; a tuning whose frequency changed since the request was captured is refused.
         function groupListAttachable(uid, tuning) {
@@ -329,10 +329,12 @@ Item {
             var tuning = loader.item.tuningOf({
                 freqMhz: "851.0125",
                 groupCsvPath: "",
+                host: "10.0.0.2",
                 name: "Ignored"
             });
-            compare(Object.keys(tuning).sort(), ["freqMhz", "groupCsvPath"]);
+            compare(Object.keys(tuning).sort(), ["freqMhz", "groupCsvPath", "host"]);
             compare(tuning.freqMhz, "851.0125");
+            compare(tuning.host, "10.0.0.2");
         }
     }
 }

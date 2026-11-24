@@ -2772,12 +2772,13 @@ test_invalidate_path_provenance() {
     empty_systems(model);
 }
 
-/* The tuning a Save talkgroup list request captures: the fields whose change ends a site's provenance. */
+/* The tuning a Save talkgroup list request captures: the fields whose change ends a site's provenance, and the
+ * receiver's. */
 QVariantMap
 captured_tuning(const SavedSystemsModel& model, int row) {
     QVariantMap tuning;
     const QVariantMap system = model.get(row);
-    for (const QString& key : model.tuningProvenanceFields()) {
+    for (const QString& key : model.groupListTuningFields()) {
         tuning.insert(key, system.value(key));
     }
     return tuning;
@@ -2804,8 +2805,9 @@ test_attach_group_list_keeps_site() {
     expect("attach: a second site with no list", model.add(grouped_site("Metro — North", 4)));
     const QString uid = model.get(0).value("uid").toString();
     const QVariantMap tuning = captured_tuning(model, 0);
-    expect("attach: the captured tuning names every provenance field",
-           tuning.size() == model.tuningProvenanceFields().size());
+    expect("attach: the captured tuning names every provenance and receiver field",
+           tuning.size() == model.groupListTuningFields().size()
+               && tuning.size() > model.tuningProvenanceFields().size());
 
     QVariantMap retuned = tuning;
     retuned.insert("freqMhz", "852.0125");
@@ -2850,6 +2852,42 @@ test_attach_group_list_keeps_site() {
     const QVariantMap before = captured_tuning(model, 1);
     expect("attach: the second site retuned", model.update(1, {{"freqMhz", "852.0125"}}));
     expect("attach: a retuned system is refused", !model.attachGroupList(second, path, before));
+    empty_systems(model);
+}
+
+/* Issue #903 (r5): a list saved from a session attaches only to a saved system that still names the receiver the session
+ * ran: the same source and endpoint. A TCP audio system edited from one receiver to another by its host or port alone
+ * keeps every tuning field, yet is refused, as is a request that captured no receiver. */
+void
+test_attach_group_list_by_receiver() {
+    const QString path = QStringLiteral("/data/imports/talkgroups-0003.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    QVariantMap tcp = grouped_site("Metro — North", 3);
+    tcp.insert("sourceType", "tcp");
+    tcp.insert("host", "10.0.0.2");
+    tcp.insert("port", 7355);
+    expect("receiver: a TCP audio system", model.add(tcp));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap tuning = captured_tuning(model, 0);
+    expect("receiver: attachable on the receiver it ran", model.groupListAttachable(uid, tuning));
+
+    expect("receiver: edited to another host", model.update(0, {{"host", "10.0.0.3"}}));
+    expect("receiver: another host is refused",
+           !model.groupListAttachable(uid, tuning) && !model.attachGroupList(uid, path, tuning));
+    expect("receiver: back on its host", model.update(0, {{"host", "10.0.0.2"}}));
+    expect("receiver: edited to another port", model.update(0, {{"port", 7356}}));
+    expect("receiver: another port is refused", !model.groupListAttachable(uid, tuning));
+    expect("receiver: back on its port", model.update(0, {{"port", 7355}}));
+    expect("receiver: edited to another source", model.update(0, {{"sourceType", "udp"}}));
+    expect("receiver: another source is refused", !model.groupListAttachable(uid, tuning));
+    expect("receiver: back on its source", model.update(0, {{"sourceType", "tcp"}}));
+
+    QVariantMap partial = tuning;
+    partial.remove("host");
+    expect("receiver: a request that captured no host is refused", !model.groupListAttachable(uid, partial));
+    expect("receiver: the receiver it ran attaches",
+           model.attachGroupList(uid, path, tuning) && model.get(0).value("groupCsvPath") == path);
     empty_systems(model);
 }
 
@@ -4455,6 +4493,7 @@ main(int argc, char** argv) {
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
     test_attach_group_list_keeps_site();
+    test_attach_group_list_by_receiver();
     test_clear_user_group_csv_keeps_site();
     test_apply_place_names();
     test_place_name_cache();

@@ -59,12 +59,13 @@ Item {
         var missed = batch && batch.missedThrough ? String(batch.missedThrough) : "0";
         return newer(missed, newest) ? missed : newest;
     }
-    // The fields of @p system whose change ends a saved site's provenance: what attachment compares later.
+    // The fields of @p system whose change ends a saved site's provenance, and its receiver's: what attachment compares
+    // later.
     function tuningOf(system) {
         var tuning = {};
         if (!system)
             return tuning;
-        var fields = systems.tuningProvenanceFields();
+        var fields = systems.groupListTuningFields();
         for (var i = 0; i < fields.length; ++i)
             tuning[fields[i]] = system[fields[i]];
         return tuning;

@@ -354,6 +354,10 @@ constexpr const char* kFreshProvenanceKeys[] = {"rrSid",   "rrSiteId",   "siteNa
 constexpr const char* kTuningProvenanceKeys[] = {"freqMhz",    "decodeFlag", "chanCsvPath",        "groupCsvPath",
                                                  "keyCsvPath", "keyCsvHex",  "p25BandplanCsvPath", "srcCsvPath"};
 
+/** The fields that name the receiver a row runs (receiver_identity()): a talkgroup list saved from a session attaches
+ *  only while they are what the session started with, as the tuning fields are (issue #903). */
+constexpr const char* kReceiverKeys[] = {"sourceType", "host", "port", "filePath", "airspy"};
+
 /** Whether @p system changes a field that decides what the row's imported site is. */
 bool
 changes_site_tuning(const QVariantMap& previous, const QVariantMap& system) {
@@ -941,10 +945,15 @@ SavedSystemsModel::groupListAttachable(const QString& uid, const QVariantMap& tu
     }
     const QVariantMap stored = get(row);
     // Compared as text: QML hands a bool or a string over as the variant it made, the store as its own.
-    return std::all_of(std::begin(kTuningProvenanceKeys), std::end(kTuningProvenanceKeys), [&](const char* key) {
-        const QString name = QLatin1String(key);
-        return tuning.contains(name) && tuning.value(name).toString() == stored.value(name).toString();
-    });
+    const bool sameTuning =
+        std::all_of(std::begin(kTuningProvenanceKeys), std::end(kTuningProvenanceKeys), [&](const char* key) {
+            const QString name = QLatin1String(key);
+            return tuning.contains(name) && tuning.value(name).toString() == stored.value(name).toString();
+        });
+    // And the receiver: the same source and endpoint, every field of it captured.
+    const bool receiverCaptured = std::all_of(std::begin(kReceiverKeys), std::end(kReceiverKeys),
+                                              [&](const char* key) { return tuning.contains(QLatin1String(key)); });
+    return sameTuning && receiverCaptured && receiver_identity(tuning) == receiver_identity(stored);
 }
 
 bool
@@ -992,6 +1001,15 @@ QStringList
 SavedSystemsModel::tuningProvenanceFields() const {
     QStringList fields;
     for (const char* key : kTuningProvenanceKeys) {
+        fields.append(QLatin1String(key));
+    }
+    return fields;
+}
+
+QStringList
+SavedSystemsModel::groupListTuningFields() const {
+    QStringList fields = tuningProvenanceFields();
+    for (const char* key : kReceiverKeys) {
         fields.append(QLatin1String(key));
     }
     return fields;

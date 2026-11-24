@@ -188,9 +188,10 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
 
     /**
-     * @brief Whether attachGroupList() would attach a list to system @p uid: it exists, has no group list, and every
-     * tuningProvenanceFields() value equals what @p tuning (captured when the list was requested) holds for it, a
-     * missing one included. Lets the caller tell a refusal from a failed save.
+     * @brief Whether attachGroupList() would attach a list to system @p uid: it exists, has no group list, every
+     * tuningProvenanceFields() value equals what @p tuning (captured when the list was requested, with
+     * groupListTuningFields()) holds for it, a missing one included, and @p tuning names the same receiver: source and
+     * endpoint (receiver_identity()), every receiver field captured. Lets the caller tell a refusal from a failed save.
      */
     Q_INVOKABLE bool groupListAttachable(const QString& uid, const QVariantMap& tuning) const;
     /**
@@ -212,6 +213,9 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief The field names whose change in update() clears a row's RadioReference provenance. */
     Q_INVOKABLE QStringList tuningProvenanceFields() const;
+    /** @brief The fields a Save talkgroup list request captures for groupListAttachable() (issue #903): the
+     *  tuningProvenanceFields() and the receiver's (sourceType, host, port, filePath, airspy). */
+    Q_INVOKABLE QStringList groupListTuningFields() const;
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
     /** @brief Row @p row's site group key (site_group_key(): its RadioReference system on its receiver), read from

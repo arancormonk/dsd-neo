@@ -19066,8 +19066,9 @@ Qt Quick frontend (`src/ui/qt`):
   own file, issue #903) keeps the provenance of a row that named the file only as its group list: a list the user
   saved never described the site, so two sites sharing it both stay in their group. `attachGroupList(uid, path,
   tuning)` (Save talkgroup list, issue #903) sets `groupCsvPath` alone, no edit and no provenance cleared, and only
-  while `groupListAttachable(uid, tuning)`: the system exists, has no list, and every tuning-provenance field equals
-  the tuning captured when the list was requested. Load drops what a row outside a group cannot use: its
+  while `groupListAttachable(uid, tuning)`: the system exists, has no list, every tuning-provenance field equals
+  the tuning captured when the list was requested (`groupListTuningFields()`: those fields and the receiver's), and
+  the captured receiver is the row's (`receiver_identity()`: source and endpoint, every receiver field captured). Load drops what a row outside a group cannot use: its
   `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
   position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
   and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
@@ -19320,8 +19321,8 @@ Qt Quick frontend (`src/ui/qt`):
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor session menu's **Talkgroups** entry. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the
   edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system
-  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and the tuning the
-  session was started with (`sessionTuning`: an edit of the running system changes `sessionSystem`, but not the
+  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and the tuning and
+  receiver the session was started with (`sessionTuning`, `tuningOf()`: an edit of the running system changes `sessionSystem`, but not the
   frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted). A
   change the decoder applied live leaves the saved row as it was; the export's completion says whether there was one
   (`tuningMoved`, `dsd_app_tg_export_result::tuning_moved`: the tuning generation had moved since the run began, or

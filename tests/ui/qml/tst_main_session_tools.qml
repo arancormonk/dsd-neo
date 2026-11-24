@@ -826,7 +826,9 @@ Item {
                     {tag: "operator hold, then released", snapshot: {operatorTuned: true}, moved: true, stopped: false, attached: false},
                     {tag: "start tuning, result read after Stop", snapshot: null, moved: false, stopped: true, attached: true},
                     {tag: "live change, result read after Stop", snapshot: null, moved: true, stopped: true, attached: false},
-                    {tag: "result with no tuning record", snapshot: null, moved: undefined, stopped: false, attached: false}];
+                    {tag: "result with no tuning record", snapshot: null, moved: undefined, stopped: false, attached: false},
+                    {tag: "saved receiver edited to another host", snapshot: null, moved: false, stopped: false, attached: false, edit: {host: "127.0.0.2"}},
+                    {tag: "saved receiver edited to another port", snapshot: null, moved: false, stopped: false, attached: false, edit: {port: 1235}}];
         }
         function test_the_export_record_decides_the_attachment(data) {
             testContext.setLifecyclePhase(0);
@@ -851,6 +853,9 @@ Item {
                 verify(flow.pending !== null, "the request was not made");
                 var request = flow.pending;
                 compare(request.uid, uid);
+                // The saved system now names another receiver than the session ran, every tuning field the same.
+                if (data.edit)
+                    verify(savedSystems.update(row, data.edit));
                 if (data.stopped)
                     testContext.setLifecyclePhase(0);
                 var completion = {sequence: String(Number(request.sequence) + 1), policyContext: request.context,
