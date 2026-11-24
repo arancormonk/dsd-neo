@@ -17145,8 +17145,10 @@ Qt Quick frontend (`src/ui/qt`):
     the store refuses the edit (`forget()`/`clear()` return false with a diagnostic, nothing removed): the spill it
     could not settle would bring the entries back after a death. Settled means no spill is left to replay: a spill no
     fold read whole (a read that failed, or lines a failed truncate left: `acknowledgeSave()` drops its mark either way)
-    is folded again first, and once the save is done the spill must be empty (`CallHistorySpill::empty()`), else the
-    edit is refused (a warning; `saveFailing` only for the save itself). Tests: `UI_QT_CALL_HISTORY_MODEL`
+    is folded again first, and once the save is done the spill must be empty (`CallHistorySpill::empty()`: a spill
+    confirmed absent (`json_store_definitely_missing()`) or an empty regular file; a stat that fails otherwise, such as
+    a folder that cannot be searched, is not empty), else the edit is refused (a warning; `saveFailing` only for the
+    save itself). Tests: `UI_QT_CALL_HISTORY_MODEL`
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
     ring at the pre-start flush, with a call committed before it, an old ring no read met during its run, a reused
@@ -17154,7 +17156,7 @@ Qt Quick frontend (`src/ui/qt`):
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
     teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot
-    save; a Forget after a partial spill read; a Forget refused while the spill cannot be emptied; a spill recovery past 20,000 of one owner's groups; a reused ring through the tap; the start's hold; a Clear
+    save; a Forget after a partial spill read; a Forget refused while the spill cannot be emptied, or checked; a spill recovery past 20,000 of one owner's groups; a reused ring through the tap; the start's hold; a Clear
     while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
     (`test_before_edit_hook`, `test_before_edit_hook_refusal`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).

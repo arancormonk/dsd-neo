@@ -4,6 +4,7 @@
  */
 
 #include "call_history_tap.h"
+#include "json_store.h"
 
 #include <QDir>
 #include <QFile>
@@ -92,7 +93,12 @@ bool
 CallHistorySpill::empty() const {
     const std::lock_guard<std::mutex> lock(m_mutex);
     const QFileInfo info(m_path);
-    return !info.exists() || (info.isFile() && info.size() == 0);
+    if (!info.exists()) {
+        // Absent only when the stat says so: one that failed otherwise (a folder that cannot be searched, a loop, an
+        // I/O error) may hide lines a later fold would read.
+        return json_store_definitely_missing(m_path);
+    }
+    return info.isFile() && info.size() == 0;
 }
 
 void

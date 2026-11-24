@@ -1732,6 +1732,57 @@ test_heard_forget_after_a_fold_survives_a_death(void) {
     expect("forget after fold: History kept both calls", relaunched.count() == 2);
 }
 
+/* Issue #903 (PR2 review r3, P2): a spill whose stat fails for any reason but its absence (here a symlink loop, ELOOP)
+ * is not an empty one. A Forget or Clear while History cannot check its spill is refused, as when it cannot save, so a
+ * fold once the spill reads again restores nothing the user saw go; once the spill checks again, the Forget goes
+ * through. */
+void
+test_heard_forget_refused_while_the_spill_cannot_be_checked(void) {
+#ifndef _WIN32
+    resetStorage();
+    const QString name = QString::fromLatin1(dsd_qt::HeardTalkgroupStore::kFileName);
+    const QString owner = QStringLiteral("sys-a");
+    const auto allow = [](const QString& uid) { return uid == QStringLiteral("sys-a"); };
+    Decoder decoder;
+    const time_t when = 1755620000;
+    dsd_qt::HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow);
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&store);
+    store.setBeforeEdit(model.spillSettler());
+    start_saved(model, owner);
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commit(0, 44700U, 99U, when);
+    prove_newest(decoder, 0, 44700U);
+    decoder.commit(0, 44701U, 99U, when + 60);
+    prove_newest(decoder, 0, 44701U);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("unchecked spill: the fold taught both groups", store.entriesFor(owner).size() == 2);
+    expect("unchecked spill: the folded spill waits for History's save", spill_lines() == 2);
+    const QString aside = spill_path() + QStringLiteral(".aside");
+    expect("unchecked spill: the spill is set aside", QFile::rename(spill_path(), aside));
+    expect("unchecked spill: the spill path loops", QFile::link(spill_path(), spill_path()));
+    expect("unchecked spill: the forget is refused", !store.forget(owner, 44700U));
+    expect("unchecked spill: the clear is refused", !store.clear(owner));
+    expect("unchecked spill: nothing is removed", store.entriesFor(owner).size() == 2);
+    store.waitForWrites();
+    model.waitForSaveForTest();
+    expect("unchecked spill: the loop is removed", QFile::remove(spill_path()));
+    expect("unchecked spill: the spill is back", QFile::rename(aside, spill_path()));
+    expect("unchecked spill: with the spill checked again, the forget goes through", store.forget(owner, 44700U));
+    store.waitForWrites();
+    model.waitForSaveForTest();
+    expect("unchecked spill: the forget emptied the spill first", spill_size() == 0);
+    expect("unchecked spill: one group is left",
+           store.entriesFor(owner).size() == 1 && store.entriesFor(owner).at(0).id == 44701U);
+#endif
+}
+
 /* Issue #903 (PR2 review r1, P2): a Forget or Clear whose spill History cannot settle (its log cannot be written) is
  * refused, as qt_ui.cpp wires the store to History (CallHistoryModel::spillSettler()): nothing is removed, History says
  * it is not saving, and a death then refolds nothing the user saw go. Once History can write again, the Forget goes
@@ -2079,6 +2130,7 @@ main(int argc, char** argv) {
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
     test_heard_forget_refused_while_history_cannot_save();
+    test_heard_forget_refused_while_the_spill_cannot_be_checked();
     test_heard_forget_after_a_partial_spill_read();
     test_heard_forget_refused_while_the_spill_cannot_be_emptied();
     test_heard_spill_recovery_keeps_each_owners_newest();

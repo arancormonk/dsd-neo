@@ -70,7 +70,8 @@ class CallHistorySpill {
     /** @brief Empty the spill if it still holds exactly @p size bytes; @return whether it was emptied. */
     bool truncateIfSize(qint64 size);
 
-    /** @brief Whether the spill holds nothing a fold could read: no file, or an empty one. */
+    /** @brief Whether the spill holds nothing a fold could read: a file confirmed absent, or an empty regular one. A
+     *  stat that fails for another reason is not an answer: false. */
     bool empty() const;
 
     /** @brief Empty the spill whatever it holds. */
