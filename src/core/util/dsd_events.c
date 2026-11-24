@@ -158,6 +158,71 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     dsd_event_history_mark_dirty(event_struct);
 }
 
+/* One history row moved down a place by push_event_history(): every field of @p src into @p dst, the strings
+   through copy_str_field(). */
+static void
+event_history_copy_row(Event_History* dst, const Event_History* src) {
+    dst->write = src->write;
+    dst->color_pair = src->color_pair;
+    dst->severity = src->severity;
+    dst->category = src->category;
+    dst->crc_invalid = src->crc_invalid;
+    copy_str_field(dst->service_label, src->service_label, sizeof dst->service_label);
+    dst->receive_identity = src->receive_identity;
+    dst->systype = src->systype;
+    dst->subtype = src->subtype;
+    dst->sys_id1 = src->sys_id1;
+    dst->sys_id2 = src->sys_id2;
+    dst->sys_id3 = src->sys_id3;
+    dst->sys_id4 = src->sys_id4;
+    dst->sys_id5 = src->sys_id5;
+    DSD_MEMCPY(&dst->site_id, &src->site_id, sizeof(dst->site_id));
+    dst->gi = src->gi;
+    dst->emergency = src->emergency;
+    dst->priority = src->priority;
+    dst->enc = src->enc;
+    dst->enc_alg = src->enc_alg;
+    dst->enc_key = src->enc_key;
+    dst->mi = src->mi;
+    dst->svc = src->svc;
+    dst->source_id = src->source_id;
+    dst->target_id = src->target_id;
+    dst->policy_target_id = src->policy_target_id;
+    copy_str_field(dst->src_str, src->src_str, sizeof dst->src_str);
+    copy_str_field(dst->src_home, src->src_home, sizeof dst->src_home);
+    dst->src_home_key = src->src_home_key;
+    dst->src_home_withdrawn = src->src_home_withdrawn;
+    copy_str_field(dst->tgt_str, src->tgt_str, sizeof dst->tgt_str);
+    copy_str_field(dst->t_name, src->t_name, sizeof dst->t_name);
+    copy_str_field(dst->s_name, src->s_name, sizeof dst->s_name);
+    copy_str_field(dst->t_mode, src->t_mode, sizeof dst->t_mode);
+    copy_str_field(dst->s_mode, src->s_mode, sizeof dst->s_mode);
+    copy_str_field(dst->channel_label, src->channel_label, sizeof dst->channel_label);
+    dst->channel_label_resolved = src->channel_label_resolved;
+    dst->stream_blocked = src->stream_blocked;
+    dst->fallback_blocked = src->fallback_blocked;
+    dst->operator_tuned = src->operator_tuned;
+    dst->scan_member = src->scan_member;
+    dst->channel = src->channel;
+    dst->call_channel_kind = src->call_channel_kind;
+    dst->analog_mode = src->analog_mode;
+    dst->freq_hz = src->freq_hz;
+    dst->access_code_kind = src->access_code_kind;
+    dst->access_code = src->access_code;
+    dst->event_time = src->event_time;
+    dst->event_start_time = src->event_start_time;
+
+    DSD_MEMCPY(dst->pdu, src->pdu, sizeof(dst->pdu));
+    copy_str_field(dst->sysid_string, src->sysid_string, sizeof dst->sysid_string);
+    copy_str_field(dst->alias, src->alias, sizeof dst->alias);
+    copy_str_field(dst->gps_s, src->gps_s, sizeof dst->gps_s);
+    copy_str_field(dst->text_message, src->text_message, sizeof dst->text_message);
+    copy_str_field(dst->event_string, src->event_string, sizeof dst->event_string);
+    copy_str_field(dst->internal_str, src->internal_str, sizeof dst->internal_str);
+    dst->pos = src->pos;
+    dst->rx_scope = src->rx_scope;
+}
+
 void
 push_event_history(Event_History_I* event_struct) {
     if (event_struct == NULL) {
@@ -166,96 +231,7 @@ push_event_history(Event_History_I* event_struct) {
 
     //Fixed, had it going in the wrong direction first time
     for (uint8_t i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
-        event_struct->Event_History_Items[i].write = event_struct->Event_History_Items[i - 1].write;
-        event_struct->Event_History_Items[i].color_pair = event_struct->Event_History_Items[i - 1].color_pair;
-        event_struct->Event_History_Items[i].severity = event_struct->Event_History_Items[i - 1].severity;
-        event_struct->Event_History_Items[i].category = event_struct->Event_History_Items[i - 1].category;
-        event_struct->Event_History_Items[i].crc_invalid = event_struct->Event_History_Items[i - 1].crc_invalid;
-        copy_str_field(event_struct->Event_History_Items[i].service_label,
-                       event_struct->Event_History_Items[i - 1].service_label,
-                       sizeof event_struct->Event_History_Items[i].service_label);
-        event_struct->Event_History_Items[i].receive_identity =
-            event_struct->Event_History_Items[i - 1].receive_identity;
-        event_struct->Event_History_Items[i].systype = event_struct->Event_History_Items[i - 1].systype;
-        event_struct->Event_History_Items[i].subtype = event_struct->Event_History_Items[i - 1].subtype;
-        event_struct->Event_History_Items[i].sys_id1 = event_struct->Event_History_Items[i - 1].sys_id1;
-        event_struct->Event_History_Items[i].sys_id2 = event_struct->Event_History_Items[i - 1].sys_id2;
-        event_struct->Event_History_Items[i].sys_id3 = event_struct->Event_History_Items[i - 1].sys_id3;
-        event_struct->Event_History_Items[i].sys_id4 = event_struct->Event_History_Items[i - 1].sys_id4;
-        event_struct->Event_History_Items[i].sys_id5 = event_struct->Event_History_Items[i - 1].sys_id5;
-        DSD_MEMCPY(&event_struct->Event_History_Items[i].site_id, &event_struct->Event_History_Items[i - 1].site_id,
-                   sizeof(event_struct->Event_History_Items[i].site_id));
-        event_struct->Event_History_Items[i].gi = event_struct->Event_History_Items[i - 1].gi;
-        event_struct->Event_History_Items[i].emergency = event_struct->Event_History_Items[i - 1].emergency;
-        event_struct->Event_History_Items[i].priority = event_struct->Event_History_Items[i - 1].priority;
-        event_struct->Event_History_Items[i].enc = event_struct->Event_History_Items[i - 1].enc;
-        event_struct->Event_History_Items[i].enc_alg = event_struct->Event_History_Items[i - 1].enc_alg;
-        event_struct->Event_History_Items[i].enc_key = event_struct->Event_History_Items[i - 1].enc_key;
-        event_struct->Event_History_Items[i].mi = event_struct->Event_History_Items[i - 1].mi;
-        event_struct->Event_History_Items[i].svc = event_struct->Event_History_Items[i - 1].svc;
-        event_struct->Event_History_Items[i].source_id = event_struct->Event_History_Items[i - 1].source_id;
-        event_struct->Event_History_Items[i].target_id = event_struct->Event_History_Items[i - 1].target_id;
-        event_struct->Event_History_Items[i].policy_target_id =
-            event_struct->Event_History_Items[i - 1].policy_target_id;
-        copy_str_field(event_struct->Event_History_Items[i].src_str, event_struct->Event_History_Items[i - 1].src_str,
-                       sizeof event_struct->Event_History_Items[i].src_str);
-        copy_str_field(event_struct->Event_History_Items[i].src_home, event_struct->Event_History_Items[i - 1].src_home,
-                       sizeof event_struct->Event_History_Items[i].src_home);
-        event_struct->Event_History_Items[i].src_home_key = event_struct->Event_History_Items[i - 1].src_home_key;
-        event_struct->Event_History_Items[i].src_home_withdrawn =
-            event_struct->Event_History_Items[i - 1].src_home_withdrawn;
-        copy_str_field(event_struct->Event_History_Items[i].tgt_str, event_struct->Event_History_Items[i - 1].tgt_str,
-                       sizeof event_struct->Event_History_Items[i].tgt_str);
-        copy_str_field(event_struct->Event_History_Items[i].t_name, event_struct->Event_History_Items[i - 1].t_name,
-                       sizeof event_struct->Event_History_Items[i].t_name);
-        copy_str_field(event_struct->Event_History_Items[i].s_name, event_struct->Event_History_Items[i - 1].s_name,
-                       sizeof event_struct->Event_History_Items[i].s_name);
-        copy_str_field(event_struct->Event_History_Items[i].t_mode, event_struct->Event_History_Items[i - 1].t_mode,
-                       sizeof event_struct->Event_History_Items[i].t_mode);
-        copy_str_field(event_struct->Event_History_Items[i].s_mode, event_struct->Event_History_Items[i - 1].s_mode,
-                       sizeof event_struct->Event_History_Items[i].s_mode);
-        copy_str_field(event_struct->Event_History_Items[i].channel_label,
-                       event_struct->Event_History_Items[i - 1].channel_label,
-                       sizeof event_struct->Event_History_Items[i].channel_label);
-        event_struct->Event_History_Items[i].channel_label_resolved =
-            event_struct->Event_History_Items[i - 1].channel_label_resolved;
-        event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
-        event_struct->Event_History_Items[i].fallback_blocked =
-            event_struct->Event_History_Items[i - 1].fallback_blocked;
-        event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
-        event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
-        event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
-        event_struct->Event_History_Items[i].call_channel_kind =
-            event_struct->Event_History_Items[i - 1].call_channel_kind;
-        event_struct->Event_History_Items[i].analog_mode = event_struct->Event_History_Items[i - 1].analog_mode;
-        event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
-        event_struct->Event_History_Items[i].access_code_kind =
-            event_struct->Event_History_Items[i - 1].access_code_kind;
-        event_struct->Event_History_Items[i].access_code = event_struct->Event_History_Items[i - 1].access_code;
-        event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
-        event_struct->Event_History_Items[i].event_start_time =
-            event_struct->Event_History_Items[i - 1].event_start_time;
-
-        DSD_MEMCPY(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
-                   sizeof(event_struct->Event_History_Items[0].pdu));
-        copy_str_field(event_struct->Event_History_Items[i].sysid_string,
-                       event_struct->Event_History_Items[i - 1].sysid_string,
-                       sizeof event_struct->Event_History_Items[i].sysid_string);
-        copy_str_field(event_struct->Event_History_Items[i].alias, event_struct->Event_History_Items[i - 1].alias,
-                       sizeof event_struct->Event_History_Items[i].alias);
-        copy_str_field(event_struct->Event_History_Items[i].gps_s, event_struct->Event_History_Items[i - 1].gps_s,
-                       sizeof event_struct->Event_History_Items[i].gps_s);
-        copy_str_field(event_struct->Event_History_Items[i].text_message,
-                       event_struct->Event_History_Items[i - 1].text_message,
-                       sizeof event_struct->Event_History_Items[i].text_message);
-        copy_str_field(event_struct->Event_History_Items[i].event_string,
-                       event_struct->Event_History_Items[i - 1].event_string,
-                       sizeof event_struct->Event_History_Items[i].event_string);
-        copy_str_field(event_struct->Event_History_Items[i].internal_str,
-                       event_struct->Event_History_Items[i - 1].internal_str,
-                       sizeof event_struct->Event_History_Items[i].internal_str);
-        event_struct->Event_History_Items[i].pos = event_struct->Event_History_Items[i - 1].pos;
-        event_struct->Event_History_Items[i].rx_scope = event_struct->Event_History_Items[i - 1].rx_scope;
+        event_history_copy_row(&event_struct->Event_History_Items[i], &event_struct->Event_History_Items[i - 1]);
     }
     event_struct->push_seq++;
     event_struct->commit_rev++;
