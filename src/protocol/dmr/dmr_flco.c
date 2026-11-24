@@ -1206,19 +1206,22 @@ dmr_flco_forget_checked_source(const dmr_flco_ctx* ctx) {
     dsd_position_attribution_clear(&ctx->state->dmr_lc_attribution[ctx->slot]);
 }
 
-/* The DMR trunking system (dsd_rxid_dmr_trunk) that checked messages of the carrier being decoded named, NONE when
-   none did. The received identity notes only content whose own check passed and is reset at every carrier boundary; a
-   trunk follow keeps it, as a voice channel belongs to its control channel's system. The Capacity Max marker alone is
-   no evidence: -F may take it from a RAS C_ALOHA whose CRC no one can check. */
-static uint8_t
-dmr_flco_checked_trunk(const dsd_state* state) {
-    const uint32_t checked_parts = DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
-                                   | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN;
+/* Whether the received identity holds a vendor trunking system (Capacity Plus, Connect Plus, Hytera XPT) that no
+   current checked message of the carrier vouches for: the last one heard, which the no-carrier pass keeps for display
+   (dsd_rxid_mark_stale()) while the next transmitter on the frequency may be another system's. */
+static int
+dmr_flco_stale_vendor_trunk(const dsd_state* state) {
+    /* The trunking parts dsd_received_identity::dmr_trunk names while one is valid. */
+    const uint32_t trunk_parts = DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
+                                 | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN;
     const dsd_received_identity* const id = &state->rx_id;
-    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR || (id->valid & checked_parts) == 0U) {
-        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR || (id->valid & trunk_parts) == 0U
+        || dsd_rxid_dmr_layout_trunk(state) != (uint8_t)DSD_RXID_DMR_TRUNK_NONE) {
+        return 0;
     }
-    return id->dmr_trunk;
+    return id->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS
+           || id->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS
+           || id->dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_XPT;
 }
 
 /* A standard layout group voice channel user (FLCO 0x00) as its raw FID carries it: FID 0, a Kenwood scrambler LC read
@@ -1262,10 +1265,17 @@ dmr_flco_standard_group_variant(const dmr_flco_ctx* ctx, uint8_t trunk) {
 /* The variant whose group this LC names in a layout the decoder reads positively for its raw FID and FLCO, checked
    against the carrier's trunking system where that layout depends on it; NONE for any other LC. Besides the standard
    group LC: the Capacity Plus group call (FID 0x10 FLCO 0x04, an 8-bit group) on a Capacity Plus carrier, and the
-   Capacity Max group voice user (FID 0x10 FLCO 0x10, a standard 24-bit group) on a Tier III one. */
+   Capacity Max group voice user (FID 0x10 FLCO 0x10, a standard 24-bit group) on a Tier III one. The carrier's system
+   is the one its current checked messages name (dsd_rxid_dmr_layout_trunk(), the address layout's source), never one
+   the record only still holds: while that is a vendor system's, which system the carrier is on is unknown and nothing
+   is proved, until a checked message names it again or a carrier boundary resets the record. The Capacity Max marker
+   alone is no evidence: -F may take it from a RAS C_ALOHA whose CRC no one can check. */
 static dsd_heard_tg_variant
 dmr_flco_heard_group_variant(const dmr_flco_ctx* ctx) {
-    const uint8_t trunk = dmr_flco_checked_trunk(ctx->state);
+    if (dmr_flco_stale_vendor_trunk(ctx->state)) {
+        return DSD_HEARD_TG_NONE;
+    }
+    const uint8_t trunk = dsd_rxid_dmr_layout_trunk(ctx->state);
     if (dmr_flco_is_standard_group_lc(ctx)) {
         return dmr_flco_standard_group_variant(ctx, trunk);
     }

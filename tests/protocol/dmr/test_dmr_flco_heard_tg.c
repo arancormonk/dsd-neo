@@ -497,6 +497,52 @@ xpt_group(void) {
     free(opts);
 }
 
+/* A vendor variant needs current carrier evidence. The no-carrier pass (dsd_rxid_mark_stale()) leaves the last
+   received identity for display, no longer current: the next transmitter on the frequency may be another system's (a
+   Tier II repeater, whose 0xFFFCA0 is an ordinary group and outside the Connect Plus range), so a standard LC proves
+   nothing while only a stale vendor system is on record, and proves as the vendor's again once a checked message of
+   the carrier names it. A stale Tier III record reads as DMR either way, so its standard LC still proves. */
+static void
+vendor_variant_needs_current_evidence(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = new_state();
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    dsd_rxid_mark_stale(state);
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0xFFFCA0U, 0x456U);
+    assert(slot_call(state, 0U).phase == DSD_CALL_PHASE_ACTIVE && slot_call(state, 0U).ota_target_id == 0xFFFCA0U);
+    assert(not_noted(state, 0U));
+    run_lc(opts, state, LC_TERMINATOR, 0, 0x00U, 0x00U, 0xFFFCA0U, 0x456U);
+    assert(not_noted(state, 0U));
+    free_state(state);
+
+    state = new_state();
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    dsd_rxid_mark_stale(state);
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x00ABCDU, 0x456U);
+    assert(not_noted(state, 0U));
+    run_lc(opts, state, LC_TERMINATOR, 0, 0x00U, 0x00U, 0x00ABCDU, 0x456U);
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x00ABCEU, 0x456U);
+    assert(proved(state, 0U, DSD_HEARD_TG_CONPLUS, 0x00ABCEU));
+    free_state(state);
+
+    state = new_state();
+    xpt_alert(opts, state, 0);
+    run_lc(opts, state, LC_TERMINATOR, 0, 0x00U, 0x00U, 0x120007U, 0x3456U);
+    dsd_rxid_mark_stale(state);
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x000009U, 0x3457U);
+    assert(slot_call(state, 0U).phase == DSD_CALL_PHASE_ACTIVE && not_noted(state, 0U));
+    free_state(state);
+
+    state = new_state();
+    dsd_rxid_note_dmr_t3_syscode(state, 0x1234U);
+    dsd_rxid_mark_stale(state);
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x000321U, 0x456U);
+    assert(proved(state, 0U, DSD_HEARD_TG_DMR, 0x000321U));
+    free_state(state);
+    free(opts);
+}
+
 /* Capacity Max group voice (FID 0x10 FLCO 0x10): a 24-bit group as DMR, only on a carrier a checked Tier III system
    code named. The Capacity Max marker alone (which -F may take from a RAS C_ALOHA) is no Tier III evidence. */
 static void
@@ -609,6 +655,7 @@ main(void) {
     capplus_group();
     conplus_group();
     xpt_group();
+    vendor_variant_needs_current_evidence();
     capmax_group();
     terminator_on_vendor_carriers();
     noted_once_per_transmission();

@@ -13644,8 +13644,11 @@ Private per-protocol modules worth knowing about:
   1, and its slot's ACTIVE DMR group call carry the target and source it names. A header notes after it published the
   call; a terminator notes before it ends the slot, reading its target from the LC's bits in its variant's layout, as
   its payload is not parsed yet. Eligible raw shapes and variants (`dmr_flco_heard_group_variant()`), the carrier's
-  trunking system read from the received identity's checked parts (`dmr_flco_checked_trunk()`; the Capacity Max marker
-  alone is no evidence): FLCO 0x00 under FID 0, a Kenwood scrambler LC or Hytera FID 0x68 is DMR (no trunking system or
+  trunking system the one the carrier's current checked messages name (`dsd_rxid_dmr_layout_trunk()`, the address
+  layout's source; the Capacity Max marker alone is no evidence). While the received identity only still holds a
+  vendor system (Capacity Plus, Connect Plus, XPT) past the no-carrier pass, which the next transmitter on the frequency
+  may not belong to, nothing is proved (`dmr_flco_stale_vendor_trunk()`) until a checked message names the carrier's
+  system again or a carrier boundary resets the record; a stale Tier III record reads as DMR either way. FLCO 0x00 under FID 0, a Kenwood scrambler LC or Hytera FID 0x68 is DMR (no trunking system or
   Tier III) or Connect Plus with its 24-bit target, and Hytera XPT with its 16-bit target only while the XPT layout
   the LC was read with (`dmr_address_layout_of()`) and the checked XPT evidence agree (either alone proves nothing); a
   Capacity Plus carrier's standard LC proves nothing, and so does one read with the standard layout while the display
