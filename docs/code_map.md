@@ -5303,27 +5303,38 @@ suite runs under this compiler.
     the receiver runs (round 9), as before #899. The public setters (`rtl_stream_set_channel_squelch()`,
     `rtl_stream_set_channel_squelch_setting()`) run their setting through the same gate under its lock, ending a closed
     start as a write does, so the decoder's next write compares against what they set (round 9); the gate's own store is
-    private (`rtl_stream_store_channel_squelch()`).
+    private (`rtl_stream_store_channel_squelch()`). A direct `rtl_stream_toggle_cqpsk()` is a boundary of its own
+    (round 10): it records whether the front end left or entered the monitor, so a later write or request selects the
+    right gate (the toggles inside a profile request or a retune landing leave that to their caller's boundary).
     `rtl_stream_gate_closed_start()` reports a closed start lock-free. The decoder's side (`channel_scan.c`, decoder
     thread, `dsd_engine_receiver_gate_settle()`) writes the gate resolved at write time
     (`dsd_scan_mode_channel_squelch()`) only when none of its own requests is outstanding
     (`receiver_gate_outstanding()`): a -Y row's (requested, retrying, or landed and owed its commit,
     `channel_scan_gate_waiting()`, the commit staying owed when the row it landed for goes before its retry: the
-    receiver has moved and no row owns it until the next row commits, round 9), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    receiver has moved and no row owns it until the next row commits, round 9; a stream reopen recognized as the
+    pending row's landing owes it too, so a restaged tune that fails there keeps the gate closed, round 10; with
+    nothing in flight to commit, an operator Hold keeps no row, `dsd_engine_channel_scan_hold_keeps_row()`, and the
+    scan recovers by its next timed step, round 10), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
     tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
     a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
-    newest's `rtl_stream_receive_request_outcome()`, through the stream hooks). It writes when one is due
+    newest's `rtl_stream_receive_request_outcome()`, through the stream hooks; a stream's soft stop settles every request
+    its joined demod thread never took, so none holds the next stream's start closed, round 10). It writes when one is due
     (`dsd_engine_receiver_gate_due()`: a stream open, a family request, a -Y commit or release, a trunk-scan landing, a
     settled manual tune; a command or a change, `changed`), and whenever the receiver reports a closed start on an
     analog session with nothing outstanding, so no channel stays muted for good. While the drain applies a command, or a
     coordinator switches (the trunk scan's target switch, the -Y staging and leave, a signal search's visit and restore),
     `dsd_engine_receiver_gate_hold()` holds every write, and one is due once the outermost hold ends. When the engine
     starts its stream with none of that outstanding and no hold (`live_scanner_start_rtl_if_needed()`), it resolves the
-    gate first (`dsd_engine_receiver_gate_resolve()`, the settle's own resolution) and hands it to the open
-    (`rtl_stream_resolve_open_gate()`), which runs it from the first block instead of a closed start, so the audio
-    output, rigctl and the frontends starting before the main loop mute nothing (round 9; every open forgets it, and
-    other opens start closed as before). The settle runs at
+    gate first (`dsd_engine_receiver_gate_resolve()`, the settle's own resolution) and passes it to that start
+    (`rtl_stream_start_gated()`, an `rtl_stream_start_gate` argument of the start alone: round 10, no staged state a
+    start that opens nothing could leave behind), which runs it from the first block instead of a closed start, so the
+    audio output, rigctl and the frontends starting before the main loop mute nothing (round 9). Every start the decoder
+    makes (the engine's, app-control's `svc_rtl_open_on_the_channel_squelch_locked()`) passes the session's own squelch
+    too, resolved on the decoder thread whatever is outstanding (the scan scope's configured setting while one is in
+    force): a start that cannot resolve the gate (a tune outstanding, a command applying: the restart of a gain change
+    or a go-to pending) starts an analog channel closed as before, and off the monitor runs that session squelch, never
+    a row's own the options hold (round 10). The settle runs at
     the drain (before and after each command, `ui_settle_squelch()`; the analog default's policy,
     `dsd_squelch_analog_default_sync()`, only on a change), at each analog block the decoder takes (the engine's
     `analog_call_block` hook) and in the engine's main pass, at a -Y row's commit and release, and when the trunk scan
@@ -5359,7 +5370,8 @@ suite runs under this compiler.
     a live Off edit over a pending go-to then reinstated, edits while a tune is outstanding and between a landing and its
     commit, a leave to a digital session, nine stalled family switches, an idle settle, a late landing's closed start,
     a commit still owed after a stale landing's restaged row is removed, a digital row's own level kept off the next
-    digital row's landing),
+    digital row's landing, the same across a restart while the next row's tune is pending, a reopen's restaged tune
+    failing, a held scan's restaged tune failing),
     `ENGINE_TRUNK_SCAN` (an NFM-to-DMR rotation writing nothing on the NFM channel), `ENGINE_TRUNK_SCAN_RUNNING_RECEIVER`
     (no FM monitor sample produced open without the noise squelch on a running receiver, and each landing's mute in
     produced samples), `IO_RTL_RETUNE_PREPARE` (the receiver's closed starts: controller and external landings closed
@@ -5371,10 +5383,13 @@ suite runs under this compiler.
     pause's FM request against a frame-sync hunt request in all four orders (`test_pause_against_hunt()`), the closed-start count of a block finished after the write, no
     telemetry on the M17 encoder, an AM channel's closed and unjudged counts, a closed start's produced block publishing
     no dynamic status, the public setters through the gate, a digital row's landing on the session gate and no gate work
-    on a repeated digital symbol request, an open with a resolved gate; and, under TSan, gate writes against landings on
-    another thread, each landing waiting for a write so one core runs it too), `UI_QT_LISTENER_SQUELCH_*` (no closed
-    start at the lifecycle's start, the first read's samples produced under the gate, an opening transmission at the
-    stream's first sample heard from its talker's start), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
+    on a repeated digital symbol request, a start with a resolved gate and one without, a resampled AM channel's counts in
+    produced samples, a direct CQPSK toggle off the monitor; and, under TSan, gate writes against landings on another
+    thread, the two meeting at every round so one core runs it too), `IO_RTL_STREAM_ORCHESTRATOR` (the start gate an
+    argument of that start alone), `UI_QT_LISTENER_SQUELCH_*` (no closed start at the lifecycle's start and the setting
+    the receiver's first blocks take then, the first read's samples produced under the gate, an opening transmission at
+    the stream's first sample heard from its talker's start inside its carrier, a second session after one stopped with
+    a request its stream never took), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
     `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
@@ -9930,7 +9945,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_prepare_retune_new_channel_for_target()` (issue #899: a retune the decoder marks as a new channel, whose
   landing on the analog monitor starts closed), `rtl_stream_write_squelch_gate()` (the gate of the channel the
   receiver is on, its digital gate, and the session's a new channel off the monitor runs), `rtl_stream_gate_closed_start()` (a closed start waits for
-  that write) and `rtl_stream_resolve_open_gate()` (the gate the next open runs from its first block), and
+  that write) and `rtl_stream_start_gated()` (a start on the `rtl_stream_start_gate` the decoder resolved for it: run
+  from the first block when resolved, the session's squelch always; `rtl_stream_squelch_status::runs` says what the
+  next block takes), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
