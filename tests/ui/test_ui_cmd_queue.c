@@ -9337,10 +9337,34 @@ test_talkgroup_export_result(void) {
     return rc;
 }
 
-/* Issue #903: every export's result is at or below the horizon read after its submission, failures and other commands
- * in between included, and the horizon counts only exports. */
+/* Issue #903: room for an export payload with a short path, aligned for its header. */
+typedef struct {
+    uint64_t words[(sizeof(dsd_app_tg_export_payload) + 64U + 7U) / 8U];
+} export_storage;
+
+/* Fill @p storage with an export to @p path for @p context and generation 1; returns the payload size. */
+static size_t
+export_request(export_storage* storage, uint64_t context, const char* path) {
+    DSD_MEMSET(storage, 0, sizeof(*storage));
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)(void*)storage->words;
+    request->policy_context = context;
+    request->policy_generation = 1U;
+    DSD_SNPRINTF(request->path, sizeof(*storage) - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    return sizeof(*storage);
+}
+
+/* Submit an export to @p path for @p context. */
 static int
-test_talkgroup_export_horizon(void) {
+submit_export(uint64_t context, const char* path) {
+    export_storage storage;
+    const size_t size = export_request(&storage, context, path);
+    return dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, storage.words, size);
+}
+
+/* Issue #903: an export is owed by its own request while it is queued, and while its result is kept and unread; once
+ * read, or no longer kept, it is not, for good. */
+static int
+test_talkgroup_export_result_owed(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -9350,37 +9374,100 @@ test_talkgroup_export_horizon(void) {
     }
     init_test_context(opts, state);
 
-    union {
-        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 64];
-        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
-        uint64_t align;
-    } storage = {0};
-
-    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
     /* A destination that cannot be written: each export fails, and still publishes its one result. */
-    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
-                 "dsd_neo_903_missing_dir/horizon.csv");
-    dsd_app_tg_export_result result = {0};
-    dsd_app_tg_export_result_get(&result);
-    const uint64_t newest = result.sequence;
-    int rc = expect_true("an idle queue leaves room for one command being applied",
-                         dsd_app_tg_export_result_horizon() == newest + 1U);
-    uint64_t horizons[2] = {0, 0};
-    for (int i = 0; i < 2; ++i) {
-        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
-        horizons[i] = dsd_app_tg_export_result_horizon();
-        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    const char* path = "dsd_neo_903_missing_dir/owed.csv";
+    dsd_app_tg_export_result before = {0};
+    dsd_app_tg_export_result_get(&before);
+    const uint64_t read = before.sequence;
+    int rc = expect_int("owed: nothing queued is owed", dsd_app_tg_export_result_owed(9030U, 1U, path, read), 0);
+    rc |= expect_int("owed: the export is queued", submit_export(9030U, path), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    rc |= expect_int("owed: a queued export is", dsd_app_tg_export_result_owed(9030U, 1U, path, read), 1);
+    rc |= expect_true("owed: by its own request alone",
+                      !dsd_app_tg_export_result_owed(9030U, 2U, path, read)
+                          && !dsd_app_tg_export_result_owed(9031U, 1U, path, read)
+                          && !dsd_app_tg_export_result_owed(9030U, 1U, "dsd_neo_903_missing_dir/other.csv", read)
+                          && !dsd_app_tg_export_result_owed(9030U, 1U, NULL, read));
+    rc |= expect_int("owed: the export and the other command drain", dsd_app_drain_cmds(opts, state), 2);
+    dsd_app_tg_export_result own = {0};
+    dsd_app_tg_export_result_get(&own);
+    rc |= expect_true("owed: one result", own.sequence == read + 1U && !own.success);
+    rc |= expect_int("owed: a kept result not read yet is", dsd_app_tg_export_result_owed(9030U, 1U, path, read), 1);
+    rc |= expect_int("owed: once read it is not", dsd_app_tg_export_result_owed(9030U, 1U, path, own.sequence), 0);
+    for (int i = 0; i < DSD_APP_RESULT_HISTORY; ++i) {
+        (void)submit_export(9031U, path);
+        (void)dsd_app_drain_cmds(opts, state);
     }
-    rc |= expect_true("each queued export counts, other commands do not",
-                      horizons[0] == newest + 2U && horizons[1] == newest + 3U);
-    rc |= expect_int("the exports and the other commands drain", dsd_app_drain_cmds(opts, state), 4);
-    dsd_app_tg_export_result read[2];
-    rc |= expect_int("both exports published a result", dsd_app_tg_export_results_since(newest, read, 2), 2);
-    rc |= expect_true("each result is at or below its submission's horizon",
-                      read[0].sequence <= horizons[0] && read[1].sequence <= horizons[1] && !read[0].success
-                          && !read[1].success);
-    rc |= expect_true("drained, the horizon is one past the newest result",
-                      dsd_app_tg_export_result_horizon() == read[1].sequence + 1U);
+    rc |= expect_int("owed: a result no longer kept is lost for good",
+                     dsd_app_tg_export_result_owed(9030U, 1U, path, read), 0);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Submitted by submit_exports_while_applying(): more exports than the queue holds, so the oldest are evicted. */
+enum { INFLIGHT_OVERTAKERS = 129 };
+
+/* What submit_exports_while_applying() saw: how often it ran, and the newest result at each of its first two runs (the
+ * evictions', then the export's own). */
+static int g_inflight_runs;
+static dsd_app_tg_export_result g_inflight_seen[2];
+/* dsd_app_tg_export_result_owed() for the applied export at each run, having read through that run's newest result. */
+static int g_inflight_owed[2];
+static const char* const kInflightPath = "dsd_neo_903_missing_dir/in-flight.csv";
+
+/* While the decoder applies the first export, more are submitted than the queue holds: each eviction publishes its
+ * failure at once, ahead of the export being applied. At the next command the export's own result is out. */
+static void
+submit_exports_while_applying(int cmd_id) {
+    if (g_inflight_runs >= 2) {
+        return;
+    }
+    if (g_inflight_runs == 0 && cmd_id == DSD_APP_CMD_TG_LIST_EXPORT) {
+
+        for (int i = 0; i < INFLIGHT_OVERTAKERS; ++i) {
+            char path[48];
+            DSD_SNPRINTF(path, sizeof path, "dsd_neo_903_missing_dir/overtaker-%d.csv", i);
+            (void)submit_export(9031U, path);
+        }
+    }
+    (void)dsd_app_tg_export_result_get(&g_inflight_seen[g_inflight_runs]);
+    /* Read through the newest result: being applied, then published and read, the export is owed, then not. */
+    g_inflight_owed[g_inflight_runs] =
+        dsd_app_tg_export_result_owed(9030U, 1U, kInflightPath, g_inflight_seen[g_inflight_runs].sequence);
+    g_inflight_runs++;
+}
+
+/* Issue #903: an export being applied when later ones are evicted from a full queue keeps its result owed. */
+static int
+test_talkgroup_export_in_flight_outlives_evictions(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+
+    const char* path = kInflightPath;
+    dsd_app_tg_export_result before = {0};
+    dsd_app_tg_export_result_get(&before);
+    int rc = expect_int("in flight: the export is queued", submit_export(9030U, path), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    g_inflight_runs = 0;
+    dsd_app_command_test_set_before_apply(submit_exports_while_applying);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_command_test_set_before_apply(NULL);
+    const dsd_app_tg_export_result* own = &g_inflight_seen[1];
+    rc |= expect_true("in flight: two evictions published first",
+                      g_inflight_runs == 2 && g_inflight_seen[0].sequence == before.sequence + 2U
+                          && g_inflight_seen[0].policy_context == 9031U);
+    rc |= expect_true("in flight: then the export's own result",
+                      own->policy_context == 9030U && strcmp(own->path, path) == 0 && !own->success);
+    rc |= expect_int("in flight: past the evictions' results, the export being applied is still owed",
+                     g_inflight_owed[0], 1);
+    rc |= expect_int("in flight: read, its result is not", g_inflight_owed[1], 0);
     freeState(state);
     free(state);
     free(opts);
@@ -32226,7 +32313,8 @@ main(void) {
     rc |= test_talkgroup_row_record_after_mode();
     rc |= test_talkgroup_row_token_commands();
     rc |= test_talkgroup_export_result();
-    rc |= test_talkgroup_export_horizon();
+    rc |= test_talkgroup_export_result_owed();
+    rc |= test_talkgroup_export_in_flight_outlives_evictions();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

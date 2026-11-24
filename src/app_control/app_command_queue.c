@@ -167,6 +167,8 @@ static atomic_int g_overflow_warn_gate = 0;
 static dsd_atomic_u64 g_test_policy_guard_waits;
 /* The result of the last command the drain applied (UI_CMD_APPLY_*). Decoder thread only, as the drain is. */
 static int g_test_last_result;
+/* Run by the drain between taking a command off the queue and applying it (dsd_app_command_test_set_before_apply()). */
+static void (*g_test_before_apply)(int cmd_id);
 #endif
 /* WP-D1: the last export completion is independent of transient decoder toasts.
  * Protected by g_mu; retained without a reader first having to arm publication. */
@@ -175,6 +177,10 @@ static dsd_app_tg_export_result g_tg_export_result;
 static dsd_app_tg_export_result g_tg_export_history[DSD_APP_RESULT_HISTORY];
 _Static_assert(sizeof(g_tg_export_result.path) == sizeof(((dsd_opts*)0)->group_in_file),
                "retained export path must fit every accepted group-file path");
+/* The export dsd_app_drain_cmds() took off the queue and has not published the result of yet (issue #903): its
+ * request fields, while g_tg_export_applying_set. Protected by g_mu. */
+static dsd_app_tg_export_result g_tg_export_applying;
+static int g_tg_export_applying_set;
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. The loser of the
  * first-call race must wait: taking a mutex another thread has not finished
@@ -239,19 +245,32 @@ dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_resul
     return n;
 }
 
-uint64_t
-dsd_app_tg_export_result_horizon(void) {
-    ensure_mu_init();
-    dsd_mutex_lock(&g_mu);
-    /* One for a command dsd_app_drain_cmds() took off the queue and has not published yet: it may be an export. */
-    uint64_t horizon = g_tg_export_result.sequence + 1U;
-    for (size_t i = g_head; i != g_tail; i = (i + 1U) % DSD_APP_CMD_Q_CAP) {
-        if (g_q[i].id == DSD_APP_CMD_TG_LIST_EXPORT) {
-            horizon++;
+/* The request fields of export @p cmd: its context, generation and path (empty for one not terminated in bounds). Only
+ * export fields; other command payloads may carry secrets. */
+static void
+tg_export_identity_of(const struct dsd_app_command* cmd, dsd_app_tg_export_result* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const size_t context_offset = offsetof(dsd_app_tg_export_payload, policy_context);
+    const size_t generation_offset = offsetof(dsd_app_tg_export_payload, policy_generation);
+    const size_t path_offset = offsetof(dsd_app_tg_export_payload, path);
+    if (cmd->n >= context_offset + sizeof out->policy_context) {
+        DSD_MEMCPY(&out->policy_context, cmd->data + context_offset, sizeof out->policy_context);
+    }
+    if (cmd->n >= generation_offset + sizeof out->policy_generation) {
+        DSD_MEMCPY(&out->policy_generation, cmd->data + generation_offset, sizeof out->policy_generation);
+    }
+    if (cmd->n > path_offset) {
+        const char* path = (const char*)cmd->data + path_offset;
+        const char* end = memchr(path, 0, cmd->n - path_offset);
+        if (end && (size_t)(end - path) < sizeof out->path) {
+            DSD_MEMCPY(out->path, path, (size_t)(end - path));
         }
     }
-    dsd_mutex_unlock(&g_mu);
-    return horizon;
+}
+
+static int
+tg_export_identity_is(const dsd_app_tg_export_result* r, uint64_t context, unsigned int generation, const char* path) {
+    return r->policy_context == context && r->policy_generation == generation && strcmp(r->path, path) == 0;
 }
 
 /* Called after dispatch, including envelope rejection, before erasing the queued
@@ -261,23 +280,8 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
     if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
         return;
     }
-    dsd_app_tg_export_result result = {0};
-    const size_t context_offset = offsetof(dsd_app_tg_export_payload, policy_context);
-    const size_t generation_offset = offsetof(dsd_app_tg_export_payload, policy_generation);
-    const size_t path_offset = offsetof(dsd_app_tg_export_payload, path);
-    if (cmd->n >= context_offset + sizeof result.policy_context) {
-        DSD_MEMCPY(&result.policy_context, cmd->data + context_offset, sizeof result.policy_context);
-    }
-    if (cmd->n >= generation_offset + sizeof result.policy_generation) {
-        DSD_MEMCPY(&result.policy_generation, cmd->data + generation_offset, sizeof result.policy_generation);
-    }
-    if (cmd->n > path_offset) {
-        const char* path = (const char*)cmd->data + path_offset;
-        const char* end = memchr(path, 0, cmd->n - path_offset);
-        if (end && (size_t)(end - path) < sizeof result.path) {
-            DSD_MEMCPY(result.path, path, (size_t)(end - path));
-        }
-    }
+    dsd_app_tg_export_result result;
+    tg_export_identity_of(cmd, &result);
     result.success = status == UI_CMD_APPLY_COMPLETED;
     result.sequence = g_tg_export_result.sequence + 1U;
     // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
@@ -288,12 +292,46 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
     g_tg_export_history[result.sequence % (uint64_t)DSD_APP_RESULT_HISTORY] = result;
 }
 
+/* The drain's publication of the command it took off the queue: the export it was applying, if it is one, is not any
+ * more once its result is out (one critical section, so dsd_app_tg_export_result_owed() never misses it). */
 static void
 tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     tg_export_publish_result_unlocked(cmd, status);
+    if (cmd->id == DSD_APP_CMD_TG_LIST_EXPORT) {
+        g_tg_export_applying_set = 0;
+    }
     dsd_mutex_unlock(&g_mu);
+}
+
+int
+dsd_app_tg_export_result_owed(uint64_t context, unsigned int generation, const char* path, uint64_t after_sequence) {
+    if (!path) {
+        return 0;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    int owed = g_tg_export_applying_set && tg_export_identity_is(&g_tg_export_applying, context, generation, path);
+    for (size_t i = g_head; !owed && i != g_tail; i = (i + 1U) % DSD_APP_CMD_Q_CAP) {
+        if (g_q[i].id == DSD_APP_CMD_TG_LIST_EXPORT) {
+            dsd_app_tg_export_result queued;
+            tg_export_identity_of(&g_q[i], &queued);
+            owed = tg_export_identity_is(&queued, context, generation, path);
+        }
+    }
+    /* A result above @p after_sequence still kept, which the reader has yet to read. */
+    const uint64_t newest = g_tg_export_result.sequence;
+    uint64_t seq = after_sequence + 1U;
+    if (newest >= (uint64_t)DSD_APP_RESULT_HISTORY && seq < newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U) {
+        seq = newest - (uint64_t)DSD_APP_RESULT_HISTORY + 1U;
+    }
+    for (; !owed && seq != 0U && seq <= newest; seq++) {
+        const dsd_app_tg_export_result* r = &g_tg_export_history[seq % (uint64_t)DSD_APP_RESULT_HISTORY];
+        owed = r->sequence == seq && tg_export_identity_is(r, context, generation, path);
+    }
+    dsd_mutex_unlock(&g_mu);
+    return owed;
 }
 
 /* The id the recording view accounts command @p c under (issue #708): its own, which the view ignores unless it is a
@@ -12067,6 +12105,36 @@ ui_forget_saved_input_off_replay(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Take the oldest queued command into @p out for the drain to apply; 0 when none is queued. An export taken is the one
+   being applied until its result is published (tg_export_publish_result()), recorded in the same critical section, so
+   dsd_app_tg_export_result_owed() always finds it queued, being applied or published. */
+static int
+q_take_for_apply(struct dsd_app_command* out) {
+    int have = 0;
+    dsd_mutex_lock(&g_mu);
+    if (!q_is_empty_unlocked()) {
+        *out = g_q[g_head];
+        DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
+        g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
+        have = 1;
+        if (out->id == DSD_APP_CMD_TG_LIST_EXPORT) {
+            tg_export_identity_of(out, &g_tg_export_applying);
+            g_tg_export_applying_set = 1;
+        }
+    }
+    // Reset overflow warning gate when queue has space again
+    if (((g_tail + 1) % DSD_APP_CMD_Q_CAP) != g_head) {
+        atomic_store(&g_overflow_warn_gate, 0);
+    }
+    dsd_mutex_unlock(&g_mu);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (have && g_test_before_apply) {
+        g_test_before_apply(out->id);
+    }
+#endif
+    return have;
+}
+
 int
 dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     int n_applied = 0;
@@ -12080,20 +12148,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
            only while that one is unsettled (ui_arm_analog_entry()). */
         ui_settle_receive_requests(opts, state);
         struct dsd_app_command cmd;
-        int have = 0;
-        dsd_mutex_lock(&g_mu);
-        if (!q_is_empty_unlocked()) {
-            cmd = g_q[g_head];
-            DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
-            g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
-            have = 1;
-        }
-        // Reset overflow warning gate when queue has space again
-        if (((g_tail + 1) % DSD_APP_CMD_Q_CAP) != g_head) {
-            atomic_store(&g_overflow_warn_gate, 0);
-        }
-        dsd_mutex_unlock(&g_mu);
-        if (!have) {
+        if (!q_take_for_apply(&cmd)) {
             break;
         }
         /* A command before this one may have sealed the capture (a retune changing the device rate): its stop takes
@@ -12147,6 +12202,11 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_app_command_test_set_before_apply(void (*hook)(int cmd_id)) {
+    g_test_before_apply = hook;
+}
+
 int
 dsd_app_command_test_policy_guard_waits(void) {
     return (int)dsd_atomic_u64_load_relaxed(&g_test_policy_guard_waits);

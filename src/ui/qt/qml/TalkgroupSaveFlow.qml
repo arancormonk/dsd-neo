@@ -6,8 +6,8 @@ import QtQuick
 // system the request named. A failed step keeps the exported file and offers that step again, never a new export:
 // the decoder already writes its edits to that file, and only while that file is still there (and, to attach it, still
 // in Imports). A request given up on (no completion in time, or its completion missed) is kept until its result comes,
-// and a late success is then only added to Imports; once its result can no longer come (lost with more completions
-// than app-control keeps), it is let go of and its name given back.
+// and a late success is then only added to Imports; once app-control says its result can no longer come (lost with more
+// completions than it keeps), it is let go of and its name given back.
 Item {
     id: flow
     property var bridge: commands
@@ -18,7 +18,7 @@ Item {
     property var pending: null
     // A successful export whose later step failed: {step: "register" or "attach", uid, tuning, path}.
     property var stalled: null
-    // Requests given up on: {path, context, generation, sequence, horizon}, each until its completion is read or lost.
+    // Requests given up on: {path, context, generation, sequence}, each until its completion is read or lost.
     property var abandoned: []
     // Late successes Imports could not take yet: retried at each later poll and request.
     property var owedRegistrations: []
@@ -105,8 +105,6 @@ Item {
             message = qsTr("Talkgroup list export was not queued. Try again.");
             return false;
         }
-        // Read after the submit: by this sequence its result has come, or was lost (bridge.talkgroupExportHorizon()).
-        pending.horizon = String(bridge.talkgroupExportHorizon());
         message = qsTr("Saving talkgroup list…");
         completionTimeout.restart();
         return true;
@@ -116,8 +114,7 @@ Item {
                 path: request.path,
                 context: request.context,
                 generation: request.generation,
-                sequence: request.sequence,
-                horizon: request.horizon
+                sequence: request.sequence
             }]);
     }
     function matches(request, r) {
@@ -191,16 +188,16 @@ Item {
         owedRegistrations = owedRegistrations.concat([path]);
         return false;
     }
-    // Whether every export result up to @p request's horizon has been read, or seen lost (@p newest is the newest
-    // sequence read or missed), without its own: its result was lost and can never come. An unknown horizon never is.
+    // Whether @p request's result, not among those read through @p newest (the newest sequence read or missed), can
+    // never come: app-control no longer queues or applies its export, nor keeps a result for it above @p newest.
     function resultLost(request, newest) {
-        var horizon = String(request.horizon || "0");
-        return newer(horizon, "0") && !newer(horizon, newest);
+        return !bridge.talkgroupExportOwed(request.context, request.generation, request.path, String(newest));
     }
     // More completions finished between two polls than app-control keeps (@p missed is the newest one lost, else "0");
     // a request older than it may have been among them. A file at its path means its export succeeded (the decoder
     // writes it only then). A request with no file stays waiting while its completion may still come; once it cannot
-    // (resultLost()), its export failed with the result lost, and the request is let go of with its name.
+    // (resultLost()), its export failed with the result lost, and the request is let go of with its name. Each batch
+    // asks again for every request given up on.
     function recoverMissed(missed, newest) {
         if (pending !== null && newer(missed, pending.sequence)) {
             var request = pending;

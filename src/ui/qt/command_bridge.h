@@ -127,9 +127,12 @@ class CommandBridge : public QObject {
                                      unsigned int generation, int tableIndex = -1,
                                      const QString& pattern = QString()) const;
     Q_INVOKABLE bool saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const;
-    /** Issue #903: dsd_app_tg_export_result_horizon() as decimal text (64-bit, beyond a JavaScript number): read after
-     *  a saveTalkgroupList() that returned true, the sequence by which that export's result has come or was lost. */
-    Q_INVOKABLE static QString talkgroupExportHorizon();
+    /** Issue #903: dsd_app_tg_export_result_owed() for the saveTalkgroupList() request @p context, @p generation and
+     *  @p path whose reader has read every result through @p afterSequence (decimal text: 64-bit, beyond a JavaScript
+     *  number). False once that export's result can never come; true for a context or sequence that is no number,
+     *  which never lets a request go. */
+    Q_INVOKABLE static bool talkgroupExportOwed(const QString& context, unsigned int generation, const QString& path,
+                                                const QString& afterSequence);
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */
     Q_INVOKABLE bool toggleMute() const;

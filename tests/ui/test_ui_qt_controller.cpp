@@ -2440,6 +2440,14 @@ test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt
     check(results.value(0).toMap().value("success").toBool() && results.value(1).toMap().value("success").toBool());
     check(results.value(0).toMap().value("sequence").toString() == QString::number(before + 1));
     check(batch.value("missedThrough").toString() == "0");
+    // Issue #903: kept and not read yet, a result is still owed to its request; read, it is not.
+    const QString read = QString::number(before + 2);
+    check(dsd_qt::CommandBridge::talkgroupExportOwed(version, generation, first, QString::number(before)));
+    check(!dsd_qt::CommandBridge::talkgroupExportOwed(version, generation, first, read));
+    check(!dsd_qt::CommandBridge::talkgroupExportOwed(version, generation + 1, second, QString::number(before)));
+    // Text that is no number never lets a request go.
+    check(dsd_qt::CommandBridge::talkgroupExportOwed(QStringLiteral("x"), generation, first, read)
+          && dsd_qt::CommandBridge::talkgroupExportOwed(version, generation, first, QStringLiteral("-1")));
 
     // More completions than the history keeps: the oldest are gone, and the batch says which.
     const int burst = DSD_APP_RESULT_HISTORY + 6;
@@ -2458,6 +2466,8 @@ test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt
     check(results.constFirst().toMap().value("sequence").toString()
           == QString::number(newest - DSD_APP_RESULT_HISTORY + 1));
     check(batch.value("missedThrough").toString() == QString::number(newest - DSD_APP_RESULT_HISTORY));
+    // No longer kept, the first result is owed to no reader that missed it.
+    check(!dsd_qt::CommandBridge::talkgroupExportOwed(version, generation, first, QString::number(before)));
 
     // A poll with nothing new keeps the batch it last published.
     run();
