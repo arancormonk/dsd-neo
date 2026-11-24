@@ -147,6 +147,11 @@ typedef struct {
        restaged there (dsd_engine_channel_scan_stream_reopened()). */
     uint64_t stop_request;
     uint64_t stop_source_key;
+    /* When the timed step recovers a commit owed with nothing in flight (issue #899): -t (at least 1 s) after the step
+       decision first found it so (dsd_engine_channel_scan_owed_recovery_due()), on the decode monotonic clock; 0 for
+       none. Every tune the scan stages, and every commit or dropped row, starts it over. Received sync, which the owed
+       commit keeps from decoding, never moves it. */
+    double owed_recovery_m;
 } channel_scan;
 
 static void
@@ -429,6 +434,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     const uint64_t landed_request = scan->request;
     scan->request = 0;
     scan->needs_commit = 0;
+    scan->owed_recovery_m = 0.0;
     /* The row is committed: the receiver, closed on an analog row since its landing, runs the row's gate (issue
        #899). */
     dsd_engine_receiver_gate_settle(opts, state, 1);
@@ -1116,6 +1122,21 @@ channel_scan_commit_owed_idle(const dsd_state* state) {
 }
 
 int
+dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, dsd_state* state, double now_m) {
+    channel_scan* scan =
+        (opts && state && opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) ? channel_scan_get(state) : NULL;
+    if (!scan || !channel_scan_commit_owed_idle(state)) {
+        return 0;
+    }
+    if (!(scan->owed_recovery_m > 0.0)) {
+        const double span_s = opts->trunk_hangtime >= 1.0f ? (double)opts->trunk_hangtime : 1.0;
+        scan->owed_recovery_m = now_m + span_s;
+        return 0;
+    }
+    return now_m >= scan->owed_recovery_m;
+}
+
+int
 dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
     /* A hold keeps the row on air. With a commit owed and nothing in flight no row is on air to keep (the receiver
        stays muted and frames held until one commits): the scan recovers as an unheld one does, by its next timed step,
@@ -1401,6 +1422,8 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
     /* The staged row's settings stand in the options only while its tune goes out: no gate is written meanwhile, and
        the row's own once it commits (issue #899). */
     dsd_engine_receiver_gate_hold(1);
+    /* A new attempt: an owed commit's recovery is paced afresh from the end of this one, if it ends unlanded. */
+    scan->owed_recovery_m = 0.0;
     /* The squelch the row on air runs, the analog default included, which the capture holds only as configured. */
     dsd_squelch_standing before_squelch;
     dsd_squelch_standing_capture(opts, &before_squelch);
@@ -1679,6 +1702,7 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->request = 0;
     scan->retry = 0;
     scan->needs_commit = 0;
+    scan->owed_recovery_m = 0.0;
     scan->tuned = 0;
     scan->committed_row = -1;
     /* The pause runs its own carrier boundary (the entry's tune) or forget (in place): no move stays owed. */

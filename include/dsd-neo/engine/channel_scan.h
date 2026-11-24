@@ -270,6 +270,13 @@ int dsd_engine_channel_scan_on_avoided_row(const dsd_state* state);
  * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
  * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
 int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
+/** Whether the timed -Y step recovers a commit owed with nothing in flight now (issue #899): the receiver moved for a
+ * row that never committed (a restaged tune failed, or its row went before its retry), so the gate stays closed and
+ * frames are held, and a sync the row keeps giving refreshes the hangtime anchor without decoding. The recovery is
+ * paced from the first decision that finds the scan so (-t, at least 1 s, on the decode monotonic clock @p now_m),
+ * which received sync never moves; every tune the scan stages starts it over. 0 without -Y, under a trunk scan, and
+ * with nothing owed. Decoder thread. */
+int dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, dsd_state* state, double now_m);
 /** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
  * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
  * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a

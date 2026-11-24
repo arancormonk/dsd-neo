@@ -14,6 +14,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/sockets.h>
@@ -42,6 +43,8 @@ static int g_tune_calls;
 static uint64_t g_tune_request;
 static int g_wait_polls;
 static int g_pending_seen;
+/* The wrapped tune fails (issue #899): a restaged row's tune the front end refuses. */
+static int g_tune_fails;
 
 // NOLINTBEGIN(misc-use-internal-linkage)
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
@@ -93,6 +96,10 @@ __wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq,
     ++g_tune_calls;
     *request = dsd_trunk_tuning_request_begin();
     g_tune_request = *request;
+    if (g_tune_fails) {
+        dsd_trunk_tuning_request_complete(*request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     if (g_pending) {
         dsd_trunk_tuning_request_mark_ready(*request);
     } else {
@@ -363,8 +370,99 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     assert(remove(path) == 0);
 }
 
+/*
+ * Issue #899 (targeted review of round 10): with a DMR row on air, the next -Y DMR row's tune lands stale (the row
+ * edited while it was pending) and
+ * its restaged tune fails. The receiver moved with no row committed on it: frames are held and the gate stays closed
+ * until a row commits. The row keeps syncing (a busy carrier: each sync refreshes the hangtime anchor before the owed
+ * commit discards the frame), with the visit cap and the voice-only scan off. The engine's real no-carrier step decides
+ * every pass: it recovers on a pace of its own (-t after the failure), held or not, never before it, and the row it
+ * lands commits; a hold then keeps that row. Before, the refreshed anchor kept the step from ever coming.
+ */
+static void
+test_owed_commit_recovers_under_continuing_sync(int held) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    initOpts(opts);
+    initState(state);
+    opts->audio_out_type = 9;
+    opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
+    opts->trunk_hangtime = 2.0f;
+    opts->scan_max_visit_ms = 0;
+    opts->scan_voice_only = 0;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000 + 1000000 * row;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    decode_clock_at_s(7000U);
+    g_tune_calls = 0;
+    g_tune_fails = 0;
+    g_pending = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1); /* row 0 on air */
+    g_pending = 1;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -40;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 1, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    dsd_trunk_tuning_request_complete(g_tune_request, DSD_TRUNK_TUNE_RESULT_OK);
+    g_pending = 0;
+    g_tune_fails = 1;
+    for (int i = 0; i < 4 && dsd_engine_channel_scan_waiting(state); i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    assert(g_tune_calls == 3 && !dsd_engine_channel_scan_waiting(state));
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 0); /* the commit owed holds frames */
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    if (held) {
+        state->lcn_scan_hold = 1U;
+    }
+    g_tune_fails = 0;
+    const int tunes_before = g_tune_calls;
+    int recovered_at = -1;
+    for (int s = 0; s <= 30 && recovered_at < 0; s++) {
+        decode_clock_at_s(7000U + (uint64_t)s);
+        /* The busy row's sync, as frame_sync_try_dmr_bs_data() stamps it, then the owed commit discards the frame. */
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+        if (dsd_engine_channel_scan_service_sync(opts, state)) {
+            recovered_at = s;
+            break;
+        }
+        noCarrier(opts, state);
+        if (s < 2) {
+            assert(g_tune_calls == tunes_before); /* paced: no step before -t has run since the failure */
+        }
+        if (dsd_engine_channel_scan_service_sync(opts, state)) {
+            recovered_at = s;
+        }
+    }
+    if (recovered_at < 0 || recovered_at > 3) {
+        DSD_FPRINTF(stderr, "%s scan: an owed commit under continuing sync recovered at %d s (tunes %d), want 2-3 s\n",
+                    held ? "held" : "unheld", recovered_at, g_tune_calls - tunes_before);
+        assert(0);
+    }
+    assert(g_tune_calls == tunes_before + 1);
+    if (held) {
+        assert(state->lcn_scan_hold && dsd_engine_channel_scan_hold_keeps_row(state));
+    }
+    state->lcn_scan_hold = 0U;
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_decode_clock_use_system();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_owed_commit_recovers_under_continuing_sync(0);
+    test_owed_commit_recovers_under_continuing_sync(1);
     test_legacy_deadline_matches_rotation();
     test_analog_carrier_deadline_matches_rotation();
     test_scan_retune_publication(0, 0, 0);

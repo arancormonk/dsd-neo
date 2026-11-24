@@ -1780,8 +1780,11 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
      * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
      * is a no-op and the rules below decide alone. So does a row the operator avoided, when the scan has somewhere to
      * go and its paced departure is due (issue #644): the frame loop yielded for it while the carrier held sync. */
+    /* A commit owed with nothing in flight (issue #899) is recovered on a pace of its own: the row it is owed for
+     * keeps no frame, yet its sync keeps refreshing the hangtime anchor. */
     if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())
-        || dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+        || dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())
+        || dsd_engine_channel_scan_owed_recovery_due(opts, state, dsd_decode_now_mono_s())) {
         *due = 1;
         return 1;
     }
