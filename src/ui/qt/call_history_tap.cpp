@@ -17,6 +17,9 @@
 #include <iterator>
 #include <new>
 #include <utility>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <atomic>
+#endif
 
 namespace dsd_qt {
 
@@ -26,6 +29,10 @@ namespace {
 constexpr qsizetype kMaxPendingRows = qsizetype{2} * (DSD_EVENT_HISTORY_LEN - 1);
 /* What the spill reader reads at a time; a spill line is about half a kilobyte, a named one about a kilobyte. */
 constexpr qsizetype kChunkBytes = qsizetype{16} * 1024;
+
+#ifdef DSD_NEO_TEST_HOOKS
+std::atomic<bool> g_truncate_fails{false};
+#endif
 
 } // namespace
 
@@ -70,10 +77,22 @@ CallHistorySpill::open(QFile* file, qint64* size) const {
 bool
 CallHistorySpill::truncateIfSize(qint64 size) {
     const std::lock_guard<std::mutex> lock(m_mutex);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_truncate_fails.load()) {
+        return false;
+    }
+#endif
     if (size <= 0 || QFileInfo(m_path).size() != size) {
         return false;
     }
     return QFile::resize(m_path, 0);
+}
+
+bool
+CallHistorySpill::empty() const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    const QFileInfo info(m_path);
+    return !info.exists() || (info.isFile() && info.size() == 0);
 }
 
 void
@@ -95,6 +114,13 @@ CallHistorySpill::appendAttemptsForTest() const {
     const std::lock_guard<std::mutex> lock(m_mutex);
     return m_attempts;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+CallHistorySpill::setTruncateFailsForTest(bool fail) {
+    g_truncate_fails.store(fail);
+}
+#endif
 
 CallHistorySpillReader::CallHistorySpillReader(QIODevice* device, qint64 limit)
     : m_device(device), m_remaining(qMax<qint64>(limit, 0)), m_chunk(kChunkBytes + 1, '\0') {}

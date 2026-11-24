@@ -70,6 +70,9 @@ class CallHistorySpill {
     /** @brief Empty the spill if it still holds exactly @p size bytes; @return whether it was emptied. */
     bool truncateIfSize(qint64 size);
 
+    /** @brief Whether the spill holds nothing a fold could read: no file, or an empty one. */
+    bool empty() const;
+
     /** @brief Empty the spill whatever it holds. */
     void clear();
 
@@ -78,6 +81,11 @@ class CallHistorySpill {
 
     /** @brief How many appends were tried, written or not. */
     int appendAttemptsForTest() const;
+
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief While @p fail, every truncateIfSize() fails, as a spill that can be read but not written would. */
+    static void setTruncateFailsForTest(bool fail);
+#endif
 
   private:
     QString m_path;

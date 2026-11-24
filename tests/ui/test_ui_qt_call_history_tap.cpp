@@ -1865,6 +1865,107 @@ test_heard_spill_recovery_keeps_each_owners_newest(void) {
            sink.seen.size() <= 1 + 2 * dsd_qt::kHeardPendingPerOwner);
 }
 
+/* Issue #903 (PR2 review r2, P2): a Forget is settled only once no spill is left to replay. The handoff's read of the
+ * spill fails partway (an I/O error), so no fold has read it whole and no save may empty it: the Forget reads it again,
+ * has History write it, and empties it before anything is removed. A death right after the Forget then refolds nothing, and the forgotten group
+ * stays forgotten. */
+void
+test_heard_forget_after_a_partial_spill_read(void) {
+    resetStorage();
+    const QString name = QString::fromLatin1(dsd_qt::HeardTalkgroupStore::kFileName);
+    const QString owner = QStringLiteral("sys-a");
+    const auto allow = [](const QString& uid) { return uid == QStringLiteral("sys-a"); };
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QTemporaryDir atDeath;
+    expect("partial read forget: a folder for the disk at death", atDeath.isValid());
+    Decoder decoder;
+    const time_t when = 1755640000;
+    {
+        dsd_qt::HeardTalkgroupStore store(name);
+        store.setOwnerPolicy(allow);
+        CallHistoryModel model;
+        start_tap(model);
+        model.setHeardSink(&store);
+        store.setBeforeEdit(model.spillSettler());
+        start_saved(model, owner);
+        gui_ingest(model);
+        set_app_state(Qt::ApplicationSuspended);
+        decoder.commit(0, 44700U, 99U, when);
+        prove_newest(decoder, 0, 44700U);
+        decoder.commit(0, 44701U, 99U, when + 60);
+        prove_newest(decoder, 0, 44701U);
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+        g_spillReadWarnings = 0;
+        CallHistoryModel::failNextSpillReadAfterLinesForTest(1);
+        set_app_state(Qt::ApplicationActive);
+        gui_ingest(model);
+        // The ring read after the handoff took in the call the failed read missed; the spill waits whole.
+        expect("partial read forget: the handoff's read failed, and the spill is kept",
+               g_spillReadWarnings == 1 && spill_lines() == 2 && store.entriesFor(owner).size() == 2);
+        expect("partial read forget: the forget goes through", store.forget(owner, 44700U));
+        expect("partial read forget: the forget emptied the spill first", spill_size() == 0);
+        store.waitForWrites();
+        model.waitForSaveForTest();
+        // The process dies here, before History's own (debounced) save.
+        copy_tree(dataDir, atDeath.path());
+    }
+    QDir(dataDir).removeRecursively();
+    copy_tree(atDeath.path(), dataDir);
+    dsd_qt::HeardTalkgroupStore relaunchedStore(name);
+    relaunchedStore.setOwnerPolicy(allow);
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedStore);
+    gui_ingest(relaunched);
+    const QVector<dsd_qt::HeardTalkgroupStore::Entry> left = relaunchedStore.entriesFor(owner);
+    expect("partial read forget: the forgotten group does not come back, the other is remembered",
+           left.size() == 1 && left.at(0).id == 44701U);
+}
+
+/* Issue #903 (PR2 review r2, P2): a spill History can read and save but not empty (its truncate fails) can replay what
+ * a Forget or Clear removed: both are refused, nothing is removed, and the spill is kept. Once the spill can be emptied,
+ * the Forget goes through and empties it. */
+void
+test_heard_forget_refused_while_the_spill_cannot_be_emptied(void) {
+    resetStorage();
+    const QString name = QString::fromLatin1(dsd_qt::HeardTalkgroupStore::kFileName);
+    const QString owner = QStringLiteral("sys-a");
+    const auto allow = [](const QString& uid) { return uid == QStringLiteral("sys-a"); };
+    Decoder decoder;
+    const time_t when = 1755650000;
+    dsd_qt::HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow);
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&store);
+    store.setBeforeEdit(model.spillSettler());
+    start_saved(model, owner);
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commit(0, 44800U, 99U, when);
+    prove_newest(decoder, 0, 44800U);
+    decoder.commit(0, 44801U, 99U, when + 60);
+    prove_newest(decoder, 0, 44801U);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("unemptied spill: the fold taught both groups", store.entriesFor(owner).size() == 2);
+    CallHistoryModel::failSpillTruncatesForTest(true);
+    expect("unemptied spill: the forget is refused", !store.forget(owner, 44800U));
+    expect("unemptied spill: asked again, it is refused again", !store.forget(owner, 44800U));
+    expect("unemptied spill: the clear is refused", !store.clear(owner));
+    expect("unemptied spill: nothing is removed", store.entriesFor(owner).size() == 2);
+    expect("unemptied spill: the spill is kept", spill_lines() == 2);
+    CallHistoryModel::failSpillTruncatesForTest(false);
+    expect("unemptied spill: once it can be emptied, the forget goes through", store.forget(owner, 44800U));
+    expect("unemptied spill: the forget emptied the spill first", spill_size() == 0);
+    const QVector<dsd_qt::HeardTalkgroupStore::Entry> left = store.entriesFor(owner);
+    expect("unemptied spill: only the forgotten group went", left.size() == 1 && left.at(0).id == 44801U);
+    store.waitForWrites();
+    model.waitForSaveForTest();
+}
+
 /* Issue #903 (PR2 review r1, P2): a start that completes while the app is away, on the state the last run used (an
  * embedding host that reuses it): the tap reads the reused ring for the new session, whose calls are its own. */
 void
@@ -1978,6 +2079,8 @@ main(int argc, char** argv) {
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
     test_heard_forget_refused_while_history_cannot_save();
+    test_heard_forget_after_a_partial_spill_read();
+    test_heard_forget_refused_while_the_spill_cannot_be_emptied();
     test_heard_spill_recovery_keeps_each_owners_newest();
     test_heard_reused_ring_through_the_tap();
     test_heard_hold_for_start();

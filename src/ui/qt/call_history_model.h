@@ -374,11 +374,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /**
      * @brief Make the background spill this model folded unable to come back (issue #903): fold what a running tap
-     * holds (it starts again), then, when a folded spill still waits for a save's acknowledgement, wait out the saves in
-     * flight and write both stores now, which acknowledges it and empties the spill. For HeardTalkgroupStore's forget
-     * and clear (HeardTalkgroupStore::setBeforeEdit()), so a relaunch after the process dies refolds nothing they
-     * removed. @return false when that write failed: the spill is kept, as every failed save keeps it, and the log is
-     * reported not saving (saveFailing()) until a save lands.
+     * holds (it starts again), and a spill no fold has read whole (a read that failed, or lines a failed truncate
+     * left) again; then, when a folded spill waits for a save's acknowledgement, wait out the saves in flight and write
+     * both stores now, which acknowledges it and empties the spill. For HeardTalkgroupStore's forget and clear
+     * (HeardTalkgroupStore::setBeforeEdit()), so a relaunch after the process dies refolds nothing they removed.
+     * @return true only when no spill is left to replay. False when that write failed (the spill is kept, as every
+     * failed save keeps it, and the log is reported not saving, saveFailing(), until a save lands), or when the spill
+     * could not be read whole or emptied.
      */
     bool settleSpill();
 
@@ -471,6 +473,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
     static void failNextSpillReadAfterLinesForTest(int lines);
+
+    /** @brief While @p fail, every truncate of the spill fails, as a spill that can be read but not written would. */
+    static void failSpillTruncatesForTest(bool fail);
 
     /** @brief The fragment parts the folds' part lookups read or indexed since the last call, which resets it. */
     static qint64 takePartLookupStepsForTest();

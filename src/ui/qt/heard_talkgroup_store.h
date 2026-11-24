@@ -131,7 +131,8 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
      * The app passes History's CallHistoryModel::settleSpill(): it folds what the background tap holds (which may
      * observe here) and writes History, so the background spill it folded is acknowledged and gone, and no later fold of
      * it (a relaunch after the process dies) observes again what the edit removes. It returns false when that write
-     * failed, and the edit is then refused: the spill it could not settle would bring the entries back.
+     * failed, or the spill could not be read whole or emptied, and the edit is then refused: the spill it could not
+     * settle would bring the entries back.
      */
     void setBeforeEdit(std::function<bool()> hook);
 

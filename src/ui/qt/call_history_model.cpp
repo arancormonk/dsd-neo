@@ -3204,6 +3204,11 @@ bool
 CallHistoryModel::settleSpill() {
     const bool resumeTap = handOffBackgroundCaptureForSession();
     bool settled = true;
+    // A spill no fold read whole (a read that failed, or lines a failed truncate left) is read again first: a line
+    // folded twice adds nothing.
+    if (m_spillFoldedBytes < 0 && !m_spill->empty() && foldSpill()) {
+        Q_EMIT countChanged();
+    }
     if (m_spillFoldedBytes >= 0) {
         // One writer at a time, as the destructor's last save: the queued saves finish first.
         m_saveTimer.stop();
@@ -3221,6 +3226,12 @@ CallHistoryModel::settleSpill() {
             m_saveFailures = 0;
         }
         setSaveFailing(!settled);
+    }
+    // Settled only once nothing is left to replay: a spill the save could not empty (its truncate failed, or a read
+    // failed again) would bring the edit's entries back at the next fold.
+    if (settled && !m_spill->empty()) {
+        settled = false;
+        qWarning("call history: the background spill could not be emptied; a remembered talkgroup edit waits for it");
     }
     resumeBackgroundCapture(resumeTap);
     return settled;
@@ -4332,6 +4343,11 @@ CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* t
 void
 CallHistoryModel::failNextSpillReadAfterLinesForTest(int lines) {
     g_spill_read_fail_after.store(lines);
+}
+
+void
+CallHistoryModel::failSpillTruncatesForTest(bool fail) {
+    CallHistorySpill::setTruncateFailsForTest(fail);
 }
 
 qint64
