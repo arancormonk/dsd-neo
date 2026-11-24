@@ -10323,6 +10323,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
             "-Wl,--wrap=SetFreq"
             "-Wl,--wrap=dsd_scan_mode_prepare"
+            "-Wl,--wrap=dsd_decode_now_mono_s"
+            "-Wl,--wrap=dsd_state_ext_get"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"

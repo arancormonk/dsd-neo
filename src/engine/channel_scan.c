@@ -147,6 +147,13 @@ typedef struct {
        restaged there (dsd_engine_channel_scan_stream_reopened()). */
     uint64_t stop_request;
     uint64_t stop_source_key;
+    /* The timed step's recovery of a commit owed with nothing in flight (issue #899): when it is due, on the decode
+       monotonic clock (0 for none), and the -t (at least 1 s) it was armed with, which the timing publication counts
+       down. Armed by the scan's service at the first pass that finds the commit owed, and again by a timed step that
+       stages no tune; cleared with the commit owed (a commit, a dropped row) and by every tune staged. Received sync
+       never moves it. dsd_state::lcn_owed_recovery_armed follows it. */
+    double owed_recovery_m;
+    double owed_recovery_span_s;
 } channel_scan;
 
 static void
@@ -186,6 +193,14 @@ channel_scan_obtain(dsd_state* state) {
     scan->session = dsd_scan_row_edit_new_session();
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     return scan;
+}
+
+/* No recovery of an owed commit is armed any more (issue #899). */
+static void
+channel_scan_owed_recovery_clear(dsd_state* state, channel_scan* scan) {
+    scan->owed_recovery_m = 0.0;
+    scan->owed_recovery_span_s = 0.0;
+    state->lcn_owed_recovery_armed = 0U;
 }
 
 static channel_scan_row_edit*
@@ -429,7 +444,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     const uint64_t landed_request = scan->request;
     scan->request = 0;
     scan->needs_commit = 0;
-    state->lcn_owed_recovery_m = 0.0;
+    channel_scan_owed_recovery_clear(state, scan);
     /* The row is committed: the receiver, closed on an analog row since its landing, runs the row's gate (issue
        #899). */
     dsd_engine_receiver_gate_settle(opts, state, 1);
@@ -618,21 +633,23 @@ dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state
     dsd_engine_receiver_gate_settle(opts, state, 1);
 }
 
-/* Pace the timed step's recovery of a commit owed with nothing in flight -t (at least 1 s) from @p now_m (issue #899):
-   dsd_state::lcn_owed_recovery_m. */
+/* Pace the timed step's recovery of a commit owed with nothing in flight -t (at least 1 s) from @p now_m (issue #899),
+   keeping the span it was armed with. */
 static void
-channel_scan_owed_recovery_arm(const dsd_opts* opts, dsd_state* state, double now_m) {
+channel_scan_owed_recovery_arm(const dsd_opts* opts, dsd_state* state, channel_scan* scan, double now_m) {
     const double span_s = opts->trunk_hangtime >= 1.0f ? (double)opts->trunk_hangtime : 1.0;
-    state->lcn_owed_recovery_m = now_m + span_s;
+    scan->owed_recovery_m = now_m + span_s;
+    scan->owed_recovery_span_s = span_s;
+    state->lcn_owed_recovery_armed = 1U;
 }
 
 /* The scan's service found nothing in flight (no request, no retry): a commit still owed has its recovery paced from
    the first service that finds it so, on a -Y scan. One read when none is owed. */
 static void
-channel_scan_owed_recovery_note(const dsd_opts* opts, dsd_state* state, const channel_scan* scan) {
-    if (scan->needs_commit && !(state->lcn_owed_recovery_m > 0.0) && opts->scanner_mode == 1
+channel_scan_owed_recovery_note(const dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    if (scan->needs_commit && !(scan->owed_recovery_m > 0.0) && opts->scanner_mode == 1
         && opts->trunk_scan_enabled != 1) {
-        channel_scan_owed_recovery_arm(opts, state, dsd_decode_now_mono_s());
+        channel_scan_owed_recovery_arm(opts, state, scan, dsd_decode_now_mono_s());
     }
 }
 
@@ -1141,21 +1158,44 @@ dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
 /* Whether the receiver moved for a row that never committed and nothing of the scan's is in flight to commit one: a
    restaged tune that failed after a landing, or its row gone before its retry (issue #899). */
 static int
-channel_scan_commit_owed_idle(const dsd_state* state) {
-    const channel_scan* scan = channel_scan_get(state);
+channel_scan_owes_idle(const channel_scan* scan) {
     return scan && scan->needs_commit && scan->request == 0 && !scan->retry;
+}
+
+static int
+channel_scan_commit_owed_idle(const dsd_state* state) {
+    return channel_scan_owes_idle(channel_scan_get(state));
 }
 
 int
 dsd_engine_channel_scan_owed_recovery_due(dsd_state* state, double now_m) {
-    /* The deadline first: with none armed, or before it, the step decision's question costs one read. */
-    if (!state || !(state->lcn_owed_recovery_m > 0.0) || now_m < state->lcn_owed_recovery_m) {
+    /* The flag first: with none armed, the step decision's question costs one read and no lookup. */
+    if (!state || !state->lcn_owed_recovery_armed) {
+        return -1;
+    }
+    channel_scan* scan = channel_scan_get(state);
+    if (!channel_scan_owes_idle(scan) || !(scan->owed_recovery_m > 0.0)) {
+        if (scan) {
+            channel_scan_owed_recovery_clear(state, scan);
+        } else {
+            state->lcn_owed_recovery_armed = 0U;
+        }
+        return -1;
+    }
+    return now_m >= scan->owed_recovery_m ? 1 : 0;
+}
+
+int
+dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s) {
+    if (!state || !deadline_m || !span_s || !state->lcn_owed_recovery_armed) {
         return 0;
     }
-    if (!channel_scan_commit_owed_idle(state)) {
-        state->lcn_owed_recovery_m = 0.0;
+    const channel_scan* scan = channel_scan_get(state);
+    if (!scan || !(scan->owed_recovery_m > 0.0)) {
         return 0;
     }
+    *deadline_m = scan->owed_recovery_m;
+    *span_s = scan->owed_recovery_span_s;
     return 1;
 }
 
@@ -1446,7 +1486,7 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
        the row's own once it commits (issue #899). */
     dsd_engine_receiver_gate_hold(1);
     /* A new attempt: an owed commit's recovery is paced afresh from the end of this one, if it ends unlanded. */
-    state->lcn_owed_recovery_m = 0.0;
+    channel_scan_owed_recovery_clear(state, scan);
     /* The squelch the row on air runs, the analog default included, which the capture holds only as configured. */
     dsd_squelch_standing before_squelch;
     dsd_squelch_standing_capture(opts, &before_squelch);
@@ -1568,8 +1608,9 @@ dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
     /* A step that staged no tune (a placeholder parked on, a row not prepared) leaves a commit owed as it found it: the
        next recovery waits a full pace from this step, so a placeholder keeps its dwell (issue #899). A tune staged
        cleared the pace; if it ends unlanded, the next service paces the recovery afresh. */
-    if (state->lcn_owed_recovery_m > 0.0) {
-        channel_scan_owed_recovery_arm(opts, state, dsd_decode_now_mono_s());
+    channel_scan* scan = state->lcn_owed_recovery_armed ? channel_scan_get(state) : NULL;
+    if (scan && scan->owed_recovery_m > 0.0) {
+        channel_scan_owed_recovery_arm(opts, state, scan, dsd_decode_now_mono_s());
     }
     return result;
 }
@@ -1728,10 +1769,11 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_ti
    every frame of the manual session), the row on air, and the staged row's options (else
    dsd_engine_scan_tuning_row_options() would hand them to a rigctl request) and keys. */
 static void
-channel_scan_drop_row(channel_scan* scan) {
+channel_scan_drop_row(dsd_state* state, channel_scan* scan) {
     scan->request = 0;
     scan->retry = 0;
     scan->needs_commit = 0;
+    channel_scan_owed_recovery_clear(state, scan);
     scan->tuned = 0;
     scan->committed_row = -1;
     /* The pause runs its own carrier boundary (the entry's tune) or forget (in place): no move stays owed. */
@@ -1836,12 +1878,12 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
         dsd_engine_scan_forget_carrier(opts, state);
     }
     if (keep && scan) {
-        channel_scan_drop_row(scan);
+        channel_scan_drop_row(state, scan);
     } else {
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
+        /* The timer went with the scan. */
+        state->lcn_owed_recovery_armed = 0U;
     }
-    /* No commit is owed any more, and none is recovered. */
-    state->lcn_owed_recovery_m = 0.0;
     channel_scan_clear_published_row(state);
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);

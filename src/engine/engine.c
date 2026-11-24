@@ -1783,9 +1783,16 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
     /* A commit owed with nothing in flight (issue #899) is recovered on a pace of its own: the row it is owed for
      * keeps no frame, yet its sync keeps refreshing the hangtime anchor. One clock sample serves every rule here. */
     const double now_m = dsd_decode_now_mono_s();
-    if (dsd_engine_scan_visit_expired(opts, state, now_m) || dsd_engine_channel_scan_departure_due(opts, state, now_m)
-        || dsd_engine_channel_scan_owed_recovery_due(state, now_m)) {
+    if (dsd_engine_scan_visit_expired(opts, state, now_m)
+        || dsd_engine_channel_scan_departure_due(opts, state, now_m)) {
         *due = 1;
+        return 1;
+    }
+    /* Armed, that recovery governs every timed step below these: none before its deadline, the hangtime rule's
+     * included, so the scan steps when the countdown it publishes ends, not on every pass once sync stops. */
+    const int owed = dsd_engine_channel_scan_owed_recovery_due(state, now_m);
+    if (owed >= 0) {
+        *due = owed;
         return 1;
     }
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor

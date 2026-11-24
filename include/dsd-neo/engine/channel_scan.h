@@ -273,15 +273,21 @@ int dsd_engine_channel_scan_on_avoided_row(const dsd_state* state);
  * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
  * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
 int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
-/** Whether the timed -Y step recovers a commit owed with nothing in flight now (issue #899): the receiver moved for a
- * row that never committed (a restaged tune failed, or its row went before its retry), so the gate stays closed and
- * frames are held, and a sync the row keeps giving refreshes the hangtime anchor without decoding. The recovery is
- * due at dsd_state::lcn_owed_recovery_m (decode monotonic clock, compared with @p now_m), which the scan's service
- * (dsd_engine_channel_scan_pending()) arms -t (at least 1 s) from the first pass that finds the scan so, received sync
- * never moves, every tune the scan stages and every commit clear, and a timed step that stages no tune (a placeholder
- * parked on, a row not prepared) arms again from that step; the -Y timing publication counts down to it. With none
- * armed it costs one read. 0 for a NULL state and with nothing owed. Decoder thread. */
+/** What the armed recovery of a commit owed with nothing in flight says about the timed -Y step now (issue #899): the
+ * receiver moved for a row that never committed (a restaged tune failed, or its row went before its retry), so the gate
+ * stays closed and frames are held, and a sync the row keeps giving refreshes the hangtime anchor without decoding.
+ * The scan's service (dsd_engine_channel_scan_pending()) arms the recovery -t (at least 1 s) from the first pass that
+ * finds the scan so, a timed step that stages no tune (a placeholder parked on, a row not prepared) arms it again from
+ * that step, and the commit, a dropped row and every tune the scan stages clear it; received sync never moves it.
+ * While armed it governs the step below the per-visit cap and the avoided-row departure: 1 once due (@p now_m, decode
+ * monotonic clock, at or past it), 0 before (no step, whatever the hangtime rule says, so the scan follows the
+ * countdown it publishes). -1 when none is armed: the step's other rules decide. One read of
+ * dsd_state::lcn_owed_recovery_armed, and no lookup, when none is armed. Decoder thread. */
 int dsd_engine_channel_scan_owed_recovery_due(dsd_state* state, double now_m);
+/** The armed recovery's window for the -Y timing publication (issue #899): 1 with its deadline (decode monotonic
+ * clock) in @p deadline_m and the span it was armed with in @p span_s, so a live -t edit does not reshape a countdown
+ * already running; 0 when none is armed (one read, no lookup). Reads only; never arms. */
+int dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
 /** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
  * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
  * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a

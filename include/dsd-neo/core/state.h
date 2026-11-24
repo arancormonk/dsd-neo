@@ -3448,12 +3448,10 @@ struct dsd_state {
      * 1 s), so a step refused, or one still in flight, is not retried on every frame
      * (dsd_engine_channel_scan_departure_due()). 0.0 until the first departure. */
     double lcn_avoid_depart_m;
-    /* When the timed -Y step recovers a commit the scan owes with nothing in flight (issue #899): -t (at least 1 s)
-     * after the scan's service first found it so, or after a timed step that staged no tune, on the decode monotonic
-     * clock; 0.0 for none. Every tune the scan stages, every commit and the scan's end clear it; received sync never
-     * moves it. Here, not in the scan's extension, so the step decision and the -Y timing publication read it with no
-     * lookup (dsd_engine_channel_scan_owed_recovery_due()). */
-    double lcn_owed_recovery_m;
+    /* 1 while the -Y scan's timer for recovering a commit it owes with nothing in flight is armed (issue #899). The
+     * timer itself is the scan's (its extension); this flag is set and cleared with it, so the step decision and the
+     * -Y timing publication look the scan up only while it is armed (dsd_engine_channel_scan_owed_recovery_due()). */
+    uint8_t lcn_owed_recovery_armed;
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */

@@ -620,13 +620,12 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
 }
 
 /* A failed retune left the scan owing a commit with nothing in flight: the countdown is to the timed step that recovers
-   it, -t (at least 1 s) long, as dsd_state::lcn_owed_recovery_m was armed. */
+   it (@p deadline_m), over the span it was armed with (@p span_s), whatever -t says now. */
 static void
-scan_y_timing_fill_owed_recovery(const dsd_opts* opts, const dsd_state* state, dsd_scan_timing_publication* out) {
-    const double span_s = opts->trunk_hangtime >= 1.0f ? (double)opts->trunk_hangtime : 1.0;
+scan_y_timing_fill_owed_recovery(double deadline_m, double span_s, dsd_scan_timing_publication* out) {
     out->reason = (uint8_t)DSD_SCAN_STAY_RETUNE_RETRY;
-    out->started_m = state->lcn_owed_recovery_m - span_s;
-    out->deadline_m = state->lcn_owed_recovery_m;
+    out->started_m = deadline_m - span_s;
+    out->deadline_m = deadline_m;
     out->span_ms = scan_y_timing_span_ms(span_s);
 }
 
@@ -657,17 +656,19 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
     }
     dsd_scan_timing_publication report;
     scan_y_timing_seed(opts, &report);
+    double owed_deadline_m = 0.0;
+    double owed_span_s = 0.0;
     if (dsd_engine_channel_scan_waiting(state)) {
         report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
     } else if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
         /* No channel map of the user's (issue #697): nothing steps, so nothing counts down; a channel learned over the
            air is no row to step to. */
         report.reason = (uint8_t)DSD_SCAN_STAY_NO_LIST;
-    } else if (state->lcn_owed_recovery_m > 0.0) {
+    } else if (dsd_engine_channel_scan_owed_recovery_window(state, &owed_deadline_m, &owed_span_s)) {
         /* A commit owed with nothing in flight (issue #899): the timed step recovers it at the scan's own deadline,
            ahead of every reason to stay, and the row's sync never moves it (dsd_engine_channel_scan_owed_recovery_due();
            read here, never armed). */
-        scan_y_timing_fill_owed_recovery(opts, state, &report);
+        scan_y_timing_fill_owed_recovery(owed_deadline_m, owed_span_s, &report);
     } else if (dsd_engine_channel_scan_hold_keeps_row(state)) {
         /* The rotation is parked by the operator: the window is paused, not expired.
          * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step
