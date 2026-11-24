@@ -1107,9 +1107,21 @@ dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
     return row >= 0 && row < state->lcn_freq_count && dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
 }
 
+/* Whether the receiver moved for a row that never committed and nothing of the scan's is in flight to commit one: a
+   restaged tune that failed after a landing, or its row gone before its retry (issue #899). */
+static int
+channel_scan_commit_owed_idle(const dsd_state* state) {
+    const channel_scan* scan = channel_scan_get(state);
+    return scan && scan->needs_commit && scan->request == 0 && !scan->retry;
+}
+
 int
 dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
-    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
+    /* A hold keeps the row on air. With a commit owed and nothing in flight no row is on air to keep (the receiver
+       stays muted and frames held until one commits): the scan recovers as an unheld one does, by its next timed step,
+       whose row the hold then keeps (issue #899). */
+    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state)
+           && !channel_scan_commit_owed_idle(state);
 }
 
 int
@@ -1889,8 +1901,11 @@ dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* s
        stop published has nothing to roll back. But a restart is a retune boundary: the stream opened on the settings in
        force before the stop (the row committed last, or the configured ones), not this row's, whose receive profile
        reaches the front end only with its own tune. So the row is restaged (channel_scan_restage()), and its landing
-       is the ordinary one, the row's whole profile with it. */
+       is the ordinary one, the row's whole profile with it. The receiver has moved with no row committed on it: the
+       commit is owed as at a landing (channel_scan_commit()), so a restaged tune that fails leaves the gate closed and
+       frames held until a row commits, never the outgoing row's gate on this frequency (issue #899). */
     dsd_trunk_tuning_request_disown(request);
+    scan->needs_commit = 1;
     channel_scan_restage(scan);
 }
 
