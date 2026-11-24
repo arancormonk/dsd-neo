@@ -12,6 +12,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "channel_scan_stubs.h"
@@ -187,6 +188,19 @@ dsd_test_channel_scan_gates_due(const dsd_opts* opts, const dsd_state* state, ds
 void
 dsd_engine_receiver_gate_hold(int hold) {
     (void)hold;
+}
+
+/* As a start resolves it under a command (the engine's hold): the session's own squelch alone. */
+int
+dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                 dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    (void)gate;
+    (void)digital;
+    if (!opts || !session) {
+        return 0;
+    }
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 0;
 }
 
 void

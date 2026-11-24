@@ -21,6 +21,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -79,8 +80,9 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     g_rtl_start_calls++;
     if (g_rtl_start_replay_center != 0U && g_rtl_create_opts != NULL) {
         g_rtl_create_opts->iq_replay_center_freq = g_rtl_start_replay_center;

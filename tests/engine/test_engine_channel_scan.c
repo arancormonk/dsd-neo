@@ -910,12 +910,17 @@ gate_clear_hooks(void) {
     channel_gate_fake_before_write(NULL);
 }
 
-/* The stream opens on the session's family, closed on the analog one, and the decoder writes the gate it resolves to
-   at its next settle with nothing outstanding (svc_rtl_open_on_the_channel_squelch_locked()). */
+/* The stream opens on the session's family, closed on the analog one, under the session's own squelch the decoder
+   resolves for the start whatever is outstanding (round 10: never a row's own, which the options may hold), and the
+   decoder writes the gate it resolves to at its next settle with nothing outstanding
+   (svc_rtl_open_on_the_channel_squelch_locked()). */
 static void
 gate_open(dsd_opts* opts, dsd_state* state) {
-    const dsd_squelch_setting configured = dsd_squelch_setting_configured(opts);
-    channel_gate_fake_open(opts->analog_only == 1, &configured, rx_runs);
+    dsd_squelch_setting gate;
+    dsd_squelch_setting digital;
+    dsd_squelch_setting session;
+    (void)dsd_engine_receiver_gate_resolve(opts, state, &gate, &digital, &session);
+    channel_gate_fake_open(opts->analog_only == 1, &session, rx_runs);
     dsd_engine_receiver_gate_due();
     dsd_engine_receiver_gate_settle(opts, state, 0);
 }
@@ -1025,6 +1030,81 @@ test_digital_landing_after_digital_row_runs_the_session_gate(void) {
     assert(!dsd_engine_channel_scan_pending(opts, state));
     assert(dsd_squelch_setting_is_off(&g_rx_squelch) && !channel_gate_fake_closed());
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_channel_scan_leave(opts, state);
+
+    gate_clear_hooks();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The same through a stream restart while the second row's tune is pending (targeted review of round 9): the reopen
+   cannot resolve the gate (the tune is outstanding), and the options it opens from hold the first row's -40 dB. The
+   receiver's session fallback is the session's own squelch the decoder resolves for the start (the scan scope's
+   configured Off), so the second row, restaged on the new stream, lands on Off before its commit. Before, the open
+   seeded the fallback from the options, and the landing ran -40 dB until the commit. */
+static void
+test_digital_landing_after_digital_row_reopen_runs_the_session_gate(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_SQUELCH;
+    profile->values.squelch_db = -40;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = rx_gate_hooks(output_rate);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    gate_install_resume_settle();
+    gate_open(opts, state);
+    expected_nxdn = 0;
+    const dsd_squelch_setting row_own = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &row_own));
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+
+    static int fake_rtl_context;
+    state->rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state->carrier_source_key = 0x899U;
+    opts->rtlsdr_center_freq = 150000000U;
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    gate_open(opts, state);
+    const dsd_squelch_setting opened = channel_gate_fake_gate();
+    tune_carried = 0;
+    dsd_engine_channel_scan_stream_reopened(opts, state, 1);
+    for (int i = 0; i < 4 && !tune_carried; i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    assert(tune_carried);
+    land_pending_tune(request);
+    /* What the receiver runs, the open's own setting included (the apply callback hears only changes after it). */
+    const dsd_squelch_setting landed = channel_gate_fake_gate();
+    if (!dsd_squelch_setting_is_off(&opened) || tune_landed_closed != 0 || !dsd_squelch_setting_is_off(&landed)) {
+        DSD_FPRINTF(stderr,
+                    "dmr row restaged after a restart: opened mode %d level %g, landed closed %d, runs mode %d level "
+                    "%g; want Off before the commit\n",
+                    opened.mode, opened.level, tune_landed_closed, landed.mode, landed.level);
+        assert(0);
+    }
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    const dsd_squelch_setting committed = channel_gate_fake_gate();
+    assert(dsd_squelch_setting_is_off(&committed) && !channel_gate_fake_closed());
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->rtl_ctx = NULL;
     dsd_engine_channel_scan_leave(opts, state);
 
     gate_clear_hooks();
@@ -5899,6 +5979,7 @@ main(void) {
     test_row_squelch_analog_default_rides_the_retune();
     test_digital_landing_after_analog_row_runs_the_session_gate();
     test_digital_landing_after_digital_row_runs_the_session_gate();
+    test_digital_landing_after_digital_row_reopen_runs_the_session_gate();
     test_row_gate_follows_the_tune_that_can_land();
     test_row_gate_closed_while_a_commit_is_owed();
     test_row_gate_pending_across_commands();

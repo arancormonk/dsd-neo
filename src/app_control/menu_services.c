@@ -2043,12 +2043,18 @@ svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* Create and start the stream on the squelch the options hold, the analog default where it belongs (issue #899): on
-   the analog family it opens closed until the decoder writes its gate. 0, or -1 with no stream. */
+   the gate the decoder resolves for this start when nothing holds it, else on the analog family closed until the
+   decoder writes its gate, and off the monitor under the session's own squelch, resolved here on the decoder thread
+   (never a scan row's, which the options may hold). 0, or -1 with no stream. */
 static int
 svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
     (void)dsd_squelch_analog_default_sync(opts, state);
+    rtl_stream_start_gate start_gate;
+    DSD_MEMSET(&start_gate, 0, sizeof start_gate);
+    start_gate.resolved =
+        dsd_engine_receiver_gate_resolve(opts, state, &start_gate.gate, &start_gate.digital, &start_gate.session);
     int rc = rtl_stream_create(opts, &state->rtl_ctx) < 0 ? -1 : 0;
-    if (rc == 0 && rtl_stream_start(state->rtl_ctx) < 0) {
+    if (rc == 0 && rtl_stream_start_gated(state->rtl_ctx, &start_gate) < 0) {
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
         rc = -1;

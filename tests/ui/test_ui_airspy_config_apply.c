@@ -86,7 +86,7 @@ static int test_refused;
 
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx);
-int __wrap_rtl_stream_start(RtlSdrContext* ctx);
+int __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate);
 int __wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
 int __wrap_rtl_stream_stop(RtlSdrContext* ctx);
 int __wrap_rtl_stream_destroy(RtlSdrContext* ctx);
@@ -124,8 +124,9 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     const int held = (test_open_kind == DSD_ANALOG_DEMOD_AM && test_open_width == 0)
                          ? dsd_analog_width_default_hz(DSD_ANALOG_DEMOD_AM)
                          : test_open_width;

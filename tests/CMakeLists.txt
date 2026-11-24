@@ -9873,7 +9873,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_engine
             "-Wl,--end-group"
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=Connect"
             "-Wl,--wrap=RigctlRebindPeer"
@@ -9915,7 +9915,7 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtlsdr_get_device_count"
             "-Wl,--wrap=rtlsdr_get_device_usb_strings"
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_destroy"
             ${LIBS}
             dsd-neo_test_support
@@ -11135,7 +11135,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_test_support
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_stop"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
@@ -11504,7 +11504,7 @@ if(
         PRIVATE
             "LINKER:--wrap=dsd_symbol_note_timing_rate"
             "LINKER:--wrap=rtl_stream_create"
-            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_gated"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_start_opened_capture"
             "LINKER:--wrap=rtl_stream_stop"
@@ -28645,7 +28645,7 @@ if(
         dsd-neo_test_ui_airspy_config_apply
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
-            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_gated"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"

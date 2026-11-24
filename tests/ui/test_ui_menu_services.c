@@ -847,8 +847,9 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-rtl_stream_start(RtlSdrContext* ctx) {
+rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
     if (g_rtl_start_clears_latch) {

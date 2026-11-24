@@ -11586,7 +11586,7 @@ config_rtl_device_rate_refuses_width(void) {
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
-int __wrap_rtl_stream_start(RtlSdrContext* ctx);
+int __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate);
 int __wrap_rtl_stream_start_analog_refusal(int* out_kind, int* out_width_hz, int* out_rate_hz);
 int __wrap_rtl_stream_start_opened_capture(void);
 int __wrap_rtl_stream_stop(RtlSdrContext* ctx);
@@ -11629,8 +11629,9 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     ++g_config_rtl_starts;
     g_config_rtl_refused = 0;
     const int capturing = g_config_rtl_create_capture == 1;

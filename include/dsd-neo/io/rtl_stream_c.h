@@ -101,6 +101,29 @@ int rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_start(RtlSdrContext* ctx);
+
+/**
+ * @brief The squelch gate one stream start runs (issue #899), resolved by the decoder for that start alone: no later
+ * start, and no start that opens nothing (a context already started, a failed start), can take it.
+ */
+typedef struct rtl_stream_start_gate {
+    int resolved;                /**< 1: none of the decoder's tunes or family requests was outstanding, so @p gate and
+                                      @p digital are its write for the channel the stream opens on, run from the first
+                                      block with no closed start; 0: an analog open starts closed until the decoder
+                                      writes */
+    dsd_squelch_setting gate;    /**< with @p resolved: as rtl_stream_write_squelch_gate()'s @p gate */
+    dsd_squelch_setting digital; /**< with @p resolved: as rtl_stream_write_squelch_gate()'s @p digital */
+    dsd_squelch_setting session; /**< always: the session's own squelch (never the analog-only default nor any scan
+                                      row's own), which the receiver runs off the monitor until the decoder writes */
+} rtl_stream_start_gate;
+
+/**
+ * @brief rtl_stream_start() on the gate @p start_gate the decoder resolved for this start (issue #899; NULL: the
+ * stream resolves it from the options it was created with, unresolved, as rtl_stream_start() does). The gate is an
+ * argument of this start only. Decoder thread.
+ * @return as rtl_stream_start().
+ */
+int rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate);
 /**
  * @brief Whether the last stream start failed at its analog channel check, and what it refused.
  *
@@ -1045,20 +1068,10 @@ void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_sq
 
 /**
  * @brief 1 while the receiver runs a new analog channel closed, waiting for the decoder's write (issue #899): a stream
- * open with no gate resolved for it (rtl_stream_resolve_open_gate()), a marked retune's landing, a family switch into
- * analog or onto another kind, or a return to the monitor from a symbol profile. Lock-free; any thread.
+ * open with no gate resolved for it (rtl_stream_start_gate::resolved 0), a marked retune's landing, a family switch
+ * into analog or onto another kind, or a return to the monitor from a symbol profile. Lock-free; any thread.
  */
 int rtl_stream_gate_closed_start(void);
-
-/**
- * @brief The gate the decoder resolved for the stream the next rtl_stream_start() opens (issue #899): @p gate, @p
- * digital and @p session as rtl_stream_write_squelch_gate() takes them (NULL @p gate: none). That open runs it from its
- * first block instead of a closed start, so nothing the engine does between the stream's start and its first gate
- * write mutes what the receiver produces meanwhile. The decoder resolves it only when none of its own tune or family
- * requests is outstanding. Every open forgets it, taken or not. Decoder thread, before rtl_stream_start().
- */
-void rtl_stream_resolve_open_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
-                                  const dsd_squelch_setting* session);
 
 /**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),
@@ -1194,6 +1207,8 @@ typedef struct {
                                   (every block that took its closed gate, one finished after the opening write too) */
     uint64_t unjudged_samples; /**< analog monitor samples produced open with no dynamic squelch since the stream
                                     opened */
+    dsd_squelch_setting runs;  /**< the setting the receiver's next block takes (issue #899): a closed start runs a
+                                    LEVEL setting no channel power reaches (DSD_SQUELCH_LEVEL_CLOSED) */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */

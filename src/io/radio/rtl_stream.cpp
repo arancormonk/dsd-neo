@@ -22,7 +22,7 @@
 
 extern "C" {
 // Backend operations hidden from the installed context API.
-int dsd_rtl_stream_open(dsd_opts* opts);
+int dsd_rtl_stream_open(dsd_opts* opts, const rtl_stream_start_gate* start_gate);
 int dsd_rtl_stream_read_ex(float* out, float* voice, uint8_t* flags, size_t count, dsd_opts* opts,
                            const dsd_opts* live_opts, const dsd_state* state, int wants);
 uint32_t rtl_stream_output_generation(void);
@@ -76,17 +76,18 @@ RtlSdrOrchestrator::~RtlSdrOrchestrator() {
 
 /**
  * @brief Initialize and start the stream threads and device async I/O.
+ * @param start_gate The squelch gate this start opens on (NULL: resolved from the snapshot); this call's alone.
  * @return 0 on success, <0 on error.
  */
 int
-RtlSdrOrchestrator::start() {
+RtlSdrOrchestrator::start(const struct rtl_stream_start_gate* start_gate) {
     if (started_) {
         return 0;
     }
     if (!opts_) {
         return -1;
     }
-    int r = dsd_rtl_stream_open(opts_);
+    int r = dsd_rtl_stream_open(opts_, start_gate);
     if (r < 0) {
         return r;
     }

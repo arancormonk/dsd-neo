@@ -742,8 +742,9 @@ __wrap_rtl_stream_gate_closed_start(void) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     return 0;
 }
 
