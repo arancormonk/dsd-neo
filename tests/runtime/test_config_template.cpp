@@ -210,6 +210,11 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing scan_max_visit_ms range hint or default\n");
         rc = 1;
     }
+    /* The skip-silent reading length (#834): 0, the calibrated reading, is the default and the window's bottom. */
+    if (!strstr(content, "# Range: 0 to 500\n# scan_skip_silent_ms = 0\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_skip_silent_ms range hint or default\n");
+        rc = 1;
+    }
     /* [recording] (issue #756): the NFM max gap's range and its default, which is off, under the schema's text. */
     if (!strstr(content, "# Range: 0 to 10000\n# analog_max_gap_ms = 200\n")) {
         DSD_FPRINTF(stderr, "FAIL: template missing analog_max_gap_ms range hint or default\n");

@@ -568,6 +568,28 @@ Generated (do not edit/commit):
       suspended with no reason to show, for its own conditions, such as a -Y row published under an operator hold,
       whose release moves only `quiet_inv_seq` (`test_y_quiet_released_hold_republished()`). A request the tap refuses (a
       Signal search holds it) is DONE.
+    - Event service (issue #834 follow-up, `dsd_engine_scan_quiet_event_service()`, the frame-sync hook
+      `scan_quiet_event`): `getFrameSync()` asks it once at entry and before each hunt symbol while the last quiet
+      answer was LIVE (a hunt-local flag; never with the setting off), skipping the iteration whose 300-symbol point ran
+      its own service (`frame_sync_quiet_event_hands_back()`). With nothing new it does only lock-free loads: the tap's
+      capture word in WAIT_CAPTURE (`rtl_signal_capture_seq()`; the check keeps the word its last read came with,
+      `rtl_signal_capture_get_seq()`, and reads again once it moved or once per entry into WAIT_CAPTURE), the ledger
+      for a park in flight, the request's status word in REQUESTED, and a READY result not yet handed back by events
+      with no frame verdict pending (the decode clock only while a PARTIAL hold runs). It requests a qualifying capture
+      at once when no settle is in force, else once the settle has run (`quiet_event_wait_capture()`); it never ends a
+      check for time and never moves the 50 ms legacy schedule, so expiry stays with the hunt's point, publications and
+      frame boundaries (`test_scan_quiet_event_late_retry_and_holds()`). It collects through `quiet_collect()` and hands
+      a READY result back at most once (`scan_quiet_check::event_handed`): a tick that keeps the visit or loses its
+      guard leaves it to the 300-symbol point. No wake-up is added: the demod thread feeds the tap before it writes the
+      same block's output, so the block that carries the event wakes the decoder; an event with no samples (a bypassed
+      or reconfigured block, a cancel) waits for the next sample or the RTL idle-bounded read. Every request also
+      carries `SCAN_QUIET_LEAD_MS` (10 ms) of lead the tap drops (`dsd_signal_quiet_request::lead_pairs`), and
+      `--scan-skip-silent-ms` its sub-window count (`scan_quiet_setting_windows()`, `scan_quiet_request_windows()`: at
+      least `SCAN_QUIET_DMR_MIN_WINDOWS` on a visit whose `scan_quiet_eligibility::dmr` is set, compared at publication
+      and at the decision like the classes) and a deadline grown by `SCAN_QUIET_DEADLINE_PER_WINDOW_MS` per sub-window
+      above nine; a shortened reading logs its WARN lines once per setting and rate (`scan_quiet_format_short_warn()`,
+      one slot for each of the `DSD_SIGNAL_QUIET_RATE_COUNT` supported rates), and again only after the switch or the
+      length really changed (the setting hook's `reading_changed`), not after an apply that left both as they were.
     - Frame-boundary service (issue #834 R1, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
       short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
@@ -5876,7 +5898,9 @@ the P25 profiles (see the startup control-channel hunt below); with nothing inst
 `scan_quiet_setting_changed` (`dsd_scan_quiet_setting_changed()`, #834) tells the engine that the session-wide
 `opts->scan_skip_silent` was written, so it can drop the quiet checks it already made; app-control's
 `DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler and every config apply call it on the decoder thread, with `turned_on` set
-when the write turned the setting on from off (the landed visit is then not checked). It lives in this table, not the
+when the write turned the setting on from off (the landed visit is then not checked) and `reading_changed` set when the
+switch or `opts->scan_skip_silent_ms` differs from before the write (a shortened reading's WARN lines are then logged
+again). It lives in this table, not the
 trunk-scan one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with
 nothing installed.
 `scan_quiet_service` (`dsd_frame_sync_hook_scan_quiet_service()`, #834) is the scan quiet check's in-hunt service
@@ -10097,7 +10121,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
-  channel carries no power above the capture's noise. `dsd_signal_quiet_detector_*` is the measurement (the shared
+  channel carries no power above the capture's noise. A request may ask for another sub-window count
+  (`dsd_signal_quiet_request::windows`, 0 for the calibrated `DSD_SIGNAL_QUIET_WINDOWS`, at most
+  `DSD_SIGNAL_QUIET_WINDOWS_MAX`) and a lead of pairs dropped before the first transform (`lead_pairs`). The tap's
+  capture word (`rtl_signal_capture_seq()`, lock-free; `rtl_signal_capture_get_seq()` gives the capture and its word
+  from one snapshot under `tap_mutex`) moves with every change of generation, centre or capture offset and at a
+  reset, never for drops or gain. `dsd_signal_quiet_detector_*` is the measurement (the shared
   tap runs one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (5.0 dB),
   `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with

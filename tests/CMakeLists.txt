@@ -9798,6 +9798,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_capture_get_seq"
+            "-Wl,--wrap=rtl_signal_capture_seq"
             "-Wl,--wrap=rtl_signal_quiet_request"
             "-Wl,--wrap=rtl_signal_quiet_status"
             "-Wl,--wrap=rtl_signal_quiet_take"
@@ -11076,17 +11078,23 @@ target_link_libraries(
 
 # The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
 # landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
-# radio pipeline, and the host's link wraps a GNU-style linker.
+# radio pipeline, and the host's link wraps a GNU-style linker. The radio code is the test-hook build, whose signal tap
+# counts the scan quiet check's requests (none under I/Q replay).
 if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
     target_include_directories(
         dsd-neo_test_y_call_hold_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_y_call_hold_replay
         PRIVATE
+            "-Wl,--start-group"
             dsd-neo_engine
+            dsd-neo_io_radio_private_test_support
+            "-Wl,--end-group"
             ${LIBS}
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_channel_scan_step"
@@ -27845,7 +27853,8 @@ if(Python3_Interpreter_FOUND)
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
     # tools/bench_scan_skip_silent.py reports per mode only what the run decoded: an
-    # untyped -Y map runs -ft on every row (issue #834). numpy, as above.
+    # untyped -Y map runs -ft on every row (issue #834). numpy, as above. Its DMR
+    # cases score the call the DMR test generator builds.
     add_test(
         NAME TOOLS_BENCH_SCAN_SKIP_SILENT
         COMMAND
@@ -27855,7 +27864,11 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(
         TOOLS_BENCH_SCAN_SKIP_SILENT
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            ENVIRONMENT
+                "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
@@ -28826,7 +28839,7 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
-    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    # The scan quiet-threshold calibration (docs/signal-search.md), run by hand: minutes on every core.
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
@@ -28845,6 +28858,22 @@ if(DSD_HAS_RADIO)
             Threads::Threads
             ${LIBS}
     )
+    # The calibration driver checks the sources of the conditions --filter selects for the phase, and only those
+    # (issue #834): one condition at a time on a tiny source set it makes in its temp directory, in seconds.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_choose_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            PROPERTIES TIMEOUT 120
+        )
+    endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(

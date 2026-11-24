@@ -1672,6 +1672,8 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
+    /* Whether the row can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
+    e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the row no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }

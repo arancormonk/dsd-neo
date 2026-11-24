@@ -440,6 +440,7 @@ the session; they never write the process environment.
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel. A save writes `true` for a scan the operator paused, so the next launch runs it | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_skip_silent` | BOOL | Leave a silent conventional trunk-scan target or `-Y` row as soon as a quick signal check finds it silent (`--scan-skip-silent`; session-wide, never a row option; see [Skipping silent channels](trunk-scan.md#skipping-silent-channels)) | `false` |
+| `scan_skip_silent_ms` | INT (0, 10-500) | Experts: how long the skip-silent check reads a channel (`--scan-skip-silent-ms`; session-wide). `0` is the calibrated reading, 9 slices of 10 ms (90 ms or a little more, by sample rate); other values round up to whole 10 ms slices. Fewer than nine slices (settings 10-80 ms) are not calibrated: a weak or fading signal can read silent and be skipped; DMR-capable channels are read for at least 6 slices; more than nine slices (settings over 90 ms) skip less often. Any other value is refused. See [Reading length (experts)](trunk-scan.md#reading-length-experts) | `0` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
 | `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; can cut an ongoing call short; `0` disables, else `1000..3600000` | `0` |
@@ -1020,6 +1021,11 @@ Config/CLI interaction:
   it; a config loaded during a session without the key turns it off; a save and the exit autosave write the value
   the session runs, including one the terminal's `Silent channel skip` row changed. On without `-Y` or trunk scan, the
   start warns `[trunking] scan_skip_silent has no effect without -Y or --trunk-scan`.
+- `[trunking] scan_skip_silent_ms` is session-wide too, and `--scan-skip-silent-ms` wins over it. The loader refuses
+  a value other than `0` or `10..500` and keeps the one it had, and `--validate-config` reports it as an error, in a
+  profile as well. Set without `-Y` or trunk scan, the start warns that it has no effect without `-Y` or
+  `--trunk-scan`; set under a scan with skip-silent off, it warns
+  `[trunking] scan_skip_silent_ms has no effect without --scan-skip-silent`.
 - `--trunk-scan-hold <target-id>` (start held on one target) has no key: it is a one-shot start option, and no save
   or exit autosave writes it.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other

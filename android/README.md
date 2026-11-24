@@ -690,7 +690,9 @@ A scan list also owns its scan settings, so a scan list's start is refused when 
 them: input, decoder and modulation options (`-i`, `-f`, `-m`), trunking and scan modes (`-T`, `-Y`, `-C`,
 `--trunk-scan`, `--p25-bandplan`, `--iq-replay`), and the switches of the list's **Voice only** and **Skip silent
 channels** checkboxes: `--scan-voice-only`, `--no-scan-voice-only`, `--scan-skip-silent` and `--no-scan-skip-silent`.
-Any option that starts with one of them is refused too, such as `-fa` or `--trunk-scan-dwell-ms`. This refusal says
+Any option that starts with one of them is refused too, such as `-fa` or `--trunk-scan-dwell-ms`, except
+`--scan-skip-silent-ms <ms>` (or `--scan-skip-silent-ms=<ms>`): the checkbox does not set how long the check reads,
+so Extra decoder arguments may set it for the whole session, and the decoder checks its range. This refusal says
 only that a prohibited option is present. A saved system's own Extra decoder arguments still take the four scan
 switches, since a saved conventional system can run `-Y`.
 

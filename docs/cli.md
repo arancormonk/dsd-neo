@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`, `--scan-skip-silent-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`; the Windows ZIP ships it and the Airspy and HackRF modules)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -2720,6 +2720,13 @@ channel is delayed.
   sample rates and decoder sets get no check (an untyped row under Auto among them): the row then reads `No check:`
   and the reason (`input`, `tuner`, `rate`, `width` or `modes`), and the log says once how to fix it. The list, the
   log lines and the limits are in [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
+  Reading length (experts): `--scan-skip-silent-ms <ms>` (also `--scan-skip-silent-ms=<ms>`; `10..500`; config
+  `[trunking] scan_skip_silent_ms`, where `0`, the default, is the calibrated reading) sets how long the check reads a
+  channel. Values round up to whole 10 ms slices. The calibrated reading is 9 slices (90 ms or a little more, by
+  sample rate). Fewer than nine slices (settings 10-80 ms) are not calibrated: a weak or fading signal can read silent and be skipped. A
+  channel that can carry DMR is still read for at least 6 slices. Above 90 the check skips less often. It does
+  nothing without `--scan-skip-silent`, and is one setting for the session, never a row option. See [Reading length
+  (experts)](trunk-scan.md#reading-length-experts).
   Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
   `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
   ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
@@ -2856,6 +2863,10 @@ channel is delayed.
     conventional target that a quick signal check finds silent is left at once instead of after its idle dwell.
     Trunked targets are never checked. Off by default. Details and limits:
     [Skipping silent channels](trunk-scan.md#skipping-silent-channels).
+  - Skip-silent reading length (`--scan-skip-silent-ms <ms>`, `10..500`; config `[trunking] scan_skip_silent_ms`), for
+    experts: values round up to whole 10 ms slices, and below the calibrated 9 slices (90 ms or a little more) a weak
+    or fading signal can read silent and be skipped; a DMR-capable target is still read for at least 6 slices. See
+    [Reading length (experts)](trunk-scan.md#reading-length-experts).
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or

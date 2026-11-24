@@ -982,6 +982,13 @@ and no class's sideband floor stands over the floor guard. It shares Signal sear
 again. The figures below are from the run that added NFM 10, 12 and 15 kHz and AM 8.333 kHz and measured every NFM
 width with both transmitters, in the RTL tap's geometry; it left the measurement as it was.
 
+Only that nine-sub-window reading is calibrated. `--scan-skip-silent-ms` (an expert setting, see
+[Reading length (experts)](trunk-scan.md#reading-length-experts)) asks the detector for another count of sub-windows
+of the same length, and the same threshold and guard judge it uncalibrated. The driver takes `--windows N` for a short
+check of such a count (`dsd_signal_quiet_request::windows`); a run of it is not a calibration. Since issue #834's
+follow-up every scan request also starts its reading 10 ms of samples after its capture
+(`dsd_signal_quiet_request::lead_pairs`), which leaves what the calibration measured unchanged.
+
 ### Reception thresholds
 
 `tools/scan_quiet_reception.py` measures the lowest S/N at which dsd-neo still receives each mode: S/N is the
@@ -1059,17 +1066,19 @@ The check runs only where the calibration rendered and validated it, matched exa
 
 ### Driver and conditions
 
-`dsd-neo_test_signal_quiet_calibrate` (`tests/io/signal_quiet_calibrate.cpp`, built with the tests, never run by CTest)
-runs the stand-alone quiet detector, the one the shared tap runs. Its signals are the reception tool's own clean
-sources (`--export-sources DIR`), interpolated to the capture rate in the frequency domain so each band's power is
-unchanged, and placed in the RTL tap's geometry (tuned a quarter of the rate above the channel, the ingest rotation
-bringing the channel to the samples' 0 Hz) with a random start, phase and sample alignment per trial. The S/N is the
-tool's; the driver's `--phase snr` renders each wanted signal as the trials do and measures it back from the samples:
-over 100 trials each it lands within 0.13 dB of the target for every row at every rate. Every digital mode and every
-width this run added is within 0.06 dB; the largest are AM with the carrier at the edge (up to 0.10 dB) and NFM 8 kHz
-with the 25 kHz channel's tone (0.13 dB at 1.2 Msps). The reception run also writes `driver_modes.tsv`, which hands
-the driver every analog row with its width and threshold (`--modes-file`); the digital rows are the driver's own, with
-the names, and so the seeds, they always had.
+`dsd-neo_test_signal_quiet_calibrate` (`tests/io/signal_quiet_calibrate.cpp`, built with the tests) runs the
+stand-alone quiet detector, the one the shared tap runs. CTest never runs a calibration with it:
+`IO_SIGNAL_QUIET_CALIBRATE_CHOOSE` runs one condition at a time on a tiny source set, to check that the driver refuses
+a source too short for a condition it renders (one `--filter` selects for the phase, `--phase snr` included) and no
+other. Its signals are the reception tool's own clean sources (`--export-sources DIR`), interpolated to the capture
+rate in the frequency domain so each band's power is unchanged, and placed in the RTL tap's geometry (tuned a quarter
+of the rate above the channel, the ingest rotation bringing the channel to the samples' 0 Hz) with a random start,
+phase and sample alignment per trial. The S/N is the tool's; the driver's `--phase snr` renders each wanted signal as
+the trials do and measures it back from the samples: over 100 trials each it lands within 0.13 dB of the target for
+every row at every rate. Every digital mode and every width this run added is within 0.06 dB; the largest are AM with
+the carrier at the edge (up to 0.10 dB) and NFM 8 kHz with the 25 kHz channel's tone (0.13 dB at 1.2 Msps). The
+reception run also writes `driver_modes.tsv`, which hands the driver every analog row with its width and threshold
+(`--modes-file`); the digital rows are the driver's own, with the names, and so the seeds, they always had.
 
 Active trials sit 1 dB below each mode's reception threshold:
 
@@ -1204,6 +1213,8 @@ levels: their sideband blocks hold the neighbours.
 
 ### Limits
 
+- The conditions are steady signals, with the deterministic power droop inside a DMR burst; propagation fading was
+  not simulated, so a signal that fades through a whole reading can read silent.
 - A channel whose sideband floor stands more than 8.7 dB over the capture's noise is never skipped, whatever it
   carries: one between transmitters that crowd its sidebands, or on a floor that stands that far over the rest of the
   capture (a strong broad interferer, a sloped floor). That is a speed cost only.

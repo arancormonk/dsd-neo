@@ -23,12 +23,17 @@ frame syncs the protocol's checks reject (an NXDN48 target with a 2000 ms dwell;
 so --scan trunk leaves its rows out of the target CSV). The untyped map has no mode column: every row runs -ft's DMR
 and P25 decoders, so --scan untyped takes no --silent-modes. NFM rows and targets are 12.5 kHz wide with a -42 dB squelch, 5 to 6 dB over
 the scene's noise in the channel. It reads the retune log, dsd-neo's output (each line stamped as it arrives), its
-frame log, its per-call recordings and their journal, and its RTL perf CSV, and reports:
+frame log, its per-call recordings and their journal, and its RTL perf CSV; the output's, frame log's and journal's
+stamps go on the scene clock through the retunes around them (scene_clock()), the frame log's and journal's whole
+seconds each as the span of its second (whole_second()). It reports:
 
   idle visits   time per visit to a silent channel, from the retune onto it to the next retune (median, p95); the
                 first visit (start-up) and the last (cut off) are left out
-  skips         the skips dsd-neo logged, and of those the skips of an active channel whose call was on air from the
-                landing to the skip (a call read as silent) or started between them (too late for the reading)
+  skips         the skips dsd-neo logged, and of those the skips of an active channel with a call keyed at the skip:
+                keyed through (keyed at the landing too, a call read as silent) or keyed after landing (keyed up
+                between the landing and the skip); a call is keyed from its key-up up to, not including, its key-down,
+                so a DMR call's silent lead (about 200.9 ms, the generator's, before its first burst) is not, nor is a
+                call that keyed down before the skip
   calls         scheduled calls inside the run, caught (one frame decoded: a P25 LDU whose link control or encryption
                 sync decoded, a DMR AMBE frame whose Golay-protected bits match the generator's; NFM: a call recording
                 holding the tone) or missed, and how many the receiver visited at all
@@ -58,11 +63,15 @@ A frontend (the Qt or Android app) is measured with --serve PORT --scan trunk|ty
 on that loopback port for --seconds, to one client after another, and writes the lists (trunk.csv is the scan list's
 target CSV) and the retunes to DIR. Then put the app's logcat (adb logcat -v epoch) in a file, its recording journal
 in DIR/calls.jsonl and its recordings in DIR/calls/, and score the run with --analyze LOGCAT --out DIR: its digital
-calls are scored by their recordings' length, as it writes no frame log. Requires NumPy. Never opens physical
-hardware, and serves the loopback interface only.
+calls are scored by their recordings' length, as it writes no frame log. The device's clock shift, which --analyze
+fits by aligning the app's retunes, in order, with the scene's tune log, goes on its logcat and its journal's stamps
+alike, and is saved in DIR/run.json for --rescore. When the retunes do not settle it (none line up, too few do, or an
+alignment a lap away fits as well), --analyze says so and exits non-zero, leaving dsd.log and run.json as they were.
+Requires NumPy. Never opens physical hardware, and serves the loopback interface only.
 """
 
 import argparse
+import bisect
 import collections
 import csv
 import json
@@ -118,6 +127,9 @@ SKIP = re.compile(r"NOTICE: scan: skipped quiet .* (\d+\.\d+) MHz: ")
 P25_FRAME = re.compile(reception.P25P1_PASS)
 DMR_SYSTEM = "DMR_CC_2"  # the recording journal's system names for the scene's DMR and P25 calls
 P25_SYSTEM = "P25_293"
+DEVICE_SHIFT = "device_clock_shift_s"  # run.json: a frontend's clock less the host's, as analyze() measured it
+RETUNE_MATCH_S = 0.25  # --analyze: a retune pair supports an alignment when its gap is this close to the alignment's
+MIN_RETUNE_MATCHES = 3  # --analyze: the fewest retune pairs a device clock shift is taken from
 AMBE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) FRAME AMBE slot=\d+ data=([0-9A-F]{14})")
 
 
@@ -133,20 +145,40 @@ class Channel:
         self.baseband: np.ndarray | None = None  # one call at 48 kHz, scaled to its S/N over unit noise in 12.5 kHz
         self.frames: list[tuple[float, float]] = []  # (start_s, end_s) of each frame inside a call
         self.expected: list[str] | None = None  # DMR: the AMBE frames a call sends
+        # (on s, off s) into a call that its carrier is keyed (keyed_span()): all of CALL_S for a continuous call, from
+        # the end of the generator's silent lead for DMR. Every judgement of a call on air uses it.
+        self.keyed = (0.0, CALL_S)
         self.cache: dict[int, np.ndarray] = {}  # stream rate -> the call at that rate
 
     @property
     def name(self):
         return f"{self.kind}-{self.index + 1:02d}"
 
+    def air(self, start):
+        """The scene time span a call scheduled at start is keyed on air."""
+        return start + self.keyed[0], start + self.keyed[1]
+
     def calls(self, end_s):
-        """Start times of the calls that end inside the run."""
+        """Scheduled start times of the calls whose keyed air ends inside the run."""
         if self.starts is None:
             return []
-        return [float(t) for t in self.starts if t + CALL_S <= end_s]
+        return [float(t) for t in self.starts if t + self.keyed[1] <= end_s]
 
     def call_at(self, t):
-        """The start of the call on air at scene time t, or None."""
+        """The scheduled start of the call keyed on air at scene time t, or None (a DMR call's silent lead is not):
+        keyed from its key-up up to, not including, its key-down. The key-ups are searched as air() computes them, each
+        start plus the lead: t less the lead can round below a start, so a call would not be keyed at its own key-up."""
+        if self.starts is None:
+            return None
+        k = int(np.searchsorted(self.starts + self.keyed[0], t, side="right")) - 1
+        if k < 0:
+            return None
+        start = float(self.starts[k])
+        return start if t < self.air(start)[1] else None
+
+    def playing_at(self, t):
+        """The scheduled start of the call whose samples the scene plays at scene time t (a block starting there),
+        silent lead included, or None."""
         if self.starts is None:
             return None
         k = int(np.searchsorted(self.starts, t, side="right")) - 1
@@ -165,9 +197,26 @@ def dmr_burst_period(burst):
     return reception.dmr_ms_voice_period(superframe, vc + 1)
 
 
+def keyed_span(on, rate, ramp_s=reception.DMR_RAMP_S, call_s=CALL_S):
+    """(on s, off s) into a call that its carrier is keyed, inside the call's first call_s: for a burst train, from
+    its on-mask (each burst's region B samples, tools/scan_quiet_reception.py dmr_ms_source()), from the first keyed
+    sample less the power ramp before it to the last keyed sample plus the ramp after it; a continuous call (no mask)
+    is keyed all of it. The DMR call keys about 200.9 ms in, after the generator's silent lead."""
+    if on is None:
+        return 0.0, call_s
+    n = round(call_s * rate)
+    keyed = np.flatnonzero(on[:n])
+    if len(keyed) == 0:
+        raise SystemExit("the DMR generator keyed no burst inside the call")
+    ramp_n = round(ramp_s * rate)
+    return max(0, int(keyed[0]) - ramp_n) / rate, min(n, int(keyed[-1]) + 1 + ramp_n) / rate
+
+
 def dmr_call(channel, work_dir):
-    """The MS burst train's first CALL_S and the AMBE frames of the bursts that end inside it."""
+    """The MS burst train's first CALL_S, its keyed air (keyed_span()) and the AMBE frames of the bursts that end
+    inside it."""
     source = reception.dmr_ms_source(work_dir)
+    channel.keyed = keyed_span(source.on, reception.RATE_HZ)
     symbol_s = 1.0 / 4800
 
     def burst_span(burst):
@@ -271,7 +320,7 @@ class Scene(tcp_bench.Source):
         scale = np.float32(math.sqrt(2.0 * NOISE_SIGMA**2 * CLASS_WIDTH_HZ / rate))
         for channel in self.channels:
             delta = channel.frequency - centre
-            start = channel.call_at(t0)
+            start = channel.playing_at(t0)
             if start is None or abs(delta) > 0.45 * rate:
                 continue
             into = t0 - start
@@ -461,41 +510,96 @@ def visits(record, channels):
     return out
 
 
-def read_log(path, started):
-    """dsd-neo's stamped lines as (scene time s, text)."""
+def scene_clock(record):
+    """A function from a monotonic stamp (the retune log's clock) to scene time, through the retunes the scene logged
+    (record["tunes"] rows are (scene s, monotonic s, centre Hz, rate Hz)), not by wall time from the run's start: when
+    the host stalls, the paced server falls behind the wall clock and then catches up, so the scene time that a wall
+    time holds drifts.
+
+    Each retune the scene logged is a known (monotonic, scene time) pair, and a stamp between retune i and retune i+1
+    is put on the straight line between them:
+
+        scene = scene_i + (mono - mono_i) * (scene_i+1 - scene_i) / (mono_i+1 - mono_i)
+
+    With no stall in between, that is scene_i + (mono - mono_i). With a stall, scene_i + (mono - mono_i) alone goes
+    wrong near retune i+1: when the next retune's scene time is behind its wall time (the server stalled after retune
+    i) it runs past scene_i+1, and when the server was behind at retune i and caught up by retune i+1 it stays behind.
+    The line puts a stamp just before retune i+1 at about scene_i+1, and never past it, in both cases. That is where a
+    skip line is: the skip is what makes the next retune. A stamp just after retune i is at about scene_i; in between,
+    a stall's lag is spread evenly, as the log does not say when the stall came. A stamp before the first retune or
+    after the last runs at the wall's pace from it."""
+    pairs = sorted((float(mono), float(scene)) for scene, mono, _centre, _rate in record["tunes"])
+    monos = [mono for mono, _scene in pairs]
+
+    def clock(mono):
+        if not pairs:
+            return mono - record["scene_started"]
+        i = bisect.bisect_right(monos, mono) - 1
+        if i < 0:
+            return pairs[0][1] + (mono - pairs[0][0])
+        mono_i, scene_i = pairs[i]
+        if i + 1 == len(pairs):
+            return scene_i + (mono - mono_i)
+        mono_next, scene_next = pairs[i + 1]
+        if mono_next <= mono_i:
+            return scene_i
+        return scene_i + (mono - mono_i) * (scene_next - scene_i) / (mono_next - mono_i)
+
+    return clock
+
+
+def read_stamped(path):
+    """dsd-neo's stamped lines as (monotonic s, text): the retune log's clock, as stamp_lines() stamped them."""
     lines = []
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             match = STAMPED.match(line.rstrip("\n"))
             if match:
-                lines.append((float(match.group(1)) - started, match.group(2)))
+                lines.append((float(match.group(1)), match.group(2)))
     return lines
 
 
+def skip_lines(lines):
+    """The skip lines among (stamp, text) lines, as (stamp, the skipped frequency in Hz)."""
+    return [(t, float(m.group(1)) * 1e6) for t, m in ((t, SKIP.search(text)) for t, text in lines) if m]
+
+
+def whole_second(clock, stamp_s):
+    """The scene time span of an event stamped with a whole second stamp_s on the retune log's clock: it happened in
+    [stamp_s, stamp_s + 1), and both ends go on the scene clock. While the paced server catches up after a stall, one
+    second of the host's can hold more than a second of the scene's, so the start of the second alone can fall well
+    before the event."""
+    return clock(stamp_s), clock(stamp_s + 1.0)
+
+
 def frame_log_ambe(path, record):
-    """The frame log's AMBE frames as (scene time s, hex); its stamps are whole wall-clock seconds."""
+    """The frame log's AMBE frames as (scene time s from, to, hex): its stamps are whole wall-clock seconds, put on the
+    monotonic clock by the run's wall offset and on the scene clock by scene_clock(), each as the span of its second
+    (whole_second())."""
     out = []
     if not os.path.exists(path):
         return out
-    offset = record["wall_offset_s"] + record["scene_started"]
+    clock = scene_clock(record)
     with open(path, encoding="ascii", errors="replace") as handle:
         for line in handle:
             match = AMBE.match(line)
             if match:
                 wall = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
-                out.append((wall - offset, match.group(2)))
+                out.append((*whole_second(clock, wall - record["wall_offset_s"]), match.group(2)))
     return out
 
 
-def journal_recordings(path, record, systems):
-    """Each published call recording of these systems (journal "system" names) as (scene time s of its start, seconds
-    heard): for NFM the seconds of the call's tone in it, for a digital call its length. The journal's start is a whole
-    second. A recording missing from the journal's folder is looked for in calls/ beside the journal (a frontend's
+def journal_recordings(path, record, systems, device_shift_s=0.0):
+    """Each published call recording of these systems (journal "system" names) as (scene time s its start was from, to,
+    seconds heard): for NFM the seconds of the call's tone in it, for a digital call its length. The journal's start is
+    a whole wall-clock second, put on the scene clock as frame_log_ambe() puts its stamps (the span of that second),
+    less device_shift_s: a frontend's journal is stamped by its device, whose clock runs that far from the host's
+    (analyze()). A recording missing from the journal's folder is looked for in calls/ beside the journal (a frontend's
     recordings pulled from the device)."""
     out = []
     if not os.path.exists(path):
         return out
-    offset = record["wall_offset_s"] + record["scene_started"]
+    clock = scene_clock(record)
     with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
@@ -504,13 +608,14 @@ def journal_recordings(path, record, systems):
                 continue
             if entry.get("type") != "publish" or entry.get("system") not in systems:
                 continue
+            start = whole_second(clock, float(entry["start"]) - record["wall_offset_s"] - device_shift_s)
             if entry["system"] != "NFM":
-                out.append((float(entry["start"]) - offset, float(entry["duration_ms"]) / 1000.0))
+                out.append((*start, float(entry["duration_ms"]) / 1000.0))
                 continue
             wav_path = os.path.join(entry["folder"], os.path.basename(entry["file"]))
             if not os.path.exists(wav_path):
                 wav_path = os.path.join(os.path.dirname(path), "calls", os.path.basename(entry["file"]))
-            out.append((float(entry["start"]) - offset, tone_seconds(wav_path)))
+            out.append((*start, tone_seconds(wav_path)))
     return out
 
 
@@ -541,13 +646,16 @@ def overlap(a0, a1, b0, b1):
 
 def score_call(channel, start, on_channel, decoded, in_seconds):
     """Caught, frames sent while on the channel and frames decoded; in seconds instead when in_seconds (NFM, and a
-    frontend's digital calls, which are scored by their recordings)."""
+    frontend's digital calls, which are scored by their recordings), of the call's keyed air. decoded holds (scene time
+    s from, to, frame or seconds heard): a stamp's span, the second a whole-second stamp names (whole_second()), and
+    one that meets the call's window counts."""
+    on_s, off_s = channel.air(start)
     if in_seconds:
-        sent = sum(overlap(v0, v1, start, start + CALL_S) for v0, v1 in on_channel)
-        heard = sum(length for t, length in decoded if start - 1.5 <= t <= start + CALL_S)
+        sent = sum(overlap(v0, v1, on_s, off_s) for v0, v1 in on_channel)
+        heard = sum(length for t0, t1, length in decoded if t0 <= off_s and on_s - 1.5 <= t1)
         return heard > 0.0, sent, min(heard, sent)
     sent = sum(1 for f0, f1 in channel.frames for v0, v1 in on_channel if v0 <= start + f0 and start + f1 <= v1)
-    window = [x for t, x in decoded if start - 1.5 <= t <= start + CALL_S + LATE_S]
+    window = [x for t0, t1, x in decoded if t0 <= off_s + LATE_S and on_s - 1.5 <= t1]
     if channel.kind == "dmr":
         got = sum(
             (collections.Counter(h[:6] for h in window) & collections.Counter(e[:6] for e in channel.expected)).values()
@@ -558,10 +666,11 @@ def score_call(channel, start, on_channel, decoded, in_seconds):
 
 
 def score(record, channels, out_dir):
-    started = record["scene_started"]
-    if started is None:
+    if record["scene_started"] is None:
         raise SystemExit(f"dsd-neo never connected to the scene, so there is nothing to score (see {out_dir}/dsd.log)")
-    lines = read_log(os.path.join(out_dir, "dsd.log"), started)
+    stamped = read_stamped(os.path.join(out_dir, "dsd.log"))
+    clock = scene_clock(record)
+    lines = [(clock(mono), text) for mono, text in stamped]
     all_visits = visits(record, channels)
     # Left out: the tunes off the scene before it (the source's own centre, when the stream started before dsd-neo's
     # first tune), the start-up visit before the first scan retune, and the last visit, which the run cut off.
@@ -570,15 +679,17 @@ def score(record, channels, out_dir):
     first_s = scored[0][1] if scored else record["end_s"]
     idle = [v1 - v0 for c, v0, v1 in scored if c is not None and c.kind == "silent"]
     journal = os.path.join(out_dir, "calls.jsonl")
+    # A frontend's journal is on its device's clock: the shift analyze() measured and saved. dsd-neo's is the host's.
+    device_shift = record.get(DEVICE_SHIFT, 0.0) if record["scan"] == "frontend" else 0.0
     decoded = {
-        "p25": [(t, 1) for t, text in lines if P25_FRAME.search(text)],
+        "p25": [(t, t, 1) for t, text in lines if P25_FRAME.search(text)],
         "dmr": frame_log_ambe(os.path.join(out_dir, "frames.log"), record),
-        "nfm": journal_recordings(journal, record, ("NFM",)),
+        "nfm": journal_recordings(journal, record, ("NFM",), device_shift),
     }
     in_seconds = {"nfm": True, "dmr": False, "p25": False}
     if record["scan"] == "frontend":  # no frame log and no decode lines: score its calls by their recordings
-        decoded["dmr"] = journal_recordings(journal, record, (DMR_SYSTEM,))
-        decoded["p25"] = journal_recordings(journal, record, (P25_SYSTEM,))
+        decoded["dmr"] = journal_recordings(journal, record, (DMR_SYSTEM,), device_shift)
+        decoded["p25"] = journal_recordings(journal, record, (P25_SYSTEM,), device_shift)
         in_seconds = dict.fromkeys(ACTIVE, True)
     calls = {}
     for channel in channels:
@@ -586,14 +697,15 @@ def score(record, channels, out_dir):
             continue
         rows = []
         for start in channel.calls(record["end_s"]):
-            if start < first_s:
+            on_s, off_s = channel.air(start)
+            if on_s < first_s:
                 continue
-            on = [(v0, v1) for c, v0, v1 in all_visits if c is channel and overlap(v0, v1, start, start + CALL_S) > 0]
+            on = [(v0, v1) for c, v0, v1 in all_visits if c is channel and overlap(v0, v1, on_s, off_s) > 0]
             caught, sent, got = score_call(channel, start, on, decoded[channel.kind], in_seconds[channel.kind])
             rows.append({"start": start, "tuned": bool(on), "caught": caught, "sent": sent, "decoded": got})
         calls[channel.kind] = rows
     perf = perf_summary(os.path.join(out_dir, "dsd-neo-rtl-perf.csv"))
-    skips = [(t, float(m.group(1)) * 1e6) for t, m in ((t, SKIP.search(text)) for t, text in lines) if m]
+    skips = skip_lines(lines)
     result = {
         "scan": record["scan"],
         "skip": record["skip"],
@@ -614,7 +726,7 @@ def score(record, channels, out_dir):
     }
     if record.get("by_mode"):
         result["silent_modes"] = record["silent_modes"]
-        result["silent_by_mode"] = silent_by_mode(record, channels, lines, skips)
+        result["silent_by_mode"] = silent_by_mode(record, channels, skip_lines(stamped))
         result["left_mid_call"] = left_mid_call(record, channels)
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=1)
@@ -622,36 +734,43 @@ def score(record, channels, out_dir):
 
 
 def skips_on_air(skips, visit_list):
-    """Skips of an active channel with one of its calls on air: (on air from the landing to the skip, starting between
-    them). The first would be a call read as silent; the second is a call that started during or after the reading,
-    which the check cannot see (a documented limit)."""
-    whole = started = 0
+    """Skips of an active channel with a call keyed at the skip: (keyed through, keyed after landing). The call is the
+    one keyed at the skip's time (Channel.call_at(): keyed from its key-up up to, not including, its key-down, so a DMR
+    call's silent lead is not, nor is a call that keyed down before the skip). Keyed at the landing too, it was keyed
+    through the reading: a call read as silent. Keyed up after the landing, it was keyed after landing. The scorer knows
+    the landing and the skip, not the reading's first sample, so that bucket holds a call that keyed up during the
+    reading, which the check cannot see (a documented limit), and one that keyed up before the reading began alike."""
+    through = after = 0
     for t, frequency in skips:
         landings = [v0 for c, v0, _v1 in visit_list if c is not None and c.frequency == round(frequency) and v0 <= t]
         channel = next((c for c, _v0, _v1 in visit_list if c is not None and c.frequency == round(frequency)), None)
         if channel is None or not landings or channel.kind == "silent":
             continue
-        landed = landings[-1]
-        for start in channel.calls(t + CALL_S):
-            whole += start <= landed and t <= start + CALL_S
-            started += landed < start < t
-    return [whole, started]
+        start = channel.call_at(t)
+        if start is None:
+            continue
+        if channel.air(start)[0] <= landings[-1]:
+            through += 1
+        else:
+            after += 1
+    return [through, after]
 
 
-def silent_by_mode(record, channels, lines, skips):
+def silent_by_mode(record, channels, skips):
     """--by-mode: per mode the silent channels run, every scored visit to one of them: skipped or how it ended, and the
-    skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line. An untyped map's
-    rows all run -ft, whatever mode the typed map would give them: their visits are one row, UNTYPED_MODE. A frontend
-    run's record says which list it scanned in "scan_variant" ("scan" is "frontend" there, which picks its scoring)."""
+    skip latency, from the scene's retune onto the channel (its monotonic stamp) to the skip's line; skips are
+    (monotonic stamp, Hz), the stamps as dsd-neo's log has them, on the retunes' clock, so a stall moves neither. An
+    untyped map's rows all run -ft, whatever mode the typed map would give them: their visits are one row,
+    UNTYPED_MODE. A frontend run's record says which list it scanned in "scan_variant" ("scan" is "frontend" there,
+    which picks its scoring)."""
     modes = tuple(record["silent_modes"])
     untyped = record.get("scan_variant", record["scan"]) == "untyped"
-    started = record["scene_started"]
     tunes = record["tunes"]
-    spans = []  # (channel, start mono s from the scene's start, end mono s), the visits() order and bounds
+    spans = []  # (channel, start mono s, end mono s), the visits() order and bounds
     for (_t, mono, centre, _rate), nxt in zip(tunes, tunes[1:] + [(0, None, 0, 0)]):
         near = min(channels, key=lambda c: abs(c.frequency - centre))
-        end = (nxt[1] - started) if nxt[1] is not None else record["wall_s"]
-        spans.append((near if abs(near.frequency - centre) < SPACING_HZ / 2 else None, mono - started, end))
+        end = nxt[1] if nxt[1] is not None else record["scene_started"] + record["wall_s"]
+        spans.append((near if abs(near.frequency - centre) < SPACING_HZ / 2 else None, mono, end))
     lead = next((i for i, (c, _v0, _v1) in enumerate(spans) if c is not None), len(spans))
     out = {}
     for c, v0, v1 in spans[lead + 1 : -1]:
@@ -681,19 +800,19 @@ def silent_by_mode(record, channels, lines, skips):
 
 
 def left_mid_call(record, channels):
-    """--by-mode: per active mode, the visits that left the channel while a call was on air with LEFT_MID_CALL_S or more
-    of it still to go (scene time, the scored visits only), and under "<mode> in its first 200 ms" those of them that left
-    within the call's first LEFT_AT_ONSET_S (counted in the mode's total too)."""
+    """--by-mode: per active mode, the visits that left the channel while a call was keyed on air with LEFT_MID_CALL_S
+    or more of it still to go (scene time, the scored visits only), and under "<mode> in its first 200 ms" those of them
+    that left within the call's first LEFT_AT_ONSET_S on air (counted in the mode's total too)."""
     out = {}
     scored = visits(record, channels)
     lead = next((i for i, (c, _v0, _v1) in enumerate(scored) if c is not None), len(scored))
     for c, v0, v1 in scored[lead + 1 : -1]:
         if c is None or c.kind == "silent":
             continue
-        start = c.call_at(v1)
-        cut = start is not None and start <= v1 and start + CALL_S - v1 >= LEFT_MID_CALL_S
+        start = c.call_at(v1)  # the call keyed on air when the visit left, if any
+        cut = start is not None and c.air(start)[1] - v1 >= LEFT_MID_CALL_S
         out[c.kind] = out.get(c.kind, 0) + (1 if cut else 0)
-        if cut and v1 - start < LEFT_AT_ONSET_S:
+        if cut and v1 - c.air(start)[0] < LEFT_AT_ONSET_S:
             onset = f"{c.kind} in its first {LEFT_AT_ONSET_S * 1000:.0f} ms"
             out[onset] = out.get(onset, 0) + 1
     return out
@@ -754,7 +873,7 @@ def summary_table(results):
     lines = [
         (
             "| scan | level | jitter s | seed | skip | idle visits | idle median s | idle p95 s "
-            "| skips (call on air / call starting) | NFM caught/missed (visited) retention "
+            "| skips (keyed through / keyed after landing) | NFM caught/missed (visited) retention "
             "| DMR caught/missed (visited) retention | P25 caught/missed (visited) retention "
             "| demod busy % | process CPU % | drops |"
         ),
@@ -826,9 +945,95 @@ def serve(args):
         scene.close()
 
 
+def save_device_shift(out_dir, shift):
+    """Record the device's clock shift in OUT_DIR/run.json, as the run saved it otherwise, for --rescore."""
+    path = os.path.join(out_dir, "run.json")
+    with open(path, encoding="utf-8") as handle:
+        saved = json.load(handle)
+    saved[DEVICE_SHIFT] = shift
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        json.dump(saved, handle)
+    os.replace(path + ".tmp", path)
+
+
+def channel_steps(entries, channels):
+    """(stamp, channel index) of each (stamp, Hz) entry onto one of the scene's channels, in order. An entry onto the
+    channel the one before it was on is left out: a rate change or a repeated retune, not a move."""
+    out = []
+    for stamp, hz in entries:
+        near = min(channels, key=lambda c: abs(c.frequency - hz))
+        if abs(near.frequency - hz) < SPACING_HZ / 2 and (not out or out[-1][1] != near.index):
+            out.append((float(stamp), near.index))
+    return out
+
+
+def fit_device_shift(device, server):
+    """Align the device's retunes with the scene's tune log, both channel_steps(), in order: device retune i with
+    server retune i + k, for every offset k. A pair on the same channel gives a gap, the device's stamp less the host's;
+    the pairs whose gap is within RETUNE_MATCH_S of the offset's median gap support it, and its shift is their median.
+    Returns (shift, support, rival shift, rival support) for the best-supported offset, the rival being the best of the
+    offsets at another shift (more than RETUNE_MATCH_S away; (None, 0) when none), or None when no pair matches.
+
+    A scan visits its channels in the same order every lap, so the channels alone line up a lap away as well; with
+    the stamps too, a lap's offset is told apart where the two logs cover different stretches of retunes or where the
+    laps' lengths differ. Offsets at one shift (the logs disagreeing on a retune split one alignment) are no rivals."""
+    if not device or not server:
+        return None
+    device_t = np.array([t for t, _c in device])
+    device_c = np.array([c for _t, c in device])
+    server_t = np.array([t for t, _c in server])
+    server_c = np.array([c for _t, c in server])
+    fits = []
+    for k in range(1 - len(device), len(server)):
+        first, last = max(0, -k), min(len(device), len(server) - k)
+        same = device_c[first:last] == server_c[first + k : last + k]
+        gaps = (device_t[first:last] - server_t[first + k : last + k])[same]
+        if len(gaps) == 0:
+            continue
+        near = gaps[np.abs(gaps - np.median(gaps)) <= RETUNE_MATCH_S]
+        if len(near):
+            fits.append((len(near), float(np.median(near))))
+    if not fits:
+        return None
+    support, shift = max(fits)
+    rivals = [(n, other) for n, other in fits if abs(other - shift) > RETUNE_MATCH_S]
+    rival_support, rival = max(rivals) if rivals else (0, None)
+    return shift, support, rival, rival_support
+
+
+def device_shift(path, record, channels, retunes):
+    """The device's clock shift from its retunes ((host monotonic s by the device's clock, Hz)) against the scene's
+    tune log (fit_device_shift()), with the pairs it rests on and the device's retunes onto the scene. Refuses, saying
+    why, when no retunes line up, too few do (fewer than MIN_RETUNE_MATCHES, or than half the device's retunes) or an
+    alignment at another shift is supported as well: then the shift is not known, and nothing may be scored with one."""
+    device = channel_steps(retunes, channels)
+    server = channel_steps([(mono, centre) for _scene, mono, centre, _rate in record["tunes"]], channels)
+    nothing = "so the device's clock shift is not known; nothing was written or scored"
+    if not device:
+        raise SystemExit(f'{path}: holds no retune ("Retune applied" line) onto a channel of the scene, {nothing}')
+    fit = fit_device_shift(device, server)
+    enough = max(MIN_RETUNE_MATCHES, (len(device) + 1) // 2)
+    if fit is None or fit[1] < enough:
+        support = 0 if fit is None else fit[1]
+        raise SystemExit(
+            f"{path}: only {support} of its {len(device)} retunes onto the scene's channels line up with the scene's "
+            f"tune log in order (at least {enough} must), {nothing}"
+        )
+    shift, support, rival, rival_support = fit
+    if rival_support >= support:
+        raise SystemExit(
+            f"{path}: the retune alignment is ambiguous: its retunes line up with the scene's tune log at a shift of "
+            f"{shift:+.3f} s and of {rival:+.3f} s alike ({support} and {rival_support} of {len(device)} retunes), "
+            f"{nothing}"
+        )
+    return shift, support, len(device)
+
+
 def analyze(args, record, channels):
     """Score a frontend's run: its logcat (adb logcat -v epoch) becomes OUT_DIR/dsd.log, on the scene's clock. The
-    emulator's clock is matched to the scene's by its "Retune applied" lines against the retunes the scene saw."""
+    device's clock is matched to the scene's by aligning its "Retune applied" lines, in order, with the retunes the
+    scene saw (device_shift()); the shift goes on its recording journal's stamps too (the same device's clock), and is
+    saved for --rescore. With no shift settled, it refuses before it replaces dsd.log or run.json."""
     logcat = re.compile(r"^\s*(\d+\.\d+)\s+\d+\s+\d+\s+[VDIWEF]\s+dsd-neo\s*:\s?(.*)$")
     lines = []
     with open(args.analyze, encoding="utf-8", errors="replace") as handle:
@@ -837,16 +1042,13 @@ def analyze(args, record, channels):
             if match:
                 lines.append((float(match.group(1)) - record["wall_offset_s"], match.group(2)))
     retunes = [(t, int(m.group(1))) for t, text in lines for m in [re.search(r"Retune applied: (\d+) Hz", text)] if m]
-    gaps = []
-    for t, frequency in retunes:
-        near = [mono for _s, mono, centre, _r in record["tunes"] if abs(centre - frequency) < SPACING_HZ / 2]
-        if near:
-            gaps.append(t - min(near, key=lambda mono: abs(mono - t)))
-    shift = statistics.median(gaps) if gaps else 0.0
+    shift, support, count = device_shift(args.analyze, record, channels, retunes)
     with open(os.path.join(args.out, "dsd.log"), "w", encoding="utf-8") as log:
         log.writelines(f"{t - shift:.3f} {text}\n" for t, text in lines)
+    save_device_shift(args.out, shift)
+    record[DEVICE_SHIFT] = shift
     result = score(record, channels, os.path.abspath(args.out))
-    print(f"clock shift {shift:+.3f} s from {len(gaps)} retunes")
+    print(f"clock shift {shift:+.3f} s from {support} of {count} retunes")
     print_result(result)
 
 
@@ -936,6 +1138,11 @@ def main():
     if args.rescore or args.analyze:
         with open(os.path.join(args.out, "run.json"), encoding="utf-8") as handle:
             record = report_options(json.load(handle), args)
+        if args.rescore and not args.analyze and record["scan"] == "frontend" and DEVICE_SHIFT not in record:
+            raise SystemExit(
+                f"{args.out} is a frontend run never scored with --analyze: its journal is on the device's clock, "
+                "whose shift comes from the logcat; score it with --analyze LOGCAT first"
+            )
         channels = scene_channels(record["silent"], record["level"], record["seed"], record["jitter_s"])
         apply_saved_modes(channels, os.path.abspath(args.out))
         if args.analyze:
