@@ -41,9 +41,13 @@
  *                     of noise): the receiver runs the resolved gate before its first block, so the opening plays from
  *                     its talker's start; nothing the engine starts between the stream and its main loop mutes it.
  *   opening-nfm-off   the same with the Settings default Off.
+ *   second-session-nfm  opening-nfm-off with a receive request queued as the engine stops (the stopped stream never
+ *                     takes it), then opening-nfm in the same process: that request cannot land on the new stream, so
+ *                     the new session's start is no closed start (round 10).
  *
  * Nothing in the fixture sets the startup squelch: the squelch the channel runs is read at the lifecycle's start (the
- * engine's setup and its stream open done), where the receiver must already run it and not a closed start; then, as
+ * engine's setup and its stream open done, before the decoder's first settle), where the receiver must already run it,
+ * the setting its next block takes (rtl_stream_squelch_status::runs), and not a closed start; then, as
  * the receiver produced the samples the decoder's first read returned (its counts of closed-start and unjudged samples,
  * kept where it produces them), and apart from that, from the dynamic squelch's status at that read. So the production
  * startup path is what each case checks.
@@ -103,6 +107,7 @@
 #include "session_args.h"
 
 #ifdef USE_RADIO
+#include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
@@ -162,16 +167,20 @@ int g_switched = 0;
 int g_followed = 0;
 constexpr double kFollowMs = 200.0;
 
+/* Where the transmission starts in the capture a case listens to: after the idle channel, or (the opening capture) at
+   its first sample. */
+double g_carrierStartMs = kIdleMs;
+
 /* Which part of the capture @p ms falls in; -1 inside the closing tail after the carrier. */
 int
 segmentAt(double ms) {
-    if (ms < kIdleMs) {
+    if (ms < g_carrierStartMs) {
         return kIdle;
     }
-    if (ms < kCarrierEndMs) {
+    if (ms < g_carrierStartMs + kCarrierMs) {
         return kCarrier;
     }
-    return ms < kCarrierEndMs + kCloseMs ? -1 : kAfter;
+    return ms < g_carrierStartMs + kCarrierMs + kCloseMs ? -1 : kAfter;
 }
 
 /* The decoder's reads, counted into stream time at the output rate in force when each was made; the scanners' hold
@@ -267,6 +276,13 @@ int g_startDefault = -1;
    here is what its first blocks run. */
 int g_startClosed = -1;
 int g_startAnalog = -1;
+/* The setting the receiver's next block takes then (rtl_stream_squelch_status::runs): what its first blocks run, before
+   the decoder's first settle could correct it. */
+dsd_squelch_setting g_startRuns = {DSD_SQUELCH_MODE_LEVEL, -1.0, 0};
+/* A receive request queued as the engine stops (second-session-nfm's first session), and whether it was still pending
+   then: the stopped stream never takes it. */
+bool g_queueAtStop = false;
+int g_stopQueuedPending = -1;
 
 /* After the engine installed its hooks and opened its (null) output: the monitor goes to the capture. */
 int
@@ -279,6 +295,9 @@ listenerStart(dsd_opts* opts, dsd_state* state, void* context) {
     g_startDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? 1 : 0;
     g_startClosed = rtl_stream_gate_closed_start();
     g_startAnalog = dsd_opts_is_analog_family(opts) ? 1 : 0;
+    rtl_stream_squelch_status status = {};
+    (void)rtl_stream_get_squelch_status(&status);
+    g_startRuns = status.runs;
     opts->audio_out = 1;
     opts->audio_out_type = 8;
     dsd_udp_audio_hooks audio = {};
@@ -298,6 +317,14 @@ listenerStop(dsd_opts* opts, dsd_state* state, void* context) {
     (void)state;
     (void)context;
     dsd_udp_audio_hooks_set(dsd_udp_audio_hooks{});
+    if (g_queueAtStop) {
+        /* A frame-sync hunt's symbol request, as the decoder makes one: the replay is at its end, so the demod thread
+           takes no block before the stop. */
+        (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+        g_stopQueuedPending =
+            rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING ? 1
+                                                                                                                  : 0;
+    }
 }
 
 /* @p bytes of the committed capture @p name, from @p from. */
@@ -438,6 +465,13 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
         argv.append(arg.data());
     }
     argv.append(nullptr);
+    /* What the last session in this process heard and saw goes. */
+    g_heard = Heard{};
+    g_firstReadSeen = 0;
+    g_firstReadGot = 0;
+    g_firstReadStatus = rtl_stream_squelch_status{};
+    g_startClosed = -1;
+    g_startRuns = dsd_squelch_setting{DSD_SQUELCH_MODE_LEVEL, -1.0, 0};
     dsd_opts* opts = session.opts.get();
     dsd_state* state = session.state.get();
     initOpts(opts);
@@ -504,6 +538,16 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
         DSD_FPRINTF(stderr, "  at the lifecycle's start the receiver runs a closed start (%d)\n", g_startClosed);
     }
     expect("the receiver runs the gate before its first block, not a closed start", g_startClosed == 0);
+    /* And the setting its first blocks take is the channel's own, before the decoder's first settle: the analog gate
+       on the analog monitor (noise +10 under the default), not the digital family's (the session's Off). */
+    const bool runsWanted = wantMode == DSD_SQUELCH_MODE_LEVEL
+                                ? dsd_squelch_setting_is_off(&g_startRuns)
+                                : g_startRuns.mode == wantMode && g_startRuns.margin_db == wantMargin;
+    if (!runsWanted) {
+        DSD_FPRINTF(stderr, "  at the lifecycle's start the receiver's next block takes mode %d margin %d level %g\n",
+                    g_startRuns.mode, g_startRuns.margin_db, g_startRuns.level);
+    }
+    expect("the receiver's first blocks take the channel's own squelch, before the first settle", runsWanted);
     /* Gate evidence for the samples the first read returned, as the receiver produced them: none muted by a closed
        start, and under a noise setting none produced open without it; under Off on the analog monitor they are
        produced open with no dynamic squelch. */
@@ -654,15 +698,28 @@ caseOpeningNfm(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
     expect("the NFM saved system starts",
            builder.start(nfmSystem(), &host, QStringLiteral("saved")).value("started").toBool());
     g_captureMs = kCarrierMs + kAfterMs;
+    g_carrierStartMs = 0.0;
     Session session;
     if (listen(host.argv, capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE, off ? 0 : 10, !off, nullptr,
                QString(), session)) {
-        const double audible = g_heard.audibleMs[kIdle] + g_heard.audibleMs[kCarrier] + g_heard.audibleMs[kAfter];
         expect("the opening transmission plays from its talker's start",
                g_heard.firstAudibleMs >= 0.0 && g_heard.firstAudibleMs <= 400.0);
-        expect("and most of it plays", audible >= 4000.0);
+        /* Inside the transmission only: the noise after it (hiss under Off) is no part of it. */
+        expect("and most of it plays", g_heard.audibleMs[kCarrier] >= 4000.0);
     }
     return 0;
+}
+
+/* Round 10: a session that stops with a receive request its stream never took (a hunt's, queued as the engine stops),
+   then a new NFM session in the same process. The request cannot land on the new stream; it must not hold that
+   session's start closed. */
+int
+caseSecondSessionNfm(dsd_qt::AppPrefs& prefs, const QString& capture) {
+    g_queueAtStop = true;
+    (void)caseOpeningNfm(prefs, capture, true);
+    g_queueAtStop = false;
+    expect("the first session stopped with a receive request its stream never took", g_stopQueuedPending == 1);
+    return caseOpeningNfm(prefs, capture, false);
 }
 
 /* Explore starts digital (Auto decode), so the monitor plays nothing until NFM is picked. */
@@ -800,7 +857,7 @@ main(int argc, char** argv) {
     const QString which = argc > 1 ? QString::fromLatin1(argv[1]) : QString();
 #ifdef USE_RADIO
     QTemporaryDir dir;
-    const bool opening = which.startsWith(QStringLiteral("opening-"));
+    const bool opening = which.startsWith(QStringLiteral("opening-")) || which == QStringLiteral("second-session-nfm");
     const QString capture = dir.isValid() ? (opening ? makeOpeningCapture(dir) : makeCapture(dir)) : QString();
     expect("the listening capture is made", !capture.isEmpty());
     if (!capture.isEmpty()) {
@@ -819,6 +876,8 @@ main(int argc, char** argv) {
             caseOpeningNfm(prefs, capture, false);
         } else if (which == QStringLiteral("opening-nfm-off")) {
             caseOpeningNfm(prefs, capture, true);
+        } else if (which == QStringLiteral("second-session-nfm")) {
+            caseSecondSessionNfm(prefs, capture);
         } else {
             expect("a known case", false);
         }
