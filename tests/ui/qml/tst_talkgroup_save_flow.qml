@@ -276,7 +276,14 @@ Item {
             // The exported file Imports does not have: a new Save may be made while the decoder's list is that file.
             compare(loader.item.unregisteredPath, "/owned/list.csv");
             library.failRegister = false;
+            // The decoder's list stays that file until an export succeeds: a new Save or a failed export keeps it.
             verify(loader.item.save("original", "7", 1, running));
+            compare(loader.item.unregisteredPath, "/owned/list.csv", "a new Save dropped the unregistered file");
+            deliver([result("7", "7", 1, loader.item.pending.path, false)]);
+            compare(loader.item.unregisteredPath, "/owned/list.csv", "a failed export dropped the unregistered file");
+            verify(loader.item.save("original", "7", 1, running));
+            deliver([result("8", "7", 1, loader.item.pending.path, true)]);
+            compare(library.registrations, 1);
             compare(loader.item.unregisteredPath, "");
         }
         function test_refused_attachment_names_it() {

@@ -19337,7 +19337,8 @@ Qt Quick frontend (`src/ui/qt`):
   exported file, and its Imports row if that worked), with no step offered again: the user saves again if they want.
   An export Imports could not add leaves the decoder's list that file (`TalkgroupListModel::persistent`), so while
   `groupFile` is still the flow's `unregisteredPath` the screen offers a new Save; any other list file still takes
-  none. A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing);
+  none. `unregisteredPath` holds through a new Save until an export succeeds (which makes its own file the decoder's
+  list), so a replacement that fails to be created, queued or exported leaves Save offered. A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing);
   one whose completion may be in a gap ends, reported as not received. A request that ends with no Imports row for its
   file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export. Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroup_save_flow.qml`),

@@ -19,7 +19,8 @@ Item {
     property int timeoutMs: 15000
     property bool retryAvailable: false
     // The file the last request exported but could not add to Imports (empty: none). While the decoder's list is that
-    // file, a new Save is the user's to make; nothing of that request is tried again.
+    // file, a new Save is the user's to make; nothing of that request is tried again. It holds until an export succeeds,
+    // which makes its own file the decoder's list.
     property string unregisteredPath: ""
     property string message: ""
     signal saved(string uid, string path)
@@ -85,7 +86,6 @@ Item {
             pending = null;
         }
         retryAvailable = false;
-        unregisteredPath = "";
         message = "";
         var path = library.newTalkgroupListPath();
         if (path.length === 0) {
@@ -146,6 +146,7 @@ Item {
             message = qsTr("Talkgroup list export failed or was canceled. Try again.");
             return;
         }
+        unregisteredPath = "";
         if (!library.registerTalkgroupList(request.path)) {
             end(request);
             unregisteredPath = request.path;

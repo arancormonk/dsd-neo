@@ -910,7 +910,13 @@ Item {
                 testContext.setGroupFile(request.path);
                 screen.saveListRequested("7", 1);
                 verify(flow.pending !== null, "the new Save was not made");
-                compare(flow.unregisteredPath, "");
+                // The new export fails: the decoder's list is still the unregistered file, so Save is offered again.
+                var replacement = flow.pending;
+                flow.results = {results: [{sequence: String(Number(replacement.sequence) + 1), policyContext: replacement.context,
+                                           policyGeneration: replacement.generation, path: replacement.path, success: false}],
+                                missedThrough: "0"};
+                compare(flow.pending, null);
+                verify(screen.canSaveList, "Save is not offered after the replacement export failed");
             } finally {
                 if (flow.pending !== null)
                     recorder.releaseTalkgroupListPath(flow.pending.path);
