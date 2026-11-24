@@ -43,9 +43,9 @@ void dsd_engine_receiver_gate_hold(int hold);
  * squelch moved) or the receiver reports a closed start on an analog session, and nothing of the decoder's own is
  * outstanding. With nothing due on a digital session, nothing is read, resolved or written. */
 void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
-/** The gate a write would give now (@p gate, @p digital, @p session, as dsd_rtl_stream_metrics_hook_write_squelch_gate()
- * takes them), when one may be written: no command or switch holds the gate and nothing of the decoder's own is
- * outstanding. Returns 1 when resolved, else 0 (nothing filled). The engine hands it to the stream it is about to start
+/** The gate a write would give now (@p gate, @p digital, @p session, as
+ * dsd_rtl_stream_metrics_hook_write_squelch_gate() takes them), when one may be written: no command or switch holds the
+ * gate and nothing of the decoder's own is outstanding. Returns 1 when resolved, else 0 (nothing filled). The engine hands it to the stream it is about to start
  * (rtl_stream_resolve_open_gate()), so a plain start runs it from the first block. */
 int dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
                                      dsd_squelch_setting* digital, dsd_squelch_setting* session);

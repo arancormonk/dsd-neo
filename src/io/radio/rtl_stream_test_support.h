@@ -2246,8 +2246,8 @@ typedef struct rtl_stream_test_gate_write_race_result {
 
 /* Land @p rounds retunes on one thread, alternating a marked NFM landing and an unmarked landing of the digital family
  * (each changes the demodulator's family), as the controller does, while this thread writes the gate (noise +10, Off
- * for the digital family) until they are done, each landing waiting for one more write; then one more write. Run under TSan, the writes must read nothing the
- * landings change outside the gate's lock. */
+ * for the digital family) until they are done, each landing waiting for one more write; then one more write. Run under
+ * TSan, the writes must read nothing the landings change outside the gate's lock. */
 int rtl_stream_test_gate_write_during_landings(int rounds, rtl_stream_test_gate_write_race_result* out);
 
 /* An external backend's retune landing against a controller reconfiguration on another thread (issue #583). */
