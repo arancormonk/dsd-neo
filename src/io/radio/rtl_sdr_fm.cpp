@@ -5668,13 +5668,15 @@ demod_take_voice_lane_setting(struct demod_state* d) {
     d->voice_lane_enabled = enabled;
 }
 
-/* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
+/* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker).
+   Whether one ran is what it says, not the block's flags: a closed start flags every sample closed with neither
+   running (issue #899). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
     dsd_squelch_floor_status st;
     dsd_squelch_floor_get_status(&d->squelch_floor, &st);
-    const int active = d->result_flags_active ? 1 : 0;
-    const int noise = active && d->squelch_noise_ran ? 1 : 0;
+    const int noise = d->squelch_noise_ran ? 1 : 0;
+    const int active = (noise || d->squelch_auto_ran) ? 1 : 0;
     dsd_noise_squelch_status ns;
     dsd_noise_squelch_get_status(&d->noise_squelch, &ns);
     int gate_open = active ? st.gate_open : 1;
@@ -20035,6 +20037,7 @@ squelch_test_ring_checks(void) {
 static int
 squelch_test_status_checks(void) {
     demod.result_flags_active = 1;
+    demod.squelch_auto_ran = 1;
     demod.squelch_floor.state = DSD_SQUELCH_FLOOR_KNOWN;
     demod.squelch_floor.floor_power = 1e-5;
     demod.squelch_floor.window_power = 3e-5;
@@ -20047,6 +20050,12 @@ squelch_test_status_checks(void) {
         return 12;
     }
     if (st.noise || fabs(st.quieting_db) > 1e-12) {
+        return 12;
+    }
+    /* The flags alone (a closed start's, with no dynamic squelch run) publish none. */
+    demod.squelch_auto_ran = 0;
+    demod_publish_squelch_status(&demod);
+    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
         return 12;
     }
     demod.result_flags_active = 0;
@@ -21213,6 +21222,49 @@ channel_gate_test_finish_block(int n, int closed) {
     demod.voice_lane_active = saved_voice;
 }
 
+/* One block of @p pairs complex samples of a low tone through the demod thread's squelch take, full_demod() and the
+   status it publishes, as the demod thread runs them. */
+static void
+channel_gate_test_run_block(int pairs) {
+    for (int k = 0; k < pairs; k++) {
+        const float phase = 0.0625f * (float)k;
+        const size_t at = (size_t)k * 2U;
+        demod.input_cb_buf[at] = 0.5f * cosf(phase);
+        demod.input_cb_buf[at + 1U] = 0.5f * sinf(phase);
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = pairs * 2;
+    demod_take_squelch_setting(&demod);
+    full_demod(&demod);
+    demod_publish_squelch_status(&demod);
+}
+
+/* A block produced on a closed start (round 9) publishes no dynamic squelch status: the receiver mutes it outright,
+   and neither the tracker nor the noise squelch ran on it, whatever ran on the channel before. */
+static void
+channel_gate_test_closed_status_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL);
+    channel_gate_test_run_block(4096);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    out->running_status_active = status.active;
+    const uint32_t hz = kFamilyTestRetuneHz + 1300000U;
+    channel_gate_test_queue(hz, 0, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    channel_gate_test_run_block(4096);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->closed_block_flagged = (channel_gate_test_closed() && demod.result_flags_active && demod.result_len > 0
+                                 && demod.result_flags[0] == DSD_SQUELCH_FLAG_CLOSED)
+                                    ? 1
+                                    : 0;
+    out->closed_status_inactive = (!status.active && !status.noise && status.gate_open == 1) ? 1 : 0;
+    demod.result_len = 0;
+    demod.result_flags_active = 0;
+    demod.lp_len = 0;
+}
+
 /* The closed start's samples are counted where they are produced (round 8): a block that took the closed gate counts
    for that closed start even when the decoder's write opened the gate before the block finished; the landing
    telemetry runs on the analog monitor only, never on the M17 encoder's monitor. */
@@ -21302,6 +21354,7 @@ channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital
     channel_gate_test_family_cases(analog_opts, digital_opts, out);
     channel_gate_test_typed_row_cases(analog_opts, out);
     channel_gate_test_telemetry_cases(analog_opts, out);
+    channel_gate_test_closed_status_cases(analog_opts, out);
 }
 
 extern "C" int

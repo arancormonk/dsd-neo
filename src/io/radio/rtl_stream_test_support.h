@@ -2176,6 +2176,10 @@ typedef struct rtl_stream_test_channel_gate_result {
     int in_flight_counted;        /* a block that took the closed gate, finished after the opening write: counted */
     int monitor_unjudged_counted; /* an open monitor block with no dynamic squelch: counted unjudged */
     int encoder_uncounted;        /* the M17 encoder's monitor block: no landing telemetry */
+    /* The status a produced block publishes: an NFM channel under noise +10, then a marked landing's closed start: */
+    int running_status_active; /* 1 when a block on the open channel published a dynamic squelch running */
+    int closed_block_flagged; /* 1 when the block produced on the closed start was muted, every sample flagged closed */
+    int closed_status_inactive; /* ... and published no dynamic squelch (inactive, not noise, gate open) */
 } rtl_stream_test_channel_gate_result;
 
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an

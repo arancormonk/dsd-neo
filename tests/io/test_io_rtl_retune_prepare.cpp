@@ -1347,6 +1347,10 @@ test_analog_channel_starts_closed(void) {
         expect_int_eq("closed start: a block finished after the opening write is counted", r.in_flight_counted, 1);
     failed |= expect_int_eq("monitor: an open block without dynamic squelch is counted", r.monitor_unjudged_counted, 1);
     failed |= expect_int_eq("M17 encoder monitor: no landing telemetry", r.encoder_uncounted, 1);
+    failed |= expect_int_eq("open channel under noise +10: a block publishes it running", r.running_status_active, 1);
+    failed |= expect_int_eq("closed start: the produced block is muted, flagged closed", r.closed_block_flagged, 1);
+    failed |=
+        expect_int_eq("closed start: the produced block publishes no dynamic squelch", r.closed_status_inactive, 1);
     return failed;
 }
 
