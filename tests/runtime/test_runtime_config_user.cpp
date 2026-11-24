@@ -4958,6 +4958,78 @@ test_recording_rdio_analog_roundtrip(void) {
     }
     return rc;
 }
+
+/* Issue #888: [recording] rdio_unknown_talkgroup loads, reaches dsd_opts, and saves back; 0 (the default) is not
+   written, and loads as 0. A value outside 0..2147483647, or not a whole number, is refused with a warning and the
+   value already loaded stays: never clamped. */
+int
+test_recording_rdio_unknown_talkgroup_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg{};
+    if (load_config_text("[recording]\nrdio_unknown_talkgroup = 2147483647\n", &cfg) != 0
+        || cfg.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup did not load (%d)\n", cfg.rdio_unknown_talkgroup);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    if (opts.rdio_unknown_talkgroup != 0) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup defaults to %d, want 0\n", opts.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup did not reach dsd_opts (%d)\n", opts.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("rdio_unknown_talkgroup saved", rendered, "rdio_unknown_talkgroup = 2147483647\n");
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || reloaded.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load rdio_unknown_talkgroup back\n");
+        rc |= 1;
+    }
+
+    /* 0 resets it, and a config at the default neither writes it nor loads anything but 0. */
+    if (load_config_text("[recording]\nrdio_unknown_talkgroup = 4242\nrdio_unknown_talkgroup = 0\n", &cfg) != 0
+        || cfg.rdio_unknown_talkgroup != 0) {
+        DSD_FPRINTF(stderr, "FAIL: 0 did not reset rdio_unknown_talkgroup (%d)\n", cfg.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (opts.rdio_unknown_talkgroup != 0 || strstr(rendered, "rdio_unknown_talkgroup") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup at 0 reached dsd_opts or the saved config\n");
+        rc |= 1;
+    }
+
+    /* Each refused value follows a valid one in the same section, which stays, with a warning naming the key. */
+    static const char* const refused[] = {"-1", "2147483648", "99999999999", "1e3", "9x"};
+    for (const char* value : refused) {
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_unknown_talkgroup = 77\nrdio_unknown_talkgroup = %s\n", value);
+        g_log_text[0] = '\0';
+        const int loaded = load_config_text(ini, &cfg);
+        if (loaded != 0 || cfg.rdio_unknown_talkgroup != 77
+            || strstr(g_log_text, "rdio_unknown_talkgroup") == nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup = %s was not refused with a warning (%d; log: '%s')\n",
+                        value, cfg.rdio_unknown_talkgroup, g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
 } // namespace
 
 /*
@@ -6493,6 +6565,7 @@ main(void) {
     rc |= test_recording_analog_max_gap_roundtrip();
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
+    rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();

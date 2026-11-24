@@ -4,11 +4,14 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/nonce.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -74,6 +77,8 @@ dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win)
     }
 }
 
+static int dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size);
+
 #ifdef USE_CURL
 typedef struct {
     int system_id;
@@ -87,8 +92,14 @@ typedef struct dsd_rdio_upload_job {
     dsd_rdio_api_config api;
     int remove_meta_on_success;
     int remove_wav_on_success;
+    /* 1 when wav_path and meta_path are the job's own private inputs (--rdio-mode both), which the job's release
+       removes however it ends; the two removals on success are then off. */
+    int private_inputs;
+    /* What the upload reads: the published pair, or the job's private copies of it. */
     char wav_path[DSD_RDIO_PATH_MAX];
     char meta_path[DSD_RDIO_PATH_MAX];
+    /* The published WAV, the file dsd_rdio_upload_holds() names whatever the upload reads. */
+    char public_wav_path[DSD_RDIO_PATH_MAX];
     struct dsd_rdio_upload_job* next;
 } dsd_rdio_upload_job;
 
@@ -101,12 +112,45 @@ dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer) 
     g_rdio_upload_release_observer = observer;
 }
 
-/* An upload job's end, sent, dropped or abandoned at the stop: its copies of the API key and URL (a URL can carry
- * credentials) are wiped before the memory goes back. */
+static void
+dsd_rdio_remove_after_upload(const char* path, const char* kind) {
+    if (!path || path[0] == '\0') {
+        return;
+    }
+    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
+        LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
+    }
+}
+
+static atomic_int g_rdio_private_remove_warned = 0;
+
+/* A private input of a job that is over, removed. One that cannot be (on Windows, while a DirWatch still holds the
+   public WAV open without delete sharing, its hard link too) is left: no retry, said once a process, with how to remove
+   such files by hand. */
+static void
+dsd_rdio_remove_private_input(const char* path) {
+    if (path[0] == '\0' || dsd_remove_file(path) == 0 || errno == ENOENT) {
+        return;
+    }
+    if (atomic_exchange(&g_rdio_private_remove_warned, 1) == 0) {
+        LOG_WARN("Rdio API upload: failed to delete the private upload input %s: %s; files ending in "
+                 ".rdio-upload-audio or .rdio-upload-meta in a recording folder no dsd-neo is exporting to can be "
+                 "deleted\n",
+                 path, strerror(errno));
+    }
+}
+
+/* An upload job's end, sent, failed, dropped or abandoned at the stop, or never queued: its private inputs go
+ * (dsd_rdio_remove_private_input()), and its copies of the API key and URL (a URL can carry credentials) are wiped
+ * before the memory goes back. */
 static void
 dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
     if (!job) {
         return;
+    }
+    if (job->private_inputs) {
+        dsd_rdio_remove_private_input(job->wav_path);
+        dsd_rdio_remove_private_input(job->meta_path);
     }
     DSD_SECURE_ZERO(&job->api, sizeof job->api);
     if (g_rdio_upload_release_observer) {
@@ -139,18 +183,20 @@ static atomic_int g_rdio_upload_cancel = 0;
 static size_t g_rdio_upload_aborted = 0;
 
 #define DSD_RDIO_UPLOAD_CANCELLED (-2)
+/* A job the queue does not admit: the shutdown has begun, or the queue is full. */
+#define DSD_RDIO_UPLOAD_REFUSED   (-3)
+/* The pause between two attempts of one upload. */
+#define DSD_RDIO_RETRY_BACKOFF_MS 150U
 
-static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path);
+/* The files one upload reads, and the file names its form parts carry: NULL for the file's own name. */
+typedef struct {
+    const char* wav_path;
+    const char* meta_path;
+    const char* wav_name;
+    const char* meta_name;
+} dsd_rdio_upload_inputs;
 
-static void
-dsd_rdio_remove_after_upload(const char* path, const char* kind) {
-    if (!path || path[0] == '\0') {
-        return;
-    }
-    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
-        LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
-    }
-}
+static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const dsd_rdio_upload_inputs* inputs);
 
 /* 0 when the queue's mutex is ready, -1 when its init failed. */
 static int
@@ -172,6 +218,25 @@ dsd_rdio_upload_mutex_ensure(void) {
         dsd_thread_yield();
     }
     return state == 2 ? 0 : -1;
+}
+
+/* What @p job uploads. Private inputs go up under the published pair's names, so the server files the call as it would
+   the pair itself; @p meta_name_buf holds the sidecar's. */
+static void
+dsd_rdio_job_upload_inputs(const dsd_rdio_upload_job* job, dsd_rdio_upload_inputs* out, char* meta_name_buf,
+                           size_t meta_name_buf_size) {
+    const int win = DSD_PLATFORM_WIN_NATIVE;
+    out->wav_path = job->wav_path;
+    out->meta_path = job->meta_path;
+    out->wav_name = NULL;
+    out->meta_name = NULL;
+    if (!job->private_inputs) {
+        return;
+    }
+    out->wav_name = dsd_rdio_path_file_name(job->public_wav_path, win);
+    if (dsd_rdio_path_with_suffix(job->public_wav_path, ".json", meta_name_buf, meta_name_buf_size) == 0) {
+        out->meta_name = dsd_rdio_path_file_name(meta_name_buf, win);
+    }
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -206,7 +271,10 @@ static DSD_THREAD_RETURN_TYPE
         g_rdio_upload_in_flight = job;
         dsd_mutex_unlock(&g_rdio_upload_mutex);
 
-        const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path);
+        char meta_name[DSD_RDIO_PATH_MAX];
+        dsd_rdio_upload_inputs inputs;
+        dsd_rdio_job_upload_inputs(job, &inputs, meta_name, sizeof meta_name);
+        const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, &inputs);
         if (upload_rc == 0) {
             if (job->remove_meta_on_success) {
                 dsd_rdio_remove_after_upload(job->meta_path, "metadata");
@@ -277,24 +345,24 @@ dsd_rdio_upload_worker_init(void) {
     }
 }
 
-/* The jobs still queued keep their place, but no copy of the API key or URL: for a worker that may still run after a
- * failed join, which pops a job only under the queue's mutex (held here) and then finds nothing to upload with. */
-static void
-dsd_rdio_wipe_queued_secrets_locked(void) {
-    for (dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL; job = job->next) {
-        DSD_SECURE_ZERO(&job->api, sizeof job->api);
-    }
+/* Empty the queue, handing back its jobs for dsd_rdio_free_upload_jobs() after the unlock: their release removes
+   files, which the recording store's dsd_rdio_upload_holds() should not wait behind. */
+static dsd_rdio_upload_job*
+dsd_rdio_detach_upload_queue_locked(void) {
+    dsd_rdio_upload_job* jobs = g_rdio_upload_head;
+    g_rdio_upload_head = NULL;
+    g_rdio_upload_tail = NULL;
+    g_rdio_upload_depth = 0;
+    return jobs;
 }
 
 static void
-dsd_rdio_clear_upload_queue_locked(void) {
-    while (g_rdio_upload_head != NULL) {
-        dsd_rdio_upload_job* next = g_rdio_upload_head->next;
-        dsd_rdio_upload_job_free(g_rdio_upload_head);
-        g_rdio_upload_head = next;
+dsd_rdio_free_upload_jobs(dsd_rdio_upload_job* jobs) {
+    while (jobs != NULL) {
+        dsd_rdio_upload_job* next = jobs->next;
+        dsd_rdio_upload_job_free(jobs);
+        jobs = next;
     }
-    g_rdio_upload_tail = NULL;
-    g_rdio_upload_depth = 0;
 }
 
 void
@@ -336,12 +404,14 @@ dsd_rdio_upload_shutdown(void) {
         /* Not expected: the handle comes from the create that set the state to 2, only the shutdown that moved it to 4
            joins, and the worker never joins itself. If it happens the worker may still be running, so nothing it can
            reach unlocked is touched: the job in flight and the worker's own stack copy of the endpoint keep the key and
-           URL until it ends them, and the queued jobs are not freed. Only their API copies are wiped, under the mutex
-           the worker pops them under. */
+           URL until it ends them. The queued jobs are the worker's only through the queue, which it pops under the
+           mutex: detached under it, they are released here (their private inputs, holds and API copies), and the
+           worker finds nothing more to take. */
         LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
         dsd_mutex_lock(&g_rdio_upload_mutex);
-        dsd_rdio_wipe_queued_secrets_locked();
+        dsd_rdio_upload_job* queued = dsd_rdio_detach_upload_queue_locked();
         dsd_mutex_unlock(&g_rdio_upload_mutex);
+        dsd_rdio_free_upload_jobs(queued);
         atomic_store(&g_rdio_upload_state, 3);
         atomic_store(&g_rdio_upload_cancel, 0);
         return;
@@ -350,10 +420,11 @@ dsd_rdio_upload_shutdown(void) {
     dsd_mutex_lock(&g_rdio_upload_mutex);
     /* After a drain the queue is empty; anything left was abandoned by a cancel. */
     const size_t not_sent = g_rdio_upload_depth + g_rdio_upload_aborted;
-    dsd_rdio_clear_upload_queue_locked();
+    dsd_rdio_upload_job* dropped = dsd_rdio_detach_upload_queue_locked();
     g_rdio_upload_stop_requested = 0;
     g_rdio_upload_aborted = 0;
     dsd_mutex_unlock(&g_rdio_upload_mutex);
+    dsd_rdio_free_upload_jobs(dropped);
     if (not_sent > 0U) {
         LOG_WARN("Rdio API upload: stopped by the user; %lu pending upload(s) not sent, their files kept\n",
                  (unsigned long)not_sent);
@@ -373,9 +444,9 @@ dsd_rdio_upload_holds(const char* path) {
     }
     dsd_mutex_lock(&g_rdio_upload_mutex);
     int held = g_rdio_upload_in_flight != NULL
-               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->wav_path, path, win);
+               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->public_wav_path, path, win);
     for (const dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL && !held; job = job->next) {
-        held = dsd_rdio_upload_names_same_file(job->wav_path, path, win);
+        held = dsd_rdio_upload_names_same_file(job->public_wav_path, path, win);
     }
     dsd_mutex_unlock(&g_rdio_upload_mutex);
     return held;
@@ -430,6 +501,7 @@ dsd_rdio_copy_upload_paths(dsd_rdio_upload_job* job, const char* wav_path, const
     }
     int wn = DSD_SNPRINTF(job->wav_path, sizeof(job->wav_path), "%s", wav_path);
     int mn = DSD_SNPRINTF(job->meta_path, sizeof(job->meta_path), "%s", meta_path);
+    (void)DSD_SNPRINTF(job->public_wav_path, sizeof(job->public_wav_path), "%s", wav_path);
     if (wn < 0 || mn < 0 || (size_t)wn >= sizeof(job->wav_path) || (size_t)mn >= sizeof(job->meta_path)) {
         LOG_ERROR("Rdio export: upload path too long\n");
         return -1;
@@ -461,22 +533,46 @@ dsd_rdio_build_upload_job(const dsd_rdio_api_config* api, const char* wav_path, 
     return 0;
 }
 
+/* Whether the queue admits one more job: 0, DSD_RDIO_UPLOAD_CANCELLED after the user's Stop (the worker would never
+   send it), or DSD_RDIO_UPLOAD_REFUSED, said for @p wav_path, when the shutdown has begun or the queue is full. Under
+   the queue's mutex. */
+static int
+dsd_rdio_upload_admits_locked(const char* wav_path) {
+    if (g_rdio_upload_stop_requested) {
+        LOG_WARN("Rdio export: shutdown in progress, dropping %s\n", wav_path);
+        return DSD_RDIO_UPLOAD_REFUSED;
+    }
+    if (atomic_load(&g_rdio_upload_cancel) != 0) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
+    if (g_rdio_upload_depth >= DSD_RDIO_UPLOAD_QUEUE_MAX) {
+        LOG_WARN("Rdio export: upload queue full, dropping %s\n", wav_path);
+        return DSD_RDIO_UPLOAD_REFUSED;
+    }
+    return 0;
+}
+
+/* dsd_rdio_upload_admits_locked(), asked ahead of the private inputs' I/O, which runs with the mutex free: the enqueue
+   asks again, and has the last word. */
+static int
+dsd_rdio_upload_admits(const char* wav_path) {
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    const int admits = dsd_rdio_upload_admits_locked(wav_path);
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+    return admits;
+}
+
+/* 0 when @p job is queued; else dsd_rdio_upload_admits_locked()'s refusal, or -1, and the job is still the caller's. */
 static int
 dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     if (!job || !wav_path) {
         return -1;
     }
     dsd_mutex_lock(&g_rdio_upload_mutex);
-    if (g_rdio_upload_stop_requested) {
+    const int admits = dsd_rdio_upload_admits_locked(wav_path);
+    if (admits != 0) {
         dsd_mutex_unlock(&g_rdio_upload_mutex);
-        LOG_WARN("Rdio export: shutdown in progress, dropping %s\n", wav_path);
-        return -1;
-    }
-
-    if (g_rdio_upload_depth >= DSD_RDIO_UPLOAD_QUEUE_MAX) {
-        dsd_mutex_unlock(&g_rdio_upload_mutex);
-        LOG_WARN("Rdio export: upload queue full, dropping %s\n", wav_path);
-        return -1;
+        return admits;
     }
 
     if (g_rdio_upload_tail) {
@@ -491,40 +587,203 @@ dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     return 0;
 }
 
-/* Queue an upload of @p wav_path with the checked @p api: 0 when it was queued. */
+#define DSD_RDIO_PRIVATE_AUDIO_SUFFIX ".rdio-upload-audio"
+#define DSD_RDIO_PRIVATE_META_SUFFIX  ".rdio-upload-meta"
+#define DSD_RDIO_PRIVATE_NAME_TRIES   64U
+
+/* This process's random id in its private input names: 64 random bits drawn at first use, as 16 uppercase hex digits,
+   so another run exporting to the same folder makes other names. */
+static char g_rdio_private_token[17];
+static atomic_int g_rdio_private_token_state = 0; /* 0 none, 1 drawing, 2 ready */
+/* The number of the next private input pair, one per try. */
+static atomic_int g_rdio_private_seq = 0;
+
+static const char*
+dsd_rdio_private_token(void) {
+    if (atomic_load(&g_rdio_private_token_state) != 2) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&g_rdio_private_token_state, &expected, 1)) {
+            uint64_t token = 0;
+            dsd_nonce_fill(&token, sizeof token);
+            DSD_SNPRINTF(g_rdio_private_token, sizeof g_rdio_private_token, "%016llX", (unsigned long long)token);
+            atomic_store(&g_rdio_private_token_state, 2);
+        } else {
+            while (atomic_load(&g_rdio_private_token_state) != 2) {
+                dsd_thread_yield();
+            }
+        }
+    }
+    return g_rdio_private_token;
+}
+
+/* errno for a copy the user's Stop cut short. */
+#ifdef ECANCELED
+#define DSD_RDIO_ECANCELED ECANCELED
+#else
+#define DSD_RDIO_ECANCELED EINTR
+#endif
+
+/* Copy @p in to @p out in 16 KiB chunks: 0, or the errno of what stopped it, DSD_RDIO_ECANCELED for the user's Stop
+   (dsd_rdio_upload_cancel()), checked between chunks. */
 static int
-dsd_rdio_enqueue_api_job(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path,
-                         int remove_meta_on_success, int remove_wav_on_success) {
-    if (dsd_rdio_upload_worker_init() != 0) {
-        LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
+dsd_rdio_copy_chunks(FILE* in, FILE* out) {
+    unsigned char buf[16384];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (atomic_load(&g_rdio_upload_cancel) != 0) {
+            return DSD_RDIO_ECANCELED;
+        }
+        if (fwrite(buf, 1, n, out) != n) {
+            return errno != 0 ? errno : EIO;
+        }
+    }
+    return ferror(in) ? (errno != 0 ? errno : EIO) : 0;
+}
+
+/* A copy of the file at @p src, created at @p dst, which must not exist (EEXIST); owner-only. The user's Stop ends it
+   between chunks with DSD_RDIO_ECANCELED (dsd_rdio_copy_chunks()). On a failure a @p dst this copy created is removed
+   (dsd_rdio_remove_private_input(), which says a removal that fails), never one that was there. */
+static int
+dsd_rdio_copy_file(const char* src, const char* dst) {
+    FILE* in = dsd_fopen_existing_regular_file(src, "rb");
+    if (!in) {
         return -1;
     }
-    dsd_rdio_upload_job* job = NULL;
-    if (dsd_rdio_build_upload_job(api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success, &job) != 0) {
+    int opened = 0;
+    FILE* out = dsd_fopen_private_ex(dst, "wbx", &opened);
+    if (!out) {
+        const int err = errno;
+        if (opened) {
+            dsd_rdio_remove_private_input(dst);
+        }
+        (void)fclose(in);
+        errno = err;
         return -1;
     }
-    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-        dsd_rdio_upload_job_free(job);
+    int err = dsd_rdio_copy_chunks(in, out);
+    if (fclose(out) != 0 && err == 0) {
+        err = errno != 0 ? errno : EIO;
+    }
+    (void)fclose(in);
+    if (err != 0) {
+        /* A removal that fails is said (once a run), and the copy's own error is the one returned. */
+        dsd_rdio_remove_private_input(dst);
+        errno = err == EEXIST ? EIO : err;
         return -1;
     }
     return 0;
 }
 
+/* The job's own name for the published WAV at @p src: a hard link, or a copy where the file system has none. */
 static int
-dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
-                            int remove_meta_on_success, int remove_wav_on_success) {
-    if (!opts || !wav_path || !meta_path) {
+dsd_rdio_link_or_copy(const char* src, const char* dst) {
+    if (dsd_hard_link(src, dst) == 0) {
+        return 0;
+    }
+    if (errno == EEXIST) {
         return -1;
     }
+    return dsd_rdio_copy_file(src, dst);
+}
 
+/* The folder part of @p path with its trailing separator, "" for a bare file name. */
+static int
+dsd_rdio_path_folder(const char* path, char* out, size_t out_size) {
+    const size_t len = (size_t)(dsd_rdio_path_file_name(path, DSD_PLATFORM_WIN_NATIVE) - path);
+    if (len >= out_size) {
+        return -1;
+    }
+    DSD_MEMCPY(out, path, len);
+    out[len] = '\0';
+    return 0;
+}
+
+/* The names of a private pair beside @p wav_path, numbered @p seq: "<id>.<seq>.rdio-upload-audio" and
+   "<id>.<seq>.rdio-upload-meta", with this process's id (dsd_rdio_private_token()). At most 45 characters whatever
+   the published name, so any recording whose public names fit can have them. */
+static int
+dsd_rdio_private_input_paths(dsd_rdio_upload_job* job, const char* wav_path, unsigned int seq) {
+    char folder[DSD_RDIO_PATH_MAX];
+    if (dsd_rdio_path_folder(wav_path, folder, sizeof folder) != 0) {
+        return -1;
+    }
+    const char* token = dsd_rdio_private_token();
+    const int wn = DSD_SNPRINTF(job->wav_path, sizeof job->wav_path, "%s%s.%u%s", folder, token, seq,
+                                DSD_RDIO_PRIVATE_AUDIO_SUFFIX);
+    const int mn = DSD_SNPRINTF(job->meta_path, sizeof job->meta_path, "%s%s.%u%s", folder, token, seq,
+                                DSD_RDIO_PRIVATE_META_SUFFIX);
+    return (wn < 0 || mn < 0 || (size_t)wn >= sizeof job->wav_path || (size_t)mn >= sizeof job->meta_path) ? -1 : 0;
+}
+
+/* --rdio-mode both: the job's own inputs, a copy of the sidecar (from @p meta_src, its temp file, before the public one
+   is in place) and a hard link (or copy) of the published WAV, under names no rdio-scanner watch reads: neither suffix
+   is one a watch looks at (6.6.3 and v8 read the last extension only: ".json" for a trunk-recorder watch, ".mp3" for
+   SDRTrunk and DSDPlus, the configured one, ".wav" by default). A DirWatch that deletes the published pair after
+   taking it then leaves this upload its bytes. A name in use moves on to the next number. On a failure nothing is left
+   behind. 0, -1, or DSD_RDIO_UPLOAD_CANCELLED when the user's Stop came first or cut the copy short. */
+static int
+dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, const char* meta_src) {
+    int err = EEXIST;
+    for (unsigned int tries = 0; tries < DSD_RDIO_PRIVATE_NAME_TRIES && err == EEXIST; tries++) {
+        if (atomic_load(&g_rdio_upload_cancel) != 0) {
+            return DSD_RDIO_UPLOAD_CANCELLED;
+        }
+        const unsigned int seq = (unsigned int)atomic_fetch_add(&g_rdio_private_seq, 1);
+        if (dsd_rdio_private_input_paths(job, wav_path, seq) != 0) {
+            err = ENAMETOOLONG;
+            break;
+        }
+        if (dsd_rdio_copy_file(meta_src, job->meta_path) != 0) {
+            err = errno;
+            continue;
+        }
+        if (dsd_rdio_link_or_copy(wav_path, job->wav_path) == 0) {
+            job->private_inputs = 1;
+            return 0;
+        }
+        err = errno;
+        dsd_rdio_remove_private_input(job->meta_path);
+    }
+    if (err == DSD_RDIO_ECANCELED && atomic_load(&g_rdio_upload_cancel) != 0) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
+    LOG_ERROR("Rdio export: unable to make the upload's own copy of %s: %s\n", wav_path, strerror(err));
+    return -1;
+}
+
+/* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none. With
+   @p private_meta_src (--rdio-mode both: the sidecar's temp file) the job uploads from its own copies of the pair
+   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place, and only once the queue would
+   admit the job: a job it would refuse (DSD_RDIO_UPLOAD_REFUSED: a full queue, the shutdown) costs no WAV copy. After
+   the user's Stop none are made, and DSD_RDIO_UPLOAD_CANCELLED says so. */
+static int
+dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
+                         const char* private_meta_src, int remove_meta_on_success, int remove_wav_on_success,
+                         dsd_rdio_upload_job** out_job) {
+    *out_job = NULL;
     dsd_rdio_api_config api;
     dsd_rdio_copy_api_config(&api, opts, system_id);
     int rc = -1;
     if (dsd_rdio_validate_api_config(&api) == 0) {
-        rc = dsd_rdio_enqueue_api_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success);
+        if (dsd_rdio_upload_worker_init() != 0) {
+            LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
+        } else {
+            rc = dsd_rdio_build_upload_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
+                                           out_job);
+        }
     }
     /* The job holds its own copy now: this one goes. */
     DSD_SECURE_ZERO(&api, sizeof api);
+    if (rc == 0 && private_meta_src) {
+        rc = dsd_rdio_upload_admits(wav_path);
+        if (rc == 0) {
+            rc = dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src);
+        }
+        if (rc != 0) {
+            dsd_rdio_upload_job_free(*out_job);
+            *out_job = NULL;
+        }
+    }
     return rc;
 }
 #else
@@ -559,9 +818,10 @@ dsd_rdio_mode_wants_api(int mode) {
     return mode == DSD_RDIO_MODE_API || mode == DSD_RDIO_MODE_BOTH;
 }
 
+/* @p wav_path without a final ".wav" (any case), then @p suffix. */
 static int
-dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out_meta_path_size) {
-    if (!wav_path || !out_meta_path || out_meta_path_size == 0) {
+dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size) {
+    if (!wav_path || !suffix || !out || out_size == 0) {
         return -1;
     }
 
@@ -574,12 +834,17 @@ dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out
         *dot = '\0';
     }
 
-    int n = DSD_SNPRINTF(out_meta_path, out_meta_path_size, "%s.json", base_path);
-    if (n < 0 || (size_t)n >= out_meta_path_size) {
+    int n = DSD_SNPRINTF(out, out_size, "%s%s", base_path, suffix);
+    if (n < 0 || (size_t)n >= out_size) {
         return -1;
     }
 
     return 0;
+}
+
+static int
+dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out_meta_path_size) {
+    return dsd_rdio_path_with_suffix(wav_path, ".json", out_meta_path, out_meta_path_size);
 }
 
 static uint16_t
@@ -715,40 +980,146 @@ dsd_rdio_wav_duration_s(const char* wav_path) {
 }
 
 static void
+dsd_rdio_json_write_ascii(FILE* fp, unsigned char c) {
+    switch (c) {
+        case '"': fputs("\\\"", fp); break;
+        case '\\': fputs("\\\\", fp); break;
+        case '\b': fputs("\\b", fp); break;
+        case '\f': fputs("\\f", fp); break;
+        case '\n': fputs("\\n", fp); break;
+        case '\r': fputs("\\r", fp); break;
+        case '\t': fputs("\\t", fp); break;
+        default:
+            if (iscntrl(c)) {
+                DSD_FPRINTF(fp, "\\u%04x", (unsigned int)c);
+            } else {
+                fputc((int)c, fp);
+            }
+            break;
+    }
+}
+
+/* The bytes of the maximal ill-formed run at @p s (Unicode's "maximal subpart"): a lead byte and the continuation
+   bytes after it that could still begin its character, else the one byte. At least 1; @p avail is at least 1. */
+static size_t
+dsd_rdio_utf8_ill_formed_len(const char* s, size_t avail) {
+    unsigned char lo;
+    unsigned char hi;
+    const size_t len = dsd_utf8_lead((unsigned char)s[0], &lo, &hi);
+    size_t n = 1;
+    while (n < len && n < avail) {
+        const unsigned char c = (unsigned char)s[n];
+        if (c < (n == 1U ? lo : 0x80U) || c > (n == 1U ? hi : 0xBFU)) {
+            break;
+        }
+        n++;
+    }
+    return n;
+}
+
+/* A JSON string's content (issue #888 B11): well-formed UTF-8 as it is, ASCII escaped where JSON needs it, and each
+   ill-formed run (a name cut mid-character) as one U+FFFD, so the sidecar is always valid UTF-8. */
+static void
 dsd_rdio_json_write_escaped(FILE* fp, const char* s) {
     const char* text = s ? s : "";
-    for (size_t i = 0; text[i] != '\0'; i++) {
-        unsigned char c = (unsigned char)text[i];
-        switch (c) {
-            case '"': fputs("\\\"", fp); break;
-            case '\\': fputs("\\\\", fp); break;
-            case '\b': fputs("\\b", fp); break;
-            case '\f': fputs("\\f", fp); break;
-            case '\n': fputs("\\n", fp); break;
-            case '\r': fputs("\\r", fp); break;
-            case '\t': fputs("\\t", fp); break;
-            default:
-                if (iscntrl(c)) {
-                    DSD_FPRINTF(fp, "\\u%04x", (unsigned int)c);
-                } else {
-                    fputc((int)c, fp);
-                }
-                break;
+    const size_t len = strlen(text);
+    size_t i = 0;
+    while (i < len) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c < 0x80U) {
+            dsd_rdio_json_write_ascii(fp, c);
+            i++;
+            continue;
+        }
+        const size_t n = dsd_utf8_sequence_len(text + i, len - i);
+        if (n > 0U) {
+            (void)fwrite(text + i, 1, n, fp);
+            i += n;
+        } else {
+            fputs("\xEF\xBF\xBD", fp);
+            i += dsd_rdio_utf8_ill_formed_len(text + i, len - i);
         }
     }
+}
+
+/* Whether @p tag names something rdio-scanner keeps as a label (issue #888 B10): not empty and not "-", which both
+   servers discard. A "-" tag gives way to the next candidate. */
+static int
+dsd_rdio_tag_usable(const char* tag) {
+    return tag[0] != '\0' && strcmp(tag, "-") != 0;
 }
 
 typedef struct {
     time_t start_time;
     uint32_t talkgroup;
     uint32_t source;
-    uint32_t freq_hz;
+    uint32_t freq_hz; /* dsd_rdio_usable_freq_hz(): 0 when unknown or not storable */
     int system_id;
     int encrypted;
+    int emergency;
     const char* talkgroup_tag;
     const char* short_name;
-    char analog_tag[64]; /* an analog call's frequency tag, when talkgroup_tag names it */
+    char generated_tag[64]; /* an analog call's frequency tag, or a fallback call's generated one (issue #888 D3) */
 } dsd_rdio_meta_fields;
+
+/* The Hz the sidecar's freq and freqList carry (issue #888 B5, B13, D8): from 1 MHz (included) up to what the signed
+   32-bit frequency columns of rdio-scanner's MySQL/MariaDB and PostgreSQL databases store; a frequency outside that is
+   unknown (0), so the whole call is not refused for it. */
+static uint32_t
+dsd_rdio_usable_freq_hz(int64_t freq_hz) {
+    return (freq_hz >= 1000000 && freq_hz <= (int64_t)INT32_MAX) ? (uint32_t)freq_hz : 0U;
+}
+
+/* The protocol's word for a digital row's sync type (issue #888 B8, D3), "" for analog and any other sync type. P25's
+   two phases share one word. */
+static const char*
+dsd_rdio_protocol_word(int systype) {
+    if (DSD_SYNC_IS_P25(systype)) {
+        return "P25";
+    }
+    if (DSD_SYNC_IS_DMR(systype)) {
+        return "DMR";
+    }
+    if (DSD_SYNC_IS_NXDN(systype)) {
+        return "NXDN";
+    }
+    if (DSD_SYNC_IS_DSTAR(systype)) {
+        return "D-STAR";
+    }
+    if (DSD_SYNC_IS_YSF(systype)) {
+        return "YSF";
+    }
+    if (DSD_SYNC_IS_DPMR(systype)) {
+        return "dPMR";
+    }
+    if (DSD_SYNC_IS_M17(systype)) {
+        return "M17";
+    }
+    if (DSD_SYNC_IS_X2TDMA(systype)) {
+        return "X2-TDMA";
+    }
+    if (DSD_SYNC_IS_PROVOICE(systype)) {
+        return "ProVoice";
+    }
+    if (DSD_SYNC_IS_EDACS_ONLY(systype)) {
+        return "EDACS";
+    }
+    if (DSD_SYNC_IS_TETRA(systype)) {
+        return "TETRA";
+    }
+    return "";
+}
+
+/* The protocol's word for @p event (dsd_rdio_protocol_word()), but "EDACS" for a ProVoice call an EDACS grant named
+   (issue #888): its row carries the grant's LCN, a channel no standalone ProVoice call has. An EDACS channel's digital
+   calls then share its analog calls' word, as they share its kHz talkgroup. Standalone ProVoice keeps "ProVoice". */
+static const char*
+dsd_rdio_row_protocol_word(const Event_History* event) {
+    if (DSD_SYNC_IS_PROVOICE(event->systype) && event->channel != 0U) {
+        return "EDACS";
+    }
+    return dsd_rdio_protocol_word(event->systype);
+}
 
 /* The row a recording is exported from: the slot's staged row, or none. */
 static const Event_History*
@@ -768,6 +1139,44 @@ dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event) {
         return (uint32_t)khz;
     }
     return (opts && opts->rdio_analog_talkgroup > 0) ? (uint32_t)opts->rdio_analog_talkgroup : 0U;
+}
+
+/* A digital row's frequency in whole kHz, rounded down, when that fits rdio-scanner's signed 32-bit talkgroup columns
+   (1..2147483647, issue #888 D2), else 0. The analog rule keeps its own range (dsd_rdio_analog_talkgroup()). */
+static uint32_t
+dsd_rdio_digital_khz(int64_t freq_hz) {
+    const int64_t khz = freq_hz / 1000;
+    return (khz > 0 && khz <= (int64_t)INT32_MAX) ? (uint32_t)khz : 0U;
+}
+
+int
+dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallback) {
+    // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
+    // the system from short_name, could pick none.
+    return allow_fallback && event != NULL && event->systype != DSD_SYNC_ANALOG && event->target_id == 0U
+           && event->category == DSD_EVENT_CATEGORY_VOICE && event->fallback_blocked == 0U
+           && dsd_rdio_row_protocol_word(event)[0] != '\0';
+}
+
+uint32_t
+dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int allow_fallback) {
+    if (!event) {
+        return 0U;
+    }
+    if (event->systype == DSD_SYNC_ANALOG) {
+        return dsd_rdio_analog_talkgroup(opts, event);
+    }
+    if (event->target_id > 0U) {
+        return event->target_id;
+    }
+    if (!dsd_rdio_call_fallback_eligible(event, allow_fallback)) {
+        return 0U;
+    }
+    const uint32_t khz = dsd_rdio_digital_khz(event->freq_hz);
+    if (khz > 0U) {
+        return khz;
+    }
+    return (opts && opts->rdio_unknown_talkgroup > 0) ? (uint32_t)opts->rdio_unknown_talkgroup : 0U;
 }
 
 int
@@ -803,6 +1212,126 @@ dsd_rdio_recording_start(const Event_History* event, time_t opened, time_t start
     return dsd_decode_time();
 }
 
+/* "<MHz> MHz" for a positive @p freq_hz: whole 100 Hz, rounded, as 4 decimals of MHz. */
+static void
+dsd_rdio_format_mhz(int64_t freq_hz, char* out, size_t out_size) {
+    const int64_t units = freq_hz / 100 + (freq_hz % 100 >= 50 ? 1 : 0);
+    DSD_SNPRINTF(out, out_size, "%lld.%04lld MHz", (long long)(units / 10000), (long long)(units % 10000));
+}
+
+/* An access code as the app's views spell it (src/app_control/access_code_view.c, which runtime cannot call): "RAN 9",
+   "CC 3", "CAN 15" in decimal, "NAC 2A3" as three uppercase hex digits, each only within the values its protocol
+   carries (a NAC from 001 to FFE: dsd-neo takes no 000 or FFF). "" for a code out of range or of a kind not known. */
+static void
+dsd_rdio_format_access_code(uint8_t kind, uint16_t code, char* out, size_t out_size) {
+    out[0] = '\0';
+    const unsigned value = (unsigned)code;
+    switch (kind) {
+        case DSD_ACCESS_CODE_COLOR_CODE:
+            if (value <= 63U) {
+                DSD_SNPRINTF(out, out_size, "CC %u", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_NAC:
+            if (value >= 0x001U && value <= 0xFFEU) {
+                DSD_SNPRINTF(out, out_size, "NAC %03X", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_RAN:
+            if (value <= 63U) {
+                DSD_SNPRINTF(out, out_size, "RAN %u", value);
+            }
+            break;
+        case DSD_ACCESS_CODE_CAN:
+            if (value <= 15U) {
+                DSD_SNPRINTF(out, out_size, "CAN %u", value);
+            }
+            break;
+        default: break;
+    }
+}
+
+/* Append @p part to the space-separated words in @p out; an empty part adds nothing. */
+static void
+dsd_rdio_tag_append(char* out, size_t out_size, const char* part) {
+    if (part[0] == '\0') {
+        return;
+    }
+    const size_t used = strlen(out);
+    if (used + 1U >= out_size) {
+        return;
+    }
+    DSD_SNPRINTF(out + used, out_size - used, "%s%s", used > 0U ? " " : "", part);
+}
+
+/* The label of a call exported under the fallback number (issue #888 D3): its service name, else its channel label,
+   else "<protocol> <access code> <MHz> MHz" with the unknown parts left out ("NXDN RAN 9", "D-STAR 145.6700 MHz",
+   "X2-TDMA"). Never per-call identity text or PRIVATE/GROUP: rdio-scanner can relabel a talkgroup with each call's tag,
+   and every unnumbered call on one frequency shares its talkgroup. */
+static void
+dsd_rdio_fallback_tag(const Event_History* event, dsd_rdio_meta_fields* out) {
+    if (dsd_rdio_tag_usable(event->service_label)) {
+        out->talkgroup_tag = event->service_label;
+        return;
+    }
+    if (dsd_rdio_tag_usable(event->channel_label)) {
+        out->talkgroup_tag = event->channel_label;
+        return;
+    }
+    char code[16];
+    dsd_rdio_format_access_code(event->access_code_kind, event->access_code, code, sizeof code);
+    out->generated_tag[0] = '\0';
+    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, dsd_rdio_row_protocol_word(event));
+    dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, code);
+    if (dsd_rdio_digital_khz(event->freq_hz) > 0U) {
+        char mhz[32];
+        dsd_rdio_format_mhz(event->freq_hz, mhz, sizeof mhz);
+        dsd_rdio_tag_append(out->generated_tag, sizeof out->generated_tag, mhz);
+    }
+    out->talkgroup_tag = out->generated_tag;
+}
+
+/* A numbered call's label: its first name (service, talkgroup name, target text, channel label; "-" is none, B10),
+   else PRIVATE for a private call (gi 1), GROUP for a group call (gi 0). A call of no known kind (gi -1: NXDN's other
+   call types, EDACS without a group or individual flag, TETRA before its setup, X2-TDMA) keeps an empty tag, which
+   rdio-scanner ignores as a label: it names the talkgroup by its number rather than calling every such call private. */
+static const char*
+dsd_rdio_numbered_tag(const Event_History* event) {
+    if (dsd_rdio_tag_usable(event->service_label)) {
+        return event->service_label;
+    }
+    if (dsd_rdio_tag_usable(event->t_name)) {
+        return event->t_name;
+    }
+    if (dsd_rdio_tag_usable(event->tgt_str)) {
+        return event->tgt_str;
+    }
+    if (dsd_rdio_tag_usable(event->channel_label)) {
+        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the receiver was parked on
+        // a named channel. That name is what the operator would recognise the upload by; "GROUP" is not.
+        return event->channel_label;
+    }
+    if (event->gi == 1) {
+        return "PRIVATE";
+    }
+    return event->gi == 0 ? "GROUP" : "";
+}
+
+/* A digital call: the decoded target, or with @p allow_fallback a VOICE row's fallback number
+   (dsd_rdio_call_talkgroup()), which takes the fallback label; the decoded source and encryption. */
+static void
+dsd_rdio_digital_meta_fields(const dsd_opts* opts, const Event_History* event, int allow_fallback,
+                             dsd_rdio_meta_fields* out) {
+    out->talkgroup = dsd_rdio_call_talkgroup(opts, event, allow_fallback);
+    out->source = event->source_id;
+    out->encrypted = event->enc ? 1 : 0;
+    if (event->target_id == 0U && out->talkgroup != 0U) {
+        dsd_rdio_fallback_tag(event, out);
+    } else {
+        out->talkgroup_tag = dsd_rdio_numbered_tag(event);
+    }
+}
+
 /* A conventional analog call (issue #668): a kHz talkgroup, or the user's for a call with no frequency, labelled by the
    channel's name, else by its frequency, else by the mode alone. Never by the per-tone service name: rdio-scanner can
    relabel a talkgroup with each call's tag, and the services on one frequency share its talkgroup. No radio, never
@@ -813,14 +1342,13 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
     out->source = 0U;
     out->encrypted = 0;
     const char* mode = event->sysid_string[0] != '\0' ? event->sysid_string : "NFM";
-    if (event->channel_label[0] != '\0') {
+    if (dsd_rdio_tag_usable(event->channel_label)) {
         out->talkgroup_tag = event->channel_label;
     } else if (event->freq_hz > 0) {
-        // Whole 100 Hz, rounded: 4 decimals of MHz.
-        const int64_t units = event->freq_hz / 100 + (event->freq_hz % 100 >= 50 ? 1 : 0);
-        DSD_SNPRINTF(out->analog_tag, sizeof out->analog_tag, "%s %lld.%04lld MHz", mode, (long long)(units / 10000),
-                     (long long)(units % 10000));
-        out->talkgroup_tag = out->analog_tag;
+        char mhz[32];
+        dsd_rdio_format_mhz(event->freq_hz, mhz, sizeof mhz);
+        DSD_SNPRINTF(out->generated_tag, sizeof out->generated_tag, "%s %s", mode, mhz);
+        out->talkgroup_tag = out->generated_tag;
     } else {
         out->talkgroup_tag = mode;
     }
@@ -828,7 +1356,7 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
 
 static void
 dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event, time_t opened, time_t started,
-                                dsd_rdio_meta_fields* out) {
+                                int allow_fallback, dsd_rdio_meta_fields* out) {
     if (!out) {
         return;
     }
@@ -838,46 +1366,27 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->freq_hz = 0;
     out->system_id = dsd_rdio_call_system_id(opts, event);
     out->encrypted = 0;
+    out->emergency = 0;
     out->talkgroup_tag = "";
     out->short_name = "";
-    out->analog_tag[0] = '\0';
+    out->generated_tag[0] = '\0';
 
     if (!event) {
         return;
     }
     out->start_time = dsd_rdio_recording_start(event, opened, started);
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
-    // an LCN or a dPMR colour code, not Hz. A frequency the sidecar's field cannot hold is unknown.
-    out->freq_hz = (event->freq_hz > 0 && event->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)event->freq_hz : 0U;
-    out->short_name = event->sysid_string;
+    // an LCN or a dPMR colour code, not Hz.
+    out->freq_hz = dsd_rdio_usable_freq_hz(event->freq_hz);
+    // A row with no system string (an X2-TDMA call) is named by its protocol, so a v8 DirWatch, which resolves the
+    // system from short_name, still finds one.
+    out->short_name = event->sysid_string[0] != '\0' ? event->sysid_string : dsd_rdio_row_protocol_word(event);
+    out->emergency = event->emergency ? 1 : 0;
     if (event->systype == DSD_SYNC_ANALOG) {
         dsd_rdio_analog_meta_fields(opts, event, out);
         return;
     }
-    out->talkgroup = event->target_id;
-    out->source = event->source_id;
-    out->encrypted = event->enc ? 1 : 0;
-
-    if (event->service_label[0] != '\0') {
-        out->talkgroup_tag = event->service_label;
-    } else if (event->t_name[0] != '\0') {
-        out->talkgroup_tag = event->t_name;
-    } else if (event->tgt_str[0] != '\0') {
-        out->talkgroup_tag = event->tgt_str;
-    } else if (event->channel_label[0] != '\0') {
-        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
-        // receiver was parked on a named channel. That name is what the operator would recognise
-        // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
-        // dsd_rdio_write_trunk_recorder_meta() skips those outright.
-        out->talkgroup_tag = event->channel_label;
-    } else if (event->gi == 1) {
-        out->talkgroup_tag = "PRIVATE";
-    } else if (event->gi == 0) {
-        out->talkgroup_tag = "GROUP";
-    }
-    // A call of no known kind (gi -1: NXDN's other call types, EDACS without a group or individual flag, TETRA before
-    // its setup, X2-TDMA) keeps an empty tag, which rdio-scanner ignores as a label: it names the talkgroup by its
-    // number rather than calling every such call private.
+    dsd_rdio_digital_meta_fields(opts, event, allow_fallback, out);
 }
 
 static int
@@ -913,19 +1422,31 @@ dsd_rdio_write_meta_json(FILE* fp, const dsd_opts* opts, const dsd_rdio_meta_fie
         DSD_FPRINTF(fp, "{\"pos\":0,\"src\":%u}", fields->source);
     }
     DSD_FPRINTF(fp, "],\n");
-    DSD_FPRINTF(fp, "  \"freq\": %u,\n", fields->freq_hz > 1000000U ? fields->freq_hz : 0U);
+    DSD_FPRINTF(fp, "  \"freq\": %u,\n", fields->freq_hz);
+    if (fields->freq_hz > 0U) {
+        // rdio-scanner v8 reads the frequency from the list only; 6.6.3 reads either.
+        DSD_FPRINTF(fp, "  \"freqList\": [{\"pos\": 0, \"freq\": %u}],\n", fields->freq_hz);
+    }
     DSD_FPRINTF(fp, "  \"system\": %d,\n", fields->system_id > 0 ? fields->system_id : 0);
     DSD_FPRINTF(fp, "  \"short_name\": \"");
     dsd_rdio_json_write_escaped(fp, fields->short_name);
     DSD_FPRINTF(fp, "\",\n");
-    DSD_FPRINTF(fp, "  \"emergency\": false,\n");
+    DSD_FPRINTF(fp, "  \"emergency\": %s,\n", fields->emergency ? "true" : "false");
     DSD_FPRINTF(fp, "  \"encrypted\": %s\n", fields->encrypted ? "true" : "false");
     DSD_FPRINTF(fp, "}\n");
 }
 
+static dsd_rdio_sidecar_published_observer g_rdio_sidecar_published_observer = NULL;
+
+void
+dsd_rdio_set_sidecar_published_observer(dsd_rdio_sidecar_published_observer observer) {
+    g_rdio_sidecar_published_observer = observer;
+}
+
+/* Flush, sync and close the temp sidecar @p fp at @p temp_meta_path; on a failure it is removed. */
 static int
-dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* out_meta_path) {
-    if (!fp || !temp_meta_path || !out_meta_path) {
+dsd_rdio_close_temp_meta_file(FILE* fp, const char* temp_meta_path) {
+    if (!fp || !temp_meta_path) {
         return -1;
     }
     if (fflush(fp) != 0) {
@@ -949,19 +1470,30 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
         (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
+    return 0;
+}
 
+/* Put the closed temp sidecar @p temp_meta_path in place under its public name @p out_meta_path, where a DirWatch can
+   take the pair; on a failure the temp file is removed. */
+static int
+dsd_rdio_publish_temp_meta_file(const char* temp_meta_path, const char* out_meta_path) {
     if (dsd_replace_file_with_temp(temp_meta_path, out_meta_path) != 0) {
         LOG_ERROR("Rdio export: failed renaming %s -> %s: %s\n", temp_meta_path, out_meta_path, strerror(errno));
         (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
+    if (g_rdio_sidecar_published_observer) {
+        g_rdio_sidecar_published_observer(out_meta_path);
+    }
     return 0;
 }
 
+/* Write the sidecar of @p wav_path's call to a closed temp file, @p temp_meta_path, beside its public name
+   @p out_meta_path, which dsd_rdio_publish_temp_meta_file() then puts it under. */
 static int
 dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened,
-                                   time_t started, const char* wav_path, char* out_meta_path,
-                                   size_t out_meta_path_size) {
+                                   time_t started, int allow_fallback, const char* wav_path, char* out_meta_path,
+                                   size_t out_meta_path_size, char* temp_meta_path, size_t temp_meta_path_size) {
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -973,7 +1505,8 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
 
     const Event_History* event = dsd_rdio_staged_row(event_struct);
     dsd_rdio_meta_fields fields;
-    dsd_rdio_meta_fields_from_event(opts, event, opened, started, &fields);
+    dsd_rdio_meta_fields_from_event(opts, event, opened, started, allow_fallback, &fields);
+    // A backstop: the WAV close asks dsd_rdio_call_talkgroup() first, and exports only a call it gives a number.
     if (fields.talkgroup == 0U) {
         LOG_WARN("Rdio export: skipped %s (missing talkgroup/target ID)\n", wav_path);
         return -1;
@@ -985,14 +1518,13 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
     unsigned int duration_s = dsd_rdio_wav_duration_s(wav_path);
     time_t stop_time = fields.start_time + (time_t)duration_s;
 
-    char temp_meta_path[DSD_RDIO_PATH_MAX];
     FILE* fp = NULL;
-    if (dsd_rdio_open_temp_meta_file(out_meta_path, temp_meta_path, sizeof(temp_meta_path), &fp) != 0) {
+    if (dsd_rdio_open_temp_meta_file(out_meta_path, temp_meta_path, temp_meta_path_size, &fp) != 0) {
         return -1;
     }
 
     dsd_rdio_write_meta_json(fp, opts, &fields, stop_time);
-    return dsd_rdio_finalize_meta_file(fp, temp_meta_path, out_meta_path);
+    return dsd_rdio_close_temp_meta_file(fp, temp_meta_path);
 }
 
 #ifdef USE_CURL
@@ -1079,8 +1611,8 @@ dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoin
 }
 
 static void
-dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const char* system_str, const char* wav_path,
-                        const char* meta_path) {
+dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const char* system_str,
+                        const dsd_rdio_upload_inputs* inputs) {
     curl_mimepart* part = NULL;
 
     part = curl_mime_addpart(mime);
@@ -1093,20 +1625,25 @@ dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const c
 
     part = curl_mime_addpart(mime);
     curl_mime_name(part, "audio");
-    curl_mime_filedata(part, wav_path);
+    curl_mime_filedata(part, inputs->wav_path);
+    if (inputs->wav_name) {
+        curl_mime_filename(part, inputs->wav_name);
+    }
     curl_mime_type(part, "audio/wav");
 
     part = curl_mime_addpart(mime);
     curl_mime_name(part, "meta");
-    curl_mime_filedata(part, meta_path);
+    curl_mime_filedata(part, inputs->meta_path);
+    if (inputs->meta_name) {
+        curl_mime_filename(part, inputs->meta_name);
+    }
     curl_mime_type(part, "application/json");
 }
 
 static int
-dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
-                             const char* meta_path, int timeout_ms, const char* system_str, CURLcode* out_res,
-                             long* out_http_code) {
-    if (!api || !endpoint || !wav_path || !meta_path || !system_str || !out_res || !out_http_code) {
+dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoint, const dsd_rdio_upload_inputs* inputs,
+                             int timeout_ms, const char* system_str, CURLcode* out_res, long* out_http_code) {
+    if (!api || !endpoint || !inputs || !system_str || !out_res || !out_http_code) {
         return -1;
     }
 
@@ -1123,7 +1660,7 @@ dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoin
         return -1;
     }
 
-    dsd_rdio_add_mime_parts(mime, api, system_str, wav_path, meta_path);
+    dsd_rdio_add_mime_parts(mime, api, system_str, inputs);
     dsd_rdio_configure_curl_request(curl, mime, endpoint, timeout_ms);
 
     *out_res = dsd_curl_perform_cancellable(curl, dsd_rdio_cancel_pred, NULL);
@@ -1149,8 +1686,7 @@ dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
 
 /* The upload's attempts to @p endpoint (built from the API URL), as dsd_rdio_upload_trunk_recorder() returns them. */
 static int
-dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
-                         const char* meta_path) {
+dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const dsd_rdio_upload_inputs* inputs) {
     int timeout_ms = 0;
     int attempts = 0;
     if (dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts) != 0) {
@@ -1170,8 +1706,7 @@ dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, c
         }
         CURLcode res = CURLE_FAILED_INIT;
         long http_code = 0;
-        if (dsd_rdio_upload_attempt_once(api, endpoint, wav_path, meta_path, timeout_ms, system_str, &res, &http_code)
-            != 0) {
+        if (dsd_rdio_upload_attempt_once(api, endpoint, inputs, timeout_ms, system_str, &res, &http_code) != 0) {
             return -1;
         }
 
@@ -1183,7 +1718,7 @@ dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, c
         LOG_WARN("Rdio API upload attempt %d/%d failed (curl=%d, http=%ld)\n", attempt, attempts, (int)res, http_code);
 
         if (attempt < attempts) {
-            dsd_sleep_ms(150U);
+            dsd_sleep_ms(DSD_RDIO_RETRY_BACKOFF_MS);
         }
     }
 
@@ -1191,8 +1726,8 @@ dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, c
 }
 
 static int
-dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
-    if (!api || !wav_path || !meta_path) {
+dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const dsd_rdio_upload_inputs* inputs) {
+    if (!api || !inputs || !inputs->wav_path || !inputs->meta_path) {
         return -1;
     }
 
@@ -1206,7 +1741,7 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
     if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
         LOG_ERROR("Rdio API upload: endpoint too long\n");
     } else {
-        rc = dsd_rdio_upload_attempts(api, endpoint, wav_path, meta_path);
+        rc = dsd_rdio_upload_attempts(api, endpoint, inputs);
     }
     DSD_SECURE_ZERO(endpoint, sizeof endpoint);
     return rc;
@@ -1284,9 +1819,67 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
 }
 #endif
 
+/* The API side of an export whose sidecar waits, written and closed, at @p temp_meta_path: the sidecar is put in place
+   under @p meta_path whatever becomes of the upload, then the upload is queued (*@p api_queued set). Beside DirWatch
+   the job uploads from its own copies of the pair, made before the public sidecar appears, so a watch that takes and
+   deletes the pair the moment its sidecar is there cannot take them first; a job whose copies cannot be made is not
+   queued. */
+static int
+dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                    const char* meta_path, const char* temp_meta_path, int* api_queued) {
+#ifndef USE_CURL
+    (void)opts;
+    (void)event_struct;
+    (void)wav_path;
+    (void)api_queued;
+    if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
+        return -1;
+    }
+    LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
+    return -1;
+#else
+    const int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(opts->rdio_mode);
+    if (opts->rdio_api_delete_after_upload && wants_dirwatch
+        && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
+        LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
+    }
+    dsd_rdio_upload_job* job = NULL;
+    const int prepared = dsd_rdio_prepare_api_job(
+        opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)), wav_path, meta_path,
+        wants_dirwatch ? temp_meta_path : NULL, !wants_dirwatch, rdio_api_removes_wav(opts, wants_dirwatch), &job);
+    if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
+        dsd_rdio_upload_job_free(job);
+        return -1;
+    }
+    const int queued = prepared == 0 ? dsd_rdio_enqueue_upload_job(job, wav_path) : prepared;
+    if (queued != 0) {
+        /* Not queued: the job goes (its private inputs, its hold), the public pair stays DirWatch's. */
+        dsd_rdio_upload_job_free(job);
+    }
+    if (queued == DSD_RDIO_UPLOAD_CANCELLED) {
+        /* The user's Stop, before or after the job was made: no upload of this run is sent any more. */
+        LOG_INFO("Rdio API upload of %s not queued: uploads were stopped\n", wav_path);
+        return 0;
+    }
+    if (queued != 0) {
+        return -1;
+    }
+    if (api_queued) {
+        *api_queued = 1;
+    }
+    return 0;
+#endif
+}
+
 int
 dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
                         time_t started, int* api_queued) {
+    return dsd_rdio_export_call_fallback(opts, event_struct, wav_path, opened, started, 0, api_queued);
+}
+
+int
+dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                              time_t opened, time_t started, int allow_fallback, int* api_queued) {
     if (api_queued) {
         *api_queued = 0;
     }
@@ -1304,33 +1897,14 @@ dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struc
     }
 
     char meta_path[DSD_RDIO_PATH_MAX];
-    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, wav_path, meta_path, sizeof(meta_path))
+    char temp_meta_path[DSD_RDIO_PATH_MAX];
+    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, allow_fallback, wav_path, meta_path,
+                                           sizeof(meta_path), temp_meta_path, sizeof(temp_meta_path))
         != 0) {
         return -1;
     }
-
     if (dsd_rdio_mode_wants_api(mode)) {
-#ifndef USE_CURL
-        LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
-        return -1;
-#else
-        int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
-        int remove_meta_on_success = !wants_dirwatch;
-        int remove_wav_on_success = rdio_api_removes_wav(opts, wants_dirwatch);
-        if (opts->rdio_api_delete_after_upload && wants_dirwatch
-            && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
-            LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
-        }
-        if (dsd_rdio_enqueue_api_upload(opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)),
-                                        wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
-            != 0) {
-            return -1;
-        }
-        if (api_queued) {
-            *api_queued = 1;
-        }
-#endif
+        return dsd_rdio_export_api(opts, event_struct, wav_path, meta_path, temp_meta_path, api_queued);
     }
-
-    return 0;
+    return dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path);
 }

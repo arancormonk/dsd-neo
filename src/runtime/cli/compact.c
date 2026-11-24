@@ -100,6 +100,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--rdio-upload-retries",
     "--rdio-analog-system-id",
     "--rdio-analog-talkgroup",
+    "--rdio-unknown-talkgroup",
     "--analog-record-max-gap-ms",
     "--analog-record-preroll-ms",
     "--dmr-baofeng-pc5",

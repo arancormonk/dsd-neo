@@ -1797,6 +1797,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     takes `MOVEFILE_REPLACE_EXISTING` only. Both refuse a directory source with EISDIR before anything moves (a
     link is a link, as `lstat()` and `dsd_path_type_nofollow()` say) (issue #661: per-call WAV publication;
     issue #828: a store file kept aside; #832: import and replay publication)
+  - Hard link (issue #888): `dsd_hard_link()` gives a file a second name, `link()` on POSIX, `CreateHardLinkW/A()` on
+    Windows (one call for the pair, as `dsd_win32_path_wide()` picks), never over an existing name (EEXIST) and never
+    a copy; a file system without links fails and the caller copies (the rdio-scanner exporter's private inputs).
+    Tests: `PLATFORM_FILE_COMPAT` (also in the non-ASCII folders; the success cases only where the test folder's file
+    system takes hard links, asked of `link()` itself, `dir_takes_hard_links()`; the refusals everywhere)
   - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
     `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
     ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
@@ -1812,7 +1817,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     invalid name or split at a different separator. Every Windows path helper follows it: `dsd_stat_path()`,
     `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_private_append_regular()`,
     `dsd_fopen_existing_local_file()`,
-    `dsd_rename_noreplace()` and `dsd_replace_file_with_temp()` (UTF-8 only when both names are), `dsd_dir_list()`
+    `dsd_rename_noreplace()`, `dsd_replace_file_with_temp()` and `dsd_hard_link()` (UTF-8 only when both names are),
+    `dsd_dir_list()`
     (names come back in the folder's encoding), `dsd_path_exists_nofollow()`, `dsd_path_canonical()`,
     `dsd_remove_file()`, `dsd_path_free_bytes()`, `dsd_mkdir()`, `dsd_mkdtemp()`, `dsd_mkstemp()`, the runtime's
     `dsd_path_fopen_user_read_file()` and the tests' `dsd_test_rmdir()`. `PLATFORM_FILE_COMPAT` runs Latin, CJK and
@@ -2116,8 +2122,129 @@ suite runs under this compiler.
   `PLATFORM_WRITE_FRAMES`, `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`,
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
-  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
-  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
+  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating IV
+  expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The file
+  is read whole (`sdrtrunk_json_read_whole()`, a buffer grown to at most `DSD_SDRTRUNK_JSON_MAX_BYTES`, 64 MiB, in
+  `file_io.h`) and parsed with one state, once: `playMbeFiles()` calls the reader once a file, so a long call is not cut
+  at a buffer's end and replayed from the start, and a larger file is refused with one log line before anything of it
+  plays or is published. The read takes at most 1 MiB at a time (`sdrtrunk_json_read_chunks()`) and looks at the exit
+  flag between chunks: on Stop the part read is dropped and nothing plays. A frame's `hex` must be the frame as SDRTrunk
+  writes it (`sdrtrunk_json_frame_is_valid()`: 36 hex digits for P25 Phase 1, 18 for the AMBE protocols), since the
+  decoders read that many; any other value is a lost frame, with a warning: `imbe_str_to_decode()` /
+  `ambe2_str_to_decode()` take a NULL frame, decode, play and record nothing, and return the keystream position past
+  its bits (88, or 49 plus DMR's 7 spare), while the callers count it in the frame sequence as usual (IMBE frame
+  counter, AMBE superframe counter, NXDN session position), so the frames after it decrypt with their own keystream. A
+  `hex` that is missing, an array or an object is a lost frame too, and an array or object is passed whole
+  (`sdrtrunk_json_skip_container()`), so none of its members is read as a key (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place`). A lost frame gives no DMR late-entry MI fragment: the
+  context marks the fragments each superframe's frames gave (`le_fragments`, `sdrtrunk_json_note_fragment()`, reset at
+  position 0), and at position 18 the MI is decoded only from all 18 (`sdrtrunk_json_finish_dmr_aes()`,
+  `sdrtrunk_dmr_process_late_entry_mi()` take `complete`), as the live `dmr_late_entry_mi()` requires all six bursts;
+  an incomplete one carries the last MI on (`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi`, for AES and for a
+  forced RC4 late entry: a missing Golay word read as zeros would pass Golay and the CRC). The row's
+  `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
+  played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
+  only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`.
+  So a file's audio is in one per-call segment. A file holding several records is played as one stream: their headers
+  fold into the open call one key at a time, and identity changes split calls only as the call-state layer splits them
+  on air. The event layer never renders a call the stream moved past, so such a file makes one history row, named
+  under the identity the row ends with: the last ID each endpoint was given (a `to` or `from` of 0, or one left out,
+  clears none while the open call lasts; when another member of the record opens a new call, that call starts from the
+  context's IDs as read so far, so a 0 read before the change stays 0). Where the call-state layer opens a new call
+  inside the file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from
+  that call's first valid frame; from the file's second such call on (`sdrtrunk_json_call_opened()`), the staged row's
+  `event_time` is cleared with the latch, so a call with no valid frame `time` falls back to the decode clock instead
+  of the last call's date (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`,
+  `test_playback_new_call_without_time_takes_the_decode_clock`, `CORE_MBE_FILE_IO`). The JSON is read token by token
+  (`sdrtrunk_json_token()`): a
+  quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a `:` follows is a key, so a
+  word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never matched as one; handlers read
+  their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an array, whose members are read
+  as keys of their own. Every key is matched by its full name (`total_frames` is not `to`, `from_site` not `from`,
+  `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and brackets the tokenizer
+  passes over, including the one that ends a bare value, so it knows the depth of each key: a record's own members sit
+  at depth 1 (2 in a file that is one array of records), and a record-level
+  `frames` whose value is an array marks its elements' members as voice-frame members. Only such a member's `time`
+  stamps the row; a `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The
+  call's IDs (`protocol`, `call_type`, `to`, `from`) are read only at record depth (`sdrtrunk_json_at_record()`), so a
+  `metadata` object's `from` is not the call's. The other keys keep their depth-free reading (some exports carry
+  `encryption_*` at record level). A `to` or `from` is read by `sdrtrunk_json_parse_id()`: decimal digits, read by value
+  (leading zeros dropped, then the strict parser checks the range, so `"00000005678"` is 5678), or for a `to` an
+  SDRTrunk P25 patch group (`PatchGroup.toString()`, `P:<group>` and ` [<patched talkgroups>]`), which is its group's
+  talkgroup, so its talkgroup rows apply. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
+  `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
+  or a space, which `strtoull()` would take, is not), then strict-parsed. The reader clears the staged row's
+  `event_time` after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a
+  protocol the reader does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
+  Recording and export are fail closed (issue #888). Before the file plays, `sdrtrunk_json_shape()` checks the buffered
+  text once against an allowlist of SDRTrunk's writer, changing nothing: `MBECallSequenceRecorder`'s
+  `writeCallSequence()` writes one `MBECallSequence` with Jackson's default pretty printer and no root name. The check
+  is a small recursive reader with one `sdrtrunk_shape_level` per object (the members read so far, as bits, the last
+  one in the writer's order, and whether a member named the current layout) over two fixed tables:
+  `k_sdrtrunk_record_members` (`MBECallSequence`'s `@JsonPropertyOrder`: `protocol` (a word that notes an NXDN record,
+  `sdrtrunk_shape_protocol()`), `version` uint16, `call_type`,
+  `from`, `to` words, `encrypted` boolean, `system`, `site` text, `frames` array) and `k_sdrtrunk_frame_members`
+  (`VoiceFrame`'s: `tag` tag, `encryption_algorithm` uint8, `encryption_key_id` uint16, `encryption_mi` word, `time`
+  int64, `hex` hex string). A file is STANDARD when it is exactly one record object with only white space after it (to
+  the buffer's end, so a NUL inside the text is not an end), each member is one of its table's, at most once, in one
+  writer layout's order (`sdrtrunk_shape_in_layout()`, absent members allowed), with a value of its type, and there is
+  no other object or array. Values (`sdrtrunk_shape_char_len()`, `sdrtrunk_shape_integer()`): every string is valid
+  UTF-8 with no raw control character; a word (a value the reader reads, or a member's name) has no escape at all, so an
+  escaped ID can never reach the policy lookup unread; text (`system`, `site`, which the reader passes over) allows only
+  JSON's escapes (`\" \\ \/ \b \f \n \r \t`, `\u` with four hex digits); a frame's `tag` is free text as text is, except
+  that in an NXDN record a tag naming a SACCH place `sdrtrunk_json_handle_nxdn_tag()` reads (it takes the value as
+  written) may hold no escape (`sdrtrunk_shape_tag()`: in the same polled pass, `sdrtrunk_shape_tag_char()` notes an
+  escape and runs the tag, its escapes read, through `sdrtrunk_shape_tag_place_next()`, the reader's `SACCH ` and
+  `dsd_parse_uint8_strict()` rule for places 1 to 4); an
+  integer is JSON's unsigned form (`0|[1-9][0-9]*`: no member the writer writes is negative) within what the member's
+  playback handler takes (`version` and `encryption_key_id` 16 bits, `encryption_algorithm` 8 bits, `time` a Java
+  `long`), read with `dsd_parse_uint64_strict()`, so the shape never passes a value the playback would pass over;
+  `frames` is an array of frame objects, each with a `hex` of hex digits that is not empty. Layouts: the writer before
+  2025-11 listed `protocol, call_type, from, to, encrypted, frames` with no `version`, so Jackson put the unlisted
+  `system` and `site` after `frames`, in either order; d09fad56 added `version` and moved the two before `frames` in one
+  change. So a record is in the current layout once it has `version` (`SDRTRUNK_SHAPE_CURRENT`), and `system` and `site`
+  (`SDRTRUNK_SHAPE_LOCATION`) come before `frames` there and after it otherwise. `VoiceFrame` gained `tag` (first) in
+  2026-07 (7945f0ce), after the current layout, so `tag` (`SDRTRUNK_SHAPE_LATER`) is allowed only in a frame of a
+  record that named the current layout: `sdrtrunk_shape_frames()` starts each frame's level with the record's
+  `current`. The check looks at the exit flag as it starts and ends and never more than a MiB apart
+  (`sdrtrunk_shape_stopped(scan, p, n)`: every step of the check, a white-space byte, a structural character, a string
+  character or escape, a word or a number's digits, calls it first with the bytes it is about to pass, and it looks
+  before a step that would end past the deadline, so a six-byte `\u` escape never puts two looks more than a MiB
+  apart); a Stop during it (`SDRTRUNK_JSON_STOPPED`), like a file the read refuses (over the cap, unreadable, or cut by
+  Stop), makes the reader return before it ends the earlier file's call and resets the speech decoder
+  (`dsd_mbe_file_end_replayed_call()`, which `playMbeFiles()` leaves to the reader for an export), resets the call or
+  syncs the slot, so the earlier call, its vocoder state and the recordings stay as they were (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_refused_file_leaves_the_earlier_call`,
+  `test_sdrtrunk_json_stop_during_the_shape_check`, `test_sdrtrunk_json_stop_in_a_long_span` (a `system` of `\u`
+  escapes), `test_sdrtrunk_json_playlist_stop_during_the_shape_check` (`-r first.mbe next.mbe` through
+  `playMbeFiles()`), through the test seam `dsd_sdrtrunk_test_set_shape_poll_hook()` in
+  `src/core/file/sdrtrunk_test_support.h`). A STANDARD file is recorded and exported as its policies allow, a Stop
+  part-way included: its call is complete before any audio, and the policy does not change while a file is read (the
+  decoder thread is in the reader and drains no commands), so the row's own record and stream verdicts judge all its
+  audio. Any other file (NONSTANDARD) plays, makes its history rows, and writes the static WAV and MBE captures, but
+  `s_sdrtrunk_per_call_off` keeps every frame out of the per-call segment (`run_decode_audio_output_path()`, one compare
+  a frame), so the segment stays empty and its close discards it as any empty one: nothing is marked, so nothing can
+  reach the next file's recording (`CORE_WAV_JOURNAL` `test_playback_empty_file_leaves_the_next_recording`). One line a
+  run while per-call recording is on (`sdrtrunk_json_note_unrecorded()`). A `to` or `from` that is a string but does not
+  read (`sdrtrunk_json_parse_id()` fails: SDRTrunk's roaming and ISSI forms among them) sets `id_unread`, and the ID is
+  0; the call is published with `dsd_call_observation::identity_unread`, which the call snapshot keeps for the epoch,
+  and the event layer's render gives its row `Event_History::fallback_blocked`, so it never takes the fallback
+  (`dsd_rdio_call_fallback_eligible()`); with a talkgroup it is exported under it. A `to` or `from` that is not a string
+  is not allowlisted, so its file is NONSTANDARD. Tests: `CORE_WAV_JOURNAL`
+  `test_playback_file_shape_decides_its_recording` (a `from`, `to` or `encrypted` after the frames, a second record,
+  frames before the protocol, a nested object with frames, an escaped key, an unclosed record, an outer array,
+  `"to":[]`, a frame with no `hex`, an escaped `from` or `to`, an escape JSON has not or bytes that are not UTF-8 in
+  `system` or `site`, `version` with a `site` after `frames`, no `version` with `system` before them, `02`, a `-` on any
+  number, a `version` or key id past 16 bits, an algorithm past 8 bits, a `time` past `long`, a tagged frame in a record
+  with no `version`, a `SACCH` tag with an escape: no per-call audio; every JSON escape and UTF-8 in `system` and
+  `site`, and `version` 65535, stay STANDARD; a zero-padded source keeps its radio's `stream=off`; a patch group, an
+  unreadable `to`, a roaming source), `test_playback_unread_ids_say_they_stay_local` (the once-a-run line for an
+  unreadable ID, said whether or not the close allows the fallback: `wav_close_note_rdio_skip()`; and at a file
+  boundary, where the event layer drops the identityless row of a roaming source to an ISSI talkgroup and rotates it
+  with `DSD_WAV_EXPORT_NONE`: `wav_close_note_unexported()`, YSF rows aside),
+  `test_playback_sdrtrunk_written_files_record` (Jackson-printed DMR, P25 Phase 1 and 2, NXDN with SACCH tags and with
+  an escaped free-text tag, the older writer, CRLF line ends: all STANDARD), `CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_wav_honors_talkgroup_policy` (a NONSTANDARD file writes the static WAV, never the per-call one).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2459,15 +2586,39 @@ suite runs under this compiler.
   NAC prints `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps
   its field positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own
   `channel` and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env).
-  The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
-  before. Its `talkgroup_tag` is the row's first name (service, talkgroup name, target string, channel label), else
-  `PRIVATE` for a private call (`gi` 1), `GROUP` for a group call (`gi` 0), and empty for a call of no known kind
-  (`gi` -1; issue #668 B3, which rdio-scanner ignores as a label). A conventional analog row (`DSD_SYNC_ANALOG`, issue
-  #668) takes its own branch in `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the
-  frequency in kHz, rounded down, else `opts->rdio_analog_talkgroup`), worked out at export time only and never
-  stored in `Event_History::target_id`; tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz`, else
-  the mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's,
-  is `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  The rdio-scanner sidecar's `freq` is `freq_hz` when it is 1,000,000 to 2,147,483,647 Hz (`dsd_rdio_usable_freq_hz()`:
+  1 MHz itself kept, up to what rdio-scanner's signed 32-bit MySQL/MariaDB/PostgreSQL columns store), else 0, never
+  an omitted key (issue #888 B5, B13, D8); it was the channel number before. A `freqList` of one entry,
+  `[{"pos": 0, "freq": <Hz>}]`, follows it only when `freq` is above 0: rdio-scanner 8 reads the list alone, 6.6.3
+  either (D5). Decoded source and target IDs stay as decoded, above 2147483647 included. `emergency` is the row's
+  (B6). `short_name` is `sysid_string`, else the protocol word (`dsd_rdio_protocol_word()` from the
+  `DSD_SYNC_IS_*` predicates: `P25` for both phases, `DMR`, `NXDN`, `D-STAR`, `YSF`, `dPMR`, `M17`, `X2-TDMA`,
+  `ProVoice`, `EDACS`, `TETRA`), so a v8 DirWatch, which resolves the system from `short_name`, finds one for an
+  X2-TDMA row (B8). Every string is written as valid UTF-8 (`dsd_rdio_json_write_escaped()`, B11): well-formed UTF-8 as
+  it is, ASCII escaped where JSON needs it, each maximal ill-formed run (a name cut mid-character) as one U+FFFD. A
+  numbered digital call's `talkgroup_tag` (`dsd_rdio_numbered_tag()`) is the row's first usable name (service,
+  talkgroup name, target string, channel label), else `PRIVATE` for a private call (`gi` 1), `GROUP` for a group
+  call (`gi` 0), and empty for a call of no known kind (`gi` -1; issue #668 B3, which rdio-scanner ignores as a
+  label). A name of `"-"` is unusable in every chain (`dsd_rdio_tag_usable()`, B10): both servers drop it as a label,
+  so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
+  `dsd_rdio_fallback_tag()`) is labelled by its service name, else its channel label, else `<protocol> <access code>
+  <MHz> MHz` built into `generated_tag` with the unknown parts left out (`NXDN RAN 9 452.3125 MHz`, `NXDN RAN 9`,
+  `X2-TDMA`); the protocol word is `dsd_rdio_row_protocol_word()`'s: `EDACS` for a ProVoice call an EDACS grant named
+  (its row carries the LCN, `Event_History::channel`, which only EDACS sets for ProVoice: `edacs_voice_observation()`;
+  a standalone ProVoice row has channel 0, and its `sysid_string` and received-identity family are EDACS's too, so
+  neither tells the two apart), so an EDACS channel's digital and analog calls share one label as they share one kHz
+  talkgroup, whether or not a site was decoded, else `dsd_rdio_protocol_word()`'s (the same rule names a row with no
+  system string in `short_name`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`,
+  `CC` and `CAN` in decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot
+  call it), and the MHz part appears only when the kHz rule gives a number. Never per-call identity text or
+  `PRIVATE`/`GROUP`: every unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback
+  number is the export mode's (`dsd_wav_export_mode`) and `dsd_rdio_call_fallback_eligible()`'s, under "rdio-scanner
+  export verdict" below. A conventional analog row (`DSD_SYNC_ANALOG`, issue #668) takes its own branch in
+  `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the frequency in kHz, rounded down,
+  else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
+  tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
+  mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's, is
+  `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
   Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -2488,9 +2639,13 @@ suite runs under this compiler.
   `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
   row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
-  shares (below). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
-  `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
-  on `event_time`. Its service, system, target and source components are made file-safe
+  shares (below). A played SDRTrunk export's row is stamped once per call, from its first voice frame whose `time`
+  (Unix milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that
+  fails clears the row's until one parses. A call the call-state layer opens inside the same file is stamped afresh
+  (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the sidecar, `CORE_MBE_FILE_IO`).
+  `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`,
+  `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`.
+  Its service, system, target and source components are made file-safe
   (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
   become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file; every
   byte that is no part of a well-formed UTF-8 character becomes `_` too, by the journal's own test
@@ -2564,11 +2719,15 @@ suite runs under this compiler.
   record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
   - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
-    rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
-    failure that keeps the temp file. `open_wav_file()` journals an open failure. The analog teardown close
-    (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) and the discard of an
-    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's
-    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+    rename (and the rdio export), `discard` for a 44-byte WAV once `wav_close_discard()` has removed it (or found it
+    already gone, `ENOENT`), `error` for a close (`sf_close()`) or rename failure that keeps the temp file, and `error`
+    of kind `discard`, with a warning, for a file whose removal failed with any other error (a read-only folder, a
+    folder that cannot be searched, a Windows reader that shares no delete), which names the file left (issue #888). The
+    removal's own error decides, never whether the file can be read afterwards. `open_wav_file()` journals an open
+    failure. The analog teardown close (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts
+    the call kept) and the discard of an unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each
+    segment's id is its temp name's token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and
+    its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
     (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
@@ -2588,7 +2747,8 @@ suite runs under this compiler.
   - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
     continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no active
     call owns (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with
-    no active call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
+    no active call), which no commit would close and the next admitted call's commit would otherwise publish as its
+    own (a TETRA admission closes it first). `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
     slot file that holds frames (`dsd_wav_segment_frames()`, libsndfile's count, read through `wav_segment_info()` as a
     close reads its length) while its slot has no active canonical call, publishes it without an rdio-scanner export and
     reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). It is published pending on the
@@ -2616,15 +2776,38 @@ suite runs under this compiler.
     EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
     trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
-    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
-    `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
-    this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
-    anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
-    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune names
-    its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
-    otherwise `opts->rtlsdr_center_freq`. The P25 patch listening clock's break and the DMR leave judge below read the
-    same value. Retunes an external controller makes over the RTL UDP port are invisible to the decoder: a recording
-    can span one (limit). One `sf_command()` per open slot file per departure; nothing on the write path.
+    nothing. An accepted EDACS voice grant (`edacs_try_tune_voice_call()`) runs the flush itself before it observes the
+    granted call, whatever its tune moved (issue #888): the grant's row would otherwise name the audio no call owns, and
+    the analog rotation after the sync (or a ProVoice call's commit) would publish and export it as the granted call's.
+    An outgoing call still active keeps its file: the commit that the incoming observation brings closes it under its
+    row, or, when the call state merges the grant into it (a group grant from the LID of an active all-call), the analog
+    rotation closes it early from its staged row (no target, the LID), which names a call, so that all-call audio is
+    exported under the kHz fallback, pending, and linked by the merged call's commit. A TETRA call admitted on a slot
+    with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous call once signalling proves the carrier, a
+    call record's or the direct-mode call's first publication) runs the flush before it observes the call (issue #888),
+    so the speech that reached the slot file before (ahead of the proof or the DM-SETUP, or trailing an ended call)
+    closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; the
+    speech starts over with it (`tetra_voice_call_admitted()`): the samples still waiting to be played
+    (`tetra_voice_t::carry_len`, half an output frame after a half slot), the confirmation and concealment state and the
+    decoder's history go, so nothing played or concealed from that speech (a half slot's stolen first frame) leads the
+    call's audio, and so does slot 0's digital high-pass state (`dsd_voice_hpf_reset()`, `-v 0x9`), which the voice
+    chain keeps across a call learned partway through a reception; a call already active (a republication, a
+    reallocation) runs nothing. Each `-r` playback file
+    (`dsd_mbe_file_end_replayed_call()` in `dsd_file.c`, once per file opened, after it ends and commits the previous
+    file's call, and resets the speech decoder; for an SDRTrunk export, `read_sdrtrunk_json_format()` runs it once the
+    file is read and its shape checked, so a refused file or a Stop before then leaves the previous call as it was)
+    runs the flush too (issue #888): a raw
+    `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would otherwise join the next file's, and an SDRTrunk
+    export's named call would commit and export it as its own; each file is a recording of its own (the last file's
+    no-call audio closes at the run's no-carrier pass). Where the receiver is comes from `dsd_engine_receiver_hz()`
+    before the tune, the reading `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the
+    frequency it last confirmed on this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a
+    connect or reconnect before anything was sent, never the tuner frequency a reconnect leaves naming the old peer's);
+    on an RTL stream tuned directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since
+    a timed-out tune names its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio
+    where it was; otherwise `opts->rtlsdr_center_freq`. The P25 patch listening clock's break and the DMR leave judge
+    below read the same value. Retunes an external controller makes over the RTL UDP port are invisible to the decoder:
+    a recording can span one (limit). One `sf_command()` per open slot file per departure; nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -2681,8 +2864,9 @@ suite runs under this compiler.
 
     `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
     `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
-    segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`, `close` or
-    `publish`), `temp` (string: the temp name it keeps, relative or absolute as `file` is; "" when none) and `folder`.
+    or discarded segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`,
+    `close`, `publish`, or `discard` for a deletion that failed), `temp` (string: the temp name it keeps, relative or
+    absolute as `file` is; "" when none) and `folder`.
 
     Measured (dev-release, NVMe ext4, 20000 appends): a `publish` append costs 7.5 us mean (p99 10 us; 6.1 us on
     tmpfs), and the whole close and publish of a 1 s per-call WAV goes from 29 us to 39 us with the journal on. With
@@ -2696,8 +2880,20 @@ suite runs under this compiler.
   session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a zero id;
   the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending and
   unlinked at its drop, one close and one publish beside a commit on another thread), not of an empty file, a static
-  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, and a retry park
-  ending the call heard since a failed park; the write and pending-list seams in
+  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, a retry park
+  ending the call heard since a failed park, and at an EDACS grant on the carrier the receiver is on (an analog group
+  call, an analog all-call and a ProVoice call, journal on and off: the earlier audio published once as no row's and
+  unexported, the granted call's recording only its own, an all-call's exported under its LCN's kHz with its label and
+  LID; an outgoing call still active keeps its audio under its row, exported; a group grant from an active all-call's
+  LID merges into it, and the all-call segment is exported under the kHz fallback from its LID, pending and linked),
+  and at the first TETRA call admitted after speech its file took with no call (an anonymous call once the carrier is
+  proven, a direct-mode call once named, through the real speech path, journal on and off: the earlier speech one
+  recording of no row's, unexported, the call's only its own under its row; a faded identity-less call held for its
+  drop verdict, then a new call admitted: the held call's audio its own recording, pending on its epoch, unexported
+  and unlinked at its drop, the new call's only its own, exported), and at each `-r`
+  playback file (two raw `.amb` files, an SDRTrunk export naming a call, a raw `.amb`, through `playMbeFiles()` and
+  the run's end, journal on and off: each file one recording, the raw files' no row's and unexported, the named call's
+  only its own, exported under its row); the write and pending-list seams in
   `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
   control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
   carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
@@ -2718,22 +2914,41 @@ suite runs under this compiler.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
   call. `wav_close_and_publish()` (`dsd_file.c`), the one export call site, which every close path reaches (the event
   rotation through `close_and_rename_wav_file_ex()`, and `close_and_publish_call_wav()` for WAV stop, analog calls,
-  EDACS and the last close) with the slot's staged row, exports only when `export_call` and the row's verdict allow
-  it. `close_and_publish_call_wav()` first re-judges the verdict (`dsd_event_refresh_stream_verdict()`, the call's own
-  staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
-  (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built
-  (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional analog calls,
-  M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue #667) also needs
-  an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when `dsd_rdio_analog_talkgroup()` gives one
-  (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it with no failure line, logging one
-  LOG_WARN per decoder run while `--rdio-mode` is on (`wav_recording_analog_rdio_skip_first_this_run()`, reset by
-  `dsd_wav_recording_session_reset()` at engine start). Its tag and `short_name` take the row's mode word
-  (`sysid_string`: `NFM`, `AM` or `ANALOG`). A digital row without a talkgroup still warns ("skipped", then "export
-  failed"). An analog export keeps the #708 contract: the upload is queued before the journal's `publish` record (its
-  `rdio` flag), the queue holds the file, and a journal suppresses delete-after-upload. Neither field is shown,
-  persisted or part of the control API's row fingerprint; exports already queued are not recalled. Tests:
-  `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
-  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  EDACS and the last close) with the slot's staged row, exports only when its export mode (`dsd_wav_export_mode`,
+  `<dsd-neo/core/file_io.h>`) and the row's verdict allow it. `close_and_publish_call_wav()` first re-judges the verdict
+  (`dsd_event_refresh_stream_verdict()`, the call's own staged row only), so a policy import or edit applied in the same
+  command drain as a WAV stop counts (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however
+  it was built (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional
+  analog calls, M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue
+  #667) also needs an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when
+  `dsd_rdio_analog_talkgroup()` gives one (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it
+  with no failure line, logging one LOG_WARN per decoder run while `--rdio-mode` is on
+  (`wav_recording_analog_rdio_skip_first_this_run()`, reset by `dsd_wav_recording_session_reset()` at engine start). Its
+  tag and `short_name` take the row's mode word (`sysid_string`: `NFM`, `AM` or `ANALOG`). The export talkgroup is
+  `dsd_rdio_call_talkgroup()`'s (issue #888 D7): a digital row's target, else the fallback (its frequency in kHz, else
+  `--rdio-unknown-talkgroup`) for a VOICE row only when the close allows it. The export mode is none on the event
+  layer's drop path and orphan flush, committed on a kept row's rotation (`watchdog_event_retire_staged_row()`), and
+  early for `close_and_publish_call_wav_ex()`, which allows the fallback only for a row that names a call (a target or
+  source, number or text; the twin of `watchdog_event_row_names_call()`) or whose protocol's voice is anonymous
+  (`dsd_call_state_protocol_voice_is_anonymous()`: X2-TDMA, standalone ProVoice, whose rows are always kept; a ProVoice
+  row carrying an EDACS grant's LCN is an EDACS call, not standalone, and needs a name like any other; an EDACS row,
+  that or an EDACS sync's, is named by its decoded IDs only, since standard addressing writes `LID_UNK` and
+  `000_AFS_00_000` placeholders into its strings for unknown parties, which the event layer's rescue still keeps for
+  history): any other
+  identity-less row's keep verdict (media plus a positive end) is not known before its commit, so a WAV stop mid-call, a
+  held fade, a cleared history or a trunk-scan target's empty row never exports under a fallback number. A digital row
+  with no number is skipped with no failure line; the one LOG_WARN per run
+  (`wav_recording_digital_rdio_skip_first_this_run()`, reset with the analog latch) is spent only by a row the fallback
+  would number had it a frequency or the option (`dsd_rdio_call_fallback_eligible()`). An analog export keeps the #708
+  contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file, and
+  a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
+  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY` (and M17 through the real
+  observation and commit rotation: a destination at `UINT32_MAX` numbered as decoded, one above it and the broadcast
+  address under the kHz fallback, a source above it listing no radio), `CORE_MBE_FILE_IO`, `CORE_WAV_JOURNAL` (the
+  close paths, `test_d7_*`; a TETRA anonymous call exported under the fallback once the carrier is proven, its earlier
+  speech not; a played SDRTrunk call with no talkgroup under `--rdio-unknown-talkgroup` with no tuner frequency or
+  code, and kept local without it), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, and end to end `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG` (`docs/testing.md`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -4290,8 +4505,8 @@ suite runs under this compiler.
   over where the receiver leaves the carrier: `dsd_engine_carrier_boundary()` for every kind but STREAM_GAP (after that
   kind's early return, not inside `dsd_engine_forget_carrier_decoding()`, which a stream gap runs too), the trunk-scan
   target switch (`trunk_scan_leave_carrier()`), a manual P25 control-channel selection
-  (`p25_sm_select_control_channel()`), and each MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a
-  stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
+  (`p25_sm_select_control_channel()`), and each MBE playback file (`dsd_mbe_file_end_replayed_call()`). It is kept
+  across a stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
   `init_audio_filters()`; fixed and auto keep its estimate (back to auto it starts from the fixed gain within its
   range, but only within the reception that fixed gain was set in: after a reset auto opens at the opening gain). All
   of these run on the decoder thread; the no-carrier pass touches no AGC state. Opening gain and talker memory
@@ -5365,7 +5580,12 @@ suite runs under this compiler.
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
     Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
     (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
-    copied into the job, so an analog system with a base system of 0 still uploads.
+    copied into the job, so an analog system with a base system of 0 still uploads. A digital row with no talkgroup
+    is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
+    `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
+    `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields
+    and "rdio-scanner export verdict"); `dsd_rdio_export_call()` and `_ex()` pass 0, so they never number one, and the
+    writer's `talkgroup == 0` check stays as a backstop (no sidecar, -1).
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
@@ -5386,8 +5606,9 @@ suite runs under this compiler.
     its copies of the API key and URL wiped (`DSD_SECURE_ZERO`) before it is freed (`dsd_rdio_upload_job_free()`;
     test: `RUNTIME_RDIO_EXPORT`), and the worker wipes the endpoint it builds from the URL after each upload. Should the
     shutdown's join of the worker fail (not expected: one shutdown joins, and the worker never joins itself), the
-    worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
-    not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
+    worker may still run, so the queued jobs are detached under the queue's mutex, which the worker pops under, and
+    released after it is unlocked (their private inputs, holds and API copies); the job in flight and the worker's
+    endpoint copy are left to the worker. Uploads are kept while a
     journal is set:
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
@@ -5395,12 +5616,59 @@ suite runs under this compiler.
     autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
     bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
     warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
-    `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
-    during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
-    rule under POSIX and Windows rules on every host; analog sidecar fields, kHz and fallback talkgroups, stable tags,
-    the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
-    BOTH mode and holds), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip
-    line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    `RUNTIME_RDIO_EXPORT`).
+    Private job inputs (issue #888 B15): in `--rdio-mode both` the sidecar is public before the queued job runs, and
+    a DirWatch with delete-after on that folder removes the pair once it takes it. So only in `both` mode,
+    `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair before the public sidecar is in place
+    (`dsd_rdio_export_api()`: the sidecar is written and closed as its temp file, the job's copy of it is made from
+    that file, then the WAV's, and only then is the temp file renamed to the public name and the job queued), so a
+    watch that takes and deletes the pair the moment the sidecar appears never beats them: a copy of the sidecar and a
+    hard link of the WAV (`dsd_hard_link()`, a copy where the file system has none), named
+    `<token>.<N>.rdio-upload-audio` / `.rdio-upload-meta` in the WAV's folder (the token: 16 uppercase hex digits drawn
+    once per process with `dsd_nonce_fill()`; N from a process-wide counter, the next one on a name in use, 64 tries),
+    which no 6.6.3 or v8 watch reads (they look at the last extension only: `.json`, `.mp3`, or the default type's
+    configured one, `.wav` by default). The names do not grow with the public stem (at most 45 characters), so any
+    recording whose public names fit the file system's name limit has them. The worker uploads from them under the
+    published names (`curl_mime_filename()`), and the job's release (`dsd_rdio_upload_job_free()`: sent, failed,
+    cancelled, dropped at shutdown, released after a failed join, or never queued) removes them; the public pair is
+    published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names, and API-only and
+    DirWatch-only runs make no private inputs. The copy (`dsd_rdio_copy_file()`) opens its destination exclusively with
+    `dsd_fopen_private_ex()` and, on a failure, removes it only when this open created it (never a file already there),
+    through `dsd_rdio_remove_private_input()`, so a removal that fails is said like a job's, with the copy's own error
+    kept; it checks the user's Stop (`g_rdio_upload_cancel`) between 16 KiB chunks. The queue's admission rule
+    (`dsd_rdio_upload_admits_locked()`: not after the shutdown began, not after a Stop, not past
+    `DSD_RDIO_UPLOAD_QUEUE_MAX`) is asked twice: before the private inputs are made, with the queue's mutex released
+    again for their I/O, so an upload the queue would refuse costs no WAV copy, and at the enqueue, which has the last
+    word. After a Stop no job is queued (the worker would never send it), whether the Stop came before the private
+    inputs or after them, before the enqueue: the job is released (its private inputs removed, nothing held), the
+    export logs it and returns success with the public pair published (`DSD_RDIO_UPLOAD_CANCELLED`), and the journal's
+    `rdio` stays false. A run only ever removes its own private inputs, at
+    each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
+    them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
+    also blocks the delete of its hard link), which is not retried and is logged once a process
+    (`dsd_rdio_remove_private_input()`); `docs/cli.md` says how to delete such files by hand. A copy that cannot be made
+    fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still published. A
+    failed join of the worker at shutdown (not expected) detaches the queued jobs under the queue's mutex, which the
+    worker pops under, and releases them (private inputs, holds, API copies); the job in flight stays the worker's.
+    Accepted limit: the copy fallback runs in the export, on the closing thread, and a commit rotation closes under the
+    call-state lock (`dsd_event_sync_slot()`), so on a drive with no hard links a long recording's copy also holds off
+    the P25 watchdog thread, which takes that lock. Moving it to the worker would reopen the race above.
+    Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and during the drain, holds with a blocked uploader
+    through 140 later publications, release after the delete, the name rule under POSIX and Windows rules on every host;
+    analog sidecar fields, kHz and fallback talkgroups, stable tags, the analog system in the sidecar and the form part,
+    the NFM upload's completion, failure, journal retention, BOTH mode and holds; issue #888 B15: a held first upload
+    while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
+    gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
+    that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), short private names under a
+    230-character stem, no copy and no job after a Stop and a Stop that ends a copy, a Stop at the sidecar's
+    publication (after the private inputs, before the enqueue) that leaves the job unqueued and unheld, no private
+    input made for a call the full queue refuses, a private open that made its file but no stream, a failed removal said
+    once (a partial copy's and the jobs' end together), the queued jobs released after a failed join (the last three through
+    GNU ld `--wrap` link seams, `DSD_TEST_WRAP_RDIO_SEAMS`, POSIX only); the fallback number and its eligibility, the
+    generated label (`EDACS` for a ProVoice call an EDACS grant named), `freq`/`freqList` at their bounds, emergency,
+    the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
+    `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
+    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -12028,6 +12296,51 @@ control within the CC grace walks its channel map with the ordinary hunts.
   data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
+- YSF and the rdio fallback (issue #888): a YSF row takes the fallback talkgroup only when its call ended on its own
+  terminator, decoded by YSF. Its own: the terminator's verified CM is `dsd_state::ysf_call_cm`, the CM the last
+  verified header or communications FICH named (set in `ysf_update_call_lifecycle()`, kept through `noCarrier()` so a
+  terminator after a fade still matches; a CM 1 Radio ID terminator does not end a CM 0 group call as its own). An
+  ended (faded) call is not observed again, but `ysf_enrich_identity()` compares a verified DCH's callsigns with it
+  (`dsd_call_snapshot_contradicted_by()`, the call state's own epoch-change rule) and forgets `ysf_call_cm` (9) when
+  they name another party, so a foreign caller's terminator never marks it. Otherwise the terminator ends the call
+  with `dsd_call_state_end_ex()` and `DSD_CALL_END_TERMINATOR`, not its own. On a match
+  `ysf_end_call_lifecycle()` ends the call with `dsd_call_state_end_own_terminator()`
+  (`DSD_SYNC_YSF_POS` and the kind the terminator's verified FICH names, `ysf_frame_call_kind()`: data by its DT, else
+  group, private or plain voice by its CM), which ends it as `dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`
+  and, when the call is of the same protocol family and the kind does not contradict the call's
+  (`call_state_kind_changed()`: a group call and a private call's terminator do; plain voice contradicts no voice
+  kind), sets `dsd_call_snapshot::own_terminator` (also when the terminator retracts a recoverable end; a new epoch
+  starts it at 0). A context restore (`dsd_call_context_restore_snapshot()`) that makes an ended slot's reason EXPLICIT
+  clears the flag with it, so the reason and the flag stay one verdict. Every other protocol ends calls with
+  `dsd_call_state_end_ex()`, which leaves it 0: `p25_sm_emit_tdu()` ends slot 0 on a terminator whatever call it holds,
+  so a P25 TDU after a YSF call in Auto mode is a terminator end but not the YSF call's own. The event layer's render
+  sets `Event_History::fallback_blocked` from the call (`watchdog_event_call_blocks_fallback()`, `dsd_events.c`): a YSF
+  call not ENDED with `DSD_CALL_END_TERMINATOR` and `own_terminator` (a sync loss, an in-band change of call mode or
+  callsign that began another epoch, a teardown, another protocol's terminator, or an early close while it is active)
+  is blocked, as is any call whose snapshot has `identity_unread`. The flag is copied with the row
+  (`push_event_history()`, the merge re-render keeps the committed row's), and `dsd_rdio_call_fallback_eligible()`
+  refuses a blocked row, so `dsd_rdio_call_talkgroup()` gives it no fallback number (a talkgroup it has stays). The WAV
+  close says it once a run (`wav_recording_fallback_blocked_first_this_run()`). A YSF voice frame's DCH is read after
+  its voice was written, so a call that ends any other way may hold the start of the next one; the rule replaces the
+  in-band epoch check of an earlier round, which a V/D1 repeater call tripped. V/D1 DCH fields are selected by frame
+  number (`ysf_vd_type1_dch_field()`: frame 0 CSD1, frame 1 CSD2, later frames none), not by the block number, which
+  read frame 1's repeater callsigns as the call's endpoints and split the call. Tests: `YSF_DCH_DECODE`
+  `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback`,
+  `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`,
+  `test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator`,
+  `test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`,
+  `test_process_ysf_faded_call_takes_no_other_callers_terminator`; `CORE_CALL_STATE`
+  `test_context_restore_clears_the_own_terminator_mark`; `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (the
+  synthetic call has no terminator: never exported, said once a leg) beside `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG`
+  (the fallback end to end).
+- YSF repeater callsigns (`src/protocol/ysf/ysf.c`): CSD2 is the downlink repeater's callsign, then the uplink's
+  (Yaesu "Amateur Radio Digital Standards" rev 1.02 Table 4-2; V/D type 2 sends the downlink in frame 2 and the uplink
+  in frame 3, Table 4-4; MMDVMHost `YSFPayload.cpp` and DSDcc `ysf.cpp` read them so). `ysf_dch_decode_csd2()` and
+  `ysf_dch_decode2()` give the uplink to `route_text[0]` and the downlink to `route_text[1]`, which the terminal's
+  `UPL:`/`DNL:` row shows; main had the two swapped. `ysf_dch_decode()` and `ysf_conv_dch()` take the DCH `field` to
+  decode (0 CSD1, 1 CSD2, 2 text), never the FICH block number. Tests: `YSF_DCH_DECODE`
+  `test_dch_csd2_tracks_uplink_and_downlink`, `test_dch2_tracks_destination_source_links_and_remarks` and the header
+  and terminator cases, every CSD2 written downlink first.
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
   destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
   split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and

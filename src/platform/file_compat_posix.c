@@ -88,6 +88,15 @@ dsd_remove_file(const char* path) {
     return remove(path);
 }
 
+int
+dsd_hard_link(const char* existing, const char* new_path) {
+    if (!existing || existing[0] == '\0' || !new_path || new_path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    return link(existing, new_path);
+}
+
 int64_t
 dsd_path_free_bytes(const char* path) {
     if (!path || path[0] == '\0') {

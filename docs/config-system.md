@@ -515,6 +515,7 @@ audio input) sound no alert.
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 | `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
 | `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
+| `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -532,10 +533,13 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
-`rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
-warning, and the value already loaded stays; `--validate-config` reports them as errors. An analog call with a frequency
-is exported under it in kHz; how analog calls are exported, and the limits, are in `docs/cli.md`, "Analog calls in
-rdio-scanner".
+`rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges, or not whole
+numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them as errors.
+An analog call with a frequency is exported under it in kHz; how analog calls are exported, and the limits, are in
+`docs/cli.md`, "Analog calls in rdio-scanner". A digital call with no talkgroup is exported under its frequency in kHz
+too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in
+`docs/cli.md`, "Digital calls with no talkgroup in rdio-scanner". A saved config writes `rdio_unknown_talkgroup` only
+when it is above 0, and `--rdio-unknown-talkgroup 0` on the command line turns a config's value off.
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.

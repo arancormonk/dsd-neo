@@ -725,6 +725,31 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return 0;
 }
 
+int
+dsd_hard_link(const char* existing, const char* new_path) {
+    if (!existing || existing[0] == '\0' || !new_path || new_path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide_existing = NULL;
+    wchar_t* wide_new = NULL;
+    const int kind = dsd_win32_path_pair_wide(existing, new_path, &wide_existing, &wide_new);
+    if (kind < 0) {
+        return -1;
+    }
+    /* CreateHardLink() takes the new name first. An existing name fails with ERROR_ALREADY_EXISTS (EEXIST). */
+    const BOOL linked =
+        kind > 0 ? CreateHardLinkW(wide_new, wide_existing, NULL) : CreateHardLinkA(new_path, existing, NULL);
+    const DWORD err = linked ? ERROR_SUCCESS : GetLastError();
+    free(wide_existing);
+    free(wide_new);
+    if (err != ERROR_SUCCESS) {
+        errno = dsd_win32_file_errno(err);
+        return -1;
+    }
+    return 0;
+}
+
 /* dsd_path_type_nofollow()'s answer from one GetFileAttributes() result, whose GetLastError() this reads on a
    failure. GetFileAttributes() describes a link or junction itself, never its target. */
 static int

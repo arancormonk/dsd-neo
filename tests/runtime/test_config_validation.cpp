@@ -1690,6 +1690,21 @@ test_rdio_analog_validation(void) {
                                  "Invalid integer value '2147483648'");
     return rc;
 }
+
+/* Issue #888: [recording] rdio_unknown_talkgroup (0..2147483647) is refused outside its range, as the analog talkgroup
+ * is: an ERROR, never the schema walk's clamping warning. */
+int
+test_rdio_unknown_talkgroup_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "0", -1, NULL);
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483647", -1, NULL);
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 2147483647] and is refused");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
+                                 "Invalid integer value '2147483648'");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    return rc;
+}
 } // namespace
 
 /* Issue #525: [analog] nfm_bandwidth_hz. A width outside 8000..25000 Hz, or anything but whole Hz, is an ERROR
@@ -2435,6 +2450,7 @@ main(void) {
     rc |= test_analog_max_gap_validation();
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
+    rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();

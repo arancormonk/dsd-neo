@@ -1039,6 +1039,153 @@ expect_rename_noreplace_in(const char* dir) {
     return ok ? 0 : 1;
 }
 
+#if DSD_PLATFORM_WIN_NATIVE
+#ifndef FILE_SUPPORTS_HARD_LINKS
+#define FILE_SUPPORTS_HARD_LINKS 0x00400000
+#endif
+/* The flags of the volume holding @p dir, asked through the wide or the ANSI call as dsd_hard_link() picks it
+   (dsd_win32_path_wide()). The folder's full path is asked, not @p dir as given: for a relative path
+   GetVolumePathName() answers the boot volume, not the working folder's. 0 when it cannot be asked. */
+static int
+win_volume_flags(const char* dir, DWORD* flags) {
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(dir, &wide);
+    int known = 0;
+    if (kind > 0) {
+        wchar_t full[DSD_TEST_PATH_MAX];
+        wchar_t root[MAX_PATH + 1];
+        const DWORD n = GetFullPathNameW(wide, DSD_TEST_PATH_MAX, full, NULL);
+        known = n > 0 && n < DSD_TEST_PATH_MAX && GetVolumePathNameW(full, root, MAX_PATH + 1)
+                && GetVolumeInformationW(root, NULL, 0, NULL, NULL, flags, NULL, 0);
+    } else if (kind == 0) {
+        char full[DSD_TEST_PATH_MAX];
+        char root[MAX_PATH + 1];
+        const DWORD n = GetFullPathNameA(dir, DSD_TEST_PATH_MAX, full, NULL);
+        known = n > 0 && n < DSD_TEST_PATH_MAX && GetVolumePathNameA(full, root, MAX_PATH + 1)
+                && GetVolumeInformationA(root, NULL, 0, NULL, NULL, flags, NULL, 0);
+    }
+    free(wide);
+    return known;
+}
+#endif
+
+/* dir_takes_hard_links() answers besides yes (1) and no (0). */
+enum {
+    DIR_LINKS_NAMES_TOO_LONG = -1, /* a probe name does not fit */
+    DIR_LINKS_UNKNOWN = -2,        /* the volume cannot be asked (Windows) */
+};
+
+/* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
+   (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
+   its volume says so (win_volume_flags()), DIR_LINKS_UNKNOWN when it cannot be asked; on POSIX a link is tried between
+   names the probe makes in @p dir, and only what it made is removed. DIR_LINKS_NAMES_TOO_LONG when a probe name does
+   not fit, before any file is touched. */
+static int
+dir_takes_hard_links(const char* dir) {
+#if DSD_PLATFORM_WIN_NATIVE
+    DWORD flags = 0;
+    if (!win_volume_flags(dir, &flags)) {
+        return DIR_LINKS_UNKNOWN;
+    }
+    return (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
+#else
+    char a[DSD_TEST_PATH_MAX];
+    char b[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(a, sizeof a, dir, "link_probe.a") != 0
+        || dsd_test_path_join(b, sizeof b, dir, "link_probe.b") != 0) {
+        return DIR_LINKS_NAMES_TOO_LONG;
+    }
+    int opened = 0;
+    FILE* fp = dsd_fopen_private_ex(a, "wbx", &opened);
+    if (fp == NULL) {
+        if (opened) {
+            (void)remove(a);
+        }
+        return 0;
+    }
+    (void)fclose(fp);
+    const int ok = link(a, b) == 0;
+    if (ok) {
+        (void)remove(b);
+    }
+    (void)remove(a);
+    return ok;
+#endif
+}
+
+/* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
+   they were), and keeps every byte once the first name is removed; a missing source fails with ENOENT and makes no
+   name, asked against an unused one so a taken name cannot answer first. Where the filesystem takes none (the exporter
+   then copies), a link over an existing name, and a link from a missing source, are refused with the files as they
+   were, whatever the reason given: such a volume (FAT, exFAT) can refuse the link before it looks at the name, and a
+   runner whose policy denies link() refuses it (EPERM) before the source is looked up. Where the volume cannot be
+   asked (DIR_LINKS_UNKNOWN), only what holds either way is: neither refused link changes or makes a file. A fixture
+   name that does not fit fails the test before any file is touched. */
+static int
+expect_hard_link_in(const char* dir) {
+    char from[DSD_TEST_PATH_MAX];
+    char taken[DSD_TEST_PATH_MAX];
+    char to[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(from, sizeof from, dir, "dsd_neo_link_from.tmp") != 0
+        || dsd_test_path_join(taken, sizeof taken, dir, "dsd_neo_link_taken.tmp") != 0
+        || dsd_test_path_join(to, sizeof to, dir, "dsd_neo_link_to.tmp") != 0) {
+        DSD_FPRINTF(stderr, "hard link: the fixture names do not fit under %s\n", dir);
+        return 1;
+    }
+    const int links = dir_takes_hard_links(dir);
+    if (links == DIR_LINKS_NAMES_TOO_LONG) {
+        DSD_FPRINTF(stderr, "hard link: the probe names do not fit under %s\n", dir);
+        return 1;
+    }
+    const int known = links >= 0;
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
+    if (write_text_file(from, "from") != 0 || write_text_file(taken, "taken") != 0) {
+        (void)dsd_remove_file(from);
+        (void)dsd_remove_file(taken);
+        return 1;
+    }
+    int ok = 1;
+    int same = 0;
+    errno = 0;
+    ok = ok && dsd_hard_link(from, taken) == -1 && (links != 1 || errno == EEXIST);
+    ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
+    if (links == 1) {
+        ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
+        ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;
+    } else if (known) {
+        ok = ok && dsd_hard_link(from, to) == -1 && !file_exists(to);
+    }
+    ok = ok && dsd_remove_file(from) == 0;
+    ok = ok && (links == 1 ? file_text_is(to, "from") : !file_exists(to));
+    ok = ok && (links != 1 || dsd_remove_file(to) == 0);
+    errno = 0;
+    ok = ok && dsd_hard_link(from, to) == -1 && (links != 1 || errno == ENOENT) && !file_exists(to)
+         && !file_exists(from);
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
+    return ok ? 0 : 1;
+}
+
+static int
+expect_hard_link(void) {
+    int rc = 0;
+    errno = 0;
+    rc |= dsd_hard_link(NULL, "x") == -1 && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_hard_link("x", "") == -1 && errno == EINVAL ? 0 : 1;
+    /* In a folder of the test's own, so no file of the caller's working folder is touched. */
+    char dir[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_hard_link") == NULL) {
+        return 1;
+    }
+    rc |= expect_hard_link_in(dir);
+    rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
+    return rc;
+}
+
 static int
 expect_rename_noreplace(void) {
     int rc = 0;
@@ -1242,6 +1389,10 @@ expect_named_dir_helpers(const char* dir, const char* leaf, const char* excl_lea
     rc |= expect_non_ascii_folders(dir);
     if (expect_rename_noreplace_in(dir) != 0) {
         DSD_FPRINTF(stderr, "non-ASCII: dsd_rename_noreplace failed in the folder\n");
+        rc = 1;
+    }
+    if (expect_hard_link_in(dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_hard_link failed in the folder\n");
         rc = 1;
     }
     (void)dsd_remove_file(file);
@@ -1561,20 +1712,6 @@ expect_move_helpers_refuse_other_volume(void) {
     return ok ? 0 : 1;
 }
 
-/* Whether the filesystem holding @p dir takes hard links: some (FAT-like, some FUSE) do not, and the fallback then
-   claims the name instead. */
-static int
-dir_takes_hard_links(const char* dir) {
-    char a[256];
-    char b[256];
-    DSD_SNPRINTF(a, sizeof a, "%s/link_probe.a", dir);
-    DSD_SNPRINTF(b, sizeof b, "%s/link_probe.b", dir);
-    int ok = write_text_file(a, "p") == 0 && link(a, b) == 0;
-    (void)remove(b);
-    (void)remove(a);
-    return ok;
-}
-
 #endif
 
 /* Issue #697: dsd_path_same_file() names one file however the path spells it (another spelling, a hard link; a symbolic
@@ -1772,6 +1909,7 @@ main(void) {
     rc |= expect_null_device_is_readable();
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
+    rc |= expect_hard_link();
     rc |= expect_non_ascii_dir_helpers();
     rc |= expect_rename_noreplace_utf8_names();
     rc |= expect_move_helpers_across_directories();

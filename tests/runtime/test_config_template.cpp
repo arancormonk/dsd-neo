@@ -233,6 +233,12 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing the rdio_analog_* range hints or defaults\n");
         rc = 1;
     }
+    /* [recording] (issue #888): the digital unknown-talkgroup fallback, its range and its 0 default. */
+    if (strstr(content, "# Range: 0 to 2147483647\n# rdio_unknown_talkgroup = 0\n") == nullptr
+        || strstr(content, "digital calls with no talkgroup and no known frequency") == nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: template missing the rdio_unknown_talkgroup range hint, default or description\n");
+        rc = 1;
+    }
     /* [analog] (issue #525): the NFM width's range and the width its default resolves to. Uncommenting the line is not
      * the same as leaving the key out: an explicit 16000 always runs the channel filter and is held to the DSP rate,
      * where the unset default runs DSP-limited below a 20 kHz rate. The description has to say so. */

@@ -486,6 +486,11 @@ dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
                                                                      : DSD_CALL_REACQUIRE_GAP_S;
 }
 
+int
+dsd_call_snapshot_contradicted_by(const dsd_call_snapshot* call, const dsd_call_observation* observation) {
+    return call != NULL && observation != NULL && call_state_observation_changes_identity(call, observation);
+}
+
 // Whether the ended epoch may still be reacquired, whatever reopens it: a recoverable end of a call that names a
 // call, within its reason's heal window. call_state_reacquires_ended_epoch() adds what the reopening observation
 // must satisfy.
@@ -584,6 +589,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
     snapshot->has_service_metadata = previous->has_service_metadata;
+    snapshot->identity_unread = previous->identity_unread;
     snapshot->emergency = previous->emergency;
     snapshot->priority = previous->priority;
     snapshot->media_started_m = previous->media_started_m;
@@ -683,6 +689,9 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
         snapshot->emergency = observation->emergency;
         snapshot->priority = observation->priority;
         snapshot->has_service_metadata = 1U;
+    }
+    if (observation->identity_unread != 0U) {
+        snapshot->identity_unread = 1U;
     }
 }
 
@@ -1106,8 +1115,22 @@ call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* sna
                                        : 0U;
 }
 
-int
-dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
+/* Whether an end for @p reason, decoded by @p own_protocol's decoder (DSD_SYNC_NONE: by none named) and naming a call
+   of @p own_kind, is the call's own terminator: a verified one, of the call's own protocol, of a kind that does not
+   contradict the call's (call_state_kind_changed()) (dsd_call_snapshot::own_terminator, issue #888). */
+static uint8_t
+call_state_own_terminator(const dsd_call_snapshot* snapshot, dsd_call_end_reason reason, int own_protocol,
+                          dsd_call_kind own_kind) {
+    return reason == DSD_CALL_END_TERMINATOR && own_protocol != DSD_SYNC_NONE
+                   && dsd_call_state_protocol_family(snapshot->protocol) == dsd_call_state_protocol_family(own_protocol)
+                   && !call_state_kind_changed(snapshot->kind, own_kind)
+               ? 1U
+               : 0U;
+}
+
+static int
+call_state_end(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason, int own_protocol,
+               dsd_call_kind own_kind) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
@@ -1143,6 +1166,7 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
             snapshot->end_reason = (reason == DSD_CALL_END_TERMINATOR || corroborates)
                                        ? (uint8_t)DSD_CALL_END_TERMINATOR
                                        : (uint8_t)DSD_CALL_END_EXPLICIT;
+            snapshot->own_terminator = call_state_own_terminator(snapshot, reason, own_protocol, own_kind);
             snapshot->revision = call_state_next_nonzero(snapshot->revision);
             ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
             dsd_call_state_ext_unlock(ext);
@@ -1154,6 +1178,7 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     snapshot->phase = DSD_CALL_PHASE_ENDED;
     call_state_capture_ended_identity(state, snapshot);
     snapshot->end_reason = (uint8_t)reason;
+    snapshot->own_terminator = call_state_own_terminator(snapshot, reason, own_protocol, own_kind);
     snapshot->media_active = 0U;
     snapshot->audio_permitted = 0U;
     snapshot->ended_m = call_state_observed_m(observed_m);
@@ -1162,6 +1187,19 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
     return 1;
+}
+
+int
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
+    return call_state_end(state, slot, observed_m, reason, DSD_SYNC_NONE, DSD_CALL_KIND_UNKNOWN);
+}
+
+int
+dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol, dsd_call_kind kind) {
+    if (protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    return call_state_end(state, slot, observed_m, DSD_CALL_END_TERMINATOR, protocol, kind);
 }
 
 int
@@ -1332,9 +1370,11 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
         // the monotonic clock is global, so a slot saved mid-fade would still satisfy the gap
         // test on the new target and suppress the first call's VOICE_START alert while seeding
         // it with the old target's identity. A restored end is a hop, never a resumable fade.
-        // This lives on the call snapshot rather than the lifecycle, so it stays here.
+        // This lives on the call snapshot rather than the lifecycle, so it stays here. A teardown is no terminator, so
+        // the mark of the call's own one goes with the reason it replaces (issue #888).
         if (ext->calls.slots[slot].phase == DSD_CALL_PHASE_ENDED) {
             ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            ext->calls.slots[slot].own_terminator = 0U;
         }
     }
     call_state_note_epoch_floor(state, ext);

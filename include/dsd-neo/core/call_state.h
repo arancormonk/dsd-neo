@@ -148,6 +148,11 @@ typedef struct {
     uint8_t priority;
     uint8_t has_service_metadata; /**< Non-zero when service options, emergency, and priority were observed. */
     /**
+     * Non-zero when the call names a party its decoder could not read as an ID (a played SDRTrunk roaming or ISSI
+     * identity, issue #888): sticky for the epoch (dsd_call_snapshot::identity_unread). 0 says nothing.
+     */
+    uint8_t identity_unread;
+    /**
      * dsd_analog_mode (<dsd-neo/core/analog_mode.h>) of an analog (DSD_SYNC_ANALOG) call; 0 (unknown) otherwise.
      * Taken by the observation that begins an epoch; a later observation never changes it.
      */
@@ -319,6 +324,20 @@ typedef struct {
     uint8_t media_active;
     uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     uint8_t crc_invalid; /**< Sticky DSD_CRC_* bits (crc_provenance.h) for this transmission; zero is not verified. */
+    /**
+     * 1 once an observation of this transmission named a party its decoder could not read as an ID
+     * (dsd_call_observation::identity_unread); a reacquired epoch carries it. Its history row never takes the rdio
+     * fallback talkgroup (Event_History::fallback_blocked, issue #888).
+     */
+    uint8_t identity_unread;
+    /**
+     * 1 when the call ended on a terminator its own protocol's decoder verified, of a call kind that does not
+     * contradict its own (dsd_call_state_end_own_terminator()), 0 for any other end, another protocol's terminator or
+     * another call's on the slot included, a restored context's teardown (dsd_call_context_restore_snapshot()), and
+     * while the call is active. A YSF row takes the rdio fallback talkgroup only with it
+     * (Event_History::fallback_blocked, issue #888).
+     */
+    uint8_t own_terminator;
     /**
      * DSD_CALL_CRYPTO_RX_* bits: which of received_algid and received_kid this transmission received over the air.
      * Sticky for the epoch: an update that did not receive a field leaves its received value alone, so a forced or
@@ -613,6 +632,16 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  * check DSD_CALL_PHASE_ACTIVE themselves beforehand.
  */
 int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
+/**
+ * End the slot's call on a terminator @p protocol's decoder verified, which names a call of @p kind
+ * (DSD_CALL_KIND_UNKNOWN: none): as dsd_call_state_end_ex() with DSD_CALL_END_TERMINATOR, whatever call the slot
+ * holds, and, when that call is @p protocol's (dsd_call_state_protocol_family()) and @p kind does not contradict the
+ * call's kind (a group call's end on a private call's terminator does; a generic voice kind contradicts no voice
+ * kind), marked as ended on its own terminator (dsd_call_snapshot::own_terminator).
+ * Returns as dsd_call_state_end_ex(); -1 also for @p protocol DSD_SYNC_NONE.
+ */
+int dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol,
+                                      dsd_call_kind kind);
 /** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 
@@ -636,6 +665,13 @@ int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
  * transmission (dsd_call_snapshot_transmission()) that holds while this is true holds for the call a heal reopens.
  */
 int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m);
+/**
+ * True when @p observation names another call than @p call: the rule by which an observation begins a new epoch on an
+ * active call (another protocol family, target, source ID or contradicting kind, or identity text that differs where
+ * both are known). A field either side lacks is no contradiction. For a decoder that compares what it verified with an
+ * ended call it may not observe (issue #888).
+ */
+int dsd_call_snapshot_contradicted_by(const dsd_call_snapshot* call, const dsd_call_observation* observation);
 
 /**
  * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending

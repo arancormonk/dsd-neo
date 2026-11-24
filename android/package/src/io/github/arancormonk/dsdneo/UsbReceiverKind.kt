@@ -77,6 +77,7 @@ internal object UsbReceiverKind {
         "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
         "--p25-sm-log", "--wav-journal", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
         "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--rdio-analog-system-id", "--rdio-analog-talkgroup",
+        "--rdio-unknown-talkgroup",
         "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv",
         "--p25-bandplan-export",
         "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",

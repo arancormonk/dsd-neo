@@ -127,6 +127,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         /* Never judged: exports as before (issue #773 D7). */
         event_struct->Event_History_Items[i].stream_blocked = 0U;
+        event_struct->Event_History_Items[i].fallback_blocked = 0U;
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
         event_struct->Event_History_Items[i].channel = 0;
@@ -216,6 +217,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
+        event_struct->Event_History_Items[i].fallback_blocked =
+            event_struct->Event_History_Items[i - 1].fallback_blocked;
         event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
         event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
@@ -470,6 +473,10 @@ watchdog_event_row_records_crypto(const Event_History* item) {
 // Deliberately not extended with channel_label: the label says where the receiver was pointing,
 // never who the call was. Counting it would rescue every stray-sync noise epoch a scanning
 // receiver opens, which is exactly what the identity gate below exists to drop.
+// Its twin is wav_close_allows_fallback() (dsd_file.c), which gives an early-closed recording the rdio-scanner fallback
+// talkgroup only for a row this would keep (issue #888 D7): the two must agree on what names a call. One difference:
+// an EDACS row's strings hold placeholders for unknown parties ("LID_UNK", "000_AFS_00_000" with standard addressing),
+// which keep the row here, for history, while an early export counts an EDACS row's decoded IDs only.
 static int
 watchdog_event_row_names_call(const Event_History* item) {
     return item->target_id != 0U || item->source_id != 0U || item->src_str[0] != '\0' || item->tgt_str[0] != '\0';
@@ -527,17 +534,16 @@ watchdog_event_is_data_event(const Event_History* item) {
                && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
 }
 
-/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported when @p export_recording), and open
-   the next one. A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and
-   a failed open marks the slot for the next one (issue #708). */
+/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported as @p export_mode, a
+   dsd_wav_export_mode), and open the next one. A slot whose last open failed (a full disk) opens again here, so the
+   next call records when it can, and a failed open marks the slot for the next one (issue #708). */
 static void
-watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_recording,
+watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_mode,
                                const dsd_wav_owner* owner) {
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
         if (opts->wav_out_f != NULL) {
-            opts->wav_out_f =
-                close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir, event_struct,
-                                             opts->wav_out_open_time, export_recording, owner);
+            opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
+                                                           event_struct, opts->wav_out_open_time, export_mode, owner);
         }
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         opts->wav_out_open_time = dsd_decode_time();
@@ -549,7 +555,7 @@ watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_stru
         if (opts->wav_out_fR != NULL) {
             opts->wav_out_fR =
                 close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
-                                             event_struct, opts->wav_out_open_timeR, export_recording, owner);
+                                             event_struct, opts->wav_out_open_timeR, export_mode, owner);
         }
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_timeR = dsd_decode_time();
@@ -558,8 +564,8 @@ watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_stru
 }
 
 static void
-watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
-                                    int export_recording, const dsd_wav_owner* owner) {
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_mode,
+                                    const dsd_wav_owner* owner) {
     if (opts->static_wav_file != 0) {
         return;
     }
@@ -569,7 +575,7 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
     if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
         return;
     }
-    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_recording, owner);
+    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_mode, owner);
 }
 
 /* Under the call-state lock: whether slot @p slot's canonical call is active. */
@@ -603,7 +609,7 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
         const uint64_t epoch = dsd_call_state_pending_row_epoch_locked(ext, slot);
         const dsd_wav_owner owner = {epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE, slot, 0U, epoch};
         const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
-        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &owner);
+        watchdog_event_rotate_slot_wav(opts, event_struct, slot, DSD_WAV_EXPORT_NONE, &owner);
     }
     dsd_call_state_ext_unlock(ext);
 }
@@ -663,7 +669,9 @@ watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History
                                  dsd_event_end_disposition end_disposition, int alert_on_final, int last_event_is_data,
                                  const dsd_wav_owner* owner) {
     if (end_disposition != DSD_EVENT_END_NONE) {
-        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final, owner);
+        /* A kept row's rotation is a commit (issue #888 D7); the drop path's exports nothing. */
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot,
+                                            alert_on_final ? DSD_WAV_EXPORT_COMMITTED : DSD_WAV_EXPORT_NONE, owner);
     }
     // Read before the clear below: the alert is the outgoing row's.
     const int analog = watchdog_event_row_is_analog(&event_struct->Event_History_Items[0]);
@@ -1760,6 +1768,8 @@ typedef struct {
     /* The rdio-scanner export verdict (issue #773 D7) and, beside the system IDs above, the talkgroup it was judged
      * on (policy_target_id); see watchdog_event_current_load_stream_export(). */
     uint8_t stream_blocked;
+    /* Whether the row may not take rdio's fallback talkgroup (Event_History::fallback_blocked). */
+    uint8_t fallback_blocked;
     /* Seconds the call has run on the canonical epoch's own timeline — through its
      * last observation while active, through its end once ended. Anchors the row's
      * stamps: the first render subtracts it from the wall clock to fix
@@ -1858,6 +1868,21 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
     }
 }
 
+/* Whether @p call's row may not take rdio's fallback talkgroup (Event_History::fallback_blocked, issue #888): it named
+   a party its decoder could not read as an ID, or it is a YSF call that has not ended on its own terminator, decoded by
+   YSF (dsd_call_snapshot::own_terminator). A YSF call that ended any other way (a sync loss, a change of call mode or
+   callsign in band, a teardown, another protocol's terminator on the slot) may hold the start of what came next: a
+   voice frame's callsigns are read after its voice. */
+static uint8_t
+watchdog_event_call_blocks_fallback(const dsd_call_snapshot* call) {
+    if (call->identity_unread != 0U) {
+        return 1U;
+    }
+    const int terminated = call->phase == DSD_CALL_PHASE_ENDED && call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR
+                           && call->own_terminator != 0U;
+    return DSD_SYNC_IS_YSF(call->protocol) && !terminated ? 1U : 0U;
+}
+
 static void
 watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                  watchdog_event_current_ctx* ctx) {
@@ -1900,6 +1925,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
         }
     }
     ctx->start_wall = call->start_wall;
+    ctx->fallback_blocked = watchdog_event_call_blocks_fallback(call);
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     (void)dsd_call_state_format_home_source(call, ctx->src_home, sizeof ctx->src_home);
     ctx->src_home_key = call->source_home.valid != 0U ? (((uint64_t)call->source_home.wacn & 0xFFFFFU) << 36)
@@ -2483,6 +2509,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->target_id = ctx->target_id;
     item->policy_target_id = ctx->policy_target_id;
     item->stream_blocked = ctx->stream_blocked;
+    item->fallback_blocked = ctx->fallback_blocked;
     item->channel = ctx->channel;
     item->call_channel_kind = ctx->channel_kind;
     item->analog_mode = ctx->analog_mode;
@@ -2601,8 +2628,8 @@ watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, 
     char site_str[64];
     watchdog_event_edacs_site_text(ctx, ea, site_str, sizeof(site_str));
     if (ea) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07d; SRC: %07d; LCN: %02d; %s%s;", datestr, timestr,
-                     sys_string, ctx->target_id, ctx->source_id, ctx->channel, site_str, sup_str);
+        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %07u; SRC: %07u; LCN: %02d; %s%s;", datestr, timestr,
+                     sys_string, (unsigned)ctx->target_id, (unsigned)ctx->source_id, ctx->channel, site_str, sup_str);
         return;
     }
 
@@ -2720,8 +2747,8 @@ watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, co
     char cc_buf[12];
     const char* cc = watchdog_event_code_text(
         cc_buf, sizeof cc_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, ctx->access_code, 1);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %s; ", datestr, timestr, sys_string,
-                 ctx->target_id, ctx->source_id, cc);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; CC: %s; ", datestr, timestr, sys_string,
+                 (unsigned)ctx->target_id, (unsigned)ctx->source_id, cc);
     watchdog_event_append_dmr_site(ctx, event_string, event_size);
 
     if (ctx->enc) {
@@ -2807,10 +2834,10 @@ watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, co
     if (ctx->source_id == 0U && ctx->src_home[0] != '\0') {
         DSD_SNPRINTF(src_buf, sizeof src_buf, "%s", ctx->src_home);
     } else {
-        DSD_SNPRINTF(src_buf, sizeof src_buf, "%08u", ctx->source_id);
+        DSD_SNPRINTF(src_buf, sizeof src_buf, "%08u", (unsigned)ctx->source_id);
     }
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %s; NAC: %s; ", datestr, timestr, sys_string,
-                 ctx->target_id, src_buf, nac);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %s; NAC: %s; ", datestr, timestr, sys_string,
+                 (unsigned)ctx->target_id, src_buf, nac);
     watchdog_event_append_p25_site(ctx, event_string, event_size);
 
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
@@ -2830,8 +2857,8 @@ static void
 watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx, const char* datestr,
                                           const char* timestr, const char* sys_string, char* event_string,
                                           size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; ", datestr, timestr, sys_string,
-                 ctx->target_id, ctx->source_id);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; ", datestr, timestr, sys_string,
+                 (unsigned)ctx->target_id, (unsigned)ctx->source_id);
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
     watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
@@ -2867,8 +2894,8 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     char ran_buf[12];
     const char* ran = watchdog_event_code_text(
         ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; RAN: %s; ", datestr, timestr, sys_string,
-                 ctx->target_id, ctx->source_id, ran);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; RAN: %s; ", datestr, timestr, sys_string,
+                 (unsigned)ctx->target_id, (unsigned)ctx->source_id, ran);
     watchdog_event_append_nxdn_site(ctx, event_string, event_size);
 
     // The call's own channel and the row's own frequency, never the last grant decoded: that is
@@ -3151,6 +3178,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     // A committed row's export verdict stands as its last render judged it; a merge re-renders only its text.
     ctx->policy_target_id = item->policy_target_id;
     ctx->stream_blocked = item->stream_blocked;
+    ctx->fallback_blocked = item->fallback_blocked;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
     ctx->emergency = item->emergency;

@@ -390,6 +390,24 @@ test_rdio_analog_long_opts_are_removed(void) {
     return 0;
 }
 
+/* Issue #888: --rdio-unknown-talkgroup leaves the pre-getopt pass with its value, so a bare value is never read as a
+   positional argument. */
+static int
+test_rdio_unknown_talkgroup_long_opt_is_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rdio-unknown-talkgroup";
+    char arg2[] = "4242";
+    char arg3[] = "-fs";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int new_argc = dsd_cli_compact_args(4, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fs") != 0) {
+        DSD_FPRINTF(stderr, "expected only -fs to remain, got %d args\n", new_argc);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_dmr_debug_burst_long_option_is_removed(void) {
     char arg0[] = "dsd-neo";
@@ -795,6 +813,7 @@ test_option_arity_matches_the_parser(void) {
         {"--analog-record-preroll-ms=200", DSD_CLI_LONG_ALONE},
         {"--rdio-analog-system-id", DSD_CLI_LONG_NEXT},
         {"--rdio-analog-talkgroup", DSD_CLI_LONG_NEXT},
+        {"--rdio-unknown-talkgroup", DSD_CLI_LONG_NEXT},
         {"--iq-replay", DSD_CLI_LONG_NEXT},
         {"--api-token", DSD_CLI_LONG_NEXT},
         {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
@@ -864,6 +883,7 @@ main(void) {
     rc |= test_analog_record_max_gap_long_opts_are_removed();
     rc |= test_analog_record_preroll_long_opts_are_removed();
     rc |= test_rdio_analog_long_opts_are_removed();
+    rc |= test_rdio_unknown_talkgroup_long_opt_is_removed();
     rc |= test_option_arity_matches_the_parser();
     return rc;
 }

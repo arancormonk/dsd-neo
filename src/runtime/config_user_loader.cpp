@@ -929,6 +929,8 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
         apply_recording_refused_range("rdio_analog_system_id", val, 0, 65535, &cfg->rdio_analog_system_id);
     } else if (strcmp(key_lc, "rdio_analog_talkgroup") == 0) {
         apply_recording_refused_range("rdio_analog_talkgroup", val, 0, 2147483647, &cfg->rdio_analog_talkgroup);
+    } else if (strcmp(key_lc, "rdio_unknown_talkgroup") == 0) {
+        apply_recording_refused_range("rdio_unknown_talkgroup", val, 0, 2147483647, &cfg->rdio_unknown_talkgroup);
     } else {
         return 0;
     }

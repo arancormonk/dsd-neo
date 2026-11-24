@@ -54,7 +54,20 @@ dsd_test_grow_sparse(int fd, int64_t size) {
         errno = ENOSYS;
         return -1;
     }
-    if (_chsize_s(fd, (__int64)size) != 0) {
+    /* The end of file is set, not written up to: _chsize_s() writes the gap as zeros, which NTFS allocates even in a
+       sparse file. The handle's position is put back at the start. */
+    LARGE_INTEGER end;
+    end.QuadPart = (LONGLONG)size;
+    LARGE_INTEGER start;
+    start.QuadPart = 0;
+    if (!SetFilePointerEx(h, end, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+        const DWORD err = GetLastError();
+        (void)SetFilePointerEx(h, start, NULL, FILE_BEGIN);
+        errno = (err == ERROR_DISK_FULL || err == ERROR_HANDLE_DISK_FULL) ? ENOSPC : EIO;
+        return -1;
+    }
+    if (!SetFilePointerEx(h, start, NULL, FILE_BEGIN)) {
+        errno = EIO;
         return -1;
     }
     return 0;
