@@ -974,7 +974,7 @@ TalkgroupListModel::forgetTalkgroupOf(const QString& owner, quint32 id) {
     }
     // Read after the store's forget, whose before-edit hook may fold what the background capture held into History:
     // those fragments came before the forget, so they are hidden too.
-    m_forgotten[owner].insert(id, m_heardSource != nullptr && m_history != nullptr ? m_heardSource->heardSerial() : 0U);
+    m_forgotten[owner].insert(id, hideHeardThroughNow(owner, id));
     dropHeard(owner, {id}, false);
     return true;
 }
@@ -989,11 +989,20 @@ TalkgroupListModel::clearRememberedOf(const QString& owner) {
     if (m_store != nullptr && !owner.isEmpty() && !m_store->clear(owner)) {
         return false;
     }
-    m_clearedThrough.insert(owner,
-                            m_heardSource != nullptr && m_history != nullptr ? m_heardSource->heardSerial() : 0U);
+    m_clearedThrough.insert(owner, hideHeardThroughNow(owner, 0U));
     m_forgotten.remove(owner);
     dropHeard(owner, {}, true);
     return true;
+}
+
+quint64
+TalkgroupListModel::hideHeardThroughNow(const QString& owner, uint32_t number) {
+    if (m_heardSource == nullptr || m_history == nullptr) {
+        return 0U;
+    }
+    // History hands on no later proof of what it took in by now either, or the proof would teach the store again.
+    m_heardSource->heardForgotten(owner, number);
+    return m_heardSource->heardSerial();
 }
 
 void

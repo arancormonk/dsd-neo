@@ -38,6 +38,7 @@
 #include <QThreadPool>
 #include <QtGlobal>
 #include <atomic>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -108,7 +109,10 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
      * @brief The talkgroup number a policy row and the Talkgroups screen know entry @p id of @p variant by: an NXDN
      * Type-D id (`prefix << 11 | id`) by its 11-bit id, as the call state numbers it; every other id as it is.
      */
-    static quint32 policyId(int variant, quint32 id);
+    static quint32
+    policyId(int variant, quint32 id) {
+        return variant == DSD_HEARD_TG_NXDN_D ? (id & 0x7FFU) : id;
+    }
 
     /**
      * @brief Remove every entry of @p ownerUid whose talkgroup number (policyId()) is @p id, every variant, and write at

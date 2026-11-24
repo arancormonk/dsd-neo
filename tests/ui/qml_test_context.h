@@ -2608,6 +2608,10 @@ class CallLogStore : public QAbstractListModel, public dsd_qt::HeardTalkgroupSou
         return static_cast<quint64>(m_lastUid);
     }
 
+    /* This fake hands no proof to a store: nothing to hide. */
+    void
+    heardForgotten(const QString& /*owner*/, quint32 /*number*/) override {}
+
     QString
     heardOwnerOnAir(quint64 /*ring*/, bool /*operatorTuned*/, bool /*scanMember*/,
                     const QString& /*channel*/) const override {

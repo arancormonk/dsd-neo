@@ -81,6 +81,13 @@ class HeardTalkgroupSource {
     virtual quint64 heardSerial() const = 0;
 
     /**
+     * @brief Saved system @p owner just forgot talkgroup number @p number (HeardTalkgroupStore::policyId()), or every
+     *        number when @p number is 0 (a clear): a proof that later reaches a fragment ingested by now is not handed
+     *        to the sink, so it cannot bring the number back. A fragment ingested after now still is.
+     */
+    virtual void heardForgotten(const QString& owner, quint32 number) = 0;
+
+    /**
      * @brief The saved system a call heard now would be owned by (empty for none), by the owner rule a fragment's owner
      *        follows: in the session decoder ring @p ring (Event_History_I::instance; 0: none) is bound to, else the
      *        current one, with the tuner stamps a call would take now (@p operatorTuned, also set once the
@@ -92,7 +99,7 @@ class HeardTalkgroupSource {
 
 } // namespace dsd_qt
 
-#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/5"
+#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/6"
 Q_DECLARE_INTERFACE(dsd_qt::HeardTalkgroupSource, DSD_QT_HEARD_TALKGROUP_SOURCE_IID)
 
 #endif /* DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_SOURCE_H_ */

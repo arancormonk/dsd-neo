@@ -66,6 +66,7 @@
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "heard_talkgroup_sink.h"
+#include "heard_talkgroup_store.h"
 #include "json_store.h"
 #include "position_kind_text.h"
 #include "realtime_clock.h"
@@ -3156,7 +3157,10 @@ CallHistoryModel::ingestReading(const Row& row, bool isUpdate, bool again, const
     // Issue #903: handed on before the fold, whatever the log then does with the reading (a trimmed or cleared row
     // drops an update), and before any trim; once per fragment: a spill line folded again finds its fragment's proof
     // in the log. Its own time, never the conversation's it joins.
-    if (!heardOwner.isEmpty() && row.heardVariant != 0U && !fragmentProven(row)) {
+    // A proof that reaches a fragment taken in before a Forget or Clear of its number is not handed on: it would undo
+    // the edit. A fragment taken in after it is a new call, and is.
+    if (!heardOwner.isEmpty() && row.heardVariant != 0U && !fragmentProven(row)
+        && !heardForgottenSince(row, isUpdate, heardOwner)) {
         noteHeard(heardOwner, row.heardVariant, row.heardId, row.end > 0 ? row.end : row.when);
     }
     // The Talkgroups screen's order of what was heard (heardSerial()): a fragment taken in as new gets the next serial,
@@ -3167,6 +3171,36 @@ CallHistoryModel::ingestReading(const Row& row, bool isUpdate, bool again, const
         part.heardSerial = reading.heardSerial;
     }
     return ingestRow(reading, isUpdate, again);
+}
+
+bool
+CallHistoryModel::heardForgottenSince(const Row& row, bool isUpdate, const QString& owner) const {
+    // A fragment the log does not hold, read as new, is ingested now: after any edit. An update of one the log no
+    // longer holds (trimmed or cleared) reads serial 0, before every edit.
+    if (!isUpdate && rowHoldingFragment(row) < 0) {
+        return false;
+    }
+    const quint64 serial = heldSerial(row);
+    const auto cleared = m_heardClearedThrough.constFind(owner);
+    if (cleared != m_heardClearedThrough.cend() && serial <= cleared.value()) {
+        return true;
+    }
+    const auto forgotten = m_heardForgotten.constFind(owner);
+    if (forgotten == m_heardForgotten.cend()) {
+        return false;
+    }
+    const auto number = forgotten->constFind(HeardTalkgroupStore::policyId(row.heardVariant, row.heardId));
+    return number != forgotten->cend() && serial <= number.value();
+}
+
+void
+CallHistoryModel::heardForgotten(const QString& owner, quint32 number) {
+    if (number == 0U) {
+        m_heardClearedThrough.insert(owner, m_heardSerial);
+        m_heardForgotten.remove(owner);
+        return;
+    }
+    m_heardForgotten[owner].insert(number, m_heardSerial);
 }
 
 quint64

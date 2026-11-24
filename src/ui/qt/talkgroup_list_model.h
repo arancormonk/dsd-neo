@@ -349,6 +349,9 @@ class TalkgroupListModel : public QAbstractListModel {
     QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, HeardTarget* target) const;
     /** @brief View @p owner's remembered talkgroups, and the session's heard on scan target @p target under it. */
     void setViewedOwner(const QString& owner, const HeardTarget& target = HeardTarget());
+    /** @brief A forget of @p owner's @p number (0: a clear) hides what History took in by now, there too
+     * (HeardTalkgroupSource::heardForgotten()); @return the ingest serial it hides through, 0 without a typed history. */
+    quint64 hideHeardThroughNow(const QString& owner, uint32_t number);
     /** @brief Drop @p owner's heard cards from the list now (a forget or clear for the viewed owner). */
     void dropHeard(const QString& owner, const QSet<uint32_t>& ids, bool all);
 

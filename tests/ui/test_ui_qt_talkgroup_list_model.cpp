@@ -24,6 +24,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/heard_talkgroup.h>
@@ -1200,6 +1201,75 @@ test_variants_one_card_and_forget() {
     expect("903 forget: for the captured owner", held.store.entriesFor(kSysB).isEmpty());
 }
 
+/* Issue #903 (PR2 review r4, P2): a proof that reaches a call logged before a Forget or Clear (a checked message after
+ * the commit) does not teach the store the number again; a call heard after it still does. History hands each proof to
+ * the store, as the app wires it. */
+void
+test_late_proof_does_not_undo_forget_or_clear() {
+    Store held("tg_list_late_proof.json");
+    Fixture fixture;
+    CallHistoryModel history;
+    history.setHeardSink(&held.store);
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), kSysA, {});
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    const auto prove = [&fixture](uint32_t tg) {
+        Event_History* row = &fixture.rings[0].Event_History_Items[1];
+        row->heard_variant = DSD_HEARD_TG_P25;
+        row->heard_id = tg;
+        row->live_input = 1U;
+        return row;
+    };
+    const auto touch = [&fixture] {
+        ++fixture.rings[0].commit_rev;
+        ++fixture.rings[0].revision;
+    };
+    const auto read = [&] {
+        history.refresh(fixture.state, fixture.opts);
+        model.refresh(fixture.opts, fixture.state);
+    };
+    const auto holds = [&held](quint32 tg) {
+        const auto entries = held.store.entriesFor(kSysA);
+        return std::any_of(entries.cbegin(), entries.cend(), [tg](const HeardTalkgroupStore::Entry& e) {
+            return HeardTalkgroupStore::policyId(e.variant, e.id) == tg;
+        });
+    };
+    for (const bool clear : {false, true}) {
+        const uint32_t tg = clear ? 812U : 811U;
+        const time_t at = now + (clear ? 1000 : 0);
+        // Remembered from an earlier call; then a call of it whose proof is still to come.
+        fixture.commit(tg, at);
+        prove(tg);
+        read();
+        expect("903 late proof: the earlier call is remembered", holds(tg));
+        fixture.commit(tg, at + 30);
+        fixture.rings[0].Event_History_Items[1].live_input = 1U;
+        read();
+        if (clear) {
+            model.clearRemembered();
+        } else {
+            model.forgetTalkgroup(tg);
+        }
+        expect("903 late proof: the edit takes the number", !holds(tg));
+        prove(tg)->event_time = at + 36;
+        touch();
+        read();
+        expect(clear ? "903 late proof: a proof of a call before the clear does not bring it back"
+                     : "903 late proof: a proof of a call before the forget does not bring it back",
+               !holds(tg) && !find(model, tg).isValid());
+        // A call heard after the edit is new, and teaches the number again.
+        fixture.commit(tg, at + 60);
+        prove(tg);
+        read();
+        expect(clear ? "903 late proof: a call after the clear is remembered"
+                     : "903 late proof: a call after the forget is remembered",
+               holds(tg) && find(model, tg).isValid());
+    }
+}
+
 /* Listed rows still cover remembered talkgroups (exact, range, pattern); `*` covers none. */
 void
 test_listed_rows_cover_remembered() {
@@ -1478,6 +1548,7 @@ main(int argc, char** argv) {
     test_transient_scoped_to_the_target();
     test_transient_scoped_to_the_scan_list_row();
     test_variants_one_card_and_forget();
+    test_late_proof_does_not_undo_forget_or_clear();
     test_listed_rows_cover_remembered();
     test_incremental_updates();
     test_two_thousand_remembered();

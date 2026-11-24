@@ -411,6 +411,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         return m_heardSerial;
     }
 
+    /** @brief HeardTalkgroupSource: from now on ingestReading() hands on no proof of a fragment it took in by now. */
+    void heardForgotten(const QString& owner, quint32 number) override;
+
     /** @brief HeardTalkgroupSource: heard_owner_for() in the session @p ring is bound to, else this one. */
     QString heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember, const QString& channel) const override;
 
@@ -1113,6 +1116,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     bool ingestReading(const Row& row, bool isUpdate, bool again, const QString& heardOwner);
     /** @brief Whether the log's row holding @p row's one fragment already has that fragment's proof. */
     bool fragmentProven(const Row& row) const;
+    /** @brief Whether a Forget or Clear of @p owner's number came after the fragment @p row reads (heardForgotten()). */
+    bool heardForgottenSince(const Row& row, bool isUpdate, const QString& owner) const;
     /** @brief The ingest serial the log's row holding @p row's fragment keeps for it (Row::heardSerial), else 0. */
     quint64 heldSerial(const Row& row) const;
     /** @brief Hand a sighting to the sink, or hold it until one is set. */
@@ -1334,6 +1339,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     HeardOwners m_heardOwners;
     /* Issue #903: the newest ingest serial given (heardSerial()). */
     quint64 m_heardSerial = 0;
+    /* Issue #903: per owner, the ingest serial a Forget of each number (HeardTalkgroupStore::policyId()), and a Clear,
+       came at (heardForgotten()). */
+    QHash<QString, QHash<quint32, quint64>> m_heardForgotten;
+    QHash<QString, quint64> m_heardClearedThrough;
     /* holdCaptureForStart(): the hold, a count that retires its safety release, and whether the app is away (the last
        application state was Suspended or Hidden), which says whether the tap starts again when the hold ends. */
     bool m_captureHeld = false;

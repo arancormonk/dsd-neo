@@ -19,7 +19,6 @@
 #include <tuple>
 #include <utility>
 
-#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/runtime/log.h>
 
 #include "json_store.h"
@@ -279,11 +278,6 @@ HeardTalkgroupStore::entriesFor(const QString& ownerUid) const {
         return std::make_tuple(-a.last, a.variant, a.id) < std::make_tuple(-b.last, b.variant, b.id);
     });
     return out;
-}
-
-quint32
-HeardTalkgroupStore::policyId(int variant, quint32 id) {
-    return variant == DSD_HEARD_TG_NXDN_D ? (id & 0x7FFU) : id;
 }
 
 bool

@@ -19254,7 +19254,11 @@ Qt Quick frontend (`src/ui/qt`):
     ingest serial read after the store's before-edit hook (`heardSerial()`: `ingestReading()` gives each fragment taken
     in as new the next serial, an update keeps its fragment's; not persisted, so a reloaded row is 0). A later call
     shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
-    per owner, and a new `historySession` drops them.
+    per owner, and a new `historySession` drops them. History keeps the same marks for the process
+    (`HeardTalkgroupSource::heardForgotten()`, given by `hideHeardThroughNow()`): a proof that reaches a fragment it took
+    in by then (a checked message after the commit, an update of a row since trimmed reads serial 0) is not handed to
+    the store (`CallHistoryModel::heardForgottenSince()`), so it cannot bring the number back; a fragment taken in
+    after it, a new call, still is.
   - The screen (issue #903; `qml/TalkgroupsScreen.qml`, `TalkgroupCard.qml`, `TalkgroupEditSheet.qml`). A remembered
     card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the screen's
     minute `ageTick`; a time ahead of the decode clock by its date and time); a card heard only this session keeps
@@ -19297,7 +19301,7 @@ Qt Quick frontend (`src/ui/qt`):
     target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads, entries read, numbers merged and whole-list updates. Tests:
     `UI_QT_TALKGROUP_LIST_MODEL` (`test_remembered_cards_at_session_start`, `test_transient_follows_the_target_on_air`
     with a relaunch, `test_transient_scoped_to_the_target`, `test_variants_one_card_and_forget`,
-    `test_listed_rows_cover_remembered`, `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`,
+    `test_late_proof_does_not_undo_forget_or_clear`, `test_listed_rows_cover_remembered`, `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`,
     `test_transient_scoped_to_the_scan_list_row`, `test_ended_call_crypto_keeps_its_owner`),
     `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`: a row added while hidden keeps the reader's card).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
