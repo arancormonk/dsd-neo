@@ -102,6 +102,12 @@ class PinTests(unittest.TestCase):
         published = result.replace("pffft-neo-", "pffft-").replace("pffft-neo/", "pffft/")
         self.assertNotIn("pffft-neo", published)
         self.assertEqual(aur.update(published, pins), result)
+        braced = published.replace('pffft-$_pffft_sha" \\', 'pffft-${_pffft_sha}" \\')
+        self.assertIn('"$srcdir/pffft-${_pffft_sha}"', braced)
+        self.assertIn('"$srcdir/pffft-neo-${_pffft_sha}"', aur.update(braced, pins))
+        # An override this helper did not write, and cannot move, is refused rather than kept.
+        with self.assertRaisesRegex(ValueError, "override"):
+            aur.update(result.replace('"$srcdir/pffft-neo-$_pffft_sha"', '"$srcdir/fft"'), pins)
 
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"), "AUR requires a Unix shell")
     def test_aur_transition_and_stale_pin(self):
@@ -149,19 +155,21 @@ class PinTests(unittest.TestCase):
         sha = "1" * 40
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w:gz") as archive:
-            for path in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "README.md", "LICENSE",
-                         "third_party/pffft/LICENSE.txt", "third_party/pffft/LicenseRef-PFFFT.txt"):
+            # Exactly the files cmake/Pffft.cmake requires.
+            for path in updater.required_files():
                 entry = tarfile.TarInfo(f"pffft-neo-{sha}/{path}")
                 archive.addfile(entry, io.BytesIO())
         payload = data.getvalue()
-        # The same archive without pffft-neo's README, which the build requires as a notice.
-        data = io.BytesIO()
-        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as source, \
-                tarfile.open(fileobj=data, mode="w:gz") as archive:
-            for entry in source.getmembers():
-                if not entry.name.endswith("/README.md"):
-                    archive.addfile(entry, io.BytesIO())
-        without_readme = data.getvalue()
+
+        def without(name):
+            # The same archive without one file the build requires.
+            data = io.BytesIO()
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as source, \
+                    tarfile.open(fileobj=data, mode="w:gz") as archive:
+                for entry in source.getmembers():
+                    if entry.name != f"pffft-neo-{sha}/{name}":
+                        archive.addfile(entry, io.BytesIO())
+            return data.getvalue()
         with tempfile.TemporaryDirectory() as directory:
             pins = Path(directory) / "pins.env"
             pins.write_text("OTHER=keep\nPFFFT_SHA=" + "0" * 40 + "\nPFFFT_ARCHIVE_SHA256=" + "0" * 64 + "\n")
@@ -172,10 +180,11 @@ class PinTests(unittest.TestCase):
             })
             before = pins.read_bytes()
             self.assertIn(b"OTHER=keep", before)
-            with patch.object(updater, "download_archive", return_value=without_readme):
-                with self.assertRaisesRegex(KeyError, "README.md"):
-                    updater.update_pins(sha, pins)
-            self.assertEqual(pins.read_bytes(), before)
+            for name in ("README.md", "src/pffft_impl.h"):
+                with patch.object(updater, "download_archive", return_value=without(name)):
+                    with self.assertRaisesRegex(KeyError, name):
+                        updater.update_pins(sha, pins)
+                self.assertEqual(pins.read_bytes(), before)
             with patch.object(updater, "download_archive", side_effect=OSError("offline")):
                 with self.assertRaises(OSError):
                     updater.update_pins("2" * 40, pins)

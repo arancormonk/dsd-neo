@@ -1396,6 +1396,7 @@ install(
     DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
     COMPONENT legal
+    REGEX "${DSD_MBELIB_UNSELECTED_FFT_REGEX}" EXCLUDE
 )
 install(
     FILES src/third_party/ezpwd/lesser.txt

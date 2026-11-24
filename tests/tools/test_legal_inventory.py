@@ -695,6 +695,14 @@ class NoticeStagingTests(unittest.TestCase):
         result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("names neither", " ".join(result.stderr.split()))
+        # Notices of a different mbelib release than the one linked are refused.
+        (self.mbe / "legal/components.json").write_text(
+            MBE_COMPONENTS.replace('"components"', '"release": "2.6.11",\n  "components"') % "pffft",
+            encoding="utf-8")
+        for version, accepted in (("2.6.11", True), ("2.6.12", False)):
+            result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", f"-Dmbe-neo_VERSION={version}", "-P",
+                                    ROOT / "cmake/MbelibNotices.cmake")
+            self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
         (self.mbe / "legal/components.json").write_text(MBE_COMPONENTS % "pffft", encoding="utf-8")
         notice = self.mbe / "LicenseRef-ETSI-EN-300-395-2-data.txt"
         notice.unlink()
@@ -721,6 +729,17 @@ class NoticeStagingTests(unittest.TestCase):
                 f"-DMBELIB_NOTICE_DIR={self.mbe}", f"-DVCPKG_SHARE_DIR={share}", "-P",
                 ROOT / "cmake/stage_android_package.cmake"]
         return build, share, stage / "assets/doc/dsd-neo", args
+
+    def test_android_assets_leave_out_the_other_fft_notice_tree(self):
+        build, share, docs, args = self.android_fixture()
+        # A PFFFT fork tree an in-place upgrade left beside pffft-neo's, whose inventory names pffft-neo.
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("stale\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((docs / "licenses/mbelib-neo/pffft").exists())
+        self.assertTrue((docs / "licenses/mbelib-neo/pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt").is_file())
 
     def test_android_assets_retain_full_notice_tree_and_fail_on_missing_dependency_text(self):
         build, share, docs, args = self.android_fixture()

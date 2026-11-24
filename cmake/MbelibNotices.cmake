@@ -38,7 +38,22 @@ set(_mbe_components_text "")
 if(EXISTS "${_mbe_components}")
     file(READ "${_mbe_components}" _mbe_components_text)
 endif()
+# The notices must be those of the mbelib this build links, not of another
+# installation's documentation (an override, or a prefix search falling back).
+if(
+    DEFINED mbe-neo_VERSION
+    AND _mbe_components_text MATCHES "\"release\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]*)\""
+)
+    set(_mbe_notice_release "${CMAKE_MATCH_1}")
+    if(NOT _mbe_notice_release VERSION_EQUAL mbe-neo_VERSION)
+        message(
+            FATAL_ERROR
+            "mbelib-neo notices in ${DSD_MBELIB_NOTICE_DIR} are for release ${_mbe_notice_release}, but this build links mbelib-neo ${mbe-neo_VERSION}; set DSD_MBELIB_NOTICE_DIR to the share/doc/mbelib-neo directory of the linked installation."
+        )
+    endif()
+endif()
 if(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft-neo\"")
+    set(DSD_MBELIB_UNSELECTED_FFT pffft)
     list(
         APPEND _mbe_required_notices
         pffft-neo/LICENSE
@@ -47,6 +62,7 @@ if(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft-neo\"")
         pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt
     )
 elseif(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft\"")
+    set(DSD_MBELIB_UNSELECTED_FFT pffft-neo)
     list(APPEND _mbe_required_notices pffft/LICENSE.txt pffft/PFFFT-NOTICES.txt)
 else()
     message(
@@ -62,6 +78,20 @@ foreach(_notice IN LISTS _mbe_required_notices)
         )
     endif()
 endforeach()
+# The other FFT's notice tree, which an in-place upgrade or downgrade can leave
+# beside the selected one, stays out of packages: a regex of its full path for
+# install(DIRECTORY) and file(COPY) excludes.
+file(TO_CMAKE_PATH "${DSD_MBELIB_NOTICE_DIR}" _mbe_notice_root)
+string(REGEX REPLACE "/+$" "" _mbe_notice_root "${_mbe_notice_root}")
+string(
+    REGEX REPLACE "([][+.*()^$?|\\{}])"
+    "\\\\\\1"
+    _mbe_notice_root
+    "${_mbe_notice_root}"
+)
+set(DSD_MBELIB_UNSELECTED_FFT_REGEX
+    "^${_mbe_notice_root}/${DSD_MBELIB_UNSELECTED_FFT}(/.*)?$"
+)
 # The folder this build packages, for the release checks (tools/check_release_notices.py).
 set(DSD_MBELIB_SELECTED_NOTICE_DIR
     "${DSD_MBELIB_NOTICE_DIR}"

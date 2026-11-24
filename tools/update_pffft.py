@@ -14,6 +14,19 @@ import urllib.request
 import ssl
 
 PINS = Path(__file__).resolve().with_name("ci-dependency-pins.env")
+PFFFT_CMAKE = Path(__file__).resolve().parents[1] / "cmake" / "Pffft.cmake"
+
+
+def required_files(cmake=PFFFT_CMAKE):
+    """The sources and notices cmake/Pffft.cmake requires of a PFFFT source tree."""
+    text = cmake.read_text(encoding="utf-8")
+    names = []
+    for group in ("sources", "notices"):
+        block = re.search(rf"^set\(_pffft_{group}\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
+        if block is None:
+            raise ValueError(f"{cmake} has no _pffft_{group} list")
+        names += block.group(1).split()
+    return names
 
 
 def download_archive(sha):
@@ -33,8 +46,7 @@ def update_pins(sha, pins=PINS):
     sha = sha.lower()
     archive = download_archive(sha)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
-        for name in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "README.md", "LICENSE",
-                     "third_party/pffft/LICENSE.txt", "third_party/pffft/LicenseRef-PFFFT.txt"):
+        for name in required_files():
             if not source.getmember(f"pffft-neo-{sha}/{name}").isfile():
                 raise ValueError(f"PFFFT archive is missing {name}")
     digest = hashlib.sha256(archive).hexdigest()

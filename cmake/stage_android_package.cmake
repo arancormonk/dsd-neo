@@ -131,10 +131,16 @@ if(DEFINED _DSD_FRESH_DIR)
         DESTINATION "${_fresh_dir}/licenses"
         ${_folder_modes}
     )
+    # Leave out the other FFT's notice tree (MbelibNotices.cmake, in the parent).
+    set(_mbe_exclude)
+    if(NOT MBELIB_UNSELECTED_FFT_REGEX STREQUAL "")
+        set(_mbe_exclude REGEX "${MBELIB_UNSELECTED_FFT_REGEX}" EXCLUDE)
+    endif()
     file(
         COPY "${MBELIB_NOTICE_DIR}/"
         DESTINATION "${_fresh_dir}/licenses/mbelib-neo"
         ${_folder_modes}
+        ${_mbe_exclude}
     )
 
     file(
@@ -311,6 +317,7 @@ set(_child_args
     -DSTAGE_DIR=${STAGE_DIR}
     -DBUILD_DIR=${BUILD_DIR}
     -DMBELIB_NOTICE_DIR=${MBELIB_NOTICE_DIR}
+    "-DMBELIB_UNSELECTED_FFT_REGEX=${DSD_MBELIB_UNSELECTED_FFT_REGEX}"
     -DVCPKG_SHARE_DIR=${VCPKG_SHARE_DIR}
     -D_DSD_FRESH_DIR=${_fresh_dir}
 )
