@@ -92,12 +92,14 @@ int __wrap_dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode
    cost). */
 static int g_mono_reads;
 static int g_scan_ext_lookups;
+#if !defined(DSD_TEST_LTO_BUILD)
 /* What a healthy digital -Y pass of test_healthy_digital_pass_costs() makes of each. */
 static const int kHealthyPassMonoReads = 1;
 static const int kHealthyPassScanLookups = 1;
 /* And what its -Y timing tick makes of them (the tick is handed its clock samples). */
 static const int kHealthyTickMonoReads = 0;
 static const int kHealthyTickScanLookups = 1;
+#endif
 double __real_dsd_decode_now_mono_s(void);
 double __wrap_dsd_decode_now_mono_s(void);
 void* __real_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
@@ -744,6 +746,13 @@ test_healthy_digital_pass_costs(void) {
     const int reads = g_mono_reads;
     const int lookups = g_scan_ext_lookups;
     assert(g_tune_calls == 1); /* it stayed */
+#if defined(DSD_TEST_LTO_BUILD)
+    /* The counts are of calls through --wrap, which an LTO build can inline away: the pass and its tick still run. */
+    (void)reads;
+    (void)lookups;
+    DSD_FPRINTF(stderr, "SKIP: healthy digital -Y pass cost counts in an LTO test build (the pass still runs)\n");
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+#else
     if (reads != kHealthyPassMonoReads || lookups != kHealthyPassScanLookups) {
         DSD_FPRINTF(stderr, "a healthy digital -Y pass: %d decode clock reads and %d -Y scan lookups, want %d and %d\n",
                     reads, lookups, kHealthyPassMonoReads, kHealthyPassScanLookups);
@@ -764,6 +773,7 @@ test_healthy_digital_pass_costs(void) {
                     kHealthyTickScanLookups);
         assert(0);
     }
+#endif
     dsd_engine_channel_scan_leave(opts, state);
     dsd_decode_clock_use_system();
     freeState(state);

@@ -9,6 +9,39 @@ set(_DSD_NEO_RR_FIXTURE_DIR
     "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
 )
 
+# Whether these tests are built with link-time optimization (issue #899). The cost counters
+# some cases keep (calls, lookups and reads counted through --wrap) cannot see a call that
+# LTO inlined before the wrap applied, so those cases skip their counts in an LTO test build
+# (DSD_TEST_LTO_BUILD) and still check the behaviour around them. No preset or CI job builds
+# tests with LTO; this only keeps such a build honest.
+set(_DSD_TEST_LTO_BUILD OFF)
+if(
+    CMAKE_INTERPROCEDURAL_OPTIMIZATION
+    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE
+    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO
+    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL
+    OR DSD_ENABLE_LTO
+)
+    set(_DSD_TEST_LTO_BUILD ON)
+endif()
+foreach(
+    _dsd_flags_var
+    CMAKE_C_FLAGS
+    CMAKE_CXX_FLAGS
+    CMAKE_C_FLAGS_DEBUG
+    CMAKE_CXX_FLAGS_DEBUG
+    CMAKE_C_FLAGS_RELEASE
+    CMAKE_CXX_FLAGS_RELEASE
+    CMAKE_C_FLAGS_RELWITHDEBINFO
+    CMAKE_CXX_FLAGS_RELWITHDEBINFO
+    CMAKE_C_FLAGS_MINSIZEREL
+    CMAKE_CXX_FLAGS_MINSIZEREL
+)
+    if("${${_dsd_flags_var}}" MATCHES "(^| )-flto($| |=)")
+        set(_DSD_TEST_LTO_BUILD ON)
+    endif()
+endforeach()
+
 # Release-style configurations put -DNDEBUG on the command line, and nearly
 # every test here carries its logic inside assert(). Left alone, a Release or
 # RelWithDebInfo build with BUILD_TESTING=ON - a plain `cmake ..`, or the
@@ -10332,6 +10365,12 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_test_support
     )
+    if(_DSD_TEST_LTO_BUILD)
+        target_compile_definitions(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE DSD_TEST_LTO_BUILD=1
+        )
+    endif()
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
 endif()
 
@@ -11503,6 +11542,12 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE DSD_NEO_TEST_RTL_WRAP DSD_NEO_TEST_ANALOG_WRAP
     )
+    if(_DSD_TEST_LTO_BUILD)
+        target_compile_definitions(
+            dsd-neo_test_app_command_queue
+            PRIVATE DSD_TEST_LTO_BUILD=1
+        )
+    endif()
     target_link_options(
         dsd-neo_test_app_command_queue
         PRIVATE

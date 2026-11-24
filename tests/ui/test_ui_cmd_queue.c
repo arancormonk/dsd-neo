@@ -146,6 +146,24 @@ static int g_cmd_rx_resolves;
 static int g_cmd_default_syncs;
 /* Every lookup of the session's own squelch (dsd_squelch_channel_gate(), issue #899 round 12). */
 static int g_cmd_session_lookups;
+
+/* Whether the call counts the wraps above take can be checked (issue #899): they count calls through --wrap, which an
+   LTO build can inline away, so an LTO test build (DSD_TEST_LTO_BUILD) checks the behaviour around them and skips the
+   counts, saying so once. */
+static int
+cmd_rx_counts_observable(void) {
+#if defined(DSD_TEST_LTO_BUILD)
+    static int said;
+    if (!said) {
+        said = 1;
+        DSD_FPRINTF(stderr, "SKIP: wrapped call counts in an LTO test build (the idle-drain case checks behaviour)\n");
+    }
+    return 0;
+#else
+    return 1;
+#endif
+}
+
 static void cmd_rx_runs(const dsd_squelch_setting* gate);
 #endif
 
@@ -12752,6 +12770,7 @@ test_idle_digital_drain_resolves_nothing(void) {
     int rc = expect_int("idle drain: dmr", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                         DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle drain: dmr drained", dsd_app_drain_cmds(opts, state), 1);
+    const int counts = cmd_rx_counts_observable();
     const dsd_squelch_setting session = dsd_squelch_setting_of_opts(opts);
     channel_gate_fake_open(0, &session, cmd_rx_runs);
     dsd_engine_receiver_gate_due();
@@ -12763,10 +12782,12 @@ test_idle_digital_drain_resolves_nothing(void) {
     for (int i = 0; i < 1000; i++) {
         rc |= expect_int("idle drain: nothing queued", dsd_app_drain_cmds(opts, state), 0);
     }
-    rc |= expect_int("idle drain: no gate resolved", g_cmd_rx_resolves, 0);
     rc |= expect_int("idle drain: no gate written", channel_gate_fake_writes() - writes, 0);
     rc |= expect_int("idle drain: no receiver read", channel_gate_fake_reads() - reads, 0);
-    rc |= expect_int("idle drain: no default-policy work", g_cmd_default_syncs, 0);
+    if (counts) {
+        rc |= expect_int("idle drain: no gate resolved", g_cmd_rx_resolves, 0);
+        rc |= expect_int("idle drain: no default-policy work", g_cmd_default_syncs, 0);
+    }
     /* A write due while a receive request is still pending: nothing is resolved, the session's squelch included. */
     g_cmd_session_lookups = 0;
     channel_gate_fake_requests_pending(1);
@@ -12774,19 +12795,25 @@ test_idle_digital_drain_resolves_nothing(void) {
     for (int i = 0; i < 50; i++) {
         rc |= expect_int("idle drain: pending, nothing queued", dsd_app_drain_cmds(opts, state), 0);
     }
-    rc |= expect_int("idle drain: pending, no session lookup", g_cmd_session_lookups, 0);
-    rc |= expect_int("idle drain: pending, no gate resolved", g_cmd_rx_resolves, 0);
+    if (counts) {
+        rc |= expect_int("idle drain: pending, no session lookup", g_cmd_session_lookups, 0);
+        rc |= expect_int("idle drain: pending, no gate resolved", g_cmd_rx_resolves, 0);
+    }
     rc |= expect_int("idle drain: pending, no gate written", channel_gate_fake_writes() - writes, 0);
     channel_gate_fake_requests_pending(0);
     rc |= expect_int("idle drain: settled, nothing queued", dsd_app_drain_cmds(opts, state), 0);
-    rc |= expect_true("idle drain: settled, the session looked up", g_cmd_session_lookups > 0);
+    if (counts) {
+        rc |= expect_true("idle drain: settled, the session looked up", g_cmd_session_lookups > 0);
+    }
     rc |= expect_int("idle drain: settled, the due write", channel_gate_fake_writes() - writes, 1);
     const int settled_resolves = g_cmd_rx_resolves;
     /* A command re-resolves; the receiver runs the session's gate already, so nothing changes. */
     rc |= expect_int("idle drain: a command", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle drain: the command drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_true("idle drain: the command re-resolves", g_cmd_rx_resolves > settled_resolves);
+    if (counts) {
+        rc |= expect_true("idle drain: the command re-resolves", g_cmd_rx_resolves > settled_resolves);
+    }
     const dsd_squelch_setting rx = channel_gate_fake_gate();
     rc |=
         expect_true("idle drain: the receiver still runs the session's gate", dsd_squelch_setting_equal(&rx, &session));
