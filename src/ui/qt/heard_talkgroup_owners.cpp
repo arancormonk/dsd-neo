@@ -30,7 +30,7 @@ heard_talkgroups_follow_systems(HeardTalkgroupStore* store, SavedSystemsModel* s
     QObject::connect(systems, &QAbstractItemModel::rowsInserted, store, refresh);
     QObject::connect(systems, &QAbstractItemModel::rowsRemoved, store, refresh);
     QObject::connect(systems, &QAbstractItemModel::dataChanged, store, refresh);
-    QObject::connect(systems, &SavedSystemsModel::systemRemoved, store, &HeardTalkgroupStore::clear);
+    QObject::connect(systems, &SavedSystemsModel::systemRemoved, store, &HeardTalkgroupStore::dropOwner);
     if (heard_talkgroups_may_purge(*systems, restore)) {
         store->purgeMissingOwners(systems->uids());
     }

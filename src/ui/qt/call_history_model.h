@@ -75,6 +75,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <stdint.h>
@@ -376,9 +377,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * holds (it starts again), then, when a folded spill still waits for a save's acknowledgement, wait out the saves in
      * flight and write both stores now, which acknowledges it and empties the spill. For HeardTalkgroupStore's forget
      * and clear (HeardTalkgroupStore::setBeforeEdit()), so a relaunch after the process dies refolds nothing they
-     * removed. @return false when that write failed (the spill is kept, as every failed save keeps it).
+     * removed. @return false when that write failed: the spill is kept, as every failed save keeps it, and the log is
+     * reported not saving (saveFailing()) until a save lands.
      */
     bool settleSpill();
+
+    /** @brief settleSpill() of this model as HeardTalkgroupStore::setBeforeEdit() takes it; true once the model is gone
+     * (nothing of it can fold again). */
+    std::function<bool()> spillSettler();
 
     /**
      * @brief Whether the app came back from the background with the tap still running.

@@ -928,39 +928,41 @@ TalkgroupListModel::updateCategories(const QSet<QString>& categoryTags) {
     }
 }
 
-void
+bool
 TalkgroupListModel::forgetTalkgroup(quint32 id) {
-    forgetTalkgroupOf(m_viewedOwner, id);
+    return forgetTalkgroupOf(m_viewedOwner, id);
 }
 
-void
+bool
 TalkgroupListModel::forgetTalkgroupOf(const QString& owner, quint32 id) {
     if (id == 0U) {
-        return;
+        return true;
     }
-    if (m_store != nullptr && !owner.isEmpty()) {
-        m_store->forget(owner, id);
+    if (m_store != nullptr && !owner.isEmpty() && !m_store->forget(owner, id)) {
+        return false;
     }
     // Read after the store's forget, whose before-edit hook may fold what the background capture held into History:
     // those fragments came before the forget, so they are hidden too.
     m_forgotten[owner].insert(id, m_heardSource != nullptr && m_history != nullptr ? m_heardSource->heardSerial() : 0U);
     dropHeard(owner, {id}, false);
+    return true;
 }
 
-void
+bool
 TalkgroupListModel::clearRemembered() {
-    clearRememberedOf(m_viewedOwner);
+    return clearRememberedOf(m_viewedOwner);
 }
 
-void
+bool
 TalkgroupListModel::clearRememberedOf(const QString& owner) {
-    if (m_store != nullptr && !owner.isEmpty()) {
-        m_store->clear(owner);
+    if (m_store != nullptr && !owner.isEmpty() && !m_store->clear(owner)) {
+        return false;
     }
     m_clearedThrough.insert(owner,
                             m_heardSource != nullptr && m_history != nullptr ? m_heardSource->heardSerial() : 0U);
     m_forgotten.remove(owner);
     dropHeard(owner, {}, true);
+    return true;
 }
 
 void

@@ -1699,7 +1699,7 @@ test_heard_forget_after_a_fold_survives_a_death(void) {
         CallHistoryModel model;
         start_tap(model);
         model.setHeardSink(&store);
-        store.setBeforeEdit([&model]() { (void)model.settleSpill(); });
+        store.setBeforeEdit(model.spillSettler());
         start_saved(model, owner);
         gui_ingest(model);
         set_app_state(Qt::ApplicationSuspended);
@@ -1730,6 +1730,72 @@ test_heard_forget_after_a_fold_survives_a_death(void) {
     const QVector<dsd_qt::HeardTalkgroupStore::Entry> left = relaunchedStore.entriesFor(owner);
     expect("forget after fold: the forgotten group does not come back", left.size() == 1 && left.at(0).id == 44001U);
     expect("forget after fold: History kept both calls", relaunched.count() == 2);
+}
+
+/* Issue #903 (PR2 review r1, P2): a Forget or Clear whose spill History cannot settle (its log cannot be written) is
+ * refused, as qt_ui.cpp wires the store to History (CallHistoryModel::spillSettler()): nothing is removed, History says
+ * it is not saving, and a death then refolds nothing the user saw go. Once History can write again, the Forget goes
+ * through and survives a death. */
+void
+test_heard_forget_refused_while_history_cannot_save(void) {
+    resetStorage();
+    const QString name = QString::fromLatin1(dsd_qt::HeardTalkgroupStore::kFileName);
+    const QString owner = QStringLiteral("sys-a");
+    const auto allow = [](const QString& uid) { return uid == QStringLiteral("sys-a"); };
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QTemporaryDir atDeath;
+    expect("refused forget: a folder for the disk at death", atDeath.isValid());
+    Decoder decoder;
+    const time_t when = 1755610000;
+    {
+        dsd_qt::HeardTalkgroupStore store(name);
+        store.setOwnerPolicy(allow);
+        CallHistoryModel model;
+        start_tap(model);
+        model.setHeardSink(&store);
+        store.setBeforeEdit(model.spillSettler());
+        start_saved(model, owner);
+        gui_ingest(model);
+        set_app_state(Qt::ApplicationSuspended);
+        decoder.commit(0, 44500U, 99U, when);
+        prove_newest(decoder, 0, 44500U);
+        decoder.commit(0, 44501U, 99U, when + 60);
+        prove_newest(decoder, 0, 44501U);
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+        set_app_state(Qt::ApplicationActive);
+        gui_ingest(model);
+        expect("refused forget: the fold taught both groups", store.entriesFor(owner).size() == 2);
+        const QString logPath = dsd_qt::json_store_path("call_history.json");
+        expect("refused forget: History's log is blocked", QDir().mkpath(logPath));
+        expect("refused forget: the forget is refused", !store.forget(owner, 44500U));
+        expect("refused forget: the clear is refused", !store.clear(owner));
+        expect("refused forget: nothing is removed", store.entriesFor(owner).size() == 2);
+        expect("refused forget: History says it is not saving", model.saveFailing());
+        expect("refused forget: the spill is kept", spill_lines() == 2);
+        store.waitForWrites();
+        model.waitForSaveForTest();
+        copy_tree(dataDir, atDeath.path());
+        expect("refused forget: History's log is unblocked", QDir(logPath).removeRecursively());
+        expect("refused forget: with History saving again, the forget goes through", store.forget(owner, 44500U));
+        expect("refused forget: History is saving again", !model.saveFailing());
+        store.waitForWrites();
+        model.waitForSaveForTest();
+        expect("refused forget: the forget emptied the spill first", spill_size() == 0);
+    }
+    // The death after the refused forget: History's log never reached the disk, so the relaunch folds the spill again;
+    // nothing the user saw go comes back, and both groups are remembered.
+    QDir(dataDir).removeRecursively();
+    copy_tree(atDeath.path(), dataDir);
+    QDir(dsd_qt::json_store_path("call_history.json")).removeRecursively();
+    {
+        dsd_qt::HeardTalkgroupStore relaunchedStore(name);
+        relaunchedStore.setOwnerPolicy(allow);
+        CallHistoryModel relaunched;
+        relaunched.setHeardSink(&relaunchedStore);
+        expect("refused forget: a death after the refusal keeps both groups",
+               relaunchedStore.entriesFor(owner).size() == 2);
+    }
 }
 
 /* Issue #903 (r2 finding 2): the backlog the tap could not spill reaches the remembered talkgroups at the model's
@@ -1814,6 +1880,7 @@ main(int argc, char** argv) {
     test_heard_tap_learns_only_owned_live_calls();
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
+    test_heard_forget_refused_while_history_cannot_save();
     test_heard_hold_for_start();
     test_heard_clear_while_the_tap_runs();
     test_heard_cleared_row_proof_through_the_tap();

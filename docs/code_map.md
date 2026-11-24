@@ -17111,18 +17111,20 @@ Qt Quick frontend (`src/ui/qt`):
     owner (`viewOwner`, persisted `vo` on rows, parts and spill lines; `heard_owner_of()` without the learnable gate,
     for the Talkgroups screen) and its ingest serial (`heardSerial`, in memory). A Forget or Clear in the store
     cannot be undone by a later fold of a spill History already folded: `HeardTalkgroupStore::setBeforeEdit()` runs
-    `CallHistoryModel::settleSpill()` first (wired in `qt_ui.cpp`, through a `QPointer`), which folds what a running tap
-    holds and, while a folded spill waits for its acknowledgement, waits out the queued saves and writes History now, so
-    the spill is acknowledged and emptied before the store removes anything (a failed write keeps the spill, as every
-    failed save does). Tests: `UI_QT_CALL_HISTORY_MODEL`
+    `CallHistoryModel::settleSpill()` first (`spillSettler()`, wired in `qt_ui.cpp`; true once History is gone), which
+    folds what a running tap holds and, while a folded spill waits for its acknowledgement, waits out the queued saves
+    and writes History now, so the spill is acknowledged and emptied before the store removes anything. A failed write
+    keeps the spill, as every failed save does, sets `saveFailing` (History's not-saving line) until a save lands, and
+    the store refuses the edit (`forget()`/`clear()` return false with a diagnostic, nothing removed): the spill it
+    could not settle would bring the entries back after a death. Tests: `UI_QT_CALL_HISTORY_MODEL`
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
     ring at the pre-start flush, an old ring no read met during its run, a cleared row's late proof),
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
-    teardown backlog; a Forget after a fold, then a death before History's save; the start's hold; a Clear while the
-    tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
-    (`test_before_edit_hook`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
+    teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot
+    save; the start's hold; a Clear while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
+    (`test_before_edit_hook`, `test_before_edit_hook_refusal`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
@@ -19176,7 +19178,8 @@ Qt Quick frontend (`src/ui/qt`):
     show while it is off. `observedDecryption()` is kept per viewed owner.
   - Forget and Clear (`forgetTalkgroup()`/`clearRemembered()` for the viewed owner, `forgetTalkgroupOf()`/
     `clearRememberedOf()` for an owner an edit sheet captured) remove every variant of the number from the store
-    (`HeardTalkgroupStore::forget()` matches by `policyId()`), then hide this session's fragments of it up to History's
+    (`HeardTalkgroupStore::forget()` matches by `policyId()`; a forget or clear the store refuses changes nothing and
+    returns false), then hide this session's fragments of it up to History's
     ingest serial read after the store's before-edit hook (`heardSerial()`: `ingestReading()` gives each fragment taken
     in as new the next serial, an update keeps its fragment's; not persisted, so a reloaded row is 0). A later call
     shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,

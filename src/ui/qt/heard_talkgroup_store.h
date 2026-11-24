@@ -115,22 +115,31 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
      * once. Not gated by the policy.
      *
      * When it holds the id, the before-edit hook (setBeforeEdit()) runs first, so nothing learnt before the forget can
-     * come back after it.
+     * come back after it; when the hook fails, nothing is removed.
+     *
+     * @return false when the hook failed and the entries stay; true otherwise (removed, or nothing to remove).
      */
-    void forget(const QString& ownerUid, quint32 id);
+    bool forget(const QString& ownerUid, quint32 id);
 
     /** @brief Remove every entry of @p ownerUid, and write at once. Not gated by the policy. Runs the before-edit hook
-     * first when it holds the owner, as forget() does. */
-    void clear(const QString& ownerUid);
+     * first when it holds the owner, as forget() does, and removes nothing when it fails. @return as forget(). */
+    bool clear(const QString& ownerUid);
 
     /**
      * @brief What forget() and clear() run before they remove anything (empty: nothing).
      *
      * The app passes History's CallHistoryModel::settleSpill(): it folds what the background tap holds (which may
      * observe here) and writes History, so the background spill it folded is acknowledged and gone, and no later fold of
-     * it (a relaunch after the process dies) observes again what the edit removes.
+     * it (a relaunch after the process dies) observes again what the edit removes. It returns false when that write
+     * failed, and the edit is then refused: the spill it could not settle would bring the entries back.
      */
-    void setBeforeEdit(std::function<void()> hook);
+    void setBeforeEdit(std::function<bool()> hook);
+
+    /**
+     * @brief Remove every entry of @p ownerUid, a saved system just deleted, and write at once. No before-edit hook:
+     * an owner that no longer exists learns nothing, so no fold can bring its entries back.
+     */
+    void dropOwner(const QString& ownerUid);
 
     /**
      * @brief Remove every owner not in @p liveUids, and write at once.
@@ -173,6 +182,8 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     using OwnerEntries = QHash<quint64, Times>;
 
     void load();
+    /** Runs the before-edit hook for @p edit ("forget", "clear"); false, with a diagnostic, when it failed. */
+    bool settleBeforeEdit(const char* edit);
     /** Takes one v:1 element; false when it breaks the schema. */
     bool takeStored(const QJsonValue& value);
     /** Evicts @p entries down to the cap, oldest first; @return the keys it evicted. */
@@ -190,7 +201,7 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     QHash<QString, OwnerEntries> m_owners;
     QJsonArray m_kept; // elements of another v, written back as they were read
     std::function<bool(const QString&)> m_policy;
-    std::function<void()> m_beforeEdit;
+    std::function<bool()> m_beforeEdit;
 
     quint64 m_generation = 0;       // bumped by every change
     quint64 m_queuedGeneration = 0; // the state the last queued write carries

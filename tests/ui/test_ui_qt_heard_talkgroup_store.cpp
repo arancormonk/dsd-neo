@@ -582,6 +582,7 @@ test_before_edit_hook() {
         runs++;
         store.observe(kOwnerA, 2, 100, 50);
         store.observe(kOwnerA, 1, 300, 60);
+        return true;
     });
     store.forget(kOwnerA, 100);
     store.clear(kOwnerA);
@@ -598,6 +599,35 @@ test_before_edit_hook() {
     store.clear(kOwnerA);
     expect("before edit: clear runs the hook first and removes what it observed",
            runs == 2 && store.entriesFor(kOwnerA).isEmpty());
+    store.waitForWrites();
+    fresh(name);
+}
+
+/* Issue #903 (PR2 review r1): a before-edit hook that fails (History could not settle its spill) refuses the forget or
+   clear: nothing is removed or written, and the next one, with the hook settled, goes through. */
+void
+test_before_edit_hook_refusal() {
+    const QString name = QStringLiteral("heard_before_edit_refused.json");
+    fresh(name);
+    HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow_all);
+    bool settles = false;
+    store.setBeforeEdit([&settles]() { return settles; });
+    store.observe(kOwnerA, 1, 100, 10);
+    store.observe(kOwnerA, 1, 200, 20);
+    store.flushNow();
+    store.waitForWrites();
+    int changes = 0;
+    QObject::connect(&store, &HeardTalkgroupStore::ownerChanged, [&changes]() { changes++; });
+    expect("refused edit: the forget is refused", !store.forget(kOwnerA, 100));
+    expect("refused edit: the clear is refused", !store.clear(kOwnerA));
+    expect("refused edit: nothing is removed", store.entriesFor(kOwnerA).size() == 2 && changes == 0);
+    expect("refused edit: nothing is owed", !store.dirty());
+    settles = true;
+    expect("refused edit: a settled forget goes through",
+           store.forget(kOwnerA, 100) && store.entriesFor(kOwnerA).size() == 1);
+    expect("refused edit: a settled clear goes through", store.clear(kOwnerA) && store.entriesFor(kOwnerA).isEmpty());
+    expect("refused edit: nothing held is nothing to refuse", store.forget(kOwnerA, 100) && store.clear(kOwnerA));
     store.waitForWrites();
     fresh(name);
 }
@@ -643,6 +673,7 @@ main(int argc, char** argv) {
     test_purge();
     test_policy();
     test_before_edit_hook();
+    test_before_edit_hook_refusal();
     test_teardown_writes();
     test_burst_coalesced();
     test_pause_hook();

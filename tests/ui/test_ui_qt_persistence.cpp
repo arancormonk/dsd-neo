@@ -766,6 +766,8 @@ test_heard_talkgroups_follow_systems(void) {
         const QString d = systems.get(2).value(QStringLiteral("uid")).toString();
         store->observe(d, 1, 15, 50);
         expect("follow: a new system learns", store->entriesFor(d).size() == 1);
+        // History cannot settle its spill (a refused Forget or Clear): a deletion still clears, as B learns nothing more.
+        store->setBeforeEdit([]() { return false; });
         expect("follow: B removed", systems.remove(1));
         store->waitForWrites();
         expect("follow: a deleted system's list is cleared and written",

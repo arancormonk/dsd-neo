@@ -184,7 +184,7 @@ HeardTalkgroupStore::loaded() const {
 }
 
 void
-HeardTalkgroupStore::setBeforeEdit(std::function<void()> hook) {
+HeardTalkgroupStore::setBeforeEdit(std::function<bool()> hook) {
     m_beforeEdit = std::move(hook);
 }
 
@@ -286,42 +286,64 @@ HeardTalkgroupStore::policyId(int variant, quint32 id) {
     return variant == DSD_HEARD_TG_NXDN_D ? (id & 0x7FFU) : id;
 }
 
-void
+bool
+HeardTalkgroupStore::settleBeforeEdit(const char* edit) {
+    if (!m_beforeEdit || m_beforeEdit()) {
+        return true;
+    }
+    LOG_WARN("%s: the %s is refused: call history could not be saved, and its unsaved background calls would bring "
+             "the talkgroups back.\n",
+             qUtf8Printable(m_fileName), edit);
+    return false;
+}
+
+bool
 HeardTalkgroupStore::forget(const QString& ownerUid, quint32 id) {
     const auto numbered = [id](quint64 key) { return policyId(key_variant(key), key_id(key)) == id; };
     const auto held = m_owners.constFind(ownerUid);
     if (!m_loaded || held == m_owners.constEnd() || std::none_of(held->keyBegin(), held->keyEnd(), numbered)) {
-        return;
+        return true;
     }
     // Before the removal: what the hook folds may observe the id again, and the forget then takes it too.
-    if (m_beforeEdit) {
-        m_beforeEdit();
+    if (!settleBeforeEdit("forget")) {
+        return false;
     }
     const auto owner = m_owners.find(ownerUid);
     if (owner == m_owners.end()) {
-        return;
+        return true;
     }
     const qsizetype removed =
         owner->removeIf([&numbered](const OwnerEntries::iterator& it) { return numbered(it.key()); });
     if (removed == 0) {
-        return;
+        return true;
     }
     if (owner->isEmpty()) {
         m_owners.erase(owner);
     }
     changed(ownerUid);
     queueWrite();
+    return true;
+}
+
+bool
+HeardTalkgroupStore::clear(const QString& ownerUid) {
+    if (!m_loaded || !m_owners.contains(ownerUid)) {
+        return true;
+    }
+    if (!settleBeforeEdit("clear")) {
+        return false;
+    }
+    if (m_owners.remove(ownerUid) == 0) {
+        return true;
+    }
+    changed(ownerUid);
+    queueWrite();
+    return true;
 }
 
 void
-HeardTalkgroupStore::clear(const QString& ownerUid) {
-    if (!m_loaded || !m_owners.contains(ownerUid)) {
-        return;
-    }
-    if (m_beforeEdit) {
-        m_beforeEdit();
-    }
-    if (m_owners.remove(ownerUid) == 0) {
+HeardTalkgroupStore::dropOwner(const QString& ownerUid) {
+    if (!m_loaded || m_owners.remove(ownerUid) == 0) {
         return;
     }
     changed(ownerUid);

@@ -24,6 +24,7 @@
 #include <QLocale>
 #include <QMap>
 #include <QPair>
+#include <QPointer>
 #include <QSet>
 #include <QStringView>
 #include <QTimer>
@@ -3196,12 +3197,24 @@ CallHistoryModel::settleSpill() {
         m_saveDirty = false;
         settled = saveSync();
         if (!settled) {
+            m_saveFailures++;
             m_saveDirty = true;
+            if (!m_saveFailing) {
+                qWarning("call history: saving the log failed; a remembered talkgroup edit waits for it");
+            }
             scheduleSave();
+        } else {
+            m_saveFailures = 0;
         }
+        setSaveFailing(!settled);
     }
     resumeBackgroundCapture(resumeTap);
     return settled;
+}
+
+std::function<bool()>
+CallHistoryModel::spillSettler() {
+    return [history = QPointer<CallHistoryModel>(this)]() { return history == nullptr || history->settleSpill(); };
 }
 
 void

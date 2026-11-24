@@ -171,18 +171,19 @@ class TalkgroupListModel : public QAbstractListModel {
     void setHeardStore(HeardTalkgroupStore* store);
 
     /** @brief forgetTalkgroupOf() for the viewed owner. */
-    Q_INVOKABLE void forgetTalkgroup(quint32 id);
+    Q_INVOKABLE bool forgetTalkgroup(quint32 id);
     /**
      * @brief Forget talkgroup number @p id for @p owner (the owner an edit sheet captured when it opened): every
      * variant the store holds (HeardTalkgroupStore::forget()), and this session's fragments of it heard so far. A later
      * call shows it again. An empty @p owner forgets the Explore context's fragments only.
+     * @return false when the store refused the forget (History could not settle its spill): nothing is forgotten.
      */
-    Q_INVOKABLE void forgetTalkgroupOf(const QString& owner, quint32 id);
+    Q_INVOKABLE bool forgetTalkgroupOf(const QString& owner, quint32 id);
     /** @brief clearRememberedOf() for the viewed owner. */
-    Q_INVOKABLE void clearRemembered();
+    Q_INVOKABLE bool clearRemembered();
     /** @brief Clear everything @p owner remembers, and this session's fragments it heard so far (forgetTalkgroupOf()
-     * for every number). */
-    Q_INVOKABLE void clearRememberedOf(const QString& owner);
+     * for every number). @return as forgetTalkgroupOf(). */
+    Q_INVOKABLE bool clearRememberedOf(const QString& owner);
 
     QString
     persistenceScope() const {
