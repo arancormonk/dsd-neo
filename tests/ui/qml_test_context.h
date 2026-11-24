@@ -1898,10 +1898,20 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /** @brief The rows asked for are kept either way; a refused request (a full queue) sends nothing. */
     Q_INVOKABLE bool
     setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
         m_last_selection = rows;
+        if (!m_talkgroup_selection_accepted) {
+            return false;
+        }
         return setAllTalkgroupsListening(listen, QString());
+    }
+
+    /** @brief Whether setTalkgroupSelection() reports the request queued, so a case can refuse it. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        m_talkgroup_selection_accepted = accepted;
     }
 
     Q_INVOKABLE QVariantList
@@ -2188,6 +2198,7 @@ class CommandRecorder : public QObject {
         m_all_talkgroups_listen_calls = 0;
         m_last_all_talkgroups_listen = false;
         m_last_all_talkgroups_tag.clear();
+        m_talkgroup_selection_accepted = true;
     }
 
     int
@@ -2511,6 +2522,7 @@ class CommandRecorder : public QObject {
     int m_all_talkgroups_listen_calls = 0;
     bool m_last_all_talkgroups_listen = false;
     QString m_last_all_talkgroups_tag;
+    bool m_talkgroup_selection_accepted = true;
 };
 
 /**
@@ -3086,6 +3098,41 @@ class CallLogStore : public QAbstractListModel {
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::WhenRole});
         return name;
+    }
+
+    /**
+     * @brief Prepend one emergency call stamped @p when (0: a call whose time is not known; issue #901, its age).
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushEmergencyAt(qint64 when) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        m_rows[0].when = when;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::EmergencyRole, CallHistoryModel::WhenRole});
+        return name;
+    }
+
+    /**
+     * @brief Give the newest row the call name @p name and the system name @p systemName, and mark it encrypted
+     *        and an emergency as @p enc and @p emergency say (issue #901 r2 C2: names that hold a field's words).
+     * @return false with no rows.
+     */
+    Q_INVOKABLE bool
+    nameNewest(const QString& name, const QString& systemName, bool enc, bool emergency) {
+        if (m_rows.isEmpty()) {
+            return false;
+        }
+        m_rows[0].name = name;
+        m_rows[0].systemName = systemName;
+        m_rows[0].enc = enc;
+        m_rows[0].emergency = emergency;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::NameRole, CallHistoryModel::SystemNameRole, CallHistoryModel::EncRole,
+                            CallHistoryModel::EmergencyRole});
+        return true;
     }
 
     /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
@@ -6807,6 +6854,14 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastTuneHz() : 0.0;
     }
 
+    /** @brief Refuse (false) or admit the next bulk talkgroup requests, as a full command queue would. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        if (m_commands != nullptr) {
+            m_commands->setTalkgroupSelectionAccepted(accepted);
+        }
+    }
+
     /** @brief Refuse (false) or admit the next tuner releases, as a full command queue would. */
     Q_INVOKABLE void
     setReleaseTunerAccepted(bool accepted) {
@@ -7148,6 +7203,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
+        /* Issue #901: compact view off, as on a fresh install. */
+        prefs[QStringLiteral("compactView")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -7248,6 +7305,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("relaxedCrcRowOverride")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        metrics[QStringLiteral("uiMessageSeq")] = 0U;
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is
         // idle, so it is simply the wall clock the screens used to read.
         metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();
@@ -7742,6 +7800,8 @@ class Setup : public QObject {
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
         app_prefs->setSystemsSort(QStringLiteral("added"));
+        /* Issue #901: and compact view off, as on a fresh install, whatever a test file before this one left. */
+        app_prefs->setCompactView(false);
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between

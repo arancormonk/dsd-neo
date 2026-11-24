@@ -10,6 +10,7 @@
 #include <QLatin1Char>
 #include <QLatin1String>
 #include <QMap>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
 #include <QTimer>
@@ -66,8 +67,8 @@ only_playable(const QList<const Member*>& group) {
     return playable;
 }
 
-/* What tells @p member's receiver apart where the card's meta does not already say it (Util.systemMeta() names a
-   TCP or UDP source's address and a file's name): the dongle, an RTL-TCP server's address, an Airspy's serial. */
+/* What tells @p member's receiver apart where the card's source line does not already say it (Util.systemMeta() names
+   a TCP or UDP source's address and a file's path): the dongle, an RTL-TCP server's address, an Airspy's serial. */
 QString
 receiver_text(const Member& member) {
     if (member.sourceType == QLatin1String("usb")) {
@@ -312,6 +313,7 @@ group_role(const Card& card, int role) {
         case SavedSystemCards::SectionStartRole: return card.sectionStart;
         case SavedSystemCards::RrLinkedRole: return card.rrLinked;
         case SavedSystemCards::ReceiverLabelRole: return card.receiverLabel;
+        case SavedSystemCards::SharedTitleRole: return card.sharedTitle;
         default: return QVariant();
     }
 }
@@ -325,7 +327,7 @@ card_role(const Card& card, int role) {
 QList<int>
 changed_roles(const Card& before, const Card& after) {
     QList<int> roles;
-    for (int role = SavedSystemCards::KeyRole; role <= SavedSystemCards::ReceiverLabelRole; ++role) {
+    for (int role = SavedSystemCards::KeyRole; role <= SavedSystemCards::SharedTitleRole; ++role) {
         if (card_role(before, role) != card_role(after, role)) {
             roles.append(role);
         }
@@ -344,15 +346,33 @@ mark_section_starts(QList<Card>& cards) {
     }
 }
 
-/* A card whose title another shown card has too (one system saved on two receivers) names its receiver. */
+/* A title as Home draws it, for comparing titles: each run of line breaks (LF, VT, FF, CR, NEL, U+2028, U+2029) a
+   space (Util.oneLine()), in Unicode NFC, so a precomposed "é" and an "e" with a combining acute, which draw alike,
+   compare equal (issue #901 r5 H4). Only the key: the stored name is never changed. */
+QString
+title_key(const QString& text) {
+    static const QRegularExpression breaks(QStringLiteral("[\\x{000A}-\\x{000D}\\x{0085}\\x{2028}\\x{2029}]+"));
+    QString out = text;
+    return out.replace(breaks, QStringLiteral(" ")).normalized(QString::NormalizationForm_C);
+}
+
+/* A card whose title, as drawn, another shown card draws too (one system saved on two receivers, two files of one
+   name, one name on two frequencies) is a shared title: Home draws every line of the full card for it, wrapping
+   (issue #901 r3 S1), and its receiver line names its receiver. Any other card names nothing. One count per title,
+   so a rebuild stays linear however many cards share one. */
 void
 mark_shared_titles(QList<Card>& cards) {
     QHash<QString, int> titles;
+    QStringList keys;
+    keys.reserve(cards.size());
     for (const Card& card : cards) {
-        ++titles[card.title];
+        keys.append(title_key(card.title));
+        ++titles[keys.constLast()];
     }
-    for (Card& card : cards) {
-        card.receiverLabel = titles.value(card.title) > 1 ? card.receiver : QString();
+    for (qsizetype i = 0; i < cards.size(); ++i) {
+        Card& card = cards[i];
+        card.sharedTitle = titles.value(keys.at(i)) > 1;
+        card.receiverLabel = card.sharedTitle ? card.receiver : QString();
     }
 }
 
@@ -460,6 +480,7 @@ SavedSystemCards::roleNames() const {
         {SectionStartRole, QByteArrayLiteral("sectionStart")},
         {RrLinkedRole, QByteArrayLiteral("rrLinked")},
         {ReceiverLabelRole, QByteArrayLiteral("receiverLabel")},
+        {SharedTitleRole, QByteArrayLiteral("sharedTitle")},
         {HeldRole, QByteArrayLiteral("held")},
     };
 }

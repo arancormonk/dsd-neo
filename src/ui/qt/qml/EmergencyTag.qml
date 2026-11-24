@@ -5,6 +5,8 @@ import QtQuick
 
 // Emergency indication shared by live calls and history.
 Rectangle {
+    // Its word, also read where the tag is not drawn (a line too narrow for it).
+    readonly property string label: qsTr("EMERGENCY")
     implicitWidth: tag.implicitWidth + 14
     implicitHeight: Math.max(20, tag.implicitHeight + 8)
     radius: 5
@@ -15,7 +17,7 @@ Rectangle {
     Text {
         id: tag
         anchors.centerIn: parent
-        text: qsTr("EMERGENCY")
+        text: parent.label
         font.family: Theme.mono
         font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1

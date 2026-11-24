@@ -248,7 +248,7 @@ Item {
 
         // B8: a card without the hint keeps its 122 px and the place of its labels at normal text, and at large text
         // grows to hold them rather than letting them spill over its top and bottom edges. A card with one site
-        // holds its site button the same way.
+        // holds its site button the same way where it draws it.
         function test_plain_card_holds_its_parts_data() {
             return [{tag: "1.0", scale: 1.0}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
         }
@@ -277,8 +277,189 @@ Item {
                     var r = rectIn(part[1], card);
                     verify(inside(r, card), name + ": " + part[0] + " " + describe(r) + " inside the card, " + card.height + " tall");
                 }
-                verify(findChild(card, "homeSiteChooserButton").visible === (name === "Grouped system"));
+                // At normal text the site group draws its button and the plain system none, as on main. At larger
+                // text the group's button gives way where the title would fall under 96 px (issue #901 G4) and its
+                // count leads the source line instead.
+                var sites = findChild(card, "homeSiteChooserButton");
+                var source = findChild(card, "savedSystemSource").text;
+                if (data.scale === 1.0)
+                    verify(sites.visible === (name === "Grouped system"), name + ": the site button at normal text");
+                else if (name === "Grouped system")
+                    verify(sites.visible || source.indexOf("1 site · ") === 0, name + ": neither the button nor the count: " + source);
+                else
+                    verify(!sites.visible && source.indexOf("site") < 0, name + ": a site count outside a group");
             }
+        }
+
+        // Issue #901 B1: a site group of @a count sites, one of which plays (the rest avoided) when @a playable.
+        function addGroup(name, sid, count, playable) {
+            var rows = [];
+            for (var i = 0; i < count; ++i)
+                rows.push({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", rrSid: sid,
+                    rrSiteId: sid * 1000 + i, siteName: "Site " + i});
+            verify(savedSystems.addAll(rows, "") >= 0);
+            wait(0);
+            if (!playable)
+                return;
+            for (i = 0; i < savedSystems.count; ++i) {
+                var row = savedSystems.get(i);
+                if (row.rrSid === sid && row.rrSiteId !== sid * 1000)
+                    verify(savedSystems.setAvoidSite(i, true));
+            }
+            wait(0);
+        }
+        function settleCards() {
+            wait(0);
+            verify(waitForPolish(root.Window.window));
+            findChild(home, "listenSystemsSection").forceLayout();
+            verify(waitForPolish(root.Window.window));
+        }
+        // Every part inside the card, the actions 48 px targets apart from each other and from the labels, and the
+        // title at least 96 px wide (the site button's rule).
+        function checkActions(card, label) {
+            var labels = findChild(card, "savedSystemTitle").parent;
+            var title = findChild(card, "savedSystemTitle");
+            var labelsRect = rectIn(labels, card);
+            verify(inside(labelsRect, card), label + ": labels " + describe(labelsRect) + " inside, " + card.height);
+            var minimum = 96;
+            verify(title.width >= minimum - 0.5, label + ": the title is " + title.width + " wide, under " + minimum);
+            var actions = [];
+            for (var name of ["homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"]) {
+                var control = findChild(card, name);
+                if (control.visible && control.opacity > 0)
+                    actions.push([name, rectIn(control, card)]);
+            }
+            for (var i = 0; i < actions.length; ++i) {
+                var a = actions[i];
+                verify(inside(a[1], card), label + ": " + a[0] + " " + describe(a[1]) + " inside, " + card.height);
+                verify(a[1].w >= 47.5 && a[1].h >= 47.5, label + ": " + a[0] + " a 48 px target");
+                verify(!overlaps(a[1], labelsRect), label + ": " + a[0] + " " + describe(a[1]) + " clear of the labels "
+                    + describe(labelsRect));
+                for (var j = i + 1; j < actions.length; ++j)
+                    verify(!overlaps(a[1], actions[j][1]), label + ": " + a[0] + " " + describe(a[1]) + " and " + actions[j][0]
+                        + " " + describe(actions[j][1]) + " apart");
+            }
+        }
+
+        // B1 (issue #901): a site group with one site to play keeps the default card's 122 px at normal text and its
+        // place for Play and More (More over Play at the right), at every width; its site button is drawn only while
+        // the title keeps 96 px beside it, measured from natural widths, and otherwise the source
+        // line leads with the count ("10 sites · ") and More offers Sites. The labels and the controls never meet, at
+        // 1.0, 1.6 and 2.0.
+        function test_site_button_gives_way_data() {
+            var rows = [];
+            for (var scale of [1.0, 1.6, 2.0]) {
+                for (var w of [320, 360, 411]) {
+                    for (var count of [1, 10, 100])
+                        rows.push({tag: w + " at " + scale + ", " + count + (count === 1 ? " site" : " sites"), width: w,
+                            scale: scale, count: count});
+                }
+            }
+            return rows;
+        }
+        function test_site_button_gives_way(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            addGroup("Grouped county system", 21, data.count, true);
+            settleCards();
+            var card = cardNamed("Grouped county system");
+            var sites = findChild(card, "homeSiteChooserButton");
+            var play = findChild(card, "savedSystemPlay");
+            var more = findChild(card, "savedSystemManageButton");
+            var source = findChild(card, "savedSystemSource");
+            verify(play.visible, "Play for the one playable site");
+            checkActions(card, data.tag);
+            // Play and More where they always were: More over Play at the right edge.
+            var playRect = rectIn(play, card);
+            var moreRect = rectIn(more, card);
+            fuzzyCompare(playRect.x + playRect.w, card.width - 16, 0.5, "Play at the right edge");
+            fuzzyCompare(moreRect.x + moreRect.w / 2, playRect.x + playRect.w / 2, 0.5, "More over Play");
+            verify(moreRect.y + moreRect.h <= playRect.y + 0.5, "More above Play");
+            // Drawn only where the title keeps its minimum beside the site button, Play and the gaps.
+            var label = data.count === 1 ? "1 site" : data.count + " sites";
+            var fits = card.width - 2 * 16 - (play.implicitWidth + 8 + sites.implicitWidth) - 12 >= 96;
+            compare(sites.visible, fits, "the site button drawn only where it fits");
+            // Pinned: one site's button at normal text on every phone width, as on main (a 110 px title at 320 dp);
+            // left out for 10 sites at 320 dp and for one site at 2x text there.
+            if (data.scale === 1.0 && data.count === 1)
+                verify(sites.visible, "one site's button at " + data.width + " dp at normal text");
+            if (data.width === 320 && (data.scale === 1.0 && data.count === 10 || data.scale === 2.0 && data.count === 1))
+                verify(!sites.visible, "the button is drawn at " + data.tag);
+            if (sites.visible) {
+                compare(sites.text, label);
+                verify(source.text.indexOf(label) < 0, "the count twice: " + source.text);
+            } else {
+                compare(source.text.indexOf(label + " · "), 0, "the count leads the source line: " + source.text);
+            }
+            if (data.scale === 1.0) {
+                var labels = findChild(card, "savedSystemTitle").parent;
+                fuzzyCompare(card.height, 122, 0.01, data.tag + ": the height at normal text");
+                fuzzyCompare(labels.y, (122 - labels.height) / 2 - 10, 0.01, data.tag + ": the labels' place");
+            }
+        }
+
+        // The full card's More offers Sites for a group whose site button is left out.
+        function test_more_offers_sites_when_the_button_is_left_out() {
+            root.width = 320;
+            Ui.Theme.fontScale = 2.0;
+            addGroup("Grouped county system", 23, 10, true);
+            settleCards();
+            var card = cardNamed("Grouped county system");
+            verify(!findChild(card, "homeSiteChooserButton").visible);
+            var more = findChild(card, "savedSystemManageButton");
+            mouseClick(more, more.width / 2, more.height / 2);
+            var menu = findChild(home, "savedSystemManageSheet");
+            tryCompare(menu, "visible", true);
+            verify(findChild(menu, "sitesSavedSystemButton") !== null, "More offers Sites");
+            menu.visible = false;
+        }
+
+        // B4 (issue #901): a scan list's card is laid out as a saved system's: a bold title, its labels placed by the
+        // same rule (10 px above the middle of the actions' box), at the same inset, and Play and More where a system
+        // card has them, at every text size; as tall as what it holds, 122 px at normal text.
+        function test_scan_list_card_matches_the_system_card_data() {
+            return [{tag: "1.0", scale: 1.0}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
+        }
+        function textNamed(node, text) {
+            for (var child of node.children) {
+                if (child.text === text && child.font !== undefined)
+                    return child;
+                var found = textNamed(child, text);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function test_scan_list_card_matches_the_system_card(data) {
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            addSystem("Plain system");
+            addList("Harbor loop");
+            settleCards();
+            var system = cardNamed("Plain system");
+            var systemTitle = findChild(system, "savedSystemTitle");
+            var systemPlay = rectIn(findChild(system, "savedSystemPlay"), system);
+            var systemMore = rectIn(findChild(system, "savedSystemManageButton"), system);
+            home.showSection("scanLists");
+            settleCards();
+            var list = findChild(findChild(home, "listenScanListsSection"), "scanListCard");
+            var listTitle = textNamed(list, "Harbor loop");
+            verify(listTitle !== null);
+            compare(listTitle.font.weight, systemTitle.font.weight, "the title's weight");
+            compare(listTitle.font.pixelSize, systemTitle.font.pixelSize, "the title's size");
+            var listLabels = listTitle.parent;
+            var listPlay = rectIn(findChild(list, "scanListPlay"), list);
+            var listMore = rectIn(findChild(list, "scanListManageButton"), list);
+            compare(describe(listPlay), describe(systemPlay), "Play where a system card has it");
+            compare(describe(listMore), describe(systemMore), "More where a system card has it");
+            var actionsBottom = Math.max(listPlay.y + listPlay.h, listMore.y + listMore.h);
+            fuzzyCompare(rectIn(listLabels, list).x, rectIn(systemTitle.parent, system).x, 0.5, "the labels' inset");
+            fuzzyCompare(listLabels.y, Math.max(16, (actionsBottom + 16 - listLabels.height) / 2 - 10), 0.5,
+                "the labels 10 px above the middle of the actions' box");
+            fuzzyCompare(list.height, Math.max(listLabels.y + listLabels.height, actionsBottom) + 16, 0.5, "as tall as it holds");
+            if (data.scale === 1.0)
+                fuzzyCompare(list.height, 122, 0.5, "122 px at normal text");
+            verify(listLabels.x + listLabels.width <= listPlay.x - 11.5, "the labels clear of Play");
         }
 
         // B3: Tab down the body and round again: every control it stops on in the body is in full view once the

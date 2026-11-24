@@ -242,6 +242,24 @@ Item {
             }
         }
 
+        // B3: the engine's answer is one node a screen reader reaches, not two lines that read the same.
+        function test_engine_answer_is_one_node() {
+            var answer = "Applied: 4 talkgroups listened to";
+            testContext.setMetric("uiMessage", answer);
+            try {
+                tryCompare(item("talkgroupCommandToast"), "visible", true);
+                var copies = testContext.accessibleNodesUnder(screen).filter(function (node) {
+                    return node.inTree && node.name === answer;
+                });
+                compare(copies.length, 1, JSON.stringify(copies.map(function (node) {
+                    return node.objectName + " (" + node.file + ")";
+                })));
+                compare(copies[0].objectName, "talkgroupCommandToast");
+            } finally {
+                testContext.setMetric("uiMessage", "");
+            }
+        }
+
         // A card's listening switch says each of its lines once: its name gives the talkgroup's name and ID and its
         // state whether it is listened to, so its description gives the rest of the card (rank, tags, an avoid).
         function test_card_switch_says_each_line_once() {
