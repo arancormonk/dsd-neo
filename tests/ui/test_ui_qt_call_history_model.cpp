@@ -7971,6 +7971,47 @@ test_heard_after_a_live_retune_is_no_ones(void) {
     expect("live retune: a late proof of a call after it is no one's", sink.seen.size() == 1);
 }
 
+/* Issue #903 (PR2 review r4 ruling): a scan list's Go to, then its resume. The calls heard while the operator holds
+ * the tuner (operator_tuned, off any target) are learnt for no one; the Go to does not move the tuning generation
+ * (APP_COMMAND_QUEUE test_go_to_and_resume_keep_the_tuning_generation), so once the resume lands each target's calls
+ * are learnt under its own saved system again, as they were before it. */
+void
+test_heard_scan_list_learns_again_after_go_to_and_resume(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("County scan"), QString());
+    model.setSessionOwners(
+        model.session(), QString(),
+        {{QStringLiteral("entry-a"), QStringLiteral("sys-a")}, {QStringLiteral("entry-b"), QStringLiteral("sys-b")}});
+    const time_t when = 1754607000;
+    // A call as the decoder stamps it at its first render: a scan member on its target, or the operator's.
+    const auto heard = [&](uint32_t tg, time_t start, const char* target, bool operatorTuned) {
+        Event_History* item = prove(ring.commit(0, tg, 900, start, start + 4, "", "", target), tg);
+        item->scan_member = operatorTuned ? 0U : 1U;
+        item->operator_tuned = operatorTuned ? 1U : 0U;
+        item->tuning_moved = static_cast<uint8_t>(dsd_state_tuning_moved(ring.state));
+    };
+    heard(7301, when, "entry-a", false);
+    model.refresh(ring.state, opts.get());
+    expect("go to: before it, the target's call is its system's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7301, when + 4));
+    // Go to: the scan pauses, the operator holds the tuner off any target.
+    heard(7302, when + 30, "", true);
+    model.refresh(ring.state, opts.get());
+    expect("go to: a call heard on the operator's frequency is no one's", sink.seen.size() == 1);
+    // The resume lands: the scan has the tuner again, on its rows.
+    heard(7303, when + 60, "entry-b", false);
+    heard(7304, when + 90, "entry-a", false);
+    model.refresh(ring.state, opts.get());
+    expect("go to: after the resume each target's call is its own system's again",
+           sink.seen.size() == 3 && sink.has("sys-b", 7303, when + 64) && sink.has("sys-a", 7304, when + 94));
+    expect("go to: every call is in History", model.count() == 4);
+}
+
 /* Issue #903: change detection sees a proof that arrives late on a committed row (a checked message after the commit)
  * and hands it on then, at the fragment's own time, once; the proof is the row's from then on, saved with it. A later
  * CRC failure marked on the row (fragment trust) keeps it and retracts nothing. */
@@ -8588,6 +8629,7 @@ main(int argc, char** argv) {
     test_reread_sender_drops_withdrawn_text();
     test_heard_proof_reaches_the_sink_once();
     test_heard_after_a_live_retune_is_no_ones();
+    test_heard_scan_list_learns_again_after_go_to_and_resume();
     test_heard_late_proof_and_crc_revision();
     test_heard_merged_conversation_keeps_fragment_proof();
     test_heard_owner_follows_the_ring();

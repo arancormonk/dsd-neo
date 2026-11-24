@@ -13268,18 +13268,23 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
-  A tune, a source change or an input switch also moves the tuning generation (issue #903; `dsd_state::tuning_gen`,
+  A source change or an input switch also moves the tuning generation (issue #903; `dsd_state::tuning_gen`,
   `dsd_state_note_tuning_change()`, under the guard): what the receiver is tuned to or decodes with changed by no trunk
-  or scan follow. A stream gap (which moves `carrier_seq` but stays on the carrier), a scan step and a replay retune do
-  not. Outside the boundary the generation moves for a decode mode applied live (`DSD_APP_CMD_DECODE_MODE_SET`, a
-  config's `[mode]` that changed it, the AM fallback, a RadioReference apply), a channel map imported or cleared live, a
-  P25 band plan imported live, and a trunking tuner release (all on the decoder thread, `ui_note_tuning_change()` under
-  the guard). `run_tuning_gen` is the generation the run started with: `dsd_engine_note_run_start()` takes it, and so
-  does `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an
-  earlier run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two
-  differ) is stamped on each history row at its first render (`Event_History::tuning_moved`, beside `operator_tuned`)
-  and on each export completion (`dsd_app_tg_export_result::tuning_moved`): a row or list heard after a live retune is
-  not the saved system's (see UI, Qt, verified talkgroups and Save talkgroup list).
+  or scan follow and in a way `operator_tuned` does not mark. A tune does not move it at the boundary: an operator's
+  tune (a frequency entry, a tap, Go to, a tune that pauses a scan) marks its calls through `operator_tuned`, which a
+  scan resume clears, so a resumed scan list learns again; a configuration's retune, which marks nothing, moves it in
+  `apply_cfg_radio_input()` (the control API's config apply, the P1 path). A stream gap (which moves `carrier_seq` but
+  stays on the carrier), a scan step, a replay retune and a channel or candidate cycle do not. Outside the boundary
+  the generation moves for a decode mode applied live (`DSD_APP_CMD_DECODE_MODE_SET`, a config's `[mode]` that
+  changed it, the AM fallback), a RadioReference apply, a channel map imported or cleared live, and a P25 band plan
+  imported live (all on the decoder thread, `ui_note_tuning_change()` under the guard). `run_tuning_gen` is the
+  generation the run started with: `dsd_engine_note_run_start()` takes it, and so does
+  `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an earlier
+  run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two differ) is
+  stamped on each history row at its first render (`Event_History::tuning_moved`, beside `operator_tuned`); each export
+  completion records it or a held tuner (`dsd_app_tg_export_result::tuning_moved`: moved, or `operator_tuned` set as
+  it ran). A row or list heard after a live retune is not the saved system's (see UI, Qt, verified talkgroups and Save
+  talkgroup list).
   With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
   clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
   never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
@@ -19300,8 +19305,8 @@ Qt Quick frontend (`src/ui/qt`):
   session was started with (`sessionTuning`: an edit of the running system changes `sessionSystem`, but not the
   frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted). A
   change the decoder applied live leaves the saved row as it was; the export's completion says whether there was one
-  (`tuningMoved`, `dsd_app_tg_export_result::tuning_moved`: the tuning generation had moved since the run began when
-  the decoder ran the export, or the export never ran), decoder provenance read with the result itself, whatever the
+  (`tuningMoved`, `dsd_app_tg_export_result::tuning_moved`: the tuning generation had moved since the run began, or
+  the operator held the tuner, when the decoder ran the export, or the export never ran), decoder provenance read with the result itself, whatever the
   snapshots showed by then and also after a Stop. The flow reads every completion since the last poll
   (`UiController::talkgroupExportResults`, from `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap
   past the 64 kept). A request's completion runs registration in Imports, then `SavedSystemsModel::attachGroupList()`

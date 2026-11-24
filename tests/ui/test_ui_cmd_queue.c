@@ -9358,8 +9358,9 @@ export_talkgroups_to(dsd_opts* opts, dsd_state* state, const char* path, dsd_app
 
 /*
  * Issue #903: the tuning generation moves when what the receiver is tuned to or decodes with changes by no trunk or
- * scan follow (a tune, another source, a decode-mode change, a channel-map import), and never for a stream gap on the
- * same carrier, a scan step or a run's own first stream. Each export's completion records whether it had moved since
+ * scan follow and operator_tuned does not mark it (another source or input, a decode-mode change, a channel-map
+ * import), and never for a stream gap on the same carrier, a scan step, a run's own first stream or the boundary of a
+ * tune (the operator's marks its calls; a config's moves the generation in its apply, RUNTIME_CONFIG_APPLY). Each export's completion records whether it had moved since
  * the run began (dsd_app_tg_export_result::tuning_moved), which Save talkgroup list attaches by.
  */
 static int
@@ -9386,22 +9387,22 @@ test_tuning_generation_follows_live_changes(void) {
     dsd_engine_note_run_stream_source(&opts, &state);
     rc |= expect_int("tuning gen: the run's first stream is its start tuning", dsd_state_tuning_moved(&state), 0);
     const dsd_carrier_boundary_kind kept[] = {DSD_CARRIER_BOUNDARY_STREAM_GAP, DSD_CARRIER_BOUNDARY_SCAN_STEP,
-                                              DSD_CARRIER_BOUNDARY_REPLAY_RETUNE};
+                                              DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, DSD_CARRIER_BOUNDARY_TUNE};
     for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) {
         dsd_engine_carrier_boundary(&opts, &state, kept[i], 0);
-        rc |= expect_int("tuning gen: a stream gap, a scan step or a replay's recorded retune keeps the tuning",
-                         dsd_state_tuning_moved(&state), 0);
+        rc |=
+            expect_int("tuning gen: a stream gap, a scan step, a replay's retune or a tune's boundary keeps the tuning",
+                       dsd_state_tuning_moved(&state), 0);
     }
     rc |= export_talkgroups_to(&opts, &state, "gap.csv", &result);
     rc |= expect_int("tuning gen: an export after a stream gap is on the start tuning", result.tuning_moved, 0);
 
-    const dsd_carrier_boundary_kind moved[] = {DSD_CARRIER_BOUNDARY_TUNE, DSD_CARRIER_BOUNDARY_SOURCE,
-                                               DSD_CARRIER_BOUNDARY_INPUT_SWITCH};
+    const dsd_carrier_boundary_kind moved[] = {DSD_CARRIER_BOUNDARY_SOURCE, DSD_CARRIER_BOUNDARY_INPUT_SWITCH};
     for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
         dsd_engine_note_run_start(&opts, &state);
         dsd_engine_carrier_boundary(&opts, &state, moved[i], 0);
-        rc |= expect_int("tuning gen: a tune, another source or another input moves the tuning",
-                         dsd_state_tuning_moved(&state), 1);
+        rc |= expect_int("tuning gen: another source or another input moves the tuning", dsd_state_tuning_moved(&state),
+                         1);
     }
     rc |= export_talkgroups_to(&opts, &state, "moved.csv", &result);
     rc |= expect_int("tuning gen: an export after a retune is not on the start tuning", result.tuning_moved, 1);
@@ -28387,6 +28388,59 @@ test_frequency_entry_pauses_a_running_list(void) {
 }
 
 /*
+ * Issue #903 (PR2 review r4 ruling): Go to over a running -Y list, then its resume. The entry pauses the scan and marks
+ * the operator (operator_tuned), which keeps the calls heard there from any saved system; it does not move the tuning
+ * generation, so once the resume lands the list's rows learn again. An export while the operator holds the tuner says
+ * the list was not heard on the start tuning; one after the resume says it was.
+ */
+static int
+test_go_to_and_resume_keep_the_tuning_generation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_go_to_gen") != 0) {
+        return expect_true("go to temp directory", 0);
+    }
+    init_decode_mode_context(&opts, &state);
+    int rc = expect_int("go to: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    g_rigctl_fake_freq_armed = 1;
+    seed_running_list(&opts, &state);
+    dsd_engine_note_run_start(&opts, &state);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    const uint32_t carrier_before = state.carrier_seq;
+    rc |= drain_entry(&opts, &state, 860000000U, "go to");
+    rc |= expect_int("go to: the scan paused for the operator, the receiver moved",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.carrier_seq != carrier_before,
+                     1);
+    rc |= expect_int("go to: the operator's tune leaves the tuning generation", dsd_state_tuning_moved(&state), 0);
+    dsd_app_tg_export_result result = {0};
+    rc |= export_talkgroups_to(&opts, &state, "held.csv", &result);
+    rc |= expect_int("go to: an export while the operator holds the tuner is not the start tuning's",
+                     result.tuning_moved, 1);
+    dsd_app_command_test_set_tune_leg(NULL);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "go to: resume");
+    rc |= expect_int("go to: the resume lands and the scan has the tuner again",
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 0,
+                     1);
+    rc |= expect_int("go to: after the resume the tuning is the run's start tuning", dsd_state_tuning_moved(&state), 0);
+    rc |= export_talkgroups_to(&opts, &state, "resumed.csv", &result);
+    rc |= expect_int("go to: an export after the resume is the start tuning's", result.tuning_moved, 0);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    opts.scanner_mode = 0;
+    freeState(&state);
+    (void)remove("held.csv");
+    (void)remove("resumed.csv");
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+/*
  * Issue #671: the operator moved the receiver off its session, so the calls heard from here on are filed as the
  * operator's (Exploring in Qt's history), not the session's. Every accepted manual tune says so -- the frequency entry
  * (terminal `=`, the menu row, the API's rtl_set_freq, Qt's Go to), applied or pending, and the tap-to-tune -- while a
@@ -31993,6 +32047,7 @@ main(void) {
     rc |= test_channel_scan_pause_services();
 #ifdef USE_RADIO
     rc |= test_frequency_entry_pauses_a_running_list();
+    rc |= test_go_to_and_resume_keep_the_tuning_generation();
     rc |= test_manual_tunes_mark_the_operator();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();

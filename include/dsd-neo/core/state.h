@@ -3383,9 +3383,10 @@ struct dsd_state {
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;
     /* The tuning generation (issue #903): tuning_gen counts every change of what the receiver is tuned to or decodes
-     * with that no trunk or scan follow makes (dsd_state_note_tuning_change()): a tune the user or a config asked for,
-     * another source or input, a decode-mode change, a channel-map or band-plan import. A stream gap or a reopen on
-     * the same carrier is none. run_tuning_gen: tuning_gen as the run began, its first stream's start included
+     * with that no trunk or scan follow makes and operator_tuned does not mark (dsd_state_note_tuning_change()): a
+     * config's retune, another source or input, a decode-mode change, a channel-map or band-plan import. An operator's
+     * tune is none (operator_tuned marks its calls, and a scan resume clears it), nor is a stream gap or a reopen on the
+     * same carrier. run_tuning_gen: tuning_gen as the run began, its first stream's start included
      * (dsd_engine_note_run_start(), dsd_engine_note_run_stream_source()). Written on the decoder thread, under the P25
      * SM tick guard once the watchdog runs. */
     uint32_t tuning_gen;

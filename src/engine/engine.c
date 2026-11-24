@@ -3612,12 +3612,13 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
            || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH || kind == DSD_CARRIER_BOUNDARY_STREAM_GAP;
 }
 
-/* Whether a boundary of @p kind moves the tuning generation (issue #903): a tune, a source change or an input switch
-   runs other tuning than the receiver ran; a scan step, a replay's recorded retune and a stream gap do not. */
+/* Whether a boundary of @p kind moves the tuning generation (issue #903): another source or input runs other tuning
+   than the receiver ran. A tune does not here: the operator's marks its calls (dsd_state::operator_tuned), and one no
+   operator asked for (a config's) moves the generation where it is made. A scan step, a replay's recorded retune and a
+   stream gap do not. */
 static int
 carrier_boundary_moves_tuning(dsd_carrier_boundary_kind kind) {
-    return kind == DSD_CARRIER_BOUNDARY_TUNE || kind == DSD_CARRIER_BOUNDARY_SOURCE
-           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+    return kind == DSD_CARRIER_BOUNDARY_SOURCE || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
 }
 
 /* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while

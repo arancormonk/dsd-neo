@@ -264,8 +264,9 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status,
         }
     }
     result.success = status == UI_CMD_APPLY_COMPLETED;
-    /* The tuning the export ran under (issue #903); an export that never ran ran under none. */
-    result.tuning_moved = state == NULL || dsd_state_tuning_moved(state);
+    /* The tuning the export ran under (issue #903): moved since the run began, or held by the operator, whose tunes
+       mark the calls heard rather than move the generation. An export that never ran ran under none. */
+    result.tuning_moved = state == NULL || dsd_state_tuning_moved(state) || state->operator_tuned != 0U;
     result.sequence = g_tg_export_result.sequence + 1U;
     // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
     if (result.sequence == 0) {
@@ -5004,16 +5005,23 @@ apply_cfg_left_carrier(const dsd_state* state, uint32_t carrier_seq, uint64_t so
    the apply left it already (apply_cfg_left_carrier()). What is left is a reopen of the same source on the config's
    frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so no input
    boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old input
-   back, and the same source reopened for a new gain stays on its carrier. */
+   back, and the same source reopened for a new gain stays on its carrier. A carrier left moves the tuning generation:
+   no operator's tune marks the calls heard after it (issue #903). */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const uint32_t carrier_seq = state->carrier_seq;
     const uint64_t source_key = state->carrier_source_key;
     const unsigned int starts = svc_rtl_start_count();
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
-    if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
-        && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
+    int left = apply_cfg_left_carrier(state, carrier_seq, source_key, starts);
+    if (!left && before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
+        left = 1;
+    }
+    if (left) {
+        /* No operator's tune marks what is heard from here on (operator_tuned): the run's tuning moved (issue #903). */
+        ui_note_tuning_change(state);
     }
     return rc;
 }
@@ -6050,8 +6058,6 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!paused) {
         if (opts->trunk_enable == 1) {
             state->operator_tuned = 1U;
-            /* The receiver stays, but no longer follows the system it ran (issue #903). */
-            dsd_state_note_tuning_change(state);
         }
         opts->scanner_mode = 0;
         // Leaving -Y hands the foreground keyring back to the globals.
