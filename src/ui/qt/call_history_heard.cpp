@@ -30,6 +30,9 @@ constexpr int kHeardOwnerRings = 32;
 /* A ring generation's whole form in the settings: [session, from slot 0, from slot 1]. */
 constexpr qsizetype kHeardGenerationFields = 3;
 
+/* An unowned window's whole form in the settings: [after slot 0, after slot 1, through slot 0, through slot 1]. */
+constexpr qsizetype kHeardWindowFields = 4;
+
 /* The newest session a ring's generations name. */
 qint64
 newest_session(const QList<HeardRingGeneration>& generations) {
@@ -56,6 +59,19 @@ bound_rings(HeardOwners* owners) {
             }
         }
         owners->rings.erase(oldest);
+    }
+    // A ring's unowned rows go with its generations. A start notes at most one window: past the newest sessions' worth
+    // the oldest two become one that spans both, so a row they held stays no one's.
+    for (auto it = owners->unowned.begin(); it != owners->unowned.end();) {
+        while (it->size() > kHeardOwnerSessions) {
+            const HeardRingWindow first = it->takeFirst();
+            HeardRingWindow& next = it->first();
+            for (int slot = 0; slot < 2; slot++) {
+                next.after[slot] = qMin(next.after[slot], first.after[slot]);
+                next.through[slot] = qMax(next.through[slot], first.through[slot]);
+            }
+        }
+        it = owners->rings.contains(it.key()) && !it->isEmpty() ? std::next(it) : owners->unowned.erase(it);
     }
 }
 
@@ -104,6 +120,46 @@ generations_from_json(const QJsonValue& value) {
         generations.append(generation);
     }
     return generations;
+}
+
+/* A ring's unowned windows as heard_owners_to_text() writes them; empty for anything else. */
+QList<HeardRingWindow>
+windows_from_json(const QJsonValue& value) {
+    QList<HeardRingWindow> windows;
+    for (const auto& entry : value.toArray()) {
+        const QJsonArray fields = entry.toArray();
+        if (fields.size() != kHeardWindowFields
+            || !std::all_of(fields.cbegin(), fields.cend(),
+                            [](const QJsonValue& field) { return field.isDouble() && field.toInteger(-1) >= 0; })) {
+            return {};
+        }
+        HeardRingWindow window;
+        for (int slot = 0; slot < 2; slot++) {
+            window.after[slot] = static_cast<quint64>(fields.at(slot).toInteger());
+            window.through[slot] = static_cast<quint64>(fields.at(slot + 2).toInteger());
+        }
+        windows.append(window);
+    }
+    return windows;
+}
+
+/* The unowned windows heard_owners_to_text() wrote, into @p owners. A ring whose windows cannot be read has no row
+   anyone owns. */
+void
+unowned_from_json(const QJsonObject& unowned, HeardOwners* owners) {
+    for (auto it = unowned.constBegin(); it != unowned.constEnd(); ++it) {
+        bool ok = false;
+        const quint64 ring = it.key().toULongLong(&ok, 16);
+        if (!ok || ring == 0U) {
+            continue;
+        }
+        QList<HeardRingWindow> windows = windows_from_json(it.value());
+        if (windows.isEmpty()) {
+            constexpr quint64 kAll = std::numeric_limits<quint64>::max();
+            windows.append(HeardRingWindow{{0U, 0U}, {kAll, kAll}});
+        }
+        owners->unowned.insert(ring, windows);
+    }
 }
 
 QJsonValue
@@ -160,8 +216,25 @@ heard_owners_mark_start(HeardOwners* owners, qint64 session, quint64 ring, const
 }
 
 bool
+operator==(const HeardRingWindow& a, const HeardRingWindow& b) {
+    return a.after[0] == b.after[0] && a.after[1] == b.after[1] && a.through[0] == b.through[0]
+           && a.through[1] == b.through[1];
+}
+
+bool
 heard_owners_ring_bound(const HeardOwners& owners, quint64 ring) {
     return ring == 0U || owners.rings.contains(ring);
+}
+
+bool
+heard_owners_note_unowned(HeardOwners* owners, quint64 ring, const quint64 after[2], const quint64 through[2]) {
+    if (owners == nullptr || ring == 0U || !owners->rings.contains(ring)
+        || (through[0] <= after[0] && through[1] <= after[1])) {
+        return false;
+    }
+    owners->unowned[ring].append(HeardRingWindow{{after[0], after[1]}, {through[0], through[1]}});
+    bound_rings(owners);
+    return true;
 }
 
 void
@@ -194,6 +267,12 @@ heard_owners_session_of(const HeardOwners* owners, quint64 ring, int slot, quint
     }
     const auto bound = owners->rings.constFind(ring);
     if (bound == owners->rings.constEnd() || slot < 0 || slot > 1) {
+        return kHeardNoSession;
+    }
+    const QList<HeardRingWindow> unowned = owners->unowned.value(ring);
+    if (std::any_of(unowned.cbegin(), unowned.cend(), [slot, seq](const HeardRingWindow& window) {
+            return seq > window.after[slot] && seq <= window.through[slot];
+        })) {
         return kHeardNoSession;
     }
     for (auto it = bound->crbegin(); it != bound->crend(); ++it) {
@@ -305,7 +384,19 @@ heard_owners_to_text(const HeardOwners& owners) {
         }
         rings.insert(QString::number(it.key(), 16), generations);
     }
+    QJsonObject unowned;
+    for (auto it = owners.unowned.constBegin(); it != owners.unowned.constEnd(); ++it) {
+        QJsonArray windows;
+        for (const HeardRingWindow& window : it.value()) {
+            windows.append(QJsonArray{static_cast<qint64>(window.after[0]), static_cast<qint64>(window.after[1]),
+                                      static_cast<qint64>(window.through[0]), static_cast<qint64>(window.through[1])});
+        }
+        unowned.insert(QString::number(it.key(), 16), windows);
+    }
     QJsonObject root{{QLatin1String("s"), sessions}, {QLatin1String("r"), rings}};
+    if (!unowned.isEmpty()) {
+        root.insert(QLatin1String("u"), unowned);
+    }
     const QJsonValue mark = mark_to_json(owners.mark);
     if (!mark.isNull()) {
         root.insert(QLatin1String("m"), mark);
@@ -342,6 +433,7 @@ heard_owners_from_text(const QString& text) {
             owners.rings.insert(ring, generations);
         }
     }
+    unowned_from_json(root.value(QLatin1String("u")).toObject(), &owners);
     owners.mark = mark_from_json(root.value(QLatin1String("m")));
     prune_sessions(&owners);
     bound_rings(&owners);

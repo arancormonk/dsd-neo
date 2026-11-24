@@ -17106,7 +17106,12 @@ Qt Quick frontend (`src/ui/qt`):
     run). No starting run's ring exists yet, so both bind only the old run's. The flush after the host's accept
     (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`) reads nothing of a snapshot whose ring no
     session owns (`heard_owners_ring_bound()`), its commit revision included: such a ring can only be the starting
-    run's, and the first read after the new session begins takes in what it committed under that session. The next
+    run's, and the first read after the new session begins takes in what it committed under that session. On a ring a
+    session owns, what that flush finds pushed since the last read is the old run's last or the new run's first on the
+    ring it reused, which nothing tells apart: those rows are no one's, fail closed (`readBeforeSession()`,
+    `heard_owners_note_unowned()`, `HeardOwners::unowned` windows `HeardRingWindow` per ring: `heard_owners_session_of()`
+    gives such a row, and its later revisions, no session; persisted as `u`, a ring's windows past 8 merged into one
+    spanning both, an unreadable entry making the whole ring no one's). History still logs them. The next
     `beginSession*()` consumes the hold and starts the tap on the new session when the app is away
     (`onApplicationStateChanged()` keeps that state); a start that begins none releases it (`releaseCaptureHold()` on
     Main's refused and failed starts, and a `QTimer::singleShot(0)` safety release a begun session retires), and a hold
@@ -17138,7 +17143,7 @@ Qt Quick frontend (`src/ui/qt`):
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
     ring at the pre-start flush, with a call committed before it, an old ring no read met during its run, a reused
-    ring's generations, a cleared row's late proof),
+    ring's generations, a reused ring's calls committed before the flush after the accept, a cleared row's late proof),
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
     teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot

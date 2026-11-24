@@ -3386,9 +3386,9 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     }
 
     // Issue #903: before the session that owns it, nothing of the starting run's ring is read, its commit revision
-    // included: the next read takes it in under the session that begins.
-    if (!bindNewRings
-        && !heard_owners_ring_bound(m_heardOwners, static_cast<quint64>(snapshot->event_history_s[0].instance))) {
+    // included: the next read takes it in under the session that begins. What a ring a session owns pushed meanwhile
+    // is read, and no one's.
+    if (!bindNewRings && !readBeforeSession(snapshot)) {
         return;
     }
     bool scan[2];
@@ -3434,6 +3434,26 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
         Q_EMIT countChanged();
     }
     markChanged();
+}
+
+bool
+CallHistoryModel::readBeforeSession(const dsd_state* snapshot) {
+    const quint64 ring = static_cast<quint64>(snapshot->event_history_s[0].instance);
+    if (!heard_owners_ring_bound(m_heardOwners, ring)) {
+        return false;
+    }
+    // Issue #903 (fail closed): what a ring a session owns pushed after the last read, found between the host's accept
+    // and the new session, is the old run's last or the new run's first on the ring it reused. Nothing tells which: it
+    // is no one's, and so are its later revisions. A ring not read last is taken whole.
+    const bool readLast = m_ringRead && m_ringPushSeqRing == ring;
+    const quint64 after[2] = {readLast ? static_cast<quint64>(m_ringPushSeq[0]) : 0U,
+                              readLast ? static_cast<quint64>(m_ringPushSeq[1]) : 0U};
+    const quint64 through[2] = {static_cast<quint64>(snapshot->event_history_s[0].push_seq),
+                                static_cast<quint64>(snapshot->event_history_s[1].push_seq)};
+    if (heard_owners_note_unowned(&m_heardOwners, ring, after, through)) {
+        saveHeardOwners();
+    }
+    return true;
 }
 
 void

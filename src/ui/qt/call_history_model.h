@@ -428,7 +428,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * Issue #903: without @p bindNewRings (the flush after the host accepted a start, before the session begins:
      * UiController::flushHistoryBeforeStart()), a snapshot of a ring no session owns is not read at all, its commits
      * left for the next read: the flush before the host was asked bound the old run's (holdCaptureForStart()), so such
-     * a ring can only be the starting run's, whose calls the coming session owns.
+     * a ring can only be the starting run's, whose calls the coming session owns. On a ring a session owns, what it
+     * pushed since the last read is the old run's last or the new run's first on the ring it reused: it is read, and
+     * no one's (readBeforeSession()).
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr, bool bindNewRings = true);
 
@@ -1155,6 +1157,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static QByteArray clearedProofLine(const FreshRow& fresh);
     /** @brief Bound @p seen once it is well past what the ring could resurrect. */
     static void pruneSeenMap(SeenMap& seen);
+    /** @brief Issue #903: whether @p snapshot may be read between a start's accept and its session (refresh() without
+     * bindNewRings): not a ring no session owns. On a ring a session owns, what it pushed since the last read is noted
+     * as no one's (heard_owners_note_unowned()). */
+    bool readBeforeSession(const dsd_state* snapshot);
 
     /** @brief Give a row about to be logged its uid, and index its fragments. */
     void adoptNewRow(Row& row);

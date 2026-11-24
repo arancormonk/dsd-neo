@@ -13,7 +13,9 @@
  * bound to the session it is first read in, and a run that reuses the last run's state (its ring with it) opens a new
  * generation of that ring at the position read when its session began. So the last call of system A, read while B
  * starts, keeps A's owners, whatever session the UI has moved on to, and B's calls on A's reused ring are B's. A ring is
- * not read before a session owns it (the flush before a start leaves a ring no session owns unread). Each row's own
+ * not read before a session owns it (the flush before a start leaves a ring no session owns unread). What the flush
+ * after the host accepted a start finds pushed on a ring a session owns could be the old run's last commit or the new
+ * run's first on the ring it reused: nothing tells which, so those rows are no one's (HeardRingWindow). Each row's own
  * stamps then decide: a call the operator tuned to, a scan member with no target, a target no single saved system owns,
  * or a row of no known session has no owner.
  */
@@ -55,14 +57,23 @@ struct HeardRingMark {
     quint64 through[2] = {0U, 0U};
 };
 
+/** @brief Rows of a decoder ring that no session owns: those pushed in slot `s` after push stamp `after[s]`, up to and
+ * including `through[s]` (heard_owners_note_unowned()). */
+struct HeardRingWindow {
+    quint64 after[2] = {0U, 0U};
+    quint64 through[2] = {0U, 0U};
+};
+
 bool operator==(const HeardRingGeneration& a, const HeardRingGeneration& b);
 bool operator==(const HeardRingMark& a, const HeardRingMark& b);
+bool operator==(const HeardRingWindow& a, const HeardRingWindow& b);
 
-/** @brief The owners of the recent History sessions, the generations of each decoder ring (oldest first), and the
- * mark of the session begun last. */
+/** @brief The owners of the recent History sessions, the generations of each decoder ring (oldest first), the rows of
+ * each ring no session owns, and the mark of the session begun last. */
 struct HeardOwners {
     QHash<qint64, HeardSessionOwners> sessions;
     QHash<quint64, QList<HeardRingGeneration>> rings;
+    QHash<quint64, QList<HeardRingWindow>> unowned;
     HeardRingMark mark;
 };
 
@@ -95,6 +106,14 @@ void heard_owners_mark_start(HeardOwners* owners, qint64 session, quint64 ring, 
 bool heard_owners_ring_bound(const HeardOwners& owners, quint64 ring);
 
 /**
+ * @brief Note that the rows ring @p ring pushed after @p after up to @p through (per slot) are no one's: what a read
+ * between a start's accept and its session finds on a ring a session owns (an old run's last commits, or a new run's on
+ * the ring it reused). A ring of no identity (0), one no session owns, or a window with nothing in it notes nothing.
+ * @return whether anything was noted.
+ */
+bool heard_owners_note_unowned(HeardOwners* owners, quint64 ring, const quint64 after[2], const quint64 through[2]);
+
+/**
  * @brief Bind ring @p ring as session @p session reads its slot @p slot at push count @p pushSeq: a ring no session
  * owns becomes @p session's from its start; the ring @p session's start marked (heard_owners_mark_start()), once the
  * slot has pushed past the mark (the run reused it), gets @p session's generation after the mark. Either consumes the
@@ -104,7 +123,8 @@ bool heard_owners_ring_bound(const HeardOwners& owners, quint64 ring);
 void heard_owners_bind_ring(HeardOwners* owners, quint64 ring, int slot, quint64 pushSeq, qint64 session);
 
 /** @brief The session that owns the row ring @p ring pushed in slot @p slot at push stamp @p seq: its generation's,
- * kHeardNoSession for none; @p session for a ring of no identity (0) or no @p owners. */
+ * kHeardNoSession for none and for a row no session owns (heard_owners_note_unowned()); @p session for a ring of no
+ * identity (0) or no @p owners. */
 qint64 heard_owners_session_of(const HeardOwners* owners, quint64 ring, int slot, quint64 seq, qint64 session);
 
 /** @brief The session a call ring @p ring commits now would be read in: the one @p current's start marked it for, else
@@ -130,7 +150,7 @@ QString heard_owner_of(const HeardOwners& owners, qint64 session, const Event_Hi
 void heard_owners_set_session(HeardOwners* owners, qint64 session, const HeardSessionOwners& who);
 
 /** @brief Take in what the background tap bound in its copy @p tapped of @p owners: the ring generations @p owners
- * lacks, and the mark as the tap left it; @return whether anything changed. */
+ * lacks, and the mark as the tap left it (the tap notes no unowned rows); @return whether anything changed. */
 bool heard_owners_adopt_rings(HeardOwners* owners, const HeardOwners& tapped);
 
 /** @brief @p owners as compact JSON text, for the settings. */

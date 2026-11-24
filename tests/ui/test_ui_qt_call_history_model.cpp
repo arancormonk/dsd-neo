@@ -8017,10 +8017,10 @@ test_heard_merged_conversation_keeps_fragment_proof(void) {
     }
 }
 
-/* Issue #903: the owners are bound to the ring the session read: the last call of system A, committed on A's ring while
- * B starts and read by the flush before B's session, is A's; B's own ring is B's, and once B's run has its own ring, a
- * late row of A's is A's too. A relaunched model keeps both bindings and owners, and re-reads nothing it already handed
- * on. */
+/* Issue #903: the owners are bound to the ring the session read: the last call of system A, read by the flush before
+ * the host is asked to start B, is A's; one that only the flush after the host's accept reads is no one's (it could be
+ * B's run's on a reused ring); B's own ring is B's, and once B's run has its own ring, a late row of A's is A's too. A
+ * relaunched model keeps both bindings and owners, and re-reads nothing it already handed on. */
 void
 test_heard_owner_follows_the_ring(void) {
     resetStorage();
@@ -8036,13 +8036,16 @@ test_heard_owner_follows_the_ring(void) {
         model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
         prove(ringA.commit(0, 7301, 801, when, when + 4), 7301);
         model.refresh(ringA.state, opts.get());
-        // Main.startWithMap: A's last call lands after the flush before the host is asked; the flush after its accept
-        // reads it, then B's session begins.
+        // Main.startWithMap: A's last call is read by the flush before the host is asked; another lands after it, read
+        // by the flush after the host's accept; then B's session begins.
         prove(ringA.commit(0, 7302, 802, when + 30, when + 34), 7302);
+        model.holdCaptureForStart();
+        model.refresh(ringA.state, opts.get());
+        prove(ringA.commit(0, 7307, 807, when + 40, when + 44), 7307);
         model.refresh(ringA.state, opts.get(), false);
         model.beginSessionOn(QStringLiteral("System B"), QStringLiteral("sys-b"));
         model.setSessionOwners(model.session(), QStringLiteral("sys-b"), {});
-        expect("ring owner: A's last call, read while B starts, is A's",
+        expect("ring owner: A's last call, read before B's start was asked, is A's",
                sink.seen.size() == 2 && sink.has("sys-a", 7301, when + 4) && sink.has("sys-a", 7302, when + 34));
         prove(ringB.commit(0, 7303, 803, when + 60, when + 64), 7303);
         model.refresh(ringB.state, opts.get());
@@ -8051,6 +8054,9 @@ test_heard_owner_follows_the_ring(void) {
         model.refresh(ringA.state, opts.get());
         expect("ring owner: with B on its own ring, A's late row is A's",
                sink.seen.size() == 4 && sink.has("sys-a", 7306, when + 74));
+        expect("ring owner: the call only the flush after the accept read is no one's",
+               std::none_of(sink.seen.cbegin(), sink.seen.cend(),
+                            [](const HeardObservation& o) { return o.id == 7307U; }));
         prove(ringB.commit(0, 7304, 804, when + 90, when + 94), 7304);
     }
     RecordingHeardSink relaunchedSink;
@@ -8119,9 +8125,9 @@ test_heard_new_ring_at_the_pre_start_flush(void) {
 }
 
 /* Issue #903 (re-review, Minor 1): the old run's ring was never read during its run, and the new run has not published
- * when its session begins. Main's flush before the host is asked binds the old ring to the old session, so its rows,
- * the one its final publish brings while the host takes the start included, keep the old owner; the new run's ring is
- * the new one's. */
+ * when its session begins. Main's flush before the host is asked binds the old ring to the old session, so the rows it
+ * reads keep the old owner; a row first read by the flush after the host's accept could be the new run's on a reused
+ * ring, and is no one's (PR2 review r2, P1, fail closed); the new run's ring is the new one's. */
 void
 test_heard_unread_old_ring_keeps_its_owner(void) {
     resetStorage();
@@ -8141,12 +8147,12 @@ test_heard_unread_old_ring_keeps_its_owner(void) {
     prove(ringA.commit(0, 7802, 1302, when + 30, when + 34), 7802);
     model.refresh(ringA.state, opts.get(), false);
     model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
-    expect("unread old ring: its rows keep the old owner",
-           sink.seen.size() == 2 && sink.has("sys-a", 7801, when + 4) && sink.has("sys-a", 7802, when + 34));
+    expect("unread old ring: the rows read before the start was asked keep the old owner, the later one is no one's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7801, when + 4));
     prove(ringB.commit(0, 7803, 1303, when + 60, when + 64), 7803);
     model.refresh(ringB.state, opts.get());
     expect("unread old ring: the new run's ring is the new owner's",
-           sink.seen.size() == 3 && sink.has("sys-b", 7803, when + 64));
+           sink.seen.size() == 2 && sink.has("sys-b", 7803, when + 64));
 }
 
 /* Issue #903 (PR2 review r1, P1): the starting run commits a verified call after the host accepted its start and before
@@ -8222,6 +8228,64 @@ test_heard_reused_ring_is_a_new_generation(void) {
     relaunched.refresh(ring.state, opts.get());
     expect("reused ring: after a relaunch the ring's new rows are still B's",
            relaunchedSink.seen.size() == 1 && relaunchedSink.has("sys-b", 8004, when + 94));
+}
+
+/* Issue #903 (PR2 review r2, P1; ruling: fail closed): a run that reuses the old run's state (an embedding host) commits
+ * verified calls on the old ring after the host accepted its start and before Main's flush after the accept reads them.
+ * Nothing tells them from the old run's last commits, so they are no one's: neither system learns them, nor a late
+ * proof of one, nor after a relaunch. History still logs them. The old run's rows read before the start stay its
+ * owner's, and what the ring pushes after that flush is the new session's. */
+void
+test_heard_reused_ring_call_before_the_post_accept_flush(void) {
+    resetStorage();
+    RingFixture ring;
+    const auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    const time_t when = 1754611000;
+    const auto heardOf = [](const RecordingHeardSink& recorded, quint32 id) {
+        return std::any_of(recorded.seen.cbegin(), recorded.seen.cend(),
+                           [id](const HeardObservation& o) { return o.id == id; });
+    };
+    {
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+        prove(ring.commit(0, 8101, 1601, when, when + 4), 8101);
+        // Main.startWithMap: the hold and the flush before the host is asked.
+        model.holdCaptureForStart();
+        model.refresh(ring.state, opts.get());
+        // The host accepted B's start on A's state; B's run commits a verified call, and two whose proofs come later,
+        // before the flush after the accept reads the ring.
+        prove(ring.commit(0, 8102, 1602, when + 30, when + 34), 8102);
+        ring.commit(0, 8103, 1603, when + 40, when + 44)->live_input = 1U;
+        ring.commit(0, 8105, 1605, when + 50, when + 54)->live_input = 1U;
+        model.refresh(ring.state, opts.get(), false);
+        model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+        expect("ambiguous commit: neither system learns it",
+               sink.seen.size() == 1 && sink.has("sys-a", 8101, when + 4) && !heardOf(sink, 8102));
+        expect("ambiguous commit: History logs every call", model.count() == 4);
+        prove(&ring.rings[0].Event_History_Items[2], 8103);
+        ring.touchCommitted(0);
+        model.refresh(ring.state, opts.get());
+        expect("ambiguous commit: a late proof is no one's either", sink.seen.size() == 1 && !heardOf(sink, 8103));
+        prove(ring.commit(0, 8104, 1604, when + 60, when + 64), 8104);
+        model.refresh(ring.state, opts.get());
+        expect("ambiguous commit: B's next call is B's", sink.seen.size() == 2 && sink.has("sys-b", 8104, when + 64));
+        model.saveNow();
+        model.waitForSaveForTest();
+    }
+    RecordingHeardSink relaunchedSink;
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedSink);
+    // The third ambiguous call's proof arrives after a relaunch.
+    prove(&ring.rings[0].Event_History_Items[2], 8105);
+    ring.touchCommitted(0);
+    relaunched.refresh(ring.state, opts.get());
+    expect("ambiguous commit: after a relaunch a late proof is still no one's", !heardOf(relaunchedSink, 8105));
+    prove(ring.commit(0, 8106, 1606, when + 90, when + 94), 8106);
+    relaunched.refresh(ring.state, opts.get());
+    expect("ambiguous commit: after a relaunch B's new call is B's",
+           relaunchedSink.seen.size() == 1 && relaunchedSink.has("sys-b", 8106, when + 94));
 }
 
 /* Issue #903 (review, Minor 4): History's Clear hides rows; it does not un-hear a talkgroup. A row the clear covers
@@ -8502,6 +8566,7 @@ main(int argc, char** argv) {
     test_heard_unread_old_ring_keeps_its_owner();
     test_heard_new_ring_call_before_the_pre_start_flush();
     test_heard_reused_ring_is_a_new_generation();
+    test_heard_reused_ring_call_before_the_post_accept_flush();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
