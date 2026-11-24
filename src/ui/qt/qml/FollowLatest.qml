@@ -47,10 +47,14 @@ Item {
     // Some of the header is on screen. Position alone decides it, not focus.
     readonly property bool headerInView: root.list.headerItem !== null && root.list.contentY < root.latestY - 0.5
 
+    // The height of the list's rows (issue #901): the Monitor's and History's
+    // set it to theirs, which Compact view and the text size change.
+    property real rowHeight: Theme.rowHeight
+
     // Within a row of the top still counts as being on the latest call: a stray
     // touch, an overscroll bounce or the keyboard resizing the view leaves the
     // list a few pixels down, and none of those mean "I am reading further back".
-    readonly property bool atLatest: root.list.contentY - root.latestY < Theme.rowHeight
+    readonly property bool atLatest: root.list.contentY - root.latestY < root.rowHeight
 
     // Set when a call landed while a finger was down, so the top is asserted once
     // the hand comes off instead of under the press. See the handler below.

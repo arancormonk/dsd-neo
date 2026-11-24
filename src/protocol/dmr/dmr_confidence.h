@@ -33,6 +33,14 @@ void dmr_confidence_note_voice_sync(dsd_state* state, unsigned int slot);
 dmr_confidence_result dmr_confidence_note_voice_burst(const dsd_opts* opts, dsd_state* state, unsigned int slot,
                                                       unsigned int color_code);
 dmr_confidence_result dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code);
+/* dmr_confidence_note_data_burst() for a control burst (a CSBK, an MBC header or continuation): the colour code counts
+   toward the lock as any data burst's, but none of the gate's evidence is noted (no PROVEN, no
+   dsd_state::dmr_confidence_lock_m stamp, no search evidence) until the PDU it belongs to passes the control gate. */
+dmr_confidence_result dmr_confidence_note_control_burst(const dsd_opts* opts, dsd_state* state,
+                                                        unsigned int color_code);
+/* A control PDU from bursts that prove content passed the control gate (dmr_cspdu_ex(), which notes its PROVEN
+   activity): with the gate locked, the stamp and the search evidence its bursts deferred are noted now. */
+void dmr_confidence_note_control_accepted(dsd_state* state);
 int dmr_confidence_voice_slot_open(const dsd_state* state, unsigned int slot);
 int dmr_confidence_any_voice_open(const dsd_state* state);
 

@@ -79,6 +79,13 @@ object DsdNative {
     external fun nativeIsRunning(): Boolean
 
     /**
+     * Whether call recording transfer [transferId]'s selection still stands: the recording store has not started
+     * reading storage again since the selection was made (#902). [RecordingExport] asks before it reads the first
+     * recording and before it keeps the document. False for a transfer that is not running.
+     */
+    external fun nativeRecordingSelectionCurrent(transferId: Long): Boolean
+
+    /**
      * Hand the engine an already-open USB device descriptor, or -1 to clear it.
      *
      * An app cannot open `/dev/bus/usb` nodes, so the descriptor comes from

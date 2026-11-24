@@ -6,7 +6,9 @@ should be included via `#include <dsd-neo/...>`.
 ## Top-Level Layout
 
 - `apps/` — executable targets (currently `apps/dsd-cli` → `dsd-neo`)
-- `src/<module>/` — implementation code for each module
+- `src/<module>/` — implementation code for each module, built as static libraries (`add_library(<name> STATIC)`)
+  that are linked into the programs and never installed; the top-level `CMakeLists.txt` keeps `BUILD_SHARED_LIBS` off
+  inside the project, so a packager's `BUILD_SHARED_LIBS=ON` cannot make any of them shared
 - `include/dsd-neo/<module>/` — public headers for each module
 - `tests/<area>/` — unit tests (CTest)
 - `cmake/` — CMake helper modules and install/uninstall scripts
@@ -182,7 +184,11 @@ Generated (do not edit/commit):
     not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
-    here. A channel map that moved gets a new `trunk_chan_map_seq`. The P25 patch table is not part of the site: Start
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. Start also saves the DMR Tier III provenance of the
+    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds and the network baseline), and every restore
+    puts it back with the rows: a visit that hears another network's checked system code drops the session's learned
+    rows, and the departure brings them back as they were (discussion #900). The P25 patch table is not part of the
+    site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -453,9 +459,11 @@ Generated (do not edit/commit):
     row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
-  - -Y rotates only a list of the user's (issue #697): channels a site announces while none is loaded (DMR C_BCAST,
-    `dmr_cspdu_pf0_c_bcast_track_freq()`, which appends only while `dsd_state_trunk_lcn_user_list_present()` is false,
-    at start or after Clear channel map) never make -Y step or end a reception. Without a user list
+  - -Y rotates only a list of the user's (issue #697): rows that are not the user's while none is loaded
+    (`dsd_state_trunk_lcn_user_list_present()` false, at start or after Clear channel map: a protocol's control channel
+    seed) never make -Y step or end a reception. A DMR C_BCAST Chan_Freq is no such row: it names a logical channel's
+    frequency, not a TSCC (TS 102 361-4 §6.7.1.6; Ann_WD_TSCC announces those, §6.7.1.1), so it reaches only the
+    sparse channel map, never the positional list (discussion #900; before, it was appended there with no user list). Without a user list
     `no_carrier_step_scanner_mode_if_needed()` (`engine.c`) admits no timed step, `dsd_scan_voice_gate_owns_step()` is
     false, and `dsd_engine_channel_scan_has_other_row()` finds nowhere to go, so neither the receive-filter yield nor
     the tone-rejection step fires. The per-visit cap re-arms (`scan_visit_rearms()`) unless
@@ -566,6 +574,28 @@ Generated (do not edit/commit):
       suspended with no reason to show, for its own conditions, such as a -Y row published under an operator hold,
       whose release moves only `quiet_inv_seq` (`test_y_quiet_released_hold_republished()`). A request the tap refuses (a
       Signal search holds it) is DONE.
+    - Event service (issue #834 follow-up, `dsd_engine_scan_quiet_event_service()`, the frame-sync hook
+      `scan_quiet_event`): `getFrameSync()` asks it once at entry and before each hunt symbol while the last quiet
+      answer was LIVE (a hunt-local flag; never with the setting off), skipping the iteration whose 300-symbol point ran
+      its own service (`frame_sync_quiet_event_hands_back()`). With nothing new it does only lock-free loads: the tap's
+      capture word in WAIT_CAPTURE (`rtl_signal_capture_seq()`; the check keeps the word its last read came with,
+      `rtl_signal_capture_get_seq()`, and reads again once it moved or once per entry into WAIT_CAPTURE), the ledger
+      for a park in flight, the request's status word in REQUESTED, and a READY result not yet handed back by events
+      with no frame verdict pending (the decode clock only while a PARTIAL hold runs). It requests a qualifying capture
+      at once when no settle is in force, else once the settle has run (`quiet_event_wait_capture()`); it never ends a
+      check for time and never moves the 50 ms legacy schedule, so expiry stays with the hunt's point, publications and
+      frame boundaries (`test_scan_quiet_event_late_retry_and_holds()`). It collects through `quiet_collect()` and hands
+      a READY result back at most once (`scan_quiet_check::event_handed`): a tick that keeps the visit or loses its
+      guard leaves it to the 300-symbol point. No wake-up is added: the demod thread feeds the tap before it writes the
+      same block's output, so the block that carries the event wakes the decoder; an event with no samples (a bypassed
+      or reconfigured block, a cancel) waits for the next sample or the RTL idle-bounded read. Every request also
+      carries `SCAN_QUIET_LEAD_MS` (10 ms) of lead the tap drops (`dsd_signal_quiet_request::lead_pairs`), and
+      `--scan-skip-silent-ms` its sub-window count (`scan_quiet_setting_windows()`, `scan_quiet_request_windows()`: at
+      least `SCAN_QUIET_DMR_MIN_WINDOWS` on a visit whose `scan_quiet_eligibility::dmr` is set, compared at publication
+      and at the decision like the classes) and a deadline grown by `SCAN_QUIET_DEADLINE_PER_WINDOW_MS` per sub-window
+      above nine; a shortened reading logs its WARN lines once per setting and rate (`scan_quiet_format_short_warn()`,
+      one slot for each of the `DSD_SIGNAL_QUIET_RATE_COUNT` supported rates), and again only after the switch or the
+      length really changed (the setting hook's `reading_changed`), not after an apply that left both as they were.
     - Frame-boundary service (issue #834 R1, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
       short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
@@ -1264,7 +1294,11 @@ TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the
 channel map, and what `p25_update_system_identity()` drops with the IDEN tables on a change of system: the pending
 announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
-`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
+`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). The channel
+map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`), so P25 IDEN 0
+channel 0 never reaches another target. A Tier III RadioReference file's key-0 control-channel rows also fill channel 0
+of the shared map, so in one session that decodes both DMR and P25, a P25 grant for channel 0 can resolve to that row
+until the site's band plan arrives; trunk-scan targets keep their own channel 0. Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
 state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
 as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
@@ -1760,6 +1794,41 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it, and falls back to
     the paths when it fails. Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a
     missing file)
+  - One file's identity (issue #902): `dsd_path_file_identity()` reads a regular file's `dsd_file_identity_t` without
+    following a link: its size and modification time, whole seconds and nanoseconds apart so no date the file system
+    keeps overflows (`expect_path_file_identity` sets one in 2300); POSIX `lstat()` with 64-bit file offsets in a file of
+    its own (the project does not build with them; `src/platform/CMakeLists.txt` gives `file_identity_posix.c` alone
+    `_FILE_OFFSET_BITS=64` as a compile definition, ahead of the forced `safe_api.h` include, and the file asserts
+    `off_t` is 64-bit, so a 32-bit glibc or armv7 bionic build reads a file over 2 GiB; with `_TIME_BITS=64` too, so
+    32-bit glibc 2.34 and later read a file dated past 2038, asserted where the C library offers 64-bit time; no
+    `struct stat`, `off_t` or `time_t` leaves it). `file_compat_posix.c` cannot take the definitions, since
+    `file_compat.h` hands `struct stat` across files (`dsd_stat_t`): its regular-file openers open with `O_LARGEFILE`
+    and check the descriptor through the identity file (`dsd_fd_regular_file_internal()`). Decided limit: bionic on
+    armv7 has no 64-bit `time_t`; there a file dated past 2038 reads with its time wrapped (checked under qemu-arm: no
+    error, the same value each read, so a change still shows), and a lookup that does fail leaves the recording kept by
+    the unread rule below, holding nothing else. Windows reads the name itself, opened with
+    `FILE_FLAG_OPEN_REPARSE_POINT` and `GetFileInformationByHandle()`, an absolute drive or UNC path of `MAX_PATH` or more
+    in extended-length form (`\\?\`, `\\?\UNC\`, also for `dsd_fopen_existing_regular_file()`; one with `.`, `..` or an
+    empty part is left as it is; `expect_long_path_identity`). `dsd_file_stream_identity()` reads the same of a stream
+    already open (`fstat()`, the handle on Windows), so a name replaced after the open does not change it
+    (`expect_file_stream_identity`). No device, inode, volume or file id is kept (FAT
+    and exFAT number a file anew when it is read again from disk, a remount numbers a volume anew), and
+    `dsd_file_identity_equal()` says whether two readings are one regular file unchanged as far as size and time tell,
+    so another file of exactly the same size and time reads as the same one (the store's decided limit below); a link at
+    the name itself (ELOOP; `lstat()`'s own ELOOP, too many links resolving a parent, is reported as EMLINK, a lookup
+    that failed with the type never read; on Windows the reparse-point bit is checked before the folder bit, so a folder
+    link or junction is a link), a folder (EISDIR), anything else read and known not to be a regular file (ENODEV: a
+    FIFO, a socket or a device, on Windows `GetFileType()` other than a disk file) or a missing name (ENOENT only for a
+    name not in a folder that is there: the parent is checked without following it, `dsd_parent_is_folder()`, and on
+    Windows only ERROR_FILE_NOT_FOUND in a plain folder counts, the folder opened by handle so a share's root counts
+    too; a parent missing, a file or a dangling link never looked the name up and is ENOTDIR; a Windows parent reparse
+    loop, ERROR_CANT_RESOLVE_FILENAME, is EMLINK)
+    has none, and a name that cannot be read fails with the system's own errno (EACCES, EIO), which says nothing about a
+    file being there. The call recording store keeps each recording's and checks it right before a delete's unlink.
+    Test: `PLATFORM_FILE_COMPAT` (`expect_path_file_identity`: read twice, the same size with only its modification
+    time set apart, another file of the same size and time (equal), a date in 2300 where `time_t` holds it and the file
+    system stored it as set, another file renamed over it, another file, a FIFO or the `NUL` device, the error cases;
+    also run under mingw-w64 and Wine).
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
@@ -1795,6 +1864,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     takes `MOVEFILE_REPLACE_EXISTING` only. Both refuse a directory source with EISDIR before anything moves (a
     link is a link, as `lstat()` and `dsd_path_type_nofollow()` say) (issue #661: per-call WAV publication;
     issue #828: a store file kept aside; #832: import and replay publication)
+  - Hard link (issue #888): `dsd_hard_link()` gives a file a second name, `link()` on POSIX, `CreateHardLinkW/A()` on
+    Windows (one call for the pair, as `dsd_win32_path_wide()` picks), never over an existing name (EEXIST) and never
+    a copy; a file system without links fails and the caller copies (the rdio-scanner exporter's private inputs).
+    Tests: `PLATFORM_FILE_COMPAT` (also in the non-ASCII folders; the success cases only where the test folder's file
+    system takes hard links, asked of `link()` itself, `dir_takes_hard_links()`; the refusals everywhere)
   - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
     `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
     ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
@@ -1810,7 +1884,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     invalid name or split at a different separator. Every Windows path helper follows it: `dsd_stat_path()`,
     `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_private_append_regular()`,
     `dsd_fopen_existing_local_file()`,
-    `dsd_rename_noreplace()` and `dsd_replace_file_with_temp()` (UTF-8 only when both names are), `dsd_dir_list()`
+    `dsd_rename_noreplace()`, `dsd_replace_file_with_temp()` and `dsd_hard_link()` (UTF-8 only when both names are),
+    `dsd_dir_list()`
     (names come back in the folder's encoding), `dsd_path_exists_nofollow()`, `dsd_path_canonical()`,
     `dsd_remove_file()`, `dsd_path_free_bytes()`, `dsd_mkdir()`, `dsd_mkdtemp()`, `dsd_mkstemp()`, the runtime's
     `dsd_path_fopen_user_read_file()` and the tests' `dsd_test_rmdir()`. `PLATFORM_FILE_COMPAT` runs Latin, CJK and
@@ -2114,8 +2189,129 @@ suite runs under this compiler.
   `PLATFORM_WRITE_FRAMES`, `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`,
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
-  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
-  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
+  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating IV
+  expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The file
+  is read whole (`sdrtrunk_json_read_whole()`, a buffer grown to at most `DSD_SDRTRUNK_JSON_MAX_BYTES`, 64 MiB, in
+  `file_io.h`) and parsed with one state, once: `playMbeFiles()` calls the reader once a file, so a long call is not cut
+  at a buffer's end and replayed from the start, and a larger file is refused with one log line before anything of it
+  plays or is published. The read takes at most 1 MiB at a time (`sdrtrunk_json_read_chunks()`) and looks at the exit
+  flag between chunks: on Stop the part read is dropped and nothing plays. A frame's `hex` must be the frame as SDRTrunk
+  writes it (`sdrtrunk_json_frame_is_valid()`: 36 hex digits for P25 Phase 1, 18 for the AMBE protocols), since the
+  decoders read that many; any other value is a lost frame, with a warning: `imbe_str_to_decode()` /
+  `ambe2_str_to_decode()` take a NULL frame, decode, play and record nothing, and return the keystream position past
+  its bits (88, or 49 plus DMR's 7 spare), while the callers count it in the frame sequence as usual (IMBE frame
+  counter, AMBE superframe counter, NXDN session position), so the frames after it decrypt with their own keystream. A
+  `hex` that is missing, an array or an object is a lost frame too, and an array or object is passed whole
+  (`sdrtrunk_json_skip_container()`), so none of its members is read as a key (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place`). A lost frame gives no DMR late-entry MI fragment: the
+  context marks the fragments each superframe's frames gave (`le_fragments`, `sdrtrunk_json_note_fragment()`, reset at
+  position 0), and at position 18 the MI is decoded only from all 18 (`sdrtrunk_json_finish_dmr_aes()`,
+  `sdrtrunk_dmr_process_late_entry_mi()` take `complete`), as the live `dmr_late_entry_mi()` requires all six bursts;
+  an incomplete one carries the last MI on (`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi`, for AES and for a
+  forced RC4 late entry: a missing Golay word read as zeros would pass Golay and the CRC). The row's
+  `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
+  played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
+  only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`.
+  So a file's audio is in one per-call segment. A file holding several records is played as one stream: their headers
+  fold into the open call one key at a time, and identity changes split calls only as the call-state layer splits them
+  on air. The event layer never renders a call the stream moved past, so such a file makes one history row, named
+  under the identity the row ends with: the last ID each endpoint was given (a `to` or `from` of 0, or one left out,
+  clears none while the open call lasts; when another member of the record opens a new call, that call starts from the
+  context's IDs as read so far, so a 0 read before the change stays 0). Where the call-state layer opens a new call
+  inside the file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from
+  that call's first valid frame; from the file's second such call on (`sdrtrunk_json_call_opened()`), the staged row's
+  `event_time` is cleared with the latch, so a call with no valid frame `time` falls back to the decode clock instead
+  of the last call's date (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`,
+  `test_playback_new_call_without_time_takes_the_decode_clock`, `CORE_MBE_FILE_IO`). The JSON is read token by token
+  (`sdrtrunk_json_token()`): a
+  quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a `:` follows is a key, so a
+  word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never matched as one; handlers read
+  their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an array, whose members are read
+  as keys of their own. Every key is matched by its full name (`total_frames` is not `to`, `from_site` not `from`,
+  `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and brackets the tokenizer
+  passes over, including the one that ends a bare value, so it knows the depth of each key: a record's own members sit
+  at depth 1 (2 in a file that is one array of records), and a record-level
+  `frames` whose value is an array marks its elements' members as voice-frame members. Only such a member's `time`
+  stamps the row; a `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The
+  call's IDs (`protocol`, `call_type`, `to`, `from`) are read only at record depth (`sdrtrunk_json_at_record()`), so a
+  `metadata` object's `from` is not the call's. The other keys keep their depth-free reading (some exports carry
+  `encryption_*` at record level). A `to` or `from` is read by `sdrtrunk_json_parse_id()`: decimal digits, read by value
+  (leading zeros dropped, then the strict parser checks the range, so `"00000005678"` is 5678), or for a `to` an
+  SDRTrunk P25 patch group (`PatchGroup.toString()`, `P:<group>` and ` [<patched talkgroups>]`), which is its group's
+  talkgroup, so its talkgroup rows apply. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
+  `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
+  or a space, which `strtoull()` would take, is not), then strict-parsed. The reader clears the staged row's
+  `event_time` after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a
+  protocol the reader does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
+  Recording and export are fail closed (issue #888). Before the file plays, `sdrtrunk_json_shape()` checks the buffered
+  text once against an allowlist of SDRTrunk's writer, changing nothing: `MBECallSequenceRecorder`'s
+  `writeCallSequence()` writes one `MBECallSequence` with Jackson's default pretty printer and no root name. The check
+  is a small recursive reader with one `sdrtrunk_shape_level` per object (the members read so far, as bits, the last
+  one in the writer's order, and whether a member named the current layout) over two fixed tables:
+  `k_sdrtrunk_record_members` (`MBECallSequence`'s `@JsonPropertyOrder`: `protocol` (a word that notes an NXDN record,
+  `sdrtrunk_shape_protocol()`), `version` uint16, `call_type`,
+  `from`, `to` words, `encrypted` boolean, `system`, `site` text, `frames` array) and `k_sdrtrunk_frame_members`
+  (`VoiceFrame`'s: `tag` tag, `encryption_algorithm` uint8, `encryption_key_id` uint16, `encryption_mi` word, `time`
+  int64, `hex` hex string). A file is STANDARD when it is exactly one record object with only white space after it (to
+  the buffer's end, so a NUL inside the text is not an end), each member is one of its table's, at most once, in one
+  writer layout's order (`sdrtrunk_shape_in_layout()`, absent members allowed), with a value of its type, and there is
+  no other object or array. Values (`sdrtrunk_shape_char_len()`, `sdrtrunk_shape_integer()`): every string is valid
+  UTF-8 with no raw control character; a word (a value the reader reads, or a member's name) has no escape at all, so an
+  escaped ID can never reach the policy lookup unread; text (`system`, `site`, which the reader passes over) allows only
+  JSON's escapes (`\" \\ \/ \b \f \n \r \t`, `\u` with four hex digits); a frame's `tag` is free text as text is, except
+  that in an NXDN record a tag naming a SACCH place `sdrtrunk_json_handle_nxdn_tag()` reads (it takes the value as
+  written) may hold no escape (`sdrtrunk_shape_tag()`: in the same polled pass, `sdrtrunk_shape_tag_char()` notes an
+  escape and runs the tag, its escapes read, through `sdrtrunk_shape_tag_place_next()`, the reader's `SACCH ` and
+  `dsd_parse_uint8_strict()` rule for places 1 to 4); an
+  integer is JSON's unsigned form (`0|[1-9][0-9]*`: no member the writer writes is negative) within what the member's
+  playback handler takes (`version` and `encryption_key_id` 16 bits, `encryption_algorithm` 8 bits, `time` a Java
+  `long`), read with `dsd_parse_uint64_strict()`, so the shape never passes a value the playback would pass over;
+  `frames` is an array of frame objects, each with a `hex` of hex digits that is not empty. Layouts: the writer before
+  2025-11 listed `protocol, call_type, from, to, encrypted, frames` with no `version`, so Jackson put the unlisted
+  `system` and `site` after `frames`, in either order; d09fad56 added `version` and moved the two before `frames` in one
+  change. So a record is in the current layout once it has `version` (`SDRTRUNK_SHAPE_CURRENT`), and `system` and `site`
+  (`SDRTRUNK_SHAPE_LOCATION`) come before `frames` there and after it otherwise. `VoiceFrame` gained `tag` (first) in
+  2026-07 (7945f0ce), after the current layout, so `tag` (`SDRTRUNK_SHAPE_LATER`) is allowed only in a frame of a
+  record that named the current layout: `sdrtrunk_shape_frames()` starts each frame's level with the record's
+  `current`. The check looks at the exit flag as it starts and ends and never more than a MiB apart
+  (`sdrtrunk_shape_stopped(scan, p, n)`: every step of the check, a white-space byte, a structural character, a string
+  character or escape, a word or a number's digits, calls it first with the bytes it is about to pass, and it looks
+  before a step that would end past the deadline, so a six-byte `\u` escape never puts two looks more than a MiB
+  apart); a Stop during it (`SDRTRUNK_JSON_STOPPED`), like a file the read refuses (over the cap, unreadable, or cut by
+  Stop), makes the reader return before it ends the earlier file's call and resets the speech decoder
+  (`dsd_mbe_file_end_replayed_call()`, which `playMbeFiles()` leaves to the reader for an export), resets the call or
+  syncs the slot, so the earlier call, its vocoder state and the recordings stay as they were (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_refused_file_leaves_the_earlier_call`,
+  `test_sdrtrunk_json_stop_during_the_shape_check`, `test_sdrtrunk_json_stop_in_a_long_span` (a `system` of `\u`
+  escapes), `test_sdrtrunk_json_playlist_stop_during_the_shape_check` (`-r first.mbe next.mbe` through
+  `playMbeFiles()`), through the test seam `dsd_sdrtrunk_test_set_shape_poll_hook()` in
+  `src/core/file/sdrtrunk_test_support.h`). A STANDARD file is recorded and exported as its policies allow, a Stop
+  part-way included: its call is complete before any audio, and the policy does not change while a file is read (the
+  decoder thread is in the reader and drains no commands), so the row's own record and stream verdicts judge all its
+  audio. Any other file (NONSTANDARD) plays, makes its history rows, and writes the static WAV and MBE captures, but
+  `s_sdrtrunk_per_call_off` keeps every frame out of the per-call segment (`run_decode_audio_output_path()`, one compare
+  a frame), so the segment stays empty and its close discards it as any empty one: nothing is marked, so nothing can
+  reach the next file's recording (`CORE_WAV_JOURNAL` `test_playback_empty_file_leaves_the_next_recording`). One line a
+  run while per-call recording is on (`sdrtrunk_json_note_unrecorded()`). A `to` or `from` that is a string but does not
+  read (`sdrtrunk_json_parse_id()` fails: SDRTrunk's roaming and ISSI forms among them) sets `id_unread`, and the ID is
+  0; the call is published with `dsd_call_observation::identity_unread`, which the call snapshot keeps for the epoch,
+  and the event layer's render gives its row `Event_History::fallback_blocked`, so it never takes the fallback
+  (`dsd_rdio_call_fallback_eligible()`); with a talkgroup it is exported under it. A `to` or `from` that is not a string
+  is not allowlisted, so its file is NONSTANDARD. Tests: `CORE_WAV_JOURNAL`
+  `test_playback_file_shape_decides_its_recording` (a `from`, `to` or `encrypted` after the frames, a second record,
+  frames before the protocol, a nested object with frames, an escaped key, an unclosed record, an outer array,
+  `"to":[]`, a frame with no `hex`, an escaped `from` or `to`, an escape JSON has not or bytes that are not UTF-8 in
+  `system` or `site`, `version` with a `site` after `frames`, no `version` with `system` before them, `02`, a `-` on any
+  number, a `version` or key id past 16 bits, an algorithm past 8 bits, a `time` past `long`, a tagged frame in a record
+  with no `version`, a `SACCH` tag with an escape: no per-call audio; every JSON escape and UTF-8 in `system` and
+  `site`, and `version` 65535, stay STANDARD; a zero-padded source keeps its radio's `stream=off`; a patch group, an
+  unreadable `to`, a roaming source), `test_playback_unread_ids_say_they_stay_local` (the once-a-run line for an
+  unreadable ID, said whether or not the close allows the fallback: `wav_close_note_rdio_skip()`; and at a file
+  boundary, where the event layer drops the identityless row of a roaming source to an ISSI talkgroup and rotates it
+  with `DSD_WAV_EXPORT_NONE`: `wav_close_note_unexported()`, YSF rows aside),
+  `test_playback_sdrtrunk_written_files_record` (Jackson-printed DMR, P25 Phase 1 and 2, NXDN with SACCH tags and with
+  an escaped free-text tag, the older writer, CRLF line ends: all STANDARD), `CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_wav_honors_talkgroup_policy` (a NONSTANDARD file writes the static WAV, never the per-call one).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2160,8 +2356,7 @@ suite runs under this compiler.
   `dsd_state_trunk_lcn_freq_write()` (moves `lcn_avoid_rev` only when the row is avoided and its value changes) and
   `dsd_state_trunk_lcn_count_raise()` (never lowers the count; flags it brings into the list are counted and move
   `lcn_avoid_rev`): the P25 row-0 seeds (`p25_trunk_sm.c`, `p25_lcw.c`, `p25p1_tsbk.c`, `p25p1_pdu_trunking.c`,
-  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the DMR learned-frequency append
-  (`dmr_csbk.c`), the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
+  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
   trunk-scan target seed. `dsd_state_trunk_lcn_name_set()` moves `lcn_avoid_rev` when an avoided row's name changes.
   `dsd_state_trunk_lcn_avoid_set()`/`_clear()` keep the saturating `lcn_avoid_count` and the exact `size_t`
   `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
@@ -2350,7 +2545,21 @@ suite runs under this compiler.
   (`src/protocol/dmr/dmr_crc_provenance.h`; `dmr_dheader()` maps a 0/1 verdict), stores RAS-accepted confirmed blocks
   as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
   (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
-  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope.
+  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope, and vouches
+  for the channel it named (`vc_lpcn`) too. An accepted in-place grant on the followed slot replaces both: the channel
+  it names, or, when it names none (an absolute grant's CdefParms CHAN 0), an unknown channel (`vc_lpcn` 0), never the
+  replaced grant's channel under the new grant's provenance. An XPT status naming the followed slot
+  (`dmr_sm_vc_channel_from_status()`) moves the channel to its LSN but ORs its flags into `vc_crc_flags`, never
+  replacing them: a status names a group and channel, not the talker, so it never makes earlier unverified evidence (a
+  RAS grant's talker) read as verified. A repeat of the followed grant changes nothing, so a
+  channel made unknown stays unknown until the next follow. Decided limit (discussion #900): after a CHAN 0 in-place
+  grant, the companion slot's own numbered grant, or a later numbered grant that names another call, may not fill
+  that call's published channel number (the slot channel check compares against the followed channel, which is now
+  unknown, and an LC-bound call skips the grant publication): the number is left out rather than guessed. Decided
+  limit (discussion #900): where several pieces of
+  evidence feed one call (the grant, a checked LC, a status, the channel a slot record inherited), the call's CRC flags
+  are the OR of theirs, so a call may read `[RAS]` when any of its evidence was RAS-accepted, even after a verified
+  grant or status confirmed the rest.
 - API note (DMR UDP services, issue #746): the IPv4 (SAP 4, `decode_ip_pdu()`, shared with P25) and compressed
   UDP/IPv4 (SAP 3, `dmr_udp_comp_pdu()`) paths in `src/protocol/dmr/dmr_pdu.c` decode a datagram through one port
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
@@ -2457,15 +2666,39 @@ suite runs under this compiler.
   NAC prints `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps
   its field positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own
   `channel` and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env).
-  The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
-  before. Its `talkgroup_tag` is the row's first name (service, talkgroup name, target string, channel label), else
-  `PRIVATE` for a private call (`gi` 1), `GROUP` for a group call (`gi` 0), and empty for a call of no known kind
-  (`gi` -1; issue #668 B3, which rdio-scanner ignores as a label). A conventional analog row (`DSD_SYNC_ANALOG`, issue
-  #668) takes its own branch in `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the
-  frequency in kHz, rounded down, else `opts->rdio_analog_talkgroup`), worked out at export time only and never
-  stored in `Event_History::target_id`; tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz`, else
-  the mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's,
-  is `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  The rdio-scanner sidecar's `freq` is `freq_hz` when it is 1,000,000 to 2,147,483,647 Hz (`dsd_rdio_usable_freq_hz()`:
+  1 MHz itself kept, up to what rdio-scanner's signed 32-bit MySQL/MariaDB/PostgreSQL columns store), else 0, never
+  an omitted key (issue #888 B5, B13, D8); it was the channel number before. A `freqList` of one entry,
+  `[{"pos": 0, "freq": <Hz>}]`, follows it only when `freq` is above 0: rdio-scanner 8 reads the list alone, 6.6.3
+  either (D5). Decoded source and target IDs stay as decoded, above 2147483647 included. `emergency` is the row's
+  (B6). `short_name` is `sysid_string`, else the protocol word (`dsd_rdio_protocol_word()` from the
+  `DSD_SYNC_IS_*` predicates: `P25` for both phases, `DMR`, `NXDN`, `D-STAR`, `YSF`, `dPMR`, `M17`, `X2-TDMA`,
+  `ProVoice`, `EDACS`, `TETRA`), so a v8 DirWatch, which resolves the system from `short_name`, finds one for an
+  X2-TDMA row (B8). Every string is written as valid UTF-8 (`dsd_rdio_json_write_escaped()`, B11): well-formed UTF-8 as
+  it is, ASCII escaped where JSON needs it, each maximal ill-formed run (a name cut mid-character) as one U+FFFD. A
+  numbered digital call's `talkgroup_tag` (`dsd_rdio_numbered_tag()`) is the row's first usable name (service,
+  talkgroup name, target string, channel label), else `PRIVATE` for a private call (`gi` 1), `GROUP` for a group
+  call (`gi` 0), and empty for a call of no known kind (`gi` -1; issue #668 B3, which rdio-scanner ignores as a
+  label). A name of `"-"` is unusable in every chain (`dsd_rdio_tag_usable()`, B10): both servers drop it as a label,
+  so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
+  `dsd_rdio_fallback_tag()`) is labelled by its service name, else its channel label, else `<protocol> <access code>
+  <MHz> MHz` built into `generated_tag` with the unknown parts left out (`NXDN RAN 9 452.3125 MHz`, `NXDN RAN 9`,
+  `X2-TDMA`); the protocol word is `dsd_rdio_row_protocol_word()`'s: `EDACS` for a ProVoice call an EDACS grant named
+  (its row carries the LCN, `Event_History::channel`, which only EDACS sets for ProVoice: `edacs_voice_observation()`;
+  a standalone ProVoice row has channel 0, and its `sysid_string` and received-identity family are EDACS's too, so
+  neither tells the two apart), so an EDACS channel's digital and analog calls share one label as they share one kHz
+  talkgroup, whether or not a site was decoded, else `dsd_rdio_protocol_word()`'s (the same rule names a row with no
+  system string in `short_name`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`,
+  `CC` and `CAN` in decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot
+  call it), and the MHz part appears only when the kHz rule gives a number. Never per-call identity text or
+  `PRIVATE`/`GROUP`: every unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback
+  number is the export mode's (`dsd_wav_export_mode`) and `dsd_rdio_call_fallback_eligible()`'s, under "rdio-scanner
+  export verdict" below. A conventional analog row (`DSD_SYNC_ANALOG`, issue #668) takes its own branch in
+  `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the frequency in kHz, rounded down,
+  else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
+  tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
+  mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's, is
+  `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
   Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -2486,9 +2719,13 @@ suite runs under this compiler.
   `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
   row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
-  shares (below). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
-  `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
-  on `event_time`. Its service, system, target and source components are made file-safe
+  shares (below). A played SDRTrunk export's row is stamped once per call, from its first voice frame whose `time`
+  (Unix milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that
+  fails clears the row's until one parses. A call the call-state layer opens inside the same file is stamped afresh
+  (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the sidecar, `CORE_MBE_FILE_IO`).
+  `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`,
+  `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`.
+  Its service, system, target and source components are made file-safe
   (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
   become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file; every
   byte that is no part of a well-formed UTF-8 character becomes `_` too, by the journal's own test
@@ -2562,11 +2799,15 @@ suite runs under this compiler.
   record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
   - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
-    rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
-    failure that keeps the temp file. `open_wav_file()` journals an open failure. The analog teardown close
-    (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) and the discard of an
-    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's
-    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+    rename (and the rdio export), `discard` for a 44-byte WAV once `wav_close_discard()` has removed it (or found it
+    already gone, `ENOENT`), `error` for a close (`sf_close()`) or rename failure that keeps the temp file, and `error`
+    of kind `discard`, with a warning, for a file whose removal failed with any other error (a read-only folder, a
+    folder that cannot be searched, a Windows reader that shares no delete), which names the file left (issue #888). The
+    removal's own error decides, never whether the file can be read afterwards. `open_wav_file()` journals an open
+    failure. The analog teardown close (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts
+    the call kept) and the discard of an unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each
+    segment's id is its temp name's token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and
+    its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
     (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
@@ -2586,7 +2827,8 @@ suite runs under this compiler.
   - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
     continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no active
     call owns (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with
-    no active call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
+    no active call), which no commit would close and the next admitted call's commit would otherwise publish as its
+    own (a TETRA admission closes it first). `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
     slot file that holds frames (`dsd_wav_segment_frames()`, libsndfile's count, read through `wav_segment_info()` as a
     close reads its length) while its slot has no active canonical call, publishes it without an rdio-scanner export and
     reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). It is published pending on the
@@ -2614,15 +2856,38 @@ suite runs under this compiler.
     EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
     trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
-    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
-    `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
-    this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
-    anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
-    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune names
-    its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
-    otherwise `opts->rtlsdr_center_freq`. The P25 patch listening clock's break and the DMR leave judge below read the
-    same value. Retunes an external controller makes over the RTL UDP port are invisible to the decoder: a recording
-    can span one (limit). One `sf_command()` per open slot file per departure; nothing on the write path.
+    nothing. An accepted EDACS voice grant (`edacs_try_tune_voice_call()`) runs the flush itself before it observes the
+    granted call, whatever its tune moved (issue #888): the grant's row would otherwise name the audio no call owns, and
+    the analog rotation after the sync (or a ProVoice call's commit) would publish and export it as the granted call's.
+    An outgoing call still active keeps its file: the commit that the incoming observation brings closes it under its
+    row, or, when the call state merges the grant into it (a group grant from the LID of an active all-call), the analog
+    rotation closes it early from its staged row (no target, the LID), which names a call, so that all-call audio is
+    exported under the kHz fallback, pending, and linked by the merged call's commit. A TETRA call admitted on a slot
+    with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous call once signalling proves the carrier, a
+    call record's or the direct-mode call's first publication) runs the flush before it observes the call (issue #888),
+    so the speech that reached the slot file before (ahead of the proof or the DM-SETUP, or trailing an ended call)
+    closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; the
+    speech starts over with it (`tetra_voice_call_admitted()`): the samples still waiting to be played
+    (`tetra_voice_t::carry_len`, half an output frame after a half slot), the confirmation and concealment state and the
+    decoder's history go, so nothing played or concealed from that speech (a half slot's stolen first frame) leads the
+    call's audio, and so does slot 0's digital high-pass state (`dsd_voice_hpf_reset()`, `-v 0x9`), which the voice
+    chain keeps across a call learned partway through a reception; a call already active (a republication, a
+    reallocation) runs nothing. Each `-r` playback file
+    (`dsd_mbe_file_end_replayed_call()` in `dsd_file.c`, once per file opened, after it ends and commits the previous
+    file's call, and resets the speech decoder; for an SDRTrunk export, `read_sdrtrunk_json_format()` runs it once the
+    file is read and its shape checked, so a refused file or a Stop before then leaves the previous call as it was)
+    runs the flush too (issue #888): a raw
+    `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would otherwise join the next file's, and an SDRTrunk
+    export's named call would commit and export it as its own; each file is a recording of its own (the last file's
+    no-call audio closes at the run's no-carrier pass). Where the receiver is comes from `dsd_engine_receiver_hz()`
+    before the tune, the reading `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the
+    frequency it last confirmed on this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a
+    connect or reconnect before anything was sent, never the tuner frequency a reconnect leaves naming the old peer's);
+    on an RTL stream tuned directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since
+    a timed-out tune names its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio
+    where it was; otherwise `opts->rtlsdr_center_freq`. The P25 patch listening clock's break and the DMR leave judge
+    below read the same value. Retunes an external controller makes over the RTL UDP port are invisible to the decoder:
+    a recording can span one (limit). One `sf_command()` per open slot file per departure; nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -2679,8 +2944,9 @@ suite runs under this compiler.
 
     `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
     `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
-    segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`, `close` or
-    `publish`), `temp` (string: the temp name it keeps, relative or absolute as `file` is; "" when none) and `folder`.
+    or discarded segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`,
+    `close`, `publish`, or `discard` for a deletion that failed), `temp` (string: the temp name it keeps, relative or
+    absolute as `file` is; "" when none) and `folder`.
 
     Measured (dev-release, NVMe ext4, 20000 appends): a `publish` append costs 7.5 us mean (p99 10 us; 6.1 us on
     tmpfs), and the whole close and publish of a 1 s per-call WAV goes from 29 us to 39 us with the journal on. With
@@ -2694,8 +2960,20 @@ suite runs under this compiler.
   session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a zero id;
   the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending and
   unlinked at its drop, one close and one publish beside a commit on another thread), not of an empty file, a static
-  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, and a retry park
-  ending the call heard since a failed park; the write and pending-list seams in
+  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, a retry park
+  ending the call heard since a failed park, and at an EDACS grant on the carrier the receiver is on (an analog group
+  call, an analog all-call and a ProVoice call, journal on and off: the earlier audio published once as no row's and
+  unexported, the granted call's recording only its own, an all-call's exported under its LCN's kHz with its label and
+  LID; an outgoing call still active keeps its audio under its row, exported; a group grant from an active all-call's
+  LID merges into it, and the all-call segment is exported under the kHz fallback from its LID, pending and linked),
+  and at the first TETRA call admitted after speech its file took with no call (an anonymous call once the carrier is
+  proven, a direct-mode call once named, through the real speech path, journal on and off: the earlier speech one
+  recording of no row's, unexported, the call's only its own under its row; a faded identity-less call held for its
+  drop verdict, then a new call admitted: the held call's audio its own recording, pending on its epoch, unexported
+  and unlinked at its drop, the new call's only its own, exported), and at each `-r`
+  playback file (two raw `.amb` files, an SDRTrunk export naming a call, a raw `.amb`, through `playMbeFiles()` and
+  the run's end, journal on and off: each file one recording, the raw files' no row's and unexported, the named call's
+  only its own, exported under its row); the write and pending-list seams in
   `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
   control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
   carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
@@ -2716,22 +2994,41 @@ suite runs under this compiler.
   Once the call has ended the staged row's own `policy_target_id` is reused, since patch membership needs an active
   call. `wav_close_and_publish()` (`dsd_file.c`), the one export call site, which every close path reaches (the event
   rotation through `close_and_rename_wav_file_ex()`, and `close_and_publish_call_wav()` for WAV stop, analog calls,
-  EDACS and the last close) with the slot's staged row, exports only when `export_call` and the row's verdict allow
-  it. `close_and_publish_call_wav()` first re-judges the verdict (`dsd_event_refresh_stream_verdict()`, the call's own
-  staged row only), so a policy import or edit applied in the same command drain as a WAV stop counts
-  (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however it was built
-  (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional analog calls,
-  M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue #667) also needs
-  an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when `dsd_rdio_analog_talkgroup()` gives one
-  (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it with no failure line, logging one
-  LOG_WARN per decoder run while `--rdio-mode` is on (`wav_recording_analog_rdio_skip_first_this_run()`, reset by
-  `dsd_wav_recording_session_reset()` at engine start). Its tag and `short_name` take the row's mode word
-  (`sysid_string`: `NFM`, `AM` or `ANALOG`). A digital row without a talkgroup still warns ("skipped", then "export
-  failed"). An analog export keeps the #708 contract: the upload is queued before the journal's `publish` record (its
-  `rdio` flag), the queue holds the file, and a journal suppresses delete-after-upload. Neither field is shown,
-  persisted or part of the control API's row fingerprint; exports already queued are not recalled. Tests:
-  `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
-  `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  EDACS and the last close) with the slot's staged row, exports only when its export mode (`dsd_wav_export_mode`,
+  `<dsd-neo/core/file_io.h>`) and the row's verdict allow it. `close_and_publish_call_wav()` first re-judges the verdict
+  (`dsd_event_refresh_stream_verdict()`, the call's own staged row only), so a policy import or edit applied in the same
+  command drain as a WAV stop counts (`CORE_WAV_JOURNAL`). The flag is set only to block, so a row never judged, however
+  it was built (`init_event_history()`, a zeroed row, a trunk-scan target's empty row), exports as before. Conventional
+  analog calls, M17 and identities wider than 32 bits are never judged. An analog row (NFM, AM or audio input, issue
+  #667) also needs an export talkgroup (issue #668): `wav_close_export_rdio()` exports it when
+  `dsd_rdio_analog_talkgroup()` gives one (its frequency in kHz, or `--rdio-analog-talkgroup`), and otherwise skips it
+  with no failure line, logging one LOG_WARN per decoder run while `--rdio-mode` is on
+  (`wav_recording_analog_rdio_skip_first_this_run()`, reset by `dsd_wav_recording_session_reset()` at engine start). Its
+  tag and `short_name` take the row's mode word (`sysid_string`: `NFM`, `AM` or `ANALOG`). The export talkgroup is
+  `dsd_rdio_call_talkgroup()`'s (issue #888 D7): a digital row's target, else the fallback (its frequency in kHz, else
+  `--rdio-unknown-talkgroup`) for a VOICE row only when the close allows it. The export mode is none on the event
+  layer's drop path and orphan flush, committed on a kept row's rotation (`watchdog_event_retire_staged_row()`), and
+  early for `close_and_publish_call_wav_ex()`, which allows the fallback only for a row that names a call (a target or
+  source, number or text; the twin of `watchdog_event_row_names_call()`) or whose protocol's voice is anonymous
+  (`dsd_call_state_protocol_voice_is_anonymous()`: X2-TDMA, standalone ProVoice, whose rows are always kept; a ProVoice
+  row carrying an EDACS grant's LCN is an EDACS call, not standalone, and needs a name like any other; an EDACS row,
+  that or an EDACS sync's, is named by its decoded IDs only, since standard addressing writes `LID_UNK` and
+  `000_AFS_00_000` placeholders into its strings for unknown parties, which the event layer's rescue still keeps for
+  history): any other
+  identity-less row's keep verdict (media plus a positive end) is not known before its commit, so a WAV stop mid-call, a
+  held fade, a cleared history or a trunk-scan target's empty row never exports under a fallback number. A digital row
+  with no number is skipped with no failure line; the one LOG_WARN per run
+  (`wav_recording_digital_rdio_skip_first_this_run()`, reset with the analog latch) is spent only by a row the fallback
+  would number had it a frequency or the option (`dsd_rdio_call_fallback_eligible()`). An analog export keeps the #708
+  contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file, and
+  a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
+  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY` (and M17 through the real
+  observation and commit rotation: a destination at `UINT32_MAX` numbered as decoded, one above it and the broadcast
+  address under the kHz fallback, a source above it listing no radio), `CORE_MBE_FILE_IO`, `CORE_WAV_JOURNAL` (the
+  close paths, `test_d7_*`; a TETRA anonymous call exported under the fallback once the carrier is proven, its earlier
+  speech not; a played SDRTrunk call with no talkgroup under `--rdio-unknown-talkgroup` with no tuner frequency or
+  code, and kept local without it), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, and end to end `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG` (`docs/testing.md`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -2960,7 +3257,9 @@ suite runs under this compiler.
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
   slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
-  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine. Slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
+  RC notice dedupe and the Tier III channel provenance (discussion #900).
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -3703,10 +4002,10 @@ suite runs under this compiler.
   - Enrichment vs admission: a path that re-judges a call it already follows because its identity was learned or
     updated keeps the call on a rejection whose only reasons are radio reasons
     (`dsd_tg_policy_decision_only_radio_blocks()`): P25 `p25_voice_start_apply_identity()` (the companion slot is
-    untouched), DMR resident members and C_MOVE of the followed call. TETRA never re-judges the call it follows, and
+    untouched) and DMR resident members. TETRA never re-judges the call it follows, and
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
-    radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
+    radio.
     App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose (mode and allow-list
     blocks), judging each call as its protocol admits it: an NXDN Type-C call by the source fallback with the call's
     source (`nxdn_held_call_policy_source()`, 0 for a Type-D call), every other call by its target.
@@ -4288,8 +4587,8 @@ suite runs under this compiler.
   over where the receiver leaves the carrier: `dsd_engine_carrier_boundary()` for every kind but STREAM_GAP (after that
   kind's early return, not inside `dsd_engine_forget_carrier_decoding()`, which a stream gap runs too), the trunk-scan
   target switch (`trunk_scan_leave_carrier()`), a manual P25 control-channel selection
-  (`p25_sm_select_control_channel()`), and each MBE playback file (`mbe_file_end_replayed_call()`). It is kept across a
-  stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
+  (`p25_sm_select_control_channel()`), and each MBE playback file (`dsd_mbe_file_end_replayed_call()`). It is kept
+  across a stream gap, the no-carrier pass, fade and terminator heals, late-entry identity, crypto purges and
   `init_audio_filters()`; fixed and auto keep its estimate (back to auto it starts from the fixed gain within its
   range, but only within the reception that fixed gain was set in: after a reset auto opens at the opening gain). All
   of these run on the decoder thread; the no-carrier pass touches no AGC state. Opening gain and talker memory
@@ -4751,6 +5050,9 @@ suite runs under this compiler.
       never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
       `NXDN_CC_HUNT`.
+    - `noCarrier()` empties the list, DMR's candidates (an announced or moved-to TSCC, a P_CLEAR's TSCC, a voted or
+      neighbour site's) with the rest, and a DMR network change does not take them out. Decided limit (discussion
+      #900): control channels a site announces are hunt candidates until the next carrier loss, as before.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, RT scheduling
     - Floating-point mode (`include/dsd-neo/runtime/fp_mode.h`, `src/runtime/fp_mode.c`, issue #672 B12):
       `DSD_NEO_FTZ_DAZ` is a start-time setting. `dsd_bootstrap_apply_fp_mode()` (`bootstrap/system.c`, called from
@@ -5364,7 +5666,12 @@ suite runs under this compiler.
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
     Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
     (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
-    copied into the job, so an analog system with a base system of 0 still uploads.
+    copied into the job, so an analog system with a base system of 0 still uploads. A digital row with no talkgroup
+    is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
+    `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
+    `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields
+    and "rdio-scanner export verdict"); `dsd_rdio_export_call()` and `_ex()` pass 0, so they never number one, and the
+    writer's `talkgroup == 0` check stays as a backstop (no sidecar, -1).
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
@@ -5385,8 +5692,9 @@ suite runs under this compiler.
     its copies of the API key and URL wiped (`DSD_SECURE_ZERO`) before it is freed (`dsd_rdio_upload_job_free()`;
     test: `RUNTIME_RDIO_EXPORT`), and the worker wipes the endpoint it builds from the URL after each upload. Should the
     shutdown's join of the worker fail (not expected: one shutdown joins, and the worker never joins itself), the
-    worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
-    not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
+    worker may still run, so the queued jobs are detached under the queue's mutex, which the worker pops under, and
+    released after it is unlocked (their private inputs, holds and API copies); the job in flight and the worker's
+    endpoint copy are left to the worker. Uploads are kept while a
     journal is set:
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
@@ -5394,12 +5702,59 @@ suite runs under this compiler.
     autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
     bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
     warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
-    `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
-    during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
-    rule under POSIX and Windows rules on every host; analog sidecar fields, kHz and fallback talkgroups, stable tags,
-    the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
-    BOTH mode and holds), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip
-    line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    `RUNTIME_RDIO_EXPORT`).
+    Private job inputs (issue #888 B15): in `--rdio-mode both` the sidecar is public before the queued job runs, and
+    a DirWatch with delete-after on that folder removes the pair once it takes it. So only in `both` mode,
+    `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair before the public sidecar is in place
+    (`dsd_rdio_export_api()`: the sidecar is written and closed as its temp file, the job's copy of it is made from
+    that file, then the WAV's, and only then is the temp file renamed to the public name and the job queued), so a
+    watch that takes and deletes the pair the moment the sidecar appears never beats them: a copy of the sidecar and a
+    hard link of the WAV (`dsd_hard_link()`, a copy where the file system has none), named
+    `<token>.<N>.rdio-upload-audio` / `.rdio-upload-meta` in the WAV's folder (the token: 16 uppercase hex digits drawn
+    once per process with `dsd_nonce_fill()`; N from a process-wide counter, the next one on a name in use, 64 tries),
+    which no 6.6.3 or v8 watch reads (they look at the last extension only: `.json`, `.mp3`, or the default type's
+    configured one, `.wav` by default). The names do not grow with the public stem (at most 45 characters), so any
+    recording whose public names fit the file system's name limit has them. The worker uploads from them under the
+    published names (`curl_mime_filename()`), and the job's release (`dsd_rdio_upload_job_free()`: sent, failed,
+    cancelled, dropped at shutdown, released after a failed join, or never queued) removes them; the public pair is
+    published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names, and API-only and
+    DirWatch-only runs make no private inputs. The copy (`dsd_rdio_copy_file()`) opens its destination exclusively with
+    `dsd_fopen_private_ex()` and, on a failure, removes it only when this open created it (never a file already there),
+    through `dsd_rdio_remove_private_input()`, so a removal that fails is said like a job's, with the copy's own error
+    kept; it checks the user's Stop (`g_rdio_upload_cancel`) between 16 KiB chunks. The queue's admission rule
+    (`dsd_rdio_upload_admits_locked()`: not after the shutdown began, not after a Stop, not past
+    `DSD_RDIO_UPLOAD_QUEUE_MAX`) is asked twice: before the private inputs are made, with the queue's mutex released
+    again for their I/O, so an upload the queue would refuse costs no WAV copy, and at the enqueue, which has the last
+    word. After a Stop no job is queued (the worker would never send it), whether the Stop came before the private
+    inputs or after them, before the enqueue: the job is released (its private inputs removed, nothing held), the
+    export logs it and returns success with the public pair published (`DSD_RDIO_UPLOAD_CANCELLED`), and the journal's
+    `rdio` stays false. A run only ever removes its own private inputs, at
+    each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
+    them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
+    also blocks the delete of its hard link), which is not retried and is logged once a process
+    (`dsd_rdio_remove_private_input()`); `docs/cli.md` says how to delete such files by hand. A copy that cannot be made
+    fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still published. A
+    failed join of the worker at shutdown (not expected) detaches the queued jobs under the queue's mutex, which the
+    worker pops under, and releases them (private inputs, holds, API copies); the job in flight stays the worker's.
+    Accepted limit: the copy fallback runs in the export, on the closing thread, and a commit rotation closes under the
+    call-state lock (`dsd_event_sync_slot()`), so on a drive with no hard links a long recording's copy also holds off
+    the P25 watchdog thread, which takes that lock. Moving it to the worker would reopen the race above.
+    Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and during the drain, holds with a blocked uploader
+    through 140 later publications, release after the delete, the name rule under POSIX and Windows rules on every host;
+    analog sidecar fields, kHz and fallback talkgroups, stable tags, the analog system in the sidecar and the form part,
+    the NFM upload's completion, failure, journal retention, BOTH mode and holds; issue #888 B15: a held first upload
+    while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
+    gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
+    that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), short private names under a
+    230-character stem, no copy and no job after a Stop and a Stop that ends a copy, a Stop at the sidecar's
+    publication (after the private inputs, before the enqueue) that leaves the job unqueued and unheld, no private
+    input made for a call the full queue refuses, a private open that made its file but no stream, a failed removal said
+    once (a partial copy's and the jobs' end together), the queued jobs released after a failed join (the last three through
+    GNU ld `--wrap` link seams, `DSD_TEST_WRAP_RDIO_SEAMS`, POSIX only); the fallback number and its eligibility, the
+    generated label (`EDACS` for a ProVoice call an EDACS grant named), `freq`/`freqList` at their bounds, emergency,
+    the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
+    `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
+    `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -5419,7 +5774,11 @@ suite runs under this compiler.
     through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
     just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
-    returns 0 with no text and keeps the trunked "first site only" warning.
+    returns 0 with no text and keeps the trunked "first site only" warning. Tier III rows are keyed by `ch_id` only
+    (`lcn` is a row ordinal there) and every marked control frequency no row holds is seeded under key 0 (CHNULL,
+    never a grant's channel, only a hunt-list slot); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
+    import (`svc_import_channel_map()`) takes a file with a usable channel row or a usable positional slot, so such
+    a seed-only map loads; zero-frequency placeholders count for neither.
     The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
     (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
     value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
@@ -5607,7 +5966,9 @@ the P25 profiles (see the startup control-channel hunt below); with nothing inst
 `scan_quiet_setting_changed` (`dsd_scan_quiet_setting_changed()`, #834) tells the engine that the session-wide
 `opts->scan_skip_silent` was written, so it can drop the quiet checks it already made; app-control's
 `DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler and every config apply call it on the decoder thread, with `turned_on` set
-when the write turned the setting on from off (the landed visit is then not checked). It lives in this table, not the
+when the write turned the setting on from off (the landed visit is then not checked) and `reading_changed` set when the
+switch or `opts->scan_skip_silent_ms` differs from before the write (a shortened reading's WARN lines are then logged
+again). It lives in this table, not the
 trunk-scan one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with
 nothing installed.
 `scan_quiet_service` (`dsd_frame_sync_hook_scan_quiet_service()`, #834) is the scan quiet check's in-hunt service
@@ -6699,8 +7060,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
     refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
     `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
-    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
-    and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"): a
+    channel map that fails is cleared rather than kept, as its rows would send the new system's grants to the old
+    system's frequencies (issue #900), while a group list that fails leaves the old one loaded; and an I/Q replay never
+    tunes or crosses a receiver-move boundary, rigctl peer or not
   - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
     tuner took supersedes a pending manual tune: one applied or accepted; a refusal (an RTL request that failed in its
     wait, a rigctl refusal, an RTL input with no stream) and a deferral leave it (issue #644). A failure or
@@ -9443,9 +9806,32 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`rtl_stream_apply_pending_retune_profile_for_target()`, which has no finalize) itself when it lands on another
   frequency than the last external landing that took a profile, whatever its width. A landing with no profile queued
   (a DMR or NXDN voice-channel tune) and every finalize (a stream open, a controller retune) forget that landing, so
-  the next one starts the filters over even on the same frequency. Tests:
+  the next one starts the filters over even on the same frequency. The output ring follows the tuner on its own record
+  (`g_external_output_freq_hz`): every external landing, with a profile or without, parks the demod thread under the
+  reconfigure gate (so no block's output write can publish a head loaded before the flush) and flushes the output,
+  moving its generation, and purges the input I/Q captured before it (`controller_request_input_purge()`, as a
+  controller retune does). Before the purge, an rtl_tcp reader restarts (`rtl_device_discard_staged_input()`): as for
+  the device's own retune it drops its partial slice, and it also drops the I byte it holds and the whole chunk it
+  next takes, keeping the pair phase; a chunk it is already writing lands before the flush goes on (the reader marks
+  each chunk's processing, `tcp_chunk_seq`), so the purge takes it. The device's own retune
+  (`rtl_device_set_frequency()`) restarts the reader the same way short of the chunk drop: the staged slice and the I/Q
+  pair a held byte straddles go, and the controller's purge waits for a chunk in progress too. The wait is bounded;
+  one that runs out poisons that chunk (its remaining writes fail as stale) and moves the ring's discard generation,
+  so none of it survives. No byte received before the next chunk boundary reaches the ring; the cost is that one
+  chunk of the new channel, a few milliseconds. A landing with no profile also starts the demodulator over as a
+  retune does: filters and their held-back samples, the output resampler, the FSK modem, the discriminator's previous
+  sample, the CQPSK Gardner delay line, differential decoder and band-edge FLL delay line, and the FSK voice lane's
+  de-emphasis), unless the last external landing was on the same frequency since the last finalize; a
+  repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache, and since it has
+  nothing to rewrite it takes the gate without raising its flag, so a block in flight keeps its whole output. The
+  engine also says whether the peer moved (`peer_moved`: it was sent another frequency than
+  `dsd_opts::rigctl_sent_freq_hz`, or `RigctlFrequencyMoves()`, which every rigctl leg's request counts, moved since
+  the last landing), and a landing that moved it flushes and starts the filters over whatever the records say, since a
+  leg that lands nothing (a manual tune, the legacy direct return to the control channel) can move the peer between
+  two landings, even away and back. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
-  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
+  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`,
+  `rtl_stream_test_external_profileless_landing_against_block()`), `ENGINE_TRUNK_RETUNE_REGRESSION` (`peer_moved`).
 - TETRA receive chain (`demod_pipeline.cpp`, `costas.cpp`, `firdes.cpp`; user view in `docs/cli.md`, `-fT`). A
   TETRA downlink runs a chain of its own; every other stream, and a TETRA profile whose chain cannot run, runs the
   generic CQPSK path exactly as before the chain existed.
@@ -9828,7 +10214,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `rtl_stream_tune_poll()` reuse the controller's completion ledger and settling gates;
   the search owner reserves tagged manual tunes, including against unsolicited UDP tunes.
 - Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
-  channel carries no power above the capture's noise. `dsd_signal_quiet_detector_*` is the measurement (the shared
+  channel carries no power above the capture's noise. A request may ask for another sub-window count
+  (`dsd_signal_quiet_request::windows`, 0 for the calibrated `DSD_SIGNAL_QUIET_WINDOWS`, at most
+  `DSD_SIGNAL_QUIET_WINDOWS_MAX`) and a lead of pairs dropped before the first transform (`lead_pairs`). The tap's
+  capture word (`rtl_signal_capture_seq()`, lock-free; `rtl_signal_capture_get_seq()` gives the capture and its word
+  from one snapshot under `tap_mutex`) moves with every change of generation, centre or capture offset and at a
+  reset, never for drops or gain. `dsd_signal_quiet_detector_*` is the measurement (the shared
   tap runs one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (5.0 dB),
   `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
@@ -12027,6 +12418,51 @@ control within the CC grace walks its channel map with the ordinary hunts.
   data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
+- YSF and the rdio fallback (issue #888): a YSF row takes the fallback talkgroup only when its call ended on its own
+  terminator, decoded by YSF. Its own: the terminator's verified CM is `dsd_state::ysf_call_cm`, the CM the last
+  verified header or communications FICH named (set in `ysf_update_call_lifecycle()`, kept through `noCarrier()` so a
+  terminator after a fade still matches; a CM 1 Radio ID terminator does not end a CM 0 group call as its own). An
+  ended (faded) call is not observed again, but `ysf_enrich_identity()` compares a verified DCH's callsigns with it
+  (`dsd_call_snapshot_contradicted_by()`, the call state's own epoch-change rule) and forgets `ysf_call_cm` (9) when
+  they name another party, so a foreign caller's terminator never marks it. Otherwise the terminator ends the call
+  with `dsd_call_state_end_ex()` and `DSD_CALL_END_TERMINATOR`, not its own. On a match
+  `ysf_end_call_lifecycle()` ends the call with `dsd_call_state_end_own_terminator()`
+  (`DSD_SYNC_YSF_POS` and the kind the terminator's verified FICH names, `ysf_frame_call_kind()`: data by its DT, else
+  group, private or plain voice by its CM), which ends it as `dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`
+  and, when the call is of the same protocol family and the kind does not contradict the call's
+  (`call_state_kind_changed()`: a group call and a private call's terminator do; plain voice contradicts no voice
+  kind), sets `dsd_call_snapshot::own_terminator` (also when the terminator retracts a recoverable end; a new epoch
+  starts it at 0). A context restore (`dsd_call_context_restore_snapshot()`) that makes an ended slot's reason EXPLICIT
+  clears the flag with it, so the reason and the flag stay one verdict. Every other protocol ends calls with
+  `dsd_call_state_end_ex()`, which leaves it 0: `p25_sm_emit_tdu()` ends slot 0 on a terminator whatever call it holds,
+  so a P25 TDU after a YSF call in Auto mode is a terminator end but not the YSF call's own. The event layer's render
+  sets `Event_History::fallback_blocked` from the call (`watchdog_event_call_blocks_fallback()`, `dsd_events.c`): a YSF
+  call not ENDED with `DSD_CALL_END_TERMINATOR` and `own_terminator` (a sync loss, an in-band change of call mode or
+  callsign that began another epoch, a teardown, another protocol's terminator, or an early close while it is active)
+  is blocked, as is any call whose snapshot has `identity_unread`. The flag is copied with the row
+  (`push_event_history()`, the merge re-render keeps the committed row's), and `dsd_rdio_call_fallback_eligible()`
+  refuses a blocked row, so `dsd_rdio_call_talkgroup()` gives it no fallback number (a talkgroup it has stays). The WAV
+  close says it once a run (`wav_recording_fallback_blocked_first_this_run()`). A YSF voice frame's DCH is read after
+  its voice was written, so a call that ends any other way may hold the start of the next one; the rule replaces the
+  in-band epoch check of an earlier round, which a V/D1 repeater call tripped. V/D1 DCH fields are selected by frame
+  number (`ysf_vd_type1_dch_field()`: frame 0 CSD1, frame 1 CSD2, later frames none), not by the block number, which
+  read frame 1's repeater callsigns as the call's endpoints and split the call. Tests: `YSF_DCH_DECODE`
+  `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback`,
+  `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`,
+  `test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator`,
+  `test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`,
+  `test_process_ysf_faded_call_takes_no_other_callers_terminator`; `CORE_CALL_STATE`
+  `test_context_restore_clears_the_own_terminator_mark`; `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (the
+  synthetic call has no terminator: never exported, said once a leg) beside `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG`
+  (the fallback end to end).
+- YSF repeater callsigns (`src/protocol/ysf/ysf.c`): CSD2 is the downlink repeater's callsign, then the uplink's
+  (Yaesu "Amateur Radio Digital Standards" rev 1.02 Table 4-2; V/D type 2 sends the downlink in frame 2 and the uplink
+  in frame 3, Table 4-4; MMDVMHost `YSFPayload.cpp` and DSDcc `ysf.cpp` read them so). `ysf_dch_decode_csd2()` and
+  `ysf_dch_decode2()` give the uplink to `route_text[0]` and the downlink to `route_text[1]`, which the terminal's
+  `UPL:`/`DNL:` row shows; main had the two swapped. `ysf_dch_decode()` and `ysf_conv_dch()` take the DCH `field` to
+  decode (0 CSD1, 1 CSD2, 2 text), never the FICH block number. Tests: `YSF_DCH_DECODE`
+  `test_dch_csd2_tracks_uplink_and_downlink`, `test_dch2_tracks_destination_source_links_and_remarks` and the header
+  and terminator cases, every CSD2 written downlink first.
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
   destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
   split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and
@@ -13266,7 +13702,9 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 
 Key public headers (selection):
 
-- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
+- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below),
+  `<dsd-neo/protocol/dmr/dmr_t3_grant.h>` (Tier III grant classes, below)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
@@ -13346,6 +13784,89 @@ Private per-protocol modules worth knowing about:
   likelier a QR(16,7,6) miscorrection; a second miss in a row ends it as before, and only an EMB the colour-code check
   accepted ends a miss streak. Tests: `DMR_SYNTH_SLOT_FLIP`,
   `DMR_SYNTH_INVERTED_*`, `DMR_BS_SYNC_TIMES`, `DECODE_IQ_DMR_T3_CC`, `DECODE_IQ_DMR_POLARITY_AUTO`.
+- Tier III channel provenance (`dmr_t3_channels.c`, `dmr_t3_chan_learn.c`, `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`,
+  discussion #900 F2). The aggregate lives in the DMR module's one state extension (slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, `dmr_t3_channels_internal.h`) beside the RC notice dedupe. Every channel map row LPCN
+  1..4094 has an origin there: NONE, FILE (a channel map import, `dmr_t3_chan_note_map_loaded()` after
+  `chan_map_adopt()`; a nonzero row with no recorded origin, such as a `-C` map at startup, reads as FILE), USER, SITE,
+  UNVERIFIED, NEIGHBOUR or ESTIMATE. A row keyed 0 (CHNULL, the RadioReference generator's control-frequency seed) names
+  no channel a grant can use: it only takes its positional slot in the control channel hunt list.
+  `dmr_t3_chan_learn()` is the only over-the-air writer: `dmr_csbk.c` (`dmr_csbk_learn_channel()`) passes SITE for a
+  CSBK or MBC whose CRC checked (absolute grants, the TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended
+  block names, Chan_Freq, the MBC form of Ann_WD_TSCC), UNVERIFIED for one `-F` accepted as RAS
+  (`dmr_csbk_ras_accepted()`, the C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now or
+  Adjacent_Site either way, and nothing for a failed CRC or the synthesized P_CLEAR. Precedence: FILE and USER are never
+  overwritten over the air; SITE replaces UNVERIFIED, NEIGHBOUR and ESTIMATE always (an origin change at the same
+  frequency counts, and bumps the revision) and another SITE row when the frequency differs; the rest fill empty rows
+  only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and ESTIMATE 0.
+  The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
+  slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
+  row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
+  drops every estimate and fills again, except an estimate confirmed at the frequency it holds, which is promoted in
+  place (it lies on the model line between the first and last anchors, so the model is unchanged). Decided limit
+  (discussion #900): with `DSD_NEO_DMR_T3_HEUR` on, estimates are recomputed when DMR itself changes an anchor row; a
+  change by a channel map import or another protocol is not noticed until then. A row another
+  writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
+  shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
+  (which the DMR writer releases before it writes and sets after), and the row then reads as FILE, so DMR neither
+  replaces nor drops it. The takeover also clears the row's trust byte (an LPCN-only grant off the control channel
+  needs trust 2, which DMR gave the frequency it learned, not the new one) and bumps the core-owned
+  `dsd_state::dmr_lcn_ota_seq`, which `dmr_t3_chan_revision()` adds to its own count, so the revision moves on an
+  ownership change at an unchanged frequency.
+  A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
+  their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
+  checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the
+  transmitting site's, noted before the announcement is handled; Vote_Now's and Adjacent_Site's BParms1 names another
+  site and is no note), C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked
+  one, MODEL or NET differing (another SITE of the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
+  `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
+  (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
+  that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
+  that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
+  a Return-to-CC keeps them); a RadioReference apply that moves no tuner does it once its mode change succeeded (one
+  an I/Q replay refuses keeps the old system's rows). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
+  voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
+  trust bytes, `dmr_lcn_ota`, generation, revision and system-code baseline together
+  (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
+  and past both sides on a restore. The snapshot saves the revision a reader sees (`dmr_t3_chan_revision()`, the
+  takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
+  `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+- Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
+  B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
+  the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
+  `symbol_clock`, its epoch and `carrier_seq`), and a continuation (data type 5) joins only an armed slot and only as
+  the slot's next burst, one TDMA frame (288 symbols, ±12 for grid slips) after the MBC's last block on the same
+  carrier and timeline, else it is dropped and the slot disarmed. A burst the decoder missed disarms nothing, but it
+  moves the clock a frame on, so a continuation after it joins nothing. Any other burst on the slot
+  (`dmr_data_burst_handler_origin()`), a voice burst there (`dmr_bs.c`, `dmr_ms.c`), the end of the MBC, a refused
+  length, a sync loss or retune (`dmr_reset_blocks()`) and the no-carrier reset disarm it; the other slot's bursts do
+  not. A non-UDT MBC holds one to three continuations, counted as received (a header whose LB is set has none and is
+  refused), and its CRC covers exactly those blocks. The assembler hands the PDU over with its shape
+  (`dmr_cspdu_shape`: continuations, header and first continuation CSBKO, that continuation's LB, and whether its
+  bursts prove scan activity) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before scan activity,
+  the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
+  absolute-parameter opcode (C_BCAST, the grants and C_MOVE whatever the FID; P_CLEAR only under FID 0, since another
+  feature set's opcode 46 is the manufacturer's and keeps the legacy carrier-wide release) whose continuation is not
+  exactly one last block carrying its header's CSBKO; a standard (FID 0) C_BCAST single block whose LB is 0 (Table
+  7.20; checked before the protect flag, a manufacturer's flags being its own); a grant, standard P_CLEAR or C_MOVE
+  naming anything but 0xFFF as an MBC (a logical channel 1..4094, or a P_CLEAR's 0, the last confirmed TSCC), which
+  the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block Ann_WD_TSCC naming 0xFFF as
+  BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Vote_Now or Adjacent_Site MBC whose channel is not
+  0xFFF (§7.2.19.3.0(b)); a Chan_Freq whose header CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
+  (a grant or standard P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
+  Adjacent_Site on 0xFFF) whose parameters `dmr_abs_params_decode()` cannot use, a single block on 0xFFF among them.
+  Neither the gate nor a handler reads a continuation field (bits 96 on) before the shape says there is one, so a
+  single CSBK passed in a 96-bit buffer is read only within it.
+  `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP, BC_AP and VN_AP (Cdeftype 0 only; a receive
+  frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no frequency). A grant's valid frequency
+  whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. A CSBK or MBC header notes its scan
+  activity evidence (`dsd_frame_sync_hook_content_evidence()`) only once `dmr_cspdu_ex()` accepts its PDU (an MBC
+  also accepted as a whole; `dsd_state::dmr_mbc_header_proven`), and so does the colour-code gate for every control
+  burst (CSBK, MBC header, continuation: `dmr_confidence_note_control_burst()` counts the code toward the lock but
+  defers PROVEN, the `dmr_confidence_lock_m` stamp and the search evidence to `dmr_confidence_note_control_accepted()`). The MBC's CRC provenance (checked, RAS-accepted or
+  failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests: `DMR_T3_CHANNELS`, `DMR_T3_MOVE_RELEASE`,
+  `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
+  `ENGINE_NO_CARRIER_RESET`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
@@ -13392,9 +13913,57 @@ Private per-protocol modules worth knowing about:
   decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
   lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
   still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
+- DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
+  only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
+  voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call (`vc_tg`,
+  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's accepted on
+  the followed slot since, even one whose call a checked LC had named already). Those addresses stay valid
+  (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still cleared by
+  either party; only a new follow, a status follow or a release drops them. Otherwise it prints "not for the followed
+  call" ("no followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or
+  release. Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy
+  companion slot keeps the carrier. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
+  followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
+  call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
+  followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Decided limit
+  (discussion #900): with DMR mono (`-fr`), after the followed slot clears while the other slot keeps the receiver,
+  that slot's audio is not played until the receiver moves (mono playout, `dmr_mono_slot`, stays on `vc_slot`; main
+  left the carrier at that point). The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's
+  opcode 46 keep the carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine
+  follows a call (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status
+  marked the receiver tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed
+  grant on its first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped
+  LPCN, or a valid appended block, which the map also learns) makes it a current-site hunt candidate, whether or not
+  it is for the followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
+  `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
+- Tier III channel announcements (C_BCAST, `dmr_csbk.c`; TS 102 361-4 §7.2.19). Each learns through
+  `dmr_csbk_learn_channel()` and adds hunt candidates (`dmr_sm_on_neighbor_update()`, current site, never the control
+  channel the receiver is on) only from a checked or RAS-accepted PDU. Ann_WD_TSCC (Table 7.69): the single-block form
+  names up to two TSCCs as logical channels, and only a mapped one marked add (AW_FLAG 0) becomes a candidate; the MBC
+  form's BC_AP teaches the map its one TSCC and adds it only on add (a withdrawal writes nothing: it may name a
+  frequency the channel no longer has); withdrawing the control channel the
+  receiver is on moves it to the other one announced. A withdraw removes no candidate an earlier announcement added
+  (decided limit). Chan_Freq (Table 7.78) is always an MBC: its header CH names the channel, or 0xFFF leaves it to the
+  BC_AP's CHAN (both naming channels that differ: refused before dispatch); a new or changed row also joins the
+  hunt candidates, but never the positional channel list (it names a channel's frequency, not a TSCC). Vote_Now and
+  Adjacent_Site (Tables 7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only
+  Active_connection, §6.7.1.3); one naming a logical channel is a single CSBK, and as an MBC is refused before
+  dispatch (§7.2.19.3.0(b)); an absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate.
+  Tests: `DMR_T3_CHANNELS`,
+  `DMR_T3_ANN_WD_TSCC`, `DMR_GRANT_POLICY`.
+- Tier III grant classes (`dmr_t3_grant.c`, `<dsd-neo/protocol/dmr/dmr_t3_grant.h>`, discussion #900 B8).
+  `dmr_t3_grant_classify()` is the one classifier of a channel grant (TS 102 361-4 Tables 7.9-7.15): group {49, 50,
+  52, 56} or private {48, 51, 53, 54, 55}, and data {51, 52, 54, 55, 56} or voice, the two kept apart; 56 on MS-sourced
+  data is BS_Dwn_Act, never a grant. A duplex grant (53, 54) reads Call Direction (bit 31: whether bits 32-55 name the
+  calling or the called MS) to name its caller and recipient. Eligibility (`dmr_cspdu_pf0_prepare_dispatch()`: data
+  tuning for a data grant, then group or private tuning by group class), the talkgroup policy (group or private call,
+  data flag), the console line, the activity row and the trunk state machine event (`dmr_csbk_parse()` fills
+  `group_call`, `data_call`, target = recipient and source = caller) all take it; no opcode is rewritten. Tests:
+  `DMR_GRANT_POLICY`, `DMR_CSBK_HELPERS`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
-  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
-  group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
+  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III grant classes, Connect Plus
+  private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
   identity and origin travel on `dmr_sm_event_t` to `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY /
   DEFERRED), which never re-evaluates a grant. The `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a
   Hold or preemption candidate.
@@ -13428,7 +13997,34 @@ Private per-protocol modules worth knowing about:
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
+    the call the slot names keeps record and follow time (on the followed slot it still becomes the grant identity), and
+    a repeat of the grant followed there changes nothing. The first voice never publishes the grant identity over a
+    checked LC bound to the slot's active call (`dmr_sm_slot_lc_holds_call()`): the LC's talker and transmission stay,
+    so an in-place grant naming that call changes only the P_CLEAR addresses. Nor does it publish a data grant's
+    identity (`vc_data_call`): voice on that slot is another call and stays as the voice names it (anonymous without an
+    LC). That voice still spends the first-voice publication (`vc_identity_published`), so a later in-place voice
+    grant never publishes over the call playing there (a checked LC's call keeps its talkgroup and transmission).
+    Decided limit (discussion #900): on a followed data slot, once the first voice has been handled, a later in-place
+    voice grant does not name its call; the call is named by its own link control or stays anonymous. A
+    repeat is the same class and kind (group or private, voice
+    or data) and the same talkgroup, or for a private call the same two parties (either way round,
+    `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
+    rule decides whether a naming keeps the slot's follow time (`dmr_sm_slot_name()`) and whether the active canonical
+    call is the named one to bind to (`dmr_sm_call_names_other()`, with what that call does not name yet left open), so
+    such a call starts its own dwell and awaits its own transmission. Late-entry voice without an LC
+    (`DSD_CALL_KIND_VOICE`) counts as voice there, and the same rule applies when an awaiting record binds to the next
+    transmission (`dmr_sm_slot_identity_refresh()`), so a data grant never binds a voice call. An unbound data grant
+    (the slot's record or the followed grant's) never describes the slot's active transmission to the ledger
+    (`dmr_sm_data_grant_not_slot_call()`): that call is unknown, so the gate protects it as any unknown call, never
+    judged by the data grant's priority or follow time. Its Hold match comes from the canonical call alone
+    (`dmr_sm_active_call_holds_hold()`: its class, target and talker), and only from an ACTIVE DMR call. So a DMR
+    voice call playing there on the Hold talkgroup is still a held Hold call, and a second grant for that group on
+    another carrier never displaces it; a record another protocol left active claims no Hold and the slot stays unknown.
+    Decided limit (discussion #900): with data following on (`trunk_tune_data_calls`), a missed voice terminator leaves
+    the voice call's canonical record active, so a confirmed packet-data transfer that follows on that slot is
+    protected as an unknown call (no preemption, past any dwell) until the voice record ends. Decided limit (discussion
+    #900): a missed voice terminator can keep a Hold call protected until its call record times out. A status's in-place
+    entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
@@ -13438,10 +14034,15 @@ Private per-protocol modules worth knowing about:
     unknown record on the followed
     carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
-    a group entry names its slot's call (on the followed slot the grant identity too, with the status's own CRC
-    provenance, `dmr_sm_vc_identity_group()`), a private one leaves it unknown and, on the followed slot, withdraws
-    the grant identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a
-    voice LC only at its checked
+    a group entry names its slot's call (on the followed slot the grant identity too, `dmr_sm_vc_identity_group()`), a
+    private one leaves it unknown and, on the followed slot, withdraws the grant identity's fallback and publication.
+    Every group or private entry for the followed slot gives the followed channel its LSN and numbering kind, and ORs
+    its CRC flags into the followed call's (`dmr_sm_vc_channel_from_status()`), even one naming the group already
+    followed, so a later LC takes that LSN and no status clears an earlier unverified mark. Where a checked LC already
+    names the followed slot's call, the entry still refreshes that pending channel, in `vc_lpcn` and in the LC's record
+    the first voice publishes it from (`dmr_sm_lc_record_channel_from_status()`, flags ORed), but never the LC's parties
+    or binding; on another slot it only fills an LC record that names no channel. Idle and unknown entries are left
+    alone), and a voice LC only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
@@ -13466,19 +14067,19 @@ Private per-protocol modules worth knowing about:
   - Call channel (issue #799). A followed call's channel is one resolved value with its numbering
     (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
     `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
-    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's or C_MOVE's absolute escape 0xFFF names its MBC's
+    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's absolute escape 0xFFF names its MBC's
     CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
-    of a known kind is named), so a same-carrier move or a repeated in-place grant keeps the first (decided limit L9).
+    of a known kind is named), so a repeated in-place grant keeps the first (decided limit L9).
     An LC's record keeps its record's channel on that carrier, else the followed call's when that is the carrier's
     (LPCN, LCN: both slots share it) or the slot is the followed one (an LSN is one slot's). A Cap+ or XPT status gives
     each slot record its own LSN (and fills it into an LC's record that names none), and voice sync gives a record's
     channel to the call the record is bound to while that call names no channel (`dmr_sm_publish_slot_channel()`): an
     LSN, or the followed grant's LPCN or LCN, which the companion slot's call is on too (TS 102 361-4 §7.1.1.1.1.1.1:
     the LPCN names the physical channel, both timeslots). The channel keeps its own provenance (`channel_crc_flags`:
-    the naming grant's, move's or status's scope), which an LC naming the record keeps and the publication carries, so
+    the naming grant's or status's scope), which an LC naming the record keeps and the publication carries, so
     a RAS-accepted status or grant under `-F` marks the row it named a channel for. The XPT free value is a repeater
     (LCN): its hint is LSN 2n - 1 (`dmr_xpt_lcn_to_lsn()`), 0 none. Calls without a channel (decided limit L5): trunking
     off; an absolute grant whose CdefParms LPCN is not 1..4094 (its MBC failing, the grant is not followed at all); a
@@ -13488,7 +14089,7 @@ Private per-protocol modules worth knowing about:
     Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`, `DMR_CSBK_HELPERS`,
     `CORE_CALL_STATE`, `CORE_TALKGROUP_POLICY`.
   - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
-    takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
+    takeover, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
     listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
     `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
@@ -13517,11 +14118,11 @@ Private per-protocol modules worth knowing about:
     receiver never left keep their ALG, key ID, MI and privacy; a request the machine gives up on unresolved (its
     deadline, a follow or park that replaces it) is judged as landed, the safe side (`ENGINE_DMR_CC_RECOVERY`
     `dmr_probe_judges_its_carrier_once_landed()`, `dmr_rigctl_probe_judged_from_the_confirmed_frequency()`,
-    `dmr_settle_tune_deadline()`). A grant's follow and a C_MOVE's follow are tracked the same way when their tune is
-    still in flight (`dmr_sm_follow_grant()`, `dmr_sm_follow_move()` take its request): the left calls end at once, as
+    `dmr_settle_tune_deadline()`). A grant's follow is tracked the same way when its tune is still in
+    flight (`dmr_sm_follow_grant()` takes its request): the left calls end at once, as
     the machine moves on, and their decryption is judged once the request lands
-    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY` `dmr_grant_follow_judges_its_carrier_once_landed()`,
-    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
+    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY`
+    `dmr_grant_follow_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
     (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data channel follow
     (`dmr_cspdu_con_plus_tune_data()`, through `dmr_sm_note_tracked_carrier_tune()`):
     `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
@@ -13570,23 +14171,17 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_clear_released_carrier()`). Writers run under the P25 SM tick guard (frame dispatch, the DMR tick, the
     carrier boundary, the trunk-scan switch); an operator move from a command takes it unless held
     (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
-  - C_MOVE. A move of the followed call (its talkgroup or either party of its private call, as the followed slot's
-    identity names it; the grant's only while that slot names none, so a talkgroup a checked LC renamed is another
-    call's), whatever slot it names, is judged with that call's own classification: refused only when tuning is denied
-    for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
-    on the new slot: the call's canonical epoch on the vacated slot ends (EXPLICIT, synchronized) and its first voice on
-    the new slot publishes it there again, so one call never shows ACTIVE on both slots; another carrier -> a new
-    acquisition that ends the calls of the carrier left (as every follow does) before naming the moved call, so its
-    first voice there publishes it in an epoch of its own, which the moved identity binds to (it never waits behind
-    the old carrier's epoch to bind the next, anonymous call); both keep the follow time. Both republish the moved
-    call's identity as the followed slot's record names it (with the record's `crc_flags` OR'ed with the move burst's:
-    the move confirms the target, not a source a RAS-accepted grant or LC under `-F` named), which makes the grant's
-    identity known again even when the end of the call it first named had withdrawn it (a checked LC then named the
-    moved call). A deferred or failed move tune changes nothing, the followed grant's identity included (it is rewritten
-    from the slot's record only in place
-    or once the tune is accepted), so a repeat of the original grant still matches it. A move of any other call is an
-    ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only once
-    accepted (as before when it is not submitted: trunking off or not on a voice channel).
+  - C_MOVE is Move TSCC (TS 102 361-4 §7.1.1.1.3, Table 7.17; `dmr_cspdu_pf0_handle_move()`): the TSCC tells one MS
+    (its individual address, bits 56-79) to move to another TSCC (Physical Channel Number, bits 44-55), with Mask
+    (25-29), Reg (35) and Backoff (36-39) for its access there. It names no call and is informational: printed
+    (`Move TSCC: MS <address> to channel <n>`, the TSCC's frequency when known), never submitted to the machine, never
+    an activity row or a burst-indicator debounce. The absolute escape 0xFFF names the TSCC in an appended MV_AP block
+    (Table 7.18, `dmr_abs_params_decode()`): from a checked or RAS-accepted PDU the channel map learns it
+    (`dmr_csbk_learn_channel()`: SITE or UNVERIFIED) and the control channel hunt takes its frequency as a current-site
+    candidate; a single-block C_MOVE naming 0xFFF is malformed and only printed. Decided limit (discussion #900 D6): a
+    call the site moves between payload carriers (a P_GRANT move on a payload channel) is not followed by a move path;
+    it is picked up again from the TSCC's late-entry grants. Tests: `DMR_T3_CMOVE`, `DMR_T3_MOVE_RELEASE`,
+    `DMR_GRANT_POLICY`.
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
@@ -13711,7 +14306,8 @@ Private per-protocol modules worth knowing about:
   Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
   LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
-  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, and Motorola's Group Regroup Voice Channel
+  User - Extended, MFID90 0xA0, whose Source SUID is octets 10-16, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
   carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
   Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
@@ -13724,7 +14320,19 @@ Private per-protocol modules worth knowing about:
   re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
   alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
   home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
-  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  earlier radio's call showed. The home is bound to the working address the voice user that named it carried
+  (`dsd_call_source_home::source`, 0 for none): a later checked voice user that names another working address and no
+  home (an abbreviated form, which fills the call's absent working address without a new epoch) takes the home away
+  and drops that alias too (`dsd_call_state_note_source_address()`), so the call's talker is matched by its working
+  address from then on; the call records the withdrawal (`dsd_call_source_home::withdrawn`, carried to the history row
+  as `Event_History::src_home_withdrawn`), so a row merged across a sync loss drops the earlier radio's home and alias
+  too (`watchdog_event_merge_home_and_alias()`). A repeat of the same full SUID with no working address keeps the
+  binding it had. A 0xA0 is segmented by its declared length (so the next message starts after it), but it names an
+  identity, in the voice-user pass and in the MAC_ACTIVE parse alike, only when it declares the 16 octets of the one
+  layout the decoder knows (or 0, the table's 16) and the segment and the span hold them all; its SUID only when it
+  declares 16. Every other voice identity form is read only when the span holds the whole structure (the MAC_ACTIVE pass parses
+  within the LCCH's span on an LCCH, `p25p2_mac_decode_voice_identity_span()`); such an addressless voice user is
+  `source_nonlocal` to the trunk state machine, so a
   working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
   source the state machine's identity record positively checks under the reception now: every publication of that record
   mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in
@@ -13754,7 +14362,7 @@ Private per-protocol modules worth knowing about:
   `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
-  decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
+  decode time (a control burst's only once its PDU passes the control gate, `dmr_confidence_note_control_accepted()`) (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
   validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
   MS/direct voice (`dmr_ms.c`) goes through it as BS voice does (issue #834): the EMB has QR(16,7,6) and no checksum
   (TS 102 361-1 Table B.1), and about one noise word in four decodes to some colour code, so an EMB's code is the
@@ -15065,7 +15673,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 - Paths:
   - `src/third_party/ezpwd` — Target: `dsd-neo_ezpwd` (INTERFACE; headers included via `src/third_party` path)
-  - `cmake/Pffft.cmake` — Target: `dsd-neo_pffft` (STATIC; pinned fork sources for spectrum/diagnostics; accessed only through `src/io/radio/rtl_fft_cache.h`)
+  - `cmake/Pffft.cmake` — Target: `dsd-neo_pffft` (STATIC; pinned pffft-neo sources for spectrum/diagnostics; accessed only through `src/io/radio/rtl_fft_cache.h`)
   - `cmake/TetraCrypto.cmake` — Target: `dsd-neo_tetra_crypto` (STATIC; pinned TETRA_crypto TEA1/2/3 keystream generators, linked privately into `dsd-neo_crypto`; accessed only through `src/crypto/tetra_tea.c`)
 - Build files: `src/third_party/CMakeLists.txt` and subdirectory `CMakeLists.txt` files
 
@@ -16051,13 +16659,99 @@ Qt Quick frontend (`src/ui/qt`):
   condition of its own to be shown or collapsed: its height is `fullHeight`, and a row that leaves the model goes with
   its delegate. The section stays keyed on its tab, never on `visible`, which also goes false while Main hides Home:
   a collapsing section would cut the body's range and Flickable would clamp the scroll position. `fullHeight` follows
-  the content: the label column is centred 10 px
-  above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
-  `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
-  refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
-  lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
-  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's
-  site button stays clear of Play.
+  the content. Where the actions go is worked out across the card by `Util.listenCardActions()` and down it by
+  `Util.listenCardRows()` (issue #901 D7, B1, B4), from the card's width and padding, the density, the controls'
+  natural sizes and the labels' heights, never the title's laid-out width, so nothing feeds back; `ScanListCard.qml`
+  uses the same two. By default More is at the top, Play under it at `moreHeight + 6`, the site button left of Play
+  and centred on it, and the label column is centred 10 px above the middle of the actions' box,
+  `[0, actionsBottom + cardPadding]` (122 px at normal text), never above the top padding. In both views the site
+  button is drawn only while the title keeps a flat 96 px beside it (`siteDrawn`, from natural widths: B1, a
+  one-site card with Play at 320 dp left the title 72 px at text 2.0); otherwise the source line leads with
+  `N sites · ` and the chooser is on More → Sites and the long press. Play and More keep their places, so the card's
+  height never follows the button: 122 px by default at normal text at any width while its labels fit in that box (a
+  shared-title card's wrapping lines grow it, below). The breakpoints that follow are examples for a group with Play
+  shown: the full card draws a one-site group's button at normal text at 320, 360 and 411 dp, as on main (a 110 px
+  title at 320); it leaves it out for
+  10 sites at 320 dp and at larger text where the title would fall under 96. Compact draws it at 411 dp at every
+  size and not at 320 or 360 (94 px at 360). A group with no Play shown (several sites to play) leaves the button
+  Play's room, so it can draw it where these do not (a compact two-site group at 320 dp keeps a 106 px title and
+  draws it). The refresh hint takes the full width 8 px below the lower
+  of labels and actions; the card ends
+  `cardPadding` below the lowest. A card without the hint whose labels fit is 122 px at normal text, as before, and
+  grows at large text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being
+  set), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  Compact view (D7) keeps the same delegate (no second Repeater or Loader) and makes each card one row: the bold
+  17 px title over a supporting line, with the site button, Play and More right-aligned on the title's row, centred on
+  a head of max(the two lines + 24, Play + 16) px, the two lines being the title and ONE supporting line however far
+  a shared title's supporting line wraps (r5 H5: two same-name replay files with 260-character paths at 320 dp and
+  2.0 had Play at y 779 under a title at y 12; `test_actions_stay_on_the_head_of_a_wrapped_card`), and 12 px of
+  padding; with the app's fonts on a desktop, 68 px at normal text for a card whose title
+  no other card shares (an example: the height follows the line boxes, so a fallback face such as Noto CJK makes it a
+  few px taller; see "Monitor layout", the fixed line boxes), the refresh hint under everything; a shared-title card's wrapping lines (its receiver and
+  place lines under the two, and its supporting line wrapping) grow it. The title and the supporting line are one line
+  each (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows
+  the
+  head; their names still read the whole text. The full card's title, supporting, place and meta lines are one line
+  each the same way (r2 B1, `maximumLineCount: 1`), so a break in an imported name or place never grows it either.
+  Only the receiver line and the refresh hint wrap, except on a shared-title card (below). A scan-list card's name
+  (in both views) and its count line
+  ("Not ready · draft", in compact) are one line each the same way. The place and meta lines (the key and when
+  last heard)
+  are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
+  they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
+  card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site
+  button follows the same `siteDrawn` rule against compact's row (site button, Play, More), and the supporting line
+  reads [the distance, in Nearest order] · [`N sites`, while the site button is not drawn] · `Util.systemMeta()`.
+  Shared titles (issue #901 r3 S1, `sharedTitle` below): a card whose drawn title another card draws too draws, in
+  both views, every line the full card has that tells it apart: the source line (frequency, mode and trunking, or a
+  TCP/UDP endpoint, or a file's whole path as saved instead of its name), the receiver line (a tuner's), and the place
+  line (the full card's place and, in Nearest order, distance; compact's `placeLineText` is the place's name alone,
+  since compact's supporting line leads with the distance for every card, a shared title too: r4 F4, two same-name
+  one-site groups at 320 dp both led with "1 site · 851.5 MHz · Auto", their distances only lower down; so each fact
+  is drawn and read once, `test_shared_title_nearest_leads_with_the_distance`); each of those wraps whole
+  (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
+  card grows by them. The title stays one line, cut, and the meta line stays undrawn in compact (the title's
+  description still reads it). Other cards are unchanged. Tests (`tst_home_compact_cards.qml`
+  `test_shared_titles_draw_every_line`, 320/360/411 x 1.0/2.0, both views, Order added and Nearest): pairs that differ
+  only in frequency, receiver, RTL-TCP, TCP or UDP endpoint, folder, the end of a long file name, place, and a
+  `Fire\nDispatch` / `Fire Dispatch` pair; no identifying line is cut (`truncated`), the two cards' drawn lines
+  differ, no fact is drawn twice, and the lines stay inside the card clear of its controls. Decided limits:
+  same-name scan lists with equal counts look alike (a scan list has no source facts), and so do two entries whose
+  drawn settings are the same. Also decided (r4 F5): two different long titles that compact cuts to the same text
+  ("County Emergency Dispatch East" and "… West" both "County Emerg…" at 320 dp) are not shared titles, so with
+  matching source facts their compact cards look alike. The full card also cuts its title, at its own width, so it
+  is not guaranteed to tell such names apart either (r5 H6, r6 J7: at 320 dp "County Dispatch East" and "… West" both
+  draw "County Dispat…" in the 132 px compact title and fit in the 188 px full one, but longer names cut alike in
+  both); the reliable ways to tell them apart are the whole name in the title's accessible name, which a screen
+  reader reads, and the card's More menu, which opens titled by it.
+  The
+  site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
+  site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
+  also still offers it for 2+ sibling rows). Play and More alone leave the title its minimum on any card 248 px wide
+  or more (a 284 dp window); below that the title takes what is left. A scan-list card (B4) has the system card's
+  bold title, label spacing, insets and action places (Play under More, `scanListTitle`, `scanListCount`), its height
+  from its parts (122 px at normal text), and in compact view the name over its count with Play and More on the title's
+  row; draft and transition gating and the live entry count are as before. Covered or hidden cards are silent (B11): the
+  section heading, the site button, Play and More (and a scan-list card's Play and More) are named only while
+  `navigationAllowed && visible` (plus `shown` and not held where those apply). A change of density holds or shows
+  parts of every card with no rebuild, wherever Home is (it is made in Settings or the session menu), so with a screen
+  reader on it owes the tree refresh below (`systemsTreeOwed`). An owed refresh, this one or an ordinary one noted for
+  a rebuild, stays owed through rebuilds, other tabs, Home hidden and a sheet over it, until the Systems tab is shown
+  and in reach (`systemsInReach()`: visible, on Systems, `Navigation.allows(listenSystemsSection)`); then the owned
+  0 ms `systemsTreeTimer` lays the section out and gives it once (`refreshSystemsTree()` clears the owed flag only
+  when it refreshes, or when no screen reader is on). The timer restarts on Home's `visible` and `section` and on
+  `Navigation`'s `topModal`, `layers` and `rootSurfaces` while a refresh is owed, on a rebuild (`onRebuilt`, deferred
+  to the timer so the parts the rebuild then shows or holds are in the same refresh), and when a card's shown parts
+  change (`notePartsShown()`, G2: a resize or text size that draws or leaves out a site button has no rebuild to give
+  it). The controls' parts change only with the search and sort, whose rebuild gives it. So an ordinary refresh noted
+  while a sheet is open is given when the sheet closes, and one noted just before Home was hidden is given on return.
+  D11:
+  `resetListenPlaces()` forgets every Listen tab's place (`sectionScroll`: Systems, Scan lists and Explore), and the
+  owned 0 ms `listenToStart` cancels the place chase and any flick on the current tab, lays the body out and moves it
+  to `originY`, hidden or not, and does nothing while a restore is owed (the restore lands at the top anyway). The reset
+  is owed from the change itself (`listenResetPending`, set by `resetListenPlaces()`, cleared when the timer runs), and
+  `showSection()` saves no place for the tab it leaves while it is owed (r2 E3: a tab chosen in the same turn as the
+  change saved the old offset back, and Systems left at 900 px reopened there).
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -16066,8 +16760,23 @@ Qt Quick frontend (`src/ui/qt`):
   (`tst_home_layout_fixes.qml`: range and place held through frames drawn while hidden, refresh-hint and plain cards at
   320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12 scan lists on their tabs on both hosts, at 411 x 700 with the tabs fixed and at
   640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
-  helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
-  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
+  helper with an offset column, the site button held while hidden, `test_site_button_gives_way` (122 px at
+  320/360/411 x 1.0 for 1, 10 and 100 sites, the button drawn exactly where the title keeps 96 px, else the count
+  leading the source line), `test_more_offers_sites_when_the_button_is_left_out`,
+  `test_scan_list_card_matches_the_system_card`; the scroll-across-tabs cases in
+  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden;
+  `tst_home_compact_cards.qml`: compact cards at 320/360/411 x 1.0/1.6/2.0, one row, the height from the measured
+  lines at every size (`cardHead()`, the measured-height rule under "Monitor layout"), and at normal text, where the
+  test's own mixed-script probes find no fallback face taller than the base face, the height from those probes and
+  the 68 px floor, 68 px with the desktop fonts (an example: a taller base face gives a taller card), the site
+  button drawn only where the title keeps its minimum and the count leading the line otherwise, More → Sites for a
+  one-site group in both views, the Nearest line, the title's description, held lines under a screen reader, compact
+  scan-list cards, the D11 reset shown and hidden, `test_tab_chosen_before_the_reset_keeps_no_old_place`,
+  `test_shared_titles_draw_every_line`, `test_card_lines_draw_one_line`, and the card stride, 135 px by default and 81
+  compact at 411 x 914),
+  `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml` `test_m6_density_change_refreshes_the_tree_once`: one refresh
+  per flip at 300 cards, given on return or when the sheet closes and none while elsewhere, with no delegate made and
+  no show or hide; `test_m7_covered_cards_say_nothing`).
 - Listen Systems search and sort (`qml/SavedSystemsControls.qml`, `objectName` `savedSystemsControls`; inside
   `listenSystemsSection` of `HomeScreen.qml`). The controls show while at least one system is saved. They hold the
   search row (a `PlexTextField` "Search saved systems", `Accessible.searchEdit`, 250 ms debounce, a "Clear search text"
@@ -16123,13 +16832,16 @@ Qt Quick frontend (`src/ui/qt`):
   now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
   rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
   and `listenSystemsSection` ends at the bottom of the last card shown (`shownBottom`), so held rows take no scroll
-  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place and
-  receiver lines, the refresh hint, the site button, Play; over the cards the ×, the count, location and place lines
+  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place,
+  receiver and meta lines, the refresh hint, the site button, Play, of which Compact view draws no place or meta line
+  and can leave the site button out; over the cards the ×, the count, location and place lines
   and the no-match card) is shown or hidden with `visible` without a screen reader. With one (`entry.positional`,
   `SavedSystemsControls.holdsParts`) it stays visible and is held instead, part by part as a held row is: transparent,
   out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
   with no height where a column lays it out (a plain slot `Item` takes the height, so the text keeps its own and no
-  binding loop forms). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
+  binding loop forms; a `Column` skips a child of no height, its spacing with it, so a card is as tall with a screen
+  reader as without, `tst_home_compact_cards.qml` `test_screen_reader_keeps_the_card_height`). A row's next card
+  showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
   had Qt 6.11.3's Android bridge fetch the scroll body, with every card under it, again: TalkBack was silent 73-109 s
   after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
   stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
@@ -16774,7 +17486,30 @@ Qt Quick frontend (`src/ui/qt`):
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
-    and `deletesWaiting`. Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
+    and `deletesWaiting`. A preset is a range of dates (`recording_export_days()`), turned once, at the press, into
+    the instants those dates span in the press's zone (below), never by an unchecked `QDate::startOfDay()`: a date the
+    zone skipped (Pacific/Apia 2011-12-30) has no start of its own, so it spans no instant and selects nothing, and a
+    25-hour day spans all 25 hours. The press reads today once, in local time
+    (`recording_export_press_zone()`, not `QTimeZone::systemTimeZone()`, which for a POSIX TZ string such as
+    `TZ=UTC+09` names a zone the other side of UTC; `test_export_press_zone_is_local_time`), through `selectForExport()`
+    → `selectForExportAt(uid, preset, pressMs)` (today is that instant's date in the press zone; a test gives the
+    instant, `test_export_press_zone_is_local_time` at one whose local date is a day ahead of UTC's, checking the
+    returned day and what Today and Yesterday take) → `selectForExportOn(uid, preset, today, zone)`, which tests call
+    with a zone of their own, and one
+    `RecordingExportWindow` (`recording_export_window()`) holds two instants resolved there, once: the first day's
+    start and the start of the day after the last, in that zone (a skipped date starts with the next day that has a
+    start). The scan compares each start with them as integers (`recording_export_covers()`), with no conversion, so a
+    zone change during it moves no recording. Decided limits (issue #902 B6, documented, not handled): a date is taken
+    as one span of time, from its first midnight to the next date's, so a clock moved back across midnight (a zone's
+    historical rollback, as `America/St_Johns` did in 2009 and 2010, its 00:01 change going back to 23:01 of the day
+    before) puts a recording stamped in the repeated hour in the neighbouring preset day; and a time-zone change while
+    an export press resolves its window (between reading today and resolving the day's start) can shift that window,
+    as the app does not follow time-zone changes while it runs. The
+    selection returns the sampled day as `day` (`yyyy-MM-dd`), and the zip is named from it, so a press across
+    midnight names the day it selected (issue #902 B6; `UI_QT_RECORDING_STORE` `test_export_presets_on_a_skipped_date`
+    and `test_export_presets_on_a_long_day`, each skipped on a host without that zone's history,
+    `test_export_dates_follow_the_given_zone`, `tst_call_recordings_screen.qml`
+    `test_export_name_uses_the_selection_day`). Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
     `application/zip`, `suggestedName` the zip's name); one that is `unavailable` releases the selection and says its
     message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
     in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
@@ -16885,7 +17620,12 @@ Qt Quick frontend (`src/ui/qt`):
     when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
     may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
     read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
-    limit, compaction) are taken on shared copies outside the lock. A History export reads every row's recording names
+    limit, compaction) are taken on copies outside the lock: the recordings' shared (only the worker changes them), the
+    folder table's a copy of the worker's own (`foldersCopyLocked()`), since a session start on the GUI thread writes
+    that table, and Qt finds a `QHash` unshared with a relaxed load that orders none of the worker's reads of a shared
+    copy before the write in place (issue #902; `test_session_starts_while_the_worker_publishes`: each copy a sum takes is
+    checked to share nothing with the table, `setFolderCopyHookForTest()`, and tsan-debug reports the race otherwise).
+    A History export reads every row's recording names
     at once (`recordingEntryNames()`, one list per row): one hold of the lock for the whole batch, each row's recordings
     found as `recordingsForFragments()` finds them (`fragmentEntriesLocked()`: each once, by a set; start, then publish
     order), each named by `recording_entry_name()` (`<folder name>/<file>`, a nested file keeping its sub-folders), the
@@ -16896,7 +17636,219 @@ Qt Quick frontend (`src/ui/qt`):
     `recordingEntryNames()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it from
     a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
     (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
-    History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
+    History row's or a detection's recordings gone (an open detection list closed itself). An export's selection and
+    every delete request (`selectForExport()`, `deleteAll()`, `deleteFolder()`, `deleteUnfinished()`,
+    `deleteRecordings()`) are refused instead unless the index is settled (`storageSettledLocked()`, one rule: the
+    store ready, no worker pass running or asked for (`m_inPass`, set as the wake clears `m_passRequested` under one
+    hold of the lock, and cleared after `publish()`; `m_passRequested`, which every session start, recheck, delete and
+    host change sets), and no folder on available storage waiting for its first read or its read again (one a session
+    start adopted with `beginSession()` between two passes, `takeCandidateFolderLocked()`, or one on storage that came
+    back). A pass covers every storage read: the roots and a returning root's listing in `rebuildRoot()`, folders read,
+    new or again, a journal replaced in place on storage that stayed mounted, and the rechecks that take gone files out
+    one at a time (`processRechecks()`, and the limit's look at what it counts, both `recheckEntries()`); a delete
+    request is refused before any recording is collected): the index then holds part of a folder, a new folder in
+    part or not yet, files no longer there, or a folder under the owner its path had before the storage came back (two
+    owners' folders swapped while it was away), and a file a newer publish replaced at the same path under its old
+    date. A delete request wakes a pass, so the next request waits for that pass to end. A delete request that names
+    any recording on storage that is not there, as the last pass found it or as the request finds it now
+    (`queueDeletesLocked()`, `rootAvailableNow()` for each root it names), is refused at once and queues nothing,
+    whole. A root a request finds missing is remembered (`m_rootsSeenAway`) and the pass it asks for lists it again in
+    full (`refreshRoots()`, `rebuildRoot()`) even when it is back before that pass, so storage that came back changed
+    (two owners' folders swapped, journals as long as the ones read) is never taken as read; a retry that finds such a
+    root, or one a pass marked away, back is refused as `loading` and asks for that read at once
+    (`test_storage_a_request_saw_missing_is_read_again`). Whole: an owner's folders, Delete all or the unfinished
+    recordings that span storage there and away delete none of them, for one simple rule (issue #902, a decision that
+    replaces issue #708's "a delete waits for its storage and runs once it is back"; `test_deletes_refused_for_storage_away`
+    and the #708 cases, each asking again once the storage is back). So nothing is asked for storage away, and nothing
+    waits across a remount. As a backstop, one rule for deletes asked earlier and not done yet (their files held by a
+    running export, the player or an upload, or storage that left during the pass that runs them): any read of storage
+    again in a pass (`Pass::reread`: a root listed in `rebuildRoot()`, a folder read in
+    `loadFolder()`, first read, read again or a journal replaced in place) drops every one of them in `runPass()`,
+    before `processDeletes()`, whether named by a journal id or by path (`file:<folder>/<file>`). The read may give a
+    path, or an id, to another owner's recording (two folders swapped while the storage was away), so a delete asked of
+    the index as it was is never applied to the index as it is: the files stay, `deletesWaiting` goes to 0, and the
+    user can ask again (issue #902 B12, a decision; `test_held_delete_dropped_by_a_reread`, swapped owners whose recordings carry no ids, B's delete held by
+    an export across the remount: nothing of A's is deleted). One check at the point of destruction covers every
+    window, those named here and any other: each entry keeps its file's identity as the read that indexed it saw it
+    (`Entry::identity`, `statOf()`: `dsd_path_file_identity()`, its kind, size and modification time, never following
+    a link), an accepted delete queues that identity with its id (`m_deleteQueue`), and `deleteEntry()` reads the path
+    again right before the unlink (`onDiskAsKnownLocked()`) and skips a file whose size or time differs, or whose name
+    cannot be read (never taken as missing), leaving it on disk and indexed (`DeleteResult::Changed`); a link or
+    anything else not a regular file at the name is left on disk and leaves the index (and the limit's usage). Either is
+    told as a delete not done because the file was not the recording (`deletesSkipped`, apart from `deletesCancelled`,
+    a delete a read again dropped), for a user's delete and for the limit's removal, which compares with the index's
+    identity and goes on with the next recording (`test_limit_skip_of_a_link_is_told`): a folder swapped on storage that stayed mounted, storage remounted
+    between two passes, a folder a session start adopted while a delete waited (`test_delete_checks_the_file_it_removes`,
+    `test_delete_leaves_a_folder_adopted_meanwhile`, `test_delete_of_a_name_now_a_link_is_told`,
+    `test_limit_skips_a_file_not_as_known`, `test_delete_of_an_unreadable_file_skips_it`).
+
+    The unread rule (issue #902, simplified): only a journal or a folder.json that cannot be read holds its folder
+    unread. A journal is opened once with the platform regular-file opener (`open_journal()`:
+    `dsd_fopen_existing_regular_file()`, never through a link, never waiting on a FIFO) and read from that file, for a
+    full read and a tail alike, with the stream's own error flag checked too (a read that stops at an error can return a
+    prefix with `QFile` reporting none); only ENOENT is an empty journal (`readJournal()`). One there that
+    cannot be opened or read whole leaves its folder unread, with what the index held for it, so the store is not
+    settled and exports and deletes are refused until a later pass reads it (`test_unread_journal_is_not_settled`); so
+    do new journal lines that cannot be read (an open, seek or read that fails in `tailFolder()`, not a last line still
+    being written; `scheduleFolderReadLocked()`, `test_tail_read_failure_unsettles`). A folder.json there that cannot
+    be read (`read_folder_marker()`: `FolderMarker::Unreadable`; an open that fails is decided by the name's own type,
+    read without following it, since the opener's errno does not tell a socket or a failed attribute read from a
+    missing name: confirmed missing or no regular file is `Absent`, no folder of the app's, anything else unreadable;
+    `test_socket_marker_is_no_folder`) keeps the folder known, with its owner and recordings, unread and read again
+    each pass; it is never dropped from the folder table, by a folder's read, a root's listing or a session start's
+    lookup, and a session start that cannot read it marks a read folder unread too and moves its `starts`, so a read in
+    flight commits nothing and the next pass reads the folder whole: no request is taken against an owner it could not
+    confirm (`test_unreadable_marker_keeps_the_folder`, `test_owner_lookup_failure_unsettles`,
+    `test_owner_lookup_failure_ends_a_read_in_flight`). The label a successful read finds wins over the index's for the
+    same owner (a session relabel during the read moved `starts`; `test_marker_retry_takes_the_label_on_disk`). A
+    read whose owner a session start changed while it ran (adopted, made or relabelled: `Folder::starts`) commits
+    nothing, and the folder is read again (`test_adoption_during_a_read_is_read_again`). A recording whose own name cannot be read (EACCES, EIO,
+    ENAMETOOLONG, EOVERFLOW, a parent that does not resolve, ENOTDIR or EMLINK: anything but ENOENT or a type read as
+    no regular file) blocks nothing: it is kept (`Entry::unreadable`, `applyPublishLocked()`), its journal line with it,
+    never deleted (no identity matches it; a delete naming it is told as skipped), and out of every index, count and
+    usage: History's fragment and detection indexes (a link record and a committed view included), the limit's usage
+    and candidates, exports, play and share (`readerEntryLocked()`). A recheck, the limit's look included, that finds a
+    name it cannot read with its root still there marks the entry so (`markEntryUnreadableLocked()`), so retention never
+    counts it; so does the check right before an unlink (`OnDisk::Unreadable`, `DeleteResult::Unreadable`: skipped and
+    told, and the limit's walk takes it out of its usage and goes on). An entry marked unreadable is never unlinked, by
+    a request queued before or after, access back before its folder's read included
+    (`test_unreadable_entry_is_never_deleted`, `test_limit_unlink_check_drops_an_unreadable_recording`). A later read
+    of its folder that sees the file indexes it as before (`test_unreadable_recording_is_kept`,
+    `test_unreadable_linked_recording_is_in_no_index`, `test_limit_look_drops_an_unreadable_recording_from_usage`,
+    `test_recheck_keeps_an_unreadable_name`). A delete, asked or the limit's, waits while its folder is unread, checked
+    again under the lock the unlink runs under (the uploader is asked without it), so a folder a session start adopted
+    or a read that failed meanwhile holds the delete for the folder's read, which drops it
+    (`test_held_delete_waits_for_an_unread_tail`, `test_delete_rechecks_its_folder_at_the_unlink`); so does one whose
+    root a session start or a request has seen missing since (`m_rootsSeenAway`), until the root's listing in full
+    drops it (`test_delete_held_when_its_root_was_seen_away`). Every root found missing outside a pass, by a delete
+    request's probe, a session start's first probe or its owner lookup, goes through one function
+    (`noteRootSeenAwayLocked()`): remembered, and every selection made before stale at once; the worker marking a root
+    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). A recheck a
+    transfer asked for that finds the file the index knows but cannot open it (no read access) marks it unreadable, so
+    the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
+    by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
+    bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
+    offers no recording path for save and share once its read is done, and a refreshed History row shows it as away
+    with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session
+    start between its slices marked the folder unread, a share can still take a path from the committed view, and a History call's part
+    buttons play by path (limits below). A journal is compacted only in a folder read and on
+    storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
+    `test_compaction_waits_for_a_rescan`).
+    A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
+    with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
+    that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
+    (`test_recheck_finding_a_link_tells_its_delete`). A folder read opens and reads the journal before it lists or looks
+    at any file, and a folder whose folder.json or journal could not be read is tried again no more often than every
+    30 s (`Folder::retryAtMs`, `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read, first or again, always publishes, so `indexed` comes back
+    even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
+    as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
+    on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one
+    the listing has keeps the start's owner and label; one it has not was made new, and what the index held at that
+    path before, a folder removed while the storage was away, goes with its recordings;
+    `test_rescan_keeps_a_session_folder_made_meanwhile`, `test_rescan_drops_a_recreated_folders_old_recordings`,
+    `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
+    its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
+    does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
+    `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
+    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
+    preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
+    a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
+    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do.
+    A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
+    file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
+
+    Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
+    documented rather than handled:
+    - Outside changes to the recordings folders while DSD-neo runs (replacing, swapping or re-permissioning files or
+      folders) are not tracked beyond the guards described below.
+    - A file's identity is its kind, size and modification time only: another file with exactly the same size and
+      time counts as the recording, and the short window between the check before an unlink and the unlink is open.
+    - Windows: the regular-file opener checks the name's attributes and then opens it, so a reparse point made in
+      between is followed (the identity then checked is the opened file's).
+    - armv7 bionic has no 64-bit `time_t`: a file dated past 2038 reads with its time wrapped (the same each read).
+    - Windows long paths (`MAX_PATH` and beyond) and share roots are handled in code but not exercised by a local test
+      (Wine has no `MAX_PATH` limit and no shares).
+    - A session start that adopts a folder, or fails its owner lookup, between the slices of that folder's read again
+      may let the read commit; the next pass reads the folder again.
+    - A folder.json read that fails with EIO because removable storage disconnected mid-read is retried for that folder
+      only, so a folder newly present on the returning storage can be missed until the next storage scan.
+    - A folder.json probe that cannot tell a missing name from a parent that does not resolve (the card absent during
+      the probe) can drop a known folder until the next storage scan.
+    - A card that disconnects between a recheck's stat and its open marks that recording unreadable until a later read
+      can open it.
+    - Two folders swapped with each other outside DSD-neo while it runs: when only one of them is read again, the
+      other still counts as read, and its next compaction can rewrite its journal without the records the swap moved.
+    - Storage that returns with a journal another device appended to while it was away: a compaction already past its
+      last check can replace that journal before the rescan reads the new records.
+    - A recording whose file is made unreadable and changed at the same time: the read again that the change asks for
+      takes the new size and time without trying to open the file, so it is selected for export and offered for
+      playback again (both then fail to open it) and the storage limit can remove it.
+    - A loaded folder whose journal's new lines cannot be read turns its recordings unavailable without telling an
+      open recordings sheet (no `revision` change), so its Play button can still play readable audio until the sheet
+      refreshes. A History call's part buttons play by path whatever the recording's availability, so a part in a
+      folder not read (whose audio still opens) can be played even after a refresh.
+
+    In detail (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
+    (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
+    the index when the player, an export, a share or the limit finds it missing), the only guards are the check right
+    before a delete's or the limit's unlink, by kind, size and modification time (seconds and nanoseconds), never the
+    device, inode, volume or file id, which FAT, exFAT and remounts renumber: another file with exactly the same size
+    and modification time counts as the recording (`test_same_size_and_time_reads_as_the_recording`), and the short
+    window between that check and the unlink is not closed; and the check before an export or a save reads each file.
+    An export's or a save's selection carries each file as the index knows it (`sizes`, `mtimeSecs`, `mtimeNanos`, in
+    `selectLocked()`) and the reads of storage again started before it (`Selection::storageReads`, `m_storageReads`,
+    moved as a pass starts reading storage again, `noteRereadStart()`, so a transfer begun while that read is still
+    going on is refused too, `test_selection_goes_stale_as_a_read_starts`). Only a selection made with the store
+    settled is transferable: a save, as an export, is refused as `loading` while it is not (`selectRecordings()`; a
+    share's hold, `selectPath()`, is taken whenever and never transferred), so a selection never carries a generation
+    newer than the view it came from (`test_queries_between_rebuild_slices`). `DecoderHost::beginTransfer()` refuses a
+    selection the store has read storage again since (`RecordingStore::selectionToken()`, set by
+    `recording_store_serve_host()`), and one without its files, and hands the transfer a `RecordingSelectionToken`
+    (`recording_selection_token.h`: the store's shared read count and the selection's, never the store; one more read
+    is counted as the store goes, so a token outlives it stale; `test_selection_token`). The transfer checks it before
+    it reads the first file and before it keeps the document: the base host's save
+    (`saveRecordingToLocalDocument()`), the Android worker, and RecordingExport over JNI
+    (`DsdNative.nativeRecordingSelectionCurrent()`, answered from the running transfer's token by
+    `DecoderHostAndroid::recordingSelectionCurrent()`; asked before `DocumentCopies.beginWrite()`, so a stale transfer
+    never truncates or deletes a document the user picked, again once the provider's open is done, before the document
+    is finished, and once it is synced, before it is closed as good (`DocumentWrite.finish(beforeClose)`), with a
+    Download-folder row checked again at its publication; `aSelectionReadAgainKeepsNothing`), so a read again that
+    finishes while the Android worker is still busy with another transfer abandons the export, `TransferChanged` naming
+    no file. Every transfer opens each file once, never through a link at its final name, and checks what it opened
+    before it copies from it: `DecoderHost::openRecordingInput()` (`dsd_fopen_existing_regular_file()`, then
+    `dsd_file_stream_identity()`) for the base host's save and the Android worker's local save, and RecordingExport's
+    `openSelected()` (`Os.open()` with `O_NOFOLLOW | O_NONBLOCK`, then `Os.fstat()` on that descriptor) before each ZIP
+    entry or save, a name it cannot read included (`test_open_recording_input`). Decided limit: on Windows the regular
+    file opener checks the name's attributes and then opens it, following a reparse point made in between; the identity
+    then read is the opened file's, so that file is checked, not the link. The Android worker's count still reads each
+    name (`recordingInputCheck()`) to leave out the ones gone. A file gone is left out as before (issue #708); any other
+    difference (another size or time, a link, a FIFO, a name that cannot be read) abandons the whole transfer with
+    nothing kept, as `TransferChanged` (6), and the file is reported so the store looks at it again: a recheck the host
+    asks for that finds another file than the index knew reads its folder again whole at the next pass (folder.json,
+    journal and files, as storage that came back is read; `scheduleFolderReadLocked()`), so the entry's owner and file
+    come from what is on disk, never taken onto the entry the index held, and a folder swapped for another owner's
+    becomes that owner's (`test_changed_file_reads_its_folder_again`: A's delete then removes nothing of B's). The next
+    selection exports the file as that read found it (`test_transfer_reads_only_the_files_selected`, `UI_QT_ANDROID_HOST`
+    `check_recording_transfers`, `ANDROID_RECORDING_EXPORT_JVM` `aRecordingNotTheOneSelectedAbandonsTheExport`, the QML
+    result rows); the screens say "Those recordings changed. Export again." and "This recording changed. Save it
+    again.". The limit's own look at what it counts reads sizes only, so its check before each unlink still finds a file
+    not as the index knew it. A delete that a read again drops or that finds another file is told, never silently
+    dropped, each with what to do: `deletesCancelled` (a read again dropped it; acknowledged with the other notices)
+    puts "Some recordings weren't deleted because their storage changed. Delete them again." on the Call recordings
+    screen and in Settings, and `deletesSkipped` (the file was not the recording: nothing to ask again) "Some files
+    weren't deleted because they changed after they were recorded. They were left as they are."
+    (`test_cancelled_deletes_notice`, `test_skipped_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
+    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen
+    and the player say "Recordings are still loading. Try again in a moment." or "That storage isn't connected. Delete
+    again once it's back." and keep nothing of the request (`test_delete_refused_while_storage_away` in both QML
+    tests) (issue #902 B12, a decision: refuse, not merge the committed view;
+    `test_queries_between_rebuild_slices`, `test_changed_storage_is_read_before_bulk_requests`,
+    `test_journal_replaced_in_place_is_read_before_bulk_requests`, `test_bulk_requests_wait_for_a_root_being_listed`,
+    `test_requests_wait_for_an_adopted_folder` (the pass-end hook, between the two passes; taken under the lock, and a
+    pass counts as done for `waitForPassForTest()` only once its hook has returned, `m_passEnding`),
+    `test_requests_wait_for_a_recheck` (the entry-check hook, a recheck asked and the limit's look),
+    `tst_call_recordings_screen.qml` `test_refused_while_loading`). The worker's checks right before each unlink are
+    unchanged. Changes reach the GUI as one
     queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
     paused GUI thread never collects more than one.
   - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
@@ -16908,14 +17860,16 @@ Qt Quick frontend (`src/ui/qt`):
     `recordingsForDetection(key)` (newest first: start, then publish order; the History maps plus `system`, `target`,
     `source` and `fragment`). `revision` (a double, so QML reads it exactly) is the worker's `m_generation`, bumped
     under the lock by `noteQueryChangeLocked()` at every change a query can see (an entry inserted or removed, a link
-    that changes its fragment, a size a recheck reads again, a root marked away or read again); `publish()` copies the
+    that changes its fragment, a size a recheck reads again, a root marked away or read again; not a folder
+    turned unread and scheduled for a read again (a failed journal read, a changed file a recheck finds), a
+    decided limit below); `publish()` copies the
     current generation to the outbox with the summary, and `deliver()` emits `revisionChanged()` when it moved. A later
     publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
     `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
     `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook, the
-    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
+    batched History names included; an export and every delete request refused, and whole once the read is done), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
     `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
@@ -16932,7 +17886,16 @@ Qt Quick frontend (`src/ui/qt`):
     store assumes one app process per set of roots (the Qt UI ships only on Android): another live instance's temp
     files carry another token and would read as unfinished.
   - Limit (D2): `limitMb` (decimal MB, 0 none) applies only once the app has set it (`setLimitMb()`; a first pass
-    never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change:
+    never applies the 1000 MB default to someone who chose more), then after each publish, at start and on a change,
+    and only with the index settled as the refusals have it (`storageReadLocked()`: no pass asked for, no folder on
+    storage that is there unread); otherwise it waits (`m_limitPending`) and runs in the pass that reads the folder, so
+    it never removes a recording on a journal no longer read (`test_limit_waits_for_a_returning_folder`). A removal
+    whose check finds another file counts it at the size found (another time only: as it was), so nothing else goes
+    when that total is under the target, and the entry is accounted at that size from then on, its identity kept
+    (`test_limit_counts_the_size_its_unlink_check_found`). Each removal
+    checks that again under the unlink's lock: a folder unread or a pass asked for since the count (a session start
+    adopting a folder of older recordings) ends the walk (`DeleteResult::Stale`), and the limit runs again once the
+    store is settled (`test_limit_walk_stops_when_its_count_goes_stale`):
     over the limit, the oldest by journaled start (an unfinished one by its file time) go, skipping held files, until
     the total is at 95%; a file already gone is taken off the total without counting as removed. A total over the
     limit is first checked against the disk: every file it counts is looked at as `recheckRecordings()` looks (on the
@@ -16954,7 +17917,9 @@ Qt Quick frontend (`src/ui/qt`):
     alone: the root is checked again first, through `rootStillAvailable()` (`rootAvailableNow()` for a root being read
     back, which is not available yet). A root found gone is marked away (`markRootAwayLocked()`: its recordings'
     fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
-    interrupted stays queued and runs once it is back, and the pass decides nothing more about it: a root marked away
+    interrupted (a delete whose storage left as it ran) stays queued while it is away and is dropped when the root is
+    read again (the B12 backstop above); a delete asked while it is away is refused at once; and the
+    pass decides nothing more about it: a root marked away
     reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
     gone (a short listing, a journal or files not found) is dropped, not applied. A root that comes back is listed,
     then has its folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps
@@ -17457,16 +18422,68 @@ Qt Quick frontend (`src/ui/qt`):
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
   (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside
-  the strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
-  and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
-  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
-  alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
-  headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
+  the strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
+  `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows
+  whenever it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). The
+  painted hero headline
   (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a
   private call the actions name the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold
   matches either party of a private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a
   lockout whose target is a radio (below).
-  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
+  The strip and the hero's subline are one line each at any width and text size (issue #901 B6/B10), of the heights
+  they always had (the strip `max(56, its line boxes and tags + 8)`, 56 up to text 2.0; the hero's from its fixed
+  lines), and what does not fit is left out in a fixed order, the first item that does not fit ending the run so a
+  lower one is never drawn in place of a higher one (`plan` on `otherSlotPanel` and `heroSubline`, from widths only).
+  Each text is measured at the size it asks for (its natural advance in its own font). A fitted line (VerticalFit,
+  below) is never wider than that, so nothing overflows. Decided limit (r7 K1, with the other left-out extras): beside
+  a name or ids in a taller script, drawn smaller to fit their box, a tag that would have fitted in the width the
+  smaller text leaves can be left out (a Tibetan private-call name at 320 dp drew in 31 of the 132 px before Skip,
+  and EMERGENCY, 77 px, was left out); it is still heard. Likewise the lead (the strip's identity, the hero's ids)
+  beside a channel or tag text drawn smaller can elide a few px early, since that text keeps the width it asks for
+  (r8 ruling: at 320 dp a Tibetan channel drawn in 46 px keeps 86, and `TG 4001 · SRC 1000001`, 164 px, gets 158); the
+  whole of it is in the accessible text (`tst_monitor_status_lines.qml` `test_tall_script_lines_keep_the_plan`: no
+  overlap or overflow, the order kept, the lead at least min(its asked-for width, 96, the room), the tags spoken as
+  whole fields, and the first item left out did not fit beside the text at its asked-for size).
+  The strip reads label, identity, PRIVATE, EMERGENCY, ENC, then Skip and More; the identity first gets
+  min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
+  the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,
+  algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
+  (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), then the channel (at least min(its width,
+  48), only after every status drawn), and only then do the ids grow into what is left, so a long name never pushes
+  a short channel off the line. What is left out stays in the accessible text. Every optional item the plans draw by
+  fit is drawn text or a drawn tag with no node of its own (r4 F3; the hero's subline items and a call row's right
+  side already were): the strip's `SLOT n` label is a plain `Text` in MicroLabel's look, since as a MicroLabel it
+  hid or showed its node at each fit change (a short to a long identity at 320 dp) and, hidden, renamed with each
+  lead-slot change, under the session's Settings too. The strip's one stable node is the line itself
+  (`otherSlotNode`, an Item from the panel's left edge that holds the label, the identity and the tags, all drawn
+  text, up to Skip during a call and the panel's whole width while idle, when Skip and More are hidden): shown with
+  the panel, idle included, so a touch on the drawn label or the identity finds it (r5 H2: as the identity line's
+  node it began after the label, and a touch on the label found the window; r6 J2: stopping at Skip's hidden place
+  while idle, it cut "SLOT 2 · idle", 223 px, to 102 at 320 dp and 2.0, so the strip tests check `!truncated` on the
+  label as well as its hit target). Its name is built from the readings in one go (`stripSpeech()`: the lead slot,
+  the other slot's state, its identity, `slotIdentity()`, and its flags), never from what its children show or from
+  the separate `stripIdle`/`stripSlot` bindings, so a call ending renames it once (r7 K2: when the leading slot 1
+  ended and slot 2 took the hero in one snapshot, those bindings settled one after another and the node said "SLOT 2
+  · idle", the slot still on air, before "SLOT 1 · idle"; r6 J3: built from the label's
+  text and the identity's visibility it was renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle";
+  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes as either
+  call ends and comes back, also through the held ended state, 2 -> 3 -> 1: one rename at 3, none at 1 (r8 L5);
+  `tst_monitor_other_slot.qml` `test_idle_strip_says_no_ended_call_tags` runs at 700 dp, where the call draws all
+  three tags, so their hiding is the idle rule's (r8 L4); the text-reach walk's every-branch pass, which also shows the tags on an idle strip,
+  where the app never draws them, allowlists them only in that pass and only while `stripIdle`). Idle it reads
+  only the label's `SLOT n · idle` (r5 H1: an ended call's kind and flags, kept through its hold by
+  `slotCallView()`, were read as `SLOT 2 · idle, PRIVATE, EMERGENCY, ENC`); with a call its name carries the slot,
+  the identity and PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
+  `PrivateTag` had), and the hero reads its subline from `heroSublineSpeech()`, every part the call has. The strip's
+  identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). The line's node, Skip and More are unnamed
+  while covered or hidden (`UI_QT_QML_A11Y_CHURN` `test_g_other_slot_label_has_no_node_of_its_own`: no show, hide
+  or rename from the label across fit and lead-slot changes, none in the strip while covered, and no optional item
+  of the strip, the hero's subline or a call row in the tree; `test_h_a_touch_on_the_slot_label_finds_the_strip`;
+  `tst_monitor_other_slot.qml` `test_idle_strip_says_no_ended_call_tags`). On a 320 px phone a long name can leave
+  the strip's
+  identity alone on its line (decided limit: the status words are still heard, and the hero shows its own call's).
+  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `tst_monitor_status_lines.qml`
+  (320/360/411 at text 1.0, 1.6 and 2.0), `UI_QT_METRICS_MODEL`
   (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
   scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
   `scanRotationActive` and `twoSlotCarrier`, cleared when the rotation ends or the decoder's `running` changes) the host
@@ -17643,7 +18660,26 @@ Qt Quick frontend (`src/ui/qt`):
   seq through `UnitActivityFilterModel::rowForSeq()`) and the Map's List (`MapList.qml`, keyed by track id through
   `positionView.rowForTrack()`; issue #800) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
-  them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
+  them under it, and each row built there was announced to accessibility clients. The Monitor's recent calls
+  (`recentCallsList`, issue #901 B8) take `monitorView` the same way (`recentPlace`, no `keyOf`): Main keeps the
+  Monitor hidden under Home whenever no session runs, with the kept calls in its model, and a session shows its calls
+  from the newest, so no place is kept. A screen pushed over the session (its Settings, the map) covers the Monitor
+  without hiding it, so its rows stay. A start shows the Monitor from inside the host's start, before
+  `startWithMap()` has told `monitorView` which session to show (`beginSessionOn()`, at its end), so the list waits
+  for that: `KeepPlace.ready` (default true) gates attaching a shown list, never releasing a hidden one, and the
+  Monitor's is `!callsPending`, which Main sets from `sessionStarting` (true while `startWithMap()` runs, its body
+  `startSession()` in a `try`/`finally`). r3 M1: with 100 calls kept from earlier sessions the list was handed all
+  100 and built rows of the previous session, then destroyed them, before the first call of the new one. A UI
+  rejoining a running session starts nothing, so its Monitor takes that session's calls as it is shown
+  (`tst_history_session_identity.qml` `test_a_start_hands_the_monitor_its_own_calls_only`, two starts and a rejoin).
+  Each attach puts the list back to no current row (`onModelChanged:
+  currentIndex = -1`, r2 D2): a view handed a model that holds rows makes row 0 current, and on a session start with
+  calls kept from earlier ones the next call to land then became current and took the keyboard from the disclosure
+  (`tst_history_session_identity.qml` `test_attaching_the_calls_keeps_no_current_row`). Its empty state reads
+  `recentList.callCount`: the model's count while detached
+  (the list then counts none), the view's own while shown, since the model's runs ahead of the view's on a clear and
+  the footer resized by it had the view cancel a row it was still building (`DelegateModel::cancel`). Setting a view's
+  model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
   range can share a start) and on-screen offset on hide, unless the reader is at the start (History:
   `FollowLatest.atLatest`), and on show restores them in the same handler (History: `callHistory.rowForUid()` and
@@ -17673,7 +18709,9 @@ Qt Quick frontend (`src/ui/qt`):
   Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
-  `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
+  `test_home_recent_calls_*`; `tst_monitor_recent_calls.qml` `test_06_a_hidden_monitor_builds_no_rows`;
+  `tst_history_session_identity.qml` `test_hidden_monitor_builds_no_rows_until_a_session_shows_it`),
+  `UI_QT_TALKGROUP_LIST_MODEL`.
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
   (`monitorLiveStrip`: the second-slot strip, the scan controls, then Listen with its settings, each only when the
   session has them), one
@@ -17682,8 +18720,16 @@ Qt Quick frontend (`src/ui/qt`):
   holds the "Signal & site" disclosure (`monitorDetailsRow`, a `DisclosureRow` in `monitorDetailsCard`), the readings it
   folds away (`monitorDetails`: site, decryption, signal strip, quality, TETRA, ENC LOCKOUT, received tone, tone filter,
   squelch, passband and scan avoids, in that order with their own objectNames) and the `RECENT CALLS` label; the rows
-  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. The engine's last answer (`uiMessage`) is
-  the line under the disclosure. The disclosure is closed by default and remembered in the device-local
+  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. While the engine's last answer
+  (`metrics.uiMessage`, "Output: Muted", "Output: open failed") lasts, it takes the disclosure's subtitle, the summary's
+  one line, as plain text in `Theme.cyan`, then the summary returns (issue #901 D9), so a tap that failed inside the
+  engine does not read as a button that did nothing. A `subtitleReading` `DisclosureRow`'s subtitle is a fixed line box
+  (`LineBoxes.lineHeight()` of the font it draws in, `AlignVCenter`, a `Binding` so hint rows keep their wrapped
+  height), so neither the answer nor a script in it moves the list header or the tier (B2); a reading draws its subtitle
+  through `Util.oneLine()`, so a line break in an answer is a space and the words after it are not lost to
+  `maximumLineCount` (r2 B1). The row's accessible
+  description is the answer while it shows (empty while a modal covers the row), else the summary at the readings'
+  pace (`detailsSpeech`); nothing is announced. The disclosure is closed by default and remembered in the device-local
   `AppPrefs::monitorDetailsExpanded` (`monitor/detailsExpanded`, kept out of backups and kept on restore); its summary
   is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
   ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`:
@@ -17695,23 +18741,227 @@ Qt Quick frontend (`src/ui/qt`):
   hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label) whose
   `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
   leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
-  and actions move into slots at the top of the list header. Parts move by `parent` bindings between fixed hosts
+  and actions move into slots at the top of the list header. Decided (r3 S2): with a taller fallback face (Noto CJK,
+  as on Android) rows are ~68 px, so on a 360x690 phone at normal text with the slot strip and the scan controls
+  tier 4 holds one whole call, not two ("Call rows"). Compact view (issue #901 D4; `compactView` is
+  `prefsStore.compactView` when the store has it, else `prefs.compactView`) starts the search at 2 and draws no label
+  in any tier: `labelCandidate(t)` (`t < 4 && !compactView`) is the one rule that the budget's label part, the label,
+  the 1 px `labelSpacer` standing in for it and where `recentCallsPanel` starts all follow (`labelShown`); the list
+  keeps its accessible name. Tiers 2 to 4 then have the same call space (moving the strip into the list header costs
+  what it frees), so compact view lands on 2, 4 or 5, always with the compact hero; the strip, actions and Stop keep
+  their sizes and the rows take the compact form. `callRowHeight` is the shared `LineBoxes.callRowHeight(compactView)`
+  (fonts and density only, never the rows' width; "Call rows" below), and the delegates and `FollowLatest.rowHeight`
+  take the same density and height. A row too narrow for everything at its right keeps its height and draws fewer
+  extras (B7), so the tier search never pays for a narrow screen with a taller row. The density the Monitor lays out
+  in (`compactView`) follows the setting (`compactViewSetting`) through a `Binding` (`when: densityInReach`, that is
+  `Navigation.allows(screen) || !visible`, `restoreMode: Binding.RestoreNone`): while a screen or sheet covers the
+  Monitor without hiding it (the session's Settings, where the setting changes; an open session menu), it keeps the
+  density it shows and takes the new one once uncovered (r2 D1: at 320 dp and text 1.6 with 250 calls and the list
+  at row 160, a flip under the session's Settings raised eight window-level hides, each a blocking query of
+  Android's bridge). A flip and a flip back under the cover apply nothing. History and Home are hidden whenever the
+  setting can change (it lives in Settings, a tab or a session destination, and the session menu, over the
+  Monitor), so their lists are detached then and lay out nothing. A change of density
+  restarts the owned 0 ms `listToStart`, which lays the rows out at their new height (`forceLayout()`; without it the
+  view was placed against the old heights and left short of the header) and puts the list at its start, header in view,
+  the focus left where it is (D11). The header's lines are fixed line boxes (issue #901 B9): the scan target, the scan
+  timing and the roaming line each take `headerMetaBox` (`LineBoxes`, mono 11), so a target or phrase in a script with a
+  taller line (Burmese) never changes the header or the tier. Every Text in a fixed line box or a width plan (the
+  title, the scan target, timing and roaming lines, the hero's ids, algorithm, channel and painted headline, the
+  strip's identity) draws `Util.oneLine()` of its text with `maximumLineCount: 1`, measured as drawn, and its speech
+  keeps every word (r2 B1: an imported channel `E\u2028W\u2028S` drew three lines, 84 px, in a 29 px hero subline
+  and painted into the strip). Each of those Texts also fits its box (r5 H3, as the call row's lines: `fontSizeMode:
+  Text.VerticalFit`, `minimumPixelSize` a third of the size, a fixed `height`), so a script that stands taller
+  (Tibetan stacks) is drawn smaller inside the box, never over its neighbours: the title and the "+ N lists" line,
+  the scan target, timing and roaming lines, the hero's ids, identity note, algorithm and channel (each as tall as
+  the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights; the
+  reservation holds the tags and the `LineBoxes` boxes of the fonts that draw received or imported text, mono 13
+  and mono 11, so Latin, CJK and emoji keep their size in it: r6 J4, from the base mono face alone a CJK channel was
+  drawn at 24 of its 26 px under Noto CJK at 2.0; the identity note is app text, whose sans 13 Latin line that box
+  holds, so the host's hero keeps its height), the
+  strip's identity and a `subtitleReading` `DisclosureRow`'s answer; on Listen, a card's title and one-line
+  supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines,
+  measured by an unfitted hidden twin, `sourceWrapProbe`, never by its own implicit height, which the fit changes:
+  that was a binding loop with Noto CJK, where the box and the line differ; the line reads the probe's `height`, which
+  it takes from its text, never the `implicitHeight` getter, r6 J6, as the meta line's holder reads that line's;
+  `test_shared_title_source_follows_its_probe` gives the probe a height of its own, which the getter would not follow)
+  and a scan list's name. r5 H3: a Tibetan scan target at 2.0 drew a 62 px line in the 29 px meta box, over the
+  title, and a Tibetan hero channel made the subline Row 74 px tall in its 34 px reservation, pushing the ids 20 px
+  down across the compact hero's border (`tst_monitor_status_lines.qml` `test_tall_scripts_fit_their_line_boxes`,
+  `tst_home_compact_cards.qml` `test_tall_script_card_lines_fit_their_boxes`). The painted headline (a Canvas) is
+  not a Text and keeps its size. The card boxes are the base face's lines with the app's fonts on a desktop host
+  (title 23, source 16 px at 1.0: cards as before, 68 px compact); with Noto CJK as the fallback they are taller (25
+  and 17 at 1.0, 25 and 18 at `QT_SCALE_FACTOR=1.25`), so a compact card is a few px taller, 70 or 71 px, not 68,
+  and a scan list's 68 or 69 (decided, as the call rows' S2 limit). The tests derive a compact card's height from the measured lines, padding and
+  Play's floor at every size (`cardHead()`, through `compactHeight()` for a system's card: title and source boxes,
+  and `compactListHeight()` for a scan list's: the name's box and the count line); at normal text, wherever the
+  test's own probes find no fallback face taller than the base face (each font's mixed-script line, "Ag返🚒", is its
+  Latin line, "Ag"), they also hold it to those probes and the specified constants alone, 12 px padding and the 68
+  px floor, never the card's own Play or boxes: 68 px with the desktop fonts (r6 J5: a 2 px tolerance had demanded
+  68 of a 69 px card, and the scan-list test 68 outright; r7 K3: deciding from the card's own numbers whether to
+  check 68 let a Play grown to 56 px pass; r8 L1: so did title boxes 4 px too tall, 71 px cards). Only a
+  script that stands taller than a box is drawn smaller in it: Latin, CJK and emoji keep their pixel size in every
+  fixed box (`test_fallback_faces_keep_their_size` on the Monitor, `test_fallback_faces_keep_their_size_in_cards`).
+  Measured exception with the host's fonts: an emoji directly before a full stop ("🚒.wav") stands 1 px taller than
+  the box, since another face draws that stop, and is drawn 1 px smaller. The header's "+ N lists" line keeps the
+  Latin box: it holds app text only. The title changes only with the session, never
+  with traffic, so its box
+  (`titleLineBox`) is the session name's own line in the title font (`titleLineProbe`, `sessionLine` on one line), at
+  least the Latin line it always had (`titleLatinProbe`, "Ag"; `titleCountBox`, which the "+ N lists" line keeps), and
+  the budget uses it: a Latin name keeps the header and the tiers as they were, and a taller script grows the header
+  for the session (r4 F1: in tier 5, where the title sits flush with the list's clipped top, the top 5 px of a
+  Burmese name, "မြို့" at 360x560 and 1.6, were cut away in the Latin box; `tst_monitor_scan_target.qml`
+  `test_title_box_holds_the_session_name`). `headerBarHeight(t)` sums these boxes for tier t and the session's line
+  conditions (`headingHeight(t)`,
+  `scanTimingLineShown`, `roamingLineShown`), never reading the column back. A scan of several lists whose title
+  room in tier t (the heading's width: the row less its 12 px right margin and, unless stacked, the header actions
+  that tier shows, the pill at its widest label) cannot hold "+ N lists" and
+  min(the whole name, max(96, 35% of the room)) of the name takes the two-line title (B12, `titleTwoLine(t)`; the
+  name's width from `titleNameProbe`, never elided, so a short title that fits keeps one line: r2 E1, "PD + 1 list",
+  93 px in 105, grew a 320 dp compact header from 48 to 95 px): the name elided on the first
+  line, the count (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions (it starts
+  `max(0, pillHeight - titleLineBox)` down beside them, at once when stacked), and `headingHeight(t)` adds that line;
+  the heading is read whole, the full name and then the count (`withOtherLists(sessionLine)`), in either form, since
+  speech has no width (r2 C1: compact at 320 x 914 read "County Fire E… + 7 lists"). Every header line below the
+  actions (stacked, under a two-line title, or at large text: `clearOfActions`, its `y` at or past the actions' bottom)
+  has the header's whole width, the scan target and timing lines as the roaming line; beside them the column's (r3 M2:
+  at 320 dp compact and 2.0 under a two-line title both kept 119 of 284 px, "SCANNIN…" and "Followi…";
+  `tst_monitor_scan_target.qml` `test_lines_below_the_actions_take_the_whole_width`). Only widths follow it, so the
+  budget's heights are the drawn ones as before. A paused scan's line, which drops
+  its noun and then its count to fit (`pausedScanText(width)`), is read whole the same way (the scan target line's
+  `speech`). The count's width is
+  session configuration, not traffic. Parts move by `parent` bindings between fixed hosts
   (`topHost`, `stripHost`, `actionsHost`) and those slots; slots and hosts size from the budget's own numbers
   (`stripHeight`), since an Item hides its children. The hero's height is reserved from its fixed lines
   (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
-  one box. The list has no current item (`currentIndex: -1`): a ListView is a focus scope that would hand focus to it
-  as rows land. Keyboard focus inside the list is revealed through `Theme.revealFocus(list, list.contentItem, item)`,
-  whose bounds follow `originY` when passed a view's `contentItem` (plain Flickables keep 0). `FollowLatest` measures
-  against the header's end (`latestY`): with any header in view a landing call moves nothing (ListView puts it under the
-  header), within a row of the calls' top the newest row is kept there, below that the reading position is kept; and on
+  one box. The list has no current item (`currentIndex: -1`, put back on every attach: "Hidden lists"): a ListView
+  is a focus scope that would hand focus to it as rows land. Keyboard focus inside the list is revealed through
+  `Theme.revealFocus(list, list.contentItem, item)`, whose bounds follow `originY` when passed a view's
+  `contentItem` (plain Flickables keep 0). `FollowLatest` measures against the header's end (`latestY`): with any
+  header in view a landing call moves nothing (ListView puts it under the header), within a row of the calls' top the
+  newest row is kept there, below that the reading position is kept; and on
   a header resize while the header is in view it moves `contentY` so `headerAnchor` (the disclosure card) keeps its
   place on screen, keeping the list's start at the start, deferring to the release under a held finger, and measuring
   from the offset noted between resizes because ListView may clamp `contentY` before the header announces its height.
   The header's end is read off the first row; the footer stands in only for an empty list, and with the first row
   recycled far down a long list the header's own geometry is used while it is in view, else the view is left alone.
   Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
-  disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
-  `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).
+  disclosure, summary, follow and focus; Compact view: `test_compact_tier_budget`, `test_compact_brokered_header`,
+  `test_compact_landscape_keeps_stop_fixed`, `test_injected_density_wins`, `test_density_change_returns_to_the_start`,
+  and the traffic and two-slot rows in both densities; `test_engine_answer_moves_nothing` with a Latin and a Burmese
+  answer), `tst_monitor_scan_target.qml` (`test_header_lines_ignore_the_script`, `test_multi_list_title_two_lines`,
+  `test_short_multi_list_title_keeps_one_line`, `test_cut_title_is_read_whole`, `test_header_lines_draw_one_line`,
+  `test_paused_header_is_read_whole`), `tst_monitor_status_lines.qml` `test_lines_draw_one_line`,
+  `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`, `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE`
+  (`test_prefs_key_table`), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`
+  `test_m9_covered_monitor_takes_the_density_when_shown`: no show or hide anywhere for a flip under the session's
+  Settings, the list unmoved, then the new density and the start once uncovered).
+- Compact view (issue #901): `AppPrefs::compactView` (`ui/compactView`, device-local, off by default; a stored value
+  that is not a true flag reads as off through `stored_flag()`, and the setter writes and notifies only on a change)
+  makes the Monitor, History, Home's Recent activity and Listen's system and scan-list cards denser, so more fit on
+  the screen. Layout heights still come only from the size, the fonts and this setting, never from call content. Two
+  places set it: Settings → Appearance's `settingsCompactView` `ToggleRow` ("Compact view", "Fit more systems, scan
+  lists and calls on the screen."), under the theme control and its note, spanning the card as the Units row does,
+  and the session menu's **Compact view** row (`sessionMenuCompactView`, just before Settings), whose description
+  line reads On or Off. That row flips the preference and opens nothing; the menu closes and the session-menu return
+  gives the focus back to Session options, as for every row. Its On/Off comes from the menu's `describe` function
+  (`ActionMenu.describe(key)`, used for a row whose action has no description), which the row calls in its own
+  binding, so `sessionMenu.actions` stays plain data that never reads the preference: a change with the menu closed
+  re-runs nothing and rebuilds no row, and the re-runs each metrics tick makes give the Repeater an equal model. A
+  description read in the list rebuilt every row of the closed menu on each change, and a function in the list on
+  every tick, the same function included (a list holding one never compares equal). An ActionMenu row's name
+  carries its description only while shown, so a state that changes under the closed menu renames nothing
+  (`UI_QT_QML_A11Y_CHURN` `test_m8_closed_session_menu_ignores_a_density_change`). The Monitor and Home read
+  an injected `prefsStore.compactView` first, else `prefs.compactView`; History reads `prefs`. A change puts each list
+  it reaches back at its start (D11): the Monitor's calls (above), History's log and Home's Recent activity ("Call
+  rows" below), and every Listen tab ("Listen body layout"). The QML fixture's `prefs` map
+  carries `compactView: false`, and the real key is set back to off for each test file. Tests: `UI_QT_PERSISTENCE`
+  (`test_compact_view_pref`, `test_prefs_key_table`), `UI_QT_BACKUP_ARCHIVE` (left out of a backup and dropped from
+  an edited one), `UI_QT_QML_CALL_LISTS` (`tst_settings_layout.qml` `test_compact_view_row` at text 1.0 and 2.0,
+  `tst_main_session_tools.qml` `test_session_menu_compact_view`, `tst_back_modals.qml` `test_session_menu_routes`).
+- Call rows (issue #901 B5, B7, D5, D10; `qml/CallRow.qml`, `qml/LineBoxes.qml`): a row's height is its fonts', never
+  its call's. `LineBoxes` is a singleton (`qmldir`), an `Item` never shown so the probes it makes have an item parent.
+  `lineHeight(family, pixelSize, weight)` is the ceiled `implicitHeight` of a hidden plain-text probe reading "Ag返🚒"
+  (a Latin ascender and descender, a CJK ideograph and an emoji, each drawn by its own face), one per key
+  (`Theme.fontRevision`, family, pixel size, weight, text), made on first use and kept, so a new text size or font
+  mapping measures again. The cache holds the current font revision's probes only: one per family, size and weight a
+  box is read in, with the line probe text or one of the views' fixed time probes (`callRowTimeWidth()`), never a
+  call's text. A new `Theme.fontRevision` (the app bumps it on every font refresh, also back to a setting it had)
+  destroys and evicts the older probes (G9; 20 revisions had grown it from 7 to 87), and every binding that read
+  them reads the revision too, so it takes a new probe. A probe
+  is made inside the binding that first reads its box, on purpose: that binding then depends on it. Sizes are rounded
+  first (`pixelSizeOf()`): a
+  Text's `font.pixelSize` rounds a fractional size and `Qt.font()` truncates it, and the boxes were a pixel short of
+  the lines they hold at text 1.3 and 1.6. A box is read through a property or a `Binding`, never inline in a
+  `ReadableText`'s own `height` binding, where the first probe of a size warned of a binding loop (MonitorScreen's
+  `otherIdentityBox`). `CallRow`'s name and meta lines are exactly their boxes (`callRowNameBox()`, sans 16
+  DemiBold; `callRowMetaBox()`, mono 12), in the fonts `LineBoxes` gives (`callRowNameFont`, `callRowMetaFont`),
+  centred, unclipped. A row is always these two lines: its `implicitHeight` is `LineBoxes.callRowHeight(compact)`,
+  name + 3 + meta + twice the padding (12, or 6 when `compact`), at least `Theme.rowHeight` (a compact row at least
+  `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0 with the app's fonts on a desktop host.
+  Decided (issue #901 r3 S2): the boxes stay fixed whatever face draws their probe, so a taller fallback face makes
+  every row taller: with Noto CJK as the fallback (Android's) the boxes are 24 and 17 px, a default row ~68 px and a
+  compact one ~56, and on a 360x690 phone at normal text with the slot strip and the scan controls the tightest tier
+  (4) leaves 131 px, one whole call, not two. Tests assert the measured boxes, padding and tier budget, never one
+  host's pixels: `test_compact_height` checks each row against its two drawn boxes plus 12 or 6 px a side and the
+  12 px between the two densities, and the "about 52 and 64" numbers only where the boxes are within 2 px of the base
+  face's own Latin lines; `tst_monitor_layout_budget.qml` computes the expected tier from the measured row height
+  (`test_injected_density_wins`, still tier 0 at 360 dp with the base face's lines) and keeps
+  `test_phone_portrait_guarantees`' two rows wherever the fonts allow it (base-face lines, or a tier whose call space
+  holds two), else one whole call in tier 4; `tst_monitor_roaming.qml` expects the roaming line below the actions
+  where the header's boxes reach past them. Each was checked with only Liberation and with Liberation and Noto CJK as
+  the fontconfig fonts. Fonts and density only, never the
+  row's width or call, so every row of a view has the one height the Monitor's budget, History's `rowHeight` and
+  `FollowLatest.rowHeight` read (`FollowLatest` keeps `Theme.rowHeight` by default, as Activity and the Map's List
+  use it). Narrow rows (B7, "keep heights, drop extras", as the Monitor strip and hero): `CallRow.plan` decides what
+  the right side draws from the room beside the labels (the row less 18 + 12 + 18) and the items' own widths. The
+  name first gets min(its natural width, 96), measured with a `TextMetrics` in the row's name font; then EMERGENCY,
+  ENC, the time and the recording glyph, each only while it still fits beside that, the first that does not ending
+  the run, so a lower item is never drawn while a higher one is left out. Left to right the side reads EMERGENCY (8
+  px before the glyph, else 6 before ENC or the time), the glyph (8 px before ENC or the time), then ENC or the time
+  at the 18 px margin; `plan.width` is that side's width and the name and meta lines take the rest and elide. Widths
+  only, never positions, so nothing loops. The time counts as a fixed slot, `timeSlotWidth` =
+  `LineBoxes.callRowTimeWidth(timeWidthProbe)`, the widest line of the view's widest times (`00:00` by default for
+  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `999d`, `99y`, the widest of
+  each `Util.shortAge()` form), with the time drawn right-aligned in it. `Util.shortAge()` is bounded to those forms:
+  no age for a call whose time is not known (`when` 0, which read "20833d"), days up to 999, then whole years capped
+  at `99y`. So the plan follows only the width, the fonts
+  and the call's flags: a ticking age ("9m" to "10m") never makes the time or the glyph come and go (a band 30-46 px
+  wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
+  the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description
+  the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. Which of those the caller's
+  own text already holds comes from its flags, never from searching that text (r2 C2: an encrypted "Snow Patrol" aged
+  "now" said no age, and a Home system named "Unencrypted Ops" kept ENC unsaid): `metaSaysEmergency` and
+  `metaSaysEnc` (History's call rows, whose meta line names EMERGENCY and "encrypted"; the Monitor's call rows,
+  `metaSaysEnc` only; a notice row's meta line is its payload, so neither) and `nameSaysTime` (History, whose
+  accessible name appends the time); Home's Recent sets none. On an encrypted row ENC
+  takes the time's place on the face, as on main, so the time is never a drawn candidate there, but it is said.
+  Decided limit: at 280 px
+  (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
+  emergency rows on a 360 dp phone keep their time up to 1.6 and the whole frequency on the meta line up to 1.3
+  (from 1.6 it still leads the line, cut). A rarer script whose line stands
+  taller than its box (Tibetan stacks, about twice the Latin line) is drawn smaller to fit it (`fontSizeMode:
+  Text.VerticalFit`, `minimumPixelSize` a third of the size, on the name and the meta line), so it stays inside the
+  row (r4 F2: in a compact list at 2.0 a Tibetan name painted 5 px above its row, across the row above, and was cut
+  at the viewport's top; it was D10's "unclipped into the padding" limit). Latin, CJK and emoji, which the box
+  holds, keep their size, the row keeps its height, and a long name is still cut at its end
+  (`tst_call_row_lines.qml` `test_tall_script_fits_its_box`). Every other fixed line box fits its text the same
+  way (r5 H3, under "Monitor layout"). History (both instances) and Home's Recent
+  activity pass `compact` from the preference; on a change each
+  forgets its kept place (`KeepPlace.forget()`)
+  and an owned 0 ms timer (`logToStart`, `recentToStart`) lays the rows out at their new height (`forceLayout()`, as
+  the Monitor's `listToStart`; without it a log read deep was placed against the old layout and stayed off its top)
+  and puts the list at its newest call, so a list hidden through the change comes back there too. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_call_row_lines.qml`: Latin, emoji, CJK and Tibetan rows of one height at 1.0/1.6/2.0
+  in both densities, the compact floor, `test_b7_extras_give_way`, `test_age_ticks_never_change_the_plan` (one drawn
+  set for every age at 220-460 px, 1.0/1.6/2.0) and `test_height_follows_neither_width_nor_call`
+  (the plan's minimum, order, priority and containment, one height at 200 to 640 px), the accessible text whatever
+  is drawn, `test_box_holds_the_drawn_line`, `test_probe_cache_keeps_one_revision`,
+  `test_speech_follows_the_callers_flags`, `test_home_recent_says_enc_beside_any_system_name`, Home's injected
+  density and its reset from deep, drawn at the top;
+  `tst_call_log_follow.qml` `test_13_compact_rows`, `test_14_a_density_change_returns_to_the_newest_call` (the day's
+  label and row 0 at the top of the viewport, from deep), `test_06i` at 1.0 to 2.0,
+  `test_06p_fields_said_once_by_the_callers_flags`; `tst_monitor_recent_calls.qml`
+  `test_03i_an_age_inside_the_name_is_still_said`).
 - Monitor receiver pill (issue #647; brokered hosts only, `qml/MonitorScreen.qml`): the live pill (`monitorLiveStatus`,
   label `monitorLiveLabel`, dot `monitorLiveDot`) reads `LOST` with a `Theme.alert` dot (no halo) as soon as the host's
   `receiverHealth` reports the session's receiver lost or failed (`receiverLost`, read through a `DeviceStatus`), while
@@ -18521,7 +19771,7 @@ Qt Quick frontend (`src/ui/qt`):
   the screen resolves to a row at click time. Roles: `key`, `leadUid`, `playUid`, `title`, `siteCount`, `name`,
   `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
   `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`, `receiverLabel`,
-  `held`. The card shows the
+  `sharedTitle`, `held`. The card shows the
   one non-avoided site when exactly one is left, else the lead; `playUid` is that site (the row itself outside a
   group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
   `lastHeard` is the group's latest; `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
@@ -18561,16 +19811,30 @@ Qt Quick frontend (`src/ui/qt`):
   rows and a new one goes after its new-order predecessor, until the hold ends or the user asks for a change (query,
   sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
   TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
-  so `sectionStart` marks only a section's first card in the shown order. `receiverLabel` is the receiver ("USB",
-  "RTL-TCP host:port", "Airspy SERIAL") of a card whose title another shown card has (one system on two receivers), else
-  empty; TCP, UDP and file cards name their source in the meta already and get none. Home shows it on a line of its own
-  under the source line, which then leaves RTL-TCP's marker out. `rebuilt()` follows every rebuild, changed or not,
-  after its row signals and `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's
-  bridge). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
+  so `sectionStart` marks only a section's first card in the shown order. `sharedTitle` marks a card whose title, as
+  Home draws it, another shown card draws too (`mark_shared_titles()`: the key is `title_key()` of the title, each run
+  of line breaks a space as `Util.oneLine()` draws it, then Unicode NFC, so an imported `Fire\nDispatch` and a typed
+  `Fire Dispatch` share one, and so do a precomposed `Café` and `Cafe` with a combining acute, r5 H4; the stored name
+  is kept; one count per key, so a rebuild stays linear however many cards share a title). Such a card's
+  `receiverLabel` is its receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL"); every other card's is empty, and so is
+  a TCP or UDP source's or a file's, whose source line already names its address or path. Home then draws every line
+  the full card has that tells the cards apart, in both views, each wrapping whole instead of cut (issue #901 r3 S1,
+  under "Listen body layout"). This replaced a per-pair label (rounds G1 and r2 A) that named only the facts that
+  differed and walked every card of a title for each card (O(n²): 1000 cards of one title took ~430 ms a rebuild).
+  Decided limit: two entries whose drawn settings are the same (they differ only in a decode flag the card does not
+  draw, such as `-f1` and `-ft`, both "P25", or in a path's trailing whitespace) look alike, and so do two different
+  long titles that compact cuts to the same text with matching source facts (r4 F5; their whole names are read).
+  `rebuilt()` follows
+  every rebuild, changed or not, after its row signals and
+  `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge, given through
+  its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard,
+  frequency and
   key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
   screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
   coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
-  `rebuilt()` after the rows, and a 500-row timing check with and without a screen reader).
+  `test_shared_title_compares_the_drawn_title` (line breaks read as a space), `rebuilt()` after the rows, a 500-row
+  timing check with and without a screen reader, and `test_shared_titles_rebuild_linearly`: a search rebuild over 1000
+  cards of one title within 3x plus 15 ms of one over 1000 titles, the fastest of nine each).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
@@ -18671,7 +19935,23 @@ Qt Quick frontend (`src/ui/qt`):
   any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
   with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
-  monitor session menu's **Talkgroups** entry.
+  monitor session menu's **Talkgroups** entry. The screen shows a command's answer on one line,
+  `talkgroupCommandToast` (issue #901 B3; it had a second copy above it, whose look it keeps: `Theme.fontSize(13)` in
+  `Theme.textPrimary`, so it grows with the text size, r2 E2): `commandMessage` is the newer of the
+  engine's answer (`metrics.uiMessage`) and the screen's own bulk status ("Update requested", or "The update could not
+  be queued. Try again." when `setTalkgroupSelection()` refuses). A bulk confirm sets `bulkNewer`; a non-empty engine
+  answer clears it, also when the same text is set again, which leaves `uiMessage` unchanged but moves
+  `MetricsModel::uiMessageSeq` (the engine's `ui_msg_seq`, its own `uiMessageSeqChanged`, emitted after
+  `uiMessageChanged` so a screen that reads the text on the count reads the new one). An answer that expires leaves
+  the line empty rather than bringing back the status it replaced, and an accepted request the engine never answers
+  (decoding stopped) is cleared after 4 s by the owned `bulkRequestedExpiry`, which a refusal stops; a refusal does
+  not expire. The save result line (`saveMessage`) stays a line of its own. Tests: `UI_QT_QML_CALL_LISTS`
+  (`tst_talkgroups_screen.qml`: `test_engine_answer_shows_once`, `test_command_line_shows_the_newest_message`,
+  `test_same_answer_text_again_replaces_the_request`, `test_unanswered_request_expires`,
+  `test_command_line_follows_the_text_size`), `UI_QT_QML_A11Y_CHURN`
+  (`tst_a11y_talkgroups.qml` `test_engine_answer_is_one_node`), `UI_QT_METRICS_MODEL`
+  (`test_ui_message_seq_moves_with_the_same_text`). The fixture's commands fake refuses a selection after
+  `testContext.setTalkgroupSelectionAccepted(false)`.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
@@ -19078,8 +20358,9 @@ Qt Quick frontend (`src/ui/qt`):
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
     (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
-    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`), whether this
-    device opens DSD-neo's file browser first (`ui/chooseFilesInApp`, issue #830) and the session
+    (`location/*`), how this device's screens were left or are arranged (`monitor/detailsExpanded`, `listen/section`,
+    `ui/compactView`, issue #901), whether this device opens DSD-neo's file browser first (`ui/chooseFilesInApp`,
+    issue #830) and the session
     this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
     set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,

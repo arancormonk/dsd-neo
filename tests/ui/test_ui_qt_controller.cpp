@@ -530,6 +530,7 @@ connectEveryMetricsSignal(dsd_qt::MetricsModel& metrics, const std::function<voi
         &dsd_qt::MetricsModel::toneFilterChanged,     &dsd_qt::MetricsModel::toneFilterSettingChanged,
         &dsd_qt::MetricsModel::tetraChanged,          &dsd_qt::MetricsModel::uiMessageChanged,
         &dsd_qt::MetricsModel::decodeNowMsChanged,    &dsd_qt::MetricsModel::callBusyChanged,
+        &dsd_qt::MetricsModel::uiMessageSeqChanged,
     };
     std::vector<QMetaMethod> watched;
     for (const Signal signal : kSignals) {

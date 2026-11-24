@@ -1006,6 +1006,24 @@ engine_fixed_tuning_refusal(const dsd_opts* opts) {
     return engine_fixed_tuning_result(opts);
 }
 
+#ifdef USE_RADIO
+/* RigctlFrequencyMoves() as the last RTL landing of a rigctl tune read it (dsd_engine_rtl_landing_peer_moved()). */
+static dsd_atomic_u64 s_rtl_landing_peer_moves;
+
+/* Whether the rigctl peer may have moved since the last RTL landing of a rigctl tune: this tune's request went out
+ * (the peer was last confirmed elsewhere, @p sent_before_hz), or any leg sent one since the last landing (a manual
+ * tune, the legacy direct return to the control channel, a scan step), which RigctlFrequencyMoves() counts even when
+ * it went away and came back to this frequency. The landing then flushes the stream's output and starts its filters
+ * over, whatever the stream's own records say. */
+static int
+dsd_engine_rtl_landing_peer_moved(uint32_t sent_before_hz, uint32_t freq_hz) {
+    const uint64_t moves = RigctlFrequencyMoves();
+    const uint64_t at_last_landing = dsd_atomic_u64_load_relaxed(&s_rtl_landing_peer_moves);
+    dsd_atomic_u64_store_relaxed(&s_rtl_landing_peer_moves, moves);
+    return sent_before_hz == 0U || sent_before_hz != freq_hz || moves != at_last_landing;
+}
+#endif
+
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     /* Nothing has moved yet: a refusal below must not report the last tune's rigctl move as this one's. */
@@ -1036,7 +1054,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         opts->rigctl_sent_freq_hz = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
-            rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
+            rtl_stream_apply_pending_retune_profile_for_target(
+                (uint32_t)freq, dsd_engine_rtl_landing_peer_moved(sent_before_hz, (uint32_t)freq));
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {

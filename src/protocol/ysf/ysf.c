@@ -40,12 +40,15 @@
 #include "ysf_frame.h"
 #include "ysf_internal.h"
 
+/* Adds the callsigns a verified DCH named to the slot's active YSF call. An ended one is not observed again; but when
+   they name another party than its own, the call mode it was in is forgotten (ysf_call_cm), so a terminator that
+   carries them is not that call's own (issue #888). */
 static void
 ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char* target, const char* uplink,
                     const char* downlink) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_YSF(call.protocol)) {
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_YSF(call.protocol)
+        || call.phase == DSD_CALL_PHASE_IDLE) {
         return;
     }
     const dsd_call_observation observation = {
@@ -61,6 +64,12 @@ ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char
     DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", target ? target : "");
     DSD_SNPRINTF(enriched.route_text[0], sizeof(enriched.route_text[0]), "%s", uplink ? uplink : "");
     DSD_SNPRINTF(enriched.route_text[1], sizeof(enriched.route_text[1]), "%s", downlink ? downlink : "");
+    if (call.phase != DSD_CALL_PHASE_ACTIVE) {
+        if (dsd_call_snapshot_contradicted_by(&call, &enriched)) {
+            state->ysf_call_cm = 9U;
+        }
+        return;
+    }
     (void)dsd_call_state_observe(state, &enriched, DSD_CALL_BOUNDARY_CONTINUE);
 }
 
@@ -100,22 +109,24 @@ ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
     ysf_enrich_identity(state, cm, string2, target, NULL, NULL);
 }
 
+/* CSD2: the downlink repeater's callsign, then the uplink's (Yaesu "Amateur Radio Digital Standards" Table 4-2, as
+   MMDVMHost and DSDcc read it). */
 static void
 ysf_dch_decode_csd2(dsd_state* state, const char dch_bytes[20]) {
-    char string1[11];
-    char string2[11];
+    char downlink[11];
+    char uplink[11];
 
-    DSD_MEMCPY(string1, dch_bytes, 10);
-    string1[10] = '\0';
-    DSD_FPRINTF(stderr, "U/L: ");
-    DSD_FPRINTF(stderr, "%s ", string1);
-
-    DSD_MEMCPY(string2, dch_bytes + 10, 10);
-    string2[10] = '\0';
+    DSD_MEMCPY(downlink, dch_bytes, 10);
+    downlink[10] = '\0';
     DSD_FPRINTF(stderr, "D/L: ");
-    DSD_FPRINTF(stderr, "%s ", string2);
+    DSD_FPRINTF(stderr, "%s ", downlink);
 
-    ysf_enrich_identity(state, state->ysf_cm, NULL, NULL, string1, string2);
+    DSD_MEMCPY(uplink, dch_bytes + 10, 10);
+    uplink[10] = '\0';
+    DSD_FPRINTF(stderr, "U/L: ");
+    DSD_FPRINTF(stderr, "%s ", uplink);
+
+    ysf_enrich_identity(state, state->ysf_cm, NULL, NULL, uplink, downlink);
 }
 
 static void
@@ -137,7 +148,8 @@ ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint
 }
 
 void
-ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[160]) {
+ysf_dch_decode(dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+               const uint8_t input[160]) {
     //TODO: Per Call WAV files using these strings
     int i;
     char dch_bytes[20];
@@ -149,7 +161,7 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
         dch_bytes[i] = (char)convert_bits_into_output(&input[(size_t)i * 8u], 8);
     }
 
-    switch (bn) { //using bn here so we can use the frame number for sorting the text messages found in here
+    switch (field) { // the caller names the field, so fn is left to sort the text messages found in here
         case 0: ysf_dch_decode_csd1(state, dch_bytes, cm); break;
         case 1: ysf_dch_decode_csd2(state, dch_bytes); break;
         case 2: ysf_dch_decode_text(state, dch_bytes, fn, ft); break;
@@ -212,18 +224,19 @@ ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft
             ysf_enrich_identity(state, cm, source_text, NULL, NULL, NULL);
             break;
         }
+        /* The downlink repeater in frame 2, the uplink in frame 3 (Table 4-4). */
         case 2: {
-            char uplink[11];
-            ysf_print_text_field("U/L: ", dch_bytes, 10, "");
-            ysf_copy_text_field(uplink, dch_bytes, 10);
-            ysf_enrich_identity(state, cm, NULL, NULL, uplink, NULL);
-            break;
-        }
-        case 3: {
             char downlink[11];
             ysf_print_text_field("D/L: ", dch_bytes, 10, "");
             ysf_copy_text_field(downlink, dch_bytes, 10);
             ysf_enrich_identity(state, cm, NULL, NULL, NULL, downlink);
+            break;
+        }
+        case 3: {
+            char uplink[11];
+            ysf_print_text_field("U/L: ", dch_bytes, 10, "");
+            ysf_copy_text_field(uplink, dch_bytes, 10);
+            ysf_enrich_identity(state, cm, NULL, NULL, uplink, NULL);
             break;
         }
         case 4: ysf_dch_decode2_remarks("RM1: ", state->ysf_rm1, "RM2: ", state->ysf_rm2, dch_bytes); break;
@@ -310,7 +323,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
 
 //modified version of nxdn_deperm_facch1 -- this one for Full Rate, Type 1 CC, Headers and Terminators DCH (180 dibit version)
 int
-ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
              uint8_t input[180]) {
     int i, j, err;
     uint8_t trellis_buf[190];
@@ -345,7 +358,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
 
     //decode the callsign, etc, found in the DCH when no errors
     if (err == 0) {
-        ysf_dch_decode(state, bn, bt, fn, ft, cm, trellis_buf);
+        ysf_dch_decode(state, field, bt, fn, ft, cm, trellis_buf);
         /* A header's or terminator's callsigns arrive here, after its FICH reported: tell a signal search again once
          * they are on the call, so the frame that carries them is enough for the search to name the stations. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
@@ -722,6 +735,15 @@ ysf_print_fich_summary(const dsd_opts* opts, const ysf_fich_info* info) {
 /* A V/D type 1 frame carries five DCH/VCH pairs, one 20 ms AMBE frame per VCH: 100 ms of voice (issue #660). */
 enum { YSF_VD1_CHANNEL_PAIRS = 5 };
 
+/* The DCH field of a V/D type 1 frame, as ysf_dch_decode() selects one: named by the frame's number, not its block's.
+   Frame 0 carries CSD1 (destination and source), frame 1 CSD2 (the downlink and uplink repeaters); the later frames
+   carry no callsign this decoder reads (3: none). Read by the block number, 0 in a voice call, every frame was CSD1,
+   so a repeater's callsigns became the call's endpoints and began another call part-way (issue #888). */
+static uint8_t
+ysf_vd_type1_dch_field(uint8_t fn) {
+    return fn <= 1U ? fn : 3U;
+}
+
 static void
 ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     uint8_t dbuf[190];
@@ -742,7 +764,7 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
     }
 
     ysf_ehr(opts, state, vbuf, 0, YSF_VD1_CHANNEL_PAIRS);
-    ysf_conv_dch(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
+    ysf_conv_dch(opts, state, ysf_vd_type1_dch_field(info->fn), info->bt, info->fn, info->ft, info->cm, dbuf);
 }
 
 static void
@@ -960,14 +982,23 @@ ysf_is_fallback_voice_frame(const ysf_fich_info* info) {
     return info->err != 0 && info->fi == 1U && (info->dt == 0U || info->dt == 2U || info->dt == 3U);
 }
 
+/* The kind of call the frame's FICH names: data by its data type, else by its call mode. */
+static dsd_call_kind
+ysf_frame_call_kind(const ysf_fich_info* info) {
+    return info->dt == 1U ? DSD_CALL_KIND_DATA : ysf_call_kind(info->cm);
+}
+
 static void
 ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
+    if (info->err == 0 && (info->fi == 0U || info->fi == 1U)) {
+        state->ysf_call_cm = info->cm;
+    }
     if ((info->err == 0 && (info->fi == 0U || info->fi == 1U)) || ysf_is_fallback_voice_frame(info)) {
         const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
         const dsd_call_observation observation = {
             .protocol = protocol,
             .slot = 0U,
-            .kind = info->dt == 1U ? DSD_CALL_KIND_DATA : ysf_call_kind(info->cm),
+            .kind = ysf_frame_call_kind(info),
         };
         const dsd_call_boundary boundary = info->fi == 0U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
         if (dsd_call_state_observe(state, &observation, boundary) > 0) {
@@ -980,9 +1011,18 @@ static void
 ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
     // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
-    // indistinguishable from an engine retune and drop that row.
-    if (info->err == 0 && info->fi == 2U && !ysf_carrier_left(state, info)
-        && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+    // indistinguishable from an engine retune and drop that row. It is the YSF call's own terminator, the one end
+    // that lets its row take the rdio fallback talkgroup (issue #888), only when its verified call mode is the call's
+    // (ysf_call_cm): a group call's end on a private or Radio ID call's terminator, or on one whose callsigns named
+    // another caller of a faded call, is a terminator end, but not the call's own.
+    if (info->err != 0 || info->fi != 2U || ysf_carrier_left(state, info)) {
+        return;
+    }
+    const int ended =
+        info->cm == state->ysf_call_cm
+            ? dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS, ysf_frame_call_kind(info))
+            : dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
+    if (ended > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

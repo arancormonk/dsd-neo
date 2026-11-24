@@ -5,8 +5,10 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
@@ -36,10 +38,217 @@ write_temp_csv(char path[DSD_TEST_PATH_MAX], const char* body) {
     fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "dsdneo_t3_lcn");
     assert(fd >= 0);
 
-    fp = dsd_fdopen(fd, "w");
+    fp = dsd_fdopen(fd, "wb"); /* the bytes as given: a row-length test counts its line ending */
     assert(fp != NULL);
     assert(fputs(body, fp) >= 0);
     assert(fclose(fp) == 0);
+}
+
+/* Run the calculator with stdout redirected to a file, so a test asserts what a caller would see on stdout. */
+static int
+run_calc(const char* csv, char* out, size_t out_size) {
+    char csv_path[DSD_TEST_PATH_MAX];
+    char out_path[DSD_TEST_PATH_MAX];
+
+    write_temp_csv(csv_path, csv);
+    int fd = dsd_test_mkstemp(out_path, sizeof out_path, "dsdneo_t3_out");
+    assert(fd >= 0);
+    (void)fflush(stdout);
+    int saved = dsd_dup(DSD_STDOUT_FILENO);
+    assert(saved >= 0);
+    assert(dsd_dup2(fd, DSD_STDOUT_FILENO) >= 0);
+    dsd_close(fd);
+
+    const int rc = dsd_cli_calc_dmr_t3_lcn_from_csv(csv_path);
+
+    (void)fflush(stdout);
+    assert(dsd_dup2(saved, DSD_STDOUT_FILENO) >= 0);
+    dsd_close(saved);
+    (void)dsd_remove_file(csv_path);
+
+    FILE* f = dsd_fopen_existing_regular_file(out_path, "rb");
+    assert(f != NULL);
+    DSD_MEMSET(out, 0, out_size);
+    const size_t got = fread(out, 1U, out_size - 1U, f);
+    assert(!ferror(f));
+    out[got] = '\0';
+    (void)fclose(f);
+    (void)dsd_remove_file(out_path);
+    return rc;
+}
+
+static void
+set_anchor(const char* freq, const char* lcn, const char* step) {
+    clear_dmr_t3_env();
+    if (freq) {
+        (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_FREQ", freq, 1);
+    }
+    if (lcn) {
+        (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_LCN", lcn, 1);
+    }
+    if (step) {
+        (void)dsd_test_setenv("DSD_NEO_DMR_T3_STEP_HZ", step, 1);
+    }
+    dsd_neo_config_init();
+}
+
+static void
+expect_error(const char* csv) {
+    char out[4096];
+    const int rc = run_calc(csv, out, sizeof out);
+    assert(rc != 0);
+    assert(out[0] == '\0');
+}
+
+static void
+expect_ok(const char* csv, const char* want) {
+    char out[4096];
+    assert(run_calc(csv, out, sizeof out) == 0);
+    if (strcmp(out, want) != 0) {
+        DSD_FPRINTF(stderr, "got:\n%s\nwant:\n%s\n", out, want);
+    }
+    assert(strcmp(out, want) == 0);
+}
+
+static void
+test_one_row_applies_anchor_and_step(void) {
+    set_anchor("851.025", "10", "12500");
+    expect_ok("f\n851025000\n", "lcn,freq\n10,851025000\n");
+    expect_ok("f\n851037500\n", "lcn,freq\n11,851037500\n");
+    expect_ok("f\n851012500\n", "lcn,freq\n9,851012500\n");
+    /* off the grid, or no step to place it with */
+    expect_error("f\n851030000\n");
+    set_anchor("851.025", "10", NULL);
+    expect_ok("f\n851025000\n", "lcn,freq\n10,851025000\n");
+    expect_error("f\n851037500\n");
+    clear_dmr_t3_env();
+}
+
+static void
+test_results_outside_range_or_off_grid_print_nothing(void) {
+    set_anchor("851.025", "1", "12500");
+    expect_error("f\n851012500\n851025000\n"); /* LCN 0 */
+    set_anchor("851.025", "4094", "12500");
+    expect_error("f\n851025000\n851037500\n"); /* LCN 4095 */
+    /* inferred step, anchor half a step off the evenly spaced inputs */
+    set_anchor("851.01875", "10", NULL);
+    expect_error("f\n851012500\n851025000\n851037500\n");
+    /* explicit step, one input off the grid */
+    set_anchor("851.025", "10", "12500");
+    expect_error("f\n851012500\n851025000\n851040000\n");
+    /* the configured anchor itself must be a valid LCN */
+    set_anchor("451.0125", "4095", "12500");
+    expect_error("f\n451000000\n");
+    set_anchor("451.0125", "0", "12500");
+    expect_error("f\n451000000\n");
+    clear_dmr_t3_env();
+}
+
+/* A setting that was supplied but is unusable fails the run with nothing on stdout, never an unanchored map. */
+static void
+test_invalid_supplied_settings_are_errors(void) {
+    const char* const csv = "f\n451000000\n451012500\n";
+    set_anchor(NULL, "0", NULL);
+    expect_error(csv); /* --calc-cc-lcn 0 alone */
+    set_anchor("0", "0", NULL);
+    expect_error(csv); /* both anchors 0 */
+    set_anchor("0", "10", NULL);
+    expect_error(csv);
+    set_anchor("451.0", "abc", NULL);
+    expect_error(csv);
+    set_anchor(NULL, NULL, "0");
+    expect_error(csv);
+    set_anchor(NULL, NULL, "-12500");
+    expect_error(csv);
+    clear_dmr_t3_env();
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_START_LCN", "0", 1);
+    dsd_neo_config_init();
+    expect_error(csv);
+    clear_dmr_t3_env();
+    dsd_neo_config_init();
+    expect_ok(csv, "lcn,freq\n1,451000000\n2,451012500\n");
+}
+
+static size_t
+fill_rows(char* buf, size_t size, int rows, int stepped) {
+    size_t n = 0;
+    for (int i = 0; i < rows; i++) {
+        n += (size_t)DSD_SNPRINTF(buf + n, size - n, "%d\n", 800000000 + (stepped ? i * 12500 : 0));
+    }
+    return n;
+}
+
+static void
+test_row_cap_is_an_error(void) {
+    static char big[4100 * 16];
+
+    set_anchor(NULL, NULL, "12500");
+    /* duplicates collapse to one row, so only the raw row cap rejects this */
+    (void)fill_rows(big, sizeof big, 4097, 0);
+    expect_error(big);
+    (void)fill_rows(big, sizeof big, 4097, 1);
+    expect_error(big);
+    /* 4096 rows fit the cap but their LCNs pass 4094 */
+    (void)fill_rows(big, sizeof big, 4096, 1);
+    expect_error(big);
+    /* and 4096 identical rows are accepted: one unique frequency */
+    (void)fill_rows(big, sizeof big, 4096, 0);
+    expect_ok(big, "lcn,freq\n1,800000000\n");
+    clear_dmr_t3_env();
+}
+
+static void
+test_overlong_row_and_half_anchor_are_errors(void) {
+    static char big[4096];
+    size_t n = (size_t)DSD_SNPRINTF(big, sizeof big, "f\n851025000\n851,");
+    for (int i = 0; i < 1100; i++) {
+        big[n++] = '9';
+    }
+    big[n++] = '\n';
+    big[n] = '\0';
+    set_anchor(NULL, NULL, "12500");
+    expect_error(big);
+    /* the same long line as the last line, with no newline */
+    big[n - 1] = '\0';
+    expect_error(big);
+
+    set_anchor("851.025", NULL, "12500");
+    expect_error("f\n851025000\n851037500\n");
+    set_anchor(NULL, "10", "12500");
+    expect_error("f\n851025000\n851037500\n");
+    clear_dmr_t3_env();
+}
+
+/* "f\n851025000\n" then one row of @p chars characters (a frequency padded with a note) and @p ending. */
+static void
+fill_long_row(char* buf, size_t size, size_t chars, const char* ending) {
+    size_t n = (size_t)DSD_SNPRINTF(buf, size, "f\n851025000\n851037500,");
+    while (n < 12U + chars) {
+        buf[n++] = 'x';
+    }
+    (void)DSD_SNPRINTF(buf + n, size - n, "%s", ending);
+}
+
+/* A row may be 1023 bytes counting its line ending: 1022 characters and a newline, 1021 and CR LF, or 1023 with no
+   line ending at the end of the file. One byte more is an error. */
+static void
+test_row_limit_counts_the_line_ending(void) {
+    static char big[2048];
+    static const char* const want = "lcn,freq\n1,851025000\n2,851037500\n";
+    set_anchor(NULL, NULL, "12500");
+    fill_long_row(big, sizeof big, 1022U, "\n");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1021U, "\r\n");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1023U, "");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1023U, "\n");
+    expect_error(big);
+    fill_long_row(big, sizeof big, 1022U, "\r\n");
+    expect_error(big);
+    fill_long_row(big, sizeof big, 1024U, "");
+    expect_error(big);
+    clear_dmr_t3_env();
 }
 
 static void
@@ -144,18 +353,15 @@ test_too_small_spacing_without_configured_step_fails(void) {
 
 static void
 test_configured_step_and_anchor_are_accepted(void) {
-    char path[DSD_TEST_PATH_MAX];
-
     clear_dmr_t3_env();
     (void)dsd_test_setenv("DSD_NEO_DMR_T3_STEP_HZ", "12500", 1);
-    (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.025M", 1);
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.025", 1);
     (void)dsd_test_setenv("DSD_NEO_DMR_T3_CC_LCN", "10", 1);
     (void)dsd_test_setenv("DSD_NEO_DMR_T3_START_LCN", "3", 1);
     dsd_neo_config_init();
 
-    write_temp_csv(path, "site,freq\nA,851012500\nB,851025000\nC,851037500\n");
-    assert(dsd_cli_calc_dmr_t3_lcn_from_csv(path) == 0);
-    remove(path);
+    expect_ok("site,freq\nA,851012500\nB,851025000\nC,851037500\n",
+              "lcn,freq\n9,851012500\n10,851025000\n11,851037500\n");
     clear_dmr_t3_env();
 }
 
@@ -169,6 +375,12 @@ main(void) {
     test_unsorted_duplicates_infer_step();
     test_too_small_spacing_without_configured_step_fails();
     test_configured_step_and_anchor_are_accepted();
+    test_one_row_applies_anchor_and_step();
+    test_results_outside_range_or_off_grid_print_nothing();
+    test_row_cap_is_an_error();
+    test_overlong_row_and_half_anchor_are_errors();
+    test_row_limit_counts_the_line_ending();
+    test_invalid_supplied_settings_are_errors();
     printf("RUNTIME_DMR_T3_LCN_CALC: OK\n");
     return 0;
 }

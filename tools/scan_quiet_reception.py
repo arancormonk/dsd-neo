@@ -62,8 +62,10 @@ impulses at unity DC gain, so a held level 3 is the outer deviation:
            call, slot 2 idle) through ETSI TS 102 361-1 10.2.2.2's square root raised cosine (alpha 0.2) at the
            outer deviation of 1944 Hz (10.2.2.1)
   dmr_ms   the same generator with --ms (MS syncs, no CACH, slot 1's bursts alone, 27.5 ms on every 60 ms); the
-           carrier is at full power for each burst's 27.5 ms and ramps up and down over 1.5 ms either side, inside the
-           guard time (ETSI TS 102 361-1 10.2.3.1.1, figure 10.3)
+           carrier is at full power for each burst's 27.5 ms (region B of ETSI TS 102 361-1 figure 10.3, clause
+           10.2.3.1.1) and ramps up and down over 1.5 ms either side (regions A and C). A 30 ms slot holds 27.5 ms of
+           burst and 2.5 ms of guard time, 1.25 ms each side (clause 4.2.2), so each ramp runs 0.25 ms past the
+           slot's edge. The ramps' raised-cosine shape is this tool's choice
   nxdn96, nxdn48   this tool's NXDN generator (nxdn_*() below, NXDN TS 1-A and MMDVMHost): RDCH voice frames of
            FSW, LICH, SACCH (CRC-6, K=5 rate-1/2 code, punctured, interleaved) carrying a VCALL over the four-frame
            superframe, and random voice bits, scrambled by the X^9+X^4+1 PN per frame; RRC 0.2 x sinc, outer 2400 /
@@ -458,10 +460,11 @@ def dmr_ms_source(work_dir, ramp=True):
     centred on sample k * sps; a period whose burst the generator left silent (the call over) stays keyed off.
 
     The carrier is the burst's 27.5 ms symbol transmission period (region B of ETSI TS 102 361-1 figure 10.3: from
-    half a symbol before the first symbol's centre to half a symbol after the last's) at full power, with a raised
-    cosine power ramp in the 1.5 ms before it and after it (regions A and C, clause 10.2.3.1.1), inside the guard
-    time; nothing else. ramp=False keys it on and off at the region B edges instead. The frames sent are the voice
-    frames whose burst ends inside the clip."""
+    half a symbol before the first symbol's centre to half a symbol after the last's) at full power, with a power
+    ramp in the 1.5 ms before it and after it (regions A and C, clause 10.2.3.1.1); nothing else. The guard time
+    either side of region B is 1.25 ms (clause 4.2.2: 2.5 ms of the 30 ms slot), so each ramp runs 0.25 ms past the
+    slot's edge. The ramps' raised-cosine shape is this tool's choice, not the standard's. ramp=False keys it on and
+    off at the region B edges instead. The frames sent are the voice frames whose burst ends inside the clip."""
     audio, expected = dmr_synth_audio(work_dir, ["--ms", "--lead", "0", "--tail", "0"])
     levels = dmr_levels(audio)
     n = sample_count()

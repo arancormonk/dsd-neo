@@ -97,6 +97,7 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -131,6 +132,7 @@
 #include "location_requests.h"
 #include "map_view_item.h"
 #include "p25_network_model.h" // WP-F2
+#include "platform_path.h"
 #include "position_model.h"
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -583,9 +585,11 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
   protected:
     bool
-    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                           bool zip) override {
-        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                           const RecordingSelectionToken& token) override {
+        return holdTransfers
+               || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip, token);
     }
 
     /* The project's LICENSE and the index naming it and a file the package lacks, compiled in by tests/CMakeLists.txt;
@@ -1897,10 +1901,20 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /** @brief The rows asked for are kept either way; a refused request (a full queue) sends nothing. */
     Q_INVOKABLE bool
     setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
         m_last_selection = rows;
+        if (!m_talkgroup_selection_accepted) {
+            return false;
+        }
         return setAllTalkgroupsListening(listen, QString());
+    }
+
+    /** @brief Whether setTalkgroupSelection() reports the request queued, so a case can refuse it. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        m_talkgroup_selection_accepted = accepted;
     }
 
     Q_INVOKABLE QVariantList
@@ -2187,6 +2201,7 @@ class CommandRecorder : public QObject {
         m_all_talkgroups_listen_calls = 0;
         m_last_all_talkgroups_listen = false;
         m_last_all_talkgroups_tag.clear();
+        m_talkgroup_selection_accepted = true;
     }
 
     int
@@ -2510,6 +2525,7 @@ class CommandRecorder : public QObject {
     int m_all_talkgroups_listen_calls = 0;
     bool m_last_all_talkgroups_listen = false;
     QString m_last_all_talkgroups_tag;
+    bool m_talkgroup_selection_accepted = true;
 };
 
 /**
@@ -3085,6 +3101,41 @@ class CallLogStore : public QAbstractListModel {
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::WhenRole});
         return name;
+    }
+
+    /**
+     * @brief Prepend one emergency call stamped @p when (0: a call whose time is not known; issue #901, its age).
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushEmergencyAt(qint64 when) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        m_rows[0].when = when;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::EmergencyRole, CallHistoryModel::WhenRole});
+        return name;
+    }
+
+    /**
+     * @brief Give the newest row the call name @p name and the system name @p systemName, and mark it encrypted
+     *        and an emergency as @p enc and @p emergency say (issue #901 r2 C2: names that hold a field's words).
+     * @return false with no rows.
+     */
+    Q_INVOKABLE bool
+    nameNewest(const QString& name, const QString& systemName, bool enc, bool emergency) {
+        if (m_rows.isEmpty()) {
+            return false;
+        }
+        m_rows[0].name = name;
+        m_rows[0].systemName = systemName;
+        m_rows[0].enc = enc;
+        m_rows[0].emergency = emergency;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::NameRole, CallHistoryModel::SystemNameRole, CallHistoryModel::EncRole,
+                            CallHistoryModel::EmergencyRole});
+        return true;
     }
 
     /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
@@ -3734,14 +3785,15 @@ class RecordingsFake : public QQmlPropertyMap {
     /** @brief Every key at rest: an empty, indexed store on available storage with the default limit. */
     static QVariantMap
     rest() {
-        return {{QStringLiteral("ready"), true},        {QStringLiteral("indexed"), true},
-                {QStringLiteral("available"), true},    {QStringLiteral("usedBytes"), 0},
-                {QStringLiteral("recordingCount"), 0},  {QStringLiteral("unfinishedCount"), 0},
-                {QStringLiteral("unfinishedBytes"), 0}, {QStringLiteral("folders"), QVariantList()},
-                {QStringLiteral("freeBytes"), -1},      {QStringLiteral("lowSpace"), false},
-                {QStringLiteral("removedByLimit"), 0},  {QStringLiteral("deletesWaiting"), 0},
-                {QStringLiteral("deleteFailures"), 0},  {QStringLiteral("lastDeleteError"), QString()},
-                {QStringLiteral("limitMb"), 1000},      {QStringLiteral("revision"), 0.0}};
+        return {{QStringLiteral("ready"), true},         {QStringLiteral("indexed"), true},
+                {QStringLiteral("available"), true},     {QStringLiteral("usedBytes"), 0},
+                {QStringLiteral("recordingCount"), 0},   {QStringLiteral("unfinishedCount"), 0},
+                {QStringLiteral("unfinishedBytes"), 0},  {QStringLiteral("folders"), QVariantList()},
+                {QStringLiteral("freeBytes"), -1},       {QStringLiteral("lowSpace"), false},
+                {QStringLiteral("removedByLimit"), 0},   {QStringLiteral("deletesWaiting"), 0},
+                {QStringLiteral("deleteFailures"), 0},   {QStringLiteral("lastDeleteError"), QString()},
+                {QStringLiteral("deletesCancelled"), 0}, {QStringLiteral("deletesSkipped"), 0},
+                {QStringLiteral("limitMb"), 1000},       {QStringLiteral("revision"), 0.0}};
     }
 
     /** @brief A recordingsForDetection() map with every key the store gives, each at a blank value. */
@@ -3779,44 +3831,89 @@ class RecordingsFake : public QQmlPropertyMap {
         m_selectionCount = 0;
         m_selectionBytes = 0;
         m_selectionPaths.clear();
+        m_loading = false;
+        m_storageAway = false;
+        m_deleteRefusal.clear();
         Q_EMIT changed();
     }
 
-    Q_INVOKABLE void
+    /* Each delete request is noted, and refused (false) while setLoading(true), as the store refuses one while a
+     * folder is read again, or while setStorageAway(true), as it refuses one naming a recording on storage that is
+     * not connected; deleteRefusal() says which. */
+    Q_INVOKABLE bool
     deleteRecordings(const QStringList& ids) {
         note(QStringLiteral("deleteRecordings"), {{QStringLiteral("ids"), ids}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteRecording(const QString& id) {
         note(QStringLiteral("deleteRecording"), {{QStringLiteral("id"), id}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteFolder(const QString& uid) {
         note(QStringLiteral("deleteFolder"), {{QStringLiteral("uid"), uid}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteUnfinished() {
         note(QStringLiteral("deleteUnfinished"), {});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteAll() {
         note(QStringLiteral("deleteAll"), {});
+        return askDelete();
+    }
+
+    Q_INVOKABLE QString
+    deleteRefusal() const {
+        return m_deleteRefusal;
+    }
+
+    /** @brief Whether a folder is being read again: exports and delete requests are refused meanwhile. */
+    Q_INVOKABLE void
+    setLoading(bool loading) {
+        m_loading = loading;
+    }
+
+    /** @brief Whether a delete names a recording on storage that is not connected: it is refused. */
+    Q_INVOKABLE void
+    setStorageAway(bool away) {
+        m_storageAway = away;
     }
 
     Q_INVOKABLE QVariantMap
     selectForExport(const QString& folderUid, const QString& preset) {
         note(QStringLiteral("selectForExport"),
              {{QStringLiteral("folderUid"), folderUid}, {QStringLiteral("preset"), preset}});
+        if (m_loading) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("day"), selectionDay()},
+                    {QStringLiteral("loading"), true}};
+        }
         return selection();
     }
 
     Q_INVOKABLE QVariantMap
     selectRecordings(const QStringList& ids) {
         note(QStringLiteral("selectRecordings"), {{QStringLiteral("ids"), ids}});
+        if (m_loading) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("loading"), true}};
+        }
         return selection();
     }
 
@@ -3836,6 +3933,8 @@ class RecordingsFake : public QQmlPropertyMap {
         note(QStringLiteral("acknowledgeNotices"), {});
         insert(QStringLiteral("removedByLimit"), 0);
         insert(QStringLiteral("deleteFailures"), 0);
+        insert(QStringLiteral("deletesCancelled"), 0);
+        insert(QStringLiteral("deletesSkipped"), 0);
         insert(QStringLiteral("lastDeleteError"), QString());
     }
 
@@ -3912,6 +4011,8 @@ class RecordingsFake : public QQmlPropertyMap {
         Q_EMIT revisionChanged();
     }
 
+    /* A selection names the day the store read at the press (`day`): a fixed one, never the UI clock's today, so a
+     * name built from a second reading of the clock shows. */
     QVariantMap
     selection() {
         if (m_selectionCount <= 0) {
@@ -3919,13 +4020,34 @@ class RecordingsFake : public QQmlPropertyMap {
                     {QStringLiteral("paths"), QStringList()},
                     {QStringLiteral("names"), QStringList()},
                     {QStringLiteral("count"), 0},
-                    {QStringLiteral("bytes"), 0}};
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("day"), selectionDay()}};
+        }
+        // Each file as a store selects it (issue #902), read now: zeros for a path with no file.
+        QVariantList sizes;
+        QVariantList secs;
+        QVariantList nanos;
+        for (const QString& path : std::as_const(m_selectionPaths)) {
+            dsd_file_identity_t file{};
+            (void)dsd_path_file_identity(dsd_qt::platform_path(path).constData(), &file);
+            sizes.append(static_cast<qint64>(file.size));
+            secs.append(static_cast<qint64>(file.mtime_s));
+            nanos.append(static_cast<int>(file.mtime_ns));
         }
         return {{QStringLiteral("selection"), ++m_lastSelection},
                 {QStringLiteral("paths"), m_selectionPaths},
                 {QStringLiteral("names"), m_selectionPaths},
                 {QStringLiteral("count"), m_selectionCount},
-                {QStringLiteral("bytes"), m_selectionBytes}};
+                {QStringLiteral("bytes"), m_selectionBytes},
+                {QStringLiteral("day"), selectionDay()},
+                {QStringLiteral("sizes"), sizes},
+                {QStringLiteral("mtimeSecs"), secs},
+                {QStringLiteral("mtimeNanos"), nanos}};
+    }
+
+    static QString
+    selectionDay() {
+        return QStringLiteral("2001-02-03");
     }
 
     QVariantList m_calls;
@@ -3934,6 +4056,20 @@ class RecordingsFake : public QQmlPropertyMap {
     qint64 m_selectionBytes = 0;
     QStringList m_selectionPaths;
     int m_lastSelection = 0;
+    bool m_loading = false;
+    bool m_storageAway = false;
+    QString m_deleteRefusal;
+
+    bool
+    askDelete() {
+        m_deleteRefusal.clear();
+        if (m_loading) {
+            m_deleteRefusal = QStringLiteral("loading");
+        } else if (m_storageAway) {
+            m_deleteRefusal = QStringLiteral("storageAway");
+        }
+        return m_deleteRefusal.isEmpty();
+    }
 };
 
 class RadioReferenceRecorder : public QQmlPropertyMap {
@@ -6721,6 +6857,14 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastTuneHz() : 0.0;
     }
 
+    /** @brief Refuse (false) or admit the next bulk talkgroup requests, as a full command queue would. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        if (m_commands != nullptr) {
+            m_commands->setTalkgroupSelectionAccepted(accepted);
+        }
+    }
+
     /** @brief Refuse (false) or admit the next tuner releases, as a full command queue would. */
     Q_INVOKABLE void
     setReleaseTunerAccepted(bool accepted) {
@@ -7100,6 +7244,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
+        /* Issue #901: compact view off, as on a fresh install. */
+        prefs[QStringLiteral("compactView")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -7200,6 +7346,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("relaxedCrcRowOverride")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        metrics[QStringLiteral("uiMessageSeq")] = 0U;
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is
         // idle, so it is simply the wall clock the screens used to read.
         metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();
@@ -7694,6 +7841,8 @@ class Setup : public QObject {
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
         app_prefs->setSystemsSort(QStringLiteral("added"));
+        /* Issue #901: and compact view off, as on a fresh install, whatever a test file before this one left. */
+        app_prefs->setCompactView(false);
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between

@@ -1,4 +1,4 @@
-add_library(dsd-neo_api)
+add_library(dsd-neo_api STATIC)
 
 target_sources(
     dsd-neo_api
@@ -38,10 +38,3 @@ elseif(MSVC)
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
-
-install(
-    TARGETS dsd-neo_api
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
