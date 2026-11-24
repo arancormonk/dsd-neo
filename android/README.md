@@ -82,7 +82,9 @@ could check, and traffic the receive filters (NAC, color code, RAN) reject are n
 D-STAR, YSF, M17, X2-TDMA, ProVoice or TETRA DMO calls, or reserved and all-call ids. The call must come from a live
 receiver while the session listens to a saved system: replays, Explore, a frequency you tuned by hand, `-Y` rows,
 imported trunk scan targets and frequency entries remember nothing, nor does anything heard once the session's tuning
-changed while it ran (a frequency, decode mode or channel map applied from the control API). In a scan list, a talkgroup heard on a target
+changed while it ran (another frequency, channel, control channel, input, decode mode or channel map, from the app or
+the control API). A dropout on the same frequency, a scan list's own steps and a trunked system's own voice and control
+channels do not count. In a scan list, a talkgroup heard on a target
 counts for the one saved system that target came from; an id that also belongs to another system or to an imported
 target counts for none.
 
@@ -122,12 +124,12 @@ the system: a RadioReference site keeps its site details, group and avoid. Later
 edits write that same file. Each step reports its own result. If a step after
 the export fails, the message says which and where the list got to: the
 exported file, and Imports if adding it there worked. Nothing is retried. If
-the saved system was deleted, retuned or acquired another
-group file while saving, or the decoder no longer ran the tuning the session
-started with when it wrote the export (a decode mode, channel map or configuration
-applied from the control API, or a frequency you tuned by hand; a dropout on the
-same frequency does not count), the export remains in Imports without changing
-that system.
+the saved system was deleted, retuned, moved to another receiver or acquired
+another group file while saving, or the decoder no longer ran the tuning the
+session started with when it wrote the export (another frequency, channel,
+control channel, input, decode mode, channel map or configuration, or a
+frequency you tuned by hand; a dropout on the same frequency does not count),
+the export remains in Imports without changing that system.
 Explore sessions, scan lists and operator holds save to Imports for later
 selection in a saved system. Scan-row exports are refused by the decoder, so
 Save is not offered there. A pending save survives the session ending: a result
