@@ -74,7 +74,6 @@ Item {
             loader.item.systems = systems;
             loader.item.bridge = bridge;
             loader.item.pending = null;
-            loader.item.sessionTuning = running;
             loader.item.lastSequence = "5";
             loader.item.timeoutMs = 15000;
             loader.item.retryAvailable = false;
@@ -91,13 +90,16 @@ Item {
             bridge.accept = true;
             bridge.calls = 0;
         }
-        function result(sequence, context, generation, path, success) {
+        // A completion as the controller reads it; @p tuningMoved (false when left out) is the decoder's record that the
+        // receiver's tuning had changed since the run began when the export ran.
+        function result(sequence, context, generation, path, success, tuningMoved) {
             return {
                 sequence: sequence,
                 policyContext: context,
                 policyGeneration: generation,
                 path: path,
-                success: success
+                success: success,
+                tuningMoved: tuningMoved === true
             };
         }
         // One poll's batch: its completions, oldest first, and the newest sequence it could not read.
@@ -254,26 +256,29 @@ Item {
                 freqMhz: "changed",
                 groupCsvPath: ""
             };
-            loader.item.sessionTuning = changed;
             verify(loader.item.save("original", "7", 1, changed));
             deliver([result("6", "7", 1, "/owned/list.csv", true)]);
             compare(library.registrations, 1);
             compare(systems.updates, 0);
             compare(loader.item.retryAvailable, false);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);
-            loader.item.sessionTuning = running;
             systems.hasList = true;
             verify(loader.item.save("original", "7", 2, running));
             deliver([result("7", "7", 2, loader.item.pending.path, true)]);
             compare(systems.updates, 0);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);
         }
-        // The session's snapshots showed a live change after the request: its tuning is no longer the one the session
-        // runs (Main empties it), and the list stays in Imports.
-        function test_tuning_left_since_the_request_is_refused() {
+        // The decoder ran the export after the receiver's tuning changed live (its result says so), or its result says
+        // nothing of the tuning: the list is not the start tuning's, and stays in Imports.
+        function test_export_after_a_tuning_change_is_refused_data() {
+            return [{tag: "tuning moved", moved: true}, {tag: "no tuning record", moved: undefined}];
+        }
+        function test_export_after_a_tuning_change_is_refused(data) {
             verify(loader.item.save("original", "7", 1, running));
-            loader.item.sessionTuning = ({});
-            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            var completion = result("6", "7", 1, "/owned/list.csv", true, true);
+            if (data.moved === undefined)
+                delete completion.tuningMoved;
+            deliver([completion]);
             compare(library.registrations, 1);
             compare(systems.attempts, 0);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);

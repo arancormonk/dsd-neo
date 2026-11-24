@@ -1153,15 +1153,10 @@ Window {
     // attached under. sessionSystem follows an edit of its system, whose new
     // frequency or decode mode the running decoder does not take; this does
     // not. Empty, which attaches nothing, for a session this window did not
-    // start (a recreated Activity cannot know what it was started with), and
-    // emptied once the decoder's snapshots show it runs something else
-    // (followRunningTuning()).
+    // start (a recreated Activity cannot know what it was started with). A
+    // change the decoder applied live is the export result's to tell
+    // (tuningMoved): the decoder records it as it runs the export.
     property var sessionTuning: ({})
-    // The decode mode and carrier count (metrics.carrierSeq) the decoder's
-    // first snapshot of this run published, the mode -1 before it: what
-    // followRunningTuning() compares the later ones with.
-    property int sessionRunningMode: -1
-    property double sessionRunningCarrier: 0
     // The standalone saved system the session runs, by UID: empty for a scan
     // list, Explore, a signal search or a wizard test. What the session may
     // write back to (radio controls, the decryption profile for future starts).
@@ -1272,9 +1267,6 @@ Window {
                     mainRoot.signalSearchOpen = false;
                 mainRoot.cancelPendingRestart("failed");
             }
-            // A new run publishes its own first snapshot (the metrics are cleared at Starting).
-            if (decoderHost.sessionState === 1)
-                mainRoot.sessionRunningMode = -1;
             if (decoderHost.sessionState === 0 && mainRoot.attemptedSource && mainRoot.attemptedSource.system.sourceType === "file") {
                 var host = decoderHost;
                 mainRoot.completionMessage = host.terminalReason === 1 ? qsTr("Replay completed: %1").arg(mainRoot.attemptedSource.system.filePath.substring(mainRoot.attemptedSource.system.filePath.lastIndexOf('/') + 1)) : host.terminalReason === 2 ? qsTr("Replay stopped") : "";
@@ -1315,7 +1307,6 @@ Window {
                 mainRoot.lastExploreFreqMhz = Util.mhzValueText(metrics.centerFreqHz);
         }
         function onControlChanged() {
-            mainRoot.followRunningTuning();
             mainRoot.syncOperatorHold();
         }
     }
@@ -1402,25 +1393,6 @@ Window {
         mainRoot.pausedScanSystem = null;
         mainRoot.pausedSessionRow = -1;
         mainRoot.exploreRequested = false;
-    }
-
-    // Issue #903: a change the decoder applied live leaves the saved row as it
-    // was, so the attachment's compare with that row cannot see it: a decode
-    // mode set from the control API, or from the Radio sheet with its save
-    // failed, a tune off the system (an operator hold, even one released
-    // since), and a configuration applied from the control API that moved the
-    // receiver off its carrier. The decoder's snapshots show each; from then
-    // on the session's list is not the start tuning's, and goes to Imports
-    // only.
-    function followRunningTuning() {
-        if (decoderHost.sessionState !== 2 || !metrics.optionsKnown || Object.keys(mainRoot.sessionTuning).length === 0)
-            return;
-        if (mainRoot.sessionRunningMode < 0) {
-            mainRoot.sessionRunningMode = metrics.decodeMode;
-            mainRoot.sessionRunningCarrier = metrics.carrierSeq;
-        }
-        if (metrics.operatorTuned || metrics.decodeMode !== mainRoot.sessionRunningMode || metrics.carrierSeq !== mainRoot.sessionRunningCarrier)
-            mainRoot.sessionTuning = ({});
     }
 
     function syncOperatorHold() {
@@ -2008,7 +1980,6 @@ Window {
         mainRoot.exploring = (row < 0) && !sys.signalSearch;
         mainRoot.sessionSystem = sys;
         mainRoot.sessionTuning = talkgroupSave.tuningOf(sys);
-        mainRoot.sessionRunningMode = -1;
         mainRoot.sessionScanList = !!scan;
         var startExploring = !scan && (row < 0) && !sys.signalSearch;
         mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
@@ -2531,7 +2502,6 @@ Window {
     TalkgroupSaveFlow {
         id: talkgroupSave
         objectName: "talkgroupSave"
-        sessionTuning: mainRoot.sessionTuning
         onSaved: function (uid, path) {
             if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
                 mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {

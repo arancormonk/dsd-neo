@@ -7528,8 +7528,6 @@ class Setup : public QObject {
         metrics[QStringLiteral("trunkableSync")] = false;
         // What the radio panel shows and changes. DSDCFG_MODE_AUTO is 1.
         metrics[QStringLiteral("decodeMode")] = 1;
-        // Issue #903: the carrier the session runs on, which a move off it counts.
-        metrics[QStringLiteral("carrierSeq")] = 0;
         metrics[QStringLiteral("modulation")] = 0;
         metrics[QStringLiteral("tunerGainDb")] = 30;
         metrics[QStringLiteral("configuredTunerGainDb")] = 30;

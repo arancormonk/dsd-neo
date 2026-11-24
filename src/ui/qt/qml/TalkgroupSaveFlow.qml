@@ -13,9 +13,6 @@ Item {
     // Every completion the controller's last poll read, oldest first, and the newest sequence it could not read.
     property var results: uiController.talkgroupExportResults
     property var pending: null
-    // The tuning the session runs (Main's sessionTuning): emptied once its snapshots show a live change. A list is
-    // attached only while it is still the tuning its request captured.
-    property var sessionTuning: ({})
     property string lastSequence: "0"
     property int timeoutMs: 15000
     property bool retryAvailable: false
@@ -67,22 +64,12 @@ Item {
             tuning[fields[i]] = system[fields[i]];
         return tuning;
     }
-    function sameTuning(a, b) {
-        var keys = Object.keys(a || {});
-        if (keys.length !== Object.keys(b || {}).length)
-            return false;
-        for (var i = 0; i < keys.length; ++i) {
-            if (!b.hasOwnProperty(keys[i]) || String(a[keys[i]]) !== String(b[keys[i]]))
-                return false;
-        }
-        return true;
-    }
     // The request ends with no Imports row for its file: its name goes back.
     function end(request) {
         library.releaseTalkgroupListPath(request.path);
     }
     // @p uid is the standalone saved system the session runs (empty for Explore, a scan list or a hold: Imports only)
-    // and @p tuning its tuning when the request was made.
+    // and @p tuning the tuning the session was started with.
     function save(uid, context, generation, tuning) {
         if (pending !== null && !retryAvailable)
             return false;
@@ -127,7 +114,7 @@ Item {
             if (pending !== null && matches(pending, list[i])) {
                 var request = pending;
                 pending = null;
-                finish(request, list[i].success === true);
+                finish(request, list[i]);
             }
         }
         // More completions finished between two polls than app-control keeps; the request's may have been among them.
@@ -140,9 +127,11 @@ Item {
         }
         lastSequence = newestIn(results, lastSequence);
     }
-    function finish(request, ok) {
+    // @p result is the request's completion: whether the export succeeded, and whether the receiver's tuning had moved
+    // since its run began when it ran (the decoder's own record, whatever the snapshots showed by now).
+    function finish(request, result) {
         retryAvailable = false;
-        if (!ok) {
+        if (result.success !== true) {
             end(request);
             retryAvailable = true;
             message = qsTr("Talkgroup list export failed or was canceled. Try again.");
@@ -153,15 +142,16 @@ Item {
             message = qsTr("Talkgroup list exported, but adding it to Imports failed; system association was not changed");
             return;
         }
-        attach(request);
+        attach(request, result.tuningMoved === false);
     }
-    function attach(request) {
+    // @p startTuning: the export ran on the tuning the session started with.
+    function attach(request, startTuning) {
         if (!request.uid) {
             message = qsTr("Talkgroup list saved in Imports; system association was not changed");
             return;
         }
         // Resolved by the captured UUID now, never a row index: the row can have become another system.
-        if (!sameTuning(request.tuning, sessionTuning) || !systems.groupListAttachable(request.uid, request.tuning)) {
+        if (!startTuning || !systems.groupListAttachable(request.uid, request.tuning)) {
             message = qsTr("Talkgroup list saved in Imports; system association was not changed: the system was removed, retuned or already has a talkgroup list");
             return;
         }

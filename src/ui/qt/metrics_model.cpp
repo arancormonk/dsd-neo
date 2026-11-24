@@ -952,7 +952,6 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.decryption_slots = decryption_slot_views(opts_snapshot, snapshot);
     next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
     next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));
-    next.carrier_seq = snapshot->carrier_seq;
 
     /* Held for a moment after the last live sync, rather than latched until
      * something explicitly clears it.

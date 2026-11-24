@@ -231,7 +231,8 @@ UiController::pollTalkgroupExport() {
                                    {QStringLiteral("policyContext"), QString::number(result.policy_context)},
                                    {QStringLiteral("policyGeneration"), result.policy_generation},
                                    {QStringLiteral("path"), QString::fromUtf8(result.path)},
-                                   {QStringLiteral("success"), result.success == 1}});
+                                   {QStringLiteral("success"), result.success == 1},
+                                   {QStringLiteral("tuningMoved"), result.tuning_moved != 0}});
         last = std::max<quint64>(last, result.sequence);
     }
     m_talkgroupExportSequence = last;

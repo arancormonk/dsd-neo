@@ -2440,6 +2440,17 @@ test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt
     check(results.value(0).toMap().value("success").toBool() && results.value(1).toMap().value("success").toBool());
     check(results.value(0).toMap().value("sequence").toString() == QString::number(before + 1));
     check(batch.value("missedThrough").toString() == "0");
+    // Issue #903: each completion says whether the run's tuning had moved when it ran: not yet, then after a channel
+    // map cleared live, it had.
+    check(results.value(0).toMap().contains("tuningMoved") && !results.value(0).toMap().value("tuningMoved").toBool());
+    check(!results.value(1).toMap().value("tuningMoved", true).toBool());
+    check(dsd_app_command_submit(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, nullptr, 0U) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    check(dsd_app_drain_cmds(opts, state) == 1);
+    check(bridge.saveTalkgroupList(version, generation, dir + QStringLiteral("/third.csv")));
+    check(dsd_app_drain_cmds(opts, state) == 1);
+    run();
+    check(latest_export(controller).value("success").toBool()
+          && latest_export(controller).value("tuningMoved").toBool());
 
     // More completions than the history keeps: the oldest are gone, and the batch says which.
     const int burst = DSD_APP_RESULT_HISTORY + 6;
@@ -2453,7 +2464,7 @@ test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt
     batch = controller.talkgroupExportResults();
     results = batch.value("results").toList();
     check(results.size() == DSD_APP_RESULT_HISTORY);
-    const quint64 newest = before + 2 + burst;
+    const quint64 newest = before + 3 + burst;
     check(results.constLast().toMap().value("sequence").toString() == QString::number(newest));
     check(results.constFirst().toMap().value("sequence").toString()
           == QString::number(newest - DSD_APP_RESULT_HISTORY + 1));
@@ -2811,6 +2822,7 @@ main(int argc, char** argv) {
     check(exported.value("policyContext").toString() == version);
     check(exported.value("policyGeneration").toUInt() == generation);
     check(exported.value("sequence").toString() != "0");
+    check(exported.contains("tuningMoved") && !exported.value("tuningMoved").toBool());
     check(QString::fromUtf8(opts.group_in_file) == exportPath);
     check(!bridge.renameTalkgroup(42, 42, version, generation, "After stop"));
     check(dsd_app_drain_cmds(&opts, &state) == 0);

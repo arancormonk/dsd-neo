@@ -812,55 +812,23 @@ Item {
                 savedSystems.remove(row);
             }
         }
-        // Issue #903: a decode mode the decoder applied live (the control API's decode_mode_set, or a Radio sheet
-        // change whose save failed) leaves the saved row as it was, but the decoder's snapshot shows it; so does an
-        // operator hold, a tune off the system's frequency. A list saved after either is not attached to the system;
-        // one saved with the start tuning still running is.
-        function test_a_live_tuning_change_ends_the_attachment_data() {
-            return [{tag: "start tuning running", change: null, attachable: true},
-                    {tag: "decode mode applied live", change: {decodeMode: 4}, attachable: false},
-                    {tag: "operator hold, then released", change: {operatorTuned: true}, attachable: false},
-                    {tag: "configuration retune off the carrier", change: {carrierSeq: 1}, attachable: false}];
+        // Issue #903: the attachment follows the decoder's own record of the export (tuningMoved): whether the
+        // receiver's tuning had changed since the run began when the export ran. A decode mode or a configuration
+        // retune applied live, an operator's tune or a channel-map import leaves the saved row as it was, so only that
+        // record shows it; the snapshots may not have shown it yet when the result is read, or may show the carrier
+        // count move for a stream gap on the same carrier, which is no change of tuning. A result read after the
+        // session stopped is judged the same way.
+        function test_the_export_record_decides_the_attachment_data() {
+            return [{tag: "start tuning running", snapshot: null, moved: false, stopped: false, attached: true},
+                    {tag: "stream gap on the same carrier", snapshot: {carrierSeq: 1}, moved: false, stopped: false, attached: true},
+                    {tag: "live change the snapshots have not shown yet", snapshot: null, moved: true, stopped: false, attached: false},
+                    {tag: "decode mode applied live", snapshot: {decodeMode: 4}, moved: true, stopped: false, attached: false},
+                    {tag: "operator hold, then released", snapshot: {operatorTuned: true}, moved: true, stopped: false, attached: false},
+                    {tag: "start tuning, result read after Stop", snapshot: null, moved: false, stopped: true, attached: true},
+                    {tag: "live change, result read after Stop", snapshot: null, moved: true, stopped: true, attached: false},
+                    {tag: "result with no tuning record", snapshot: null, moved: undefined, stopped: false, attached: false}];
         }
-        function test_a_live_tuning_change_ends_the_attachment(data) {
-            testContext.setLifecyclePhase(0);
-            savedSystems.add({name: "Live site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
-            var row = savedSystems.count - 1;
-            var uid = savedSystems.get(row).uid;
-            var flow = findChild(app, "talkgroupSave");
-            verify(flow !== null);
-            try {
-                app.startSystem(row);
-                testContext.setLifecyclePhase(2);
-                // The run's first snapshot, then the change it applies.
-                testContext.setMetrics({optionsKnown: true, decodeMode: 1, carrierSeq: 0});
-                if (data.change !== null)
-                    testContext.setMetrics(data.change);
-                testContext.setMetrics({operatorTuned: false});
-                compare(app.sessionSavedSystemUid, uid);
-                findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
-                verify(flow.pending !== null, "the request was not made");
-                compare(flow.pending.uid, uid);
-                compare(savedSystems.groupListAttachable(uid, flow.pending.tuning), data.attachable,
-                        data.attachable ? "the running system would not take the list" : "a list heard after the change would be attached");
-            } finally {
-                if (flow.pending !== null)
-                    importedFiles.releaseTalkgroupListPath(flow.pending.path);
-                flow.pending = null;
-                flow.message = "";
-                flow.retryAvailable = false;
-                testContext.setMetrics({decodeMode: 1, carrierSeq: 0, operatorTuned: false, optionsKnown: false});
-                savedSystems.remove(row);
-            }
-        }
-        // Issue #903: the attachment is judged again when the export's result is read. A live change the decoder's
-        // snapshots showed after Save was pressed (and before the result came) leaves the list in Imports.
-        function test_a_live_change_before_the_result_keeps_the_list_out_data() {
-            return [{tag: "start tuning still running", change: null, attached: true},
-                    {tag: "decode mode applied live", change: {decodeMode: 4}, attached: false},
-                    {tag: "configuration retune off the carrier", change: {carrierSeq: 1}, attached: false}];
-        }
-        function test_a_live_change_before_the_result_keeps_the_list_out(data) {
+        function test_the_export_record_decides_the_attachment(data) {
             testContext.setLifecyclePhase(0);
             savedSystems.add({name: "Result site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
             var row = savedSystems.count - 1;
@@ -875,17 +843,24 @@ Item {
                 app.startSystem(row);
                 testContext.setLifecyclePhase(2);
                 testContext.setMetrics({optionsKnown: true, decodeMode: 1, carrierSeq: 0});
+                if (data.snapshot !== null)
+                    testContext.setMetrics(data.snapshot);
+                testContext.setMetrics({operatorTuned: false});
+                compare(app.sessionSavedSystemUid, uid);
                 findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
                 verify(flow.pending !== null, "the request was not made");
                 var request = flow.pending;
-                if (data.change !== null)
-                    testContext.setMetrics(data.change);
-                flow.results = {results: [{sequence: String(Number(request.sequence) + 1), policyContext: request.context,
-                                           policyGeneration: request.generation, path: request.path, success: true}],
-                                missedThrough: "0"};
+                compare(request.uid, uid);
+                if (data.stopped)
+                    testContext.setLifecyclePhase(0);
+                var completion = {sequence: String(Number(request.sequence) + 1), policyContext: request.context,
+                                  policyGeneration: request.generation, path: request.path, success: true};
+                if (data.moved !== undefined)
+                    completion.tuningMoved = data.moved;
+                flow.results = {results: [completion], missedThrough: "0"};
                 compare(flow.pending, null);
                 compare(savedSystems.getByUid(uid).groupCsvPath, data.attached ? "/owned/result.csv" : "",
-                        data.attached ? "the running system did not take the list" : "a list read after the change was attached");
+                        data.attached ? "the system the export ran on did not take the list" : "a list exported after a tuning change was attached");
                 if (!data.attached)
                     verify(flow.message.indexOf("system association was not changed") >= 0, flow.message);
             } finally {
@@ -895,6 +870,7 @@ Item {
                 flow.message = "";
                 flow.retryAvailable = false;
                 testContext.setMetrics({decodeMode: 1, carrierSeq: 0, operatorTuned: false, optionsKnown: false});
+                testContext.setLifecyclePhase(0);
                 savedSystems.remove(savedSystems.rowForUid(uid));
             }
         }

@@ -54,6 +54,8 @@ class UiController : public QObject {
     // WP-D1: copied retained outcomes, polled even without decoder redraw. Issue #903: every export completion the
     // last poll read, oldest first ({results: [...], missedThrough}), so two finishing between polls both arrive;
     // missedThrough is the newest sequence that poll could not read (more finished than app-control keeps), else "0".
+    // Each result's tuningMoved says the receiver's tuning had changed since the run began as the export ran
+    // (dsd_app_tg_export_result::tuning_moved): its list was not heard on the session's start tuning.
     Q_PROPERTY(QVariantMap talkgroupExportResults READ talkgroupExportResults NOTIFY talkgroupExportResultsChanged)
     Q_PROPERTY(QVariantMap decryptionResult READ decryptionResult NOTIFY decryptionResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)

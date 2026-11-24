@@ -327,9 +327,6 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
     Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
-    // Issue #903: dsd_state::carrier_seq, which every move of the receiver off its carrier (a typed tune, a
-    // configuration retune, another source or input, a scan step) counts and a trunk follow does not.
-    Q_PROPERTY(double carrierSeq READ carrierSeq NOTIFY controlChanged)
     Q_PROPERTY(QString scanMode READ scanMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(QVariantMap airspy READ airspy NOTIFY controlChanged)
@@ -1020,11 +1017,6 @@ class MetricsModel : public QObject {
     int
     decodeMode() const {
         return m_view.decode_mode;
-    }
-
-    double
-    carrierSeq() const {
-        return m_view.carrier_seq;
     }
 
     int
@@ -2449,7 +2441,6 @@ class MetricsModel : public QObject {
         int nfm_bandwidth_unset_hz = 0;
         int am_bandwidth_unset_hz = 0;
         int decode_mode = 0;
-        quint32 carrier_seq = 0;
         int configured_force = 0;
         int effective_force = 0;
         int modulation = 0;
@@ -2773,8 +2764,8 @@ class MetricsModel : public QObject {
                    && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && inputKindEquals(other)
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && carrier_seq == other.carrier_seq && decryptionEquals(other) && radioControlsEqual(other)
-                   && tgLockoutsEqual(other) && relaxedCrcEquals(other);
+                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other)
+                   && relaxedCrcEquals(other);
         }
 
         bool
