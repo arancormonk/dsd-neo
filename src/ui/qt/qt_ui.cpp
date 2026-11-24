@@ -340,7 +340,8 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     // Reconciled here because the library cannot: it loads in its constructor,
     // and it has no business knowing what references it.
     QStringList gone = importedFiles->takePrunedPaths();
-    // A pruned file the user made (a saved talkgroup list) never described a site: its systems keep theirs.
+    // A pruned file the user made (a saved talkgroup list) never described a site: its systems keep theirs. An export a
+    // failed clear left named is found below with no Imports row left to give its origin: its name gives it.
     const QStringList userFiles = importedFiles->takePrunedUserPaths();
     // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
     // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
@@ -354,7 +355,8 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     }
     bool saved = true;
     for (const QString& path : gone) {
-        saved = systems->clearCsvPath(path, !userFiles.contains(path)) && saved;
+        const bool userFile = userFiles.contains(path) || ImportedFilesModel::talkgroupListExportPath(path);
+        saved = systems->clearCsvPath(path, !userFile) && saved;
         saved = scanLists->clearCsvPath(path) && saved;
     }
     if (!saved) {

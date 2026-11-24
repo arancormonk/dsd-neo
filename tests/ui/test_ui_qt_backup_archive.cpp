@@ -325,6 +325,83 @@ test_startup_clears_missing_library_paths_twice() {
     }
 }
 
+/* Issue #903 (B2): a gone file's origin outlives a startup clear that could not be saved. The library saves its prune at
+ * the first launch, so the next finds the gone export only through the system naming it, with no Imports row left to
+ * say whose it was. Nothing shows it came from RadioReference, so the site keeps its ids and avoid. A RadioReference
+ * file the library prunes still clears its site's provenance. */
+void
+test_startup_retry_keeps_a_user_file_origin() {
+    const QStringList stores{"imported_files.json", "saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString root = dsd_qt::ImportedFilesModel::libraryRoot();
+    const QString exported = root + "/talkgroups-00000000-0000-4000-8000-000000000903.csv";
+    const QString generated = root + "/Metro group.csv";
+    const auto site = [](int id, const QString& groupCsv) {
+        return QVariantMap{{"name", "Metro"},     {"sourceType", "usb"}, {"freqMhz", "851.0125"},
+                           {"decodeFlag", "-ft"}, {"rrSid", 12},         {"rrSiteId", id},
+                           {"siteName", "North"}, {"avoidSite", true},   {"groupCsvPath", groupCsv}};
+    };
+    const auto kept = [](const QVariantMap& row, int id) {
+        return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == id
+               && row.value("avoidSite").toBool() && row.value("siteName") == "North";
+    };
+    expect("origin retry: the RadioReference file is there", write_file(generated, "TG,Mode,Name\n1,D,Dispatch\n"));
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect("origin retry: a site names the export", systems.add(site(3, exported)));
+        expect("origin retry: a site names the RadioReference file", systems.add(site(4, generated)));
+    }
+    expect("origin retry: the index names both files",
+           dsd_qt::json_store_save_array(
+               "imported_files.json",
+               QJsonArray{QJsonObject{{"name", "talkgroups.csv"}, {"path", exported}, {"type", "group"}},
+                          QJsonObject{{"name", "Metro group.csv"},
+                                      {"path", generated},
+                                      {"type", "group"},
+                                      {"origin", "radioreference"},
+                                      {"rrSid", 12}}}));
+    const auto row = [](const dsd_qt::SavedSystemsModel& systems, int fromEnd) {
+        return systems.get(systems.count() - fromEnd);
+    };
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("origin retry: launch 1 store blocked", block_store("saved_systems.json"));
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        expect("origin retry: launch 1 store unblocked", unblock_store("saved_systems.json"));
+    }
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        expect("origin retry: launch 2 lets go of the export", row(systems, 2).value("groupCsvPath") == "");
+        expect("origin retry: launch 2 keeps the site", kept(row(systems, 2), 3));
+    }
+    expect("origin retry: the RadioReference file goes", QFile::remove(generated));
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        const QVariantMap cleared = row(systems, 1);
+        expect("origin retry: a pruned RadioReference file still ends its site",
+               cleared.value("groupCsvPath") == "" && cleared.value("rrSid").toInt() == 0
+                   && !cleared.value("avoidSite").toBool());
+        expect("origin retry: the user's site is still kept", kept(row(systems, 2), 3));
+    }
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
+}
+
 #ifndef _WIN32
 /* Issue #828: a library file in a folder that cannot be searched is not known to be gone, so the startup cleanup
  * leaves every reference to it. Only a confirmed absence clears one. */
@@ -2336,6 +2413,7 @@ main(int argc, char** argv) {
     test_incoming_classification();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
+    test_startup_retry_keeps_a_user_file_origin();
 #ifndef _WIN32
     test_startup_keeps_paths_it_cannot_check();
 #endif

@@ -1884,6 +1884,19 @@ test_file_origin_through_removal() {
     expect("origin: both pruned", pruned.contains(radioReference) && pruned.contains(exported));
     expect("origin: only the export is the user's", user == QStringList{exported});
     expect("origin: read once", model.takePrunedUserPaths().isEmpty());
+    // Its name keeps an export's origin once no row holds it; no other name in the library has that form.
+    using dsd_qt::ImportedFilesModel;
+    const QString root = ImportedFilesModel::libraryRoot();
+    expect("origin: an export is known by its name",
+           ImportedFilesModel::talkgroupListExportPath(exported)
+               && ImportedFilesModel::talkgroupListExportPath(model.newTalkgroupListPath()));
+    expect("origin: a RadioReference file is no export", !ImportedFilesModel::talkgroupListExportPath(radioReference));
+    expect("origin: nor a name close to one",
+           !ImportedFilesModel::talkgroupListExportPath(root + "/talkgroups-1.csv")
+               && !ImportedFilesModel::talkgroupListExportPath(QString(exported).replace(".csv", ".txt"))
+               && !ImportedFilesModel::talkgroupListExportPath(
+                   root + "/talkgroups-" + QFileInfo(exported).completeBaseName().mid(11).toUpper() + ".csv")
+               && !ImportedFilesModel::talkgroupListExportPath(root + "/sub/" + QFileInfo(exported).fileName()));
 }
 
 /* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the

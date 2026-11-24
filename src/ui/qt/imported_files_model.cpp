@@ -518,16 +518,35 @@ ImportedFilesModel::libraryRoot() {
     return json_store_path(QStringLiteral("imports"));
 }
 
+namespace {
+/* The file name of an exported talkgroup list: newTalkgroupListPath() gives no other file in the library this form. */
+const QLatin1String kExportPrefix("talkgroups-");
+const QLatin1String kExportSuffix(".csv");
+} // namespace
+
 QString
 ImportedFilesModel::newTalkgroupListPath() const {
     QDir dir(libraryRoot());
     if (!dir.mkpath(QStringLiteral("."))) {
         return {};
     }
-    const QString path = dir.absoluteFilePath(
-        QStringLiteral("talkgroups-%1.csv").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+    const QString path =
+        dir.absoluteFilePath(kExportPrefix + QUuid::createUuid().toString(QUuid::WithoutBraces) + kExportSuffix);
     reserved_exports().insert(path);
     return path;
+}
+
+bool
+ImportedFilesModel::talkgroupListExportPath(const QString& path) {
+    const QFileInfo file(path);
+    const QString name = file.fileName();
+    if (QDir::cleanPath(file.absolutePath()) != QDir::cleanPath(QDir(libraryRoot()).absolutePath())
+        || !name.startsWith(kExportPrefix) || !name.endsWith(kExportSuffix)) {
+        return false;
+    }
+    const QString id = name.mid(kExportPrefix.size(), name.size() - kExportPrefix.size() - kExportSuffix.size());
+    const QUuid uuid = QUuid::fromString(id);
+    return !uuid.isNull() && uuid.toString(QUuid::WithoutBraces) == id;
 }
 
 bool

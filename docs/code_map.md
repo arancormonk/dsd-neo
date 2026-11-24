@@ -18471,7 +18471,9 @@ Qt Quick frontend (`src/ui/qt`):
   An export name stays reserved while the decoder may still write it (issue #903): a registration hands it to its row,
   and `releaseTalkgroupListPath()` gives back the name of an export that failed or was never queued; an export whose
   answer is late keeps it. `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an
-  update in place and a removal read; load keeps the pruned user files apart (`takePrunedUserPaths()`).
+  update in place and a removal read; load keeps the pruned user files apart (`takePrunedUserPaths()`), and
+  `talkgroupListExportPath()` knows an exported list by the name `newTalkgroupListPath()` gave it (talkgroups-<uuid>.csv
+  in the library), which no RadioReference file takes.
   Document probes (#831): a document opened from another app is told apart before anything is asked.
   `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
   the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
@@ -19114,7 +19116,9 @@ Qt Quick frontend (`src/ui/qt`):
   pins for each test file, and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`, told the file's origin by `ImportedFilesModel::fromRadioReference()`;
-  the startup cleanup passes the pruned user files the same way), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  the startup cleanup passes the pruned user files the same way, and an export it finds only through a reference left by
+  a clear that could not be saved, with no Imports row left to give its origin, by its name), then from scan lists
+  (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
   before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
   not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,

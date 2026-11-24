@@ -132,6 +132,12 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE QString newTalkgroupListPath() const;
     /**
+     * Issue #903: whether @p path has the form newTalkgroupListPath() gives (talkgroups-<uuid>.csv directly in the
+     * library), which no RadioReference file takes: a list the user exported, by its name alone. The origin of a pruned
+     * export a saved system still names, once the index row that held its origin is gone.
+     */
+    static bool talkgroupListExportPath(const QString& path);
+    /**
      * Whether an exported list is at @p path: a regular file, not a symlink, directly in the library folder, which is
      * where registerTalkgroupList() accepts one. The engine writes an export there only once it succeeded, so the
      * save flow reads this as "the export completed" when its completion was missed, apart from whether Imports could
