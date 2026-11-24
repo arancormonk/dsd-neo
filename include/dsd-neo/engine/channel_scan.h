@@ -45,13 +45,16 @@ void dsd_engine_receiver_gate_hold(int hold);
 void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
 /** The gate a write would give now (@p gate, @p digital, @p session, as
  * dsd_rtl_stream_metrics_hook_write_squelch_gate() takes them), when one may be written: no command or switch holds the
- * gate and nothing of the decoder's own is outstanding. Returns 1 when resolved, else 0 with only @p session filled:
- * the session's own squelch (the scan scope's configured one while a scope is in force; never the analog default nor
- * a row's own), which resolves whatever is outstanding. A stream start takes all three as its argument
- * (rtl_stream_start_gate), so a plain start runs the gate from the first block, and one whose gate cannot be resolved
- * (a tune outstanding, a command applying) still runs the session's squelch off the monitor, not a row's. */
+ * gate and nothing of the decoder's own is outstanding. Returns 1 when resolved, else 0 with nothing filled (and
+ * nothing resolved: the outstanding check comes first). */
 int dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
                                      dsd_squelch_setting* digital, dsd_squelch_setting* session);
+/** dsd_engine_receiver_gate_resolve() for a stream start (rtl_stream_start_gate): when the gate cannot be resolved (a
+ * tune outstanding, a command applying) it still fills @p session, the session's own squelch (the scan scope's
+ * configured one while a scope is in force; never the analog default nor a row's own), which the start runs off the
+ * monitor. Returns as dsd_engine_receiver_gate_resolve(). */
+int dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                           dsd_squelch_setting* digital, dsd_squelch_setting* session);
 /** dsd_engine_receiver_gate_settle() with @p changed: what the scan scope's entry points run through
  * dsd_receiver_gate_settle_hook_set() (issue #899). */
 void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);

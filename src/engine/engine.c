@@ -4285,8 +4285,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
            what the receiver produces meanwhile (issue #899). The gate is this start's argument alone. */
         rtl_stream_start_gate start_gate;
         DSD_MEMSET(&start_gate, 0, sizeof start_gate);
-        start_gate.resolved =
-            dsd_engine_receiver_gate_resolve(opts, state, &start_gate.gate, &start_gate.digital, &start_gate.session);
+        start_gate.resolved = dsd_engine_receiver_gate_resolve_start(opts, state, &start_gate.gate, &start_gate.digital,
+                                                                     &start_gate.session);
         if (state->rtl_ctx && rtl_stream_start_gated(state->rtl_ctx, &start_gate) < 0) {
             LOG_ERROR("Failed to open radio stream.\n");
             rtl_stream_destroy(state->rtl_ctx);

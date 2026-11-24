@@ -919,7 +919,7 @@ gate_open(dsd_opts* opts, dsd_state* state) {
     dsd_squelch_setting gate;
     dsd_squelch_setting digital;
     dsd_squelch_setting session;
-    (void)dsd_engine_receiver_gate_resolve(opts, state, &gate, &digital, &session);
+    (void)dsd_engine_receiver_gate_resolve_start(opts, state, &gate, &digital, &session);
     channel_gate_fake_open(opts->analog_only == 1, &session, rx_runs);
     dsd_engine_receiver_gate_due();
     dsd_engine_receiver_gate_settle(opts, state, 0);

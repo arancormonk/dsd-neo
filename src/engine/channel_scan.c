@@ -595,16 +595,27 @@ dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, in
 int
 dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
                                  dsd_squelch_setting* digital, dsd_squelch_setting* session) {
-    if (!opts || !gate || !digital || !session) {
-        return 0;
-    }
-    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
-    if (s_rx_hold || receiver_gate_outstanding(state)) {
+    if (!opts || !gate || !digital || !session || s_rx_hold || receiver_gate_outstanding(state)) {
         return 0;
     }
     *gate = dsd_scan_mode_channel_squelch(opts, state);
     *digital = dsd_scan_mode_digital_squelch(opts, state);
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
     return 1;
+}
+
+int
+dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                       dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    if (!opts || !gate || !digital || !session) {
+        return 0;
+    }
+    if (dsd_engine_receiver_gate_resolve(opts, state, gate, digital, session)) {
+        return 1;
+    }
+    /* A start whose gate cannot be resolved still runs the session's own squelch off the monitor. */
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 0;
 }
 
 void

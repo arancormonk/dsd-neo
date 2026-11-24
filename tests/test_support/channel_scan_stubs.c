@@ -192,8 +192,8 @@ dsd_engine_receiver_gate_hold(int hold) {
 
 /* As a start resolves it under a command (the engine's hold): the session's own squelch alone. */
 int
-dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
-                                 dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                       dsd_squelch_setting* digital, dsd_squelch_setting* session) {
     (void)gate;
     (void)digital;
     if (!opts || !session) {

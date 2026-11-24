@@ -2052,7 +2052,7 @@ svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
     rtl_stream_start_gate start_gate;
     DSD_MEMSET(&start_gate, 0, sizeof start_gate);
     start_gate.resolved =
-        dsd_engine_receiver_gate_resolve(opts, state, &start_gate.gate, &start_gate.digital, &start_gate.session);
+        dsd_engine_receiver_gate_resolve_start(opts, state, &start_gate.gate, &start_gate.digital, &start_gate.session);
     int rc = rtl_stream_create(opts, &state->rtl_ctx) < 0 ? -1 : 0;
     if (rc == 0 && rtl_stream_start_gated(state->rtl_ctx, &start_gate) < 0) {
         rtl_stream_destroy(state->rtl_ctx);
