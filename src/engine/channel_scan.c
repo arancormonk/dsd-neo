@@ -523,12 +523,21 @@ channel_scan_request_result(const channel_scan* scan) {
 static int s_rx_write_due;
 static int s_rx_hold;
 
-/* Whether a tune or family request of the decoder's own is outstanding: a -Y row's (requested, retrying, or landed and
-   waiting for its commit), a trunk-scan target's retune, a timed-out manual tune still followed to its completion, a
-   signal-search visit's or restore's tune, or a receive request the demod thread has not applied. */
+/* Whether a -Y row's tune is outstanding for the gate: requested, retrying, or landed and owed its commit. The commit
+   stays owed when the row it landed for goes before its retry (the list replaced, the row rewritten): the receiver has
+   moved and no row owns it until the next row commits, as dsd_engine_channel_scan_service_sync() holds frames. */
+static int
+channel_scan_gate_waiting(const dsd_state* state) {
+    const channel_scan* scan = channel_scan_get(state);
+    return scan && (scan->request != 0 || scan->retry || scan->needs_commit);
+}
+
+/* Whether a tune or family request of the decoder's own is outstanding: a -Y row's (channel_scan_gate_waiting()), a
+   trunk-scan target's retune, a timed-out manual tune still followed to its completion, a signal-search visit's or
+   restore's tune, or a receive request the demod thread has not applied. */
 static int
 receiver_gate_outstanding(const dsd_state* state) {
-    return dsd_engine_channel_scan_waiting(state) || dsd_engine_trunk_scan_retune_pending(state)
+    return channel_scan_gate_waiting(state) || dsd_engine_trunk_scan_retune_pending(state)
            || dsd_engine_manual_tune_awaited() || dsd_engine_signal_search_tune_pending(state)
            || dsd_rtl_stream_metrics_hook_receive_requests_pending();
 }

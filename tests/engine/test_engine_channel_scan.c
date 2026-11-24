@@ -1329,8 +1329,9 @@ test_row_gate_follows_the_tune_that_can_land(void) {
 
     /* A step to the nfm row 2 that lands but restages (an edit of the row while its tune was pending), whose row is
        written over in place before the retry: the retry is dropped. The receiver ran the landing closed while the row
-       was outstanding; with nothing outstanding any more the decoder writes the gate of the row still on air (the nfm
-       row 0's noise), so the receiver is not left muted. */
+       was outstanding, and it has moved with no row owning it yet (a commit is still owed, round 9): it stays closed,
+       never running the nfm row 0's gate on the frequency the tune put it on, until the next row commits (the go-to of
+       the dmr row 3 below). */
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     state->lcn_freq_roll = 2;
     expected_tune_hz = k_gate_hz[2];
@@ -1349,7 +1350,9 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     *dsd_state_trunk_lcn_slot(state, 2) = 153500000;
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     dsd_engine_receiver_gate_settle(opts, state, 0);
-    gate_expect("the dropped retry", DSD_SQUELCH_MODE_NOISE, 10);
+    gate_expect_closed("the dropped retry, a commit still owed");
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    gate_expect_closed("the dropped retry, a commit still owed, after a change");
     *dsd_state_trunk_lcn_slot(state, 2) = k_gate_hz[2];
     DSD_MEMSET(&value, 0, sizeof value);
     assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 2, DSD_SCAN_ROW_FIELD_SQUELCH,
@@ -1417,6 +1420,59 @@ test_row_gate_follows_the_tune_that_can_land(void) {
     /* The same with the incoming row an nfm row and the outgoing one an nfm row with its own -40 dB. */
     gate_reopen_over_a_pending_row(opts, state);
     state->rtl_ctx = NULL;
+
+    gate_list_free(opts, state);
+}
+
+/*
+ * Issue #899 (review round 9): a typed go-to that lands with a stale profile owes its row's commit, and its restaged row
+ * removed (the list replaced without it) drops the retry but not that commit: the receiver has moved and no row owns it.
+ * With the dmr row 1 on air (Off), a go-to of the nfm row 2 pending, an edit of that row before it lands, its landing
+ * closed, and the list then replaced by rows 0 and 1 alone, no settle writes the outgoing dmr row's Off (which would
+ * open the new frequency): the receiver stays closed until the next row commits, the step to the nfm row 0 (noise
+ * +10). Before round 9 the first settle after the removal opened it on Off.
+ */
+static void
+test_row_gate_closed_while_a_commit_is_owed(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    gate_list_start(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(gate_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+    gate_expect("the dmr row on air", DSD_SQUELCH_MODE_LEVEL, 0);
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(gate_goto(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -45;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 2, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    tune_carried = 1;
+    tuned_analog_only = 1;
+    land_pending_tune(request);
+    gate_expect_closed("the nfm go-to landed stale");
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, restaged */
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    gate_expect_closed("the nfm go-to's restage outstanding");
+
+    dsd_state_trunk_lcn_replace_begin(state);
+    state->lcn_freq_count = 2;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(!dsd_engine_channel_scan_waiting(state));
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    gate_expect_closed("the restaged row removed, its commit owed");
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+    gate_expect_closed("the restaged row removed, a settle after a change");
+
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->lcn_freq_roll = 0;
+    expected_tune_hz = k_gate_hz[0];
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    gate_expect("the next row committed", DSD_SQUELCH_MODE_NOISE, 10);
 
     gate_list_free(opts, state);
 }
@@ -5844,6 +5900,7 @@ main(void) {
     test_digital_landing_after_analog_row_runs_the_session_gate();
     test_digital_landing_after_digital_row_runs_the_session_gate();
     test_row_gate_follows_the_tune_that_can_land();
+    test_row_gate_closed_while_a_commit_is_owed();
     test_row_gate_pending_across_commands();
     test_row_gate_writes_wait_for_the_tune();
     test_row_leave_to_a_digital_session_writes_nothing_on_the_row();
