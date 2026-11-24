@@ -852,7 +852,8 @@ void svc_scan_entry_toast_reason(const dsd_opts* opts, dsd_state* state, const d
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /* The tune alone, the io/control leg of svc_rtl_set_freq() with its pending manual-tune record (issue #671), for a
-   caller that runs the carrier boundary itself once something else (a scan's pause) has run after the tune. */
+   caller that runs the carrier boundary itself: once something else (a scan's pause) has run after the tune, or as the
+   operator's (DSD_CARRIER_BOUNDARY_OPERATOR_TUNE, issue #903). */
 int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /* io_control_set_freq_tagged(), every app-control tune's io/control leg: a rigctl peer's confirmed move to another
    frequency is noted to the engine (dsd_engine_note_rigctl_retune(), issue #834), as the backend's own legs note it. */

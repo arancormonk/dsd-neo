@@ -780,8 +780,8 @@ typedef struct {
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
-    // Issue #903: 1 when the receiver's tuning had changed since its run began (dsd_state_tuning_moved(): a live
-    // retune, decode-mode change or channel-map import) at the call's first render; frozen with the stamps above. The
+    // Issue #903: 1 when the receiver's tuning had changed since its run began (dsd_state_tuning_moved(): a carrier,
+    // input or decode-mode change on no allow-list, or a channel-map import) at the call's first render; frozen with the stamps above. The
     // call was not heard on the tuning its session started with.
     uint8_t tuning_moved;
     // The -Y scan-list row the call was heard on (issue #903), stamped and frozen with channel_label: 1 + its index
@@ -2940,6 +2940,10 @@ struct dsd_state {
     uint64_t edacs_no_stream_since_ms;
     uint64_t edacs_no_stream_paid;
     uint64_t edacs_no_stream_owed;
+    /* The stream the decoder read was cut and the engine has still to end the reception (issue #634): 0 none,
+       DSD_INPUT_BOUNDARY_REPLACED for another input (dsd_engine_note_input_replaced()), DSD_INPUT_BOUNDARY_RESTORED for
+       the same input put back on its own endpoint, which keeps the tuning (dsd_engine_note_input_restored(), issue
+       #903). */
     int input_boundary;
     /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
@@ -3382,11 +3386,10 @@ struct dsd_state {
     uint8_t lcn_scan_paused;
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;
-    /* The tuning generation (issue #903): tuning_gen counts every change of what the receiver is tuned to or decodes
-     * with that no trunk or scan follow makes and operator_tuned does not mark (dsd_state_note_tuning_change()): a
-     * config's retune, another source or input, a decode-mode change, a channel-map or band-plan import. An operator's
-     * tune is none (operator_tuned marks its calls, and a scan resume clears it), nor is a stream gap or a reopen on the
-     * same carrier. run_tuning_gen: tuning_gen as the run began, its first stream's start included
+    /* The tuning generation (issue #903), fail-closed: tuning_gen counts every carrier boundary, input change, decode-
+     * mode change and channel-map or band-plan import, but the moves dsd_state_note_tuning_move() lists as staying on
+     * the system the session started (dsd_tuning_move). run_tuning_gen: tuning_gen as the run began, its first stream's
+     * start included
      * (dsd_engine_note_run_start(), dsd_engine_note_run_stream_source()). Written on the decoder thread, under the P25
      * SM tick guard once the watchdog runs. */
     uint32_t tuning_gen;
@@ -3778,11 +3781,48 @@ dsd_state_note_carrier_change(dsd_state* state) {
     dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
 }
 
-/* What the receiver is tuned to or decodes with changed, by no trunk or scan follow (dsd_state::tuning_gen, issue
-   #903). The caller holds the P25 SM tick guard. */
+/* dsd_state::input_boundary's values. */
+enum { DSD_INPUT_BOUNDARY_REPLACED = 1, DSD_INPUT_BOUNDARY_RESTORED = 2 };
+
+/* Why the receiver's carrier, input or decode mode moved (issue #903). DSD_TUNING_MOVE_OTHER is every move not listed;
+   the others are the allow-list of moves that provably stay on the system the session started. */
+typedef enum {
+    DSD_TUNING_MOVE_OTHER = 0,
+    /* (a) A trunk follow to a voice channel, or the return to that system's control channel. */
+    DSD_TUNING_MOVE_TRUNK_FOLLOW,
+    /* (b) The system's own control-channel hunt among its own control-channel candidates. */
+    DSD_TUNING_MOVE_OWN_CC_HUNT,
+    /* (c) A step of the session's own scan list: scan-row ownership attributes its calls. */
+    DSD_TUNING_MOVE_OWN_SCAN_STEP,
+    /* (d) A stream gap or a reopen on the same carrier. */
+    DSD_TUNING_MOVE_STREAM_GAP,
+    /* (e) A change rolled back, or an input restored, that ends on exactly the tuning in force before it. */
+    DSD_TUNING_MOVE_RESTORED,
+    /* (f) An operator's tune: operator_tuned marks the calls heard after it, and a resume clears it. */
+    DSD_TUNING_MOVE_OPERATOR,
+} dsd_tuning_move;
+
+/* The receiver's tuning moved for @p why (dsd_state::tuning_gen, issue #903): the generation moves unless @p why is on
+   the allow-list. Every carrier boundary, input change and decode-mode change reports here. The caller holds the P25 SM
+   tick guard. */
+static inline void
+dsd_state_note_tuning_move(dsd_state* state, dsd_tuning_move why) {
+    switch (why) {
+        case DSD_TUNING_MOVE_TRUNK_FOLLOW:
+        case DSD_TUNING_MOVE_OWN_CC_HUNT:
+        case DSD_TUNING_MOVE_OWN_SCAN_STEP:
+        case DSD_TUNING_MOVE_STREAM_GAP:
+        case DSD_TUNING_MOVE_RESTORED:
+        case DSD_TUNING_MOVE_OPERATOR: return;
+        case DSD_TUNING_MOVE_OTHER:
+        default: state->tuning_gen++; return;
+    }
+}
+
+/* What the receiver is tuned to or decodes with changed, by a move on no allow-list (DSD_TUNING_MOVE_OTHER). */
 static inline void
 dsd_state_note_tuning_change(dsd_state* state) {
-    state->tuning_gen++;
+    dsd_state_note_tuning_move(state, DSD_TUNING_MOVE_OTHER);
 }
 
 /* Whether the receiver's tuning changed since its run began (dsd_state::run_tuning_gen, issue #903). */

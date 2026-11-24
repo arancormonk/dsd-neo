@@ -3612,13 +3612,25 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
            || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH || kind == DSD_CARRIER_BOUNDARY_STREAM_GAP;
 }
 
-/* Whether a boundary of @p kind moves the tuning generation (issue #903): another source or input runs other tuning
-   than the receiver ran. A tune does not here: the operator's marks its calls (dsd_state::operator_tuned), and one no
-   operator asked for (a config's) moves the generation where it is made. A scan step, a replay's recorded retune and a
-   stream gap do not. */
-static int
-carrier_boundary_moves_tuning(dsd_carrier_boundary_kind kind) {
-    return kind == DSD_CARRIER_BOUNDARY_SOURCE || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+/* Why a boundary of @p kind moves the receiver, for the tuning generation (issue #903, dsd_state_note_tuning_move()):
+   fail-closed, every kind is a move off the session's tuning but the ones that stay on its system. A stream gap is on
+   the same carrier (d); a scan step is one of the session's own scan list (c); an operator's tune, or any tune while the
+   operator holds the tuner, is marked by operator_tuned (f); an input put back on its own endpoint is restored (e). */
+static dsd_tuning_move
+carrier_boundary_tuning_move(const dsd_state* state, dsd_carrier_boundary_kind kind) {
+    switch (kind) {
+        case DSD_CARRIER_BOUNDARY_STREAM_GAP: return DSD_TUNING_MOVE_STREAM_GAP;
+        case DSD_CARRIER_BOUNDARY_SCAN_STEP: return DSD_TUNING_MOVE_OWN_SCAN_STEP;
+        case DSD_CARRIER_BOUNDARY_OPERATOR_TUNE: return DSD_TUNING_MOVE_OPERATOR;
+        case DSD_CARRIER_BOUNDARY_TUNE:
+            return state->operator_tuned != 0U ? DSD_TUNING_MOVE_OPERATOR : DSD_TUNING_MOVE_OTHER;
+        case DSD_CARRIER_BOUNDARY_INPUT_SWITCH:
+            return state->input_boundary == DSD_INPUT_BOUNDARY_RESTORED ? DSD_TUNING_MOVE_RESTORED
+                                                                        : DSD_TUNING_MOVE_OTHER;
+        case DSD_CARRIER_BOUNDARY_SOURCE:
+        case DSD_CARRIER_BOUNDARY_REPLAY_RETUNE:
+        default: return DSD_TUNING_MOVE_OTHER;
+    }
 }
 
 /* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
@@ -3847,10 +3859,16 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     /* The watchdog's ticks write the state machines, the followed assignment and the call state under the P25 SM tick
        guard, so a boundary that can run beside them holds it from the first inspection through the last step: the
        caller's hold (@p guard_held), or one taken here. The guard is not re-entrant. */
+    const dsd_tuning_move tuning_move = carrier_boundary_tuning_move(state, kind);
+    if (kind == DSD_CARRIER_BOUNDARY_OPERATOR_TUNE) {
+        kind = DSD_CARRIER_BOUNDARY_TUNE; // a tune in every other respect
+    }
     const int take_guard = carrier_boundary_takes_guard(kind) && !guard_held;
     if (take_guard) {
         p25_sm_tick_guard_enter();
     }
+    /* Under the tick guard whenever a watchdog tick can run (carrier_boundary_takes_guard()). */
+    dsd_state_note_tuning_move(state, tuning_move);
     if (kind == DSD_CARRIER_BOUNDARY_STREAM_GAP) {
         carrier_boundary_stream_gap(opts, state);
         if (take_guard) {
@@ -3863,9 +3881,6 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_p25p2_playout_note_policy(opts, state);
     // The receiver leaves the carrier a scan last landed on (issue #667 D9).
     dsd_engine_scan_landing_forget(state);
-    if (carrier_boundary_moves_tuning(kind)) {
-        dsd_state_note_tuning_change(state); // under the tick guard, which every such kind takes
-    }
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins
@@ -4796,7 +4811,23 @@ dsd_engine_note_input_replaced(dsd_state* state) {
        nothing will roll a failed one back, and a late completion of one is a stale ID the tuning layer ignores. A tune
        recovery gives the new device from here on is its own and is kept (issue #703). */
     dsd_trunk_tuning_requests_reset();
-    state->input_boundary = 1;
+    state->input_boundary = DSD_INPUT_BOUNDARY_REPLACED;
+    /* Another input moves the tuning now, at the commit, so a command later in the same drain reads it moved before the
+       engine's boundary runs (issue #903). */
+    dsd_state_note_tuning_change(state);
+}
+
+void
+dsd_engine_note_input_restored(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_trunk_tuning_requests_reset();
+    /* The stream was still cut, so the boundary runs; but the input is back on its own endpoint (issue #903): unless a
+       replacement is pending too, the boundary is a restored one, which keeps the tuning. */
+    if (state->input_boundary == 0) {
+        state->input_boundary = DSD_INPUT_BOUNDARY_RESTORED;
+    }
 }
 
 /* The stream the decoder read was replaced (state->input_boundary, issue #634): noCarrier() has ended the reception,

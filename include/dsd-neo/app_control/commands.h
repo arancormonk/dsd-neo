@@ -538,9 +538,10 @@ typedef struct {
  * path is the requested destination (written only when success == 1), or empty
  * if the submitted path was invalid. sequence is nonzero and advances per result.
  * tuning_moved (issue #903) is 1 when the receiver's tuning had changed since the
- * run began as the export ran (dsd_state_tuning_moved()) or the operator held the
- * tuner then (dsd_state::operator_tuned), and for an export that never ran: the
- * list was then not heard on the tuning the session started with. */
+ * run began as the export ran (dsd_state_tuning_moved()), the operator held the
+ * tuner then (dsd_state::operator_tuned) or a decode-mode change was still to
+ * settle on the front end, and for an export that never ran: the list was then
+ * not heard on the tuning the session started with. */
 typedef struct {
     uint64_t sequence;
     uint64_t policy_context;

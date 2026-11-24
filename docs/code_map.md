@@ -13268,22 +13268,35 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
-  A source change or an input switch also moves the tuning generation (issue #903; `dsd_state::tuning_gen`,
-  `dsd_state_note_tuning_change()`, under the guard): what the receiver is tuned to or decodes with changed by no trunk
-  or scan follow and in a way `operator_tuned` does not mark. A tune does not move it at the boundary: an operator's
-  tune (a frequency entry, a tap, Go to, a tune that pauses a scan) marks its calls through `operator_tuned`, which a
-  scan resume clears, so a resumed scan list learns again; a configuration's retune, which marks nothing, moves it in
-  `apply_cfg_radio_input()` (the control API's config apply, the P1 path). A stream gap (which moves `carrier_seq` but
-  stays on the carrier), a scan step, a replay retune and a channel or candidate cycle do not. Outside the boundary
-  the generation moves for a decode mode applied live (`DSD_APP_CMD_DECODE_MODE_SET`, a config's `[mode]` that
-  changed it, the AM fallback), a RadioReference apply, a channel map imported or cleared live, and a P25 band plan
-  imported live (all on the decoder thread, `ui_note_tuning_change()` under the guard). `run_tuning_gen` is the
+  The tuning generation (issue #903; `dsd_state::tuning_gen`) is fail-closed: every carrier boundary, input change and
+  decode-mode change reports to `dsd_state_note_tuning_move()` (`<dsd-neo/core/state.h>`, under the guard whenever a
+  watchdog tick can run) with why it moved (`dsd_tuning_move`), and the generation moves unless the reason is on its
+  allow-list, the only place exceptions live: (a) `DSD_TUNING_MOVE_TRUNK_FOLLOW`, a trunk follow and the return to the
+  system's control channel (follows never reach the boundary; a Return-to-CC and a P25 control-channel selection of the
+  system's own `p25_cc_freq` report it); (b) `_OWN_CC_HUNT`, the trunked candidate cycle; (c) `_OWN_SCAN_STEP`, a
+  `DSD_CARRIER_BOUNDARY_SCAN_STEP` (scan-row ownership attributes its calls; trunk-scan target switches never reach the
+  boundary); (d) `_STREAM_GAP`, a stream gap or a reopen on the same carrier; (e) `_RESTORED`, a failed UDP switch
+  that restarted its own endpoint (`dsd_engine_note_input_restored()`, `input_boundary ==
+  DSD_INPUT_BOUNDARY_RESTORED`), or a mode change put back; (f) `_OPERATOR`, an operator's tune
+  (`DSD_CARRIER_BOUNDARY_OPERATOR_TUNE`: the frequency entry and the tap, which set `operator_tuned` after the
+  boundary) or any tune while `operator_tuned` holds, which a scan resume clears, so a resumed scan list learns again.
+  Everything else moves it (`carrier_boundary_tuning_move()`, `ui_user_move_forgets_identity()`): a tune no operator
+  marks (an off-scan or trunked channel cycle, a stale scan row's landing, Signal search, a config's or an import's
+  tune), a P25 control-channel selection of another system, another source, a replay's recorded retune, and an input
+  replacement, which moves it at its commit (`dsd_engine_note_input_replaced()`), so an export later in the same
+  drain reads it. `apply_cfg_radio_input()` also moves it for a config retune that ran no boundary (a live Airspy
+  retune). A decode-mode change moves it once it has settled (`ui_commit_mode_tuning()`: the decoders, analog monitor
+  and kind and DMR single slot after the command, `ui_decode_mode_key()`, against before it), so a config `[mode]` the
+  front end refused and rolled back moves nothing; a switch onto the analog monitor the front end has still to take
+  waits (`g_analog_entry.commit_tuning`) and moves it only if taken, and an export while it waits reads moved. A
+  RadioReference apply, a channel map imported or cleared live, and a P25 band plan imported live move it as well
+  (`ui_note_tuning_change()`). `run_tuning_gen` is the
   generation the run started with: `dsd_engine_note_run_start()` takes it, and so does
   `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an earlier
   run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two differ) is
   stamped on each history row at its first render (`Event_History::tuning_moved`, beside `operator_tuned`); each export
-  completion records it or a held tuner (`dsd_app_tg_export_result::tuning_moved`: moved, or `operator_tuned` set as
-  it ran). A row or list heard after a live retune is not the saved system's (see UI, Qt, verified talkgroups and Save
+  completion records it or a held tuner (`dsd_app_tg_export_result::tuning_moved`: moved, `operator_tuned` set as it
+  ran, or a mode change still waiting on the front end). A row or list heard after a live retune is not the saved system's (see UI, Qt, verified talkgroups and Save
   talkgroup list).
   With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
   clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
