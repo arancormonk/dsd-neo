@@ -1781,10 +1781,10 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
      * is a no-op and the rules below decide alone. So does a row the operator avoided, when the scan has somewhere to
      * go and its paced departure is due (issue #644): the frame loop yielded for it while the carrier held sync. */
     /* A commit owed with nothing in flight (issue #899) is recovered on a pace of its own: the row it is owed for
-     * keeps no frame, yet its sync keeps refreshing the hangtime anchor. */
-    if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())
-        || dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())
-        || dsd_engine_channel_scan_owed_recovery_due(opts, state, dsd_decode_now_mono_s())) {
+     * keeps no frame, yet its sync keeps refreshing the hangtime anchor. One clock sample serves every rule here. */
+    const double now_m = dsd_decode_now_mono_s();
+    if (dsd_engine_scan_visit_expired(opts, state, now_m) || dsd_engine_channel_scan_departure_due(opts, state, now_m)
+        || dsd_engine_channel_scan_owed_recovery_due(state, now_m)) {
         *due = 1;
         return 1;
     }
@@ -1795,7 +1795,7 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
      * where it is, as a fixed frequency does: a step would land on the same row, end the reception and judge the same
      * traffic again, and so would the hangtime rule below. A receive-policy leave is answered the same way. */
     if ((!dsd_engine_channel_scan_hold_keeps_row(state)
-         && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s()))
+         && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, now_m))
         || tone_gate == DSD_ANALOG_TONE_GATE_REJECTED) {
         *due = dsd_engine_channel_scan_has_other_row(opts, state);
         return 1;

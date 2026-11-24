@@ -5316,7 +5316,10 @@ suite runs under this compiler.
     nothing in flight to commit, an operator Hold keeps no row, `dsd_engine_channel_scan_hold_keeps_row()`, and the
     scan recovers by its next timed step, round 10, a forced step paced -t from the first decision that finds the scan
     so, `dsd_engine_channel_scan_owed_recovery_due()`, since a busy row's sync keeps refreshing the hangtime anchor
-    though the owed commit discards its frames, round 11), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    though the owed commit discards its frames, round 11; the deadline is `dsd_state::lcn_owed_recovery_m`, armed by
+    the scan's service `dsd_engine_channel_scan_pending()` and armed again by a timed step that stages no tune (a
+    placeholder keeps its `-t` dwell, a row not prepared is tried once a pace), read by the step decision with no scan
+    lookup and published by the `-Y` timing tick as `Retune retry` counting down to that step, round 12), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
     tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
     a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the

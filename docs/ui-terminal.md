@@ -1082,7 +1082,7 @@ last sync. NXDN's additional grace period is described below.
 | Phrase | Staying because | Running timer |
 | --- | --- | --- |
 | `Retune pending` | a backend retune request has not resolved | none |
-| `Retune retry` | the retune failed; cooling down before retrying in place | the retry cooldown |
+| `Retune retry` | the retune failed; cooling down before retrying in place (`-Y`: a row's restaged retune failed, and the timed step leaves it) | the retry cooldown (`-Y`: `-t`, at least 1 s, to that step) |
 | `Acquiring control` | the trunking state machine is hunting a control channel | none |
 | `Following call` | the trunking state machine is following a call | none; `hang` is the budget |
 | `Voice` | conventional voice media is active (`--scan-voice-only`) | the activity hold |

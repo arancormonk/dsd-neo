@@ -10322,6 +10322,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
             "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=dsd_scan_mode_prepare"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
