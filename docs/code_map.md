@@ -14103,7 +14103,8 @@ Private per-protocol modules worth knowing about:
   keeps `p25_sm_slot_ctx_t::regroup_sg` on the accepted assignment for that group until it is cleared or a checked
   grant replaces it, or a checked repeat starts the slot's next call: one naming another talker than the last checked
   one (`p25_grant_duplicate_spend_another_call()`, against `p25_sm_slot_ctx_t::checked_src`, which only messages whose
-  source check passed set, kept apart from `src`, which a failed-CRC repeat also sets for the follow) or one accepted
+  source check passed set, a committed voice start (MAC_PTT) by its own source and not one inherited from the
+  assignment (`p25_voice_start_note_checked_talker()`), kept apart from `src`, which a failed-CRC repeat also sets for the follow) or one accepted
   after the assignment's call ended
   (`p25_grant_duplicate_spend_ended_call()`); a grant or repeat whose CRC failed (`-F`) spends nothing
   (`p25_grant_spends_regroup_evidence()`; an unchecked grant that reassigns the slot to the same group keeps the mark,

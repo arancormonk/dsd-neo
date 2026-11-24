@@ -4628,6 +4628,16 @@ p25_voice_start_withdraw_placeholder_source(p25_sm_slot_ctx_t* slot_ctx, dsd_sta
     }
 }
 
+/* A committed voice start whose own source check passed names the assignment's last checked talker
+ * (p25_sm_slot_ctx_t::checked_src); a source it inherited from the assignment names none. */
+static void
+p25_voice_start_note_checked_talker(p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* input) {
+    if (input->identity_valid) {
+        const p25_sm_identity_claim claim = p25_sm_event_claim(input);
+        p25_slot_note_checked_talker(slot_ctx, &claim);
+    }
+}
+
 static void
 p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
                                 const p25_sm_event_t* call_ev, const dsd_tg_policy_decision* decision,
@@ -4757,6 +4767,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     p25_voice_start_commit_identity(ctx, opts, state, slot, &call_ev, &decision, &eval_ctx, &changes, now_m);
+    p25_voice_start_note_checked_talker(&ctx->slots[slot], input);
     p25_p1_hdu_crypto_consume_identity(ctx, state, input);
     return p25_voice_start_finish_p1_identity(ctx, opts, state, slot, &call_ev);
 }

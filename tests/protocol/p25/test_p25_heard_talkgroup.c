@@ -784,6 +784,30 @@ test_p2_regroup_evidence_judged_by_the_checked_talker(void) {
     return rc;
 }
 
+/* A checked MAC_PTT naming another talker makes that talker the one the next grant is judged by, and keeps the regroup
+   evidence for its own call: after talker B's checked MAC_PTT on the regroup grant of talker A, a checked standard grant
+   for A starts A's call and spends the evidence (A's MAC_PTT proves the group). */
+static int
+test_p2_regroup_evidence_judged_by_a_checked_ptt_talker(void) {
+    int rc = 0;
+    on_tdma_control_channel();
+    fill_patch_table();
+    p2_signal_regroup_grant(TEST_SG);
+    p2_ptt(0U, TEST_SG);
+    rc |= expect("P2 regroup call is a supergroup", active_on(0U, TEST_SG) && noted_not_remembered(0U));
+    advance_ms(100U);
+    p2_ptt_from(0U, TEST_SG, TEST_SRC + 1U);
+    rc |= expect("P2 checked MAC_PTT of another talker keeps the regroup evidence",
+                 active_on(0U, TEST_SG) && slot_call(0U).ota_source_id == TEST_SRC + 1U && noted_not_remembered(0U));
+    advance_ms(100U);
+    p2_signal_group_grant_from(TEST_SG, TEST_SRC);
+    advance_ms(30U);
+    p2_ptt(0U, TEST_SG);
+    rc |= expect("P2 checked grant for the earlier talker after another talker's MAC_PTT spends the regroup evidence",
+                 active_on(0U, TEST_SG) && remembered(0U, TEST_SG));
+    return rc;
+}
+
 /* The same for a failed-CRC update accepted after the regroup call ended: it spends nothing, so the next MAC_PTT of
    the group is still a supergroup. */
 static int
@@ -1044,6 +1068,7 @@ main(void) {
     rc |= test_p2_regroup_evidence_survives_unchecked_new_talker();
     rc |= test_p2_regroup_evidence_survives_unchecked_update_after_end();
     rc |= test_p2_regroup_evidence_judged_by_the_checked_talker();
+    rc |= test_p2_regroup_evidence_judged_by_a_checked_ptt_talker();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();
