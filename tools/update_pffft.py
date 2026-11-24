@@ -20,7 +20,7 @@ def download_archive(sha):
     # Only HTTPS is supported: no file:// handler or redirect handler is installed.
     opener = urllib.request.OpenerDirector()
     opener.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
-    url = f"https://codeload.github.com/arancormonk/pffft/tar.gz/{sha}"
+    url = f"https://codeload.github.com/arancormonk/pffft-neo/tar.gz/{sha}"
     with opener.open(url, timeout=120) as response:
         if response.status != 200:
             raise OSError(f"PFFFT download returned HTTP {response.status}")
@@ -33,8 +33,9 @@ def update_pins(sha, pins=PINS):
     sha = sha.lower()
     archive = download_archive(sha)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
-        for name in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE.txt"):
-            if not source.getmember(f"pffft-{sha}/{name}").isfile():
+        for name in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE",
+                     "third_party/pffft/LICENSE.txt", "third_party/pffft/LicenseRef-PFFFT.txt"):
+            if not source.getmember(f"pffft-neo-{sha}/{name}").isfile():
                 raise ValueError(f"PFFFT archive is missing {name}")
     digest = hashlib.sha256(archive).hexdigest()
     text = pins.read_text(encoding="utf-8")
@@ -58,7 +59,7 @@ def update_pins(sha, pins=PINS):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("sha", help="full commit SHA from arancormonk/pffft")
+    parser.add_argument("sha", help="full commit SHA from arancormonk/pffft-neo")
     args = parser.parse_args()
     try:
         update_pins(args.sha)

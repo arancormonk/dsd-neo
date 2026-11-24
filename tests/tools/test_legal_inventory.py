@@ -22,9 +22,12 @@ SPEC.loader.exec_module(legal)
 MBE_NOTICES = (
     "LICENSE", "GPL-2.0-or-later.txt", "ISC.txt", "LicenseRef-PFFFT.txt",
     "LicenseRef-ETSI-EN-300-395-2-data.txt", "upstream-mbelib-attribution.md",
-    "pffft/LICENSE.txt", "pffft/PFFFT-NOTICES.txt", "legal/components.json",
+    "pffft-neo/LICENSE", "pffft-neo/README.md", "pffft-neo/third_party/pffft/LICENSE.txt",
+    "pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt", "legal/components.json",
     "legal/status.md", "legal/patents.md",
 )
+# mbelib 2.6.0-2.6.11 install the PFFFT fork's notices in place of pffft-neo's.
+MBE_FORK_NOTICES = ("pffft/LICENSE.txt", "pffft/PFFFT-NOTICES.txt")
 
 # LICENSES/Apache-2.0.txt is the apache.org text; every record that names Apache-2.0 retains this one file.
 APACHE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
@@ -662,6 +665,21 @@ class NoticeStagingTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
             result = self.run_cmake(f"-Dmbe-neo_DIR={directory}", "-P", ROOT / "cmake/MbelibNotices.cmake")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        notice = self.mbe / "pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt"
+        notice.unlink()
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt", result.stderr)
+        # An install from before pffft-neo carries the PFFFT fork's notices instead, and needs both.
+        shutil.rmtree(self.mbe / "pffft-neo")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pffft/LICENSE.txt", result.stderr)
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("Retained dependency notice fixture: " + name + "\n", encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         notice = self.mbe / "LicenseRef-ETSI-EN-300-395-2-data.txt"
         notice.unlink()
         result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
@@ -672,7 +690,8 @@ class NoticeStagingTests(unittest.TestCase):
         package = self.work / "package"
         package.mkdir()
         build = self.work / "build"
-        for name in ("pffft-licenses/pffft-LICENSE.txt", "pffft-licenses/pffft-NOTICES.txt",
+        for name in ("pffft-licenses/pffft-neo-LICENSE.txt", "pffft-licenses/pffft-LICENSE.txt",
+                     "pffft-licenses/pffft-NOTICES.txt",
                      "tetra_crypto-licenses/tetra_crypto-LICENSE.txt", "qt-source/qt-source.txt"):
             (build / name).parent.mkdir(parents=True, exist_ok=True)
             (build / name).write_text(name + "\n", encoding="utf-8")

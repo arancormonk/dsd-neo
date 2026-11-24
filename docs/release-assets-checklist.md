@@ -10,9 +10,9 @@ Required license/notice files in every shipped asset:
   `licenses/BSL-1.0.txt` and `licenses/SoapySDR-COPYRIGHT.txt` (SoapySDR), `licenses/LicenseRef-Simon-Rockliff.txt` and
   `licenses/LicenseRef-BCH3-Noncommercial.txt`
 - `licenses/mbelib-neo/` (the complete notice directory from the selected mbelib
-  installation, including ISC/PFFFT/ETSI texts and `legal/status.md`/`patents.md`)
+  installation, including ISC/pffft-neo/ETSI texts and `legal/status.md`/`patents.md`)
 - `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
-- `licenses/pffft-LICENSE.txt` and `licenses/pffft-NOTICES.txt` (from the configured build tree's `pffft-licenses/`, including the pinned revision and backend copyright notices)
+- `licenses/pffft-neo-LICENSE.txt`, `licenses/pffft-LICENSE.txt` and `licenses/pffft-NOTICES.txt` (from the configured build tree's `pffft-licenses/`: pffft-neo's GPL-2.0-or-later text, the inherited PFFFT/FFTPACK license and pffft-neo's retained-notice record)
 - `licenses/tetra_crypto-LICENSE.txt` (the Apache-2.0 text of the pinned TETRA_crypto revision, from the configured build tree's `tetra_crypto-licenses/`)
 
 Assets that bundle the Qt Quick frontend (`DSD_ENABLE_QT_UI=ON`, today the APK)

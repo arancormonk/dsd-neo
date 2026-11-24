@@ -25,12 +25,23 @@ set(_mbe_required_notices
     LicenseRef-PFFFT.txt
     LicenseRef-ETSI-EN-300-395-2-data.txt
     upstream-mbelib-attribution.md
-    pffft/LICENSE.txt
-    pffft/PFFFT-NOTICES.txt
     legal/components.json
     legal/status.md
     legal/patents.md
 )
+# mbelib 2.6.12 embeds pffft-neo and installs its notices under pffft-neo/;
+# earlier 2.6 releases install the PFFFT fork's notices under pffft/.
+if(EXISTS "${DSD_MBELIB_NOTICE_DIR}/pffft-neo")
+    list(
+        APPEND _mbe_required_notices
+        pffft-neo/LICENSE
+        pffft-neo/README.md
+        pffft-neo/third_party/pffft/LICENSE.txt
+        pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt
+    )
+else()
+    list(APPEND _mbe_required_notices pffft/LICENSE.txt pffft/PFFFT-NOTICES.txt)
+endif()
 foreach(_notice IN LISTS _mbe_required_notices)
     if(NOT EXISTS "${DSD_MBELIB_NOTICE_DIR}/${_notice}")
         message(

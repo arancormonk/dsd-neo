@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Compile the pinned fork into DSD-neo; do not configure its C++ project.
+# Compile the pinned pffft-neo sources into DSD-neo; do not configure its CMake project.
 include(FetchContent)
 
 set(_pffft_pins "${CMAKE_CURRENT_LIST_DIR}/../tools/ci-dependency-pins.env")
@@ -38,7 +38,7 @@ if(POLICY CMP0135)
 endif()
 FetchContent_Declare(
     dsd_pffft
-    URL "https://codeload.github.com/arancormonk/pffft/tar.gz/${PFFFT_SHA}"
+    URL "https://codeload.github.com/arancormonk/pffft-neo/tar.gz/${PFFFT_SHA}"
     URL_HASH "SHA256=${PFFFT_ARCHIVE_SHA256}"
     TLS_VERIFY TRUE
     # Supported since CMake 3.18: a directory without CMakeLists.txt populates
@@ -58,36 +58,20 @@ set(PFFFT_SOURCES
     "${DSD_PFFFT_SOURCE_DIR}/src/pffft_common.c"
 )
 set(PFFFT_INCLUDE_DIR "${DSD_PFFFT_SOURCE_DIR}/include/pffft")
-set(_pffft_notice_sources
-    src/pffft.c
-    src/pffft_priv_impl.h
-    src/pffft_passes_impl.h
-    src/pffft_pass_config.h
-    src/pffft_cplx_impl.h
-    src/pffft_real_impl.h
-    src/pffft_internal.h
-    src/pffft_setup.h
-    src/pffft_cpu_x86.h
-    src/pffft_wide_impl.h
-    src/pffft_wide_select.h
-    src/pffft_wide_sizes.h
-    src/pffft_wide_api.h
-    src/pffft_wide_tu.c
-    include/pffft/pffft.h
-    include/pffft/pffft_double.h
-    src/simd/pf_float.h
-    src/simd/pf_scalar_float.h
-    src/simd/pf_sse1_float.h
-    src/simd/pf_fma_x86.h
-    src/simd/pf_neon_float.h
-    src/simd/pf_wasm_float.h
-    src/simd/pf_altivec_float.h
+set(_pffft_notices
+    LICENSE
+    third_party/pffft/LICENSE.txt
+    third_party/pffft/LicenseRef-PFFFT.txt
 )
-foreach(_file IN ITEMS src/pffft_common.c LICENSE.txt ${_pffft_notice_sources})
+foreach(
+    _file
+    IN
+    ITEMS src/pffft_common.c include/pffft/pffft.h ${_pffft_notices}
+)
     if(NOT EXISTS "${DSD_PFFFT_SOURCE_DIR}/${_file}")
         message(
             FATAL_ERROR
-            "Incompatible PFFFT source directory ${DSD_PFFFT_SOURCE_DIR}: missing ${_file}. Use the pinned fork; for offline builds set FETCHCONTENT_SOURCE_DIR_DSD_PFFFT."
+            "Incompatible PFFFT source directory ${DSD_PFFFT_SOURCE_DIR}: missing ${_file}. Use the pinned pffft-neo revision; for offline builds set FETCHCONTENT_SOURCE_DIR_DSD_PFFFT."
         )
     endif()
 endforeach()
@@ -95,30 +79,7 @@ file(READ "${DSD_PFFFT_SOURCE_DIR}/src/simd/pf_fma_x86.h" _pffft_fma)
 if(NOT _pffft_fma MATCHES "PFFFT_DISABLE_FMA")
     message(
         FATAL_ERROR
-        "Incompatible PFFFT revision: PFFFT_DISABLE_FMA support is required. Use the pinned fork."
-    )
-endif()
-
-# Include the license headers of every compiled backend, not just LICENSE.txt.
-set(PFFFT_NOTICES "${PROJECT_BINARY_DIR}/PFFFT-NOTICES.txt")
-file(
-    WRITE "${PFFFT_NOTICES}"
-    "PFFFT: https://github.com/arancormonk/pffft\nPinned revision: ${PFFFT_SHA}\n\n"
-)
-foreach(_file IN LISTS _pffft_notice_sources)
-    file(READ "${DSD_PFFFT_SOURCE_DIR}/${_file}" _text)
-    string(FIND "${_text}" "*/" _end)
-    math(EXPR _end "${_end} + 2")
-    string(SUBSTRING "${_text}" 0 ${_end} _notice)
-    file(APPEND "${PFFFT_NOTICES}" "${_file}\n${_notice}\n\n")
-endforeach()
-
-if(DSD_ENABLE_WARNINGS AND CMAKE_C_COMPILER_ID MATCHES "Clang|GNU|IntelLLVM")
-    # Upstream's private FFT helpers have external linkage and optional stack
-    # scratch uses VLAs. These exceptions apply only to dependency sources.
-    set_source_files_properties(
-        ${PFFFT_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "-Wno-missing-prototypes;-Wno-vla"
+        "Incompatible PFFFT revision: PFFFT_DISABLE_FMA support is required. Use the pinned pffft-neo revision."
     )
 endif()
 
@@ -137,16 +98,14 @@ target_compile_definitions(
 )
 target_link_libraries(dsd-neo_pffft PRIVATE dsd-neo_warnings)
 if(DSD_PFFFT_ENABLE_SIMD)
-    # The fork also checks compiler target features, including ARM64EC.
-    target_compile_definitions(
-        dsd-neo_pffft
-        PRIVATE PFFFT_ENABLE_NEON PFFFT_ENABLE_WASM_SIMD
-    )
+    # pffft-neo selects SSE or NEON from the compiler's target features;
+    # PFFFT_ENABLE_NEON is its opt-in for NEON on ARM64EC.
+    target_compile_definitions(dsd-neo_pffft PRIVATE PFFFT_ENABLE_NEON)
     # The 8-lane AVX2 FFT backend: GCC and Clang build it inside pffft.c;
     # MSVC (not clang-cl) needs it as a translation unit of its own, compiled
-    # with /arch:AVX2 (PFFFT's README, "MSVC and the 8-lane code"). pffft.c
-    # only calls it after its CPU check; /GL- keeps link-time code generation
-    # from inlining AVX2 code into code that runs first.
+    # with /arch:AVX2 (pffft-neo's src/pffft_wide_tu.c). pffft.c only calls
+    # it after its CPU check; /GL- keeps link-time code generation from
+    # inlining AVX2 code into code that runs first.
     if(MSVC AND NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
         include(CheckCSourceCompiles)
         check_c_source_compiles(
@@ -186,13 +145,22 @@ endif()
 # One stable build-tree location serves install(), Qt resources and packaging.
 set(DSD_PFFFT_LICENSE_DIR "${PROJECT_BINARY_DIR}/pffft-licenses")
 file(MAKE_DIRECTORY "${DSD_PFFFT_LICENSE_DIR}")
-configure_file(
-    "${DSD_PFFFT_SOURCE_DIR}/LICENSE.txt"
-    "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-    COPYONLY
+# pffft-neo's own GPL-2.0-or-later license, the inherited PFFFT/FFTPACK
+# license, and pffft-neo's record of every retained upstream notice.
+foreach(
+    _pair
+    IN
+    ITEMS
+        "LICENSE|pffft-neo-LICENSE.txt"
+        "third_party/pffft/LICENSE.txt|pffft-LICENSE.txt"
+        "third_party/pffft/LicenseRef-PFFFT.txt|pffft-NOTICES.txt"
 )
-configure_file(
-    "${PFFFT_NOTICES}"
-    "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
-    COPYONLY
-)
+    string(REPLACE "|" ";" _pair "${_pair}")
+    list(GET _pair 0 _from)
+    list(GET _pair 1 _to)
+    configure_file(
+        "${DSD_PFFFT_SOURCE_DIR}/${_from}"
+        "${DSD_PFFFT_LICENSE_DIR}/${_to}"
+        COPYONLY
+    )
+endforeach()

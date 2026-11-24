@@ -440,7 +440,7 @@
     },
     {
       "id": "pffft",
-      "name": "PFFFT",
+      "name": "pffft-neo",
       "paths": [
         "cmake/Pffft.cmake"
       ],
@@ -457,23 +457,25 @@
       "license_declared": "NOASSERTION",
       "license_concluded": "NOASSERTION",
       "notices": [],
-      "assessment": "Compiled backend-specific permission texts are generated from the pinned source and shipped as pffft-LICENSE.txt and pffft-NOTICES.txt.",
+      "assessment": "pffft-neo declares GPL-2.0-or-later AND LicenseRef-PFFFT: its contributions are GPL-2.0-or-later and it retains the PFFFT and FFTPACK notices. Its GPL text, the inherited PFFFT license and its retained-notice record are copied from the pinned source and shipped as pffft-neo-LICENSE.txt, pffft-LICENSE.txt and pffft-NOTICES.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
-      "review_date": "2026-10-17",
+      "review_date": "2026-11-23",
       "notice_sha256": {},
       "windows_release": {
         "binaries": [
           "dsd-neo.exe"
         ],
         "notices": {
+          "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
         }
       },
       "android_release": {
         "notices": {
+          "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
         }
@@ -483,6 +485,7 @@
           "dsd-neo"
         ],
         "notices": {
+          "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
         }
@@ -555,7 +558,7 @@
       "license_declared": "NOASSERTION",
       "license_concluded": "NOASSERTION",
       "notices": [],
-      "assessment": "2.6.11 project contributions GPL-2.0-or-later, ISC and PFFFT notices, and unresolved ETSI data terms. Full dependency legal records are packaged.",
+      "assessment": "2.6.12 project contributions GPL-2.0-or-later, ISC notices, embedded pffft-neo (GPL-2.0-or-later with retained PFFFT notices), and unresolved ETSI data terms. Full dependency legal records are packaged.",
       "copyright_permission": "unresolved",
       "gpl_compatibility": "unresolved",
       "patent_status": "not-cleared",
@@ -572,8 +575,10 @@
           "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
           "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
-          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
-          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/README.md": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/legal/components.json": "legal-component",
           "licenses/mbelib-neo/legal/status.md": "legal-component",
           "licenses/mbelib-neo/legal/patents.md": "legal-component"
@@ -587,8 +592,10 @@
           "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
           "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
-          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
-          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/README.md": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/legal/components.json": "legal-component",
           "licenses/mbelib-neo/legal/status.md": "legal-component",
           "licenses/mbelib-neo/legal/patents.md": "legal-component"
@@ -605,8 +612,10 @@
           "licenses/mbelib-neo/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/LicenseRef-ETSI-EN-300-395-2-data.txt": "legal-component",
           "licenses/mbelib-neo/upstream-mbelib-attribution.md": "legal-component",
-          "licenses/mbelib-neo/pffft/LICENSE.txt": "legal-component",
-          "licenses/mbelib-neo/pffft/PFFFT-NOTICES.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/LICENSE": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/README.md": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LICENSE.txt": "legal-component",
+          "licenses/mbelib-neo/pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt": "legal-component",
           "licenses/mbelib-neo/legal/components.json": "legal-component",
           "licenses/mbelib-neo/legal/status.md": "legal-component",
           "licenses/mbelib-neo/legal/patents.md": "legal-component"

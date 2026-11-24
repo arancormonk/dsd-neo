@@ -1095,7 +1095,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         build = self.work / "build"
         (build / "apps/dsd-cli/Release").mkdir(parents=True)
         (build / "apps/dsd-cli/Release/dsd-neo.exe").write_bytes(pe_image(b"dsd-neo", dll=False))
-        for directory, names in (("pffft-licenses", ("pffft-LICENSE.txt", "pffft-NOTICES.txt")),
+        for directory, names in (("pffft-licenses", ("pffft-neo-LICENSE.txt", "pffft-LICENSE.txt", "pffft-NOTICES.txt")),
                                  ("tetra_crypto-licenses", ("tetra_crypto-LICENSE.txt",))):
             (build / directory).mkdir()
             for name in names:

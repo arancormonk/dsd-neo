@@ -282,7 +282,7 @@ class AirspyPackaging(unittest.TestCase):
         build = self.work / "build"
         fft_notices = build / "pffft-licenses"
         fft_notices.mkdir(parents=True)
-        for name in ("pffft-LICENSE.txt", "pffft-NOTICES.txt"):
+        for name in ("pffft-neo-LICENSE.txt", "pffft-LICENSE.txt", "pffft-NOTICES.txt"):
             (fft_notices / name).write_text("FFT notice fixture\n")
         tea_notices = build / "tetra_crypto-licenses"
         tea_notices.mkdir()

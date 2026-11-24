@@ -73,7 +73,10 @@ class PinTests(unittest.TestCase):
         sbom = metadata.add_spdx({"SPDXID": "SPDXRef-DOCUMENT", "packages": []}, pins)
         package = sbom["packages"][0]
         self.assertEqual(package["versionInfo"], pins["PFFFT_SHA"])
+        self.assertEqual(package["name"], "pffft-neo")
+        self.assertEqual(metadata.REPO, "https://github.com/arancormonk/pffft-neo")
         self.assertIn(metadata.REPO, package["downloadLocation"])
+        self.assertIn("pkg:github/arancormonk/pffft-neo@", package["externalRefs"][0]["referenceLocator"])
         self.assertEqual(package["checksums"][0]["checksumValue"], pins["PFFFT_ARCHIVE_SHA256"])
         self.assertEqual(sbom["relationships"][0]["relatedSpdxElement"], package["SPDXID"])
         with self.assertRaises(ValueError):
@@ -93,6 +96,12 @@ class PinTests(unittest.TestCase):
         self.assertIn(pins["PFFFT_SHA"], result)
         self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON', result)
         self.assertIn('grep -qx "PFFFT_SHA=$_pffft_sha"', result)
+        self.assertIn("arancormonk/pffft-neo/tar.gz/", result)
+        self.assertIn('-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-neo-$_pffft_sha"', result)
+        # A recipe published for the PFFFT fork moves to pffft-neo's archive and unpack directory.
+        published = result.replace("pffft-neo-", "pffft-").replace("pffft-neo/", "pffft/")
+        self.assertNotIn("pffft-neo", published)
+        self.assertEqual(aur.update(published, pins), result)
 
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"), "AUR requires a Unix shell")
     def test_aur_transition_and_stale_pin(self):
@@ -128,7 +137,7 @@ class PinTests(unittest.TestCase):
             sha = "1" * 40
             self.assertEqual(updater.download_archive(sha), b"archive")
             opener.open.assert_called_with(
-                f"https://codeload.github.com/arancormonk/pffft/tar.gz/{sha}", timeout=120)
+                f"https://codeload.github.com/arancormonk/pffft-neo/tar.gz/{sha}", timeout=120)
             opener.add_handler.assert_called_once()
             handler = opener.add_handler.call_args.args[0]
             self.assertIsInstance(handler, updater.urllib.request.HTTPSHandler)
@@ -140,8 +149,9 @@ class PinTests(unittest.TestCase):
         sha = "1" * 40
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w:gz") as archive:
-            for path in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE.txt"):
-                entry = tarfile.TarInfo(f"pffft-{sha}/{path}")
+            for path in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE",
+                         "third_party/pffft/LICENSE.txt", "third_party/pffft/LicenseRef-PFFFT.txt"):
+                entry = tarfile.TarInfo(f"pffft-neo-{sha}/{path}")
                 archive.addfile(entry, io.BytesIO())
         payload = data.getvalue()
         with tempfile.TemporaryDirectory() as directory:

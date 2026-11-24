@@ -2151,7 +2151,7 @@ jobs:
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euo pipefail
             source tools/ci-dependency-pins.env
-            tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft "$PFFFT_SHA" /tmp/dsd-pffft
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft-neo "$PFFFT_SHA" /tmp/dsd-pffft
             export DSD_PFFFT_SOURCE_DIR=/tmp/dsd-pffft
             tools/fetch-pinned-git.sh https://github.com/MidnightBlueLabs/TETRA_crypto "$TETRA_CRYPTO_SHA" /tmp/dsd-tetra-crypto
             export DSD_TETRA_CRYPTO_SOURCE_DIR=/tmp/dsd-tetra-crypto

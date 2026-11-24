@@ -15,7 +15,7 @@ END = "# END pinned PFFFT"
 def update(text, pins):
     block = f'''{BEGIN}
 _pffft_sha={pins["PFFFT_SHA"]}
-source+=("pffft-$_pffft_sha.tar.gz::https://codeload.github.com/arancormonk/pffft/tar.gz/$_pffft_sha")
+source+=("pffft-neo-$_pffft_sha.tar.gz::https://codeload.github.com/arancormonk/pffft-neo/tar.gz/$_pffft_sha")
 sha256sums+=('{pins["PFFFT_ARCHIVE_SHA256"]}')
 {END}
 '''
@@ -28,11 +28,14 @@ sha256sums+=('{pins["PFFFT_ARCHIVE_SHA256"]}')
         text = text.replace("build() {", block + "\nbuild() {", 1)
     else:
         raise ValueError("Unsupported PKGBUILD: expected one build() function")
+    # Published recipes still unpack the PFFFT fork's archive name; pffft-neo's unpacks as pffft-neo-<sha>.
+    text = text.replace('-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-$_pffft_sha"',
+                        '-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-neo-$_pffft_sha"')
     if "-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=" not in text:
         anchor = "        -DCMAKE_INSTALL_PREFIX=/usr \\\n"
         if text.count(anchor) != 1:
             raise ValueError("Unsupported PKGBUILD: expected one CMake install prefix")
-        options = '        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-$_pffft_sha" \\\n'
+        options = '        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-neo-$_pffft_sha" \\\n'
         # The TETRA_crypto helper may already have disconnected FetchContent.
         if "-DFETCHCONTENT_FULLY_DISCONNECTED=ON" not in text:
             options += '        -DFETCHCONTENT_FULLY_DISCONNECTED=ON \\\n'

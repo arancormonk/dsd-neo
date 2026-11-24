@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 PINS = Path(__file__).resolve().with_name("ci-dependency-pins.env")
-REPO = "https://github.com/arancormonk/pffft"
+REPO = "https://github.com/arancormonk/pffft-neo"
 PACKAGE_ID = "SPDXRef-Package-dsd-pffft"
 
 
@@ -29,7 +29,7 @@ def add_spdx(document, pins):
     if any(package.get("SPDXID") == PACKAGE_ID for package in packages):
         raise ValueError("SBOM already contains the pinned PFFFT package")
     packages.append({
-        "name": "pffft", "SPDXID": PACKAGE_ID, "versionInfo": sha,
+        "name": "pffft-neo", "SPDXID": PACKAGE_ID, "versionInfo": sha,
         "downloadLocation": f"{REPO}/archive/{sha}.tar.gz",
         "homepage": REPO, "filesAnalyzed": False,
         "licenseConcluded": "NOASSERTION", "licenseDeclared": "NOASSERTION",
@@ -37,7 +37,7 @@ def add_spdx(document, pins):
         "sourceInfo": f"Compiled into dsd-neo from {REPO} at commit {sha}",
         "checksums": [{"algorithm": "SHA256", "checksumValue": pins["PFFFT_ARCHIVE_SHA256"]}],
         "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
-                          "referenceLocator": f"pkg:github/arancormonk/pffft@{sha}"}],
+                          "referenceLocator": f"pkg:github/arancormonk/pffft-neo@{sha}"}],
     })
     document.setdefault("relationships", []).append({
         "spdxElementId": document["SPDXID"], "relationshipType": "DESCRIBES",
@@ -55,7 +55,7 @@ def main():
     pins = read_pins()
     if args.osv:
         document = {"results": [{"packages": [{"package": {
-            "name": "github.com/arancormonk/pffft", "commit": pins["PFFFT_SHA"],
+            "name": "github.com/arancormonk/pffft-neo", "commit": pins["PFFFT_SHA"],
         }}]}]}
         output = args.osv
     else:
