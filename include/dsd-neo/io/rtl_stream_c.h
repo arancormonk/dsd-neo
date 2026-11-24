@@ -1045,7 +1045,7 @@ void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_sq
 
 /**
  * @brief 1 while the receiver runs a new analog channel closed, waiting for the decoder's write (issue #899): a stream
- * open, a marked retune's landing, a family switch into analog or onto another kind, or a return to the monitor from a
+ * open with no gate resolved for it (rtl_stream_resolve_open_gate()), a marked retune's landing, a family switch into analog or onto another kind, or a return to the monitor from a
  * symbol profile. Lock-free; any thread.
  */
 int rtl_stream_gate_closed_start(void);
