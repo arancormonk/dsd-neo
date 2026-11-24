@@ -20108,6 +20108,14 @@ squelch_test_ring_checks(void) {
     return 0;
 }
 
+/* Whether the status the demod publishes now shows no dynamic squelch running. */
+static int
+squelch_test_status_inactive(void) {
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    return rtl_stream_get_squelch_status(&st) == 0 && !st.active && !st.noise && st.gate_open == 1;
+}
+
 /* The status the demod publishes, while the tracker runs and after. */
 static int
 squelch_test_status_checks(void) {
@@ -20129,16 +20137,11 @@ squelch_test_status_checks(void) {
     }
     /* The flags alone (a closed start's, with no dynamic squelch run) publish none. */
     demod.squelch_auto_ran = 0;
-    demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
+    if (!squelch_test_status_inactive()) {
         return 12;
     }
     demod.result_flags_active = 0;
-    demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
-        return 12;
-    }
-    return 0;
+    return squelch_test_status_inactive() ? 0 : 12;
 }
 
 /* The status while the noise squelch runs: its gate and quieting, not the tracker's. */
@@ -21248,11 +21251,18 @@ channel_gate_test_family_cases(const dsd_opts* analog_opts, const dsd_opts* digi
     out->open_opened = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
     (void)rtl_stream_get_squelch_status(&status);
     out->open_counted = status.closed_starts == 1 ? 1 : 0;
+}
 
-    /* An open the decoder resolved the gate for (round 9) runs it from its first block, with no closed start; the
-       next open has none resolved and starts closed. */
+/* An open the decoder resolved the gate for (round 9) runs it from its first block, with no closed start; the next
+   open has none resolved and starts closed. */
+static void
+channel_gate_test_resolved_open_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    (void)family_test_seed_open(analog_opts, 48000, 0);
     rtl_stream_resolve_open_gate(&noise10, &off, &off);
     rtl_stream_gate_open(&off, NULL);
+    rtl_stream_squelch_status status{};
     (void)rtl_stream_get_squelch_status(&status);
     out->resolved_open_runs = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
                                && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == 0)
@@ -21531,6 +21541,7 @@ channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital
     channel_gate_test_closed_status_cases(analog_opts, out);
     channel_gate_test_public_setter_cases(analog_opts, out);
     channel_gate_test_digital_row_cases(digital_opts, out);
+    channel_gate_test_resolved_open_cases(analog_opts, out);
 }
 
 extern "C" int
