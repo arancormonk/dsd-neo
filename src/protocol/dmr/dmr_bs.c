@@ -445,6 +445,9 @@ handle_dmr_bs_frame_sync_miss(const dmr_bs_ctx* ctx, uint8_t* vc1, uint8_t* vc2)
 /* Counts an EMB that did not decode, or named another colour code, on @p slot; returns the misses in a row. */
 static uint8_t
 note_dmr_bs_emb_miss(dsd_state* state, uint8_t slot) {
+    if (slot >= (uint8_t)(sizeof state->dmr_emb_err / sizeof state->dmr_emb_err[0])) {
+        return 0; /* not a slot: count nothing */
+    }
     uint8_t* miss = &state->dmr_emb_err[slot];
     if (*miss < 0xFF) {
         (*miss)++;
