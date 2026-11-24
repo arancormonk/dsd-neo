@@ -9953,7 +9953,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   receiver is on, its digital gate, and the session's a new channel off the monitor runs), `rtl_stream_gate_closed_start()` (a closed start waits for
   that write) and `rtl_stream_start_gated()` (a start on the `rtl_stream_start_gate` the decoder resolved for it: run
   from the first block when resolved, the session's squelch always; `rtl_stream_get_squelch_running()` says what the
-  next block takes), and
+  next block takes, and `rtl_stream_get_squelch_status()`, which the telemetry polls, reads none of it), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
