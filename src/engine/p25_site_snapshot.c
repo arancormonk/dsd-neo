@@ -51,7 +51,7 @@ p25_site_snapshot_chan_map_reserve(dsd_p25_site_snapshot* snapshot, size_t neede
 /*
  * Capture state's channel map as (channel, frequency) pairs. state->trunk_chan_map_used[] is
  * already the exact sorted set of mapped channels, so this walks it directly rather than
- * scanning 64K slots.
+ * scanning 64K slots. Channel 0, which that set never holds, is kept on its own.
  */
 static int
 p25_site_snapshot_save_chan_map(const dsd_state* state, dsd_p25_site_snapshot* snapshot) {
@@ -70,13 +70,14 @@ p25_site_snapshot_save_chan_map(const dsd_state* state, dsd_p25_site_snapshot* s
         snapshot->chan_map_freq[i] = state->trunk_chan_map[chan];
     }
     snapshot->trunk_chan_map_used_count = used;
+    snapshot->chan_map_zero = state->trunk_chan_map[0];
     snapshot->trunk_chan_map_seq = state->trunk_chan_map_seq;
     return rc;
 }
 
 /*
- * Reinstate a saved channel map. Only the mapped channels on the state are cleared - a
- * DSD_MEMSET of the whole 64K-entry map would cost half a megabyte on every restore.
+ * Reinstate a saved channel map. Only the mapped channels on the state, and channel 0, are
+ * replaced - a DSD_MEMSET of the whole 64K-entry map would cost half a megabyte on every restore.
  */
 static void
 p25_site_snapshot_restore_chan_map(dsd_state* state, const dsd_p25_site_snapshot* snapshot) {
@@ -106,6 +107,7 @@ p25_site_snapshot_restore_chan_map(dsd_state* state, const dsd_p25_site_snapshot
         state->trunk_chan_map_used[i] = chan;
     }
     state->trunk_chan_map_used_count = (uint32_t)used;
+    state->trunk_chan_map[0] = snapshot->chan_map_zero;
     state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
 }
 

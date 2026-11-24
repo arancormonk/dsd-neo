@@ -119,6 +119,7 @@ Item {
             prefs.backgroundListening = oldBackgroundListening;
             prefs.lastStartedKind = "";
             prefs.lastStartedUid = "";
+            prefs.compactView = false;
             testContext.setScanTestUsb(false, false);
             testContext.useLifecycleHost(false);
             while (savedSystems.count)
@@ -695,9 +696,13 @@ Item {
         function test_session_menu_routes_data() {
             var rows = [];
             for (var height of [900, 440]) {
-                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Compact view", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
+            // Issue #901: Compact view starts past tier 1 on a tall phone too,
+            // which leaves Sites and Spectrum to this menu.
+            for (var moved of ["Sites", "Spectrum"])
+                rows.push({tag: moved + "-900-compact", text: moved, height: 900, compact: true});
             return rows;
         }
         function test_session_menu_routes(data) {
@@ -708,7 +713,11 @@ Item {
             testContext.setMetric("radioInput", true);
             app.height = data.height;
             var monitor = item("monitorScreen");
-            if (data.height < 500) {
+            if (data.compact) {
+                prefs.compactView = true;
+                tryVerify(function () { return monitor.tier >= 2; });
+            }
+            if (data.height < 500 || data.compact) {
                 // A short phone moves Sites and Spectrum into this menu (#718).
                 tryVerify(function () { return monitor.tier >= 1; });
                 tryCompare(item("runningSiteChooserButton"), "visible", false);
@@ -717,7 +726,7 @@ Item {
             var menu = item("sessionMenu");
             monitor.openSessionMenu();
             tryCompare(menu, "visible", true);
-            compare(menu.actions.length, 10);
+            compare(menu.actions.length, 11);
             var button = visualChild(menu, function (entry) {
                 return entry.text === data.text && typeof entry.clicked === "function";
             });
@@ -725,12 +734,29 @@ Item {
             verify(waitForPolish(app.contentItem));
             var scroll = item("modalSheetScroll", menu);
             if (button.mapToItem(scroll, 0, button.height).y > scroll.height) {
-                // Start on a destination row: its tap handler must let the sheet flick.
+                // Start on a destination row: its tap handler must let the sheet flick. The finger moves slowly and
+                // rests before it lets go, so the sheet stops where the finger does, with no fling: just far enough
+                // to bring the row into view (the middle of the range that shows it whole), never past it. A fling
+                // ran a menu this tall (issue #901 added Compact view) past a row in its middle.
                 var dragRow = item(menu.actions[3].objectName, menu);
                 var previousY = scroll.contentY;
-                mouseDrag(dragRow, dragRow.width / 2, dragRow.height / 2, 0, -190, Qt.LeftButton);
-                tryVerify(function () { return scroll.contentY > previousY; });
+                var least = button.mapToItem(scroll, 0, button.height).y - scroll.height;
+                var most = button.mapToItem(scroll, 0, 0).y;
+                verify(least < most, "the row fits the sheet");
+                var target = (least + most) / 2;
+                var start = dragRow.mapToItem(scroll, dragRow.width / 2, dragRow.height / 2);
+                var fingerY = start.y;
+                mousePress(scroll, start.x, fingerY);
+                for (var step = 0; step < 200 && scroll.contentY - previousY < target; ++step) {
+                    fingerY -= 4;
+                    mouseMove(scroll, start.x, fingerY, 16);
+                }
+                wait(300);
+                mouseRelease(scroll, start.x, fingerY);
                 tryCompare(scroll, "moving", false);
+                verify(scroll.contentY > previousY, "the drag moved the sheet");
+                var moved = scroll.contentY - previousY;
+                verify(moved >= least && moved <= most, "the drag stopped at " + moved + ", outside " + least + " to " + most);
                 verify(menu.visible, "dragging must not activate a destination");
             }
             verify(button.mapToItem(scroll, 0, 0).y >= 0);
@@ -754,6 +780,10 @@ Item {
             }
             if (data.text === "History")
                 compare(app.sessionDestination, "history");
+            if (data.text === "Compact view") {
+                verify(prefs.compactView, "Compact view turns compact view on");
+                prefs.compactView = false;
+            }
             if (data.text === "Settings")
                 compare(app.sessionDestination, "settings");
             if (data.text === "Diagnostics")
@@ -766,9 +796,9 @@ Item {
             app.sessionRow = -1;
             testContext.setMetric("radioInput", false);
             menu.open();
-            // Talkgroups, Activity, Map (issue #800), History, Settings and Diagnostics: none needs a radio or a
-            // saved system.
-            compare(menu.actions.length, 6);
+            // Talkgroups, Activity, Map (issue #800), History, Compact view (issue #901), Settings and Diagnostics:
+            // none needs a radio or a saved system.
+            compare(menu.actions.length, 7);
             verify(Ui.Navigation.back(app));
             verify(!menu.visible);
         }

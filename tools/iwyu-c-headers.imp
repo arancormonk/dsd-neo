@@ -58,4 +58,11 @@
   { include: ["<uchar.h>", public, "<cuchar>", public] },
   { include: ["<wchar.h>", public, "<cwchar>", public] },
   { include: ["<wctype.h>", public, "<cwctype>", public] },
+
+  # Not from the upstream table: __GLIBC__ and __GLIBC_MINOR__ come from glibc's
+  # <features.h>, which is glibc-only; every glibc header includes it, so a file
+  # that tests them (guarded by defined(__GLIBC__) for every other C library)
+  # takes them from a standard header, <stdio.h>, rather than naming it.
+  { symbol: ["__GLIBC__", private, "<stdio.h>", public] },
+  { symbol: ["__GLIBC_MINOR__", private, "<stdio.h>", public] },
 ]

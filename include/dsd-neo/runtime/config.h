@@ -290,6 +290,12 @@ typedef struct dsdneoRuntimeConfig {
     int dmr_t3_cc_freq_is_set;
     int dmr_t3_cc_lcn_is_set;
     int dmr_t3_start_lcn_is_set;
+    /* Supplied (env or the --calc-* flag) but unusable: the matching *_is_set stays 0, and the calculator refuses
+       the run rather than print a map without that setting. */
+    int dmr_t3_step_hz_invalid;
+    int dmr_t3_cc_freq_invalid;
+    int dmr_t3_cc_lcn_invalid;
+    int dmr_t3_start_lcn_invalid;
 
     /* DMR TIII heuristic fill (opt-in) */
     int dmr_t3_heur_is_set;
@@ -647,6 +653,7 @@ typedef struct dsdneoUserConfig {
     int trunk_p25_prefer_candidates;
     int trunk_scan_voice_only;
     int trunk_scan_skip_silent;
+    int trunk_scan_skip_silent_ms; /* 0 = the calibrated reading; else 10..500 (#834) */
     int trunk_scan_voice_qualify_ms;
     int trunk_scan_voice_hold_ms;
     int trunk_scan_max_visit_ms;
@@ -704,6 +711,9 @@ typedef struct dsdneoUserConfig {
        had. */
     int rdio_analog_system_id;
     int rdio_analog_talkgroup;
+    /* The talkgroup of a digital call with no talkgroup and no frequency, 0..2147483647 (0: not exported) (issue
+       #888). The loader refuses a value outside the range and keeps the one it had. */
+    int rdio_unknown_talkgroup;
     int unknown_talkgroups_only; /* bool: record only talkgroups without a row (opts->record_unknown_only) */
     /* The longest pause in ms one analog call and its recording survive (opts->analog_record_max_gap_ms; issue #756):
        0..10000, 200 or less is off. The loader refuses a value outside the range and keeps the one it had. */

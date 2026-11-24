@@ -213,10 +213,10 @@ write_silent_pcm16_wav(const char* path, uint32_t sample_rate, uint32_t seconds)
 }
 
 // Export the closing recording through the real rdio-scanner exporter, as close_and_rename_wav_file_ex() does, and
-// keep the sidecar it wrote.
+// keep the sidecar it wrote. A commit rotation (DSD_WAV_EXPORT_COMMITTED) allows the fallback talkgroup (issue #888 D7).
 static void
-close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened, int index,
-                         close_wav_capture* capture) {
+close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened, int export_mode,
+                         int index, close_wav_capture* capture) {
     char name[32];
     char wav_path[DSD_TEST_PATH_MAX];
     char json_path[DSD_TEST_PATH_MAX];
@@ -229,7 +229,9 @@ close_wav_export_sidecar(const dsd_opts* opts, const Event_History_I* event_stru
         return;
     }
     if (write_silent_pcm16_wav(wav_path, 8000U, CLOSE_WAV_SECONDS) == 0
-        && dsd_rdio_export_call(opts, event_struct, wav_path, opened) == 0) {
+        && dsd_rdio_export_call_fallback(opts, event_struct, wav_path, opened, 0,
+                                         export_mode == DSD_WAV_EXPORT_COMMITTED, NULL)
+               == 0) {
         FILE* f = fopen(json_path, "rb");
         if (f != NULL) {
             const size_t n = fread(capture->sidecar, 1, sizeof capture->sidecar - 1U, f);
@@ -254,14 +256,14 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const Event_History_I* event_struct, time_t opened, int export_mode,
                              const dsd_wav_owner* owner) {
     UNUSED(wav_file);
     UNUSED(wav_out_filename);
     UNUSED(dir);
     UNUSED(owner);
     g_close_wav_count++;
-    if (export_call) {
+    if (export_mode != DSD_WAV_EXPORT_NONE) {
         g_close_wav_export_count++;
     }
     if (event_struct != NULL && g_close_wav_capture_count < CLOSE_WAV_CAPTURE_MAX) {
@@ -270,11 +272,12 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         capture->event_time = event_struct->Event_History_Items[0].event_time;
         capture->stream_export = event_struct->Event_History_Items[0].stream_blocked == 0U;
         capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
-        capture->export_call = export_call;
+        capture->export_call = export_mode;
         capture->journal_start = dsd_rdio_recording_start(&event_struct->Event_History_Items[0], opened, 0);
         capture->sidecar[0] = '\0';
-        if (export_call && capture->stream_export != 0U && opts != NULL && g_close_wav_export_dir[0] != '\0') {
-            close_wav_export_sidecar(opts, event_struct, opened, index, capture);
+        if (export_mode != DSD_WAV_EXPORT_NONE && capture->stream_export != 0U && opts != NULL
+            && g_close_wav_export_dir[0] != '\0') {
+            close_wav_export_sidecar(opts, event_struct, opened, export_mode, index, capture);
         }
     }
     return NULL;
@@ -1872,6 +1875,56 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     rc |= expect_has_substr("p25 event voice prefix", item->event_string,
                             "TEST TGT: 00050061; SRC: 05790062; NAC: 293; NET_STS: 45564:006:10.10;");
     rc |= expect_has_substr("p25 event call class", item->event_string, "Group;");
+    return rc;
+}
+
+// Issue #888 B17: the event line prints a row's 32-bit IDs unsigned, at the same minimum width: an ID above 2147483647
+// (an SDRTrunk import, or a test row like these) is never shown negative. DMR, P25, NXDN and X2-TDMA print 8 digits,
+// EDACS extended addressing 7.
+static int
+test_event_line_prints_wide_ids_unsigned(void) {
+    static const struct {
+        const char* label;
+        int sync;
+        int ea;
+        const char* want;
+    } cases[] = {
+        {"dmr", DSD_SYNC_DMR_BS_VOICE_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; CC: "},
+        {"p25", DSD_SYNC_P25P1_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; NAC: "},
+        {"nxdn", DSD_SYNC_NXDN_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; RAN: "},
+        {"x2-tdma", DSD_SYNC_X2TDMA_VOICE_POS, 0, "TEST TGT: 4294967295; SRC: 3000000000; "},
+        {"edacs ea", DSD_SYNC_EDACS_POS, 1, "TEST TGT: 4294967295; SRC: 3000000000; LCN: "},
+    };
+
+    // On the heap (AGENTS.md), freed at the end: no permanent static copy of the fixture per test.
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(*event_history));
+    assert(opts && state && event_history);
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_fixture(opts, state, event_history);
+        state->lastsynctype = cases[i].sync;
+        state->ea_mode = cases[i].ea;
+        assert(observe_test_call(state, 0U, cases[i].sync, DSD_CALL_KIND_GROUP_VOICE, 4294967295ULL, 3000000000ULL, 0U,
+                                 0U, DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        watchdog_event_current(opts, state, 0);
+        const Event_History* item = &state->event_history_s[0].Event_History_Items[0];
+        rc |= expect_has_substr(cases[i].label, item->event_string, cases[i].want);
+    }
+    reset_fixture(opts, state, event_history);
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    assert(observe_test_call(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 61U, 7U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    rc |= expect_has_substr("small ids keep their width", state->event_history_s[0].Event_History_Items[0].event_string,
+                            "TEST TGT: 00000061; SRC: 00000007; CC: ");
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -5072,6 +5125,156 @@ test_reacq_merge_takes_the_replacement_home(void) {
     return rc;
 }
 
+// A roaming radio named by its home alone, then, in the reacquired segment (no end decoded between them), another
+// radio's abbreviated voice user naming working address 3002: 3002 talks now, so the call withdraws the roamer's home
+// and its alias (dsd_call_state_note_source_address(), as p25p2_note_voice_home() does), and the merged row follows:
+// it never pairs 3002 with the roamer's home or alias.
+static int
+test_reacq_merge_carries_a_withdrawn_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_CONTINUE, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    const dsd_call_observation abbreviated = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 3002U,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &abbreviated, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    int dropped = 0;
+    assert(dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
+    assert(dropped == 1);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int rc = expect_int("one row", committed_history_rows(&event_history[0]), 1);
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("the merged row names the working address", (int)merged->source_id, 3002);
+    rc |= expect_int("the merged row drops the roamer's home",
+                     merged->src_home_key == 0U && merged->src_home[0] == '\0', 1);
+    rc |= expect_int("the merged row drops the roamer's alias", strstr(merged->alias, "FIRSTRADIO") == NULL, 1);
+    rc |=
+        expect_int("the merged line does not name the roamer", strstr(merged->event_string, "1234567@2A7") == NULL, 1);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+// As test_reacq_merge_carries_a_withdrawn_home(), but a call notice commits the reacquired segment into the row before
+// the abbreviated voice user withdraws the home, so the withdrawal and the new talker's alias land on the committed row
+// itself: the terminator's merge keeps that alias rather than putting back the staged row's empty one.
+static int
+test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-withdrawn-home-events");
+    assert(fd >= 0);
+    close(fd);
+    remove(path);
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", path);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_CONTINUE, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_emit_call_notice_nonfinalizing(opts, state, 0U, &call, "NOTICE") == 1);
+    const dsd_call_observation abbreviated = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 3002U,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &abbreviated, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    int dropped = 0;
+    assert(dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
+    assert(dropped == 1);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "NEWTALKER") >= 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    /* While the call still runs, the committed row the frontends show already names the working address. */
+    int rc = 0;
+    int shown = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (strstr(row->alias, "NEWTALKER") == NULL) {
+            continue;
+        }
+        shown = 1;
+        rc |= expect_int("the live committed row names the working address", (int)row->source_id, 3002);
+        rc |= expect_int("the live committed line no longer names the roamer",
+                         strstr(row->event_string, "1234567@2A7") == NULL, 1);
+        rc |= expect_has_substr("the live committed line names the talker", row->event_string, "3002");
+    }
+    rc |= expect_int("the new talker's alias is on a committed row", shown, 1);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int found = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (row->source_id != 3002U) {
+            continue;
+        }
+        found = 1;
+        rc |= expect_int("the committed row keeps the new talker's alias", strstr(row->alias, "NEWTALKER") != NULL, 1);
+        rc |= expect_int("the committed row drops the roamer's alias", strstr(row->alias, "FIRSTRADIO") == NULL, 1);
+        rc |= expect_int("the committed row drops the roamer's home", row->src_home_key == 0U, 1);
+    }
+    rc |= expect_int("the working address's row", found, 1);
+    /* The event log follows the row: the corrected line, naming the working address, is written as the withdrawal
+       lands, beside the new talker's alias. */
+    char buf[16384] = {0};
+    const int read_rc = read_event_log(path, buf, sizeof buf);
+    remove(path);
+    rc |= expect_int("the event log was readable", read_rc, 0);
+    rc |= expect_has_substr("the event log names the working address", buf,
+                            "Enriched: TEST TGT: 00000100; SRC: 00003002;");
+    rc |= expect_has_substr("the event log reports the new talker's alias", buf, "Talker Alias: NEWTALKER");
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 // A replacement roaming radio whose home differs only by WACN (the same `unit@system` text) is still another radio:
 // the merged row takes its alias, not the first radio's, and the event log reports the new alias.
 static int
@@ -6362,6 +6565,100 @@ test_rdio_sidecar_files_each_recording_at_its_start(void) {
     (void)dsd_test_rmdir(g_close_wav_export_dir);
     g_close_wav_export_dir[0] = '\0';
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Issue #888: M17 calls through the real observation, render and commit rotation to the rdio-scanner sidecar, by the
+// width of their encoded addresses. A destination up to UINT32_MAX is the call's talkgroup as decoded, labelled by its
+// callsign. One above it, and the broadcast address, leave the row with no number (the row keeps none), so the call is
+// exported under its frequency in kHz and labelled by protocol, CAN and MHz, never by the per-call callsign text. A
+// source above UINT32_MAX lists no radio. Callsigns are invented.
+static int
+test_m17_rdio_export_by_address_width(void) {
+    static const struct {
+        const char* label;
+        uint64_t dst;
+        const char* dst_text;
+        uint64_t src;
+        const char* src_text;
+        uint32_t want_tg;
+        const char* want_tag;
+        const char* want_src;
+    } cases[] = {
+        {"M17 destination at UINT32_MAX", 0xFFFFFFFFULL, "N0CALL", 2748U, "N0SRC", 4294967295U, "N0CALL",
+         "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 destination above UINT32_MAX", 0x100000000ULL, "N0WIDE", 2748U, "N0SRC", 433475U,
+         "M17 CAN 3 433.4750 MHz", "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 broadcast", 0xFFFFFFFFFFFFULL, "BROADCAST", 2748U, "N0SRC", 433475U, "M17 CAN 3 433.4750 MHz",
+         "\"srcList\": [{\"pos\":0,\"src\":2748}],"},
+        {"M17 source above UINT32_MAX", 1234U, "N0CALL", 0x100000000ULL, "N0WIDE", 1234U, "N0CALL", "\"srcList\": [],"},
+    };
+
+    // On the heap (AGENTS.md), freed at the end: no permanent static copy of the fixture per test.
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(*event_history));
+    assert(opts && state && event_history);
+    static max_align_t wav_sentinel;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_fixture(opts, state, event_history);
+        state->lastsynctype = DSD_SYNC_M17_STR_POS;
+        opts->wav_out_f = (SNDFILE*)&wav_sentinel;
+        g_open_wav_result = &wav_sentinel;
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_system_id = 48;
+        if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_m17")) {
+            DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the M17 rdio test\n");
+            rc = 1;
+            break;
+        }
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_M17_STR_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+            .ota_target_id = cases[i].dst,
+            .ota_source_id = cases[i].src,
+            .service_options = 3U, /* the CAN */
+            .has_service_metadata = 1U,
+            .frequency_hz = 433475000,
+            .observed_m = g_observed_m,
+        };
+        DSD_SNPRINTF(observation.target_text, sizeof observation.target_text, "%s", cases[i].dst_text);
+        DSD_SNPRINTF(observation.source_text, sizeof observation.source_text, "%s", cases[i].src_text);
+        g_observed_m += 0.1;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0U);
+        assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+        dsd_event_sync_slot(opts, state, 0U);
+
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the commit closes and exports its recording", cases[i].label);
+        rc |= expect_int(tag, g_close_wav_capture_count, 1);
+        const close_wav_capture* capture = &g_close_wav_captures[0];
+        rc |= expect_int(tag, capture->export_call, DSD_WAV_EXPORT_COMMITTED);
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", cases[i].want_tg);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: talkgroup", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, want);
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want_tag);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: label", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, want);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: radio", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, cases[i].want_src);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: frequency", cases[i].label);
+        rc |= expect_has_substr(tag, capture->sidecar, "\"freqList\": [{\"pos\": 0, \"freq\": 433475000}],");
+        const Event_History* row = &event_history[0].Event_History_Items[1];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row keeps the target it decoded", cases[i].label);
+        rc |= expect_u64(tag, row->target_id, cases[i].dst <= UINT32_MAX ? cases[i].dst : 0U);
+
+        (void)dsd_test_rmdir(g_close_wav_export_dir);
+        g_close_wav_export_dir[0] = '\0';
+    }
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -9098,7 +9395,7 @@ expect_stream_close(const char* label, int closes, int want_export, uint32_t wan
     }
     const close_wav_capture* capture = &g_close_wav_captures[g_close_wav_capture_count - 1];
     DSD_SNPRINTF(tag, sizeof tag, "%s: the event layer asks for the export", label);
-    rc |= expect_int(tag, capture->export_call, 1);
+    rc |= expect_int(tag, capture->export_call, DSD_WAV_EXPORT_COMMITTED);
     DSD_SNPRINTF(tag, sizeof tag, "%s: export verdict", label);
     rc |= expect_int(tag, capture->stream_export, want_export);
     if (want_target != 0U) {
@@ -9487,7 +9784,7 @@ test_unjudged_recordings_export(void) {
     rc |= expect_int("NFM call under the allow list: not blocked from the export", (int)staged->stream_blocked, 0);
     close_wav_capture capture;
     DSD_MEMSET(&capture, 0, sizeof capture);
-    close_wav_export_sidecar(&opts, &event_history[0], 0, 0, &capture);
+    close_wav_export_sidecar(&opts, &event_history[0], 0, DSD_WAV_EXPORT_EARLY, 0, &capture);
     rc |= expect_has_substr("NFM call exported under its frequency in kHz", capture.sidecar, "\"talkgroup\": 154437,");
     rc |= expect_u64("the export id is not stored on the row", staged->target_id, 0U);
     const int closes = g_close_wav_capture_count;
@@ -9741,6 +10038,7 @@ main(void) {
     rc |= test_edacs_service_string_appends_past_pointer_size();
     rc |= test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening();
     rc |= test_p25_event_string_keeps_full_prefix_after_sprintf_hardening();
+    rc |= test_event_line_prints_wide_ids_unsigned();
     rc |= test_source_less_current_event_updates_history_metadata();
     rc |= test_event_log_writes_optional_metadata_lines();
     rc |= test_event_log_unstamped_row_keeps_bare_detail_lines();
@@ -9788,6 +10086,8 @@ main(void) {
     rc |= test_reacq_merge_unions_site();
     rc |= test_reacq_merge_keeps_roaming_home();
     rc |= test_reacq_merge_takes_the_replacement_home();
+    rc |= test_reacq_merge_carries_a_withdrawn_home();
+    rc |= test_reacq_merge_keeps_an_alias_written_after_the_withdrawal();
     rc |= test_reacq_merge_logs_the_replacement_alias();
     rc |= test_reacq_merge_refuses_conflict();
     rc |= test_row_channel_fill_only_with_kind();
@@ -9818,6 +10118,7 @@ main(void) {
     rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_end_alert_due_runs_on_the_decode_clock();
     rc |= test_rdio_sidecar_files_each_recording_at_its_start();
+    rc |= test_m17_rdio_export_by_address_width();
     rc |= test_drop_hold_due_runs_on_the_decode_clock();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();

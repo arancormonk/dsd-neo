@@ -818,6 +818,8 @@ typedef struct {
     char src_home[24];   //display only: a roaming P25 radio's home identity, unit@system (never a source)
     uint64_t
         src_home_key; //the talker's full P25 home SUID (WACN, System ID, unit) when named, 0 otherwise: which radio's home the row shows
+    // 1 when the call withdrew a home an earlier talker named (dsd_call_source_home::withdrawn)
+    uint8_t src_home_withdrawn;
     char tgt_str[200]; //target, expressed as a string for M17, YSF, DSTAR, dPMR
     char t_name[200];  //this is the string present from any csv groupName import
     char s_name[200];  //same as above, but if loaded from a src value and not tg value
@@ -843,6 +845,12 @@ typedef struct {
     // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
     // call has not been judged. Bookkeeping as stream_blocked is.
     uint32_t policy_target_id;
+    // Set when the recording of the row's call, if it has no talkgroup, must not be exported under rdio's fallback
+    // talkgroup (--rdio-unknown-talkgroup, a frequency in kHz; issue #888): its call named a party its decoder could
+    // not read as an ID (dsd_call_snapshot::identity_unread: a played SDRTrunk roaming or ISSI identity), or it is a
+    // YSF call that has not ended on a decoded terminator. Set by each render from the call; 0 for a row never
+    // rendered. Bookkeeping as stream_blocked is.
+    uint8_t fallback_blocked;
     // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
     // call a later release or resume ends keeps the identity it began with. operator_tuned: the
     // operator held the receiver (a paused scan, a tuner release, a manual tune). scan_member: a scan was running,
@@ -1672,6 +1680,14 @@ struct dsd_state {
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
+    /* DMR Tier III: one bit per LPCN row (row l in byte l / 8, bit l % 8) that the DMR over-the-air writer set and no
+       other writer has set since. dsd_state_set_trunk_chan_freq() clears a row's bit on every write, so a row another
+       protocol or an import wrote is no longer the air's: DMR neither replaces it nor drops it on a network change
+       (discussion #900 F2). Core owns the bit so the shared setter can clear it without knowing the DMR module. */
+    uint8_t dmr_lcn_ota[0x1000 / 8];
+    /* DMR Tier III: bumped each time dsd_state_set_trunk_chan_freq() takes a row from the DMR over-the-air writer
+       (clears its dmr_lcn_ota bit), whatever the frequency, so DMR's channel revision moves on an ownership change. */
+    uint32_t dmr_lcn_ota_seq;
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -2314,6 +2330,18 @@ struct dsd_state {
     uint16_t data_byte_ctr[2];   //number of bytes acculumated
     uint8_t data_ks_start[2];    //where the start of the keystream should be applied to PDU data
     uint8_t udt_uab_reserved[2]; //UDT: header UAB indicates reserved/unknown count (use CRC-based EOM)
+    /* 1 while the slot's last burst was an MBC header or one of its continuations: only then does a continuation join
+     * that MBC. Any other burst on the slot, a sync loss or a retune (dmr_reset_blocks()) disarms it. */
+    uint8_t dmr_mbc_armed[2];
+    /* Where the slot's MBC took its last block (header or continuation): symbol_clock, symbol_clock_epoch and
+     * carrier_seq then. A continuation joins only as the slot's next burst, one TDMA frame on: a burst the decoder
+     * missed disarms nothing, but it moves the clock a frame further. */
+    uint64_t dmr_mbc_clock[2];
+    uint32_t dmr_mbc_epoch[2];
+    uint32_t dmr_mbc_carrier[2];
+    /* 1 when the slot's MBC header proved content by its own check (or a RAS signature -F accepts): the scan's
+     * activity evidence, noted only once the assembled MBC passes the control PDU gate. */
+    uint8_t dmr_mbc_header_proven[2];
     uint8_t dmr_pdu_sf
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot
@@ -3166,6 +3194,10 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
+    /* The call mode (CM) the last verified header or communications FICH named: the call's, which only its own
+     * terminator repeats (issue #888). Kept through noCarrier(), so a terminator after a fade is still matched; 9 for
+     * none, and set to 9 when a verified DCH names a party other than an ended call's (ysf_enrich_identity()). */
+    uint8_t ysf_call_cm;
     /* Sticky for the transmission: set once a FICH passes its Golay+CRC-16, cleared with the
      * rest of the YSF strings on noCarrier(). A later FICH failure still lays the payload out
      * from the previous frame's dt/fi and still synthesizes voice from it, so once one FICH
@@ -4006,8 +4038,34 @@ dsd_state_nxdn_dfa_untag(dsd_state* state, uint32_t channel) {
     learned->count = count;
 }
 
+/* Whether the DMR over-the-air writer holds channel map row @p channel (dsd_state::dmr_lcn_ota). */
+static inline int
+dsd_state_dmr_lcn_ota_get(const dsd_state* state, uint32_t channel) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return 0;
+    }
+    return (state->dmr_lcn_ota[channel >> 3U] >> (channel & 7U)) & 1U;
+}
+
+/* Mark row @p channel as the DMR over-the-air writer's (@p held nonzero) or nobody's in particular. */
+static inline void
+dsd_state_dmr_lcn_ota_set(dsd_state* state, uint32_t channel, int held) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return;
+    }
+    const uint8_t bit = (uint8_t)(1U << (channel & 7U));
+    if (held) {
+        state->dmr_lcn_ota[channel >> 3U] |= bit;
+    } else {
+        state->dmr_lcn_ota[channel >> 3U] &= (uint8_t)~bit;
+    }
+}
+
 /* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
-   row leaves the DFA record and no later parameter change drops it. */
+   row leaves the DFA record and no later parameter change drops it; the same goes for the DMR over-the-air record
+   (dsd_state::dmr_lcn_ota), whose writer releases its bit before this and marks the row again after. A row another
+   writer takes from that record loses the trust DMR gave it (dsd_state::dmr_lcn_trust) and bumps
+   dsd_state::dmr_lcn_ota_seq. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
@@ -4015,6 +4073,11 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     }
     if (state->nxdn_dfa_learned.count != 0U) {
         dsd_state_nxdn_dfa_untag(state, channel);
+    }
+    if (dsd_state_dmr_lcn_ota_get(state, channel)) {
+        dsd_state_dmr_lcn_ota_set(state, channel, 0);
+        state->dmr_lcn_trust[channel] = 0U;
+        state->dmr_lcn_ota_seq++;
     }
 
     const long int old_freq = state->trunk_chan_map[channel];

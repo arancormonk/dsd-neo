@@ -74,6 +74,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -1672,6 +1673,8 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
+    /* Whether the row can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
+    e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the row no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }
@@ -3297,6 +3300,9 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
+    /* An MBC is consecutive bursts on one carrier: a sync loss ends the one being assembled, as dmr_reset_blocks()
+       does. */
+    DSD_MEMSET(state->dmr_mbc_armed, 0, sizeof(state->dmr_mbc_armed));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
     DSD_MEMSET(state->cap_plus_csbk_crc_invalid, 0, sizeof(state->cap_plus_csbk_crc_invalid));
@@ -3819,6 +3825,16 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_scan_y_stay_begin(state);
 }
 
+/* Another receiver or input need not be on the same network: the DMR Tier III channels the air taught go (discussion
+   #900 F2), the channel map's own rows stay. A tune drops them only when the operator made it
+   (svc_operator_carrier_boundary()): a -Y step, a replay retune and a signal search visit keep them. */
+static void
+carrier_boundary_forget_network(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
+    if (kind == DSD_CARRIER_BOUNDARY_SOURCE || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH) {
+        dmr_t3_chan_network_changed(opts, state);
+    }
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -3879,6 +3895,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        DMR RAS evidence. */
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    carrier_boundary_forget_network(opts, state, kind);
     /* Nor are its P25 patches the next carrier's: a manual tune, a new source or input, a scan step or a replay retune
        names no system, so the table, its owner and its listening clock start over. */
     dsd_p25_patch_clear_all(state);

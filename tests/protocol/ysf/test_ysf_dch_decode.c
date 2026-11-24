@@ -26,12 +26,14 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/audio/voice_chain_internal.h"
@@ -560,11 +562,14 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     assert(call.epoch != first_epoch);
 }
 
+/* CSD2 is the downlink repeater's callsign, then the uplink's (Yaesu "Amateur Radio Digital Standards" Table 4-2;
+   MMDVMHost and DSDcc read it so). route_text[0] is the uplink, route_text[1] the downlink. Before, the first ten bytes
+   were taken for the uplink, so the two read swapped. */
 static void
 test_dch_csd2_tracks_uplink_and_downlink(void) {
     static dsd_state state;
     uint8_t bits[160];
-    const char payload[] = "UPLINK0001DOWNLINK02";
+    const char payload[] = "DOWNLINK02UPLINK0001";
 
     DSD_MEMSET(&state, 0, sizeof(state));
     begin_test_ysf_call(&state);
@@ -619,15 +624,16 @@ test_dch2_tracks_destination_source_links_and_remarks(void) {
     call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "SRC2CALL45") == 0);
 
-    pack_bytes_to_bits("UP2CALL678", 10U, bits);
+    /* V/D type 2 sends the downlink in frame 2 and the uplink in frame 3 (Table 4-4). */
+    pack_bytes_to_bits("DN2CALL901", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 2, 5, 0, bits);
     call = get_test_ysf_call(&state);
-    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
+    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
 
-    pack_bytes_to_bits("DN2CALL901", 10U, bits);
+    pack_bytes_to_bits("UP2CALL678", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 3, 5, 0, bits);
     call = get_test_ysf_call(&state);
-    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
+    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
 
     pack_bytes_to_bits("RM1AARM2BB", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 4, 5, 0, bits);
@@ -869,7 +875,7 @@ test_process_ysf_header_search_evidence_follows_the_callsigns(void) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("SRCHDST001SRCHSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("SRCHUPL003SRCHDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("SRCHDNL004SRCHUPL003", 20U, dch1, 176U, 9U, 0);
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
 
@@ -904,7 +910,7 @@ test_process_ysf_full_rate_data_routes_fich_and_dch_state(void) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("PYSFDST001PYSFSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("PYSFUPL003PYSFDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("PYSFDNL004PYSFUPL003", 20U, dch1, 176U, 9U, 0);
 
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
@@ -1140,7 +1146,7 @@ quiet_ysf_header(int on, size_t cut) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("QYSFDST001QYSFSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("QYSFUPL003QYSFDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("QYSFDNL004QYSFUPL003", 20U, dch1, 176U, 9U, 0);
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
     g_quiet_proven = 0;
@@ -1560,7 +1566,7 @@ test_process_ysf_terminator_enriches_identity_before_call_end(void) {
     make_fich_bits_for_terminator(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMDNL004TERMUPL003", 20U, dch1, 176U, 9U, 0);
 
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
@@ -1776,6 +1782,271 @@ reset_ysf_stream(void) {
     g_mbe_fail_at = -1;
 }
 
+/* A FICH with fields @p fi, @p cm, @p fn, @p ft and @p dt, the rest as a V/D type 1 frame's. */
+static void
+make_ysf_fich(uint8_t fich_bits[48], uint8_t fi, uint8_t cm, uint8_t fn, uint8_t ft, uint8_t dt) {
+    make_fich_bits_for_vd_type1(fich_bits);
+    set_bits_msb(fich_bits, 0U, 2U, fi);
+    set_bits_msb(fich_bits, 4U, 2U, cm);
+    set_bits_msb(fich_bits, 10U, 3U, fn);
+    set_bits_msb(fich_bits, 13U, 3U, ft);
+    set_bits_msb(fich_bits, 22U, 2U, dt);
+    append_ysf_crc(fich_bits);
+}
+
+/* The header (@p fi 0) or terminator (2) of a V/D type 1 call in call mode @p cm, carrying CSD1 @p csd1 (destination,
+   source) and CSD2 @p csd2 (downlink, uplink), twenty characters each; with @p corrupt_dch, both DCH blocks fail their
+   CRC while the FICH verifies. */
+static void
+append_ysf_bound_frame_ex(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2, int corrupt_dch) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+    make_ysf_fich(fich_bits, fi, cm, 0U, 1U, 0U);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input(csd1, 20U, dch0, 176U, 9U, corrupt_dch);
+    encode_dch_payload_to_input(csd2, 20U, dch1, 176U, 9U, corrupt_dch);
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+}
+
+static void
+append_ysf_bound_frame(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2) {
+    append_ysf_bound_frame_ex(fi, cm, csd1, csd2, 0);
+}
+
+/* V/D type 1 voice frame @p fn of a call in call mode @p cm, its DCH @p dch_text (twenty characters): CSD1 in frame 0,
+   CSD2 in frame 1. */
+static void
+append_ysf_vd1_frame(uint8_t cm, uint8_t fn, const char* dch_text) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+    make_ysf_fich(fich_bits, 1U, cm, fn, 6U, 0U);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input(dch_text, 20U, dch, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+}
+
+/* A YSF decoder on the heap, its history kept, with --rdio-unknown-talkgroup 4242. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    Event_History_I* history;
+} ysf_call_rig;
+
+static void
+ysf_call_rig_open(ysf_call_rig* rig) {
+    InitAllFecFunction();
+    rig->opts = (dsd_opts*)calloc(1, sizeof(*rig->opts));
+    rig->state = (dsd_state*)calloc(1, sizeof(*rig->state));
+    rig->history = (Event_History_I*)calloc(2, sizeof(*rig->history));
+    assert(rig->opts != NULL && rig->state != NULL && rig->history != NULL);
+    init_event_history(&rig->history[0], 0U, 255U);
+    init_event_history(&rig->history[1], 0U, 255U);
+    rig->state->event_history_s = rig->history;
+    rig->opts->rdio_unknown_talkgroup = 4242;
+}
+
+static void
+ysf_call_rig_close(ysf_call_rig* rig) {
+    dsd_state_ext_free_all(rig->state);
+    free(rig->history);
+    free(rig->state);
+    free(rig->opts);
+}
+
+/* Plays the frame the stream holds and syncs the slot's history, as the frame sync does before the next frame, then
+   empties the stream. */
+static void
+ysf_call_rig_play(ysf_call_rig* rig) {
+    processYSF(rig->opts, rig->state);
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    dsd_event_sync_slot(rig->opts, rig->state, 0U);
+    reset_ysf_stream();
+}
+
+/* The talkgroup the export gives committed row @p n (1 the latest), the fallback allowed: 4242 when the row takes
+   it. */
+static uint32_t
+ysf_committed_talkgroup(const ysf_call_rig* rig, int n) {
+    return dsd_rdio_call_talkgroup(rig->opts, &rig->history[0].Event_History_Items[n], 1);
+}
+
+/* Issue #888: an ordinary V/D type 1 call through a repeater, between a header and a terminator: frame 1's DCH (CSD2)
+   names the repeaters, which the call keeps as its route; its endpoints stay the caller's. The call is one row, the
+   caller's, and, ended by its terminator, it takes the fallback talkgroup. Before, every V/D type 1 frame's DCH was
+   read as CSD1, so frame 1 named the repeaters as the call's endpoints and began another call. */
+static void
+test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback(void) {
+    ysf_call_rig rig;
+    ysf_call_rig_open(&rig);
+    reset_ysf_stream();
+    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 1U, "RPTDNL0004RPTUPL0003");
+    ysf_call_rig_play(&rig);
+    const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+    assert(strcmp(call.source_text, "CALLSRC002") == 0);
+    assert(strcmp(call.target_text, "CALLDST001") == 0);
+    assert(strcmp(call.route_text[0], "RPTUPL0003") == 0);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    append_ysf_bound_frame(2U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+    ysf_call_rig_play(&rig);
+    const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+    assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+    assert(rig.history[0].push_seq == 1U);
+    assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+    assert(ysf_committed_talkgroup(&rig, 1) == 4242U);
+    ysf_call_rig_close(&rig);
+}
+
+/* Issue #888: a YSF call takes the fallback talkgroup only when it has ended on a decoded terminator, as the export
+   reads its row. A call ended by a sync loss, or by a change of call mode in band (a group call, then a private one
+   with no header or terminator between them), does not: its recording may also hold the start of what came next. The
+   private call, ended by its terminator, does. Before, every committed YSF row took the fallback. */
+static void
+test_process_ysf_call_takes_the_fallback_only_after_a_terminator(void) {
+    for (int sync_loss = 1; sync_loss >= 0; sync_loss--) {
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
+        reset_ysf_stream();
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        if (sync_loss) {
+            assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+            dsd_event_sync_slot(rig.opts, rig.state, 0U);
+            assert(rig.history[0].push_seq == 1U);
+            assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+        } else {
+            append_ysf_vd1_frame(3U, 0U, "CALLDST001CALLSRC002");
+            ysf_call_rig_play(&rig);
+            assert(get_test_ysf_call(rig.state).kind == DSD_CALL_KIND_PRIVATE_VOICE);
+            assert(rig.history[0].push_seq == 1U);
+            assert(rig.history[0].Event_History_Items[1].gi == 0);
+            assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+            append_ysf_bound_frame(2U, 3U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+            ysf_call_rig_play(&rig);
+            assert(rig.history[0].push_seq == 2U);
+            assert(rig.history[0].Event_History_Items[1].gi == 1);
+            assert(ysf_committed_talkgroup(&rig, 1) == 4242U);
+        }
+        ysf_call_rig_close(&rig);
+    }
+}
+
+/* Issue #888: a YSF call takes the fallback talkgroup only on its own terminator, decoded by YSF. A call that another
+   protocol's terminator ends on the slot (as a P25 Phase 1 TDU heard next in Auto mode ends slot 0 on a terminator,
+   whatever call it holds) does not. Before, any terminator end let the YSF row take the fallback. */
+static void
+test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator(void) {
+    ysf_call_rig rig;
+    ysf_call_rig_open(&rig);
+    reset_ysf_stream();
+    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_event_sync_slot(rig.opts, rig.state, 0U);
+    const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+    assert(ended.phase == DSD_CALL_PHASE_ENDED && ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(rig.history[0].push_seq == 1U);
+    assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+    assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+    ysf_call_rig_close(&rig);
+}
+
+/* Issue #888: a YSF terminator is the call's own only when its verified FICH's call mode is the one the call's own
+   verified FICHs last named. An open group call (CM 0), then a terminator whose FICH verifies but whose DCH fails, so no
+   callsign names another call: a private call's (CM 3) or a Radio ID call's (CM 1). The group call ends on that
+   terminator, but its row does not take the fallback talkgroup. The group call's own terminator (CM 0), its DCH failed
+   too, still gives it the fallback. Before, only the terminator's protocol was checked, so the group row took the
+   fallback on the other call's terminator; and then only the call kind its mode maps to, so a Radio ID terminator,
+   generic voice, still did. */
+static void
+test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode(void) {
+    static const uint8_t k_modes[] = {3U, 1U, 0U};
+    for (size_t m = 0; m < sizeof k_modes; m++) {
+        const uint8_t mode = k_modes[m];
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
+        reset_ysf_stream();
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+        assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+        append_ysf_bound_frame_ex(2U, mode, "CALLDST009CALLSRC008", "RPTDNL0007RPTUPL0006", 1);
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+        assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+        assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+        assert(ended.own_terminator == (mode == 0U ? 1U : 0U));
+        assert(rig.history[0].push_seq == 1U);
+        assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+        assert(ysf_committed_talkgroup(&rig, 1) == (mode == 0U ? 4242U : 0U));
+        ysf_call_rig_close(&rig);
+    }
+}
+
+/* Issue #888: a terminator heard after a call faded is that call's own only when its verified callsigns, where it has
+   them, are the call's. A group call from CALLSRC002 ends on a sync loss (its YSF strings cleared, as noCarrier() does),
+   then a group terminator (CM 0) arrives whose verified DCH names another caller, CALLSRC008: the faded call's end
+   becomes a terminator end, but not its own. The caller's own terminator, and one whose DCH failed (no callsign to
+   compare), still mark it as its own. Before, the faded call was marked by any terminator of its call mode. */
+static void
+test_process_ysf_faded_call_takes_no_other_callers_terminator(void) {
+    static const struct {
+        const char* csd1;
+        int corrupt_dch;
+        uint8_t own;
+    } k_cases[] = {
+        {"CALLDST001CALLSRC008", 0, 0U},
+        {"CALLDST001CALLSRC002", 0, 1U},
+        {"CALLDST001CALLSRC008", 1, 1U},
+    };
+
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
+        reset_ysf_stream();
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+        assert(strcmp(call.source_text, "CALLSRC002") == 0);
+        assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+        dsd_event_sync_slot(rig.opts, rig.state, 0U);
+        rig.state->ysf_dt = 9U;
+        rig.state->ysf_fi = 9U;
+        rig.state->ysf_cm = 9U;
+        rig.state->ysf_fich_confirmed = 0U;
+        append_ysf_bound_frame_ex(2U, 0U, k_cases[c].csd1, "RPTDNL0004RPTUPL0003", k_cases[c].corrupt_dch);
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+        assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+        assert(strcmp(ended.source_text, "CALLSRC002") == 0);
+        assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+        if (ended.own_terminator != k_cases[c].own) {
+            DSD_FPRINTF(stderr, "faded call, terminator %s (DCH %s): own %u, want %u\n", k_cases[c].csd1,
+                        k_cases[c].corrupt_dch ? "failed" : "verified", (unsigned)ended.own_terminator,
+                        (unsigned)k_cases[c].own);
+        }
+        assert(ended.own_terminator == k_cases[c].own);
+        ysf_call_rig_close(&rig);
+    }
+}
+
 #ifndef DSD_YSF_TEST_REAL_VOCODER
 /* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error counts (0 for a
    block mbelib refused), in the record format -r reads back. */
@@ -1889,7 +2160,7 @@ test_process_ysf_header_and_terminator_end_the_capture(void) {
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_end_capture");
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMDNL004TERMUPL003", 20U, dch1, 176U, 9U, 0);
 
     for (int header = 1; header >= 0; --header) {
         reset_ysf_stream();
@@ -2154,6 +2425,11 @@ main(void) {
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_vd_type2_tells_the_chain_each_frame();
     test_process_ysf_terminator_enriches_identity_before_call_end();
+    test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback();
+    test_process_ysf_call_takes_the_fallback_only_after_a_terminator();
+    test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator();
+    test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode();
+    test_process_ysf_faded_call_takes_no_other_callers_terminator();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
     test_process_ysf_vd_type2_captures_each_block();

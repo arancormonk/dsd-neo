@@ -150,6 +150,7 @@ Item {
             leaveSystems();
         if (visible && restorePending)
             restoreTimer.restart();
+        refreshSystemsTreeLater();
     }
     onColumnWidthChanged: takePins()
     onPinLabelFontChanged: takePins()
@@ -166,6 +167,9 @@ Item {
     // still switches the tab. prefsStore is the app's AppPrefs; a test may
     // hand in its own.
     property var prefsStore: typeof prefs !== "undefined" ? prefs : null
+    // Issue #901 (D6): Compact view, read from the same store; Recent
+    // activity's rows follow it.
+    readonly property bool compactView: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
     property string section: "systems"
     readonly property var sectionTabs: [
         {id: "systems", label: qsTr("Systems")},
@@ -198,7 +202,9 @@ Item {
         // a restore is still owed: until then the body shows a range clamped
         // to the section before, which is no place the user left.
         scrollBody.cancelFlick();
-        if (!restorePending)
+        // Nor while a density reset is owed (r2 E3): the body still shows
+        // the place the reset forgot, which would be saved back.
+        if (!restorePending && !listenResetPending)
             sectionScroll[section] = clampedScroll(scrollBody.contentY);
         restorePending = true;
         ++restoreGeneration;
@@ -404,10 +410,12 @@ Item {
         if (row >= 0)
             chooseSites(row);
     }
-    function manageCard(leadUid, title, rrLinked) {
+    // @a hasSites: the card is a site group (one site included), whose menu
+    // offers Sites: compact can leave its site button out.
+    function manageCard(leadUid, title, rrLinked, hasSites) {
         var row = savedSystems.rowForUid(leadUid);
         if (row >= 0)
-            manageMenu.openFor(row, title, rrLinked);
+            manageMenu.openFor(row, title, rrLinked, hasSites);
     }
 
     // Leaving Systems (another tab, or Home hidden): what was typed lands
@@ -445,24 +453,72 @@ Item {
     // are noted as they come (a row's card, a held row, a line over the
     // cards) and answered once the cards' rebuild that settles them has been
     // applied (`rebuilt`): one event a change.
+    //
+    // Issue #901 (D8): a change of Compact view holds or shows parts of every
+    // card with no rebuild, wherever Home is (it is made in Settings or the
+    // session menu, with Home hidden or covered). It owes the refresh too, and
+    // an owed refresh stays owed, through rebuilds, other tabs, Home hidden
+    // and a sheet over it, until the Systems tab is shown and in reach; it is
+    // then given once, with any other change owed, after the layout.
     property Item systemsTreeRefresh: null
     property bool systemsTreeOwed: false
     function noteSystemsChanged() {
         if (savedSystemCards.screenReaderActive && visible && section === "systems")
             systemsTreeOwed = true;
     }
+    // A part shown or held in place (G2): also from layout alone (a resize or
+    // a text size that draws or leaves out a site button), with no rebuild
+    // to give the refresh, so it is scheduled here, coalesced with any other.
+    function notePartsShown() {
+        noteSystemsChanged();
+        refreshSystemsTreeLater();
+    }
+    function systemsInReach() {
+        return visible && section === "systems" && Navigation.allows(listenSystemsSection);
+    }
     function refreshSystemsTree() {
         if (!systemsTreeOwed)
             return;
-        systemsTreeOwed = false;
-        if (!savedSystemCards.screenReaderActive || !visible || section !== "systems")
+        if (!savedSystemCards.screenReaderActive) {
+            systemsTreeOwed = false;
+            return;
+        }
+        if (!systemsInReach())
             return;
         if (systemsTreeRefresh === null) {
             if (!Window.contentItem)
                 return;
             systemsTreeRefresh = systemsTreeRefreshComponent.createObject(Window.contentItem);
         }
+        systemsTreeOwed = false;
         systemsTreeRefresh.visible = !systemsTreeRefresh.visible;
+    }
+    // Gives a refresh still owed once the Systems tab is in reach again, after
+    // the layout. Owned, so nothing runs after Home goes.
+    function refreshSystemsTreeLater() {
+        if (systemsTreeOwed)
+            systemsTreeTimer.restart();
+    }
+    Timer {
+        id: systemsTreeTimer
+        interval: 0
+        onTriggered: {
+            listenSystemsSection.forceLayout();
+            screen.refreshSystemsTree();
+        }
+    }
+    onSectionChanged: refreshSystemsTreeLater()
+    Connections {
+        target: Navigation
+        function onTopModalChanged() {
+            screen.refreshSystemsTreeLater();
+        }
+        function onLayersChanged() {
+            screen.refreshSystemsTreeLater();
+        }
+        function onRootSurfacesChanged() {
+            screen.refreshSystemsTreeLater();
+        }
     }
     Component.onDestruction: {
         if (systemsTreeRefresh !== null)
@@ -484,8 +540,10 @@ Item {
         function onShownCountChanged() {
             screen.noteSystemsChanged();
         }
+        // Deferred to the owned timer, so the parts a rebuild then shows or
+        // holds in place (G2) are in the same one refresh.
         function onRebuilt() {
-            screen.refreshSystemsTree();
+            screen.refreshSystemsTreeLater();
         }
     }
 
@@ -1133,6 +1191,8 @@ Item {
                     onYChanged: listenSystemsSection.place()
                     onHeightChanged: listenSystemsSection.place()
                     onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
+                    // Its parts change with the search and sort, whose rebuild
+                    // gives the refresh.
                     onPartsShownChanged: screen.noteSystemsChanged()
                     onKeyboardLeft: screen.noteKeyboardLeft(null)
                     onRevealRequested: screen.revealSystemsTop()
@@ -1162,13 +1222,14 @@ Item {
                 // end; a longer list takes it back before a row is added.
                 //
                 // A part one card has and another lacks (the section heading,
-                // the place and receiver lines, the refresh hint, the site
-                // button, Play) is shown or hidden with `visible` without a
-                // screen reader. With one, the row's next card would show or
-                // hide it, and each show or hide makes the Android bridge
-                // fetch the part's parent again (the scroll body, with every
-                // card under it): ~140 per sort at 300 cards left TalkBack
-                // silent for over a minute. So in positional rows every such
+                // the place, receiver and meta lines, the refresh hint, the
+                // site button, Play; Compact view draws no place or meta line
+                // and can leave the site button out) is shown or hidden with
+                // `visible` without a screen reader. With one, the row's next
+                // card would show or hide it, and each show or hide makes the
+                // Android bridge fetch the part's parent again (the scroll
+                // body, with every card under it): ~140 per sort at 300 cards
+                // left TalkBack silent for over a minute. So in positional rows every such
                 // part stays visible and is held as a held row is: transparent
                 // (Qt reports it invisible), unnamed and out of the tree, off
                 // Tab and presses (disabled), and no height in its column.
@@ -1206,6 +1267,7 @@ Item {
                         required property bool sectionStart
                         required property bool rrLinked
                         required property string receiverLabel
+                        required property bool sharedTitle
                         required property bool held
                         // Rows are positional (a screen reader): a part this
                         // card lacks is held, never hidden (see the Repeater).
@@ -1233,11 +1295,11 @@ Item {
                         // (a place named after an import, a site avoided), and
                         // holding or showing one raises no show or hide, so
                         // Home refreshes Android's tree for it as for a reorder.
-                        readonly property var lackableParts: [sectionHeading, receiverLine, placeLine, refreshHintText, siteButton, play]
+                        readonly property var lackableParts: [sectionHeading, receiverLine, placeLine, metaLine, refreshHintText, siteButton, play]
                         readonly property string partsShown: lackableParts.map(function (part) {
                             return part.shown;
                         }).join()
-                        onPartsShownChanged: screen.noteSystemsChanged()
+                        onPartsShownChanged: screen.notePartsShown()
                         // A part with the keyboard that goes (held, or hidden
                         // without a screen reader) is disabled or hidden with
                         // it, and Qt drops the keyboard: this row's More
@@ -1267,7 +1329,8 @@ Item {
                                 topPadding: 6
                                 wrapMode: Text.Wrap
                                 text: entry.section
-                                Accessible.name: entry.held || !shown ? "" : text
+                                // B11: unnamed while covered or hidden, as while held.
+                                Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                 Accessible.focusable: navigationAllowed && visible && shown && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                             }
@@ -1285,46 +1348,106 @@ Item {
                             // with the section or Home hidden (issue #646).
                             readonly property bool playShown: entry.playUid.length > 0
                             readonly property bool refreshHint: entry.refreshHint
+                            // Issue #901 (D7): Compact view, one row a card.
+                            readonly property bool compact: screen.compactView
+                            // Issue #901 r3 S1: another card draws this title. Then the card
+                            // draws every line the full card has that tells it apart (the
+                            // source line, the receiver line, the place line), in either
+                            // view, each wrapping whole instead of cut.
+                            readonly property bool sharedTitle: entry.sharedTitle
+                            // The title's and the one-line supporting line's boxes (r5 H3):
+                            // a name or source in a taller script is drawn smaller to fit,
+                            // never over the line below.
+                            readonly property real titleBox: LineBoxes.lineHeight(Theme.sans, Theme.fontSize(17), Font.Bold)
+                            readonly property real sourceBox: LineBoxes.lineHeight(Theme.mono, Theme.fontSize(12), Font.Normal)
+                            // In Nearest order, how far, when known.
+                            readonly property string distanceText: savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : ""
                             // The distance first: Nearest sorts by it, and a long
                             // place elides from the end (large text).
-                            readonly property string placeText: [savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : "", entry.placeLabel].filter(function (part) {
+                            readonly property string placeText: [distanceText, entry.placeLabel].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
+                            // What the place line draws: the full card's place text; in
+                            // compact (a shared title) the place's name alone, as the
+                            // supporting line leads with the distance (r4 F4).
+                            readonly property string placeLineText: compact ? entry.placeLabel : placeText
+                            readonly property string siteCountText: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
+                            readonly property string sourceText: Util.systemMeta(entry)
+                            // The line under the title: the site count while the site button
+                            // is not drawn (either view), then the source. Compact leads with
+                            // the distance in Nearest order, a shared title too (r4 F4: the
+                            // sort value first, where two same-name cards differ); the full
+                            // card has it on its place line.
+                            readonly property string supportingText: [compact ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
+                                return part.length > 0;
+                            }).join(" · ")
+                            // heardTick forces the minute-by-minute refresh.
+                            readonly property string metaText: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
+                            // D8: what compact does not draw (the place, unless the title is
+                            // shared, the key and when last heard), which the title's
+                            // description reads instead.
+                            readonly property string undrawnWords: !compact ? "" : [sharedTitle ? "" : entry.placeLabel, metaText].filter(function (part) {
+                                return part.length > 0;
+                            }).join(", ")
 
                             width: parent.width
                             height: fullHeight
 
+                            // Issue #901 (B1): where the actions go across the card and
+                            // whether the site button is drawn, from the controls' natural
+                            // widths only (Util.listenCardActions()).
+                            readonly property var actionPlan: Util.listenCardActions({width: width, padding: Theme.cardPadding,
+                                compact: compact, hasSites: hasSites, siteWidth: siteButton.implicitWidth, playShown: playShown,
+                                playWidth: play.implicitWidth, moreWidth: manageButton.implicitWidth})
+                            // And down it (Util.listenCardRows()), from the labels' heights.
+                            // The head is the title and ONE supporting line, however far a
+                            // shared title's supporting line wraps (r5 H5: Play and More
+                            // were centred halfway down a 260-character path); the lines
+                            // the wrap adds grow the card below the actions.
+                            // One line is the one-line supporting line's box, so a wrapped
+                            // card's actions sit where a plain card's do.
+                            readonly property var rowPlan: Util.listenCardRows(actionPlan, {compact: compact, padding: Theme.cardPadding,
+                                headLines: titleText.height + labels.spacing + sourceBox, labelsHeight: labels.height,
+                                siteHeight: siteButton.implicitHeight, playHeight: play.implicitHeight, moreHeight: manageButton.implicitHeight})
                             // Issue #646 B8: as tall as what it holds, so larger text grows
                             // the card instead of running its labels into the hint or past
                             // its edges. At normal text that is the actions' 122 px, as
                             // before. Play counts even while it is hidden (several sites to
                             // play): the site button is centred on it.
-                            readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
-                                hasSites ? siteButton.y + siteButton.height : 0)
+                            readonly property real actionsBottom: rowPlan.actionsBottom
                             readonly property real labelsBottom: labels.y + labels.height
                             // The hint takes the full width, so it starts below both.
                             readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
-                            readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
+                            readonly property real fullHeight: refreshHint ? hintTop + refreshHintText.height + rowPlan.bottomPadding : rowPlan.height
 
                             Column {
                                 id: labels
-                                anchors.left: parent.left
-                                anchors.right: card.hasSites ? siteButton.left : play.left
-                                anchors.leftMargin: Theme.cardPadding
-                                anchors.rightMargin: 12
-                                // Centred 10 px above the middle of the actions' box: the
-                                // actions plus the bottom padding, 122 px at normal text,
-                                // so they sit where they always have; never above the top
-                                // padding.
-                                y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
+                                x: Theme.cardPadding
+                                width: card.actionPlan.labelsWidth
+                                // Default: centred 10 px above the middle of the actions'
+                                // box (the actions plus the bottom padding, 122 px at
+                                // normal text), so they sit where they always have, never
+                                // above the top padding. Compact: centred on the title row.
+                                y: card.rowPlan.labelsY
                                 spacing: 4
 
                                 ReadableText {
+                                    id: titleText
                                     width: parent.width
                                     objectName: "savedSystemTitle"
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    text: card.name
+                                    // D8: compact's undrawn lines, from their own words.
+                                    Accessible.description: navigationAllowed && visible && !entry.held ? card.undrawnWords : ""
+                                    // One line, cut, in either view (G6, r2 B1): a line
+                                    // break in an imported name is a space, so the head
+                                    // keeps its height and its name reads it whole.
+                                    text: Util.oneLine(card.name)
+                                    maximumLineCount: 1
+                                    height: card.titleBox
+                                    verticalAlignment: Text.AlignVCenter
+                                    fontSizeMode: Text.VerticalFit
+                                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
                                     font.weight: Font.Bold
@@ -1333,15 +1456,31 @@ Item {
                                 }
 
                                 ReadableText {
+                                    id: sourceLine
                                     width: parent.width
                                     objectName: "savedSystemSource"
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    text: Util.systemMeta(entry)
+                                    text: Util.oneLine(card.supportingText)
+                                    // One line, cut; whole, wrapping, on a shared title (r3 S1),
+                                    // where it names the endpoint, file, frequency and mode.
+                                    wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
+                                    maximumLineCount: card.sharedTitle ? undefined : 1
+                                    // One line: its box, fitted (r5 H3); wrapping: its lines, as
+                                    // the unfitted probe below measures them, never this Text's
+                                    // own implicit height, which the fit changes (a binding loop
+                                    // where the box and the line differ: Noto CJK). The probe's
+                                    // height, which it takes from its text (no height is set),
+                                    // never the implicitHeight getter, which lays out pending
+                                    // text under the binding reading it (r6 J6).
+                                    height: card.sharedTitle ? sourceWrapProbe.height : card.sourceBox
+                                    verticalAlignment: Text.AlignVCenter
+                                    fontSizeMode: card.sharedTitle ? Text.FixedSize : Text.VerticalFit
+                                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued
-                                    elide: Text.ElideRight
+                                    elide: card.sharedTitle ? Text.ElideNone : Text.ElideRight
                                 }
 
                                 // The receiver, when another card has this title
@@ -1367,7 +1506,9 @@ Item {
                                     }
                                 }
 
-                                // Where it is, and in Nearest order how far.
+                                // Where it is, and in Nearest order how far. Compact
+                                // draws it only for a shared title (r3 S1); otherwise the
+                                // title's description reads it.
                                 Item {
                                     width: parent.width
                                     height: placeLine.shown ? placeLine.implicitHeight : 0
@@ -1376,32 +1517,60 @@ Item {
                                         id: placeLine
                                         width: parent.width
                                         objectName: "savedSystemPlace"
-                                        readonly property bool shown: card.placeText.length > 0
+                                        readonly property bool shown: (!card.compact || card.sharedTitle) && card.placeLineText.length > 0
                                         Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                         Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                         opacity: shown ? 1 : 0
-                                        text: card.placeText
+                                        // One line (r2 B1): a break in an imported place is a space.
+                                        // Cut, or whole and wrapping on a shared title (r3 S1).
+                                        text: Util.oneLine(card.placeLineText)
+                                        wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
+                                        maximumLineCount: card.sharedTitle ? undefined : 1
+                                        font.family: Theme.sans
+                                        font.pixelSize: Theme.fontSize(13)
+                                        color: Theme.textSecondary
+                                        elide: card.sharedTitle ? Text.ElideNone : Text.ElideRight
+                                    }
+                                }
+
+                                // The key and when last heard; compact does not draw it
+                                // either (the title's description reads it).
+                                Item {
+                                    width: parent.width
+                                    // Its line's height, not the implicitHeight getter (r6 J6).
+                                    height: metaLine.shown ? metaLine.height : 0
+                                    visible: metaLine.shown || entry.positional
+                                    ReadableText {
+                                        id: metaLine
+                                        width: parent.width
+                                        objectName: "savedSystemMeta"
+                                        readonly property bool shown: !card.compact
+                                        Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
+                                        Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
+                                        opacity: shown ? 1 : 0
+                                        text: Util.oneLine(card.metaText)
+                                        maximumLineCount: 1
                                         font.family: Theme.sans
                                         font.pixelSize: Theme.fontSize(13)
                                         color: Theme.textSecondary
                                         elide: Text.ElideRight
                                     }
                                 }
-
-                                ReadableText {
-                                    width: parent.width
-                                    // heardTick forces the minute-by-minute refresh.
-                                    objectName: "savedSystemMeta"
-                                    Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                    Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    text: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
-                                    font.family: Theme.sans
-                                    font.pixelSize: Theme.fontSize(13)
-                                    color: Theme.textSecondary
-                                    elide: Text.ElideRight
-                                }
                             }
 
+                            // A shared title's supporting line as it wraps, unfitted, for that
+                            // line's height (r5 H3). Never shown; empty for other cards. No
+                            // height is set: its height is its wrapped text's.
+                            Text {
+                                id: sourceWrapProbe
+                                objectName: "savedSystemSourceProbe"
+                                visible: false
+                                width: sourceLine.width
+                                text: card.sharedTitle ? sourceLine.text : ""
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                font: sourceLine.font
+                            }
                             ReadableText {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"
@@ -1421,16 +1590,19 @@ Item {
                             OutlineButton {
                                 id: siteButton
                                 objectName: "homeSiteChooserButton"
-                                readonly property bool shown: card.hasSites
+                                // Issue #901: drawn only while the title keeps its minimum
+                                // beside it, in either view; the supporting line then leads
+                                // with the count and More offers Sites.
+                                readonly property bool shown: card.hasSites && card.actionPlan.siteDrawn
                                 // Says its label too ("2 sites"), which a screen reader otherwise never hears.
-                                accessibleName: entry.held || !shown ? "" : Util.fill(qsTr("Choose sites for %1, %2"), [card.name, text])
+                                // B11: unnamed while covered or hidden, as while held.
+                                accessibleName: navigationAllowed && visible && shown && !entry.held ? Util.fill(qsTr("Choose sites for %1, %2"), [card.name, text]) : ""
                                 Accessible.focusable: navigationAllowed && visible && shown && !entry.held
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
-                                width: implicitWidth
-                                anchors.right: parent.right
-                                anchors.verticalCenter: play.verticalCenter
-                                anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
-                                text: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
+                                width: card.actionPlan.siteWidth
+                                x: card.actionPlan.siteX
+                                y: card.rowPlan.siteY
+                                text: card.siteCountText
                                 visible: shown || entry.positional
                                 enabled: shown
                                 opacity: shown ? 1 : 0
@@ -1440,15 +1612,13 @@ Item {
                             PlayCircle {
                                 id: play
                                 readonly property bool shown: card.playShown
-                                accessibleName: entry.held || !shown ? "" : entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                                accessibleName: navigationAllowed && visible && shown && !entry.held ? (entry.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)) : ""
                                 Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                 objectName: "savedSystemPlay"
                                 visible: shown || entry.positional
                                 opacity: !shown ? 0 : enabled ? 1 : 0.5
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.cardPadding
-                                anchors.top: parent.top
-                                anchors.topMargin: Theme.minimumTouchSize + 6
+                                x: card.actionPlan.playX
+                                y: card.rowPlan.playY
                                 enabled: shown && !decoderHost.transitioning
                                 onActiveFocusChanged: entry.notePartGone(play)
                                 onClicked: screen.playCard(entry.playUid)
@@ -1458,19 +1628,18 @@ Item {
                                 id: manageButton
                                 objectName: "savedSystemManageButton"
                                 icon: "more"
-                                accessibleName: entry.held ? "" : qsTr("More options for %1").arg(card.name)
+                                accessibleName: navigationAllowed && visible && !entry.held ? qsTr("More options for %1").arg(card.name) : ""
                                 Accessible.ignored: !navigationAllowed || !visible || entry.held
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
-                                anchors.top: parent.top
-                                onClicked: screen.manageCard(entry.leadUid, card.name, entry.rrLinked)
+                                x: card.actionPlan.moreX
+                                y: card.rowPlan.moreY
+                                onClicked: screen.manageCard(entry.leadUid, card.name, entry.rrLinked, card.hasSites)
                             }
                             // Long-press manages the card: the design keeps card faces clean,
                             // so destructive actions hide behind the press.
                             GatedTapHandler {
                                 acceptedButtons: Qt.LeftButton
                                 enabled: !entry.parked
-                                onAllowedLongPress: screen.manageCard(entry.leadUid, card.name, entry.rrLinked)
+                                onAllowedLongPress: screen.manageCard(entry.leadUid, card.name, entry.rrLinked, card.hasSites)
                             }
                         }
                     }
@@ -1521,6 +1690,7 @@ Item {
                         required property var targetsCsvPath
                         required isDraft
                         width: content.width
+                        compact: screen.compactView
                         listName: name
                         entryCount: {
                             var changed = importedFiles.revision;
@@ -1774,11 +1944,13 @@ Item {
         // is offered (hidden where it cannot work). While an update
         // runs it is disabled and says why (the progress line under Systems
         // says how far), and it enables in place when that update ends.
-        function openFor(row, name, rrLinked) {
+        // Issue #901: @a hasSites offers Sites for a group of one site too,
+        // whose card can leave its site button out (Compact view).
+        function openFor(row, name, rrLinked, hasSites) {
             systemUid = savedSystems.get(row).uid;
             systemName = name;
             var items = [{text: qsTr("Edit"), key: "edit", objectName: "editSavedSystemButton"}];
-            if (savedSystems.siblingRows(row).length > 1)
+            if (hasSites === true || savedSystems.siblingRows(row).length > 1)
                 items.push({text: qsTr("Sites"), key: "sites", objectName: "sitesSavedSystemButton"});
             items.push(screen.pinAction("system", systemUid, "pinSavedSystemButton"));
             if (rrLinked === true && radioReference.available)
@@ -2028,6 +2200,7 @@ Item {
                 // The row's identity, for recentPlace.
                 readonly property var rowUid: model.uid
                 width: recentList.width
+                compact: screen.compactView
                 name: model.name
                 metaText: model.systemName
                 rightText: model.timeText
@@ -2055,6 +2228,7 @@ Item {
         // Shown again, it lists the calls as they are then, and a reader who
         // had scrolled down is back on the same row.
         KeepPlace {
+            id: recentPlace
             list: recentList
             model: callHistory
             keyOf: function (row) {
@@ -2063,6 +2237,58 @@ Item {
             rowOf: function (uid) {
                 return callHistory.rowForUid(uid);
             }
+        }
+    }
+    // Issue #901 (D11): a change of density puts Recent activity back at the
+    // newest call; hidden, it comes back there rather than at the place it
+    // held. Deferred, as History's filter change is: the rows take their new
+    // height first. A timer the screen owns, so nothing runs after it closes.
+    // The rows are laid out at their new height before the view is placed, as
+    // the Monitor and History do, so the start it finds is the new layout's.
+    onCompactViewChanged: {
+        recentPlace.forget();
+        recentToStart.restart();
+        // D8: every card holds or shows parts in place, which Android's copy
+        // of the tree does not learn of (refreshSystemsTree()).
+        if (savedSystemCards.screenReaderActive) {
+            systemsTreeOwed = true;
+            refreshSystemsTreeLater();
+        }
+        resetListenPlaces();
+    }
+    Timer {
+        id: recentToStart
+        interval: 0
+        onTriggered: {
+            recentList.forceLayout();
+            recentList.positionViewAtBeginning();
+        }
+    }
+    // Issue #901 (D11): every Listen tab (Systems, Scan lists, Explore) opens
+    // at the top after a change of density, the one shown at once (once its
+    // cards have their new height), hidden or not. The reset is owed from the
+    // change itself (listenResetPending) until the timer applies it, so a tab
+    // chosen in between saves no place for the tab it leaves (r2 E3).
+    property bool listenResetPending: false
+    function resetListenPlaces() {
+        delete sectionScroll.systems;
+        delete sectionScroll.scanLists;
+        delete sectionScroll.explore;
+        listenResetPending = true;
+        listenToStart.restart();
+    }
+    Timer {
+        id: listenToStart
+        interval: 0
+        onTriggered: {
+            screen.listenResetPending = false;
+            if (screen.restorePending)
+                return;
+            placeChase.active = false;
+            scrollBody.cancelFlick();
+            content.forceLayout();
+            scrollBody.contentY = scrollBody.originY;
+            screen.sectionScroll[screen.section] = scrollBody.originY;
         }
     }
     HistoryDetailSheet {

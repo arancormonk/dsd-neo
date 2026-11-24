@@ -32,13 +32,16 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTimeZone>
 #include <QVariant> // IWYU pragma: keep -- Summary copies QVariantLists; IWYU asks for it in some units only.
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
 #include <condition_variable>
+#include <dsd-neo/platform/file_compat.h>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -54,6 +57,7 @@ namespace dsd_qt {
 
 class AppPrefs;
 class DecoderHost;
+class RecordingSelectionToken;
 
 struct RecordingJournalRecord;
 
@@ -64,11 +68,45 @@ QString recording_sanitize_name(const QString& name);
 QString recording_folder_base_name(const QString& kind, const QString& uid, const QString& name);
 
 /**
- * @brief The start stamps (Unix seconds, [@p from, @p to)) an export date preset covers, on the local calendar of
- * @p today: "today", "yesterday", "last7" and "last30" (today and the days before it, ending where tomorrow starts),
- * "all" (unbounded). False for any other.
+ * @brief The local calendar days [@p first, @p last] an export date preset covers, counted from @p today: "today",
+ * "yesterday", "last7" and "last30" (today and the days before it, ending with today); "all" leaves both null (no
+ * bound). False for any other, or with no @p today.
+ *
+ * A preset is a range of dates: recording_export_window() turns it into instants once, at the press, from the day
+ * boundaries in the press's zone (a date the zone skipped, with no midnight of its own, starts with the next day that
+ * has one), and recording_export_covers() compares each recording's start with them.
  */
-bool recording_export_range(const QString& preset, const QDate& today, qint64* from, qint64* to);
+bool recording_export_days(const QString& preset, const QDate& today, QDate* first, QDate* last);
+
+/**
+ * @brief An export date preset resolved once, at the press: the instants [@p from, @p to) its days span in the press's
+ * zone, from the first day's start to the start of the day after the last (a date the zone skipped starts with the
+ * next day that has a start, so a range of skipped days spans nothing). The scan then compares instants only: a zone
+ * change during it moves no recording, and none is converted.
+ */
+struct RecordingExportWindow {
+    bool all = true;
+    qint64 from = 0;
+    qint64 to = 0;
+};
+
+/**
+ * @brief The zone a press reads today and every recording's date in: local time, as the phone's clock shows it. Not
+ * QTimeZone::systemTimeZone(): for a POSIX TZ string (TZ=UTC+09, local UTC-09) Qt 6.11.3 names a zone the other side
+ * of UTC.
+ */
+QTimeZone recording_export_press_zone();
+
+/** @brief @p window for the preset @p preset from @p today in @p zone; false for an unknown preset, no @p today or an
+ * invalid @p zone. */
+bool recording_export_window(const QString& preset, const QDate& today, const QTimeZone& zone,
+                             RecordingExportWindow* window);
+
+/**
+ * @brief Whether a recording that started at @p start (Unix seconds) falls in @p window; with "all", every start does.
+ * One after the last day (a clock that ran ahead) is outside.
+ */
+bool recording_export_covers(const RecordingExportWindow& window, qint64 start);
 
 /**
  * @brief The name a recording's zip entry takes, and a History export lists: the base name of its @p folder, a slash,
@@ -125,6 +163,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     Q_PROPERTY(int removedByLimit READ removedByLimit NOTIFY changed)
     Q_PROPERTY(int deletesWaiting READ deletesWaiting NOTIFY changed)
     Q_PROPERTY(int deleteFailures READ deleteFailures NOTIFY changed)
+    Q_PROPERTY(int deletesCancelled READ deletesCancelled NOTIFY changed)
+    Q_PROPERTY(int deletesSkipped READ deletesSkipped NOTIFY changed)
     Q_PROPERTY(QString lastDeleteError READ lastDeleteError NOTIFY changed)
     Q_PROPERTY(int limitMb READ limitMb WRITE setLimitMb NOTIFY limitMbChanged)
     /* A double so QML reads it exactly well past any count a run reaches (a JS number). */
@@ -220,10 +260,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     int deleteFailures() const;
     /** @brief Why the last of them failed (the system's text); empty when none did since the acknowledgement. */
     QString lastDeleteError() const;
+    /** @brief Deletes accepted and then dropped because their storage was read again while they waited (the files
+     * stay; asking again deletes them), since the app started or acknowledgeNotices(). */
+    int deletesCancelled() const;
+    /** @brief Deletes (asked for or by the limit) not done because the file at the recording's name was not the one
+     * recorded (another size or time, a name that cannot be read, a link): left as it is, nothing to ask again. */
+    int deletesSkipped() const;
     /**
-     * @brief The user has seen what the storage limit removed and which deletes failed: removedByLimit() and
-     * deleteFailures() count from zero again (the Call recordings screen calls this as it shows them). GUI thread;
-     * limitReached() is unaffected.
+     * @brief The user has seen what the storage limit removed and which deletes failed, were cancelled or skipped:
+     * removedByLimit(), deleteFailures(), deletesCancelled() and deletesSkipped() count from zero again (the Call
+     * recordings screen calls this as it shows them). GUI thread; limitReached() is unaffected.
      */
     Q_INVOKABLE void acknowledgeNotices();
 
@@ -236,29 +282,59 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     int limitMb() const;
     void setLimitMb(int mb);
 
-    /** @brief Delete recordings by id; each waits while something holds its file. History rows stay. */
-    Q_INVOKABLE void deleteRecordings(const QStringList& ids);
-    Q_INVOKABLE void deleteRecording(const QString& id);
+    /** @brief Delete recordings by id; each waits while something holds its file. History rows stay.
+     *
+     * Every delete request (these and the ones below) is refused, and asks nothing, unless the index is settled
+     * (storageSettledLocked(): no pass running or asked for, every available folder read): the index may then hold
+     * part of a folder, or a folder under the owner it had before the storage came back. It is refused whole too when
+     * any recording it names is on storage that is not there (a folder, Delete all or unfinished recordings that span
+     * storage there and away delete none of them). False when refused, and deleteRefusal() says why. A delete asked
+     * but not done yet (its file held by an export) is dropped when the worker reads storage again. */
+    Q_INVOKABLE bool deleteRecordings(const QStringList& ids);
+    Q_INVOKABLE bool deleteRecording(const QString& id);
     /** @brief Delete every recording of the owner @p uid, unfinished ones in its folders included. */
-    Q_INVOKABLE void deleteFolder(const QString& uid);
+    Q_INVOKABLE bool deleteFolder(const QString& uid);
     /** @brief Delete the unfinished recordings earlier runs left. */
-    Q_INVOKABLE void deleteUnfinished();
+    Q_INVOKABLE bool deleteUnfinished();
     /** @brief Delete every managed recording. */
-    Q_INVOKABLE void deleteAll();
+    Q_INVOKABLE bool deleteAll();
+    /** @brief Why the last delete request refused (GUI thread): "loading" (the index is not settled), "storageAway"
+     * (it named a recording on storage that is not there), or empty after one that was asked. */
+    Q_INVOKABLE QString deleteRefusal() const;
 
     /**
      * @brief Resolve an export (D9) and hold its files until releaseSelection(): the finished recordings of owner
-     * @p folderUid (empty: every owner) whose start falls in the date @p preset (recording_export_range(), today on
-     * the real-time clock).
+     * @p folderUid (empty: every owner) whose start falls in the window of the date @p preset
+     * (recording_export_window()), from one reading of the local zone and of today in it on the real-time clock, taken
+     * at the call (selectForExportAt()). Refused, selecting and holding nothing, while a folder is being read
+     * (deleteRecordings()).
      *
-     * @return {selection (0 when nothing matched), paths, names (`<folder>/<file>`, for the zip), count, bytes}.
+     * @return {selection (0 when nothing matched or refused), paths, names (`<folder>/<file>`, for the zip), count,
+     * bytes, sizes, mtimeSecs and mtimeNanos (each file's size and modification time as the index knows it, which the
+     * transfer checks before it reads the file), day (that reading of today, `yyyy-MM-dd`, which names the zip: a press
+     * across midnight names the day it selected), loading (true when refused while a folder is read)}.
      */
     Q_INVOKABLE QVariantMap selectForExport(const QString& folderUid, const QString& preset);
-    /** @brief As selectForExport(), for the recordings @p ids (save or share one, a row's parts). */
+    /** @brief selectForExport() pressed at @p pressMs (milliseconds since the Unix epoch, given rather than read):
+     * today is that instant's date in the press zone. */
+    QVariantMap selectForExportAt(const QString& folderUid, const QString& preset, qint64 pressMs);
+    /** @brief selectForExport() on @p today in @p zone, given rather than read. */
+    QVariantMap selectForExportOn(const QString& folderUid, const QString& preset, const QDate& today,
+                                  const QTimeZone& zone);
+    /** @brief As selectForExport(), for the recordings @p ids (save one, a row's parts): refused, with loading true,
+     * while the store is not settled. */
     Q_INVOKABLE QVariantMap selectRecordings(const QStringList& ids);
     /** @brief As selectRecordings(), for the recording at @p path (a share the host queued); its selection, 0 when
      * there is none to hold. */
     int selectPath(const QString& path);
+    /** @brief Whether @p selection is held and no read of storage again has started since it was made: a read again
+     * may give a path it names to another recording (two owners' folders swapped while the storage was away), so the
+     * host refuses its transfer otherwise (recording_store_serve_host(), DecoderHost::TransferChanged). */
+    bool selectionCurrent(int selection) const;
+    /** @brief selectionCurrent(), and when it is, @p token (may be null) set to what the transfer checks again on its
+     * own thread: stale once a read of storage again starts, or once the store is gone. A selection made while the
+     * store was not settled (a share's hold) is never current. */
+    bool selectionToken(int selection, RecordingSelectionToken* token) const;
     /** @brief The export or transfer of @p selection is over: its files may be deleted again. */
     Q_INVOKABLE void releaseSelection(int selection);
     /** @brief The file the player has open, held while it plays; empty when none. */
@@ -276,8 +352,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 #ifdef DSD_NEO_TEST_HOOKS
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
+    /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
+     * for, which a limit walk takes as its count gone stale). Test hook. */
+    void waitForPassCountForTest(quint64 count);
+    /** @brief The passes ended so far. Test hook. */
+    quint64 passCountForTest() const;
     /** @brief Pass every @p activeMs while a session runs, else every @p idleMs; before start(). Test hook. */
     void setTimingForTest(int activeMs, int idleMs);
+    /** @brief How long a folder whose folder.json or journal could not be read waits before its next read (30 s by
+     * default). Test hook. */
+    void setReadRetryForTest(int ms);
     /** @brief Replace dsd_rdio_upload_holds() (called on the worker thread); before start(). Test hook. */
     void setUploadHoldsForTest(std::function<bool(const QString&)> holds);
     /** @brief Replace the free-space read (worker thread; -1 unknown); before start(). Test hook. */
@@ -293,8 +377,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after each folder.json read, before the folder's files and journal; before
      * start(). Test hook. */
     void setFolderLoadHookForTest(std::function<void(const QString& folder)> hook);
-    /** @brief Call @p hook on the worker as a root is read whole (at the first pass, or back from away), before its
-     * folders are listed; before start(). Test hook. */
+    /** @brief Call @p hook on the worker as a root is read whole (at the first pass, or back from away), once its
+     * folders are listed and their folder.json read, before the table is installed; before start(). Test hook. */
     void setRootReadHookForTest(std::function<void(const QString& root)> hook);
     /** @brief Call @p hook on the worker after a folder's new journal lines are read, before their files are looked
      * at; before start(). Test hook. */
@@ -302,6 +386,17 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after each slice of a folder's journal is applied, with the lock released;
      * before start() or between passes. Test hook. */
     void setSliceHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook on the worker, under the lock, each time a sum takes its copy of the folder table, with
+     * whether that copy still shares the table's storage (it never should: foldersCopyLocked()). Test hook. */
+    void setFolderCopyHookForTest(std::function<void(bool shared)> hook);
+    /** @brief Call @p hook on the worker before each recording a recheck looks at (recheckRecordings(),
+     * recheckPaths(), the limit's look at what it counts), with the lock released; between passes. Test hook. */
+    void setEntryCheckHookForTest(std::function<void(const QString& id)> hook);
+    /** @brief Call @p hook on the worker as each pass ends, the lock released, before the next pass can begin; between
+     * passes. Test hook. */
+    void setPassEndHookForTest(std::function<void()> hook);
+    /** @brief The ids waiting to be deleted, sorted, and none waiting after. Test hook. */
+    QStringList takeDeleteQueueForTest();
 #endif
 
   Q_SIGNALS:
@@ -341,6 +436,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         /* The Signal search detection it was heard on; empty for none. */
         QString search;
         quint64 order = 0U;
+        /* Its file as the read that indexed it saw it (dsd_path_file_identity()): a delete removes only that file. */
+        dsd_file_identity_t identity{};
+        /* Its name could not be read (no access, an I/O error) when it was indexed: kept with its journal line, never
+         * deleted, counted, exported, played or shared, until a read of its folder sees the file. */
+        bool unreadable = false;
     };
 
     /* A folder as the index held it before a read of it again (loadFolder() with replace), which drops its entries and
@@ -367,12 +467,22 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         qint64 offset = 0;
         qint64 lines = 0;
         qint64 compactFailedAt = -1;
+        /* Session starts that adopted, made or relabelled the folder at this path: a read that saw another count
+         * commits nothing (loadFolder()). */
+        quint64 starts = 0U;
+        /* When a read that failed (folder.json or journal) is tried again (dsd_realtime_mono_ms()); 0 at once. */
+        qint64 retryAtMs = 0;
     };
 
+    /* regular: a regular file, read; missing: nothing at the name; unreadable: the read failed for a reason that says
+     * nothing about the file (no access to the name, an I/O error); none of them: no file (a link, a folder, a FIFO). */
     struct FileStat {
         bool regular = false;
+        bool missing = false;
+        bool unreadable = false;
         qint64 size = 0;
         qint64 mtime = 0;
+        dsd_file_identity_t identity{};
     };
 
     struct Summary {
@@ -389,6 +499,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         int removedByLimit = 0;
         int deletesWaiting = 0;
         int deleteFailures = 0;
+        int deletesCancelled = 0;
+        int deletesSkipped = 0;
         QString lastDeleteError;
 
         /* Whether anything the GUI shows differs from @p other. */
@@ -401,15 +513,21 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         bool published = false;
         bool rebuilt = false;
         bool dirty = false;
+        /* Storage read again: a root listed (rebuildRoot()) or a folder read (loadFolder()). Drops the deletes asked. */
+        bool reread = false;
     };
 
     /* Removed: unlinked. Gone: already gone, now out of the index. Held: waits for a hold. Kept: not the store's to
-     * remove (left on disk, out of the index) or this process's temp file. Failed: the unlink failed; still indexed. */
-    enum class DeleteResult { Removed, Gone, Held, Kept, Failed };
+     * remove (left on disk, out of the index) or this process's temp file. Failed: the unlink failed; still indexed.
+     * Changed: the file at its path is not the one the request (or, for the limit, the index) knew; left alone. */
+    /* Stale: a removal for the limit found the index it counted no longer whole (storageReadLocked()). */
+    /* Unreadable: the recording's name could not be read (now, or when it was indexed or rechecked): kept, skipped. */
+    enum class DeleteResult { Removed, Gone, Held, Kept, Failed, Changed, Stale, Unreadable };
     enum class DeleteCause { Asked, Limit };
     /* What is at a recording's path, without following a link there: nothing; a regular file inside an available root,
-     * which the store may remove; or anything else, which it leaves alone. */
-    enum class OnDisk { Missing, Removable, Foreign };
+     * which the store may remove; anything else, which it leaves alone; or (onDiskAsKnownLocked()) a removable file that
+     * is not the one known, which it leaves alone too, or a name that cannot be read, which it never removes. */
+    enum class OnDisk { Missing, Removable, Foreign, Replaced, Unreadable };
     /* What a folder name an owner's new folder would take, already there, comes to: taken for the owner, or the next
      * name, or the next root (the owner's, taking no new files). */
     enum class CandidateFolder { Taken, NextName, NextRoot };
@@ -434,9 +552,23 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     };
 
     /* What the store needs of one file, read without following a symlink in its place. */
-    static FileStat statOf(const QFileInfo& info, bool withTime);
+    /* What is at @p path, never following a link: a regular file's size, modification time and identity. */
+    static FileStat statOf(const QString& path);
+    /* @p journalPath read whole into @p data; true for one read to its end, or a name confirmed missing (nothing
+     * published yet), false for anything else (a read that failed, a link, a name that cannot be read). */
+    static bool readJournal(const QString& journalPath, QByteArray* data);
+    /* loadFolder()'s read of @p path's folder.json into @p folder: true to go on with the owner read; false when the
+     * load ends (not readable now: read again later; no folder of the app's: dropped, unless a start adopted it since
+     * @p starts). */
+    bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
+    /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
+    static bool opensToRead(const QString& path);
+    /* False for @p path, read as @p stat, while it is a recording a transfer could not open (m_unopenable) and it still
+     * does not open; true otherwise, and then it is forgotten. Lock held. */
+    bool opensAgainLocked(const QString& path, const FileStat& stat);
     static qint64 parseLines(const QByteArray& data, QList<RecordingJournalRecord>* records);
+    /* Each file @p records publishes into @p files (one the folder's listing read already is kept). */
     static void statPublished(const QString& folder, const QList<RecordingJournalRecord>& records,
                               QHash<QString, FileStat>* files);
 
@@ -456,10 +588,20 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool rootStillAvailable(int root, Pass* pass);
     /* rootStillAvailable() for each root @p roots marks true; false when any of them is gone. */
     bool rootsStillAvailable(const QList<bool>& roots, Pass* pass);
-    void rebuildRoot(int root, Pass* pass);
+    /* False, installing nothing, when the root left again as it was listed. */
+    bool rebuildRoot(int root, Pass* pass);
     /* @p root's folder table, as rebuildRoot() listed it, in place of what the index held for the root. Under the
      * store's lock. */
     void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
+    /* A session start put @p path into the folder table or relabelled it: told to a listing of its root going on now.
+     * Under the store's lock. */
+    void noteFolderAddedLocked(const QString& path, int root);
+    /* For installRootTableLocked(): the folders a session start touched during @p root's listing keep the start's owner
+     * and label in @p table; the ones the listing never saw (made new) leave @p stale, and are returned: their earlier
+     * recordings at that path go. Under the store's lock. */
+    QSet<QString> keepSessionFoldersLocked(int root, QList<Folder>* table, QSet<QString>* stale);
+    /* A pass's first read of storage again: Pass::reread, and every selection made before it goes stale at once. */
+    void noteRereadStart(Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
     /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it,
@@ -472,7 +614,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void applyRecordsInSlices(const Folder& folder, const QList<RecordingJournalRecord>& records,
                               const QHash<QString, FileStat>& files, Pass* pass);
     void tailFolders(Pass* pass);
-    void tailFolder(const QString& path, qint64 offset, Pass* pass);
+    /* @p path's new journal lines from @p offset, applied only while the folder is still read with the session starts
+     * count @p starts it had when its cursor was taken. */
+    void tailFolder(const QString& path, qint64 offset, quint64 starts, Pass* pass);
+    /* Whether @p path is still read, at @p offset, with @p starts: the tail's lines may be applied. Lock held. */
+    bool tailCursorCurrentLocked(const QString& path, qint64 offset, quint64 starts) const;
     void applyRecordLocked(const Folder& folder, const RecordingJournalRecord& record,
                            const QHash<QString, FileStat>& files, Pass* pass);
     void applyPublishLocked(const Folder& folder, const RecordingJournalRecord& record,
@@ -497,24 +643,91 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * then publish order). */
     QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
+    /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
+    bool folderReadLocked(const QString& folder) const;
+    /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
+     * applies deletes from start to end), and every folder on available storage has had its read (none adopted by a
+     * session start or back with its storage still waiting for it). Exports and delete requests wait for it. */
+    bool storageSettledLocked() const;
+    /* storageSettledLocked() within a pass: no pass asked for, and every folder on storage that is there read. */
+    bool storageReadLocked() const;
+    /* Whether a root the index holds as away is back now (checkRootsLocked()): a pass is asked for to read it, and the
+     * caller wakes the worker and refuses its export or save as loading. Under the store's lock. */
+    bool awayRootsBackLocked();
+    /* Queue @p ids that are indexed for deletion; false, queuing nothing, when any is on storage not there now
+     * (m_deleteRefusal says so). @p wake: a pass was asked for. The caller checked storageSettledLocked(). */
+    bool queueDeletesLocked(const QStringList& ids, bool* wake);
+    /* @p roots as they are now, for a delete request: @p away when one is missing, @p unread when one is back but not
+     * read again since (marked away, or found missing by a request); true when a pass must read one (m_rootsSeenAway). */
+    bool checkRootsLocked(const QList<int>& roots, bool* away, bool* unread);
+    /* One delete request: refused unless storageSettledLocked() (and, for a @p bulk one, no root held as away is back:
+     * awayRootsBackLocked()), else the ids @p collect gives (under the lock) are queued by queueDeletesLocked(). */
+    bool requestDeletes(bool bulk, const std::function<QStringList()>& collect);
     QString folderUidLocked(const QString& folder) const;
     bool liveTemp(const QString& path) const;
     bool stopping() const;
     /* Let History reads waiting for the lock take it before the worker takes it again (the mutex is not fair). */
     void yieldToReaders() const;
     void processRechecks(Pass* pass);
-    /* Look at the files of @p ids again: a gone one leaves the index (kept when its root went: the storage-loss rule),
-     * one still there has its size read again. */
-    void recheckEntries(const QStringList& ids, Pass* pass);
+    /* Look at the files of @p ids again: one confirmed gone, or no recording file, leaves the index (kept when its root
+     * went: the storage-loss rule; kept when its name cannot be read), one still there has its size read again, and
+     * with @p readChanged (a recheck the host asked for) another file than the index knew reads its folder again. */
+    void recheckEntries(const QStringList& ids, Pass* pass, bool readChanged);
+    /* recheckEntries() for @p entry, a regular file now as @p stat reads it. Under the store's lock. */
+    void recheckRegularLocked(Entry& entry, const FileStat& stat, bool readChanged, Pass* pass);
+    /* Read @p path whole again at the next pass, with what the index held for it kept until then; the store is not
+     * settled meanwhile. Under the store's lock. */
+    void scheduleFolderReadLocked(const QString& path, Pass* pass);
+    /* @p path read whole again before any request is taken (loaded false, what the index holds kept). Lock held. */
+    void markFolderUnreadLocked(const QString& path);
+    /* scheduleFolderReadLocked() after a read that failed: tried again once m_readRetryMs has passed. Lock held. */
+    void deferFolderReadLocked(const QString& path, Pass* pass);
+    /* A session start found @p root missing: listed in full when it is back, deletes held, selections stale. Lock
+     * held. */
+    void noteRootSeenAwayLocked(int root);
+    /* A recheck could not read @p id's name: kept, its journal line with it, and out of every index, count and usage
+     * (Entry::unreadable). Under the store's lock. */
+    void markEntryUnreadableLocked(const QString& id, Pass* pass);
+    /* @p entry out of the detection index. Under the store's lock. */
+    void unindexSearchLocked(const Entry& entry);
+    /* tailFolder() could not read @p path's new journal lines: read whole at the next pass (its root still there). */
+    void noteTailReadFailed(const QString& path, Pass* pass);
     void processDeletes(Pass* pass);
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
-    DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr);
+    /* @p expected: the file a user's delete was asked of (its identity when the request was accepted); null for the
+     * limit's, which removes the file the index knows. */
+    DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr,
+                             const dsd_file_identity_t* expected = nullptr, qint64* foundBytes = nullptr);
     /* A recording not removable as found (@p found: missing, or not the store's to remove) leaves the index, unless
      * what is there changed meanwhile. Under the store's lock. */
     DeleteResult dropUnremovableLocked(const QString& id, OnDisk found, Pass* pass);
     OnDisk onDiskLocked(const QString& path) const;
+    /* onDiskLocked(), and Replaced when a removable file there is not the one @p known names (its size or time differs),
+     * or when the name cannot be read at all. */
+    OnDisk onDiskAsKnownLocked(const QString& path, const dsd_file_identity_t& known, qint64* bytes = nullptr) const;
+
+    /* What deleteEntry() settles after the lock when the unlink did not decide: what is at the name, its root, and the
+     * failure's reason. */
+    struct UnlinkAttempt {
+        OnDisk found = OnDisk::Removable;
+        int root = -1;
+        QString error;
+        /* The size of the regular file the check found at the name; -1 when it found none. */
+        qint64 bytes = -1;
+    };
+
+    /* deleteEntry()'s step under the lock: the holds, the check and the unlink. Failed when deleteEntry() still has to
+     * settle it from @p attempt (a missing or foreign name, a refused or failed removal). */
+    DeleteResult unlinkEntryLocked(const QString& id, const QString& path, bool uploading, DeleteCause cause,
+                                   const dsd_file_identity_t* expected, Pass* pass, UnlinkAttempt* attempt);
+    /* The player, an export or a save holds @p path. */
+    bool heldLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
     void enforceLimit(Pass* pass);
+    /* The folder table, copied whole under the store's lock, for the worker to read once the lock is let go. A shared
+     * copy would not do: a session start on the GUI thread writes the table, and Qt decides a QHash is no longer shared
+     * with a relaxed load, which orders none of the worker's reads of the shared table before that write in place. */
+    QHash<QString, Folder> foldersCopyLocked() const;
     /* The limit's usage now; false when nothing is to go (no limit the user set, or under it). Once @p looked, the
      * recordings it may remove; before, the ids of the files to look at first. */
     bool countLimitUsage(bool looked, LimitUsage* usage);
@@ -531,7 +744,14 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     static RecordingJournalRecord journalRecordOf(const Entry& entry);
     /* Rewrite the journal at @p journalPath with one publish per @p live recording, when nothing but a torn line lies
      * past @p offset; @p written is the bytes it holds then. */
-    static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written);
+    /* @p stillDue is asked right before the rewrite is committed; false cancels it. */
+    static bool rewriteJournal(const QString& journalPath, qint64 offset, const QList<Entry>& live, qint64* written,
+                               const std::function<bool()>& stillDue);
+    /* Whether @p path's journal may be compacted: read, on available storage not seen away since. Lock held. */
+    bool compactableLocked(const QString& path) const;
+    /* summarize() for an entry no listed recording: an unfinished one counted as such, one whose name cannot be read
+     * not at all. True when @p entry is one of them. */
+    static bool tallyUnlisted(const Entry& entry, Summary* summary);
     static Summary summarize(const QHash<QString, Entry>& entries, const QHash<QString, Folder>& folders,
                              const QList<bool>& rootAvailable);
     void publish(const Pass& pass);
@@ -541,7 +761,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
      * and a new folder. */
     QList<bool> usableRootsLocked();
-    QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone);
+    QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
+    /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
+     * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
+     * folder is read again before any request). Under the store's lock. */
+    bool ownerFolderOnDiskLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone,
+                                 QStringList* unread);
     QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
     CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);
@@ -550,6 +775,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* entryMap() and what a detection's list shows of a recording. */
     QVariantMap detectionEntryMap(const Entry& entry) const;
     QVariantMap selectLocked(QList<const Entry*> entries);
+    /* selectLocked() of the finished recordings @p ids names, whenever (selectRecordings() checks first). */
+    QVariantMap selectIdsLocked(const QStringList& ids);
 
     /* GUI thread: the last summary the worker delivered, and the generation it came with. */
     Summary m_summary;
@@ -579,6 +806,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Folder path -> what it held, for each folder being read again (CommittedFolder). */
     QHash<QString, CommittedFolder> m_committed;
     QSet<QString> m_active;
+    /* Why the last delete request refused (deleteRefusal()). */
+    enum class DeleteRefusal { None, Loading, StorageAway };
+    DeleteRefusal m_deleteRefusal = DeleteRefusal::None;
     /* Every journal held: until the host's state is known, and while a session no starter began here is active. */
     bool m_allActive = true;
     bool m_hostKnown = false;
@@ -591,10 +821,36 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QSet<QString> m_unproven;
     QString m_compacting;
     QHash<QString, int> m_holds;
-    QHash<int, QStringList> m_selections;
+
+    /* An export's or a save's files, m_storageReads when they were selected, and whether the store was settled then
+     * (only such a selection is transferred). */
+    struct Selection {
+        QStringList paths;
+        quint64 storageReads = 0U;
+        bool settled = false;
+    };
+
+    QHash<int, Selection> m_selections;
+    /* Reads of storage again started (noteRereadStart()), and one more as the store goes: a selection made before one
+     * is not transferred. Shared with the tokens transfers carry (selectionToken()), which outlive the store. Changed
+     * under the store's lock. */
+    const std::shared_ptr<std::atomic<quint64>> m_storageReads = std::make_shared<std::atomic<quint64>>(0U);
     int m_nextSelection = 1;
     QString m_playing;
-    QSet<QString> m_deleteQueue;
+    /* Each delete asked and not done yet, with its file's identity as the index knew it when the request was accepted. */
+    QHash<QString, dsd_file_identity_t> m_deleteQueue;
+    /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
+     * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
+    QSet<int> m_rootsSeenAway;
+    /* Paths of recordings a transfer could not open (recheckRegularLocked()): unreadable until an open succeeds. */
+    QSet<QString> m_unopenable;
+    /* The roots rebuildRoot() is listing now, each with the folders a session start made, took or relabelled on it since
+     * the listing began (keepSessionFoldersLocked()). */
+    QHash<int, QSet<QString>> m_listing;
+    /* Accepted deletes a read again of their storage dropped (deletesCancelled()), since the app started. */
+    int m_deletesCancelled = 0;
+    /* Deletes not done because the file was not the one recorded (deletesSkipped()), since the app started. */
+    int m_deletesSkipped = 0;
     QSet<QString> m_recheckQueue;
     qint64 m_limitBytes = kDefaultLimitMb * kBytesPerMb;
     bool m_limitChanged = false;
@@ -613,9 +869,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::atomic<bool> m_stopping{false};
     bool m_passRequested = false;
     bool m_inPass = false;
+    /* A pass's end hook running (setPassEndHookForTest()): the pass is not counted done until it returns. */
+    bool m_passEnding = false;
     quint64 m_passes = 0U;
     int m_activeMs = 1000;
     int m_idleMs = 60000;
+    /* deferFolderReadLocked()'s wait before a failed folder read is tried again. */
+    qint64 m_readRetryMs = 30000;
     quint64 m_nextOrder = 1U;
     int m_compactions = 0;
     qint64 m_rebuildNs = 0;
@@ -632,6 +892,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* GUI thread: the totals acknowledgeNotices() took, which the notice readings count from. */
     int m_removedByLimitSeen = 0;
     int m_deleteFailuresSeen = 0;
+    int m_deletesCancelledSeen = 0;
+    int m_deletesSkippedSeen = 0;
 
     /* Worker thread only. */
     QString m_liveToken;
@@ -644,6 +906,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_rootReadHook;
     std::function<void(const QString&)> m_tailHook;
     std::function<void(const QString&)> m_sliceHook;
+    std::function<void(bool)> m_folderCopyHook;
+    std::function<void(const QString&)> m_entryCheckHook;
+    std::function<void()> m_passEndHook;
     int m_removedByLimit = 0;
     int m_deleteFailures = 0;
     QString m_lastDeleteError;

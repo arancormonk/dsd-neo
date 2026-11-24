@@ -69,7 +69,7 @@
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingExport {
-    public static java.lang.String[] transfer(android.content.ContentResolver, long, java.lang.String[], java.lang.String[], java.lang.String, boolean);
+    public static java.lang.String[] transfer(android.content.ContentResolver, long, java.lang.String[], java.lang.String[], long[], java.lang.String, boolean);
     public static long progress(long);
     public static void cancel(long);
 }

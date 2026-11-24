@@ -103,6 +103,11 @@ void tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t ne
  * may no longer be known, is not the next transmission's and starts over. */
 void tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id);
 
+/** A call is admitted on a slot with no active call (issue #888): the speech in progress, heard before the call was,
+ * starts over: its unplayed samples, its confirmation and concealment state and the decoder's history go, so no
+ * sample of the admitted call's audio is played or concealed from speech before it. */
+void tetra_voice_call_admitted(tetra_voice_t* voice);
+
 /** The receiver lost the carrier's samples (tetra_forget_carrier()): the speech in progress starts over, but the
  * transmission it belonged to is kept, so speech after the gap that voice_bind()'s rules call the same transmission
  * does not count as another. */

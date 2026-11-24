@@ -382,6 +382,8 @@ rigctl_response_ok(const char* response) {
    no request sends it. */
 static dsd_socket_t s_last_sockfd = DSD_INVALID_SOCKET;
 static uint32_t s_last_freq = 0U;
+/* Frequency requests that went out and were not refused (RigctlFrequencyMoves()): each may have moved the peer. */
+static dsd_atomic_u64 s_freq_moves;
 
 /* What a frequency request's reply says (issue #834): only a complete numeric RPRT line ("RPRT 0", or a non-zero
    status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
@@ -420,6 +422,37 @@ rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
  * is 32-bit (issue #671). A request with no complete reply (lost, garbled, cut short) may have moved the peer: where it
  * is is not known until it confirms a request, so the next one goes out whatever it asks for (RigctlConfirmedFreq()).
  * A complete refusal leaves the peer where it was, as known. */
+/* Whether a send that wrote nothing failed for a moment only (interrupted, or the socket's buffer full) on a connection
+ * that still runs, rather than for its loss or any error not known to be passing. A Winsock time-out is not one: the
+ * connection sets no send time-out, so WSAETIMEDOUT from send() says TCP gave up on a peer that stopped answering. */
+static int
+rigctl_send_failure_is_transient(int n) {
+    if (n == 0) {
+        return 1;
+    }
+#if DSD_PLATFORM_WIN_NATIVE
+    const int error = dsd_socket_get_error();
+    return error == WSAEINTR || error == WSAEWOULDBLOCK;
+#else
+    const int error = errno;
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+    if (error == EWOULDBLOCK) {
+        return 1;
+    }
+#endif
+    return error == EINTR || error == EAGAIN;
+#endif
+}
+
+/* Forget the frequency the peer on @p sockfd confirmed: it may have moved, or this connection can no longer say. */
+static void
+rigctl_forget_confirmed_freq(dsd_socket_t sockfd) {
+    if (sockfd == s_last_sockfd) {
+        s_last_sockfd = DSD_INVALID_SOCKET;
+        s_last_freq = 0U;
+    }
+}
+
 static bool
 rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     if (sockfd == s_last_sockfd && freq_hz == s_last_freq) {
@@ -428,15 +461,31 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     char buf[BUFSIZE + 1];
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
-    const int outcome = Send(sockfd, buf) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    const size_t len = strlen(buf);
+    const int n = dsd_socket_send(sockfd, buf, len, DSD_RIGCTL_SEND_FLAGS);
+    if (n <= 0) {
+        if (!rigctl_send_failure_is_transient(n)) {
+            /* The connection is lost, or failed in a way not known to pass: it confirms nothing any more, and where
+               the peer is goes unknown, a move for the stream (RigctlFrequencyMoves()). */
+            rigctl_forget_confirmed_freq(sockfd);
+            (void)dsd_atomic_u64_fetch_add_release(&s_freq_moves, 1U);
+        }
+        /* Otherwise nothing went out: the peer is where it was, and still confirms it on this connection. */
+        return false;
+    }
+    const int outcome = ((size_t)n == len) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    if (outcome != RIGCTL_FREQ_REFUSED) {
+        /* Some of the request reached the peer, which confirmed it or sent no complete reply: it moved, or may have. A
+           refusal leaves it where it was, and a send that put nothing on the wire cannot have moved it. */
+        (void)dsd_atomic_u64_fetch_add_release(&s_freq_moves, 1U);
+    }
     if (outcome == RIGCTL_FREQ_CONFIRMED) {
         s_last_sockfd = sockfd;
         s_last_freq = freq_hz;
         return true;
     }
-    if (outcome == RIGCTL_FREQ_UNKNOWN && sockfd == s_last_sockfd) {
-        s_last_sockfd = DSD_INVALID_SOCKET;
-        s_last_freq = 0U;
+    if (outcome == RIGCTL_FREQ_UNKNOWN) {
+        rigctl_forget_confirmed_freq(sockfd);
     }
     return false;
 }
@@ -444,6 +493,11 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
 uint32_t
 RigctlConfirmedFreq(dsd_socket_t sockfd) {
     return sockfd != DSD_INVALID_SOCKET && sockfd == s_last_sockfd ? s_last_freq : 0U;
+}
+
+uint64_t
+RigctlFrequencyMoves(void) {
+    return dsd_atomic_u64_load_acquire(&s_freq_moves);
 }
 
 /**

@@ -469,11 +469,16 @@ object DocumentCopies {
             finish(length)
         }
 
-        /** Settle and close the document, [length] bytes long; a failure fails it ([fail]) and is rethrown. */
-        fun finish(length: Long) {
+        /**
+         * Settle and close the document, [length] bytes long; a failure fails it ([fail]) and is rethrown. [beforeClose]
+         * runs once the document is synced and before it is closed as good: what it throws fails the document the same
+         * way (a call recording export whose selection went stale during the sync, #902).
+         */
+        fun finish(length: Long, beforeClose: () -> Unit = {}) {
             try {
                 output.flush()
                 settle(document, length)
+                beforeClose()
                 document.close()
             } catch (e: Throwable) {
                 fail(e)

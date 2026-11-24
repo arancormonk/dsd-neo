@@ -1,4 +1,4 @@
-add_library(dsd-neo_app_control)
+add_library(dsd-neo_app_control STATIC)
 
 target_sources(
     dsd-neo_app_control
@@ -108,10 +108,3 @@ elseif(MSVC)
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
-
-install(
-    TARGETS dsd-neo_app_control
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

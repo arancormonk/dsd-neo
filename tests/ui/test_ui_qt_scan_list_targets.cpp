@@ -14,6 +14,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -29,6 +30,42 @@ check(bool ok) {
     if (!ok) {
         ++failures;
         std::fputs("scan-list assertion failed\n", stderr);
+    }
+}
+
+static void
+expect(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+    }
+    check(ok);
+}
+
+/* Issue #834: the Skip silent channels box owns --scan-skip-silent and --no-scan-skip-silent, but not how long the
+   check reads. A list's extra options may set that length in either spelling, the space form's value as the next
+   token; the decoder checks the range. */
+static void
+test_skip_silent_length_extra(const QVariantMap& list) {
+    SessionArgPrefs prefs;
+    QString error;
+    for (const auto& extra : {QStringLiteral("--scan-skip-silent-ms 50"), QStringLiteral("--scan-skip-silent-ms=50")}) {
+        expect("the scan gate takes the skip-silent length", session_args_scan_extra_safe(extra));
+        prefs.extraArgs = extra;
+        const QStringList args = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
+        const QStringList tokens = extra.split(QLatin1Char(' '));
+        expect("a scan list with the skip-silent length starts, the length passed as typed",
+               error.isEmpty() && args.size() > tokens.size() && args.mid(args.size() - tokens.size()) == tokens
+                   && args.count(QStringLiteral("--scan-skip-silent")) == 1);
+    }
+    for (const auto& extra : {QStringLiteral("--scan-skip-silent-ms 50 --scan-skip-silent"),
+                              QStringLiteral("--scan-skip-silent-ms=50 --no-scan-skip-silent"),
+                              QStringLiteral("--scan-skip-silent=1"), QStringLiteral("--no-scan-skip-silent-ms=50")}) {
+        expect("the scan gate still refuses the skip-silent switches beside the length",
+               !session_args_scan_extra_safe(extra));
+        prefs.extraArgs = extra;
+        expect("a scan list carrying a skip-silent switch is refused",
+               session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error).isEmpty()
+                   && error == session_args_error_text(SessionArgsError::UnsafeOption));
     }
 }
 
@@ -355,6 +392,7 @@ main(int argc, char** argv) {
           && args.contains("--src-csv") && args.contains("--trunk-scan-dwell-ms")
           && args.contains("--trunk-scan-activity-hold-ms") && args.contains("--enc-lockout")
           && args.contains("--auto-ppm"));
+    test_skip_silent_length_extra(list);
     for (const auto& field : {"gainDb", "bandwidthKhz", "biasTee"}) {
         const auto prior = list.value(field);
         list[field] = "invalid";

@@ -1,5 +1,5 @@
 # Engine module library
-add_library(dsd-neo_dispatch)
+add_library(dsd-neo_dispatch STATIC)
 
 target_sources(
     dsd-neo_dispatch
@@ -44,14 +44,7 @@ target_link_libraries(
 
 target_link_libraries(dsd-neo_dispatch PRIVATE dsd-neo_warnings)
 
-install(
-    TARGETS dsd-neo_dispatch
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-
-add_library(dsd-neo_engine)
+add_library(dsd-neo_engine STATIC)
 
 target_sources(
     dsd-neo_engine
@@ -120,11 +113,4 @@ target_link_libraries(
 target_link_libraries(
     dsd-neo_engine
     PRIVATE dsd-neo_warnings dsd-neo_feature_lz dsd-neo_io_iq
-)
-
-install(
-    TARGETS dsd-neo_engine
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

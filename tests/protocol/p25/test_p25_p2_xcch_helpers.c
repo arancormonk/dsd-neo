@@ -63,6 +63,8 @@ static int g_active_svc[2];
 static int g_active_source_absent[2];
 static int g_voice_start_unchecked; /* voice starts the decoder emitted without all three identity verdicts */
 static int g_voice_identity_result;
+static int g_vpdu_saw_lcch; /* p2_is_lcch as the last VPDU pass found it, which the real pass clears when it ends */
+static int g_voice_identity_span; /* the span the last voice identity parse was given */
 static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
 static int g_end_apply;
@@ -155,6 +157,10 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
     (void)opts;
     g_vpdu_count++;
     g_vpdu_crc_ok = crc_ok;
+    g_vpdu_saw_lcch = state ? state->p2_is_lcch : -1;
+    if (state) {
+        state->p2_is_lcch = 0; /* as process_MAC_VPDU_crc() leaves it */
+    }
     g_vpdu_type = type;
     g_vpdu_pdu_type = pdu_type;
     if (state) {
@@ -186,10 +192,21 @@ process_MAC_VPDU_crc(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_typ
     }
 }
 
+/* The transport spans, as p25p2_mac_parse.c gives them (P25_MAC_SEGMENT checks the values). */
 int
-p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out) {
+p25p2_mac_span(int type, int is_lcch) {
+    if (type == 1) {
+        return is_lcch ? P25P2_MAC_SPAN_LCCH : P25P2_MAC_SPAN_SACCH;
+    }
+    return P25P2_MAC_SPAN_FACCH;
+}
+
+int
+p25p2_mac_decode_voice_identity_span(int type, int span, const unsigned long long mac[24],
+                                     struct p25p2_mac_voice_identity* out) {
     (void)type;
     (void)mac;
+    g_voice_identity_span = span;
     if (g_voice_identity_result == 1 && out) {
         *out = g_voice_identity;
     }
@@ -1874,6 +1891,37 @@ set_roaming_voice_identity(uint32_t unit) {
     g_voice_identity_result = 1;
 }
 
+/* A MAC_ACTIVE on an LCCH carries fewer message octets than one on a SACCH: its voice identity is parsed within the
+   LCCH's span, which the VPDU pass, clearing p2_is_lcch as it ends, would otherwise leave to the SACCH's. */
+static int
+test_lcch_mac_active_identity_parses_within_the_lcch(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    unsigned long long int mac[24] = {0};
+    reset_stubs();
+    g_voice_identity_span = 0;
+    state->p2_is_lcch = 1;
+    p25p2_xcch_handle_sacch_mac_active(opts, state, 0, mac);
+    int rc = expect_int("lcch MAC_ACTIVE reached the VPDU pass on the lcch", g_vpdu_saw_lcch, 1);
+    rc |=
+        expect_int("lcch MAC_ACTIVE identity parsed within the lcch span", g_voice_identity_span, P25P2_MAC_SPAN_LCCH);
+    reset_stubs();
+    g_voice_identity_span = 0;
+    p25p2_xcch_handle_sacch_mac_active(opts, state, 0, mac);
+    rc |= expect_int("sacch MAC_ACTIVE identity parsed within the sacch span", g_voice_identity_span,
+                     P25P2_MAC_SPAN_SACCH);
+    reset_stubs();
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* The MAC_ACTIVE voice start can open the call after the voice-user pass named the talker's home: the call it opened
    carries the home too. Another radio's home on the same call drops the alias the earlier radio's call showed. */
 static int
@@ -1890,7 +1938,8 @@ test_mac_active_voice_start_carries_roaming_home(void) {
     g_voice_event_accept = 1;
     unsigned long long int mac[24] = {0};
     set_roaming_voice_identity(1234567U);
-    rc |= expect_int("roam MAC_ACTIVE accepted", p25p2_xcch_emit_active(opts, state, 0, 0, mac), 1);
+    rc |=
+        expect_int("roam MAC_ACTIVE accepted", p25p2_xcch_emit_active(opts, state, 0, P25P2_MAC_SPAN_FACCH, 0, mac), 1);
     dsd_call_snapshot call;
     rc |= expect_int("roam call open", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_int("roam no working address", (int)call.ota_source_id, 0);
@@ -1901,7 +1950,7 @@ test_mac_active_voice_start_carries_roaming_home(void) {
 
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "FIRSTRADIO");
     set_roaming_voice_identity(7654321U);
-    rc |= expect_int("second roamer accepted", p25p2_xcch_emit_active(opts, state, 0, 0, mac), 1);
+    rc |= expect_int("second roamer accepted", p25p2_xcch_emit_active(opts, state, 0, P25P2_MAC_SPAN_FACCH, 0, mac), 1);
     rc |= expect_int("second roamer's home",
                      dsd_call_state_get(state, 0U, &call) == 1 && call.source_home.unit == 7654321U, 1);
     rc |= expect_int("first roamer's alias dropped", state->generic_talker_alias[0][0], '\0');
@@ -1909,9 +1958,23 @@ test_mac_active_voice_start_carries_roaming_home(void) {
     /* A voice user naming no target publishes no call: its home is not the open call's. */
     set_roaming_voice_identity(5555555U);
     g_voice_identity.tg = 0;
-    (void)p25p2_xcch_emit_active(opts, state, 0, 0, mac);
+    (void)p25p2_xcch_emit_active(opts, state, 0, P25P2_MAC_SPAN_FACCH, 0, mac);
     rc |= expect_int("target-less voice user leaves the open call's home",
                      dsd_call_state_get(state, 0U, &call) == 1 && call.source_home.unit == 7654321U, 1);
+
+    /* Another radio's abbreviated voice user on the call (no end decoded): its working address names the talker now,
+       so the roamer's home and alias go with it. */
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "SECONDRADIO");
+    DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
+    g_voice_identity.tg = 0x1234;
+    g_voice_identity.src = 3002;
+    g_voice_identity.is_group = 1;
+    rc |= expect_int("abbreviated voice user accepted",
+                     p25p2_xcch_emit_active(opts, state, 0, P25P2_MAC_SPAN_FACCH, 0, mac), 1);
+    rc |= expect_int("abbreviated voice user names its working address",
+                     dsd_call_state_get(state, 0U, &call) == 1 && call.ota_source_id == 3002U, 1);
+    rc |= expect_int("abbreviated voice user drops the roamer's home", call.source_home.valid, 0);
+    rc |= expect_int("abbreviated voice user drops the roamer's alias", state->generic_talker_alias[0][0], '\0');
 
     g_voice_identity_result = 0;
     reset_stubs();
@@ -1938,6 +2001,7 @@ main(void) {
     rc |= test_voice_counter_reset_helpers();
     rc |= test_mac_handlers_stop_after_vpdu_retune();
     rc |= test_mac_active_voice_start_carries_roaming_home();
+    rc |= test_lcch_mac_active_identity_parses_within_the_lcch();
 
     if (rc != 0) {
         return 1;
