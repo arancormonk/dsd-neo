@@ -626,6 +626,16 @@ channel_scan_owed_recovery_arm(const dsd_opts* opts, dsd_state* state, double no
     state->lcn_owed_recovery_m = now_m + span_s;
 }
 
+/* The scan's service found nothing in flight (no request, no retry): a commit still owed has its recovery paced from
+   the first service that finds it so, on a -Y scan. One read when none is owed. */
+static void
+channel_scan_owed_recovery_note(const dsd_opts* opts, dsd_state* state, const channel_scan* scan) {
+    if (scan->needs_commit && !(state->lcn_owed_recovery_m > 0.0) && opts->scanner_mode == 1
+        && opts->trunk_scan_enabled != 1) {
+        channel_scan_owed_recovery_arm(opts, state, dsd_decode_now_mono_s());
+    }
+}
+
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
    longer outstanding (no request, retry or commit of it left), would wait for good: it fails here, kept for its toast,
    as its attempt's failure would have failed it. */
@@ -661,11 +671,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return dsd_engine_channel_scan_waiting(state);
     }
     if (!scan->request) {
-        /* A commit owed with nothing in flight: its recovery is paced from the first service that finds it so. */
-        if (scan->needs_commit && !(state->lcn_owed_recovery_m > 0.0) && opts->scanner_mode == 1
-            && opts->trunk_scan_enabled != 1) {
-            channel_scan_owed_recovery_arm(opts, state, dsd_decode_now_mono_s());
-        }
+        channel_scan_owed_recovery_note(opts, state, scan);
         return 0;
     }
     const dsd_trunk_tune_result result = channel_scan_request_result(scan);
