@@ -21778,7 +21778,8 @@ struct GateWriteRace {
     /* The round each thread has reached (round 10): both meet at every round before its write and its landing, so
        neither banks progress for later rounds however the two are scheduled (one core included). The same round's
        write and landing are then ordered by nothing but the gate's lock, which is what TSan checks; a round's
-       operations happen-before the next round's, only through this meeting. */
+       operations happen-before the next round's, only through this meeting. A write that read the demodulator is
+       reported in every run, one core included (the round-8 fix reverted). */
     std::atomic<int> writer_round{0};
     std::atomic<int> lander_round{0};
 };
@@ -21798,7 +21799,6 @@ gate_write_race_lander(void* arg) {
     GateWriteRace* race = static_cast<GateWriteRace*>(arg);
     const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 0};
     for (int i = 0; i < race->rounds; i++) {
-        gate_write_race_meet(&race->lander_round, &race->writer_round, i + 1);
         /* Digital first, so the last landing is the marked NFM one. */
         const uint32_t hz = kFamilyTestRetuneHz + 25000U * (uint32_t)(i % 8);
         const int analog = (i % 2) != 0;
@@ -21807,7 +21807,16 @@ gate_write_race_lander(void* arg) {
         } else {
             (void)rtl_stream_prepare_retune_analog_profile_for_target(hz, &digital);
         }
-        (void)channel_gate_test_controller_land(analog ? race->analog_opts : race->digital_opts, hz);
+        /* The profile is taken before the meeting (as schedule_manual_retune() takes it) and lands after it: the
+           landing's demodulator writes come after the last lock it took, so a write of this round that runs before
+           them has no lock between them, and one that read the demodulator would race them. */
+        RtlRetuneProfile profile{};
+        const int taken = rtl_stream_take_pending_retune_profile(&profile, 7U, hz);
+        gate_write_race_meet(&race->lander_round, &race->writer_round, i + 1);
+        /* The writer's turn first where one core runs both: it met this round already, and writes once it runs. */
+        dsd_thread_yield();
+        (void)family_test_finalize_on_pipeline(&controller, analog ? race->analog_opts : race->digital_opts, hz,
+                                               taken ? &profile : NULL);
         race->landings.fetch_add(1, std::memory_order_relaxed);
     }
     DSD_THREAD_RETURN;
