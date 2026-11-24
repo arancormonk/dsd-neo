@@ -19248,7 +19248,9 @@ Qt Quick frontend (`src/ui/qt`):
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor session menu's **Talkgroups** entry. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the
   edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system
-  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and its tuning. The
+  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and the tuning the
+  session was started with (`sessionTuning`: an edit of the running system changes `sessionSystem`, but not the
+  frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted). The
   flow reads every completion since the last poll (`UiController::talkgroupExportResults`, from
   `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
   registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step

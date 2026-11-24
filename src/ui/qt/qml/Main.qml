@@ -1148,6 +1148,13 @@ Window {
     property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
+    // Issue #903: the tuning the running session was started with
+    // (TalkgroupSaveFlow.tuningOf()), what a talkgroup list it saves is
+    // attached under. sessionSystem follows an edit of its system, whose new
+    // frequency or decode mode the running decoder does not take; this does
+    // not. Empty, which attaches nothing, for a session this window did not
+    // start (a recreated Activity cannot know what it was started with).
+    property var sessionTuning: ({})
     // The standalone saved system the session runs, by UID: empty for a scan
     // list, Explore, a signal search or a wizard test. What the session may
     // write back to (radio controls, the decryption profile for future starts).
@@ -1970,6 +1977,7 @@ Window {
         }
         mainRoot.exploring = (row < 0) && !sys.signalSearch;
         mainRoot.sessionSystem = sys;
+        mainRoot.sessionTuning = talkgroupSave.tuningOf(sys);
         mainRoot.sessionScanList = !!scan;
         var startExploring = !scan && (row < 0) && !sys.signalSearch;
         mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
@@ -2491,6 +2499,7 @@ Window {
     // WP-D1: associate only the retained completion, using the captured system UUID and tuning.
     TalkgroupSaveFlow {
         id: talkgroupSave
+        objectName: "talkgroupSave"
         onSaved: function (uid, path) {
             if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
                 mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {
@@ -2511,9 +2520,9 @@ Window {
         saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
         saveMessage: talkgroupSave.message
         // The sheet's own policy version; the standalone saved system (none for Explore, a scan list or a hold) and the
-        // tuning it runs, captured now for the attachment to compare.
+        // tuning the decoder runs it with, captured now for the attachment to compare.
         onSaveListRequested: function (context, generation) {
-            talkgroupSave.save(mainRoot.sessionSavedSystemUid, context, generation, talkgroupSave.tuningOf(mainRoot.sessionSystem));
+            talkgroupSave.save(mainRoot.sessionSavedSystemUid, context, generation, mainRoot.sessionTuning);
         }
         opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0

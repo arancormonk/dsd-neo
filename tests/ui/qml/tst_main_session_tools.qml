@@ -780,6 +780,38 @@ Item {
                 savedSystems.remove(row);
             }
         }
+        // Issue #903: an edit of the running system pushes its files to the
+        // session, and the monitor shows it, but the decoder keeps the frequency
+        // it started on. A talkgroup list saved afterwards captures the tuning
+        // the session runs, so it is not attached to the retuned system.
+        function test_a_saved_list_captures_the_running_tuning() {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Tuned site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var uid = savedSystems.get(row).uid;
+            var flow = findChild(app, "talkgroupSave");
+            verify(flow !== null);
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                compare(app.sessionRow, row);
+                verify(savedSystems.update(row, {freqMhz: "852.5"}));
+                findChild(app, "wizardScreen").saved(row);
+                compare(app.sessionSystem.freqMhz, "852.5", "the monitor did not follow the edit");
+                findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                compare(flow.pending.uid, uid);
+                compare(flow.pending.tuning.freqMhz, "851.5", "the request captured the edited, not the running, tuning");
+                verify(!savedSystems.groupListAttachable(uid, flow.pending.tuning), "the retuned system would take the list");
+            } finally {
+                if (flow.pending !== null)
+                    importedFiles.releaseTalkgroupListPath(flow.pending.path);
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                savedSystems.remove(row);
+            }
+        }
         // A recreated Activity finds the tuner held: no session map came with it,
         // so it names the session Exploring until the resume, then by the label
         // the history kept.
