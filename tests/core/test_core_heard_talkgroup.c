@@ -511,6 +511,34 @@ test_live_input_committed_revision(void) {
     fixture_close(&f);
 }
 
+/* A proof that revises a committed row reads the input in force as it arrives, and the staged row's live-input latch
+   only once a render built that row since the commit cleared it. */
+static void
+test_live_input_revision_reads_current_input(void) {
+    proof_fixture f;
+    /* Live input, no render since the notice committed the row and cleared the staged one: the row stays live. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot call = slot_call(&f);
+    assert(dsd_event_emit_call_notice_nonfinalizing(f.opts, f.state, 0U, &call, "NOTICE") == 1);
+    assert(row(&f, 1)->live_input == 1U && row(&f, 0)->channel_label_resolved == 0U);
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 1U);
+    fixture_close(&f);
+
+    /* A live render, then a switch to a file and no render since: the proof arrives from the file and clears it. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    call = slot_call(&f);
+    assert(dsd_event_emit_call_notice_nonfinalizing(f.opts, f.state, 0U, &call, "NOTICE") == 1);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(row(&f, 0)->channel_label_resolved != 0U && row(&f, 0)->live_input == 1U && row(&f, 1)->live_input == 1U);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+}
+
 /* ---- Receive filters (issue #903): traffic a filter says is not this system proves no talkgroup ---- */
 
 /* One access-code filter and the protocol it judges: the code the carrier is decoded with (@ref set_code, known or
@@ -767,6 +795,7 @@ main(void) {
     test_live_input();
     test_live_input_merge();
     test_live_input_committed_revision();
+    test_live_input_revision_reads_current_input();
     test_receive_filter_rejects();
     test_receive_filter_checking();
     test_receive_filter_rejects_midcall();

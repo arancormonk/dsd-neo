@@ -1583,7 +1583,7 @@ dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epo
    the next render (the epoch-change path commits the staged row as it stands) from losing it. Caller holds the
    call-state mutex. */
 static void
-call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
+call_state_stamp_verified_rows(const dsd_opts* opts, dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
                                const dsd_call_snapshot* call) {
     if (state->event_history_s == NULL) {
         return;
@@ -1591,14 +1591,17 @@ call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, 
     Event_History_I* ring = &state->event_history_s[slot];
     const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     int changed = 0;
-    /* Whether the input is live now, as far as the note can tell without the options: the epoch's own staged row's
-       live-input latch, which every render ANDs with the input in force (issue #903); none (not live) without one. */
-    uint8_t live_now = 0U;
+    /* Whether the input is live now (issue #903): the input in force as the proof arrives, and, when the epoch's own
+       staged row was rendered since its last commit, that row's live-input latch, which every render ANDs with the
+       input then. A staged row no render built yet (a commit just cleared it) says nothing either way. */
+    uint8_t live_now = (uint8_t)dsd_opts_input_is_live(opts);
     if (lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
         Event_History* staged = &ring->Event_History_Items[0];
         staged->heard_variant = call->heard_variant;
         staged->heard_id = call->heard_id;
-        live_now = staged->live_input;
+        if (staged->channel_label_resolved != 0U) {
+            live_now = (uint8_t)(live_now != 0U && staged->live_input != 0U);
+        }
         changed = 1;
     }
     const uint8_t index =
@@ -1666,7 +1669,7 @@ dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint
     if (dsd_heard_tg_ordinary(in)) {
         snapshot->heard_variant = (uint8_t)in->variant;
         snapshot->heard_id = in->id;
-        call_state_stamp_verified_rows(state, ext, slot, snapshot);
+        call_state_stamp_verified_rows(opts, state, ext, slot, snapshot);
     }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);

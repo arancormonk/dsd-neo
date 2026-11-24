@@ -2421,7 +2421,8 @@ suite runs under this compiler.
   (fragment trust). `Event_History::live_input` is a fail-closed latch of `dsd_opts_input_is_live()` (`opts.h`: an
   RTL-family input other than an I/Q replay, Pulse, UDP or TCP PCM; not files, stdin, symbol captures or
   `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
-  cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
+  cleared when a proof revises a committed row while the input in force is not live, or after a render of the epoch's
+  staged row since that commit saw non-live input (a staged row a commit just cleared says nothing either way). All three ride
   `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
   `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2
   (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup"). Test:
