@@ -3176,11 +3176,13 @@ CallHistoryModel::setHeardSink(HeardTalkgroupSink* sink) {
         return;
     }
     // What the spill folded at construction gave: its earliest and latest sighting of each talkgroup.
-    const QHash<QString, HeardSighting> pending = std::exchange(m_heardPending, {});
-    for (const HeardSighting& sighting : pending) {
-        m_heardSink->observe(sighting.owner, sighting.variant, sighting.id, sighting.first);
-        if (sighting.last != sighting.first) {
-            m_heardSink->observe(sighting.owner, sighting.variant, sighting.id, sighting.last);
+    const HeardPending pending = std::exchange(m_heardPending, {});
+    for (const auto& owner : pending) {
+        for (const HeardSighting& sighting : owner) {
+            m_heardSink->observe(sighting.owner, sighting.variant, sighting.id, sighting.first);
+            if (sighting.last != sighting.first) {
+                m_heardSink->observe(sighting.owner, sighting.variant, sighting.id, sighting.last);
+            }
         }
     }
 }

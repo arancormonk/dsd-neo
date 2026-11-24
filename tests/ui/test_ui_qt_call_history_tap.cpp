@@ -1798,6 +1798,73 @@ test_heard_forget_refused_while_history_cannot_save(void) {
     }
 }
 
+/* Fill @p slot's ring of @p decoder with @p count verified calls at once, newest at index 1, as that many commits would:
+ * talkgroups from @p tg up, 30 s apart from @p start, heard on live input on scan target @p target. */
+void
+commit_proven_scan_calls(Decoder& decoder, int slot, int count, uint32_t tg, time_t start, const char* target) {
+    Event_History_I* ring = &decoder.state->event_history_s[slot];
+    for (int i = 0; i < count; i++) {
+        Event_History* item = &ring->Event_History_Items[count - i];
+        DSD_MEMSET(item, 0, sizeof(*item));
+        item->category = DSD_EVENT_CATEGORY_VOICE;
+        item->target_id = tg + static_cast<uint32_t>(i);
+        item->source_id = 100U;
+        item->event_start_time = start + 30 * static_cast<time_t>(i);
+        item->event_time = item->event_start_time + 4;
+        item->heard_variant = 1U;
+        item->heard_id = tg + static_cast<uint32_t>(i);
+        item->live_input = 1U;
+        item->scan_member = 1U;
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", target);
+    }
+    ring->push_seq += static_cast<uint64_t>(count);
+    ring->commit_rev++;
+    ring->revision++;
+}
+
+/* Issue #903 (PR2 review r1, P2): a long multi-system scan spills while suspended and the process dies. The relaunch
+ * folds the spill before the remembered talkgroups exist, holding what it finds for them: past the store's cap of one
+ * owner, its newest, as the store keeps them. The last system's only talkgroup, after more than 20,000 of another's, is
+ * kept, and so is each owner's newest. */
+void
+test_heard_spill_recovery_keeps_each_owners_newest(void) {
+    resetStorage();
+    Decoder decoder;
+    const time_t when = 1755620000;
+    constexpr int kFirstOwnerGroups = 20250;
+    constexpr int kBatch = 250;
+    {
+        CallHistoryModel model;
+        start_tap(model);
+        model.beginSessionWithOwners(QStringLiteral("County scan"), QString(), QString(),
+                                     QVariantMap{{QStringLiteral("entry-a"), QStringLiteral("sys-a")},
+                                                 {QStringLiteral("entry-b"), QStringLiteral("sys-b")}});
+        gui_ingest(model);
+        set_app_state(Qt::ApplicationSuspended);
+        for (int done = 0; done < kFirstOwnerGroups; done += kBatch) {
+            commit_proven_scan_calls(decoder, 0, kBatch, 50000U + static_cast<uint32_t>(done),
+                                     when + 30 * static_cast<time_t>(done), "entry-a");
+            decoder.publish();
+            model.waitForBackgroundPollForTest();
+        }
+        commit_proven_scan_calls(decoder, 0, 1, 90000U, when + 30 * static_cast<time_t>(kFirstOwnerGroups), "entry-b");
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+    } // death: the tap's stop writes what it holds, and nothing folds it
+    RecordingHeardSink sink;
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&sink);
+    expect("spill recovery: the last system's only group is kept", sink.count(QStringLiteral("sys-b"), 90000U) == 1);
+    int newest = 0;
+    for (uint32_t tg = 50000U + kFirstOwnerGroups - dsd_qt::kHeardPendingPerOwner; tg < 50000U + kFirstOwnerGroups;
+         tg++) {
+        newest += sink.count(QStringLiteral("sys-a"), tg) == 1;
+    }
+    expect("spill recovery: the other system keeps its newest", newest == dsd_qt::kHeardPendingPerOwner);
+    expect("spill recovery: each owner holds at most twice the cap",
+           sink.seen.size() <= 1 + 2 * dsd_qt::kHeardPendingPerOwner);
+}
+
 /* Issue #903 (PR2 review r1, P2): a start that completes while the app is away, on the state the last run used (an
  * embedding host that reuses it): the tap reads the reused ring for the new session, whose calls are its own. */
 void
@@ -1911,6 +1978,7 @@ main(int argc, char** argv) {
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
     test_heard_forget_refused_while_history_cannot_save();
+    test_heard_spill_recovery_keeps_each_owners_newest();
     test_heard_reused_ring_through_the_tap();
     test_heard_hold_for_start();
     test_heard_clear_while_the_tap_runs();

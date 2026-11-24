@@ -12,6 +12,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <algorithm>
 #include <iterator>
@@ -25,11 +26,6 @@ namespace {
 /* Rings older sessions' calls can still come from: a run's late commits arrive while the next run starts, rarely more
    than one ring later. */
 constexpr int kHeardOwnerRings = 32;
-
-QString
-pending_key(const QString& owner, int variant, quint32 id) {
-    return owner + QLatin1Char('\n') + QString::number(variant) + QLatin1Char('\n') + QString::number(id);
-}
 
 /* A ring generation's whole form in the settings: [session, from slot 0, from slot 1]. */
 constexpr qsizetype kHeardGenerationFields = 3;
@@ -353,15 +349,13 @@ heard_owners_from_text(const QString& text) {
 }
 
 void
-heard_pending_note(QHash<QString, HeardSighting>* pending, const QString& owner, int variant, quint32 id, qint64 when) {
-    const QString key = pending_key(owner, variant, id);
-    const auto held = pending->find(key);
-    if (held != pending->end()) {
+heard_pending_note(HeardPending* pending, const QString& owner, int variant, quint32 id, qint64 when) {
+    QHash<quint64, HeardSighting>& sightings = (*pending)[owner];
+    const quint64 key = (static_cast<quint64>(static_cast<quint32>(variant)) << 32) | id;
+    const auto held = sightings.find(key);
+    if (held != sightings.end()) {
         held->first = qMin(held->first, when);
         held->last = qMax(held->last, when);
-        return;
-    }
-    if (pending->size() >= kHeardPendingMax) {
         return;
     }
     HeardSighting sighting;
@@ -370,7 +364,22 @@ heard_pending_note(QHash<QString, HeardSighting>* pending, const QString& owner,
     sighting.id = id;
     sighting.first = when;
     sighting.last = when;
-    pending->insert(key, sighting);
+    sightings.insert(key, sighting);
+    if (sightings.size() <= qsizetype{2} * kHeardPendingPerOwner) {
+        return;
+    }
+    // Down to the cap at once, so a long spill pays for one selection per kHeardPendingPerOwner new talkgroups. What
+    // goes has the cap's worth of newer ones, which only grow newer: the store would keep none of it either.
+    QList<QPair<qint64, quint64>> order;
+    order.reserve(sightings.size());
+    for (auto it = sightings.cbegin(); it != sightings.cend(); ++it) {
+        order.append(qMakePair(it->last, it.key()));
+    }
+    const qsizetype excess = sightings.size() - kHeardPendingPerOwner;
+    std::nth_element(order.begin(), order.begin() + (excess - 1), order.end());
+    for (qsizetype i = 0; i < excess; ++i) {
+        sightings.remove(order.at(i).second);
+    }
 }
 
 } // namespace dsd_qt

@@ -1319,7 +1319,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     quint64 m_captureHoldRev = 0;
     bool m_appAway = false;
     HeardTalkgroupSink* m_heardSink = nullptr;
-    QHash<QString, HeardSighting> m_heardPending;
+    HeardPending m_heardPending;
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
     quint64 m_clearRev = 0;
     quint64 m_tapClearRev = 0;

@@ -78,8 +78,11 @@ struct HeardSighting {
     qint64 last = 0;
 };
 
-/** @brief The most distinct talkgroups held for a sink not yet set; further ones are dropped. */
-constexpr int kHeardPendingMax = 20000;
+/** @brief The sightings waiting for the sink: owner to entry key (variant << 32 | id) to its sighting. */
+using HeardPending = QHash<QString, QHash<quint64, HeardSighting>>;
+
+/** @brief The most sightings of one owner held for a sink not yet set (HeardTalkgroupStore::kMaxEntriesPerOwner). */
+constexpr int kHeardPendingPerOwner = 2000;
 
 /** @brief The session of a row no ring generation holds: none, so it has no owner. */
 constexpr qint64 kHeardNoSession = std::numeric_limits<qint64>::min();
@@ -145,9 +148,10 @@ struct HeardProof {
 /** @brief The proof @p item carries (HeardProof). */
 HeardProof heard_item_proof(const Event_History* item);
 
-/** @brief Note @p id of @p variant heard on @p owner at @p when in @p pending (bounded by kHeardPendingMax). */
-void heard_pending_note(QHash<QString, HeardSighting>* pending, const QString& owner, int variant, quint32 id,
-                        qint64 when);
+/** @brief Note @p id of @p variant heard on @p owner at @p when in @p pending. Each owner keeps its newest sightings,
+ * as the store does: past twice kHeardPendingPerOwner, the oldest last heard go first (ties: lower variant, then lower
+ * id) down to kHeardPendingPerOwner. */
+void heard_pending_note(HeardPending* pending, const QString& owner, int variant, quint32 id, qint64 when);
 
 } // namespace dsd_qt
 

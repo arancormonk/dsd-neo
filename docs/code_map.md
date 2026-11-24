@@ -17074,7 +17074,9 @@ Qt Quick frontend (`src/ui/qt`):
     (handoff and load) and the teardown fold of the tap's unwritten backlog (`ingestReading()`), at the fragment's own
     time (its end, else its start), never the merged conversation's. A reload of the saved log observes nothing, and
     the store applies its owner policy at the call (frozen there; nothing is re-ingested). What the load's spill fold
-    finds before a sink is set waits (`HeardSighting`, first and last per talkgroup, at most 20,000). Once per fragment:
+    finds before a sink is set waits (`HeardPending`: first and last per talkgroup, per owner; past twice
+    `kHeardPendingPerOwner` (the store's cap) an owner keeps its newest, oldest last heard dropped first, ties to the
+    lower variant and id, so one owner's long spill never crowds out another's). Once per fragment:
     the walk hands an owner only when the fragment's seen entry held no proof (`seenProven()`), and the ingest skips a
     fragment whose row already holds its part's proof (`fragmentProven()`), so a spill line folded again adds nothing.
     Owners: `setSessionOwners(session, single, scan)`, or with the session itself under one tap handoff
@@ -17135,8 +17137,8 @@ Qt Quick frontend (`src/ui/qt`):
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
     teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot
-    save; a reused ring through the tap; the start's hold; a Clear while the tap runs; a cleared row's late proof),
-    `UI_QT_HEARD_TALKGROUP_STORE`
+    save; a spill recovery past 20,000 of one owner's groups; a reused ring through the tap; the start's hold; a Clear
+    while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
     (`test_before_edit_hook`, `test_before_edit_hook_refusal`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
