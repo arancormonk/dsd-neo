@@ -72,9 +72,9 @@ dsd_event_emit_data_notice(dsd_opts* o, dsd_state* s, uint8_t slot, const dsd_ca
 }
 
 int
-dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
-    (void)opts;
-    (void)state;
+dsd_event_emit_system_notice(dsd_opts* o, dsd_state* s, uint8_t slot, const char* notice) {
+    (void)o;
+    (void)s;
     (void)slot;
     (void)notice;
     return 0;
@@ -557,11 +557,10 @@ test_p_clear_named_tscc_becomes_candidate(void) {
     assert(state.trunk_cc_freq == CC_HZ);
 }
 
-/* The clear the encryption lockout synthesizes names no address and always applies. */
 /* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
 static void
-user_entry(dsd_state* state, uint16_t lpcn, long hz) {
-    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+user_entry(dsd_state* s, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(s);
     assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
     ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
     ext->overlay.hz[lpcn] = hz;
@@ -586,6 +585,7 @@ test_p_clear_tscc_uses_the_users_channels(void) {
     assert(candidate_count(other_hz) == 0);
 }
 
+/* The clear the encryption lockout synthesizes names no address and always applies. */
 static void
 test_synth_lockout_clear_still_releases(void) {
     follow_group_ts1();
