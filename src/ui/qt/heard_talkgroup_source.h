@@ -83,7 +83,8 @@ class HeardTalkgroupSource {
     /**
      * @brief The saved system a call heard now would be owned by (empty for none), by the owner rule a fragment's owner
      *        follows: in the session decoder ring @p ring (Event_History_I::instance; 0: none) is bound to, else the
-     *        current one, with the tuner stamps a call would take now (@p operatorTuned, @p scanMember, @p channel).
+     *        current one, with the tuner stamps a call would take now (@p operatorTuned, also set once the
+     *        receiver's tuning moved since the run began; @p scanMember, @p channel).
      */
     virtual QString heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember,
                                     const QString& channel) const = 0;

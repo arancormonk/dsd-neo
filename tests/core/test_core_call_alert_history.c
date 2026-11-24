@@ -542,7 +542,8 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
            && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0
            && memcmp(lhs->channel_label, rhs->channel_label, sizeof lhs->channel_label) == 0
            && lhs->channel_label_resolved == rhs->channel_label_resolved && lhs->operator_tuned == rhs->operator_tuned
-           && lhs->scan_member == rhs->scan_member && lhs->channel == rhs->channel && lhs->freq_hz == rhs->freq_hz
+           && lhs->scan_member == rhs->scan_member && lhs->tuning_moved == rhs->tuning_moved
+           && lhs->channel == rhs->channel && lhs->freq_hz == rhs->freq_hz
            && lhs->access_code_kind == rhs->access_code_kind && lhs->access_code == rhs->access_code
            && lhs->event_time == rhs->event_time && lhs->event_start_time == rhs->event_start_time
            && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
@@ -3645,6 +3646,34 @@ test_tuner_owner_stamps_freeze_at_first_render(void) {
     rc |= expect_int("manual-tune call commits", committed_history_rows(&event_history[0]), 2);
     rc |= expect_int("call begun after a manual tune is operator tuned", row->operator_tuned, 1);
     rc |= expect_int("call begun after a manual tune is not a scan member", row->scan_member, 0);
+    dsd_state_ext_free_all(&state);
+
+    // Issue #903: the receiver's tuning changes live mid-call (a configuration retune, a decode-mode change, a
+    // channel-map import): the call it began under keeps 0; the next call is stamped as heard on other tuning than the
+    // run started with, frozen at its first render, whatever a later run start makes of the generation.
+    reset_fixture(&opts, &state, event_history);
+    state.run_tuning_gen = state.tuning_gen;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_state_note_tuning_change(&state);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("call begun before a live retune is on the start tuning", row->tuning_moved, 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 101U, 202U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    state.run_tuning_gen = state.tuning_gen;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    row = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("live-retune call commits", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("call begun after a live retune is not on the start tuning", row->tuning_moved, 1);
+    rc |= expect_int("call begun after a live retune is not operator tuned", row->operator_tuned, 0);
+    rc |= expect_int("the call before it keeps its stamp", event_history[0].Event_History_Items[2].tuning_moved, 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }

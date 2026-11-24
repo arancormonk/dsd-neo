@@ -9337,6 +9337,118 @@ test_talkgroup_export_result(void) {
     return rc;
 }
 
+/* Export the talkgroup list to @p path and read its completion into @p out (issue #903). */
+static int
+export_talkgroups_to(dsd_opts* opts, dsd_state* state, const char* path, dsd_app_tg_export_result* out) {
+    const size_t size = sizeof(dsd_app_tg_export_payload) + 64U;
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)calloc(1, size);
+    if (request == NULL) {
+        return 1;
+    }
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    DSD_SNPRINTF(request->path, size - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    int rc = expect_int("tuning export queued", dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, size),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    free(request);
+    rc |= expect_int("tuning export drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("tuning export completion", dsd_app_tg_export_result_get(out), 1);
+    rc |= expect_int("tuning export succeeded", out->success, 1);
+    return rc;
+}
+
+/*
+ * Issue #903: the tuning generation moves when what the receiver is tuned to or decodes with changes by no trunk or
+ * scan follow (a tune, another source, a decode-mode change, a channel-map import), and never for a stream gap on the
+ * same carrier, a scan step or a run's own first stream. Each export's completion records whether it had moved since
+ * the run began (dsd_app_tg_export_result::tuning_moved), which Save talkgroup list attaches by.
+ */
+static int
+test_tuning_generation_follows_live_changes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_tuning_gen") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    static const char map[] = "channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n";
+    rc |= write_file_bytes("tuning_map.csv", map, strlen(map));
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tuning gen: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+    dsd_engine_note_run_start(&opts, &state);
+    dsd_app_tg_export_result result = {0};
+    rc |= export_talkgroups_to(&opts, &state, "start.csv", &result);
+    rc |= expect_int("tuning gen: an export on the start tuning says so", result.tuning_moved, 0);
+
+    /* A run on a state an earlier run used: its first stream's source boundary is the run's start, not a change. */
+    state.carrier_source_key = 1U;
+    dsd_engine_note_run_stream_source(&opts, &state);
+    rc |= expect_int("tuning gen: the run's first stream is its start tuning", dsd_state_tuning_moved(&state), 0);
+    const dsd_carrier_boundary_kind kept[] = {DSD_CARRIER_BOUNDARY_STREAM_GAP, DSD_CARRIER_BOUNDARY_SCAN_STEP,
+                                              DSD_CARRIER_BOUNDARY_REPLAY_RETUNE};
+    for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) {
+        dsd_engine_carrier_boundary(&opts, &state, kept[i], 0);
+        rc |= expect_int("tuning gen: a stream gap, a scan step or a replay's recorded retune keeps the tuning",
+                         dsd_state_tuning_moved(&state), 0);
+    }
+    rc |= export_talkgroups_to(&opts, &state, "gap.csv", &result);
+    rc |= expect_int("tuning gen: an export after a stream gap is on the start tuning", result.tuning_moved, 0);
+
+    const dsd_carrier_boundary_kind moved[] = {DSD_CARRIER_BOUNDARY_TUNE, DSD_CARRIER_BOUNDARY_SOURCE,
+                                               DSD_CARRIER_BOUNDARY_INPUT_SWITCH};
+    for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
+        dsd_engine_note_run_start(&opts, &state);
+        dsd_engine_carrier_boundary(&opts, &state, moved[i], 0);
+        rc |= expect_int("tuning gen: a tune, another source or another input moves the tuning",
+                         dsd_state_tuning_moved(&state), 1);
+    }
+    rc |= export_talkgroups_to(&opts, &state, "moved.csv", &result);
+    rc |= expect_int("tuning gen: an export after a retune is not on the start tuning", result.tuning_moved, 1);
+
+    /* A new run starts on its own tuning. */
+    dsd_engine_note_run_start(&opts, &state);
+    rc |= expect_int("tuning gen: a new run starts on its tuning", dsd_state_tuning_moved(&state), 0);
+    rc |= expect_int("tuning gen: decode mode",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tuning gen: decode mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tuning gen: a decode mode applied live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    rc |= export_talkgroups_to(&opts, &state, "mode.csv", &result);
+    rc |= expect_int("tuning gen: an export after a mode change is not on the start tuning", result.tuning_moved, 1);
+
+    dsd_engine_note_run_start(&opts, &state);
+    rc |= expect_int("tuning gen: the same mode again",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("tuning gen: the mode in force restated keeps the tuning", dsd_state_tuning_moved(&state), 0);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "tuning_map.csv");
+    rc |= expect_int("tuning gen: channel map drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("tuning gen: the channel map runs", state.trunk_chan_map_used_count > 0);
+    rc |= expect_int("tuning gen: a channel map imported live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    dsd_engine_note_run_start(&opts, &state);
+    post_empty(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR);
+    rc |= expect_int("tuning gen: channel map clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tuning gen: a channel map cleared live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    dsd_engine_note_run_start(&opts, &state);
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "missing_map.csv");
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("tuning gen: a channel map that did not load keeps the tuning", dsd_state_tuning_moved(&state), 0);
+
+    freeState(&state);
+    (void)remove("tuning_map.csv");
+    const char* exports[] = {"start.csv", "gap.csv", "moved.csv", "mode.csv"};
+    for (size_t i = 0; i < sizeof exports / sizeof exports[0]; i++) {
+        (void)remove(exports[i]);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
 /* WP-D1: exercise the decoder-thread API, including the resulting effective policy. */
 static int
 test_talkgroup_row_commands(void) {
@@ -32176,6 +32288,7 @@ main(void) {
     rc |= test_talkgroup_row_record_after_mode();
     rc |= test_talkgroup_row_token_commands();
     rc |= test_talkgroup_export_result();
+    rc |= test_tuning_generation_follows_live_changes();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

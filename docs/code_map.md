@@ -13268,6 +13268,18 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+  A tune, a source change or an input switch also moves the tuning generation (issue #903; `dsd_state::tuning_gen`,
+  `dsd_state_note_tuning_change()`, under the guard): what the receiver is tuned to or decodes with changed by no trunk
+  or scan follow. A stream gap (which moves `carrier_seq` but stays on the carrier), a scan step and a replay retune do
+  not. Outside the boundary the generation moves for a decode mode applied live (`DSD_APP_CMD_DECODE_MODE_SET`, a
+  config's `[mode]` that changed it, the AM fallback, a RadioReference apply), a channel map imported or cleared live, a
+  P25 band plan imported live, and a trunking tuner release (all on the decoder thread, `ui_note_tuning_change()` under
+  the guard). `run_tuning_gen` is the generation the run started with: `dsd_engine_note_run_start()` takes it, and so
+  does `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an
+  earlier run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two
+  differ) is stamped on each history row at its first render (`Event_History::tuning_moved`, beside `operator_tuned`)
+  and on each export completion (`dsd_app_tg_export_result::tuning_moved`): a row or list heard after a live retune is
+  not the saved system's (see UI, Qt, verified talkgroups and Save talkgroup list).
   With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
   clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
   never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
@@ -17080,8 +17092,9 @@ Qt Quick frontend (`src/ui/qt`):
   - Verified talkgroups to the remembered list (issue #903; `call_history_heard.{h,cpp}`, `heard_talkgroup_sink.h`).
     `setHeardSink()` (`qt_ui.cpp` `wire_heard_talkgroups()`: the `HeardTalkgroupStore`, made after History so it
     outlives it) receives `observe(owner, variant, id, when)` for each fragment reading that is the first to carry its
-    proof (`Event_History::heard_variant`, `heard_id`), taken on live input (`live_input`) and not operator tuned, whose
-    owner resolves. It is called at every ingest point, before any trim: the foreground `refresh()`, the spill fold
+    proof (`Event_History::heard_variant`, `heard_id`), taken on live input (`live_input`), not operator tuned, and
+    heard on the tuning its run started with (`tuning_moved` 0: the tuning generation, see Protocols,
+    `dsd_engine_carrier_boundary()`), whose owner resolves. It is called at every ingest point, before any trim: the foreground `refresh()`, the spill fold
     (handoff and load) and the teardown fold of the tap's unwritten backlog (`ingestReading()`), at the fragment's own
     time (its end, else its start), never the merged conversation's. A reload of the saved log observes nothing, and
     the store applies its owner policy at the call (frozen there; nothing is re-ingested). What the load's spill fold

@@ -301,7 +301,8 @@ TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* s
         target->scanListRow = static_cast<quint32>(scanListRow) + 1U;
         target->scanListRev = snapshot->lcn_list_rev;
     }
-    return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U, scanMember, target->channel);
+    return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U || dsd_state_tuning_moved(snapshot) != 0,
+                                          scanMember, target->channel);
 }
 
 void

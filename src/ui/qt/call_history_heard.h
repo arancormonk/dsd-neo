@@ -16,8 +16,9 @@
  * not read before a session owns it (the flush before a start leaves a ring no session owns unread). What the flush
  * after the host accepted a start finds pushed on a ring a session owns could be the old run's last commit or the new
  * run's first on the ring it reused: nothing tells which, so those rows are no one's (HeardRingWindow). Each row's own
- * stamps then decide: a call the operator tuned to, a scan member with no target, a target no single saved system owns,
- * or a row of no known session has no owner.
+ * stamps then decide: a call the operator tuned to, one heard after the receiver's tuning changed live (a retune, a
+ * decode-mode change or a channel-map import its run did not start with: Event_History::tuning_moved), a scan member
+ * with no target, a target no single saved system owns, or a row of no known session has no owner.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_HEARD_H_
@@ -131,19 +132,20 @@ qint64 heard_owners_session_of(const HeardOwners* owners, quint64 ring, int slot
  * its newest generation's, else (an unbound ring, or none) @p current. */
 qint64 heard_owners_on_air_session(const HeardOwners& owners, quint64 ring, qint64 current);
 
-/** @brief Whether @p item carries a proof that may be learnt: a verified talkgroup, live input, not operator tuned. */
+/** @brief Whether @p item carries a proof that may be learnt: a verified talkgroup, live input, not operator tuned, and
+ * heard on the tuning its run started with (Event_History::tuning_moved). */
 bool heard_item_learnable(const Event_History* item);
 
 /**
  * @brief The saved system that owns a call heard in History session @p session, or empty for none: with
- * @p operatorTuned none; off any scan (@p channel empty, not @p scanMember) the session's single owner; on a scan
+ * @p operatorTuned (the operator held the receiver, or its tuning moved since the run began) none; off any scan (@p channel empty, not @p scanMember) the session's single owner; on a scan
  * target @p channel of a session with no single owner, that target's owner; else none.
  */
 QString heard_owner_for(const HeardOwners& owners, qint64 session, bool operatorTuned, bool scanMember,
                         const QString& channel);
 
 /** @brief The saved system that owns @p item, heard in History session @p session, or empty for none
- * (heard_owner_for() with the item's own stamps). */
+ * (heard_owner_for() with the item's own stamps: a row whose tuning moved is the operator's as one operator tuned). */
 QString heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* item);
 
 /** @brief Set @p session's owners, keeping the newest kHeardOwnerSessions sessions and their rings. */

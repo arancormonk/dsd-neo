@@ -130,6 +130,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].stream_blocked = 0U;
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
+        event_struct->Event_History_Items[i].tuning_moved = 0U;
         event_struct->Event_History_Items[i].scan_list_row = 0U;
         event_struct->Event_History_Items[i].scan_list_rev = 0U;
         /* No verified talkgroup proof, and not known to be live input (issue #903). */
@@ -177,6 +178,7 @@ static void
 watchdog_event_copy_tuner_stamps(Event_History* dst, const Event_History* src) {
     dst->operator_tuned = src->operator_tuned;
     dst->scan_member = src->scan_member;
+    dst->tuning_moved = src->tuning_moved;
     dst->scan_list_row = src->scan_list_row;
     dst->scan_list_rev = src->scan_list_rev;
 }
@@ -1084,6 +1086,7 @@ watchdog_event_merge_channel_label(Event_History* retained, const Event_History*
     retained->channel_label_resolved = 1U;
     retained->operator_tuned = staged->operator_tuned;
     retained->scan_member = staged->scan_member;
+    retained->tuning_moved = staged->tuning_moved;
     retained->scan_list_row = staged->scan_list_row;
     retained->scan_list_rev = staged->scan_list_rev;
     /* A row that never resolved its stamps (staged directly) takes the segment's, as it takes its tuner owner. */
@@ -1761,6 +1764,7 @@ typedef struct {
     uint8_t channel_label_resolved;
     uint8_t operator_tuned;
     uint8_t scan_member;
+    uint8_t tuning_moved;
     /* The verified talkgroup proof of the call the row is this epoch's own (issue #903), and whether the input was
        live when the row began; see watchdog_event_current_load_heard() and load_channel_label(). */
     uint8_t heard_variant;
@@ -2352,13 +2356,15 @@ watchdog_event_current_load_labels(const dsd_opts* opts, const dsd_state* state,
 // notice does.
 //
 // Who held the tuner right now: the operator (state->operator_tuned) and whether a scan was
-// running (-Y on, or a trunk scan that owns the tuner). Read once, with the label, so the pair
-// describes the call's first render and not whichever session ends it.
+// running (-Y on, or a trunk scan that owns the tuner), and whether the tuning moved since the run
+// began (dsd_state_tuning_moved(), issue #903). Read once, with the label, so the stamps describe
+// the call's first render and not whichever session ends it.
 static void
 watchdog_event_stamp_tuner_owner(const dsd_opts* opts, const dsd_state* state, uint8_t* operator_tuned,
-                                 uint8_t* scan_member) {
+                                 uint8_t* scan_member, uint8_t* tuning_moved) {
     *operator_tuned = (state != NULL && state->operator_tuned != 0U) ? 1U : 0U;
     *scan_member = (opts != NULL && (opts->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts, state))) ? 1U : 0U;
+    *tuning_moved = (state != NULL && dsd_state_tuning_moved(state)) ? 1U : 0U;
 }
 
 // The -Y scan-list row a call heard now is heard on (issue #903; Event_History::scan_list_row, scan_list_rev): the row
@@ -2384,6 +2390,7 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
         ctx->channel_label_resolved = 1U;
         ctx->operator_tuned = staged->operator_tuned;
         ctx->scan_member = staged->scan_member;
+        ctx->tuning_moved = staged->tuning_moved;
         ctx->scan_list_row = staged->scan_list_row;
         ctx->scan_list_rev = staged->scan_list_rev;
         /* A latch (issue #903): live only while the input was live when the row began and at every render since. */
@@ -2392,7 +2399,7 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
     }
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
     ctx->channel_label_resolved = 1U;
-    watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member);
+    watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member, &ctx->tuning_moved);
     watchdog_event_stamp_scan_list_row(opts, state, &ctx->scan_list_row, &ctx->scan_list_rev);
     /* Whether the input is live as the row begins (issue #903); later renders and the commit only clear it. */
     ctx->live_input = (uint8_t)dsd_opts_input_is_live(opts);
@@ -2591,6 +2598,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel_label_resolved = ctx->channel_label_resolved;
     item->operator_tuned = ctx->operator_tuned;
     item->scan_member = ctx->scan_member;
+    item->tuning_moved = ctx->tuning_moved;
     item->scan_list_row = ctx->scan_list_row;
     item->scan_list_rev = ctx->scan_list_rev;
     item->heard_variant = ctx->heard_variant;
@@ -3279,6 +3287,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->operator_tuned = item->operator_tuned;
     ctx->scan_member = item->scan_member;
+    ctx->tuning_moved = item->tuning_moved;
     ctx->scan_list_row = item->scan_list_row;
     ctx->scan_list_rev = item->scan_list_rev;
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
@@ -4731,7 +4740,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->channel_label_resolved = 1U;
-    watchdog_event_stamp_tuner_owner(opts, state, &item->operator_tuned, &item->scan_member);
+    watchdog_event_stamp_tuner_owner(opts, state, &item->operator_tuned, &item->scan_member, &item->tuning_moved);
     watchdog_event_stamp_scan_list_row(opts, state, &item->scan_list_row, &item->scan_list_rev);
     // Live for the same reason: the notice's own frequency when the PDU named one, else the tuned
     // frequency, and the carrier's access code. Neither is taken playing back files, where the

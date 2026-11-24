@@ -7941,6 +7941,36 @@ test_heard_proof_reaches_the_sink_once(void) {
     expect("heard: a session that names no owner hands nothing", sink.seen.size() == 1);
 }
 
+/* Issue #903 (PR2 review r4, P1): a saved system's session whose receiver a live retune moved (a configuration from the
+ * control API, a decode mode, a channel map: Event_History::tuning_moved, with no operator hold) learns nothing for
+ * the saved system from then on, and names no owner for the call; the calls heard before the move stay its own. */
+void
+test_heard_after_a_live_retune_is_no_ones(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+    model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+    const time_t when = 1754605000;
+    prove(ring.commit(0, 7201, 701, when, when + 4), 7201);
+    prove(ring.commit(0, 7202, 702, when + 30, when + 34), 7202)->tuning_moved = 1U;
+    model.refresh(ring.state, opts.get());
+    expect("live retune: the call before it is the saved system's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7201, when + 4));
+    expect("live retune: the call after it is handed on to no one", model.count() == 2 && sink.seen.size() == 1);
+    // A proof that comes late on the moved call hands nothing on either.
+    Event_History* late = ring.commit(0, 7203, 703, when + 60, when + 64);
+    late->tuning_moved = 1U;
+    model.refresh(ring.state, opts.get());
+    prove(late, 7203);
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("live retune: a late proof of a call after it is no one's", sink.seen.size() == 1);
+}
+
 /* Issue #903: change detection sees a proof that arrives late on a committed row (a checked message after the commit)
  * and hands it on then, at the fragment's own time, once; the proof is the row's from then on, saved with it. A later
  * CRC failure marked on the row (fragment trust) keeps it and retracts nothing. */
@@ -8557,6 +8587,7 @@ main(int argc, char** argv) {
     test_reread_destination_renames_row();
     test_reread_sender_drops_withdrawn_text();
     test_heard_proof_reaches_the_sink_once();
+    test_heard_after_a_live_retune_is_no_ones();
     test_heard_late_proof_and_crc_revision();
     test_heard_merged_conversation_keeps_fragment_proof();
     test_heard_owner_follows_the_ring();

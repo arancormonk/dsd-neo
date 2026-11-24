@@ -242,7 +242,7 @@ dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_resul
 /* Called after dispatch, including envelope rejection, before erasing the queued
  * request. Publish only export fields; other command payloads may carry secrets. */
 static void
-tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status) {
+tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status, const dsd_state* state) {
     if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
         return;
     }
@@ -264,6 +264,8 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
         }
     }
     result.success = status == UI_CMD_APPLY_COMPLETED;
+    /* The tuning the export ran under (issue #903); an export that never ran ran under none. */
+    result.tuning_moved = state == NULL || dsd_state_tuning_moved(state);
     result.sequence = g_tg_export_result.sequence + 1U;
     // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
     if (result.sequence == 0) {
@@ -274,10 +276,10 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
 }
 
 static void
-tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+tg_export_publish_result(const struct dsd_app_command* cmd, int status, const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
-    tg_export_publish_result_unlocked(cmd, status);
+    tg_export_publish_result_unlocked(cmd, status, state);
     dsd_mutex_unlock(&g_mu);
 }
 
@@ -308,7 +310,7 @@ dsd_app_command_session_set_open(int open) {
      * Admission and disposal share the producer lock: a racing late submission
      * is either erased here or rejected after the session closes. */
     while (g_head != g_tail) {
-        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED, NULL);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
@@ -1491,6 +1493,15 @@ ui_rxid_guard_leave(int taken) {
     if (taken) {
         p25_sm_tick_guard_leave();
     }
+}
+
+/* What the receiver decodes with changed by the command being applied (dsd_state_note_tuning_change(), issue #903):
+   under the P25 SM tick guard, which the call history's stamps read it under. */
+static void
+ui_note_tuning_change(dsd_state* state) {
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
+    dsd_state_note_tuning_change(state);
+    ui_rxid_guard_leave(taken);
 }
 
 /* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
@@ -3206,6 +3217,7 @@ channel_map_import_apply(dsd_opts* opts, dsd_state* state, const char* path, int
     int rc = svc_import_channel_map(opts, state, path);
     if (rc == 0) {
         dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
+        ui_note_tuning_change(state);                  // the channels the receiver runs (issue #903)
     }
     char skipped[160];
     if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
@@ -3259,6 +3271,7 @@ ui_cmd_handle_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
             int rc = svc_import_p25_bandplan(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
+                ui_note_tuning_change(state); // where the receiver finds the system's channels (issue #903)
                 ui_set_toast(state, 3, "Applied: P25 band plan imported -> %s", path);
             } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: P25 band plan import -> %s", path);
@@ -3449,6 +3462,7 @@ ui_cmd_handle_import_channel_map_clear(dsd_opts* opts, dsd_state* state, const s
     }
     const int rc = svc_clear_channel_map(opts, state);
     if (rc == 0) {
+        ui_note_tuning_change(state); // the channels the receiver runs (issue #903)
         ui_set_toast(state, 3, "Applied: Channel map cleared");
     } else {
         ui_set_toast(state, 4, "Failed: Channel map clear");
@@ -5132,7 +5146,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
     if (q_is_full_unlocked()) {
-        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED, NULL);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
@@ -6036,6 +6050,8 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     if (!paused) {
         if (opts->trunk_enable == 1) {
             state->operator_tuned = 1U;
+            /* The receiver stays, but no longer follows the system it ran (issue #903). */
+            dsd_state_note_tuning_change(state);
         }
         opts->scanner_mode = 0;
         // Leaving -Y hands the foreground keyring back to the globals.
@@ -7038,6 +7054,7 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
     }
     /* After the outgoing calls ended and froze their identity. */
     ui_commit_mode_identity(opts, state);
+    ui_note_tuning_change(state); // what the receiver decodes with (issue #903)
     decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled, note, note_size);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7609,6 +7626,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     }
     /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
+    ui_note_tuning_change(state); // the session is re-pointed at the imported system (issue #903)
     if (rr_apply_moves_the_receiver(opts, &p)) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
            while the calls of the system it leaves are still active, before anything below ends them
@@ -10323,6 +10341,14 @@ cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_i
     }
 }
 
+/* A config whose [mode] changed what the receiver decodes with changed its tuning (issue #903). */
+static void
+cfg_note_mode_change(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode old_decode_mode) {
+    if (dsd_infer_decode_mode_preset_exact(opts) != old_decode_mode) {
+        ui_note_tuning_change(state);
+    }
+}
+
 /* The apply commits here, past everything before it that can put the session back: a [mode] that stands leaves TETRA
    unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and one
    put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
@@ -10536,6 +10562,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
     cfg_forget_rx_tone_on_boundary(opts, state, old_audio_in_type, old_audio_in_dev, old_decode_mode);
+    cfg_note_mode_change(opts, state, old_decode_mode);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
@@ -12085,7 +12112,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
            effect before this command can start the stream again. */
         dsd_app_take_capture_stopped(opts, state);
         if (!ui_cmd_payload_is_valid(&cmd)) {
-            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
+            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD, NULL);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
@@ -12103,7 +12130,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif
-        tg_export_publish_result(&cmd, result);
+        tg_export_publish_result(&cmd, result, state);
         dsd_app_publish_decryption_result(&cmd, result);
         dsd_app_scan_list_publish_result(&cmd, scan_list_code, state);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);

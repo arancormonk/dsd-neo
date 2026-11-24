@@ -3612,6 +3612,14 @@ carrier_boundary_takes_guard(dsd_carrier_boundary_kind kind) {
            || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH || kind == DSD_CARRIER_BOUNDARY_STREAM_GAP;
 }
 
+/* Whether a boundary of @p kind moves the tuning generation (issue #903): a tune, a source change or an input switch
+   runs other tuning than the receiver ran; a scan step, a replay's recorded retune and a stream gap do not. */
+static int
+carrier_boundary_moves_tuning(dsd_carrier_boundary_kind kind) {
+    return kind == DSD_CARRIER_BOUNDARY_TUNE || kind == DSD_CARRIER_BOUNDARY_SOURCE
+           || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH;
+}
+
 /* Step 1 of the carrier boundary: the voice channel a trunking state machine followed, if one is held, is released while
    its calls are still active (dsd_engine_carrier_boundary()). The state machine comes to rest on its control channel
    without tuning, as trunk scan hands a carrier back (trunk_scan_release_active_carrier()); the P25 release flushes
@@ -3826,6 +3834,8 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     state->run_landed = opts->trunk_scan_enabled == 1 ? 0U : 1U;
     /* The run's stay where its stream opens has heard no call yet (the -Y no-check status). */
     dsd_engine_scan_y_stay_begin(state);
+    /* The tuning the run starts with: what an earlier run on this state changed is not this run's change (issue #903). */
+    state->run_tuning_gen = state->tuning_gen;
 }
 
 void
@@ -3852,6 +3862,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_p25p2_playout_note_policy(opts, state);
     // The receiver leaves the carrier a scan last landed on (issue #667 D9).
     dsd_engine_scan_landing_forget(state);
+    if (carrier_boundary_moves_tuning(kind)) {
+        dsd_state_note_tuning_change(state); // under the tick guard, which every such kind takes
+    }
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
     /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins
@@ -4032,6 +4045,9 @@ dsd_engine_note_run_stream_source(dsd_opts* opts, dsd_state* state) {
     dmr_enc_class_release_hold(state, 0U);
     dmr_enc_class_release_hold(state, 1U);
     state->run_landed = landed;
+    /* Nor is that boundary a change of the run's tuning: the run starts on this stream (issue #903), before the P25
+       watchdog runs. */
+    state->run_tuning_gen = state->tuning_gen;
 }
 
 void

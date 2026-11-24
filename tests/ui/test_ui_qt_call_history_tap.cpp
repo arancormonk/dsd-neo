@@ -1503,7 +1503,8 @@ test_heard_last_call_of_a_during_b_start(void) {
 }
 
 /* Issue #903 (r3 finding 8): through the background tap, a scan target id an imported target file also gives (left out
- * of the owner map), a running switch from live input to a file, and a call the operator tuned to learn nothing. */
+ * of the owner map), a running switch from live input to a file, a call the operator tuned to, and (PR2 review r4) one
+ * heard after a live retune moved the run's tuning learn nothing. */
 void
 test_heard_tap_learns_only_owned_live_calls(void) {
     resetStorage();
@@ -1530,13 +1531,44 @@ test_heard_tap_learns_only_owned_live_calls(void) {
     scanCall(43202U, "entry-a", when + 120, false);
     scanCall(43203U, "entry-a", when + 180, true);
     decoder.state->event_history_s[0].Event_History_Items[1].operator_tuned = 1U;
+    scanCall(43204U, "entry-a", when + 240, true);
+    decoder.state->event_history_s[0].Event_History_Items[1].tuning_moved = 1U;
     decoder.publish();
     model.waitForBackgroundPollForTest();
     set_app_state(Qt::ApplicationActive);
     gui_ingest(model);
-    expect("tap learning: every call is in History", model.count() == 4);
+    expect("tap learning: every call is in History", model.count() == 5);
     expect("tap learning: only the owned target's live call is handed on",
            sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43200U) == 1);
+}
+
+/* Issue #903 (PR2 review r4, P1): a saved-system session whose tuning a live retune moved (a configuration from the
+ * control API, with no operator hold) learns nothing through the background tap either: the call heard before the move
+ * is the saved system's, the one after it no one's. */
+void
+test_heard_tap_after_a_live_retune(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755450000;
+    Decoder decoder;
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    decoder.commit(0, 43300U, 99U, when);
+    prove_newest(decoder, 0, 43300U);
+    decoder.commit(0, 43301U, 99U, when + 60);
+    prove_newest(decoder, 0, 43301U);
+    decoder.state->event_history_s[0].Event_History_Items[1].tuning_moved = 1U;
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("tap retune: both calls are in History", model.count() == 2);
+    expect("tap retune: only the call before the move is the saved system's",
+           sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43300U) == 1);
 }
 
 /* Run the event loop's posted work a few times, as the turns after Main's start would. */
@@ -2127,6 +2159,7 @@ main(int argc, char** argv) {
     test_heard_long_spill_reaches_the_sink_before_the_trim();
     test_heard_last_call_of_a_during_b_start();
     test_heard_tap_learns_only_owned_live_calls();
+    test_heard_tap_after_a_live_retune();
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
     test_heard_forget_refused_while_history_cannot_save();

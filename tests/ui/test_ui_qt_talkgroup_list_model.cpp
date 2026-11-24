@@ -969,6 +969,17 @@ test_transient_follows_the_target_on_air() {
     model.refresh(single.opts, single.state);
     expect("903 explore: back on the system, its calls only",
            model.viewedOwner() == kSysA && model.count() == 1 && find(model, 710).isValid());
+
+    // A live retune with no operator hold (a configuration from the control API, a decode mode, a channel map): the
+    // tuning moved since the run began, so the receiver no longer runs the saved system's tuning and none is viewed;
+    // the call heard after it is no one's.
+    dsd_state_note_tuning_change(single.state);
+    single.commitOn(712, now + 50, nullptr, false, false);
+    single.rings[0].Event_History_Items[1].tuning_moved = 1U;
+    history.refresh(single.state, single.opts);
+    model.refresh(single.opts, single.state);
+    expect("903 live retune: the moved tuning views no system", model.viewedOwner().isEmpty() && !model.remembering());
+    expect("903 live retune: its call is no system's card", find(model, 712).isValid() && !find(model, 710).isValid());
 }
 
 /* Issue #903 (PR2 review r1, P2): the session's heard cards are the scan target's on air, not only its owner's. Two

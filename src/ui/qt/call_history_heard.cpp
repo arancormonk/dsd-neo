@@ -304,7 +304,8 @@ heard_item_proof(const Event_History* item) {
 
 bool
 heard_item_learnable(const Event_History* item) {
-    return item->heard_variant != 0U && item->heard_id != 0U && item->live_input != 0U && item->operator_tuned == 0U;
+    return item->heard_variant != 0U && item->heard_id != 0U && item->live_input != 0U && item->operator_tuned == 0U
+           && item->tuning_moved == 0U;
 }
 
 QString
@@ -324,7 +325,8 @@ heard_owner_for(const HeardOwners& owners, qint64 session, bool operatorTuned, b
 
 QString
 heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* item) {
-    return heard_owner_for(owners, session, item->operator_tuned != 0U, item->scan_member != 0U, channel_of(item));
+    return heard_owner_for(owners, session, item->operator_tuned != 0U || item->tuning_moved != 0U,
+                           item->scan_member != 0U, channel_of(item));
 }
 
 void

@@ -81,7 +81,8 @@ TETRA trunked group call setup followed by its speech. A grant alone, a call joi
 could check, and traffic the receive filters (NAC, color code, RAN) reject are not remembered, nor are EDACS, dPMR,
 D-STAR, YSF, M17, X2-TDMA, ProVoice or TETRA DMO calls, or reserved and all-call ids. The call must come from a live
 receiver while the session listens to a saved system: replays, Explore, a frequency you tuned by hand, `-Y` rows,
-imported trunk scan targets and frequency entries remember nothing. In a scan list, a talkgroup heard on a target
+imported trunk scan targets and frequency entries remember nothing, nor does anything heard once the session's tuning
+changed while it ran (a frequency, decode mode or channel map applied from the control API). In a scan list, a talkgroup heard on a target
 counts for the one saved system that target came from; an id that also belongs to another system or to an imported
 target counts for none.
 

@@ -780,6 +780,10 @@ typedef struct {
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
+    // Issue #903: 1 when the receiver's tuning had changed since its run began (dsd_state_tuning_moved(): a live
+    // retune, decode-mode change or channel-map import) at the call's first render; frozen with the stamps above. The
+    // call was not heard on the tuning its session started with.
+    uint8_t tuning_moved;
     // The -Y scan-list row the call was heard on (issue #903), stamped and frozen with channel_label: 1 + its index
     // (dsd_channel_label_scan_list_row()) and the identity of the list it is a row of (dsd_state::lcn_list_rev); 0 and
     // 0 off any -Y row (no scan, a paused one, a --trunk-scan target). Two rows that share a name, a frequency or
@@ -3378,6 +3382,14 @@ struct dsd_state {
     uint8_t lcn_scan_paused;
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;
+    /* The tuning generation (issue #903): tuning_gen counts every change of what the receiver is tuned to or decodes
+     * with that no trunk or scan follow makes (dsd_state_note_tuning_change()): a tune the user or a config asked for,
+     * another source or input, a decode-mode change, a channel-map or band-plan import. A stream gap or a reopen on
+     * the same carrier is none. run_tuning_gen: tuning_gen as the run began, its first stream's start included
+     * (dsd_engine_note_run_start(), dsd_engine_note_run_stream_source()). Written on the decoder thread, under the P25
+     * SM tick guard once the watchdog runs. */
+    uint32_t tuning_gen;
+    uint32_t run_tuning_gen;
     uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
     uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
     /* The --trunk-scan hold is an entry hold (issue #644), as lcn_scan_entry_hold is for -Y: set with trunk_scan_hold
@@ -3763,6 +3775,19 @@ dsd_state_note_carrier_change(dsd_state* state) {
        no embedded GPS fix of the next reception is attributed by it (issue #800). */
     dsd_position_attribution_clear(&state->dmr_lc_attribution[0]);
     dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
+}
+
+/* What the receiver is tuned to or decodes with changed, by no trunk or scan follow (dsd_state::tuning_gen, issue
+   #903). The caller holds the P25 SM tick guard. */
+static inline void
+dsd_state_note_tuning_change(dsd_state* state) {
+    state->tuning_gen++;
+}
+
+/* Whether the receiver's tuning changed since its run began (dsd_state::run_tuning_gen, issue #903). */
+static inline int
+dsd_state_tuning_moved(const dsd_state* state) {
+    return state->tuning_gen != state->run_tuning_gen ? 1 : 0;
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

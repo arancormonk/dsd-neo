@@ -1210,6 +1210,8 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->lcn_scan_paused = 0;
     state->lcn_scan_resume_pending = 0;
     state->operator_tuned = 0;
+    state->tuning_gen = 0U;
+    state->run_tuning_gen = 0U;
     state->lcn_avoid_count = 0;
     state->trunk_scan_hold = 0;
     state->trunk_scan_entry_hold = 0;
