@@ -18,8 +18,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct rtl_stream_start_gate;
-
 /**
  * @brief RAII-class orchestrator for RTL-SDR streaming pipeline.
  *
