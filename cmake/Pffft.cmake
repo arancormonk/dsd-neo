@@ -200,7 +200,10 @@ set(_pffft_licenseref
 set_property(
     DIRECTORY
     APPEND
-    PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pffft_licenseref}"
+    PROPERTY
+        CMAKE_CONFIGURE_DEPENDS
+            "${_pffft_licenseref}"
+            "${DSD_PFFFT_SOURCE_DIR}/third_party/pffft/LicenseRef-PFFFT.txt"
 )
 file(READ "${_pffft_licenseref}" _pffft_tracked)
 file(

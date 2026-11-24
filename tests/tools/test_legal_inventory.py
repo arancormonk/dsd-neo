@@ -703,7 +703,11 @@ class NoticeStagingTests(unittest.TestCase):
             result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", f"-Dmbe-neo_VERSION={version}", "-P",
                                     ROOT / "cmake/MbelibNotices.cmake")
             self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+        # With the linked version known, an inventory that names no release is refused too.
         (self.mbe / "legal/components.json").write_text(MBE_COMPONENTS % "pffft", encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-Dmbe-neo_VERSION=2.6.11", "-P",
+                                ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
         notice = self.mbe / "LicenseRef-ETSI-EN-300-395-2-data.txt"
         notice.unlink()
         result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
@@ -728,6 +732,22 @@ class NoticeStagingTests(unittest.TestCase):
                 f"-DMBELIB_NOTICE_DIR={self.mbe}", f"-DVCPKG_SHARE_DIR={share}", "-P",
                 ROOT / "cmake/stage_android_package.cmake"]
         return build, share, stage / "assets/doc/dsd-neo", args
+
+    def test_installed_notices_leave_out_the_other_fft_notice_tree(self):
+        # Selected by name at the notice root, whatever the override's spelling (here a trailing slash).
+        for name in MBE_FORK_NOTICES:
+            (self.mbe / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.mbe / name).write_text("stale\n", encoding="utf-8")
+        script = self.work / "list.cmake"
+        script.write_text(f'include("{(ROOT / "cmake/MbelibNotices.cmake").as_posix()}")\n'
+                          'message(STATUS "DIRS=${DSD_MBELIB_NOTICE_DIRS}")\n'
+                          'message(STATUS "FILES=${DSD_MBELIB_NOTICE_FILES}")\n', encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe.as_posix()}/", "-P", script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        listed = {Path(path.rstrip("/")).name for line in result.stdout.splitlines() if "=" in line
+                  for path in line.split("=", 1)[1].split(";") if path}
+        self.assertEqual(listed, {name.split("/")[0] for name in MBE_NOTICES})
+        self.assertNotIn("pffft", listed)
 
     def test_android_assets_leave_out_the_other_fft_notice_tree(self):
         build, share, docs, args = self.android_fixture()

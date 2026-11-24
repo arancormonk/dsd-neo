@@ -112,6 +112,12 @@ class PinTests(unittest.TestCase):
         # An override this helper did not write, and cannot move, is refused rather than kept.
         with self.assertRaisesRegex(ValueError, "override"):
             aur.update(result.replace('"$srcdir/pffft-neo-$_pffft_sha"', '"$srcdir/fft"'), pins)
+        # A second override after the right one is not hidden by it.
+        doubled = result.replace('"$srcdir/pffft-neo-$_pffft_sha" \\\n',
+                                 '"$srcdir/pffft-neo-$_pffft_sha" \\\n        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/fft" \\\n')
+        self.assertIn('"$srcdir/fft"', doubled)
+        with self.assertRaisesRegex(ValueError, "override"):
+            aur.update(doubled, pins)
 
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"), "AUR requires a Unix shell")
     def test_aur_transition_and_stale_pin(self):
@@ -208,6 +214,25 @@ class PinTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 updater.update_pins("master", root)
             self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
+            # A failure moving the last file (the pins) puts back the two already replaced.
+            licenseref.write_bytes(b"Retained notices v1\n")
+            before = [path.read_bytes() for path in (pins, licenseref, inventory)]
+            real_replace = updater.os.replace
+            moves = []
+
+            def failing_replace(source, destination):
+                moves.append(destination)
+                if Path(destination) == pins:
+                    raise OSError("read-only tools/")
+                real_replace(source, destination)
+            with patch.object(updater, "download_archive", return_value=payload), \
+                    patch.object(updater.os, "replace", side_effect=failing_replace):
+                with self.assertRaisesRegex(OSError, "read-only"):
+                    updater.update_pins(sha, root)
+            self.assertEqual([Path(path) for path in moves], [licenseref, inventory, pins])
+            self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
+            self.assertEqual(sorted(path.name for path in root.rglob("*") if path.is_file()),
+                             ["LicenseRef-PFFFT.txt", "ci-dependency-pins.env", "components.json"])
 
 
 if __name__ == "__main__":

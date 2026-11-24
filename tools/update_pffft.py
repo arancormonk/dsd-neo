@@ -42,18 +42,26 @@ def download_archive(sha):
         return response.read()
 
 
-def replace_file(path, data):
-    """Write bytes beside path and move them over it, keeping its mode."""
-    temporary = None
+def replace_files(contents):
+    """Replace each path with its bytes, all or none: every file is written beside its destination first, and a
+    failed move puts back the files already replaced."""
+    staged = []
+    replaced = []
     try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as output:
-            temporary = Path(output.name)
-            output.write(data)
-        temporary.chmod(path.stat().st_mode)
-        os.replace(temporary, path)
-        temporary = None
+        for path, data in contents:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as output:
+                staged.append((path, Path(output.name), path.read_bytes()))
+                output.write(data)
+            staged[-1][1].chmod(path.stat().st_mode)
+        for path, temporary, original in staged:
+            os.replace(temporary, path)
+            replaced.append((path, original))
+    except BaseException:
+        for path, original in reversed(replaced):
+            path.write_bytes(original)
+        raise
     finally:
-        if temporary is not None:
+        for _, temporary, _ in staged:
             temporary.unlink(missing_ok=True)
 
 
@@ -86,9 +94,7 @@ def update_pins(sha, root=ROOT):
         if len(re.findall(pattern, text, flags=re.MULTILINE)) != 1:
             raise ValueError(f"Expected exactly one {key} in {pins}")
         text = re.sub(pattern, f"{key}={value}", text, flags=re.MULTILINE)
-    replace_file(licenseref, notice)
-    replace_file(inventory, records.encode("utf-8"))
-    replace_file(pins, text.encode("utf-8"))
+    replace_files(((licenseref, notice), (inventory, records.encode("utf-8")), (pins, text.encode("utf-8"))))
     print(f"PFFFT_SHA={sha}\nPFFFT_ARCHIVE_SHA256={digest}")
 
 

@@ -1392,11 +1392,16 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/legal
     COMPONENT legal
 )
+# mbelib's notice folder, without the other FFT's notice tree (MbelibNotices.cmake).
 install(
-    DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/"
+    DIRECTORY ${DSD_MBELIB_NOTICE_DIRS}
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
     COMPONENT legal
-    REGEX "${DSD_MBELIB_UNSELECTED_FFT_REGEX}" EXCLUDE
+)
+install(
+    FILES ${DSD_MBELIB_NOTICE_FILES}
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
+    COMPONENT legal
 )
 install(
     FILES src/third_party/ezpwd/lesser.txt

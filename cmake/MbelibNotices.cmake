@@ -40,11 +40,16 @@ if(EXISTS "${_mbe_components}")
 endif()
 # The notices must be those of the mbelib this build links, not of another
 # installation's documentation (an override, or a prefix search falling back).
-if(
-    DEFINED mbe-neo_VERSION
-    AND _mbe_components_text MATCHES "\"release\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]*)\""
-)
-    set(_mbe_notice_release "${CMAKE_MATCH_1}")
+# Every 2.6 inventory names its release.
+if(DEFINED mbe-neo_VERSION)
+    set(_mbe_notice_release "")
+    if(
+        _mbe_components_text
+            MATCHES
+            "\"release\"[ \t\r\n]*:[ \t\r\n]*\"([^\"]*)\""
+    )
+        set(_mbe_notice_release "${CMAKE_MATCH_1}")
+    endif()
     if(NOT _mbe_notice_release VERSION_EQUAL mbe-neo_VERSION)
         message(
             FATAL_ERROR
@@ -79,19 +84,29 @@ foreach(_notice IN LISTS _mbe_required_notices)
     endif()
 endforeach()
 # The other FFT's notice tree, which an in-place upgrade or downgrade can leave
-# beside the selected one, stays out of packages: a regex of its full path for
-# install(DIRECTORY) and file(COPY) excludes.
-file(TO_CMAKE_PATH "${DSD_MBELIB_NOTICE_DIR}" _mbe_notice_root)
-string(REGEX REPLACE "/+$" "" _mbe_notice_root "${_mbe_notice_root}")
-string(
-    REGEX REPLACE "([][+.*()^$?|\\{}])"
-    "\\\\\\1"
-    _mbe_notice_root
-    "${_mbe_notice_root}"
+# beside the selected one, stays out of packages. Packages copy the notice
+# folder's top-level entries by name, without that one; a path regex would
+# depend on the host's path spelling (file(COPY) and install() lowercase it on
+# macOS and Windows before matching).
+file(
+    GLOB _mbe_notice_entries
+    LIST_DIRECTORIES true
+    RELATIVE "${DSD_MBELIB_NOTICE_DIR}"
+    "${DSD_MBELIB_NOTICE_DIR}/*"
 )
-set(DSD_MBELIB_UNSELECTED_FFT_REGEX
-    "^${_mbe_notice_root}/${DSD_MBELIB_UNSELECTED_FFT}(/.*)?$"
-)
+list(REMOVE_ITEM _mbe_notice_entries "${DSD_MBELIB_UNSELECTED_FFT}")
+set(DSD_MBELIB_NOTICE_DIRS)
+set(DSD_MBELIB_NOTICE_FILES)
+foreach(_entry IN LISTS _mbe_notice_entries)
+    if(IS_DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/${_entry}")
+        list(APPEND DSD_MBELIB_NOTICE_DIRS "${DSD_MBELIB_NOTICE_DIR}/${_entry}")
+    else()
+        list(
+            APPEND DSD_MBELIB_NOTICE_FILES
+            "${DSD_MBELIB_NOTICE_DIR}/${_entry}"
+        )
+    endif()
+endforeach()
 # The folder this build packages, for the release checks (tools/check_release_notices.py).
 set(DSD_MBELIB_SELECTED_NOTICE_DIR
     "${DSD_MBELIB_NOTICE_DIR}"

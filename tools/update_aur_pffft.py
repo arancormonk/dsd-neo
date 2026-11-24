@@ -31,9 +31,10 @@ sha256sums+=('{pins["PFFFT_ARCHIVE_SHA256"]}')
     # Published recipes still unpack the PFFFT fork's archive name; pffft-neo's unpacks as pffft-neo-<sha>.
     text = re.sub(r'(-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="\$srcdir/)pffft-(\$_pffft_sha|\$\{_pffft_sha\})"',
                   r'\1pffft-neo-\2"', text)
-    if "-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=" in text and not re.search(
-            r'-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="\$srcdir/pffft-neo-(\$_pffft_sha|\$\{_pffft_sha\})"', text):
-        raise ValueError("Unsupported PKGBUILD: the PFFFT source override names another directory")
+    # CMake honours the last of several overrides, so every one must name pffft-neo's unpack directory.
+    overrides = re.findall(r"-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=(\S*)", text)
+    if any(not re.fullmatch(r'"\$srcdir/pffft-neo-(\$_pffft_sha|\$\{_pffft_sha\})"', value) for value in overrides):
+        raise ValueError("Unsupported PKGBUILD: a PFFFT source override names another directory")
     if "-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=" not in text:
         anchor = "        -DCMAKE_INSTALL_PREFIX=/usr \\\n"
         if text.count(anchor) != 1:
