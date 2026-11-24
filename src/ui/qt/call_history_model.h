@@ -358,7 +358,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void setHeardSink(HeardTalkgroupSink* sink);
 
     /**
-     * @brief Who owns the calls History session @p session hears (issue #903): @p singleOwnerUid, the saved system a
+     * @brief Who owns the calls History session @p sessionId hears (issue #903): @p singleOwnerUid, the saved system a
      * saved-system start runs (empty for any other start), and for a scan-list start @p scanEntryOwner, each scan
      * target id (entry uid) to the saved system it runs, built from the start's entries and every target file it
      * launched before the engine drops duplicate ids, leaving out any id another saved system, an imported target file
@@ -368,7 +368,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * included), so the last calls of a session's ring that are read after the next session began keep its owners.
      * Persisted with the session, for a relaunched UI that rejoins the running session.
      */
-    void setSessionOwners(qint64 session, const QString& singleOwnerUid, const QHash<QString, QString>& scanEntryOwner);
+    void setSessionOwners(qint64 sessionId, const QString& singleOwnerUid,
+                          const QHash<QString, QString>& scanEntryOwner);
 
     /**
      * @brief Make the background spill this model folded unable to come back (issue #903): fold what a running tap

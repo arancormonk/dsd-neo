@@ -3165,14 +3165,14 @@ CallHistoryModel::setHeardSink(HeardTalkgroupSink* sink) {
 }
 
 void
-CallHistoryModel::setSessionOwners(qint64 session, const QString& singleOwnerUid,
+CallHistoryModel::setSessionOwners(qint64 sessionId, const QString& singleOwnerUid,
                                    const QHash<QString, QString>& scanEntryOwner) {
     // The running background tap holds a copy of the owners: it hands off what it found and starts again on these.
     const bool resumeTap = handOffBackgroundCaptureForSession();
     HeardSessionOwners who;
     who.single = singleOwnerUid;
     who.scan = scanEntryOwner;
-    heard_owners_set_session(&m_heardOwners, session, who);
+    heard_owners_set_session(&m_heardOwners, sessionId, who);
     saveHeardOwners();
     resumeBackgroundCapture(resumeTap);
 }
