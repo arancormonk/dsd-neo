@@ -2217,7 +2217,47 @@ test_heard_type_d(dsd_opts* opts, dsd_state* state) {
     rc |= expect_long("Type-D run already confirmed: noted on the header", heard_variant(state),
                       (long)DSD_HEARD_TG_NXDN_D);
     rc |= expect_long("Type-D run already confirmed: full id", heard_id(state), (long)nxdn_typed_full_id(3U, 5U));
-    rc |= expect_long("Type-D run already confirmed: nothing waits", (long)state->nxdn_heard_pending.transmission, 0L);
+    rc |= expect_long("Type-D run already confirmed: nothing waits", (long)state->nxdn_heard_pending.epoch, 0L);
+    return rc;
+}
+
+/*
+ * A Type-D group waiting for its SCCH run belongs to the call epoch whose VCALL named it. Sync is lost after the header
+ * frame, before any SCCH confirms the run; the no-carrier pass restarts the confirmation gate, and addressless voice
+ * reopens the call within its heal window (the same logical transmission, a new epoch seeded with the old target). The
+ * SCCH run that then confirms is the reopened epoch's, which received no VCALL of its own: nothing is noted.
+ */
+static int
+test_heard_type_d_reacquired_epoch(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t vcall[80];
+    int rc = 0;
+    scch_info1(scch);
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    dsd_call_snapshot first;
+    rc |= expect_long("Type-D reacquired: header call", dsd_call_state_get(state, 0U, &first) > 0, 1L);
+    rc |= expect_long("Type-D reacquired: header not yet noted", heard_variant(state), -1L);
+
+    rc |= expect_long("Type-D reacquired: sync lost",
+                      dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS) > 0, 1L);
+    nxdn_confirm_reset(state);
+    /* The vocoder's first voice frame of the reopened segment, as mark_vocoder_call_media() observes it: no party. */
+    const dsd_call_observation voice = {.protocol = DSD_SYNC_NXDN_POS, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    rc |= expect_long("Type-D reacquired: voice reopens",
+                      dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN), 1L);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    dsd_call_snapshot reopened;
+    rc |= expect_long("Type-D reacquired: call reopened", dsd_call_state_get(state, 0U, &reopened) > 0, 1L);
+    rc |= expect_long("Type-D reacquired: active", reopened.phase == DSD_CALL_PHASE_ACTIVE, 1L);
+    rc |= expect_long("Type-D reacquired: another epoch", reopened.epoch != first.epoch, 1L);
+    rc |= expect_long("Type-D reacquired: same transmission",
+                      dsd_call_snapshot_transmission(&reopened) == dsd_call_snapshot_transmission(&first), 1L);
+    rc |= expect_long("Type-D reacquired: seeded target", (long)reopened.ota_target_id, 5L);
+    rc |= expect_long("Type-D reacquired: run confirmed", nxdn_confirm_scch_confirmed(state), 1L);
+    rc |= expect_long("Type-D reacquired: not noted", heard_variant(state), -1L);
     return rc;
 }
 
@@ -2302,6 +2342,7 @@ main(void) {
     rc |= test_heard_followed_without_type_c(opts, state);
     rc |= test_heard_cold_composite(opts, state);
     rc |= test_heard_type_d(opts, state);
+    rc |= test_heard_type_d_reacquired_epoch(opts, state);
     rc |= test_heard_arib(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

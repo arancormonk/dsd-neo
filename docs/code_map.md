@@ -12664,8 +12664,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   Type-D for a VCALL read with the Type-D layout on an RTCH2 frame with no Type-C decoded, and only once its
   transmission's SCCH run is confirmed (`nxdn_confirm_scch_confirmed()`). A Type-D transmission sends its VCALL once,
   on the header frame beside its first SCCH (TS 2-E Fig 6.1-5), so the group waits in `dsd_state::nxdn_heard_pending`,
-  bound to its transmission, until the next confirmed SCCH (`nxdn_heard_note_pending_type_d()` in
-  `nxdn_scch_prepare_type_d()`), and is dropped if Type-C is decoded meanwhile or the call changed. Before any Type-C
+  bound to its call epoch, until the next confirmed SCCH (`nxdn_heard_note_pending_type_d()` in
+  `nxdn_scch_prepare_type_d()`), and is dropped if Type-C is decoded meanwhile or the call changed. The epoch, not the
+  logical transmission: an epoch reopened after a sync loss is seeded with the call's target, but its confirmation gate
+  restarted, so the run that confirms there received no VCALL of its own. Before any Type-C
   message decodes, the LICH values a composite control channel shares with Type-D read as Type-D (above), so a
   cold-start composite VCALL with either layout is not noted. The ARIB VCALL never is. The classifier gets the 16-bit
   group (Type-C, conventional) or the full Type-D address `(prefix << 11) | id` (the call state keeps the 11-bit id),

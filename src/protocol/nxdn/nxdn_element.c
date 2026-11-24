@@ -3349,21 +3349,22 @@ nxdn_vcall_heard_variant(const dsd_opts* opts, const dsd_state* state, const str
     return DSD_HEARD_TG_NONE;
 }
 
-/* Note a Type-D group held for @p transmission (dsd_state::nxdn_heard_pending) now that its SCCH run confirmed the
- * Type-D reading, while no Type-C has been decoded and slot 0 still carries that transmission's call to the group. Once:
- * the pending group is dropped whatever it finds. */
+/* Note a Type-D group held for its call epoch (dsd_state::nxdn_heard_pending) now that an SCCH run confirmed the Type-D
+ * reading, while no Type-C has been decoded and slot 0 still carries that epoch's call to the group. The epoch, not
+ * its logical transmission: an epoch reopened after a sync loss continues the transmission and is seeded with its
+ * target, but the confirmation gate restarted with it, so the run that confirms there is that epoch's, which received
+ * no VCALL. Once: the pending group is dropped whatever it finds. */
 static void
 nxdn_heard_note_pending_type_d(const dsd_opts* opts, dsd_state* state) {
     dsd_nxdn_heard_pending* const pending = &state->nxdn_heard_pending;
-    if (pending->transmission == 0U) {
+    if (pending->epoch == 0U) {
         return;
     }
     const dsd_nxdn_heard_pending held = *pending;
-    pending->transmission = 0U;
+    pending->epoch = 0U;
     dsd_call_snapshot call;
     if (dsd_nxdn_type_c(state) || state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
-        || dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol)
-        || dsd_call_snapshot_transmission(&call) != held.transmission
+        || dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol) || call.epoch != held.epoch
         || call.ota_target_id != nxdn_typed_low_id(held.full_id)) {
         return;
     }
@@ -3373,7 +3374,7 @@ nxdn_heard_note_pending_type_d(const dsd_opts* opts, dsd_state* state) {
     in.id = held.full_id;
     in.nxdn_type_bits = held.call_type;
     in.nxdn_inter_system = held.inter_system;
-    dsd_call_state_note_verified_target(opts, state, 0U, held.transmission, &in);
+    dsd_call_state_note_verified_target(opts, state, 0U, dsd_call_snapshot_transmission(&call), &in);
 }
 
 /*
@@ -3404,15 +3405,14 @@ nxdn_vcall_note_heard_group(const dsd_opts* opts, dsd_state* state, const struct
                                            : (uint32_t)info->destination_id;
     in.nxdn_type_bits = info->call_type;
     in.nxdn_inter_system = (uint8_t)((info->cc_option & 0x40U) != 0U);
-    const uint64_t transmission = dsd_call_snapshot_transmission(call);
     if (variant == DSD_HEARD_TG_NXDN_D && !nxdn_confirm_scch_confirmed(state)) {
-        state->nxdn_heard_pending.transmission = transmission;
+        state->nxdn_heard_pending.epoch = call->epoch;
         state->nxdn_heard_pending.full_id = in.id;
         state->nxdn_heard_pending.call_type = in.nxdn_type_bits;
         state->nxdn_heard_pending.inter_system = in.nxdn_inter_system;
         return;
     }
-    dsd_call_state_note_verified_target(opts, state, 0U, transmission, &in);
+    dsd_call_state_note_verified_target(opts, state, 0U, dsd_call_snapshot_transmission(call), &in);
 }
 
 /* A VCALL naming no party continues a DCR call (dsd_call_state_observe(): it names no other call) but describes it no

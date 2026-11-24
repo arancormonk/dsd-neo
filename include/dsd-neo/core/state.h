@@ -1151,10 +1151,10 @@ typedef struct {
 } dsd_nxdn_tx_source;
 
 /* NXDN Type-D: the group a checked VCALL read with the Type-D layout named (dsd_state::nxdn_heard_pending), held for
-   its own transmission until that transmission's SCCH run confirms the Type-D reading (issue #903, nxdn_element.c). */
+   its own call epoch until that epoch's SCCH run confirms the Type-D reading (issue #903, nxdn_element.c). */
 typedef struct {
-    uint64_t transmission; /**< dsd_call_snapshot_transmission() of the call the VCALL named; 0 none pending */
-    uint32_t full_id;      /**< (prefix << 11) | id (nxdn_typed_full_id()) */
+    uint64_t epoch;   /**< dsd_call_snapshot::epoch of the call the VCALL named; 0 none pending */
+    uint32_t full_id; /**< (prefix << 11) | id (nxdn_typed_full_id()) */
     uint8_t call_type;
     uint8_t inter_system; /**< CC Option bit 6 */
 } dsd_nxdn_heard_pending;
