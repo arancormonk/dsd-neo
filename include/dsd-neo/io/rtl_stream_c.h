@@ -1146,21 +1146,21 @@ void rtl_stream_set_p25_timing_proof(uint64_t proof);
 double rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
- * @brief Set the channel squelch level in the demod state.
- *
- * Call this whenever opts->rtl_squelch_level changes to keep the demod
- * state in sync for channel-based squelching.
+ * @brief Set the channel squelch to a level, as rtl_stream_set_channel_squelch_setting() sets a LEVEL setting.
  *
  * @param level Linear power threshold (same units as rtl_squelch_level).
  */
 void rtl_stream_set_channel_squelch(float level);
 
 /**
- * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting as
- * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns, a NOISE one by
- * the FM quieting it opens at. AUTO and NOISE flag each sample (rtl_stream_read_ex()) of the analog monitor, the M17
- * encoder's monitor and the 9600 bit/s FSK path EDACS analog voice reads (issue #625; NOISE runs as AUTO there), and
- * gate nothing else.
+ * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting by its threshold, an AUTO
+ * one by its margin over the floor the demodulator learns, a NOISE one by the FM quieting it opens at (NULL: off). AUTO
+ * and NOISE flag each sample (rtl_stream_read_ex()) of the analog monitor, the M17 encoder's monitor and the 9600
+ * bit/s FSK path EDACS analog voice reads (issue #625; NOISE runs as AUTO there), and gate nothing else.
+ *
+ * The setting is the receiver's gate on the channel it is on now (issue #899), as a decoder write
+ * (rtl_stream_write_squelch_gate()) runs it: it ends a closed start, counted as one, and the decoder's next write is
+ * compared against it. The engine never calls it: its decoder writes the gate.
  */
 void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 

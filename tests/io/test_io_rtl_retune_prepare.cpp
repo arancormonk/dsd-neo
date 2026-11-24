@@ -1349,6 +1349,11 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("M17 encoder monitor: no landing telemetry", r.encoder_uncounted, 1);
     failed |= expect_int_eq("AM closed start: blocks before a delayed write are counted", r.am_closed_counted, 1);
     failed |= expect_int_eq("AM under Off: an open block is counted unjudged", r.am_unjudged_counted, 1);
+    failed |=
+        expect_int_eq("public level setter Off, then the decoder's noise +10 write runs", r.public_level_then_write, 1);
+    failed |= expect_int_eq("public setting setter Off, then the decoder's noise +10 write runs",
+                            r.public_setting_then_write, 1);
+    failed |= expect_int_eq("public setter on a closed start ends it, counted", r.public_ends_closed, 1);
     failed |= expect_int_eq("open channel under noise +10: a block publishes it running", r.running_status_active, 1);
     failed |= expect_int_eq("closed start: the produced block is muted, flagged closed", r.closed_block_flagged, 1);
     failed |=

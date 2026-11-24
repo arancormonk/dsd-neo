@@ -639,6 +639,7 @@ static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
 static void rtl_stream_gate_open(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
 static void rtl_stream_gate_boundary(int new_channel);
+static void rtl_stream_store_channel_squelch(const dsd_squelch_setting* setting);
 static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
@@ -13695,7 +13696,26 @@ rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32
 /* The receiver runs @p gate (g_pending_retune_profile_mutex held, as for every channel helper here). */
 static void
 rtl_stream_gate_apply_locked(const dsd_squelch_setting* gate) {
-    rtl_stream_set_channel_squelch_setting(gate);
+    rtl_stream_store_channel_squelch(gate);
+}
+
+/* The receiver runs @p runs on the channel it is on (g_pending_retune_profile_mutex held): the decoder's write, or a
+   public setter's. A closed start it ends is counted. */
+static void
+rtl_stream_gate_run_locked(const dsd_squelch_setting* runs) {
+    const int closed = g_gate_closed.load(std::memory_order_relaxed);
+    if (closed) {
+        /* The muted samples go on being counted where they are produced (demod_count_monitor_gate()): a block that took
+           the closed gate before this write still counts when it is finished. */
+        g_gate_closed_ms.store((double)(dsd_realtime_mono_ns() - g_gate_closed_since_ns) / 1.0e6,
+                               std::memory_order_relaxed);
+        g_gate_closed_starts.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (closed || !dsd_squelch_setting_equal(&g_gate_running, runs)) {
+        g_gate_running = *runs;
+        g_gate_closed.store(0, std::memory_order_release);
+        rtl_stream_gate_apply_locked(&g_gate_running);
+    }
 }
 
 /* The receiver is on a new channel, or switched family or profile, at a boundary where the rest of a landing or a
@@ -13876,20 +13896,7 @@ rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch
     }
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
     g_gate_digital = digital ? *digital : *gate;
-    const dsd_squelch_setting* runs = g_gate_monitor ? gate : &g_gate_digital;
-    const int closed = g_gate_closed.load(std::memory_order_relaxed);
-    if (closed) {
-        /* The muted samples go on being counted where they are produced (demod_count_monitor_gate()): a block that took
-           the closed gate before this write still counts when it is finished. */
-        g_gate_closed_ms.store((double)(dsd_realtime_mono_ns() - g_gate_closed_since_ns) / 1.0e6,
-                               std::memory_order_relaxed);
-        g_gate_closed_starts.fetch_add(1, std::memory_order_relaxed);
-    }
-    if (closed || !dsd_squelch_setting_equal(&g_gate_running, runs)) {
-        g_gate_running = *runs;
-        g_gate_closed.store(0, std::memory_order_release);
-        rtl_stream_gate_apply_locked(&g_gate_running);
-    }
+    rtl_stream_gate_run_locked(g_gate_monitor ? gate : &g_gate_digital);
 }
 
 extern "C" int
@@ -21320,6 +21327,41 @@ channel_gate_test_telemetry_cases(const dsd_opts* analog_opts, rtl_stream_test_c
     out->am_unjudged_counted = status.unjudged_samples == am_unjudged_before + 24U ? 1 : 0;
 }
 
+/* The public squelch setters run through the gate (round 9): the decoder's next write compares against what they set,
+   and one made on a closed start ends it as a write would. */
+static void
+channel_gate_test_public_setter_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL);
+    rtl_stream_set_channel_squelch(0.0f);
+    const int level_off = channel_gate_test_runs_level(0.0);
+    rtl_stream_write_squelch_gate(&noise10, NULL);
+    out->public_level_then_write =
+        (level_off && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10) ? 1 : 0;
+    rtl_stream_set_channel_squelch_setting(&off);
+    const int setting_off = channel_gate_test_runs_level(0.0);
+    rtl_stream_write_squelch_gate(&noise10, NULL);
+    out->public_setting_then_write =
+        (setting_off && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10) ? 1 : 0;
+
+    const uint32_t hz = kFamilyTestRetuneHz + 1500000U;
+    channel_gate_test_queue(hz, 0, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    const int closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    const int starts_before = status.closed_starts;
+    rtl_stream_set_channel_squelch_setting(&noise10);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->public_ends_closed =
+        (closed && !channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+         && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == starts_before + 1)
+            ? 1
+            : 0;
+}
+
 /* What a channel-gate case runs inside channel_gate_test_fixture(): @p analog_opts an -fA session's, @p digital_opts a
    digital one's, @p ctx the case's own. */
 typedef void (*ChannelGateTestBody)(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx);
@@ -21375,6 +21417,7 @@ channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital
     channel_gate_test_typed_row_cases(analog_opts, out);
     channel_gate_test_telemetry_cases(analog_opts, out);
     channel_gate_test_closed_status_cases(analog_opts, out);
+    channel_gate_test_public_setter_cases(analog_opts, out);
 }
 
 extern "C" int
@@ -22459,20 +22502,13 @@ dsd_rtl_stream_return_pwr(void) {
     return (double)g_channel_pwr.load(std::memory_order_relaxed);
 }
 
-/**
- * @brief Set the channel squelch level in the demod state.
- */
-extern "C" void
-rtl_stream_set_channel_squelch(float level) {
-    /* The level before the word that makes it the one in force (see g_squelch_auto_word). */
-    demod.channel_squelch_level.store(level, std::memory_order_relaxed);
-    g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_LEVEL, std::memory_order_release);
-}
-
-extern "C" void
-rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
-    if (!setting || !dsd_squelch_mode_is_dynamic(setting->mode)) {
-        rtl_stream_set_channel_squelch(setting ? (float)setting->level : 0.0f);
+/* The demodulator's channel squelch takes @p setting, bare (the gate's lock held: rtl_stream_gate_apply_locked()). */
+static void
+rtl_stream_store_channel_squelch(const dsd_squelch_setting* setting) {
+    if (!dsd_squelch_mode_is_dynamic(setting->mode)) {
+        /* The level before the word that makes it the one in force (see g_squelch_auto_word). */
+        demod.channel_squelch_level.store((float)setting->level, std::memory_order_relaxed);
+        g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_LEVEL, std::memory_order_release);
         return;
     }
     int margin = setting->margin_db;
@@ -22483,6 +22519,22 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     }
     /* The word alone: the level stays for a block that took the LEVEL word before this store (see g_squelch_auto_word). */
     g_squelch_auto_word.store((uint32_t)setting->mode | ((uint32_t)margin << 8), std::memory_order_release);
+}
+
+/**
+ * @brief Set the channel squelch level in the demod state.
+ */
+extern "C" void
+rtl_stream_set_channel_squelch(float level) {
+    const dsd_squelch_setting setting = dsd_squelch_setting_of_level((double)level);
+    rtl_stream_set_channel_squelch_setting(&setting);
+}
+
+extern "C" void
+rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    const dsd_squelch_setting runs = setting ? *setting : dsd_squelch_setting_of_level(0.0);
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_gate_run_locked(&runs);
 }
 
 extern "C" int

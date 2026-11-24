@@ -2182,6 +2182,10 @@ typedef struct rtl_stream_test_channel_gate_result {
     int running_status_active; /* 1 when a block on the open channel published a dynamic squelch running */
     int closed_block_flagged; /* 1 when the block produced on the closed start was muted, every sample flagged closed */
     int closed_status_inactive; /* ... and published no dynamic squelch (inactive, not noise, gate open) */
+    /* The public squelch setters, on an NFM channel the decoder wrote noise +10 for: */
+    int public_level_then_write;   /* the level setter's Off runs, and the decoder's noise +10 write after it runs */
+    int public_setting_then_write; /* the same through the whole-setting setter */
+    int public_ends_closed;        /* on a marked landing's closed start, the setter ends it, counted, as a write */
 } rtl_stream_test_channel_gate_result;
 
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
