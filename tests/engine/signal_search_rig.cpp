@@ -7,15 +7,16 @@
  * configured from the command line like any session (-i rtltcp:...), the app-control frontend runtime and the native
  * history store are opened around it, and the search is submitted through the app-control command queue, so the real
  * coordinator, the app-control observer and the store all run. Not a CTest by itself: it reads its search from the
- * environment and runs until told how many passes to finish.
+ * environment and runs until told how many passes to finish. It keeps its files in its working directory: the history
+ * journal (history.jsonl) and the stop file (stop).
  *
- *   DSD_SEARCH_RIG_STORE   the history journal's path (its folder must exist); required
  *   DSD_SEARCH_RIG_RANGES  ranges, ';' between them, each "name,start_hz,end_hz,step_hz,bandwidth_hz,digital,probe_ms,
  *                          max_visit_ms" (digital as dsd_signal_search_range.digital; 0 analog, 1 Auto, 10 TETRA)
  *   DSD_SEARCH_RIG_PASSES  stop once this many passes have ended (default 1; a positive whole number)
  *   DSD_SEARCH_RIG_SECONDS stop after this long whatever the passes (default 120; 1 to 86400)
- *   DSD_SEARCH_RIG_STOP    also stop once a file of this name exists (a driver that knows when it has seen enough;
- *                          a signal would end the run without the history on every platform but POSIX)
+ *
+ * The run also stops once a file named stop exists in the working directory (a driver that knows when it has seen
+ * enough; a signal would end the run without the history on every platform but POSIX).
  *
  * stdout gets one JSON line per change of the store's status ({"rig":"status",...}, with the hit being shown), then,
  * once the run ends, one per history row ({"rig":"history",...}) and the same rows read back after the store is
@@ -47,6 +48,10 @@
 namespace {
 
 constexpr uint64_t kMaxRigSeconds = 86400;
+/* The history journal and the stop file, both in the working directory (tests/signal_search_tetra_rig_check.py runs
+   the rig in its folder and uses the same names). */
+constexpr const char* kRigJournal = "history.jsonl";
+constexpr const char* kRigStopFile = "stop";
 
 struct Rig {
     dsd_signal_search_config config{};
@@ -219,7 +224,6 @@ stop(dsd_opts* opts, dsd_state* state, void* ptr) {
 void
 watch(Rig* rig) {
     const uint64_t deadline = dsd_realtime_mono_ms() + rig->seconds * 1000U;
-    const char* stop_file = std::getenv("DSD_SEARCH_RIG_STOP");
     std::string last;
     while (!rig->done.load()) {
         dsd_signal_search_status s{};
@@ -240,7 +244,7 @@ watch(Rig* rig) {
                 return;
             }
         }
-        if (stop_file && stop_file[0] && dsd_path_exists_nofollow(stop_file) == 1) {
+        if (dsd_path_exists_nofollow(kRigStopFile) == 1) {
             dsd_exitflag_store(1);
             return;
         }
@@ -270,16 +274,11 @@ print_history(const char* kind) {
 int
 main(int argc, char** argv) {
     static Rig rig;
-    const char* store = std::getenv("DSD_SEARCH_RIG_STORE");
-    if (!store || !store[0]) {
-        DSD_FPRINTF(stderr, "RIG ERROR: DSD_SEARCH_RIG_STORE is not set\n");
-        return 2;
-    }
     if (!read_config(&rig)) {
         return 2;
     }
-    if (dsd_app_signal_search_store_open(store) != 0) {
-        DSD_FPRINTF(stderr, "RIG ERROR: the store at %s did not open\n", store);
+    if (dsd_app_signal_search_store_open(kRigJournal) != 0) {
+        DSD_FPRINTF(stderr, "RIG ERROR: the store at %s did not open\n", kRigJournal);
         return 2;
     }
     auto* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
@@ -309,8 +308,8 @@ main(int argc, char** argv) {
     dsd_app_signal_search_store_flush();
     print_history("history");
     dsd_app_signal_search_store_close();
-    if (dsd_app_signal_search_store_open(store) != 0) {
-        DSD_FPRINTF(stderr, "RIG ERROR: the store at %s did not open again\n", store);
+    if (dsd_app_signal_search_store_open(kRigJournal) != 0) {
+        DSD_FPRINTF(stderr, "RIG ERROR: the store at %s did not open again\n", kRigJournal);
         return 1;
     }
     print_history("reload");

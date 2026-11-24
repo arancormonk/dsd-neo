@@ -495,7 +495,7 @@ tetra_search_note_dsb(dsd_state* state, const uint8_t* sch_s, const uint8_t* sch
     /* A DMAC-SYNC the call records took as a call or short data (DMO_SERVICE): never DM-2-C, a reservation, a
        registration, a timing acknowledgement or a presence signal. */
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (!presence && ts->confirm.burst_proof == (uint8_t)DSD_TETRA_BURST_PROOF_DMO_SERVICE) {
+    if (!presence && ts && ts->confirm.burst_proof == (uint8_t)DSD_TETRA_BURST_PROOF_DMO_SERVICE) {
         search_mark_activity(sr, DSD_SEARCH_TETRA_DMO);
     }
 }

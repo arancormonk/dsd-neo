@@ -29209,7 +29209,7 @@ if(DSD_HAS_RADIO)
         add_test(
             NAME ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
             COMMAND
-                ${CMAKE_COMMAND} -E env DSD_SEARCH_RIG_STORE=unused.jsonl
+                ${CMAKE_COMMAND} -E env
                 DSD_SEARCH_RIG_RANGES=r,450000000,450100000,12500,16000,0,3000,0
                 DSD_SEARCH_RIG_${_rig_limit_env}
                 $<TARGET_FILE:dsd-neo_test_signal_search_rig>

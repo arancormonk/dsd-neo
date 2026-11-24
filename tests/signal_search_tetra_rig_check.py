@@ -124,7 +124,8 @@ SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanit
 # listening and held. Tuning (2) is published with the hit when the tune is queued, before the receiver hears the
 # channel, so it is no landing.
 LANDED_PHASES = (3, 4, 5)
-# The history journal's name in a rig folder; the store keeps files beside it under names that start with it.
+# The history journal's name in a rig folder; the store keeps files beside it under names that start with it. The rig
+# opens it, and watches for its stop file ("stop"), in its working directory under these fixed names.
 RIG_JOURNAL = "history.jsonl"
 
 
@@ -247,11 +248,9 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
         tx.at_rate(rate)
     env = {k: v for k, v in os.environ.items() if not k.startswith("DSD_NEO_")}
     env.update(
-        DSD_SEARCH_RIG_STORE=str(work / RIG_JOURNAL),
         DSD_SEARCH_RIG_RANGES=";".join(",".join(str(v) for v in r) for r in ranges),
         DSD_SEARCH_RIG_PASSES=str(passes),
         DSD_SEARCH_RIG_SECONDS=str(int(seconds) + 10),
-        DSD_SEARCH_RIG_STOP=str(work / "stop"),
     )
     first = ranges[0][1]
     cmd = [str(Path(rig).resolve()), "--no-config", "--frontend", "none", "-i",

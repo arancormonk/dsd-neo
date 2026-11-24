@@ -1550,7 +1550,7 @@ fell 0.36 s into that gap once left 1.77 s after the stop (2.13 s after the last
 leaves in the same window after its first confirmation, and must leave before its train's 8 s are up: a presence
 signal never refreshes the visit's activity (a run measured 2.11 s; one that refreshed it, or that left only once the
 train stopped, would stay past the 8 s). Each run lasts until every transmitter has been visited, stopped and left; the
-rig stops when the script creates its stop file (`DSD_SEARCH_RIG_STOP`), not on a signal, so it still prints the
+rig stops when the script creates the stop file (`stop`) in its working directory, not on a signal, so it still prints the
 history.
 The DMO call is bursty and passes the RF detector only at some burst phases, so it is often found on a later pass. With
 the TETRA quiet time set to 500 ms the awgn visit left 0.47 s after its carrier stopped and the case failed.
