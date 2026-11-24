@@ -2198,6 +2198,8 @@ typedef struct rtl_stream_test_channel_gate_result {
     int digital_grant_kept;           /* an unmarked retune (a grant) keeps the running -40 dB */
     int digital_repush_locks;         /* gate locks over 50 symbol requests on the digital family: 0 */
     int digital_repush_kept;          /* ... which keep the running -40 dB */
+    int digital_poll_running_reads;   /* reads of the running setting over 50 status polls (the telemetry's): 0 */
+    int digital_getter_running_reads; /* ... and over one rtl_stream_get_squelch_running() after them: 1 */
     /* A direct CQPSK toggle on the NFM monitor written noise +10 (-40 dB for the digital family, Off the session's): */
     int cqpsk_toggle_off_monitor;        /* 1 when the toggle took the front end off the monitor */
     int cqpsk_toggle_runs_session;       /* ... and the receiver runs the session's Off from it, not noise +10 */

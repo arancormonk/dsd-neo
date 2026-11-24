@@ -603,6 +603,9 @@ static std::atomic<uint64_t> g_gate_unjudged_samples{0U};
 /* The boundaries that took the gate's lock (rtl_stream_gate_boundary()), for the cases that check a digital-only
    boundary does no gate work. */
 static std::atomic<int> g_test_gate_boundary_locks{0};
+/* The reads of the setting the receiver runs (rtl_stream_get_squelch_running()), for the case that checks the status
+   the telemetry polls reads none. */
+static std::atomic<int> g_test_squelch_running_reads{0};
 #endif
 /* A level no channel power reaches: the level gate mutes every block. */
 static const dsd_squelch_setting kGateClosed = {DSD_SQUELCH_MODE_LEVEL, DSD_SQUELCH_LEVEL_CLOSED,
@@ -21532,6 +21535,18 @@ channel_gate_test_digital_row_cases(const dsd_opts* digital_opts, rtl_stream_tes
     test_stream_set(NULL);
     out->digital_repush_locks = g_test_gate_boundary_locks.load(std::memory_order_relaxed) - locks_before;
     out->digital_repush_kept = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+
+    /* The status the telemetry polls (round 12) reads nothing of the setting the receiver runs; the getter does. */
+    const int reads_before = g_test_squelch_running_reads.load(std::memory_order_relaxed);
+    rtl_stream_squelch_status status{};
+    for (int i = 0; i < 50; i++) {
+        (void)rtl_stream_get_squelch_status(&status);
+    }
+    out->digital_poll_running_reads = g_test_squelch_running_reads.load(std::memory_order_relaxed) - reads_before;
+    dsd_squelch_setting runs{};
+    (void)rtl_stream_get_squelch_running(&runs);
+    out->digital_getter_running_reads =
+        g_test_squelch_running_reads.load(std::memory_order_relaxed) - reads_before - out->digital_poll_running_reads;
 }
 
 /* The public squelch setters run through the gate (round 9): the decoder's next write compares against what they set,
@@ -22793,6 +22808,9 @@ rtl_stream_get_squelch_running(dsd_squelch_setting* out) {
     if (!out) {
         return -1;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_squelch_running_reads.fetch_add(1, std::memory_order_relaxed);
+#endif
     /* What the next block takes (demod_take_squelch_setting()): the word, and under a LEVEL word its level. */
     const uint32_t word = g_squelch_auto_word.load(std::memory_order_acquire);
     const int mode = (int)(word & 0xFFU);

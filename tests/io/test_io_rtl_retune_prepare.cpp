@@ -1372,6 +1372,8 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("digital grant retune: the running gate stays", r.digital_grant_kept, 1);
     failed |= expect_int_eq("digital symbol re-push: no gate work", r.digital_repush_locks, 0);
     failed |= expect_int_eq("digital symbol re-push: the running gate stays", r.digital_repush_kept, 1);
+    failed |= expect_int_eq("digital status polls: no running-setting read", r.digital_poll_running_reads, 0);
+    failed |= expect_int_eq("digital running getter: one read", r.digital_getter_running_reads, 1);
     failed |= expect_int_eq("open channel under noise +10: a block publishes it running", r.running_status_active, 1);
     failed |= expect_int_eq("closed start: the produced block is muted, flagged closed", r.closed_block_flagged, 1);
     failed |=
