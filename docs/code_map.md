@@ -19277,7 +19277,10 @@ Qt Quick frontend (`src/ui/qt`):
   edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system
   (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and the tuning the
   session was started with (`sessionTuning`: an edit of the running system changes `sessionSystem`, but not the
-  frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted). The
+  frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted, and
+  emptied by `followRunningTuning()` once the decoder's snapshots show a change applied live that the saved row does not
+  carry: a decode mode other than the run's first snapshot's, set from the control API or from the Radio sheet with its
+  save failed, or an operator hold, released or not). The
   flow reads every completion since the last poll (`UiController::talkgroupExportResults`, from
   `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
   registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step

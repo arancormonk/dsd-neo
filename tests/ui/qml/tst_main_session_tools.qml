@@ -812,6 +812,46 @@ Item {
                 savedSystems.remove(row);
             }
         }
+        // Issue #903: a decode mode the decoder applied live (the control API's decode_mode_set, or a Radio sheet
+        // change whose save failed) leaves the saved row as it was, but the decoder's snapshot shows it; so does an
+        // operator hold, a tune off the system's frequency. A list saved after either is not attached to the system;
+        // one saved with the start tuning still running is.
+        function test_a_live_tuning_change_ends_the_attachment_data() {
+            return [{tag: "start tuning running", change: null, attachable: true},
+                    {tag: "decode mode applied live", change: {decodeMode: 4}, attachable: false},
+                    {tag: "operator hold, then released", change: {operatorTuned: true}, attachable: false}];
+        }
+        function test_a_live_tuning_change_ends_the_attachment(data) {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Live site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var uid = savedSystems.get(row).uid;
+            var flow = findChild(app, "talkgroupSave");
+            verify(flow !== null);
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                // The run's first snapshot, then the change it applies.
+                testContext.setMetrics({optionsKnown: true, decodeMode: 1});
+                if (data.change !== null)
+                    testContext.setMetrics(data.change);
+                testContext.setMetrics({operatorTuned: false});
+                compare(app.sessionSavedSystemUid, uid);
+                findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                compare(flow.pending.uid, uid);
+                compare(savedSystems.groupListAttachable(uid, flow.pending.tuning), data.attachable,
+                        data.attachable ? "the running system would not take the list" : "a list heard after the change would be attached");
+            } finally {
+                if (flow.pending !== null)
+                    importedFiles.releaseTalkgroupListPath(flow.pending.path);
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                testContext.setMetrics({decodeMode: 1, operatorTuned: false, optionsKnown: false});
+                savedSystems.remove(row);
+            }
+        }
         // Issue #903: Save talkgroup list's export succeeded but Imports could not record it, and the file went
         // before Try again. The decoder still names that file, so its list reads as persistent; the retry reads as a
         // failed export, and the Save button stays enabled to start the new export it offers.
