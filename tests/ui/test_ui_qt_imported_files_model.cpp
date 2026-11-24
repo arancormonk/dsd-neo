@@ -1831,9 +1831,16 @@ test_export_reservations_released() {
     const QString exported = model.newTalkgroupListPath();
     expect("released: export written", write_file(exported, "id,mode,name\n42,A,Dispatch\n"));
     expect("released: export registered", model.registerTalkgroupList(exported));
+    const QString registration = model.entryIdentity(exported);
+    expect("released: the registered row has an identity",
+           !registration.isEmpty() && model.entryIdentity(exported) == registration);
     expect("released: the row goes with its file",
            model.remove(model.rowForPath(exported)) && !QFile::exists(exported));
+    expect("released: no row, no identity", model.entryIdentity(exported).isEmpty());
     expect("a registered export no longer holds its name", importNamed(exported) == exported);
+    // Issue #903: the file now at the export's path is another row, which the export's registration does not name.
+    expect("released: another row at the same path is another identity",
+           !model.entryIdentity(exported).isEmpty() && model.entryIdentity(exported) != registration);
     model.remove(model.rowForPath(exported));
 
     const QString held = model.newTalkgroupListPath();

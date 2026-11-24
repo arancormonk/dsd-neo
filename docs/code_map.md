@@ -19282,12 +19282,17 @@ Qt Quick frontend (`src/ui/qt`):
   `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
   registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step
   keeps the exported file (the decoder writes to it already) and Try again repeats that step only, while that file is
-  still there (and, to attach it, still in Imports): one removed since leaves the system unchanged and reads as a failed
-  export, so the next Try again exports anew. A request given up
+  still there (and, to attach it, still the Imports row it was added as: `ImportedFilesModel::entryIdentity()`, the
+  row's revision, which a later import at the same path does not share). One removed since leaves the system unchanged
+  and reads as a failed export, so the next Try again exports anew; removing that row in Imports cancels a stalled
+  attachment at once (`entriesChanged`). `retryOffered` (a stalled step, or the new export a lost one leaves) keeps
+  `Main.qml`'s Save enabled though the decoder still names the exported file and the list reads as persistent. A
+  request given up
   on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
   export releases its reserved name. A completion lost in a gap is recovered from the file
   (`ImportedFilesModel::talkgroupListWritten()`: the decoder writes it only on success): an existing file is registered,
-  or owed to Imports and retried at each later poll when the index cannot be saved. A failure lost in a gap leaves no
+  or owed to Imports when the index cannot be saved: retried at each later poll and request, and on its own after 2 s,
+  doubling to a minute (a late success makes the list persistent, which hides Save). A failure lost in a gap leaves no
   file: the request waits while its result can still come, asked at each batch of app-control itself
   (`CommandBridge::talkgroupExportOwed()`, `dsd_app_tg_export_result_owed()`: the export is queued or being applied, or
   its result is kept above the newest sequence the flow read); once it is not, it is let go of with its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save

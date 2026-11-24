@@ -14,6 +14,10 @@ Item {
         property bool listed: true
         property var registered: []
         property var released: []
+        // Each listed row's identity by path, which no later row at that path takes (entryIdentity()).
+        property var identities: ({})
+        property int identityCount: 0
+        signal entriesChanged()
         function newTalkgroupListPath() {
             paths++;
             return paths === 1 ? "/owned/list.csv" : "/owned/list-" + paths + ".csv";
@@ -23,7 +27,26 @@ Item {
                 return false;
             registrations++;
             registered = registered.concat([path]);
+            identify(path);
             return true;
+        }
+        function identify(path) {
+            var next = Object.assign({}, identities);
+            next[path] = "row-" + (++identityCount);
+            identities = next;
+        }
+        function entryIdentity(path) {
+            return rowForPath(path) >= 0 ? identities[path] : "";
+        }
+        // The user removes the row at @p path in Imports, then (with @p replacement) imports another file that takes
+        // the exact same path.
+        function removeRow(path, replacement) {
+            if (replacement) {
+                identify(path);
+            } else {
+                listed = false;
+            }
+            entriesChanged();
         }
         function talkgroupListWritten(path) {
             return written;
@@ -91,9 +114,11 @@ Item {
             loader.item.stalled = null;
             loader.item.abandoned = [];
             loader.item.owedRegistrations = [];
+            loader.item.owedRetryMs = 2000;
             loader.item.lastSequence = "5";
             loader.item.timeoutMs = 15000;
             loader.item.retryAvailable = false;
+            loader.item.exportGone = false;
             loader.item.message = "";
             library.registrations = 0;
             library.paths = 0;
@@ -102,6 +127,8 @@ Item {
             library.listed = true;
             library.registered = [];
             library.released = [];
+            library.identities = {};
+            library.identityCount = 0;
             systems.updates = 0;
             systems.attempts = 0;
             systems.failSave = false;
@@ -411,6 +438,70 @@ Item {
             compare(loader.item.abandoned.length, 0);
             compare(library.released, ["/owned/list.csv"]);
             compare(library.registrations, 0);
+        }
+        // A late success Imports could not take is asked again on its own, at a growing interval: the list it exported
+        // is the decoder's, so Save hides and no later export or poll may come to retry it.
+        function test_owed_registration_retries_on_its_own() {
+            loader.item.owedRetryMs = 20;
+            loader.item.timeoutMs = 50;
+            verify(loader.item.save("original", "7", 1));
+            tryCompare(loader.item, "retryAvailable", true);
+            library.failRegister = true;
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            compare(loader.item.owedRegistrations, ["/owned/list.csv"]);
+            // Refused again, it is asked later still.
+            wait(60);
+            compare(library.registrations, 0);
+            library.failRegister = false;
+            tryCompare(library, "registrations", 1, 2000);
+            compare(library.registered, ["/owned/list.csv"]);
+            compare(loader.item.owedRegistrations, []);
+            compare(systems.attempts, 0);
+        }
+        // The attachment retried after the user removed the export in Imports and imported another file that took
+        // its exact path: only the row the export was registered as is attached, never the one now at that path. The
+        // retry checks that itself, whether or not the flow heard of the change (here it does not).
+        function test_attachment_retry_checks_the_registered_row() {
+            systems.failSave = true;
+            verify(loader.item.save("original", "7", 1, {
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            }));
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            verify(loader.item.stalled !== null);
+            systems.failSave = false;
+            library.identify("/owned/list.csv");
+            verify(!loader.item.save("original", "8", 2));
+            compare(systems.attempts, 1, "the file now at the export's path was attached");
+            compare(systems.updates, 0);
+            compare(loader.item.stalled, null);
+            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
+        }
+        // Removing the registered row in Imports (or replacing it with another file at its path) cancels the stalled
+        // attachment at once: nothing is left to attach, and the next Try again exports anew.
+        function test_removed_row_cancels_the_stalled_attachment_data() {
+            return [{tag: "removed", replacement: false}, {tag: "replaced at its path", replacement: true}];
+        }
+        function test_removed_row_cancels_the_stalled_attachment(data) {
+            systems.failSave = true;
+            verify(loader.item.save("original", "7", 1, {
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            }));
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            verify(loader.item.stalled !== null);
+            systems.failSave = false;
+            library.removeRow("/owned/list.csv", data.replacement);
+            compare(loader.item.stalled, null, "the attachment of a removed row was still offered");
+            verify(loader.item.retryAvailable);
+            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
+            compare(systems.attempts, 1);
+            library.listed = true;
+            verify(loader.item.save("original", "8", 2, {
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            }));
+            compare(bridge.calls, 2, "the next Try again did not export anew");
         }
         function test_failed_registration_retries_registration_only() {
             library.failRegister = true;

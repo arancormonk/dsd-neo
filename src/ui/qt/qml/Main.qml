@@ -2515,8 +2515,9 @@ Window {
         objectName: "talkgroupsScreen"
         anchors.fill: safeArea
         systemName: monitor.systemName
-        // A step left to retry is offered even once the decoder writes the exported file (the list is then persistent).
-        canSaveList: talkgroupSave.stalled !== null || (!talkgroups.persistent && talkgroupSave.pending === null)
+        // A step left to retry, or the new export a lost one leaves, is offered even once the decoder writes the
+        // exported file (the list is then persistent).
+        canSaveList: talkgroupSave.retryOffered || (!talkgroups.persistent && talkgroupSave.pending === null)
         saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
         saveMessage: talkgroupSave.message
         // The sheet's own policy version; the standalone saved system (none for Explore, a scan list or a hold) and the

@@ -1328,6 +1328,12 @@ ImportedFilesModel::rowForPath(const QString& path) const {
     return -1;
 }
 
+QString
+ImportedFilesModel::entryIdentity(const QString& path) const {
+    const int row = rowForPath(path);
+    return row < 0 ? QString() : QString::number(m_rows.at(row).revision);
+}
+
 QVariantMap
 ImportedFilesModel::groupListCounts(const QString& path) const {
     int accepted = 0;

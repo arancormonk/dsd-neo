@@ -261,6 +261,12 @@ class ImportedFilesModel : public QAbstractListModel {
 
     /** @brief Row index whose stored path matches, or -1. */
     Q_INVOKABLE int rowForPath(const QString& path) const;
+    /**
+     * @brief Issue #903: an identity of the row at @p path that no other row takes, or empty for none: the row's
+     *        revision, which a replace or refresh of its file moves too. A row removed and another imported at the same
+     *        path give two identities, so a step kept for the first never acts on the second.
+     */
+    Q_INVOKABLE QString entryIdentity(const QString& path) const;
 
     /**
      * @brief The rows the file at @p path holds now, read as a talkgroup list: {ok, accepted, skipped}, with ok false

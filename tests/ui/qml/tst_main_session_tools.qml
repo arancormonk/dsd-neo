@@ -812,6 +812,56 @@ Item {
                 savedSystems.remove(row);
             }
         }
+        // Issue #903: Save talkgroup list's export succeeded but Imports could not record it, and the file went
+        // before Try again. The decoder still names that file, so its list reads as persistent; the retry reads as a
+        // failed export, and the Save button stays enabled to start the new export it offers.
+        function test_a_lost_export_keeps_its_retry() {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Retry site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var flow = findChild(app, "talkgroupSave");
+            var footer = findChild(findChild(app, "talkgroupsScreen"), "footerSaveTalkgroupList");
+            verify(flow !== null && footer !== null);
+            var paths = [];
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                app.talkgroupsOpen = true;
+                tryVerify(function () { return footer.enabled; }, 5000, "Save is not offered for a list with no file");
+                footer.clicked();
+                verify(flow.pending !== null, "the export was not requested");
+                var first = flow.pending;
+                paths.push(first.path);
+                // Its success is read, but the file is not in the library: Imports cannot record it.
+                flow.results = {results: [{sequence: String(Number(first.sequence) + 1), policyContext: first.context,
+                                           policyGeneration: first.generation, path: first.path, success: true}],
+                                missedThrough: "0"};
+                verify(flow.stalled !== null, "the failed registration was not offered again");
+                testContext.setGroupFileConfigured(true);
+                verify(footer.enabled, "the registration retry was hidden");
+                compare(footer.text, "Try again");
+                footer.clicked();
+                compare(flow.stalled, null);
+                compare(flow.message, "Talkgroup list export failed or was canceled. Try again.");
+                verify(footer.enabled, "the fresh-export retry was hidden by the persistent list");
+                compare(footer.text, "Try again");
+                footer.clicked();
+                verify(flow.pending !== null, "Try again did not export anew");
+                paths.push(flow.pending.path);
+                verify(flow.pending.path !== first.path);
+            } finally {
+                for (var i = 0; i < paths.length; ++i)
+                    importedFiles.releaseTalkgroupListPath(paths[i]);
+                flow.pending = null;
+                flow.stalled = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                flow.exportGone = false;
+                app.talkgroupsOpen = false;
+                testContext.setGroupFileConfigured(false);
+                savedSystems.remove(row);
+            }
+        }
         // A recreated Activity finds the tuner held: no session map came with it,
         // so it names the session Exploring until the resume, then by the label
         // the history kept.

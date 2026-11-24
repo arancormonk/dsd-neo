@@ -5,7 +5,7 @@ import QtQuick
 // Each step after the export reports its own outcome: adding the file to Imports, then attaching it to the saved
 // system the request named. A failed step keeps the exported file and offers that step again, never a new export:
 // the decoder already writes its edits to that file, and only while that file is still there (and, to attach it, still
-// in Imports). A request given up on (no completion in time, or its completion missed) is kept until its result comes,
+// the Imports row it was added as; removing that row cancels the attachment). A request given up on (no completion in time, or its completion missed) is kept until its result comes,
 // and a late success is then only added to Imports; once app-control says its result can no longer come (lost with more
 // completions than it keeps), it is let go of and its name given back.
 Item {
@@ -16,15 +16,25 @@ Item {
     // Every completion the controller's last poll read, oldest first, and the newest sequence it could not read.
     property var results: uiController.talkgroupExportResults
     property var pending: null
-    // A successful export whose later step failed: {step: "register" or "attach", uid, tuning, path}.
+    // A successful export whose later step failed: {step: "register" or "attach", uid, tuning, path, registration},
+    // registration being the Imports row's ImportedFilesModel::entryIdentity() once it was added.
     property var stalled: null
     // Requests given up on: {path, context, generation, sequence}, each until its completion is read or lost.
     property var abandoned: []
-    // Late successes Imports could not take yet: retried at each later poll and request.
+    // Late successes Imports could not take yet: retried at each later poll and request, and on their own after
+    // owedRetryMs, then twice as long after each refusal up to a minute. A late success makes the decoder's list
+    // persistent, which hides Save, so nothing else may come to retry them once storage recovers.
     property var owedRegistrations: []
+    property int owedRetryMs: 2000
+    property int owedRetryWaitMs: 0
     property string lastSequence: "0"
     property int timeoutMs: 15000
     property bool retryAvailable: false
+    // A stalled step's exported file went (or its Imports row): Try again starts a new export, which a persistent list
+    // (the decoder still names that file) must not hide.
+    property bool exportGone: false
+    // Whether Try again has a step or a new export to run that the decoder's persistent list must not hide.
+    readonly property bool retryOffered: stalled !== null || exportGone
     property string message: ""
     signal saved(string uid, string path)
 
@@ -47,6 +57,22 @@ Item {
             completionTimeout.stop();
     }
     Component.onCompleted: lastSequence = flow.newestIn(results, "0")
+    onOwedRegistrationsChanged: scheduleOwedRetry()
+    Timer {
+        id: owedRetry
+        onTriggered: flow.retryOwedRegistrations()
+    }
+    // Removing the Imports row a stalled attachment was added as leaves it nothing to attach.
+    Connections {
+        target: flow.library
+        ignoreUnknownSignals: true
+        function onEntriesChanged() {
+            if (flow.stalled !== null && flow.stalled.step === "attach" && !flow.stepFileKept(flow.stalled)) {
+                flow.stalled = null;
+                flow.exportLost();
+            }
+        }
+    }
 
     function newer(a, b) {
         a = String(a);
@@ -83,6 +109,7 @@ Item {
         if (pending !== null)
             return false;
         retryAvailable = false;
+        exportGone = false;
         message = "";
         var path = library.newTalkgroupListPath();
         if (path.length === 0) {
@@ -180,6 +207,18 @@ Item {
         }
         if (owed.length !== owedRegistrations.length)
             owedRegistrations = owed;
+        scheduleOwedRetry();
+    }
+    // Ask Imports again for owedRegistrations later, each time later than the last, or stop when none is owed.
+    function scheduleOwedRetry() {
+        if (owedRegistrations.length === 0) {
+            owedRetry.stop();
+            owedRetryWaitMs = 0;
+        } else if (!owedRetry.running) {
+            owedRetryWaitMs = owedRetryWaitMs > 0 ? Math.min(owedRetryWaitMs * 2, 60000) : Math.max(1, owedRetryMs);
+            owedRetry.interval = owedRetryWaitMs;
+            owedRetry.start();
+        }
     }
     // A missed success: kept in Imports (never attached), or owed there when Imports cannot record it now.
     function keepMissed(path) {
@@ -231,25 +270,31 @@ Item {
             step: step,
             uid: request.uid,
             tuning: request.tuning,
-            path: request.path
+            path: request.path,
+            registration: request.registration || ""
         };
         retryAvailable = true;
         message = text;
     }
     // Whether the exported file @p request (a stalled step) finishes with is still there: written, and to attach it,
-    // still in Imports. Removed since (in Imports, possibly in a later session), it leaves nothing to finish.
+    // still the Imports row it was added as (not one a later import put at its path). Removed since (in Imports,
+    // possibly in a later session), it leaves nothing to finish.
     function stepFileKept(request) {
-        return library.talkgroupListWritten(request.path) && (request.step === "register" || library.rowForPath(request.path) >= 0);
+        return library.talkgroupListWritten(request.path) && (request.step === "register" || (request.registration.length > 0 && library.entryIdentity(request.path) === request.registration));
+    }
+    // No system is changed for a file that is gone, and its name stays reserved: the decoder may still write it. The
+    // export is lost with it, so the next Try again starts a new one, as after a failed export.
+    function exportLost() {
+        retryAvailable = true;
+        exportGone = true;
+        message = qsTr("Talkgroup list export failed or was canceled. Try again.");
     }
     function retryStep() {
         var request = stalled;
         stalled = null;
         retryAvailable = false;
-        // No system is changed for a file that is gone, and its name stays reserved: the decoder may still write it.
-        // The export is lost with it, so the next Try again starts a new one, as after a failed export.
         if (!stepFileKept(request)) {
-            retryAvailable = true;
-            message = qsTr("Talkgroup list export failed or was canceled. Try again.");
+            exportLost();
             return false;
         }
         if (request.step === "register")
@@ -263,6 +308,7 @@ Item {
             stallAt("register", request, qsTr("Talkgroup list exported, but adding it to Imports failed. Try again."));
             return;
         }
+        request.registration = library.entryIdentity(request.path);
         attach(request);
     }
     function attach(request) {
