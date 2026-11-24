@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/stat.h>
 
@@ -1774,6 +1775,323 @@ expect_path_same_file(void) {
     return ok ? 0 : 1;
 }
 
+/* Set @p path's modification time to @p seconds since the Unix epoch (and access time with it), the file and its size
+   left as they are. 0 on success; 1, setting nothing, when this build's time_t cannot hold @p seconds. */
+static int
+set_file_mtime(const char* path, int64_t seconds) {
+#if DSD_PLATFORM_WIN_NATIVE
+    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    const ULONGLONG ticks = (ULONGLONG)(seconds + 11644473600LL) * 10000000ULL;
+    FILETIME when;
+    when.dwLowDateTime = (DWORD)(ticks & 0xFFFFFFFFULL);
+    when.dwHighDateTime = (DWORD)(ticks >> 32);
+    const int ok = SetFileTime(h, NULL, &when, &when) != 0;
+    CloseHandle(h);
+    return ok ? 0 : -1;
+#else
+    const time_t when = (time_t)seconds;
+    if ((int64_t)when != seconds) {
+        return 1; /* a 32-bit time_t: the date would land elsewhere */
+    }
+    struct timespec times[2];
+    times[0].tv_sec = when;
+    times[0].tv_nsec = 0;
+    times[1] = times[0];
+    return utimensat(AT_FDCWD, path, times, 0);
+#endif
+}
+
+/* @p path's modification time in whole seconds as the file system stored it, read apart from dsd_path_file_identity()
+   (stat() on POSIX; GetFileAttributesExA() on Windows, whose _stat64() under Wine wraps a date past 2038): a file
+   system may clamp a date it cannot keep. */
+static int
+stored_mtime(const char* path, int64_t* seconds) {
+#if DSD_PLATFORM_WIN_NATIVE
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) {
+        return -1;
+    }
+    const ULONGLONG ticks = ((ULONGLONG)data.ftLastWriteTime.dwHighDateTime << 32) | data.ftLastWriteTime.dwLowDateTime;
+    *seconds = (int64_t)(ticks / 10000000ULL) - 11644473600LL;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
+    *seconds = (int64_t)st.st_mtime;
+#endif
+    return 0;
+}
+
+/* Issue #902: dsd_path_file_identity() reads one regular file's identity. Read twice it is equal; written to, or another
+   file renamed over its name, it is not; another file's of another size is not, while one of the same size and time
+   is (the decided limit); a folder, a link (POSIX), a FIFO (POSIX) or a device (Windows), a missing name and an empty
+   argument have none. */
+static int
+expect_path_file_identity(void) {
+    const char* dir = "dsd_neo_file_identity";
+    const char* file = "dsd_neo_file_identity/a.wav";
+    const char* other = "dsd_neo_file_identity/b.wav";
+    const char* missing = "dsd_neo_file_identity/missing.wav";
+    const char* twin = "dsd_neo_file_identity/twin.wav";
+    // Only in a folder this run made: a name already there is left alone, never written or removed.
+    if (dsd_mkdir(dir, 0700) != 0) {
+        DSD_FPRINTF(stderr, "file identity: could not make %s (left from an earlier run?)\n", dir);
+        return 1;
+    }
+    int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0
+             && write_text_file(twin, "cccc") == 0;
+    dsd_file_identity_t first = {0};
+    dsd_file_identity_t again = {0};
+    dsd_file_identity_t moved = {0};
+    ok = ok && dsd_path_file_identity(file, &first) == 0 && first.kind != 0 && first.size == 4;
+    ok = ok && dsd_path_file_identity(file, &again) == 0 && dsd_file_identity_equal(&first, &again);
+    ok =
+        ok && dsd_path_file_identity(other, &moved) == 0 && moved.size == 6 && !dsd_file_identity_equal(&first, &moved);
+    /* Written to in place: the same size, only its modification time moved, set explicitly a day apart rather than
+       left to two writes landing on different file-system clock ticks. */
+    ok = ok && set_file_mtime(file, 1700000000) == 0 && dsd_path_file_identity(file, &first) == 0
+         && first.mtime_s == 1700000000 && first.mtime_ns == 0;
+    ok = ok && set_file_mtime(file, 1700086400) == 0 && dsd_path_file_identity(file, &again) == 0
+         && again.size == first.size && !dsd_file_identity_equal(&first, &again);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "file identity: the modification time alone tells a rewrite apart\n");
+    }
+    /* The decided limit: no device, inode or file id is compared (FAT renumbers a file, a remount a volume), so
+       another file with exactly the same size and modification time reads as the same one. */
+    dsd_file_identity_t twins[2] = {{0}};
+    ok = ok && set_file_mtime(file, 1700000000) == 0 && set_file_mtime(twin, 1700000000) == 0
+         && dsd_path_file_identity(file, &twins[0]) == 0 && dsd_path_file_identity(twin, &twins[1]) == 0
+         && dsd_file_identity_equal(&twins[0], &twins[1]);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "file identity: another file of the same size and time reads as the same\n");
+    }
+    /* A date past 2262, where nanoseconds since 1970 would overflow 64 bits, reads whole (2300-01-01): asked only where
+       time_t holds it and the file system stored it as set (one may clamp it), read back on its own first. */
+    const int64_t year_2300 = 10413792000LL;
+    int64_t stored = 0;
+    dsd_file_identity_t late = {0};
+    if (set_file_mtime(file, year_2300) == 0 && stored_mtime(file, &stored) == 0 && stored == year_2300) {
+        ok = ok && dsd_path_file_identity(file, &late) == 0 && late.mtime_s == year_2300 && late.mtime_ns == 0;
+    } else {
+        DSD_FPRINTF(stdout, "SKIP file identity: this build or file system keeps no date in 2300\n");
+    }
+    ok = ok && dsd_path_file_identity(file, &first) == 0 && dsd_path_file_identity(other, &moved) == 0;
+    ok = ok && dsd_replace_file_with_temp(other, file) == 0 && dsd_path_file_identity(file, &again) == 0
+         && !dsd_file_identity_equal(&first, &again) && dsd_file_identity_equal(&moved, &again);
+    // Starts as a file's so each failure's kind == 0 shows the call cleared it.
+    dsd_file_identity_t none = {.kind = 1, .size = 1};
+    errno = 0;
+    ok = ok && dsd_path_file_identity(missing, &none) == -1 && errno == ENOENT && none.kind == 0;
+    errno = 0;
+    ok = ok && dsd_path_file_identity(dir, &none) == -1 && errno == EISDIR && none.kind == 0;
+    // A name under a regular file, or under a folder that is not there, was never looked up: ENOTDIR, never the
+    // ENOENT of a name missing from a folder that is there.
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/a.wav/r.wav", &none) == -1 && errno == ENOTDIR;
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/none/r.wav", &none) == -1 && errno == ENOTDIR;
+    errno = 0;
+    ok = ok && dsd_path_file_identity("dsd_neo_file_identity/none.wav", &none) == -1 && errno == ENOENT;
+#if !DSD_PLATFORM_WIN_NATIVE
+    const char* soft = "dsd_neo_file_identity/soft.wav";
+    errno = 0;
+    ok = ok && symlink("a.wav", soft) == 0 && dsd_path_file_identity(soft, &none) == -1 && errno == ELOOP;
+    /* Read, and no file: ENODEV, never EIO (which a failed read gives, and says nothing about the name). */
+    // A parent that does not resolve (a link to itself: too many links on the way) is a lookup that failed (EMLINK),
+    // never read as a link at the name (ELOOP).
+    // ENOENT only for a name not in a folder that is there: under a dangling link the name was never looked up
+    // (ENOTDIR), as under a regular file.
+    const char* dangling = "dsd_neo_file_identity/dangling";
+    errno = 0;
+    ok = ok && symlink("nowhere", dangling) == 0
+         && dsd_path_file_identity("dsd_neo_file_identity/dangling/r.wav", &none) == -1 && errno == ENOTDIR;
+    const char* loop = "dsd_neo_file_identity/loop";
+    errno = 0;
+    ok = ok && symlink("loop", loop) == 0 && dsd_path_file_identity("dsd_neo_file_identity/loop/r.wav", &none) == -1
+         && errno == EMLINK && none.kind == 0;
+    const char* fifo = "dsd_neo_file_identity/fifo.wav";
+    errno = 0;
+    ok =
+        ok && mkfifo(fifo, 0600) == 0 && dsd_path_file_identity(fifo, &none) == -1 && errno == ENODEV && none.kind == 0;
+#else
+    /* A device opens under a name too: read, and no file. */
+    errno = 0;
+    ok = ok && dsd_path_file_identity("NUL", &none) == -1 && errno == ENODEV && none.kind == 0;
+#endif
+    errno = 0;
+    ok = ok && dsd_path_file_identity("", &none) == -1 && errno == EINVAL;
+    errno = 0;
+    ok = ok && dsd_path_file_identity(file, NULL) == -1 && errno == EINVAL;
+    DSD_MEMSET(&none, 0, sizeof none);
+    ok = ok && !dsd_file_identity_equal(&none, &none) && !dsd_file_identity_equal(NULL, &first);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "file identity: equal, changed, replaced, another file, or the error cases\n");
+    }
+#if !DSD_PLATFORM_WIN_NATIVE
+    (void)remove(fifo);
+    (void)remove(loop);
+    (void)remove(dangling);
+    (void)remove(soft);
+#endif
+    (void)remove(twin);
+    (void)remove(other);
+    (void)remove(file);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
+/* Issue #902: dsd_file_stream_identity() reads what was opened: the same identity as the name's, and on POSIX still the
+   opened file's once another file takes the name (an export checks the file it copies, not the name again). */
+static int
+expect_file_stream_identity(void) {
+    const char* dir = "dsd_neo_stream_identity";
+    const char* file = "dsd_neo_stream_identity/a.wav";
+    const char* other = "dsd_neo_stream_identity/b.wav";
+    // Only in a folder this run made: a name already there is left alone, never written or removed.
+    if (dsd_mkdir(dir, 0700) != 0) {
+        DSD_FPRINTF(stderr, "file identity: could not make %s (left from an earlier run?)\n", dir);
+        return 1;
+    }
+    int ok = write_text_file(file, "aaaa") == 0 && write_text_file(other, "bbbbbb") == 0;
+    dsd_file_identity_t named = {0};
+    dsd_file_identity_t opened = {0};
+    FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
+    ok = ok && fp != NULL && dsd_path_file_identity(file, &named) == 0 && dsd_file_stream_identity(fp, &opened) == 0
+         && dsd_file_identity_equal(&named, &opened);
+#if !DSD_PLATFORM_WIN_NATIVE
+    dsd_file_identity_t after = {0};
+    ok = ok && dsd_replace_file_with_temp(other, file) == 0 && dsd_file_stream_identity(fp, &after) == 0
+         && dsd_file_identity_equal(&opened, &after) && after.size == 4;
+#endif
+    if (fp) {
+        (void)fclose(fp);
+    }
+    // Starts as a file's so each failure's kind == 0 shows the call cleared it.
+    dsd_file_identity_t none = {.kind = 1, .size = 1};
+    errno = 0;
+    ok = ok && dsd_file_stream_identity(NULL, &none) == -1 && errno == EINVAL && none.kind == 0;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "stream identity: the opened file's, or the error case\n");
+    }
+    (void)remove(other);
+    (void)remove(file);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
+/* Issue #902: a recording under an absolute path longer than MAX_PATH (Qt lists those on Windows) has an identity, and
+   opens as a regular file: on Windows both take it in extended-length form. */
+#if DSD_PLATFORM_WIN_NATIVE
+/* "\\?\" + @p path, '/' as '\\': the test makes and removes the deep tree itself, past what plain calls reach. */
+static wchar_t*
+long_path_wide(const char* path) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    // A share's path (\\server\share\...) takes the extended UNC form (\\?\UNC\server\share\...), as the
+    // production converter makes it; a drive path takes \\?\ before it.
+    const int unc = (path[0] == '\\' || path[0] == '/') && (path[1] == '\\' || path[1] == '/');
+    const wchar_t* prefix = unc ? L"\\\\?\\UNC" : L"\\\\?\\";
+    const size_t prefix_len = wcslen(prefix);
+    wchar_t* out = n > 0 ? (wchar_t*)malloc((size_t)n * sizeof(wchar_t) + prefix_len * sizeof(wchar_t)) : NULL;
+    if (!out) {
+        return NULL;
+    }
+    DSD_MEMCPY(out, prefix, prefix_len * sizeof(wchar_t));
+    (void)MultiByteToWideChar(CP_UTF8, 0, unc ? path + 1 : path, -1, out + prefix_len, n);
+    for (wchar_t* c = out + prefix_len; *c != L'\0'; c++) {
+        *c = *c == L'/' ? L'\\' : *c;
+    }
+    return out;
+}
+
+static int
+long_path_op(const char* path, int op) {
+    wchar_t* wide = long_path_wide(path);
+    if (!wide) {
+        return -1;
+    }
+    BOOL done = FALSE;
+    if (op == 0) {
+        done = CreateDirectoryW(wide, NULL);
+    } else if (op == 1) {
+        HANDLE h = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        DWORD wrote = 0;
+        done = h != INVALID_HANDLE_VALUE && WriteFile(h, "long", 4, &wrote, NULL) && wrote == 4;
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
+    } else if (op == 2) {
+        done = DeleteFileW(wide);
+    } else {
+        done = RemoveDirectoryW(wide);
+    }
+    free(wide);
+    return done ? 0 : -1;
+}
+#else
+static int
+long_path_op(const char* path, int op) {
+    if (op == 0) {
+        return dsd_mkdir(path, 0700);
+    }
+    if (op == 1) {
+        return write_text_file(path, "long");
+    }
+    return op == 2 ? remove(path) : dsd_test_rmdir(path);
+}
+#endif
+
+static int
+expect_long_path_identity(void) {
+    char cwd[DSD_TEST_PATH_MAX];
+    if (dsd_path_canonical(".", cwd, sizeof cwd) != 0) {
+        DSD_FPRINTF(stderr, "long path identity: . did not resolve\n");
+        return 1;
+    }
+
+    enum { kLevels = 5 };
+
+    char dirs[kLevels][DSD_TEST_PATH_MAX];
+    const char* part = "dsd_neo_long_identity_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    int made = 0;
+    int ok = 1;
+    for (int i = 0; i < kLevels && ok; i++) {
+        DSD_SNPRINTF(dirs[i], sizeof dirs[i], "%s/%s", i == 0 ? cwd : dirs[i - 1], part);
+        ok = long_path_op(dirs[i], 0) == 0;
+        made += ok;
+    }
+    /* The file only once every level is there, and each removed only when this run made it. */
+    char file[DSD_TEST_PATH_MAX] = "";
+    int created = 0;
+    if (ok && made == kLevels) {
+        DSD_SNPRINTF(file, sizeof file, "%s/r.wav", dirs[kLevels - 1]);
+        created = strlen(file) > 260 && long_path_op(file, 1) == 0;
+    }
+    ok = ok && created;
+    dsd_file_identity_t id = {0};
+    dsd_file_identity_t opened = {0};
+    ok = ok && dsd_path_file_identity(file, &id) == 0 && id.size == 4;
+    FILE* fp = ok ? dsd_fopen_existing_regular_file(file, "rb") : NULL;
+    ok = ok && fp != NULL && dsd_file_stream_identity(fp, &opened) == 0 && dsd_file_identity_equal(&id, &opened);
+    if (fp) {
+        (void)fclose(fp);
+    }
+    if (!ok) {
+        DSD_FPRINTF(stderr, "long path identity: a file past MAX_PATH has none, or does not open\n");
+    }
+    if (created) {
+        ok = long_path_op(file, 2) == 0 && ok;
+    }
+    for (int i = made - 1; i >= 0; i--) {
+        ok = long_path_op(dirs[i], 3) == 0 && ok;
+    }
+    return ok ? 0 : 1;
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
 /* The hard-link fallback: EEXIST on a taken name, and a link whose source cannot be unlinked still publishes, reporting
    the source left behind. */
@@ -1915,6 +2233,9 @@ main(void) {
     rc |= expect_move_helpers_across_directories();
     rc |= expect_path_exists_nofollow();
     rc |= expect_path_same_file();
+    rc |= expect_path_file_identity();
+    rc |= expect_file_stream_identity();
+    rc |= expect_long_path_identity();
 #if DSD_PLATFORM_WIN_NATIVE
     rc |= expect_path_type_reparse_point();
     rc |= expect_ansi_dir_helpers();

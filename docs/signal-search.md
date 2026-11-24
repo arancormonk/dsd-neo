@@ -181,7 +181,9 @@ While a search runs, the screen is laid out for what is on the air now:
   storage limit, the one that takes its place (the next older) is selected, or
   the one before it when it was the oldest; the sheet closes when none is left,
   and a recording on storage that is away stays listed and says so. Delete
-  removes only the audio; History and the detection are unchanged. With
+  removes only the audio; History and the detection are unchanged. A recording
+  on storage that is away is not deleted: Delete says that storage isn't
+  connected, to delete again once it's back. With
   **Record calls** off, a row that kept no recordings ends its actions with
   **Recordings** disabled, saying that turning it on in Settings keeps the
   audio of later detections. With it on, a detection that kept none (nothing

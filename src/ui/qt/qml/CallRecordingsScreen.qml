@@ -36,8 +36,12 @@ Item {
     property int removedShown: 0
     property int failuresShown: 0
     property string failureReason: ""
+    property int cancelledShown: 0
+    property int skippedShown: 0
     readonly property int unseenRemoved: recordings.removedByLimit
     readonly property int unseenFailures: recordings.deleteFailures
+    readonly property int unseenCancelled: recordings.deletesCancelled
+    readonly property int unseenSkipped: recordings.deletesSkipped
 
     readonly property var folders: {
         var list = [];
@@ -67,6 +71,8 @@ Item {
         removedShown = 0;
         failuresShown = 0;
         failureReason = "";
+        cancelledShown = 0;
+        skippedShown = 0;
         takeNotices();
         Qt.callLater(function () {
             if (screen.visible && Navigation.allows(screen))
@@ -77,11 +83,15 @@ Item {
     Component.onCompleted: Qt.callLater(takeNotices)
     onUnseenRemovedChanged: Qt.callLater(takeNotices)
     onUnseenFailuresChanged: Qt.callLater(takeNotices)
+    onUnseenCancelledChanged: Qt.callLater(takeNotices)
+    onUnseenSkippedChanged: Qt.callLater(takeNotices)
 
     function takeNotices() {
-        if (!visible || (unseenRemoved <= 0 && unseenFailures <= 0))
+        if (!visible || (unseenRemoved <= 0 && unseenFailures <= 0 && unseenCancelled <= 0 && unseenSkipped <= 0))
             return;
         removedShown += Math.max(0, unseenRemoved);
+        cancelledShown += Math.max(0, unseenCancelled);
+        skippedShown += Math.max(0, unseenSkipped);
         if (unseenFailures > 0) {
             failuresShown += unseenFailures;
             failureReason = recordings.lastDeleteError;
@@ -158,13 +168,21 @@ Item {
             return;
         }
         var selection = recordings.selectForExport(folder ? folder.uid : "", preset);
+        if (selection.loading) {
+            // Issue #902: refused while storage that came back is read again;
+            // nothing is selected or held.
+            say(qsTr("Recordings are still loading. Try again in a moment."), true);
+            return;
+        }
         if (!selection.selection) {
             say(qsTr("No recordings in that range."), false);
             return;
         }
         exportSelection = selection.selection;
         exportSelectionMap = selection;
-        var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
+        // Issue #902 B6: named for the day the store selected by, read once at
+        // the press: a second reading here could fall after midnight.
+        var stamp = selection.day;
         say("", false);
         var owner = folder ? Util.fileNameText(folder.name) : "";
         exportPicker.suggestedName = (owner.length > 0 ? Util.fill(qsTr("Call recordings %1 %2"), [owner, stamp]) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
@@ -222,6 +240,8 @@ Item {
             say(qsTr("Another export is running. Try again when it finishes."), true);
         } else if (result === 5) {
             say(qsTr("This device can't export call recordings."), true);
+        } else if (result === 6) {
+            say(qsTr("Those recordings changed. Export again."), true);
         } else {
             say(qsTr("The export couldn't be written. Try another location."), true);
         }
@@ -251,15 +271,28 @@ Item {
         }
         confirmDelete.open();
     }
+    // Why the store refused a delete (RecordingStore::deleteRefusal()).
+    function deleteRefusalText() {
+        return recordings.deleteRefusal() === "storageAway" ? qsTr("That storage isn't connected. Delete again once it's back.") : qsTr("Recordings are still loading. Try again in a moment.");
+    }
     function deleteConfirmed() {
         var kind = confirmDelete.kind;
+        var asked = true;
         if (kind === "folder" && subject)
-            recordings.deleteFolder(subject.uid);
+            asked = recordings.deleteFolder(subject.uid);
         else if (kind === "unfinished")
-            recordings.deleteUnfinished();
+            asked = recordings.deleteUnfinished();
         else if (kind === "all")
-            recordings.deleteAll();
-        say("", false);
+            asked = recordings.deleteAll();
+        // The request is over either way: nothing of it stays to act on later.
+        confirmDelete.kind = "";
+        subject = null;
+        // Issue #902: refused while storage that came back is read again, and
+        // whole when it names a recording on storage that is not connected.
+        if (asked === false)
+            say(screen.deleteRefusalText(), true);
+        else
+            say("", false);
     }
 
     Connections {
@@ -445,6 +478,30 @@ Item {
                 visible: screen.failuresShown > 0
                 text: Util.deleteFailuresText(screen.failuresShown, screen.failureReason)
                 textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.alert
+                Accessible.role: Accessible.AlertMessage
+            }
+
+            ReadableText {
+                objectName: "callRecordingsDeletesCancelled"
+                width: parent.width
+                visible: screen.cancelledShown > 0
+                text: Util.deletesCancelledText()
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.alert
+                Accessible.role: Accessible.AlertMessage
+            }
+
+            ReadableText {
+                objectName: "callRecordingsDeletesSkipped"
+                width: parent.width
+                visible: screen.skippedShown > 0
+                text: Util.deletesSkippedText()
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)

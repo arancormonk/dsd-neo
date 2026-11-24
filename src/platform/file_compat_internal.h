@@ -21,6 +21,11 @@ int dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_sour
  * that deletes the claim before the rename can still be replaced. On a failed rename the claim is removed again.
  */
 int dsd_rename_noreplace_by_reservation(const char* from, const char* to);
+
+/* Whether the descriptor @p fd is open on a regular file: 0 when it is, -1 with errno otherwise (EINVAL for anything
+ * else, the system's errno when it cannot be read). In file_identity_posix.c, built with 64-bit file offsets and time,
+ * so a file over 2 GiB or dated past 2038 is read, whatever this file's own struct stat is. */
+int dsd_fd_regular_file_internal(int fd);
 #endif
 
 #if DSD_PLATFORM_WIN_NATIVE

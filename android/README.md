@@ -584,10 +584,18 @@ time, system, talkgroup and radio, and an analog FM call's with the date, time, 
   every recording: export the ones you want to keep first.
 - When that storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
   reach (Share, Save to file and Export still can). Recordings on storage that is away stay listed and are never
-  deleted; Settings and **Call recordings** say the storage is not available.
+  deleted; Settings and **Call recordings** say the storage is not available. A delete that includes any of them (one
+  recording, a system's, **Delete all** or **Delete unfinished**) deletes nothing and says "That storage isn't
+  connected. Delete again once it's back."
 - DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
   unless it is named like an unfinished recording (`TEMP_…`, below). A recording you delete from a computer leaves the
-  app's list the next time DSD-neo starts or tries to play, share or export it.
+  app's list the next time DSD-neo starts or tries to play, share or export it. DSD-neo doesn't watch for other changes
+  to these folders while it runs (files replaced, folders swapped, permissions changed). Right before a delete or the
+  storage limit removes a recording, it checks the file's size and modification time and leaves a file that doesn't
+  match; the screen then says "Some files weren't deleted because they changed after they were recorded. They were
+  left as they are." A delete still waiting when the storage was read again (disconnected and back) is dropped, and
+  the screen says "Some recordings weren't deleted because their storage changed. Delete them again." The storage
+  limit waits until every recordings folder on connected storage has been read.
 
 ### Playing a recording
 
@@ -618,7 +626,12 @@ Download/DSD-neo as** the file's name (for Save to file, **Saved to Download/DSD
 that result out. Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing
 there. When the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free
 again, as they are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile
-is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+is left out, and the result says how many. Each recording is opened once and checked before it goes into the file: if
+one was replaced by another file meanwhile, or the storage was disconnected and read again after you chose them (even
+while the export runs), nothing is saved and the screen says **Those recordings changed. Export again.** (for Save to
+file, **This recording changed. Save it again.**); DSD-neo reads that recording's folder again, so the next export
+takes what is there now. While DSD-neo is still reading the recordings (just after the storage comes back), Export and
+Save to file say **Recordings are still loading. Try again in a moment.** A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
 ### Storage limit

@@ -1042,6 +1042,19 @@ function deleteFailuresText(count, reason) {
     return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
 }
 
+// Issue #902: accepted deletes a read again of their storage dropped while
+// they waited. Asking again deletes them.
+function deletesCancelledText() {
+    return qsTr("Some recordings weren't deleted because their storage changed. Delete them again.")
+}
+
+// Issue #902: deletes (asked for or by the storage limit) not done because
+// the file at the recording's name was not the one recorded. Nothing to
+// retry: the file stays as it is.
+function deletesSkippedText() {
+    return qsTr("Some files weren't deleted because they changed after they were recorded. They were left as they are.")
+}
+
 // Issue #782: the words a group of plain Text items shows, for the one
 // accessible node that reads them (a reading's label and value, a strip of
 // readings). Each visible child's text in order, the parts of a nested row

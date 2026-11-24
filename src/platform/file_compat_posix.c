@@ -283,18 +283,20 @@ dsd_close_failed_fd(int fd) {
     return -1;
 }
 
+/*
+ * The project does not build with 64-bit file offsets or time, and this file cannot take them on its own:
+ * file_compat.h hands struct stat across files (dsd_stat_t), so it keeps the default layout. A 32-bit build's default
+ * open() and fstat() fail with EOVERFLOW for a file over 2 GiB or dated past 2038, which a recording can be: the
+ * openers below open with O_LARGEFILE, and check the descriptor in file_identity_posix.c, which is built with both
+ * (dsd_fd_regular_file_internal()).
+ */
+
 /* An fd dsd_fopen_existing_regular_file() opened non-blocking: refuse (EINVAL) anything but a regular file, then make
    its reads blocking. On failure @p fd is closed and -1 returned with errno set. */
 static int
 dsd_existing_regular_fd_ready(int fd) {
-    dsd_stat_t st;
-    if (fstat(fd, &st) != 0) {
+    if (dsd_fd_regular_file_internal(fd) != 0) {
         return dsd_close_failed_fd(fd);
-    }
-    if (!dsd_stat_is_regular(&st)) {
-        close(fd);
-        errno = EINVAL;
-        return -1;
     }
 
     int fl = fcntl(fd, F_GETFL);
@@ -314,6 +316,9 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     /* O_NONBLOCK keeps open(2) from waiting on a FIFO with no writer; it is cleared once the target is known
        regular. */
     int flags = O_RDONLY | O_NONBLOCK;
+#ifdef O_LARGEFILE
+    flags |= O_LARGEFILE;
+#endif
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif
@@ -347,6 +352,9 @@ dsd_fopen_private_append_regular(const char* path) {
     /* As dsd_fopen_existing_regular_file(): O_NONBLOCK keeps open(2) from waiting on a FIFO, which with no reader
        fails at once (ENXIO, reported as EINVAL); it is cleared once the target is known regular. */
     int flags = O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK;
+#ifdef O_LARGEFILE
+    flags |= O_LARGEFILE;
+#endif
 #ifdef O_NOFOLLOW
     flags |= O_NOFOLLOW;
 #endif

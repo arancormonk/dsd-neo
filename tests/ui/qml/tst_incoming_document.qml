@@ -709,11 +709,11 @@ Item {
                 verify(replayFiles.copying);
             } else if (data.tag === "recording save") {
                 testContext.holdRecordingTransfers(true);
-                verify(decoderHost.saveRecording({selection: 1, paths: [path], names: []}, "file://" + path + ".copy"));
+                verify(decoderHost.saveRecording({selection: 1, paths: [path], names: [], sizes: [0], mtimeSecs: [0], mtimeNanos: [0]}, "file://" + path + ".copy"));
                 verify(decoderHost.recordingTransferActive);
             } else {
                 testContext.holdRecordingTransfers(true);
-                verify(decoderHost.exportRecordings({selection: 2, paths: [path], names: ["a.csv"], bytes: 10}, "file://" + path + ".zip"));
+                verify(decoderHost.exportRecordings({selection: 2, paths: [path], names: ["a.csv"], bytes: 10, sizes: [0], mtimeSecs: [0], mtimeNanos: [0]}, "file://" + path + ".zip"));
                 verify(decoderHost.recordingTransferActive);
             }
             testContext.emitIncomingDocument(path);

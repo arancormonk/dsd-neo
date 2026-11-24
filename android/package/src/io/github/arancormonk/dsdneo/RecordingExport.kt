@@ -8,10 +8,15 @@ package io.github.arancormonk.dsdneo
 import android.content.ContentResolver
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
+import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileNotFoundException
+import java.io.FilterInputStream
 import java.io.FilterOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -40,6 +45,18 @@ object RecordingExport {
     const val CANCELLED = 2
     const val MISSING = 3
 
+    /** A recording is not the file selected any more: the transfer keeps nothing, and the user exports again. */
+    const val CHANGED = 6
+
+    /** Thrown by [openSelected] at a recording that is not the file selected: the whole transfer is abandoned. */
+    internal class RecordingChangedException(val path: String) : IOException("not the recording selected: $path")
+
+    /** The store read storage again since the selection ([selectionCurrent]): the whole transfer is abandoned. */
+    private class SelectionStaleException : IOException("the recordings were read again since they were selected")
+
+    /** A recording as the store selected it: its size and modification time. */
+    internal data class Selected(val size: Long, val seconds: Long, val nanos: Long)
+
     /**
      * Entries are DEFLATED at level 0: stored blocks that still stream with data descriptors (STORED would need each
      * entry's CRC and size before its bytes). Measured on the fixture recordings (#708), BEST_SPEED shrinks 8 kHz
@@ -48,6 +65,21 @@ object RecordingExport {
      * a phone, while documents are written to local storage far faster.
      */
     private const val LEVEL = Deflater.NO_COMPRESSION
+
+    /**
+     * How a transfer opens each recording: [openSelected]. A test swaps it to feed a FIFO, which the check refuses, to
+     * hold an export between chunks.
+     */
+    @Volatile
+    internal var inputOpener: (String, Selected) -> InputStream? = ::openSelected
+
+    /**
+     * Whether transfer [id]'s selection still stands: the store has not started reading storage again since it was
+     * selected (DecoderHostAndroid's token). Asked before the first recording is read and before the document is kept.
+     * A test swaps it.
+     */
+    @Volatile
+    internal var selectionCurrent: (Long) -> Boolean = { DsdNative.nativeRecordingSelectionCurrent(it) }
 
     /** One transfer: its id (DecoderHostAndroid's, rising), signal and the source bytes it has copied. */
     private class Transfer(val id: Long, val signal: CancellationSignal) {
@@ -77,13 +109,17 @@ object RecordingExport {
 
     /**
      * Write [paths] into the document [uriText] names: one ZIP whose entries are named [names] when [zip], else the
-     * one file as it is.
+     * one file as it is. [selected] holds three numbers per path, its size and its modification time's seconds and
+     * nanoseconds as the store selected it: right before each file is read it must still be that regular file, never
+     * a link; one gone is left out, and any other difference abandons the whole transfer ([CHANGED]), writing nothing.
      *
      * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit. Its
      * publication still answers [cancel] until it begins; a row that could not be published fails the transfer, and so
      * does one a discard took before this transfer began (never written).
      *
-     * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]), as text.
+     * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]) and, for
+     * [CHANGED], the one found changed, as text: the store looks at each again. A selection that stopped standing
+     * ([selectionCurrent]) is [CHANGED] with none named.
      */
     @JvmStatic
     fun transfer(
@@ -91,6 +127,7 @@ object RecordingExport {
         id: Long,
         paths: Array<String>,
         names: Array<String>,
+        selected: LongArray,
         uriText: String,
         zip: Boolean,
     ): Array<String> {
@@ -110,10 +147,10 @@ object RecordingExport {
         var result = FAILED
         try {
             try {
-                result = write(resolver, transfer, paths, names, uriText, zip, missing)
+                result = write(resolver, transfer, paths, names, selected, uriText, zip, missing)
             } finally {
                 // Still the current transfer, so a cancel reaches the publication.
-                result = settled(resolver, uriText, result, transfer.signal)
+                result = settled(resolver, transfer, uriText, result)
             }
         } finally {
             synchronized(lock) {
@@ -123,12 +160,18 @@ object RecordingExport {
         return arrayOf(result.toString(), *missing.toTypedArray())
     }
 
-    /** [result] once the document was settled: a written row that does not stand is cancelled or failed. */
-    private fun settled(resolver: ContentResolver, uriText: String, result: Int, signal: CancellationSignal): Int {
-        val stands = DownloadsSave.settle(resolver, uriText, result == DONE, signal)
+    /**
+     * [result] once the document was settled: a written row that does not stand is cancelled or failed, or changed when
+     * the selection stopped standing before its publication (asked on DownloadsSave's worker right before it).
+     */
+    private fun settled(resolver: ContentResolver, transfer: Transfer, uriText: String, result: Int): Int {
+        val stands = DownloadsSave.settle(resolver, uriText, result == DONE, transfer.signal) {
+            selectionCurrent(transfer.id)
+        }
         return when {
             result != DONE || stands -> result
-            signal.isCanceled -> CANCELLED
+            transfer.signal.isCanceled -> CANCELLED
+            !selectionCurrent(transfer.id) -> CHANGED
             else -> FAILED
         }
     }
@@ -138,13 +181,21 @@ object RecordingExport {
         transfer: Transfer,
         paths: Array<String>,
         names: Array<String>,
+        selected: LongArray,
         uriText: String,
         zip: Boolean,
         missing: MutableList<String>,
     ): Int {
-        if (paths.isEmpty() || (if (zip) names.size != paths.size else paths.size != 1)) {
+        if (paths.isEmpty() || (if (zip) names.size != paths.size else paths.size != 1) ||
+            selected.size != paths.size * 3
+        ) {
             return FAILED
         }
+        val files = HashMap<String, Selected>()
+        for ((index, path) in paths.withIndex()) {
+            files[path] = Selected(selected[index * 3], selected[index * 3 + 1], selected[index * 3 + 2])
+        }
+        val open = { path: String -> inputOpener(path, files.getValue(path)) }
         val steps = object : DocumentTransfer.Steps {
             override fun check() {
                 if (DocumentTransfer.isAborted) throw IOException("document transfers were aborted")
@@ -155,6 +206,12 @@ object RecordingExport {
                 transfer.bytes += count
             }
         }
+        // Before the document is opened for replacement: a transfer already known stale never truncates, or deletes, a
+        // document the user picked. A pending Download-folder row made for it goes as for any other end (settled()).
+        if (!selectionCurrent(transfer.id)) {
+            Log.w(TAG, "call recordings were read again since they were selected; the document is left as it was")
+            return CHANGED
+        }
         val write = try {
             DocumentCopies.beginWrite(resolver, uriText, transfer.signal) ?: return FAILED
         } catch (e: Exception) {
@@ -162,19 +219,35 @@ object RecordingExport {
             return if (transfer.signal.isCanceled) CANCELLED else FAILED
         }
         return try {
+            // Again once the provider's open (which may wait) is done, before the first recording is read.
+            if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
             val counted = CountingOutputStream(write.output)
             val written = if (zip) {
-                writeZip(counted, paths.toList(), names.toList(), steps, ::openRecording, missing)
+                writeZip(counted, paths.toList(), names.toList(), steps, open, missing)
             } else {
-                writeOne(counted, paths[0], steps, missing)
+                writeOne(counted, paths[0], steps, open, missing)
             }
             if (written == 0) {
                 // Every recording went while the transfer ran: nothing to keep.
                 write.fail(FileNotFoundException("every recording is gone"))
                 return MISSING
             }
-            write.finish(counted.count)
+            // Read again while it was written: the store may have given a path it named to another recording. Asked
+            // again once the document is synced (that can wait), before it is closed as good.
+            if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
+            write.finish(counted.count) {
+                if (!selectionCurrent(transfer.id)) throw SelectionStaleException()
+            }
             DONE
+        } catch (e: SelectionStaleException) {
+            Log.w(TAG, "call recordings were read again since they were selected; nothing is kept", e)
+            write.fail(e)
+            CHANGED
+        } catch (e: RecordingChangedException) {
+            Log.w(TAG, "a call recording changed since it was selected; nothing is kept", e)
+            write.fail(e)
+            missing += e.path // the store looks at it again, so the next export takes what is there now
+            CHANGED
         } catch (e: Exception) {
             Log.w(TAG, "could not write call recordings into a document", e)
             write.fail(e)
@@ -186,11 +259,65 @@ object RecordingExport {
         }
     }
 
-    /** A recording opened to read, or null when it is gone. */
-    internal fun openRecording(path: String): InputStream? = try {
-        FileInputStream(path)
-    } catch (e: FileNotFoundException) {
-        if (File(path).exists()) throw e else null
+    /**
+     * The recording at [path] opened once to read, never through a link at its name (O_NOFOLLOW; O_NONBLOCK, so a FIFO
+     * never holds the open), and the file opened checked to be the one [selected] names (a regular file with that size
+     * and modification time, read on the descriptor): what is read is what was checked. Null when it is gone;
+     * [RecordingChangedException] otherwise, a link and a name that cannot be read included.
+     */
+    internal fun openSelected(path: String, selected: Selected): InputStream? {
+        val fd = try {
+            val flags = OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK or OsConstants.O_CLOEXEC
+            Os.open(path, flags, 0)
+        } catch (e: ErrnoException) {
+            // Gone only when the name is not in its folder and that folder is there (a parent that is a dangling link
+            // never looked the name up).
+            if (e.errno == OsConstants.ENOENT && parentIsFolder(path)) return null
+            // A link (ELOOP), a parent that does not resolve (ENOTDIR), no access to it, an I/O error: not the file
+            // selected as far as can be told, and the store looks again.
+            throw RecordingChangedException(path)
+        }
+        val same = try {
+            val stat = Os.fstat(fd)
+            OsConstants.S_ISREG(stat.st_mode) && stat.st_size == selected.size &&
+                stat.st_mtim.tv_sec == selected.seconds && stat.st_mtim.tv_nsec == selected.nanos
+        } catch (e: ErrnoException) {
+            false
+        }
+        if (!same) {
+            closeQuietly(fd)
+            throw RecordingChangedException(path)
+        }
+        return DescriptorInputStream(fd)
+    }
+
+    /** Whether the folder [path] is in is there and a folder, never followed if a link. */
+    private fun parentIsFolder(path: String): Boolean {
+        val parent = File(path).parent ?: return true
+        return try {
+            OsConstants.S_ISDIR(Os.lstat(parent).st_mode)
+        } catch (e: ErrnoException) {
+            false
+        }
+    }
+
+    /** Reads [fd] and closes it with the stream: a FileInputStream made on a descriptor does not own it. */
+    private class DescriptorInputStream(private val fd: FileDescriptor) : FilterInputStream(FileInputStream(fd)) {
+        override fun close() {
+            try {
+                super.close()
+            } finally {
+                closeQuietly(fd)
+            }
+        }
+    }
+
+    private fun closeQuietly(fd: FileDescriptor) {
+        try {
+            Os.close(fd)
+        } catch (e: ErrnoException) {
+            // Already closed, or the close failed: a read-only descriptor has nothing to lose.
+        }
     }
 
     /**
@@ -269,10 +396,11 @@ object RecordingExport {
         output: OutputStream,
         path: String,
         steps: DocumentTransfer.Steps,
+        open: (String) -> InputStream?,
         missing: MutableList<String>,
     ): Int {
         steps.check()
-        val input = openRecording(path)
+        val input = open(path)
         if (input == null) {
             missing += path
             return 0

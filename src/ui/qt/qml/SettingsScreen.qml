@@ -201,6 +201,10 @@ Item {
             notes.push({text: Util.removedByLimitText(recordings.removedByLimit), problem: false});
         if (recordings.deleteFailures > 0)
             notes.push({text: Util.deleteFailuresText(recordings.deleteFailures, recordings.lastDeleteError), problem: true});
+        if (recordings.deletesCancelled > 0)
+            notes.push({text: Util.deletesCancelledText(), problem: true});
+        if (recordings.deletesSkipped > 0)
+            notes.push({text: Util.deletesSkippedText(), problem: true});
         return notes;
     }
     readonly property string recordingUsage: !recordings.indexed ? qsTr("Counting recordings…") : recordings.recordingCount + recordings.unfinishedCount === 0 ? qsTr("No recordings yet") : Util.recordingUsageText(recordings.usedBytes, prefs.recordingLimitMb, recordings.recordingCount + recordings.unfinishedCount)
