@@ -3689,6 +3689,15 @@ DMR Tier III (env helpers for `--calc-lcn`)
 - `DSD_NEO_DMR_T3_START_LCN=<n>` — start LCN when no anchor
 - `DSD_NEO_DMR_T3_HEUR=1` — enable heuristic LCN fill
 
+`--calc-lcn` is for a known, fixed channel plan: it lays your frequencies on one channel grid (the given step, or
+the smallest spacing it can infer) from the anchor, or from the lowest frequency and the start LCN. It cannot
+discover a site's plan from a frequency list. Every input and the anchor must sit on that grid, every LCN must fall
+in 1..4094 and be unique, a file may hold at most 4096 frequency rows, and no row may exceed 1023 bytes counting its
+line ending (1022 characters and a newline; a last row with no line ending may hold 1023). Set the anchor frequency
+and anchor LCN together or not at all; one alone is an error. On any problem it prints the reason to stderr, writes
+nothing to stdout and exits nonzero. A single frequency needs the step to be placed against an anchor it does not
+equal.
+
 Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output

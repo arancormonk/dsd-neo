@@ -184,7 +184,11 @@ Generated (do not edit/commit):
     not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
-    here. A channel map that moved gets a new `trunk_chan_map_seq`. The P25 patch table is not part of the site: Start
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. Start also saves the DMR Tier III provenance of the
+    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds and the network baseline), and every restore
+    puts it back with the rows: a visit that hears another network's checked system code drops the session's learned
+    rows, and the departure brings them back as they were (discussion #900). The P25 patch table is not part of the
+    site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -455,9 +459,11 @@ Generated (do not edit/commit):
     row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
-  - -Y rotates only a list of the user's (issue #697): channels a site announces while none is loaded (DMR C_BCAST,
-    `dmr_cspdu_pf0_c_bcast_track_freq()`, which appends only while `dsd_state_trunk_lcn_user_list_present()` is false,
-    at start or after Clear channel map) never make -Y step or end a reception. Without a user list
+  - -Y rotates only a list of the user's (issue #697): rows that are not the user's while none is loaded
+    (`dsd_state_trunk_lcn_user_list_present()` false, at start or after Clear channel map: a protocol's control channel
+    seed) never make -Y step or end a reception. A DMR C_BCAST Chan_Freq is no such row: it names a logical channel's
+    frequency, not a TSCC (TS 102 361-4 §6.7.1.6; Ann_WD_TSCC announces those, §6.7.1.1), so it reaches only the
+    sparse channel map, never the positional list (discussion #900; before, it was appended there with no user list). Without a user list
     `no_carrier_step_scanner_mode_if_needed()` (`engine.c`) admits no timed step, `dsd_scan_voice_gate_owns_step()` is
     false, and `dsd_engine_channel_scan_has_other_row()` finds nowhere to go, so neither the receive-filter yield nor
     the tone-rejection step fires. The per-visit cap re-arms (`scan_visit_rearms()`) unless
@@ -1288,7 +1294,11 @@ TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the
 channel map, and what `p25_update_system_identity()` drops with the IDEN tables on a change of system: the pending
 announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
-`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
+`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). The channel
+map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`), so P25 IDEN 0
+channel 0 never reaches another target. A Tier III RadioReference file's key-0 control-channel rows also fill channel 0
+of the shared map, so in one session that decodes both DMR and P25, a P25 grant for channel 0 can resolve to that row
+until the site's band plan arrives; trunk-scan targets keep their own channel 0. Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
 state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
 as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
@@ -2346,8 +2356,7 @@ suite runs under this compiler.
   `dsd_state_trunk_lcn_freq_write()` (moves `lcn_avoid_rev` only when the row is avoided and its value changes) and
   `dsd_state_trunk_lcn_count_raise()` (never lowers the count; flags it brings into the list are counted and move
   `lcn_avoid_rev`): the P25 row-0 seeds (`p25_trunk_sm.c`, `p25_lcw.c`, `p25p1_tsbk.c`, `p25p1_pdu_trunking.c`,
-  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the DMR learned-frequency append
-  (`dmr_csbk.c`), the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
+  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
   trunk-scan target seed. `dsd_state_trunk_lcn_name_set()` moves `lcn_avoid_rev` when an avoided row's name changes.
   `dsd_state_trunk_lcn_avoid_set()`/`_clear()` keep the saturating `lcn_avoid_count` and the exact `size_t`
   `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
@@ -2536,7 +2545,21 @@ suite runs under this compiler.
   (`src/protocol/dmr/dmr_crc_provenance.h`; `dmr_dheader()` maps a 0/1 verdict), stores RAS-accepted confirmed blocks
   as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
   (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
-  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope.
+  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope, and vouches
+  for the channel it named (`vc_lpcn`) too. An accepted in-place grant on the followed slot replaces both: the channel
+  it names, or, when it names none (an absolute grant's CdefParms CHAN 0), an unknown channel (`vc_lpcn` 0), never the
+  replaced grant's channel under the new grant's provenance. An XPT status naming the followed slot
+  (`dmr_sm_vc_channel_from_status()`) moves the channel to its LSN but ORs its flags into `vc_crc_flags`, never
+  replacing them: a status names a group and channel, not the talker, so it never makes earlier unverified evidence (a
+  RAS grant's talker) read as verified. A repeat of the followed grant changes nothing, so a
+  channel made unknown stays unknown until the next follow. Decided limit (discussion #900): after a CHAN 0 in-place
+  grant, the companion slot's own numbered grant, or a later numbered grant that names another call, may not fill
+  that call's published channel number (the slot channel check compares against the followed channel, which is now
+  unknown, and an LC-bound call skips the grant publication): the number is left out rather than guessed. Decided
+  limit (discussion #900): where several pieces of
+  evidence feed one call (the grant, a checked LC, a status, the channel a slot record inherited), the call's CRC flags
+  are the OR of theirs, so a call may read `[RAS]` when any of its evidence was RAS-accepted, even after a verified
+  grant or status confirmed the rest.
 - API note (DMR UDP services, issue #746): the IPv4 (SAP 4, `decode_ip_pdu()`, shared with P25) and compressed
   UDP/IPv4 (SAP 3, `dmr_udp_comp_pdu()`) paths in `src/protocol/dmr/dmr_pdu.c` decode a datagram through one port
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
@@ -3234,7 +3257,9 @@ suite runs under this compiler.
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
   slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
-  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine. Slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
+  RC notice dedupe and the Tier III channel provenance (discussion #900).
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -3977,10 +4002,10 @@ suite runs under this compiler.
   - Enrichment vs admission: a path that re-judges a call it already follows because its identity was learned or
     updated keeps the call on a rejection whose only reasons are radio reasons
     (`dsd_tg_policy_decision_only_radio_blocks()`): P25 `p25_voice_start_apply_identity()` (the companion slot is
-    untouched), DMR resident members and C_MOVE of the followed call. TETRA never re-judges the call it follows, and
+    untouched) and DMR resident members. TETRA never re-judges the call it follows, and
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
-    radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
+    radio.
     App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose (mode and allow-list
     blocks), judging each call as its protocol admits it: an NXDN Type-C call by the source fallback with the call's
     source (`nxdn_held_call_policy_source()`, 0 for a Type-D call), every other call by its target.
@@ -5025,6 +5050,9 @@ suite runs under this compiler.
       never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
       `NXDN_CC_HUNT`.
+    - `noCarrier()` empties the list, DMR's candidates (an announced or moved-to TSCC, a P_CLEAR's TSCC, a voted or
+      neighbour site's) with the rest, and a DMR network change does not take them out. Decided limit (discussion
+      #900): control channels a site announces are hunt candidates until the next carrier loss, as before.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, RT scheduling
     - Floating-point mode (`include/dsd-neo/runtime/fp_mode.h`, `src/runtime/fp_mode.c`, issue #672 B12):
       `DSD_NEO_FTZ_DAZ` is a start-time setting. `dsd_bootstrap_apply_fp_mode()` (`bootstrap/system.c`, called from
@@ -5745,7 +5773,11 @@ suite runs under this compiler.
     through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
     just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
-    returns 0 with no text and keeps the trunked "first site only" warning.
+    returns 0 with no text and keeps the trunked "first site only" warning. Tier III rows are keyed by `ch_id` only
+    (`lcn` is a row ordinal there) and every marked control frequency no row holds is seeded under key 0 (CHNULL,
+    never a grant's channel, only a hunt-list slot); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
+    import (`svc_import_channel_map()`) takes a file with a usable channel row or a usable positional slot, so such
+    a seed-only map loads; zero-frequency placeholders count for neither.
     The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
     (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
     value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
@@ -7027,8 +7059,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
     refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
     `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
-    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
-    and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"): a
+    channel map that fails is cleared rather than kept, as its rows would send the new system's grants to the old
+    system's frequencies (issue #900), while a group list that fails leaves the old one loaded; and an I/Q replay never
+    tunes or crosses a receiver-move boundary, rigctl peer or not
   - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
     tuner took supersedes a pending manual tune: one applied or accepted; a refusal (an RTL request that failed in its
     wait, a rigctl refusal, an RTL input with no stream) and a deferral leave it (issue #644). A failure or
@@ -13667,7 +13701,9 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 
 Key public headers (selection):
 
-- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
+- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below),
+  `<dsd-neo/protocol/dmr/dmr_t3_grant.h>` (Tier III grant classes, below)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
@@ -13747,6 +13783,89 @@ Private per-protocol modules worth knowing about:
   likelier a QR(16,7,6) miscorrection; a second miss in a row ends it as before, and only an EMB the colour-code check
   accepted ends a miss streak. Tests: `DMR_SYNTH_SLOT_FLIP`,
   `DMR_SYNTH_INVERTED_*`, `DMR_BS_SYNC_TIMES`, `DECODE_IQ_DMR_T3_CC`, `DECODE_IQ_DMR_POLARITY_AUTO`.
+- Tier III channel provenance (`dmr_t3_channels.c`, `dmr_t3_chan_learn.c`, `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`,
+  discussion #900 F2). The aggregate lives in the DMR module's one state extension (slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, `dmr_t3_channels_internal.h`) beside the RC notice dedupe. Every channel map row LPCN
+  1..4094 has an origin there: NONE, FILE (a channel map import, `dmr_t3_chan_note_map_loaded()` after
+  `chan_map_adopt()`; a nonzero row with no recorded origin, such as a `-C` map at startup, reads as FILE), USER, SITE,
+  UNVERIFIED, NEIGHBOUR or ESTIMATE. A row keyed 0 (CHNULL, the RadioReference generator's control-frequency seed) names
+  no channel a grant can use: it only takes its positional slot in the control channel hunt list.
+  `dmr_t3_chan_learn()` is the only over-the-air writer: `dmr_csbk.c` (`dmr_csbk_learn_channel()`) passes SITE for a
+  CSBK or MBC whose CRC checked (absolute grants, the TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended
+  block names, Chan_Freq, the MBC form of Ann_WD_TSCC), UNVERIFIED for one `-F` accepted as RAS
+  (`dmr_csbk_ras_accepted()`, the C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now or
+  Adjacent_Site either way, and nothing for a failed CRC or the synthesized P_CLEAR. Precedence: FILE and USER are never
+  overwritten over the air; SITE replaces UNVERIFIED, NEIGHBOUR and ESTIMATE always (an origin change at the same
+  frequency counts, and bumps the revision) and another SITE row when the frequency differs; the rest fill empty rows
+  only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and ESTIMATE 0.
+  The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
+  slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
+  row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
+  drops every estimate and fills again, except an estimate confirmed at the frequency it holds, which is promoted in
+  place (it lies on the model line between the first and last anchors, so the model is unchanged). Decided limit
+  (discussion #900): with `DSD_NEO_DMR_T3_HEUR` on, estimates are recomputed when DMR itself changes an anchor row; a
+  change by a channel map import or another protocol is not noticed until then. A row another
+  writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
+  shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
+  (which the DMR writer releases before it writes and sets after), and the row then reads as FILE, so DMR neither
+  replaces nor drops it. The takeover also clears the row's trust byte (an LPCN-only grant off the control channel
+  needs trust 2, which DMR gave the frequency it learned, not the new one) and bumps the core-owned
+  `dsd_state::dmr_lcn_ota_seq`, which `dmr_t3_chan_revision()` adds to its own count, so the revision moves on an
+  ownership change at an unchanged frequency.
+  A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
+  their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
+  checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the
+  transmitting site's, noted before the announcement is handled; Vote_Now's and Adjacent_Site's BParms1 names another
+  site and is no note), C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked
+  one, MODEL or NET differing (another SITE of the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
+  `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
+  (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
+  that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
+  that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
+  a Return-to-CC keeps them); a RadioReference apply that moves no tuner does it once its mode change succeeded (one
+  an I/Q replay refuses keeps the old system's rows). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
+  voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
+  trust bytes, `dmr_lcn_ota`, generation, revision and system-code baseline together
+  (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
+  and past both sides on a restore. The snapshot saves the revision a reader sees (`dmr_t3_chan_revision()`, the
+  takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
+  `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+- Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
+  B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
+  the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
+  `symbol_clock`, its epoch and `carrier_seq`), and a continuation (data type 5) joins only an armed slot and only as
+  the slot's next burst, one TDMA frame (288 symbols, ±12 for grid slips) after the MBC's last block on the same
+  carrier and timeline, else it is dropped and the slot disarmed. A burst the decoder missed disarms nothing, but it
+  moves the clock a frame on, so a continuation after it joins nothing. Any other burst on the slot
+  (`dmr_data_burst_handler_origin()`), a voice burst there (`dmr_bs.c`, `dmr_ms.c`), the end of the MBC, a refused
+  length, a sync loss or retune (`dmr_reset_blocks()`) and the no-carrier reset disarm it; the other slot's bursts do
+  not. A non-UDT MBC holds one to three continuations, counted as received (a header whose LB is set has none and is
+  refused), and its CRC covers exactly those blocks. The assembler hands the PDU over with its shape
+  (`dmr_cspdu_shape`: continuations, header and first continuation CSBKO, that continuation's LB, and whether its
+  bursts prove scan activity) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before scan activity,
+  the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
+  absolute-parameter opcode (C_BCAST, the grants and C_MOVE whatever the FID; P_CLEAR only under FID 0, since another
+  feature set's opcode 46 is the manufacturer's and keeps the legacy carrier-wide release) whose continuation is not
+  exactly one last block carrying its header's CSBKO; a standard (FID 0) C_BCAST single block whose LB is 0 (Table
+  7.20; checked before the protect flag, a manufacturer's flags being its own); a grant, standard P_CLEAR or C_MOVE
+  naming anything but 0xFFF as an MBC (a logical channel 1..4094, or a P_CLEAR's 0, the last confirmed TSCC), which
+  the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block Ann_WD_TSCC naming 0xFFF as
+  BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Vote_Now or Adjacent_Site MBC whose channel is not
+  0xFFF (§7.2.19.3.0(b)); a Chan_Freq whose header CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
+  (a grant or standard P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
+  Adjacent_Site on 0xFFF) whose parameters `dmr_abs_params_decode()` cannot use, a single block on 0xFFF among them.
+  Neither the gate nor a handler reads a continuation field (bits 96 on) before the shape says there is one, so a
+  single CSBK passed in a 96-bit buffer is read only within it.
+  `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP, BC_AP and VN_AP (Cdeftype 0 only; a receive
+  frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no frequency). A grant's valid frequency
+  whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. A CSBK or MBC header notes its scan
+  activity evidence (`dsd_frame_sync_hook_content_evidence()`) only once `dmr_cspdu_ex()` accepts its PDU (an MBC
+  also accepted as a whole; `dsd_state::dmr_mbc_header_proven`), and so does the colour-code gate for every control
+  burst (CSBK, MBC header, continuation: `dmr_confidence_note_control_burst()` counts the code toward the lock but
+  defers PROVEN, the `dmr_confidence_lock_m` stamp and the search evidence to `dmr_confidence_note_control_accepted()`). The MBC's CRC provenance (checked, RAS-accepted or
+  failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests: `DMR_T3_CHANNELS`, `DMR_T3_MOVE_RELEASE`,
+  `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
+  `ENGINE_NO_CARRIER_RESET`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
@@ -13793,9 +13912,57 @@ Private per-protocol modules worth knowing about:
   decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
   lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
   still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
+- DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
+  only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
+  voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call (`vc_tg`,
+  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's accepted on
+  the followed slot since, even one whose call a checked LC had named already). Those addresses stay valid
+  (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still cleared by
+  either party; only a new follow, a status follow or a release drops them. Otherwise it prints "not for the followed
+  call" ("no followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or
+  release. Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy
+  companion slot keeps the carrier. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
+  followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
+  call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
+  followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Decided limit
+  (discussion #900): with DMR mono (`-fr`), after the followed slot clears while the other slot keeps the receiver,
+  that slot's audio is not played until the receiver moves (mono playout, `dmr_mono_slot`, stays on `vc_slot`; main
+  left the carrier at that point). The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's
+  opcode 46 keep the carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine
+  follows a call (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status
+  marked the receiver tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed
+  grant on its first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped
+  LPCN, or a valid appended block, which the map also learns) makes it a current-site hunt candidate, whether or not
+  it is for the followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
+  `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
+- Tier III channel announcements (C_BCAST, `dmr_csbk.c`; TS 102 361-4 §7.2.19). Each learns through
+  `dmr_csbk_learn_channel()` and adds hunt candidates (`dmr_sm_on_neighbor_update()`, current site, never the control
+  channel the receiver is on) only from a checked or RAS-accepted PDU. Ann_WD_TSCC (Table 7.69): the single-block form
+  names up to two TSCCs as logical channels, and only a mapped one marked add (AW_FLAG 0) becomes a candidate; the MBC
+  form's BC_AP teaches the map its one TSCC and adds it only on add (a withdrawal writes nothing: it may name a
+  frequency the channel no longer has); withdrawing the control channel the
+  receiver is on moves it to the other one announced. A withdraw removes no candidate an earlier announcement added
+  (decided limit). Chan_Freq (Table 7.78) is always an MBC: its header CH names the channel, or 0xFFF leaves it to the
+  BC_AP's CHAN (both naming channels that differ: refused before dispatch); a new or changed row also joins the
+  hunt candidates, but never the positional channel list (it names a channel's frequency, not a TSCC). Vote_Now and
+  Adjacent_Site (Tables 7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only
+  Active_connection, §6.7.1.3); one naming a logical channel is a single CSBK, and as an MBC is refused before
+  dispatch (§7.2.19.3.0(b)); an absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate.
+  Tests: `DMR_T3_CHANNELS`,
+  `DMR_T3_ANN_WD_TSCC`, `DMR_GRANT_POLICY`.
+- Tier III grant classes (`dmr_t3_grant.c`, `<dsd-neo/protocol/dmr/dmr_t3_grant.h>`, discussion #900 B8).
+  `dmr_t3_grant_classify()` is the one classifier of a channel grant (TS 102 361-4 Tables 7.9-7.15): group {49, 50,
+  52, 56} or private {48, 51, 53, 54, 55}, and data {51, 52, 54, 55, 56} or voice, the two kept apart; 56 on MS-sourced
+  data is BS_Dwn_Act, never a grant. A duplex grant (53, 54) reads Call Direction (bit 31: whether bits 32-55 name the
+  calling or the called MS) to name its caller and recipient. Eligibility (`dmr_cspdu_pf0_prepare_dispatch()`: data
+  tuning for a data grant, then group or private tuning by group class), the talkgroup policy (group or private call,
+  data flag), the console line, the activity row and the trunk state machine event (`dmr_csbk_parse()` fills
+  `group_call`, `data_call`, target = recipient and source = caller) all take it; no opcode is rewritten. Tests:
+  `DMR_GRANT_POLICY`, `DMR_CSBK_HELPERS`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
-  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
-  group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
+  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III grant classes, Connect Plus
+  private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
   identity and origin travel on `dmr_sm_event_t` to `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY /
   DEFERRED), which never re-evaluates a grant. The `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a
   Hold or preemption candidate.
@@ -13829,7 +13996,34 @@ Private per-protocol modules worth knowing about:
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
+    the call the slot names keeps record and follow time (on the followed slot it still becomes the grant identity), and
+    a repeat of the grant followed there changes nothing. The first voice never publishes the grant identity over a
+    checked LC bound to the slot's active call (`dmr_sm_slot_lc_holds_call()`): the LC's talker and transmission stay,
+    so an in-place grant naming that call changes only the P_CLEAR addresses. Nor does it publish a data grant's
+    identity (`vc_data_call`): voice on that slot is another call and stays as the voice names it (anonymous without an
+    LC). That voice still spends the first-voice publication (`vc_identity_published`), so a later in-place voice
+    grant never publishes over the call playing there (a checked LC's call keeps its talkgroup and transmission).
+    Decided limit (discussion #900): on a followed data slot, once the first voice has been handled, a later in-place
+    voice grant does not name its call; the call is named by its own link control or stays anonymous. A
+    repeat is the same class and kind (group or private, voice
+    or data) and the same talkgroup, or for a private call the same two parties (either way round,
+    `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
+    rule decides whether a naming keeps the slot's follow time (`dmr_sm_slot_name()`) and whether the active canonical
+    call is the named one to bind to (`dmr_sm_call_names_other()`, with what that call does not name yet left open), so
+    such a call starts its own dwell and awaits its own transmission. Late-entry voice without an LC
+    (`DSD_CALL_KIND_VOICE`) counts as voice there, and the same rule applies when an awaiting record binds to the next
+    transmission (`dmr_sm_slot_identity_refresh()`), so a data grant never binds a voice call. An unbound data grant
+    (the slot's record or the followed grant's) never describes the slot's active transmission to the ledger
+    (`dmr_sm_data_grant_not_slot_call()`): that call is unknown, so the gate protects it as any unknown call, never
+    judged by the data grant's priority or follow time. Its Hold match comes from the canonical call alone
+    (`dmr_sm_active_call_holds_hold()`: its class, target and talker), and only from an ACTIVE DMR call. So a DMR
+    voice call playing there on the Hold talkgroup is still a held Hold call, and a second grant for that group on
+    another carrier never displaces it; a record another protocol left active claims no Hold and the slot stays unknown.
+    Decided limit (discussion #900): with data following on (`trunk_tune_data_calls`), a missed voice terminator leaves
+    the voice call's canonical record active, so a confirmed packet-data transfer that follows on that slot is
+    protected as an unknown call (no preemption, past any dwell) until the voice record ends. Decided limit (discussion
+    #900): a missed voice terminator can keep a Hold call protected until its call record times out. A status's in-place
+    entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
@@ -13839,10 +14033,15 @@ Private per-protocol modules worth knowing about:
     unknown record on the followed
     carrier, so a later group status names it; an idle one changes nothing), XPT status reconciliation
     (`dmr_sm_status_slot_reconcile()`, from each site status before its busy view and ranking: on the followed carrier
-    a group entry names its slot's call (on the followed slot the grant identity too, with the status's own CRC
-    provenance, `dmr_sm_vc_identity_group()`), a private one leaves it unknown and, on the followed slot, withdraws
-    the grant identity's fallback and publication; an LC's identity, idle and unknown entries are left alone), and a
-    voice LC only at its checked
+    a group entry names its slot's call (on the followed slot the grant identity too, `dmr_sm_vc_identity_group()`), a
+    private one leaves it unknown and, on the followed slot, withdraws the grant identity's fallback and publication.
+    Every group or private entry for the followed slot gives the followed channel its LSN and numbering kind, and ORs
+    its CRC flags into the followed call's (`dmr_sm_vc_channel_from_status()`), even one naming the group already
+    followed, so a later LC takes that LSN and no status clears an earlier unverified mark. Where a checked LC already
+    names the followed slot's call, the entry still refreshes that pending channel, in `vc_lpcn` and in the LC's record
+    the first voice publishes it from (`dmr_sm_lc_record_channel_from_status()`, flags ORed), but never the LC's parties
+    or binding; on another slot it only fills an LC record that names no channel. Idle and unknown entries are left
+    alone), and a voice LC only at its checked
     publication (`dmr_sm_note_lc_identity()` from `dmr_flco_publish_voice()`). The follow time moves only when the call
     (policy class, target, carrier) changes, so a candidate's dwell runs from the conversation's first follow. They live
     in each trunk-scan target's `dmr_sm_ctx_t` and are dropped by a release, an abandoned carrier, an operator move and
@@ -13867,19 +14066,19 @@ Private per-protocol modules worth knowing about:
   - Call channel (issue #799). A followed call's channel is one resolved value with its numbering
     (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
     `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
-    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's or C_MOVE's absolute escape 0xFFF names its MBC's
+    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's absolute escape 0xFFF names its MBC's
     CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
-    of a known kind is named), so a same-carrier move or a repeated in-place grant keeps the first (decided limit L9).
+    of a known kind is named), so a repeated in-place grant keeps the first (decided limit L9).
     An LC's record keeps its record's channel on that carrier, else the followed call's when that is the carrier's
     (LPCN, LCN: both slots share it) or the slot is the followed one (an LSN is one slot's). A Cap+ or XPT status gives
     each slot record its own LSN (and fills it into an LC's record that names none), and voice sync gives a record's
     channel to the call the record is bound to while that call names no channel (`dmr_sm_publish_slot_channel()`): an
     LSN, or the followed grant's LPCN or LCN, which the companion slot's call is on too (TS 102 361-4 §7.1.1.1.1.1.1:
     the LPCN names the physical channel, both timeslots). The channel keeps its own provenance (`channel_crc_flags`:
-    the naming grant's, move's or status's scope), which an LC naming the record keeps and the publication carries, so
+    the naming grant's or status's scope), which an LC naming the record keeps and the publication carries, so
     a RAS-accepted status or grant under `-F` marks the row it named a channel for. The XPT free value is a repeater
     (LCN): its hint is LSN 2n - 1 (`dmr_xpt_lcn_to_lsn()`), 0 none. Calls without a channel (decided limit L5): trunking
     off; an absolute grant whose CdefParms LPCN is not 1..4094 (its MBC failing, the grant is not followed at all); a
@@ -13889,7 +14088,7 @@ Private per-protocol modules worth knowing about:
     Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`, `DMR_CSBK_HELPERS`,
     `CORE_CALL_STATE`, `CORE_TALKGROUP_POLICY`.
   - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
-    takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
+    takeover, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
     listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
     `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
@@ -13918,11 +14117,11 @@ Private per-protocol modules worth knowing about:
     receiver never left keep their ALG, key ID, MI and privacy; a request the machine gives up on unresolved (its
     deadline, a follow or park that replaces it) is judged as landed, the safe side (`ENGINE_DMR_CC_RECOVERY`
     `dmr_probe_judges_its_carrier_once_landed()`, `dmr_rigctl_probe_judged_from_the_confirmed_frequency()`,
-    `dmr_settle_tune_deadline()`). A grant's follow and a C_MOVE's follow are tracked the same way when their tune is
-    still in flight (`dmr_sm_follow_grant()`, `dmr_sm_follow_move()` take its request): the left calls end at once, as
+    `dmr_settle_tune_deadline()`). A grant's follow is tracked the same way when its tune is still in
+    flight (`dmr_sm_follow_grant()` takes its request): the left calls end at once, as
     the machine moves on, and their decryption is judged once the request lands
-    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY` `dmr_grant_follow_judges_its_carrier_once_landed()`,
-    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
+    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY`
+    `dmr_grant_follow_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
     (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data channel follow
     (`dmr_cspdu_con_plus_tune_data()`, through `dmr_sm_note_tracked_carrier_tune()`):
     `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
@@ -13971,23 +14170,17 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_clear_released_carrier()`). Writers run under the P25 SM tick guard (frame dispatch, the DMR tick, the
     carrier boundary, the trunk-scan switch); an operator move from a command takes it unless held
     (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
-  - C_MOVE. A move of the followed call (its talkgroup or either party of its private call, as the followed slot's
-    identity names it; the grant's only while that slot names none, so a talkgroup a checked LC renamed is another
-    call's), whatever slot it names, is judged with that call's own classification: refused only when tuning is denied
-    for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
-    on the new slot: the call's canonical epoch on the vacated slot ends (EXPLICIT, synchronized) and its first voice on
-    the new slot publishes it there again, so one call never shows ACTIVE on both slots; another carrier -> a new
-    acquisition that ends the calls of the carrier left (as every follow does) before naming the moved call, so its
-    first voice there publishes it in an epoch of its own, which the moved identity binds to (it never waits behind
-    the old carrier's epoch to bind the next, anonymous call); both keep the follow time. Both republish the moved
-    call's identity as the followed slot's record names it (with the record's `crc_flags` OR'ed with the move burst's:
-    the move confirms the target, not a source a RAS-accepted grant or LC under `-F` named), which makes the grant's
-    identity known again even when the end of the call it first named had withdrawn it (a checked LC then named the
-    moved call). A deferred or failed move tune changes nothing, the followed grant's identity included (it is rewritten
-    from the slot's record only in place
-    or once the tune is accepted), so a repeat of the original grant still matches it. A move of any other call is an
-    ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only once
-    accepted (as before when it is not submitted: trunking off or not on a voice channel).
+  - C_MOVE is Move TSCC (TS 102 361-4 §7.1.1.1.3, Table 7.17; `dmr_cspdu_pf0_handle_move()`): the TSCC tells one MS
+    (its individual address, bits 56-79) to move to another TSCC (Physical Channel Number, bits 44-55), with Mask
+    (25-29), Reg (35) and Backoff (36-39) for its access there. It names no call and is informational: printed
+    (`Move TSCC: MS <address> to channel <n>`, the TSCC's frequency when known), never submitted to the machine, never
+    an activity row or a burst-indicator debounce. The absolute escape 0xFFF names the TSCC in an appended MV_AP block
+    (Table 7.18, `dmr_abs_params_decode()`): from a checked or RAS-accepted PDU the channel map learns it
+    (`dmr_csbk_learn_channel()`: SITE or UNVERIFIED) and the control channel hunt takes its frequency as a current-site
+    candidate; a single-block C_MOVE naming 0xFFF is malformed and only printed. Decided limit (discussion #900 D6): a
+    call the site moves between payload carriers (a P_GRANT move on a payload channel) is not followed by a move path;
+    it is picked up again from the TSCC's late-entry grants. Tests: `DMR_T3_CMOVE`, `DMR_T3_MOVE_RELEASE`,
+    `DMR_GRANT_POLICY`.
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
@@ -14168,7 +14361,7 @@ Private per-protocol modules worth knowing about:
   `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
-  decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
+  decode time (a control burst's only once its PDU passes the control gate, `dmr_confidence_note_control_accepted()`) (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
   validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
   MS/direct voice (`dmr_ms.c`) goes through it as BS voice does (issue #834): the EMB has QR(16,7,6) and no checksum
   (TS 102 361-1 Table B.1), and about one noise word in four decodes to some colour code, so an EMB's code is the

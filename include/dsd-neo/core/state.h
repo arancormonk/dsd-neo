@@ -1599,6 +1599,14 @@ struct dsd_state {
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
+    /* DMR Tier III: one bit per LPCN row (row l in byte l / 8, bit l % 8) that the DMR over-the-air writer set and no
+       other writer has set since. dsd_state_set_trunk_chan_freq() clears a row's bit on every write, so a row another
+       protocol or an import wrote is no longer the air's: DMR neither replaces it nor drops it on a network change
+       (discussion #900 F2). Core owns the bit so the shared setter can clear it without knowing the DMR module. */
+    uint8_t dmr_lcn_ota[0x1000 / 8];
+    /* DMR Tier III: bumped each time dsd_state_set_trunk_chan_freq() takes a row from the DMR over-the-air writer
+       (clears its dmr_lcn_ota bit), whatever the frequency, so DMR's channel revision moves on an ownership change. */
+    uint32_t dmr_lcn_ota_seq;
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -2239,6 +2247,18 @@ struct dsd_state {
     uint16_t data_byte_ctr[2];   //number of bytes acculumated
     uint8_t data_ks_start[2];    //where the start of the keystream should be applied to PDU data
     uint8_t udt_uab_reserved[2]; //UDT: header UAB indicates reserved/unknown count (use CRC-based EOM)
+    /* 1 while the slot's last burst was an MBC header or one of its continuations: only then does a continuation join
+     * that MBC. Any other burst on the slot, a sync loss or a retune (dmr_reset_blocks()) disarms it. */
+    uint8_t dmr_mbc_armed[2];
+    /* Where the slot's MBC took its last block (header or continuation): symbol_clock, symbol_clock_epoch and
+     * carrier_seq then. A continuation joins only as the slot's next burst, one TDMA frame on: a burst the decoder
+     * missed disarms nothing, but it moves the clock a frame further. */
+    uint64_t dmr_mbc_clock[2];
+    uint32_t dmr_mbc_epoch[2];
+    uint32_t dmr_mbc_carrier[2];
+    /* 1 when the slot's MBC header proved content by its own check (or a RAS signature -F accepts): the scan's
+     * activity evidence, noted only once the assembled MBC passes the control PDU gate. */
+    uint8_t dmr_mbc_header_proven[2];
     uint8_t dmr_pdu_sf
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot
@@ -3845,8 +3865,34 @@ dsd_state_nxdn_dfa_untag(dsd_state* state, uint32_t channel) {
     learned->count = count;
 }
 
+/* Whether the DMR over-the-air writer holds channel map row @p channel (dsd_state::dmr_lcn_ota). */
+static inline int
+dsd_state_dmr_lcn_ota_get(const dsd_state* state, uint32_t channel) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return 0;
+    }
+    return (state->dmr_lcn_ota[channel >> 3U] >> (channel & 7U)) & 1U;
+}
+
+/* Mark row @p channel as the DMR over-the-air writer's (@p held nonzero) or nobody's in particular. */
+static inline void
+dsd_state_dmr_lcn_ota_set(dsd_state* state, uint32_t channel, int held) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return;
+    }
+    const uint8_t bit = (uint8_t)(1U << (channel & 7U));
+    if (held) {
+        state->dmr_lcn_ota[channel >> 3U] |= bit;
+    } else {
+        state->dmr_lcn_ota[channel >> 3U] &= (uint8_t)~bit;
+    }
+}
+
 /* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
-   row leaves the DFA record and no later parameter change drops it. */
+   row leaves the DFA record and no later parameter change drops it; the same goes for the DMR over-the-air record
+   (dsd_state::dmr_lcn_ota), whose writer releases its bit before this and marks the row again after. A row another
+   writer takes from that record loses the trust DMR gave it (dsd_state::dmr_lcn_trust) and bumps
+   dsd_state::dmr_lcn_ota_seq. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
@@ -3854,6 +3900,11 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     }
     if (state->nxdn_dfa_learned.count != 0U) {
         dsd_state_nxdn_dfa_untag(state, channel);
+    }
+    if (dsd_state_dmr_lcn_ota_get(state, channel)) {
+        dsd_state_dmr_lcn_ota_set(state, channel, 0);
+        state->dmr_lcn_trust[channel] = 0U;
+        state->dmr_lcn_ota_seq++;
     }
 
     const long int old_freq = state->trunk_chan_map[channel];

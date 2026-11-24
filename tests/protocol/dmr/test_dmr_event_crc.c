@@ -200,6 +200,9 @@ static void
 send_burst_bits(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], const uint8_t reserved[3],
                 uint8_t databurst) {
     uint8_t info[196];
+    // Each burst is its slot's next one, a TDMA frame (288 symbols) after the last: an MBC continuation joins its
+    // header only there.
+    state->symbol_clock += 288U;
     dmr_test_encode_bptc_196x96(bits, reserved, info);
     dmr_data_burst_handler(opts, state, info, databurst, NULL);
 }
@@ -287,6 +290,7 @@ send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn, int con
 
     uint8_t block[96] = {0};
     put_bits(block, 0, 1, 1U);     // last block
+    put_bits(block, 2, 6, 0x31U);  // CSBKO: the header's (CG_AP, TS 102 361-4 Table 7.16)
     put_bits(block, 22, 12, lpcn); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
@@ -369,7 +373,7 @@ test_ras_data_provenance(dsd_opts* opts, dsd_state* state) {
         const uint16_t lpcn = ras ? 291U : 292U;
         send_mbc_grant(opts, state, ras, lpcn, 1);
         expect_event(state, slot, before++, 1, ras ? DSD_CRC_RAS_UNVERIFIED : 0U,
-                     ras ? "Learned LCN 0291 -> 851.012500 MHz" : "Learned LCN 0292 -> 851.012500 MHz");
+                     ras ? "Learned channel 291 -> 851.012500 MHz" : "Learned channel 292 -> 851.012500 MHz");
     }
 
     // The separate relaxed-CRC configuration accepts failures but never runs the RAS heuristic: the same RAS-shaped

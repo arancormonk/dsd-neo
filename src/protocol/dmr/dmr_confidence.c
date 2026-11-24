@@ -26,12 +26,17 @@
    decoder thread (issue #703). Never cleared: a carrier boundary does not undo content that was decoded. The carrier
    is two-slot TDMA from here, until an acquisition reset or a carrier boundary (dsd_state::tdma_carrier). The locked
    @p color_code is the carrier's received access code, noted before the burst it came with is dispatched, so whatever
-   that burst publishes already carries it. A scan quiet check hears it as PROVEN content (issue #834). */
+   that burst publishes already carries it. A scan quiet check hears it as PROVEN content (issue #834). A control
+   burst (@p defer) notes the colour code alone: the stamp, the search evidence and the activity wait for its PDU to
+   pass the control gate (dmr_confidence_note_control_accepted()). */
 static void
-dmr_confidence_note_evidence(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
-    state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
+dmr_confidence_note_evidence(const dsd_opts* opts, dsd_state* state, unsigned int color_code, int defer) {
     state->tdma_carrier = 1U;
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, (uint16_t)color_code);
+    if (defer) {
+        return;
+    }
+    state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
     dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
     dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
 }
@@ -86,7 +91,7 @@ dmr_confidence_reset_slot(dsd_state* state, unsigned int slot) {
 }
 
 static dmr_confidence_result
-dmr_confidence_observe_cc(const dsd_opts* opts, dsd_state* state, unsigned int color_code, int may_lock) {
+dmr_confidence_observe_cc(const dsd_opts* opts, dsd_state* state, unsigned int color_code, int may_lock, int defer) {
     if (!state || !dmr_confidence_valid_cc(color_code)) {
         return DMR_CONFIDENCE_REJECT;
     }
@@ -99,7 +104,7 @@ dmr_confidence_observe_cc(const dsd_opts* opts, dsd_state* state, unsigned int c
             // co-channel interference never accumulates into a re-lock.
             state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
             state->dmr_confidence_candidate_count = 0;
-            dmr_confidence_note_evidence(opts, state, color_code);
+            dmr_confidence_note_evidence(opts, state, color_code, defer);
             return DMR_CONFIDENCE_LOCKED;
         }
         if (state->dmr_confidence_mismatch_count < 255U) {
@@ -126,7 +131,7 @@ dmr_confidence_observe_cc(const dsd_opts* opts, dsd_state* state, unsigned int c
             // and RAS is the new system's to prove.
             dmr_confidence_clear_voice(state);
             dmr_ras_reset(state);
-            dmr_confidence_note_evidence(opts, state, color_code);
+            dmr_confidence_note_evidence(opts, state, color_code, defer);
             return DMR_CONFIDENCE_LOCKED;
         }
         return DMR_CONFIDENCE_REJECT;
@@ -146,7 +151,7 @@ dmr_confidence_observe_cc(const dsd_opts* opts, dsd_state* state, unsigned int c
            system, whose RAS is its own to prove; a carrier's first lock (16, not decoded) changes nothing. */
         dmr_ras_note_color_code(state, color_code);
         state->dmr_color_code = color_code;
-        dmr_confidence_note_evidence(opts, state, color_code);
+        dmr_confidence_note_evidence(opts, state, color_code, defer);
         return DMR_CONFIDENCE_LOCKED;
     }
 
@@ -174,7 +179,7 @@ dmr_confidence_note_voice_burst(const dsd_opts* opts, dsd_state* state, unsigned
     }
 
     int was_locked = state->dmr_confidence_locked != 0;
-    dmr_confidence_result cc_result = dmr_confidence_observe_cc(opts, state, color_code, 1);
+    dmr_confidence_result cc_result = dmr_confidence_observe_cc(opts, state, color_code, 1, 0);
     if (cc_result != DMR_CONFIDENCE_LOCKED) {
         return cc_result;
     }
@@ -187,7 +192,7 @@ dmr_confidence_note_voice_burst(const dsd_opts* opts, dsd_state* state, unsigned
 
     if (state->dmr_confidence_voice_count[slot] >= DMR_CONFIDENCE_VOICE_OBSERVES) {
         state->dmr_confidence_voice_open[slot] = 1;
-        dmr_confidence_note_evidence(opts, state, state->dmr_confidence_color_code);
+        dmr_confidence_note_evidence(opts, state, state->dmr_confidence_color_code, 0);
         state->dmr_confidence_voice_m[slot] = state->dmr_confidence_lock_m;
         return DMR_CONFIDENCE_LOCKED;
     }
@@ -195,18 +200,34 @@ dmr_confidence_note_voice_burst(const dsd_opts* opts, dsd_state* state, unsigned
     return DMR_CONFIDENCE_PENDING;
 }
 
-dmr_confidence_result
-dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+static dmr_confidence_result
+dmr_confidence_observe_data(const dsd_opts* opts, dsd_state* state, unsigned int color_code, int defer) {
     // Any data burst with a valid slot type may contribute to the colour-code
     // lock, not just IDLE: a dedicated TIII TSCC transmits continuous CSBK
     // signalling and may never carry IDLE bursts or voice (issue #348).
     if (!state || !dmr_confidence_valid_cc(color_code)) {
         return DMR_CONFIDENCE_REJECT;
     }
-    if (state->dmr_confidence_locked) {
-        return dmr_confidence_observe_cc(opts, state, color_code, 0);
+    return dmr_confidence_observe_cc(opts, state, color_code, !state->dmr_confidence_locked, defer);
+}
+
+dmr_confidence_result
+dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+    return dmr_confidence_observe_data(opts, state, color_code, 0);
+}
+
+dmr_confidence_result
+dmr_confidence_note_control_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+    return dmr_confidence_observe_data(opts, state, color_code, 1);
+}
+
+void
+dmr_confidence_note_control_accepted(dsd_state* state) {
+    if (!state || !state->dmr_confidence_locked) {
+        return;
     }
-    return dmr_confidence_observe_cc(opts, state, color_code, 1);
+    state->dmr_confidence_lock_m = dsd_decode_now_mono_s();
+    dsd_signal_search_note_evidence(state, "DMR", 0, 0, NULL);
 }
 
 int

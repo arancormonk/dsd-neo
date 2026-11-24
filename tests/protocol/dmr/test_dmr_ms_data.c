@@ -714,6 +714,26 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     assert(state.directmode == 0);
 }
 
+/* Discussion #900 B7: an MBC is consecutive bursts, so the voice burst the bootstrap reads ends the one being assembled
+   (dsd_state::dmr_mbc_armed). */
+static void
+test_ms_bootstrap_voice_disarms_the_mbc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+    state.dmr_color_code = 5;
+    open_voice_gate(&state, 1U);
+    state.dmr_mbc_armed[0] = 1U;
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(state.dmr_mbc_armed[0] == 0U);
+}
+
 /* The frame sync accepted the burst with the oldest of its 90 dibits read back not the stream's (a cold start or an
    acquisition reset: dsd_state_sync_readback_invalid()). 60 of them reach into the second AMBE frame's buffered part:
    the first two frames are not decoded, nor the burst's late-entry fragments, its debug dump or its DSP output line,
@@ -1291,6 +1311,7 @@ main(void) {
     test_interrupted_cach_proves_no_slot();
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
     test_ms_bootstrap_plays_short_on_one_channel();
+    test_ms_bootstrap_voice_disarms_the_mbc();
     test_ms_bootstrap_decodes_no_frame_it_did_not_read_back();
     test_ms_data_not_read_back_whole_decodes_nothing();
     test_ms_colour_code_stays_unknown_until_the_embedded_code_decodes();

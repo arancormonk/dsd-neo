@@ -73,6 +73,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -1510,6 +1511,18 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system)
     ui_rxid_guard_leave(taken);
 }
 
+/* ui_user_move_forgets_identity() for a move that can leave the network followed: anything but a return to, or a
+   selection of, the control channel of the system already followed (@p same_system). The DMR Tier III channels the air
+   taught there are not the next network's (dmr_t3_chan_network_changed(), discussion #900 F2); a Return-to-CC goes
+   back to the same network and keeps them. */
+static void
+ui_user_move_leaves_network(dsd_opts* opts, dsd_state* state, int guard_held, int same_system) {
+    ui_user_move_forgets_identity(state, guard_held, same_system);
+    if (!same_system) {
+        dmr_t3_chan_network_changed(opts, state);
+    }
+}
+
 /* Whether a manual move to @p freq lands on the control channel of the P25 system the patch table belongs to (its
    p25_cc_freq, read before the move): a same-system move. */
 static int
@@ -2179,7 +2192,7 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
            as the frequency entry's other branch drops it. */
         dsd_analog_rx_reset(state);
         /* the selection ended the calls left */
-        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held, same_system);
+        ui_user_move_leaves_network(opts, state, g_apply_cmd_guard_held, same_system);
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
@@ -2338,7 +2351,7 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
         *scan_paused = trunk_scan_paused;
     } else {
         /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+        svc_operator_carrier_boundary(opts, state, 0);
     }
     dsd_frame_sync_reset_mod_state();
     dsd_analog_rx_reset(state);
@@ -4157,9 +4170,9 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     if (opts->trunk_enable != 1) {
         /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
            (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, &judge, cand);
     }
     hand_tetra_sm_over(opts, state);
@@ -4216,9 +4229,9 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, judge, freq);
     }
     hand_tetra_sm_over(opts, state);
@@ -5000,7 +5013,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
         && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
+        svc_operator_carrier_boundary(opts, state, 1); // a config apply holds the guard
     }
     return rc;
 }
@@ -7273,14 +7286,15 @@ enum { RR_APPLY_CHAN_FAILED = 1, RR_APPLY_GROUP_FAILED = 2 };
    protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
    this is an ordinary outcome, not an edge case. services.h says the same thing
    about why the clear counterparts exist: "the previous file would otherwise
-   stay live for the session". Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED,
-   or 0. */
+   stay live for the session". A channel map that fails to load clears the live one for the same reason (issue #900).
+   Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED, or 0. */
 static int
 rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
     int failed = 0;
     if (p->has_chan) {
         if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
             failed |= RR_APPLY_CHAN_FAILED;
+            (void)svc_clear_channel_map(opts, state);
         }
     } else {
         (void)svc_clear_channel_map(opts, state);
@@ -7610,18 +7624,24 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     }
     /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
-    if (rr_apply_moves_the_receiver(opts, &p)) {
+    const int moves = rr_apply_moves_the_receiver(opts, &p);
+    if (moves) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
            while the calls of the system it leaves are still active, before anything below ends them
            (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
            talkgroup (issue #575). The import runs under the P25 SM tick guard. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_operator_carrier_boundary(opts, state, 1);
     }
     (void)svc_leave_channel_scan(opts, state);
     char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
     note[0] = '\0';
     if (rr_apply_mode(opts, state, mode, note, sizeof note) != UI_CMD_APPLY_COMPLETED) {
-        return UI_CMD_APPLY_FAILED;
+        return UI_CMD_APPLY_FAILED; // the previous mode and system stay, and so does what their network taught
+    }
+    if (!moves) {
+        /* No tuner moves, but the system the mode change committed replaces the old one: the DMR network baseline and
+           what the old network taught go, so the new system's first checked system code is no change of network. */
+        dmr_t3_chan_network_changed(opts, state);
     }
     rr_apply_edacs_variants(state, &p, mode);
     if (mode == DSDCFG_MODE_EDACS_PV) {

@@ -93,6 +93,9 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * state's extensions. Decoder-thread private: frontends read the copies app-control publishes. */
     DSD_STATE_EXT_CORE_POSITION_FEED = 17,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
+    /* The DMR module's extension (src/protocol/dmr/dmr_t3_channels_internal.h): the Reverse Channel notice dedupe and
+     * the Tier III channel provenance (<dsd-neo/protocol/dmr/dmr_t3_channels.h>, discussion #900). Decoder-thread
+     * private. */
     DSD_STATE_EXT_PROTO_DMR_RC = 25,
     DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,
     /* TETRA decoder state (src/protocol/tetra/tetra_state.h). Decoder-thread private. */
