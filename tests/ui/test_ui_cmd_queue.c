@@ -11427,8 +11427,9 @@ static double g_config_rtl_create_squelch = -1.0;
 /* The squelch mode and margin a stream would open with (issue #899: the analog default is in them before the open). */
 static int g_config_rtl_create_squelch_mode = -1;
 static int g_config_rtl_create_squelch_margin = -1;
-/* The receiver channel the last create opened (issue #899), and whether it opened closed (on the analog family). */
-static int g_config_rtl_create_closed = -1;
+/* Whether the receiver the last start ran started closed (issue #899): read right after the start, before any write
+   of the decoder's (-1: none started). */
+static int g_config_rtl_start_closed = -1;
 /* The squelch gate the last start was passed (rtl_stream_start_gated(), issue #899): whether one was, and resolved (-1:
    none), and what the options copy of the last create gives a start passed none. */
 static int g_config_rtl_start_gate_given = -1;
@@ -11572,7 +11573,7 @@ reset_config_rtl_wrap(void) {
     g_config_rtl_airspy_stops_after_open = 0;
     g_config_rtl_next_fail_opens = 0;
     g_config_rtl_creates = 0;
-    g_config_rtl_create_closed = -1;
+    g_config_rtl_start_closed = -1;
     g_config_rtl_start_gate_given = g_config_rtl_start_gate_resolved = -1;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
@@ -11631,7 +11632,6 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
         /* The stream opens a new channel: closed on the analog family (issue #899). */
         const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
         channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, cmd_rx_runs);
-        g_config_rtl_create_closed = channel_gate_fake_closed();
         /* What the receiver's options copy gives a start passed no gate (rtl_stream_start()). */
         g_config_rtl_create_configured = dsd_squelch_setting_configured(opts);
     }
@@ -11665,6 +11665,7 @@ __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* s
             channel_gate_fake_start(g_config_rtl_create_analog_only == 1, start_gate && start_gate->resolved,
                                     start_gate ? &start_gate->gate : none, start_gate ? &start_gate->digital : none,
                                     start_gate ? &start_gate->session : none, cmd_rx_runs);
+            g_config_rtl_start_closed = channel_gate_fake_closed();
             channel_gate_fake_requests_pending(g_config_rtl_start_leaves_pending);
         }
         return 0;
@@ -17328,13 +17329,14 @@ test_config_apply_under_a_row_keeps_its_gate(void) {
        closed: the digital family), the row's resume asks for its analog monitor on a channel of its own, closed until
        the decoder opens it on the row's noise +10 once the command has run; never the configured Off. */
     const dsd_squelch_setting reopened_rx = channel_gate_fake_gate();
-    if (g_config_rtl_create_closed != g_config_rtl_create_analog_only || channel_gate_fake_closed()
+    if (g_config_rtl_start_closed != g_config_rtl_create_analog_only || channel_gate_fake_closed()
         || reopened_rx.mode != DSD_SQUELCH_MODE_NOISE || reopened_rx.margin_db != 10) {
-        DSD_FPRINTF(stderr,
-                    "row gate: reopen, the device opened analog %d closed %d; the receiver runs closed %d, mode %d "
-                    "margin %d; want closed on the analog family only, then noise +10\n",
-                    g_config_rtl_create_analog_only, g_config_rtl_create_closed, channel_gate_fake_closed(),
-                    reopened_rx.mode, reopened_rx.margin_db);
+        DSD_FPRINTF(
+            stderr,
+            "row gate: reopen, the device opened analog %d and started closed %d; the receiver runs closed %d, mode %d "
+            "margin %d; want closed on the analog family only, then noise +10\n",
+            g_config_rtl_create_analog_only, g_config_rtl_start_closed, channel_gate_fake_closed(), reopened_rx.mode,
+            reopened_rx.margin_db);
         rc |= 1;
     }
     rc |= expect_true("row gate: reopen, the row runs it",
@@ -17420,7 +17422,9 @@ test_config_to_dmr_on_the_same_input_keeps_off_off_the_nfm_channel(void) {
  * before the fix it opened on Off and noise +10 came only with the resume. (P2) A config that reopens the device and
  * turns the -Y scanner off ([trunking] with neither scanner nor trunking) opens it for the session it leaves (DMR,
  * Off), never on the outgoing nfm row's own -40 dB threshold; before the fix the suspended row's threshold opened the
- * stream that starts the configured DMR session.
+ * stream that starts the configured DMR session. Round 12: whether the analog reopen started closed is read right after
+ * its start (g_config_rtl_start_closed), so a reopen that started resolved and open fails, though the decoder's write
+ * after the command corrects the gate the case reads at its end.
  */
 static int
 test_config_reopen_opens_on_the_gate_of_what_it_opens(void) {
@@ -17456,12 +17460,13 @@ test_config_reopen_opens_on_the_gate_of_what_it_opens(void) {
     rc |= expect_int("reopen gate: inherited, one open", g_config_rtl_creates, 1);
     rc |= expect_int("reopen gate: inherited, the scanner kept", opts->scanner_mode, 1);
     const dsd_squelch_setting inherited_rx = channel_gate_fake_gate();
-    if (g_config_rtl_create_analog_only != 1 || g_config_rtl_create_closed != 1 || channel_gate_fake_closed()
+    if (g_config_rtl_create_analog_only != 1 || g_config_rtl_start_closed != 1 || channel_gate_fake_closed()
         || inherited_rx.mode != DSD_SQUELCH_MODE_NOISE || inherited_rx.margin_db != 10) {
         DSD_FPRINTF(stderr,
-                    "reopen gate: inherited row onto analog, the device opened analog %d closed %d; the receiver runs "
+                    "reopen gate: inherited row onto analog, the device opened analog %d and started closed %d; the "
+                    "receiver runs "
                     "closed %d, mode %d margin %d; want the analog monitor opened closed, then on noise +10\n",
-                    g_config_rtl_create_analog_only, g_config_rtl_create_closed, channel_gate_fake_closed(),
+                    g_config_rtl_create_analog_only, g_config_rtl_start_closed, channel_gate_fake_closed(),
                     inherited_rx.mode, inherited_rx.margin_db);
         rc |= 1;
     }
