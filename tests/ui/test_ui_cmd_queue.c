@@ -12781,11 +12781,12 @@ test_idle_digital_drain_resolves_nothing(void) {
     rc |= expect_int("idle drain: settled, nothing queued", dsd_app_drain_cmds(opts, state), 0);
     rc |= expect_true("idle drain: settled, the session looked up", g_cmd_session_lookups > 0);
     rc |= expect_int("idle drain: settled, the due write", channel_gate_fake_writes() - writes, 1);
+    const int settled_resolves = g_cmd_rx_resolves;
     /* A command re-resolves; the receiver runs the session's gate already, so nothing changes. */
     rc |= expect_int("idle drain: a command", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle drain: the command drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_true("idle drain: the command re-resolves", g_cmd_rx_resolves > 0);
+    rc |= expect_true("idle drain: the command re-resolves", g_cmd_rx_resolves > settled_resolves);
     const dsd_squelch_setting rx = channel_gate_fake_gate();
     rc |=
         expect_true("idle drain: the receiver still runs the session's gate", dsd_squelch_setting_equal(&rx, &session));
