@@ -14061,10 +14061,14 @@ Private per-protocol modules worth knowing about:
   voice but no proof. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
   epoch an addressless start reopens after a clean END is another epoch. Supergroup evidence is the message's own (a
   regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
-  updates the patch table) or an active patch entry naming the group when the proof is noted, frozen there with it.
-  Documented limit: a MAC_PTT names no supergroup itself, so one naming a supergroup that no regroup grant or voice
-  user has yet put in the patch table (and no regroup voice user waiting on the same epoch) is remembered as an
-  ordinary group. Test: `P25_HEARD_TALKGROUP`.
+  updates the patch table), an active patch entry naming the group, or a checked regroup grant of the group the slot
+  follows (`p25_sm_note_regroup_grant()`, called by each regroup grant and grant update decoder after its dispatch,
+  keeps `p25_sm_slot_ctx_t::regroup_sg` on the accepted assignment for that group until it is cleared or replaced;
+  `p25_sm_followed_regroup()`), when the proof is noted, frozen there with it. The grant's word needs no patch row: a
+  full table of live member-bearing patches takes no memberless row. Documented limit: a MAC_PTT names no supergroup
+  itself, so one naming a supergroup no followed regroup grant named, that no regroup grant or voice user has put in
+  the patch table (and no regroup voice user waiting on the same epoch) is remembered as an ordinary group. Test:
+  `P25_HEARD_TALKGROUP`.
 - P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
   assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
   `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own

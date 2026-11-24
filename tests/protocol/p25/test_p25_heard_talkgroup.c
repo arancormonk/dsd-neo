@@ -23,6 +23,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -546,6 +547,67 @@ test_p2_corrected_duid_traffic_proves_nothing(void) {
     return rc;
 }
 
+/* A trunked TDMA session on the control channel: no grant followed yet. */
+static void
+on_tdma_control_channel(void) {
+    reset_session(1);
+    g_opts.trunk_enable = 1;
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.trunk_tune_group_calls = 1;
+    g_state.p25_cc_freq = 851000000;
+    g_state.trunk_chan_map[TEST_CHANNEL] = TEST_FREQ;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+}
+
+/* The control channel's Motorola MFID 0x90 Group Regroup Channel Grant - Implicit (0xA3 0x90) of supergroup @p sg,
+   a CRC-passed MAC_SIGNAL. */
+static void
+p2_signal_regroup_grant(uint32_t sg) {
+    unsigned long long int mac[24] = {0};
+    mac[1] = 0xA3;
+    mac[2] = 0x90;
+    mac[3] = 0x0B;
+    mac[5] = (TEST_CHANNEL >> 8) & 0xFFU;
+    mac[6] = TEST_CHANNEL & 0xFFU;
+    mac[7] = (sg >> 8) & 0xFFU;
+    mac[8] = sg & 0xFFU;
+    mac[9] = (TEST_SRC >> 16) & 0xFFU;
+    mac[10] = (TEST_SRC >> 8) & 0xFFU;
+    mac[11] = TEST_SRC & 0xFFU;
+    g_state.currentslot = 0;
+    process_MAC_VPDU_crc(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac, 1);
+}
+
+/* A checked regroup grant says its group is a supergroup, whether or not the patch table can keep a row for it: with
+   every row a live patch that has members, a grant naming only its supergroup evicts none, and the MAC_PTT that then
+   starts the followed call still proves a supergroup (not remembered). */
+static int
+test_p2_followed_regroup_grant_outside_patch_table(void) {
+    int rc = 0;
+    on_tdma_control_channel();
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        p25_patch_update(&g_state, 0x3000 + i, 1, 1);
+        p25_patch_add_wgid(&g_state, 0x3000 + i, 0x0100 + i);
+    }
+    p2_signal_regroup_grant(TEST_SG);
+    rc |= expect("P2 regroup grant followed", g_opts.trunk_is_tuned == 1 && p25_sm_get_ctx()->vc_tg == TEST_SG);
+    int rows = 0;
+    for (int i = 0; i < DSD_P25_PATCH_MAX; i++) {
+        rows += g_state.p25_patch_active[i] && g_state.p25_patch_sgid[i] == TEST_SG;
+    }
+    rc |= expect("P2 full patch table keeps no row for the granted supergroup", rows == 0);
+    p2_ptt(0U, TEST_SG);
+    rc |= expect("P2 MAC_PTT publishes the regroup call", active_on(0U, TEST_SG));
+    rc |= expect("P2 MAC_PTT of a followed regroup grant is a supergroup", noted_not_remembered(0U));
+
+    /* An ordinary grant of the same group is no supergroup evidence. */
+    follow_grant(1, TEST_SG);
+    p2_ptt(0U, TEST_SG);
+    rc |= expect("P2 MAC_PTT of an ordinary grant proves the group", remembered(0U, TEST_SG));
+    return rc;
+}
+
 /* A voice burst run outside the DUID dispatch carries no DUID verdict and proves nothing. */
 static int
 test_p2_voice_outside_dispatch_proves_nothing(void) {
@@ -761,6 +823,7 @@ main(void) {
     rc |= test_p2_voice_user_after_note_waits_on_nothing();
     rc |= test_p2_corrected_duid_traffic_proves_nothing();
     rc |= test_p2_voice_outside_dispatch_proves_nothing();
+    rc |= test_p2_followed_regroup_grant_outside_patch_table();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();

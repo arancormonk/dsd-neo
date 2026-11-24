@@ -12,6 +12,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -49,8 +50,10 @@ p25_heard_tg_note(const dsd_opts* opts, dsd_state* state, uint8_t slot, const ds
     DSD_MEMSET(&in, 0, sizeof in);
     in.variant = DSD_HEARD_TG_P25;
     in.id = group;
-    /* Read now and frozen with the proof: a patch that expires before the call commits changes nothing. */
-    in.p25_supergroup = (uint8_t)(supergroup != 0 || p25_heard_tg_patch_names_sg(state, group));
+    /* Read now and frozen with the proof: a patch that expires before the call commits changes nothing. A checked
+       regroup grant the slot follows says so too, whether or not the patch table could keep a row for it. */
+    in.p25_supergroup = (uint8_t)(supergroup != 0 || p25_heard_tg_patch_names_sg(state, group)
+                                  || p25_sm_followed_regroup(p25_sm_get_ctx(), (int)slot, group));
     dsd_call_state_note_verified_target(opts, state, slot, dsd_call_snapshot_transmission(call), &in);
 }
 

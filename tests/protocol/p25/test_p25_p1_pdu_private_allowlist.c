@@ -213,6 +213,12 @@ p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* st
     (void)state;
 }
 
+void
+p25_sm_note_regroup_grant(p25_sm_ctx_t* ctx, int sg) {
+    (void)ctx;
+    (void)sg;
+}
+
 /* The validated-control helper (issue #703) is the SM's; this harness keeps its activity semantics. */
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)

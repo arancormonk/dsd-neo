@@ -2266,6 +2266,7 @@ p25_grant_clear_one_slot_state(p25_sm_ctx_t* ctx, int slot) {
     ctx->slots[slot].svc_bits = P25_SM_SVC_UNKNOWN;
     ctx->slots[slot].enc_override_clear = 0;
     ctx->slots[slot].enc_lockout_reprobe = 0;
+    ctx->slots[slot].regroup_sg = 0U;
     // last_followed_m is deliberately NOT cleared here. It is carrier history,
     // not assignment state, and this helper also runs for slots that are merely
     // being vacated (p25_grant_clear_moved_target_slots) -- wiping the countdown
@@ -2398,6 +2399,8 @@ p25_grant_store_slot_context(p25_sm_ctx_t* ctx, const dsd_state* state, const p2
     slot_ctx->svc_bits = ev->svc_bits;
     slot_ctx->enc_override_clear = (eval_ctx && eval_ctx->enc_override_clear) ? 1 : 0;
     slot_ctx->enc_lockout_reprobe = (eval_ctx && eval_ctx->enc_lockout_reprobe) ? 1 : 0;
+    /* A new assignment: a regroup grant names its supergroup after its dispatch (p25_sm_note_regroup_grant()). */
+    slot_ctx->regroup_sg = 0U;
     p25_slot_note_grant(slot_ctx, now_m);
     slot_ctx->tg = target_id;
 }
@@ -3425,6 +3428,29 @@ p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int t
         return 0;
     }
     return svc_bits < 0 || (svc_bits & 0x40) != 0;
+}
+
+void
+p25_sm_note_regroup_grant(p25_sm_ctx_t* ctx, int sg) {
+    if (!ctx || sg <= 0 || sg > 0xFFFF) {
+        return;
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+        if (slot_ctx->grant_active && slot_ctx->is_group && slot_ctx->ota_tg == sg) {
+            slot_ctx->regroup_sg = (uint32_t)sg;
+        }
+    }
+}
+
+int
+p25_sm_followed_regroup(const p25_sm_ctx_t* ctx, int slot, uint32_t group) {
+    if (!ctx || slot < 0 || slot > 1 || group == 0U) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[ctx->vc_is_tdma ? slot : 0];
+    return slot_ctx->grant_active && slot_ctx->is_group && (uint32_t)slot_ctx->ota_tg == group
+           && slot_ctx->regroup_sg == group;
 }
 
 void

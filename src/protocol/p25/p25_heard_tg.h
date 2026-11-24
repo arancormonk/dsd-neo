@@ -14,8 +14,9 @@
  *   once traffic of the same transmission is decoded on the slot. A voice user alone proves nothing: the base station
  *   sends it during call setup even when the setup fails (TIA-102.BBAC §7.3.1).
  *
- * Supergroup evidence is taken from the message itself (a regroup voice user) or from a patch entry naming the group
- * when the proof is noted, and frozen there with the proof.
+ * Supergroup evidence is taken from the message itself (a regroup voice user), from a patch entry naming the group, or
+ * from a checked regroup grant the slot's followed assignment came from (p25_sm_followed_regroup(), which needs no
+ * patch row), when the proof is noted, and frozen there with the proof.
  */
 
 #ifndef DSD_NEO_SRC_PROTOCOL_P25_P25_HEARD_TG_H_
@@ -31,8 +32,9 @@ extern "C" {
 #endif
 
 /* Note that a checked message proved @p group for @p call, slot @p slot's ACTIVE P25 group call naming that group, with
- * @p supergroup 1 when the message itself named a supergroup; an active patch entry naming the group as its supergroup
- * counts too. Nothing for any other call, or one already noted. */
+ * @p supergroup 1 when the message itself named a supergroup; an active patch entry naming the group as its supergroup,
+ * or a checked regroup grant of the group the slot follows, counts too. Nothing for any other call, or one already
+ * noted. */
 void p25_heard_tg_note(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                        uint32_t group, int supergroup);
 

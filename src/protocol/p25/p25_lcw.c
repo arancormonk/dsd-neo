@@ -1074,6 +1074,10 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
         const uint16_t groups[1] = {(uint16_t)sg};
         const int svcs[1] = {P25_SM_SVC_UNKNOWN};
         p25_lcw_offer_preemption(ctx, channels, groups, svcs, 1);
+        if (ctx->lc_hard) {
+            /* A hard-decoded update names its supergroup to an assignment it took (spec 2.20). */
+            p25_sm_note_regroup_grant(p25_sm_get_ctx(), (int)sg);
+        }
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 0U);
     }

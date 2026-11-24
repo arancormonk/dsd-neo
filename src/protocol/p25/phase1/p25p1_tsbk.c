@@ -305,6 +305,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     }
     // The grant names the supergroup (a CRC-good block: tsbk_dispatch_message()): its row stays, its members do not.
     p25_patch_update(state, sg, /*is_patch*/ 1, /*active*/ 1);
+    p25_sm_note_regroup_grant(p25_sm_get_ctx(), sg);
 }
 
 static void
@@ -338,8 +339,10 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
     // Each supergroup the update names keeps its row (a CRC-good block); the second only with its own channel.
     p25_patch_update(state, sg1, /*is_patch*/ 1, /*active*/ 1);
+    p25_sm_note_regroup_grant(p25_sm_get_ctx(), sg1);
     if (ch2 != 0) {
         p25_patch_update(state, sg2, /*is_patch*/ 1, /*active*/ 1);
+        p25_sm_note_regroup_grant(p25_sm_get_ctx(), sg2);
     }
 }
 

@@ -258,6 +258,10 @@ typedef struct {
     /* dsd_state_reception_generation() the assignment's flags were earned under: they count only there. A grant
        stores it after the retune it causes, so its checked talker carries to the channel it sends the receiver to. */
     uint64_t identity_rx_gen;
+    /* The group of this assignment when a checked regroup grant named it a supergroup (p25_sm_note_regroup_grant()),
+       0 none: the verified talkgroup proof's supergroup evidence for the followed call (issue #903), kept apart from
+       the patch table, which may hold no row for it. */
+    uint32_t regroup_sg;
     p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
@@ -1040,6 +1044,26 @@ int p25_sm_grant_candidate_rank(const dsd_opts* opts, dsd_state* state, const p2
  * @return 1 for a silent probe, 0 otherwise.
  */
 int p25_sm_grant_is_silent_probe(const dsd_opts* opts, const dsd_state* state, int tg, int svc_bits);
+
+/**
+ * @brief A checked regroup grant or grant update named @p sg a supergroup (issue #903).
+ *
+ * Called by a decoder after it dispatched the grant: each slot's accepted group assignment for @p sg keeps the word
+ * (p25_sm_slot_ctx_t::regroup_sg) until the assignment is cleared or replaced, whether or not the patch table has a
+ * row for the supergroup (a full table of live member-bearing patches takes no memberless row).
+ *
+ * @param ctx State machine context (NULL: nothing).
+ * @param sg Supergroup ID (0: nothing).
+ */
+void p25_sm_note_regroup_grant(p25_sm_ctx_t* ctx, int sg);
+
+/**
+ * @brief Whether call-state slot @p slot's followed assignment is for @p group, which a checked regroup grant named a
+ * supergroup (p25_sm_note_regroup_grant()).
+ *
+ * @return 1 when it is, 0 otherwise (NULL context, no assignment, another group, or none named).
+ */
+int p25_sm_followed_regroup(const p25_sm_ctx_t* ctx, int slot, uint32_t group);
 
 /* ============================================================================
  * Helper: SACCH slot mapping

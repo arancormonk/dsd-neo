@@ -718,8 +718,10 @@ p25p2_vpdu_note_regroup_grant(const p25p2_vpdu_ctx* ctx, int sg1, int sg2) {
         return;
     }
     p25_patch_update(ctx->state, sg1, /*is_patch*/ 1, /*active*/ 1);
+    p25_sm_note_regroup_grant(p25_sm_get_ctx(), sg1);
     if (sg2 != 0 && sg2 != sg1) {
         p25_patch_update(ctx->state, sg2, /*is_patch*/ 1, /*active*/ 1);
+        p25_sm_note_regroup_grant(p25_sm_get_ctx(), sg2);
     }
 }
 
