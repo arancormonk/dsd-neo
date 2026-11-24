@@ -387,6 +387,7 @@ static struct controller_state controller;
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 /* The same word, with every load of it counted, for the case that checks the status the telemetry polls reads none
    (issue #899): a load anywhere, the getter's or one written inline, counts. */
+namespace {
 struct SquelchWordCounted {
     std::atomic<uint32_t> word{0U};
     std::atomic<int> loads{0};
@@ -402,6 +403,7 @@ struct SquelchWordCounted {
         word.store(value, order);
     }
 };
+} // namespace
 
 static SquelchWordCounted g_squelch_auto_word;
 #else
