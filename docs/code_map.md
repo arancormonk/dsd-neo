@@ -5316,10 +5316,14 @@ suite runs under this compiler.
     nothing in flight to commit, an operator Hold keeps no row, `dsd_engine_channel_scan_hold_keeps_row()`, and the
     scan recovers by its next timed step, round 10, a forced step paced -t from the first decision that finds the scan
     so, `dsd_engine_channel_scan_owed_recovery_due()`, since a busy row's sync keeps refreshing the hangtime anchor
-    though the owed commit discards its frames, round 11; the deadline is `dsd_state::lcn_owed_recovery_m`, armed by
-    the scan's service `dsd_engine_channel_scan_pending()` and armed again by a timed step that stages no tune (a
-    placeholder keeps its `-t` dwell, a row not prepared is tried once a pace), read by the step decision with no scan
-    lookup and published by the `-Y` timing tick as `Retune retry` counting down to that step, round 12), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    though the owed commit discards its frames, round 11; the deadline and the span it was armed with are the scan's
+    (its extension, cleared with the commit owed and by every staged tune), armed by the scan's service
+    `dsd_engine_channel_scan_pending()` and armed again by a timed step that stages no tune (a placeholder keeps its
+    `-t` dwell, a row not prepared is tried once a pace), round 12; while armed it governs every timed step below the
+    per-visit cap and the avoided-row departure, none before its deadline, the hangtime rule's included, and the `-Y`
+    timing tick publishes it as `Retune retry` over its armed span, which a live `-t` edit leaves alone
+    (`dsd_engine_channel_scan_owed_recovery_window()`); `dsd_state::lcn_owed_recovery_armed`, set and cleared with it,
+    lets a healthy pass's decision and tick skip the scan lookup, round 13), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
     tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
     a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
@@ -9953,7 +9957,7 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   receiver is on, its digital gate, and the session's a new channel off the monitor runs), `rtl_stream_gate_closed_start()` (a closed start waits for
   that write) and `rtl_stream_start_gated()` (a start on the `rtl_stream_start_gate` the decoder resolved for it: run
   from the first block when resolved, the session's squelch always; `rtl_stream_get_squelch_running()` says what the
-  next block takes, and `rtl_stream_get_squelch_status()`, which the telemetry polls, reads none of it), and
+  next block takes, and `rtl_stream_get_squelch_status()`, which the telemetry polls, loads none of its gate word), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
