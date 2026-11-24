@@ -1133,7 +1133,7 @@ channel_scan_commit_owed_idle(const dsd_state* state) {
 }
 
 int
-dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, dsd_state* state, double now_m) {
+dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, const dsd_state* state, double now_m) {
     channel_scan* scan =
         (opts && state && opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) ? channel_scan_get(state) : NULL;
     if (!scan || !channel_scan_commit_owed_idle(state)) {

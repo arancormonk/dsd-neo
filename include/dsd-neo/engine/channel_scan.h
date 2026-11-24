@@ -279,7 +279,7 @@ int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
  * paced from the first decision that finds the scan so (-t, at least 1 s, on the decode monotonic clock @p now_m),
  * which received sync never moves; every tune the scan stages starts it over. 0 without -Y, under a trunk scan, and
  * with nothing owed. Decoder thread. */
-int dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, dsd_state* state, double now_m);
+int dsd_engine_channel_scan_owed_recovery_due(const dsd_opts* opts, const dsd_state* state, double now_m);
 /** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
  * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
  * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a
