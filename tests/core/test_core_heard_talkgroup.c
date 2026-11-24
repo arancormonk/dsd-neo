@@ -92,6 +92,8 @@ test_classifier(void) {
     assert(nx(DSD_HEARD_TG_NXDN_CONV, 0, 1, 0) == 0);
     assert(nx(DSD_HEARD_TG_NXDN_CONV, 0xFFEF, 1, 0) == 1);
     assert(nx(DSD_HEARD_TG_NXDN_CONV, 0xFFF0, 1, 0) == 0);
+    /* CC Option bit 6 names an inter-system call on a conventional channel too (TS 1-A 6.5.11). */
+    assert(nx(DSD_HEARD_TG_NXDN_CONV, 100, 1, 1) == 0);
 
     assert(t(DSD_HEARD_TG_NXDN_D, (0u << 11) | 1u) == 1);
     assert(t(DSD_HEARD_TG_NXDN_D, (0u << 11) | 0u) == 0);

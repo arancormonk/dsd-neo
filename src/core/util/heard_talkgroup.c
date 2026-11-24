@@ -51,15 +51,18 @@ dsd_heard_tg_test_eval_count(void) {
 #define HEARD_TG_COUNT_EVAL() ((void)0)
 #endif
 
-/* The qualifiers a variant checks beyond its id range: P25 excludes supergroups, NXDN admits only group call types. */
+/* The qualifiers a variant checks beyond its id range: P25 excludes supergroups, NXDN admits only group call types and
+   no inter-system call (CC Option bit 6, TS 1-A 6.5.11: another system's group, never a local talkgroup). */
 static int
 heard_tg_qualifiers_ok(const dsd_heard_tg_input* in) {
     switch (in->variant) {
         case DSD_HEARD_TG_P25: return in->p25_supergroup ? 0 : 1;
         case DSD_HEARD_TG_NXDN_C:
-            /* Call types 000/001 only; inter-system (CC Option bit 6) is not a local talkgroup. */
+            /* Call types 000/001 only. */
             return ((in->nxdn_type_bits == 0u || in->nxdn_type_bits == 1u) && !in->nxdn_inter_system) ? 1 : 0;
-        case DSD_HEARD_TG_NXDN_CONV: return in->nxdn_type_bits == 1u ? 1 : 0;
+        case DSD_HEARD_TG_NXDN_CONV:
+            /* Call type 001 only: 000 is used only on a trunked system (TS 1-A 6.5.12). */
+            return (in->nxdn_type_bits == 1u && !in->nxdn_inter_system) ? 1 : 0;
         default: return 1;
     }
 }

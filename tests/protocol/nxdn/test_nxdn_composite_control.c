@@ -1143,7 +1143,8 @@ enum {
 };
 
 /* A conventional channel (trunking off, no control channel decoded): a group call (001) is remembered as conventional,
- * a broadcast call (000, trunked only) is noted and refused by the classifier, a private call (100) is not noted. */
+ * a broadcast call (000, trunked only) or an inter-system one is noted and refused by the classifier, a private call
+ * (100) is not noted. */
 static int
 test_heard_conventional(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -1162,6 +1163,13 @@ test_heard_conventional(dsd_opts* opts, dsd_state* state) {
     send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 4U, 7100U);
     rc |= expect_long("conventional private: call", call_target(state), 7100L);
     rc |= expect_long("conventional private: not noted", heard_variant(state), -1L);
+
+    /* CC Option bit 6 (TS 1-A 6.5.11) says the group call is another system's: noted, and refused. */
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0x40U, 1U, 7100U);
+    rc |= expect_long("conventional inter-system: call", call_target(state), 7100L);
+    rc |=
+        expect_long("conventional inter-system: noted, not a talkgroup", heard_variant(state), (long)DSD_HEARD_TG_NONE);
 
     /* A VCALL naming no destination (as one continuing a DCR call does) proves nothing, and leaves the proof to the
        next VCALL that names the group. */
