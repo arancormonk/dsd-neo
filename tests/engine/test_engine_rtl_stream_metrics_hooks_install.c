@@ -311,14 +311,17 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
 static int g_gate_writes;
 static dsd_squelch_setting g_last_gate;
 static dsd_squelch_setting g_last_digital_gate;
+static dsd_squelch_setting g_last_session_gate;
 static int g_closed_start_reads;
 static int g_request_pending;
 
 void
-rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                              const dsd_squelch_setting* session) {
     ++g_gate_writes;
     g_last_gate = *gate;
     g_last_digital_gate = digital ? *digital : *gate;
+    g_last_session_gate = session ? *session : g_last_digital_gate;
 }
 
 int
@@ -557,13 +560,15 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&auto6) == -1);
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(NULL) == -1);
     assert(g_channel_squelch_setting_calls == 0 && g_channel_squelch_calls == 0);
-    /* A gate write reaches the stream whole, with its digital gate (issue #899). */
+    /* A gate write reaches the stream whole, with its digital gate and the session's (issue #899). */
     const dsd_squelch_setting noise10 = {DSD_SQUELCH_MODE_NOISE, 0.0, 10};
     const dsd_squelch_setting off = {DSD_SQUELCH_MODE_LEVEL, 0.0, 6};
-    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(&noise10, &off) == 0);
+    const dsd_squelch_setting auto8 = {DSD_SQUELCH_MODE_AUTO, 0.0, 8};
+    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(&noise10, &off, &auto8) == 0);
     assert(g_gate_writes == 1 && g_last_gate.mode == DSD_SQUELCH_MODE_NOISE && g_last_gate.margin_db == 10
-           && g_last_digital_gate.mode == DSD_SQUELCH_MODE_LEVEL);
-    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(NULL, &off) == -1 && g_gate_writes == 1);
+           && g_last_digital_gate.mode == DSD_SQUELCH_MODE_LEVEL && g_last_session_gate.mode == DSD_SQUELCH_MODE_AUTO
+           && g_last_session_gate.margin_db == 8);
+    assert(dsd_rtl_stream_metrics_hook_write_squelch_gate(NULL, &off, &off) == -1 && g_gate_writes == 1);
     assert(dsd_rtl_stream_metrics_hook_gate_closed_start() == 1 && g_closed_start_reads == 1);
     /* The newest receive request unsettled says one is outstanding; settled, none is. */
     g_request_pending = 1;

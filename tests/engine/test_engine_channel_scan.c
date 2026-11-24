@@ -979,6 +979,63 @@ test_digital_landing_after_analog_row_runs_the_session_gate(void) {
     tunes = reset_count = 0;
 }
 
+/* Round 9: the same between two digital rows. A digital row's own squelch is its gate, and still belongs to that row:
+   with session squelch Off, a dmr row with its own -40 dB rotates to a dmr row with none, and the second row's landing
+   runs Off from its first block (its first frames pass), before the decoder's write at the row commit, which keeps Off.
+   Before round 9 the landing ran the outgoing row's -40 dB until that commit. */
+static void
+test_digital_landing_after_digital_row_runs_the_session_gate(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 2;
+    for (int row = 0; row < 2; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_SQUELCH;
+    profile->values.squelch_db = -40;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = rx_gate_hooks(output_rate);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    gate_install_resume_settle();
+    gate_open(opts, state);
+    assert(dsd_squelch_setting_is_off(&g_rx_squelch) && !channel_gate_fake_closed());
+    expected_nxdn = 0;
+    const dsd_squelch_setting row_own = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(!channel_gate_fake_closed() && dsd_squelch_setting_equal(&g_rx_squelch, &row_own));
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    land_pending_tune(request);
+    if (tune_landed_closed != 0 || !dsd_squelch_setting_is_off(&g_rx_squelch)) {
+        DSD_FPRINTF(stderr,
+                    "dmr landing after the dmr row's own -40 dB: closed %d, runs mode %d level %g; want Off before the "
+                    "commit\n",
+                    tune_landed_closed, g_rx_squelch.mode, g_rx_squelch.level);
+        assert(0);
+    }
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(dsd_squelch_setting_is_off(&g_rx_squelch) && !channel_gate_fake_closed());
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_channel_scan_leave(opts, state);
+
+    gate_clear_hooks();
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 static void
 test_row_squelch_analog_default_rides_the_retune(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -5785,6 +5842,7 @@ main(void) {
     test_row_squelch_threshold_off_inherit();
     test_row_squelch_analog_default_rides_the_retune();
     test_digital_landing_after_analog_row_runs_the_session_gate();
+    test_digital_landing_after_digital_row_runs_the_session_gate();
     test_row_gate_follows_the_tune_that_can_land();
     test_row_gate_pending_across_commands();
     test_row_gate_writes_wait_for_the_tune();

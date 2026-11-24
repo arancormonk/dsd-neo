@@ -731,8 +731,9 @@ __wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz,
 }
 
 void
-__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
-    g_wrap_rx_hooks.write_squelch_gate(gate, digital);
+__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                     const dsd_squelch_setting* session) {
+    g_wrap_rx_hooks.write_squelch_gate(gate, digital, session);
 }
 
 int

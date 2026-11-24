@@ -63,7 +63,7 @@
 static int
 open_the_channel(const dsd_opts* opts) {
     const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
-    rtl_stream_write_squelch_gate(&squelch, &squelch);
+    rtl_stream_write_squelch_gate(&squelch, &squelch, NULL);
     return rtl_stream_gate_closed_start() ? -1 : 0;
 }
 

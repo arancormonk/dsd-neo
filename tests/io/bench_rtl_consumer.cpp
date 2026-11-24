@@ -416,7 +416,7 @@ main(int argc, char** argv) {
        measures the running monitor, not a muted pipeline. */
     {
         const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts.get());
-        rtl_stream_write_squelch_gate(&squelch, &squelch);
+        rtl_stream_write_squelch_gate(&squelch, &squelch, NULL);
     }
 
     float sink = 0.0f;

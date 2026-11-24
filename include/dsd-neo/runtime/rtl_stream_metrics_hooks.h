@@ -81,7 +81,8 @@ typedef struct {
     /** The receiver's squelch gate (issue #899): write it for the channel on air (rtl_stream_write_squelch_gate()),
         whether a new analog channel waits closed for that write (rtl_stream_gate_closed_start()), and whether any
         receive request the decoder made is still unsettled (rtl_stream_receive_request_outcome()). */
-    void (*write_squelch_gate)(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+    void (*write_squelch_gate)(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                               const dsd_squelch_setting* session);
     int (*gate_closed_start)(void);
     int (*receive_requests_pending)(void);
     /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
@@ -171,10 +172,11 @@ int dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_se
 
 /**
  * @brief Write the squelch gate of the receiver's channel on air (issue #899, rtl_stream_write_squelch_gate()): @p gate
- * on the analog family, @p digital on the digital family. 0, or -1 when no radio backend is installed or @p gate is
- * NULL.
+ * on the analog monitor, @p digital off it, and @p session, the session's own squelch a later new channel off the
+ * monitor runs until the next write. 0, or -1 when no radio backend is installed or @p gate is NULL.
  */
-int dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+int dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                                   const dsd_squelch_setting* session);
 /** @brief 1 while a new analog channel waits closed for the decoder's write (rtl_stream_gate_closed_start()); 0 with
  * none or no radio backend. Lock-free. */
 int dsd_rtl_stream_metrics_hook_gate_closed_start(void);

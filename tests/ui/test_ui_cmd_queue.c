@@ -712,12 +712,14 @@ cmd_rx_land_held_retune(void) {
 
 /* The engine's own hook table (dsd_engine_rtl_stream_metrics_hooks_install(), which a case's engine run installs)
    reaches the stand-in too: it is the stream here. */
-void __wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+void __wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                          const dsd_squelch_setting* session);
 int __wrap_rtl_stream_gate_closed_start(void);
 
 void
-__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
-    g_cmd_rx_fake_hooks.write_squelch_gate(gate, digital);
+__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                     const dsd_squelch_setting* session) {
+    g_cmd_rx_fake_hooks.write_squelch_gate(gate, digital, session);
 }
 
 int

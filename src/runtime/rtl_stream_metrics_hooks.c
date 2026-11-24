@@ -139,11 +139,12 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_settin
 }
 
 int
-dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                               const dsd_squelch_setting* session) {
     if (!gate || !g_rtl_stream_metrics_hooks.write_squelch_gate) {
         return -1;
     }
-    g_rtl_stream_metrics_hooks.write_squelch_gate(gate, digital);
+    g_rtl_stream_metrics_hooks.write_squelch_gate(gate, digital, session);
     return 0;
 }
 

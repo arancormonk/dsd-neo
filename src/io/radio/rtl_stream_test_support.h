@@ -2186,6 +2186,12 @@ typedef struct rtl_stream_test_channel_gate_result {
     int public_level_then_write;   /* the level setter's Off runs, and the decoder's noise +10 write after it runs */
     int public_setting_then_write; /* the same through the whole-setting setter */
     int public_ends_closed;        /* on a marked landing's closed start, the setter ends it, counted, as a write */
+    /* Digital rows, on the digital family: one with its own -40 dB (the session's Off), then the next: */
+    int digital_row_runs_own;         /* 1 when the decoder's write for the row runs its -40 dB */
+    int digital_landing_runs_session; /* the next row's marked landing runs the session's Off, not the row's -40 dB */
+    int digital_grant_kept;           /* an unmarked retune (a grant) keeps the running -40 dB */
+    int digital_repush_locks;         /* gate locks over 50 symbol requests on the digital family: 0 */
+    int digital_repush_kept;          /* ... which keep the running -40 dB */
 } rtl_stream_test_channel_gate_result;
 
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an

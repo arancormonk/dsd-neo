@@ -573,7 +573,8 @@ dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, in
     s_rx_write_due = 0;
     const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
     const dsd_squelch_setting digital = dsd_scan_mode_digital_squelch(opts, state);
-    (void)dsd_rtl_stream_metrics_hook_write_squelch_gate(&gate, &digital);
+    const dsd_squelch_setting session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    (void)dsd_rtl_stream_metrics_hook_write_squelch_gate(&gate, &digital, &session);
 }
 
 void

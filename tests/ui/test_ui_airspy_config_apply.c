@@ -96,7 +96,8 @@ int __wrap_rtl_stream_airspy_info(dsd_airspy_info* info);
 void __wrap_rtl_stream_set_channel_squelch(float level);
 void __wrap_rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 void __wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel);
-void __wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+void __wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                          const dsd_squelch_setting* session);
 int __wrap_rtl_stream_gate_closed_start(void);
 int __wrap_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id,
                                       dsd_input_cut* rigctl_mark);
@@ -213,8 +214,9 @@ __wrap_rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz,
 }
 
 void
-__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
-    test_rx_hooks.write_squelch_gate(gate, digital);
+__wrap_rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                     const dsd_squelch_setting* session) {
+    test_rx_hooks.write_squelch_gate(gate, digital, session);
 }
 
 int
@@ -284,7 +286,7 @@ test_rx_open(const dsd_opts* opts) {
     const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
     const dsd_squelch_setting digital = dsd_squelch_setting_configured(opts);
     channel_gate_fake_open(dsd_opts_is_analog_family(opts), &digital, test_rx_run);
-    test_rx_hooks.write_squelch_gate(&opened, &digital);
+    test_rx_hooks.write_squelch_gate(&opened, &digital, NULL);
     test_rx_runs = 0;
     test_rx_closed = 0;
     test_rx_event = 0;

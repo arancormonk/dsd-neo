@@ -1354,6 +1354,12 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("public setting setter Off, then the decoder's noise +10 write runs",
                             r.public_setting_then_write, 1);
     failed |= expect_int_eq("public setter on a closed start ends it, counted", r.public_ends_closed, 1);
+    failed |= expect_int_eq("digital row: the decoder's write runs its own -40 dB", r.digital_row_runs_own, 1);
+    failed |= expect_int_eq("next digital row: its landing runs the session's Off, not the last row's -40 dB",
+                            r.digital_landing_runs_session, 1);
+    failed |= expect_int_eq("digital grant retune: the running gate stays", r.digital_grant_kept, 1);
+    failed |= expect_int_eq("digital symbol re-push: no gate work", r.digital_repush_locks, 0);
+    failed |= expect_int_eq("digital symbol re-push: the running gate stays", r.digital_repush_kept, 1);
     failed |= expect_int_eq("open channel under noise +10: a block publishes it running", r.running_status_active, 1);
     failed |= expect_int_eq("closed start: the produced block is muted, flagged closed", r.closed_block_flagged, 1);
     failed |=

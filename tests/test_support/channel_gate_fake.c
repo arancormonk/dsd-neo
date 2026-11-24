@@ -6,7 +6,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 
-static dsd_squelch_setting g_digital;
+static dsd_squelch_setting g_session;
 static dsd_squelch_setting g_gate;
 static int g_closed;
 static int g_analog;
@@ -38,7 +38,7 @@ channel_gate_fake_open(int analog, const dsd_squelch_setting* gate, channel_gate
     g_pending = 0;
     g_writes = 0;
     g_analog = analog ? 1 : 0;
-    g_digital = *gate;
+    g_session = *gate;
     /* The stream opens on it, as the open's own setting, not a write the apply callback hears. */
     g_gate = analog ? k_closed : *gate;
     g_closed = g_analog;
@@ -46,13 +46,14 @@ channel_gate_fake_open(int analog, const dsd_squelch_setting* gate, channel_gate
 
 void
 channel_gate_fake_land(int new_channel, int analog) {
+    const int was_analog = g_analog;
     g_analog = analog ? 1 : 0;
     if (analog) {
         if (new_channel) {
             fake_apply(&k_closed, 1);
         }
-    } else {
-        fake_apply(&g_digital, 0);
+    } else if (new_channel || was_analog) {
+        fake_apply(&g_session, 0);
     }
 }
 
@@ -92,13 +93,14 @@ channel_gate_fake_reads(void) {
 }
 
 static void
-fake_write(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
+fake_write(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital, const dsd_squelch_setting* session) {
     g_writes++;
     if (g_before_write) {
         g_before_write();
     }
-    g_digital = digital ? *digital : *gate;
-    fake_apply(g_analog ? gate : &g_digital, 0);
+    const dsd_squelch_setting* off_monitor = digital ? digital : gate;
+    g_session = session ? *session : *off_monitor;
+    fake_apply(g_analog ? gate : off_monitor, 0);
 }
 
 static int

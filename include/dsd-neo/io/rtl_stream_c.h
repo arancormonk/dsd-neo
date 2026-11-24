@@ -1033,12 +1033,15 @@ void rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz
 /**
  * @brief Write the squelch gate of the channel the receiver is on now (issue #899): @p gate on the analog monitor,
  * @p digital (NULL: @p gate) off it (the digital family, or a typed digital scan row's symbol profile on the analog
- * family), which the receiver also runs at every later landing or switch off the monitor (the session's own squelch:
- * no analog gate outlives its analog channel). Which of the two the receiver is on is what its last boundary recorded
- * under the gate's lock; a write never reads the demodulator. The only way a closed start opens. The decoder writes
- * only when none of its own tune or family requests is outstanding. Any thread.
+ * family). @p session (NULL: @p digital) is the session's own squelch, which the receiver runs at every later new
+ * channel or switch off the monitor until the decoder writes for it: no analog gate and no row's own squelch outlives
+ * its channel. Which of the two the receiver is on is what its last boundary recorded under the gate's lock; a write
+ * never reads the demodulator. The decoder's write opens a closed start (and so does
+ * rtl_stream_set_channel_squelch_setting()). The decoder writes only when none of its own tune or family requests is
+ * outstanding. Any thread.
  */
-void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
+void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                   const dsd_squelch_setting* session);
 
 /**
  * @brief 1 while the receiver runs a new analog channel closed, waiting for the decoder's write (issue #899): a stream
