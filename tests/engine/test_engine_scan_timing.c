@@ -541,7 +541,7 @@ test_owed_commit_recovers_under_continuing_sync(int held) {
     int recovered_at = -1;
     double published_m = -1.0;
     int published_retry = 1;
-    for (int s = 0; s <= 30 && recovered_at < 0; s++) {
+    for (int s = 0; s <= 30; s++) {
         if (owed_scan_second(opts, state, 7000U + (uint64_t)s, 1)) {
             recovered_at = s;
             break;

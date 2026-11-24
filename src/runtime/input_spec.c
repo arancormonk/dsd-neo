@@ -134,14 +134,18 @@ enum { SOFTY_TOK_MAX = 16 };
    `remote=[2001:db8::1]` is one device-args field, whose groups were read as tuning fields (issue #899). */
 static char*
 soapy_field_end(char* field) {
-    for (char* p = field; *p != '\0'; p++) {
+    char* p = field;
+    while (*p != '\0') {
         if (*p == '[') {
-            p = strchr(p, ']');
-            if (!p) {
+            char* close = strchr(p, ']');
+            if (!close) {
                 return NULL;
             }
+            p = close + 1;
         } else if (*p == ':') {
             return p;
+        } else {
+            p++;
         }
     }
     return NULL;
