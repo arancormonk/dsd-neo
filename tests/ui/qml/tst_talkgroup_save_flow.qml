@@ -268,6 +268,16 @@ Item {
             compare(systems.updates, 0);
             verify(loader.item.message.indexOf("system association was not changed") >= 0);
         }
+        // The session's snapshots showed a live change after the request: its tuning is no longer the one the session
+        // runs (Main empties it), and the list stays in Imports.
+        function test_tuning_left_since_the_request_is_refused() {
+            verify(loader.item.save("original", "7", 1, running));
+            loader.item.sessionTuning = ({});
+            deliver([result("6", "7", 1, "/owned/list.csv", true)]);
+            compare(library.registrations, 1);
+            compare(systems.attempts, 0);
+            verify(loader.item.message.indexOf("system association was not changed") >= 0);
+        }
         // S2: an Explore session (or a scan list, or a hold) has no saved system: the list stays in Imports.
         function test_explore_export_stays_in_imports() {
             verify(loader.item.save("", "7", 1));

@@ -1157,9 +1157,11 @@ Window {
     // emptied once the decoder's snapshots show it runs something else
     // (followRunningTuning()).
     property var sessionTuning: ({})
-    // The decode mode the decoder's first snapshot of this run published, or -1
-    // before it: what followRunningTuning() compares the later ones with.
+    // The decode mode and carrier count (metrics.carrierSeq) the decoder's
+    // first snapshot of this run published, the mode -1 before it: what
+    // followRunningTuning() compares the later ones with.
     property int sessionRunningMode: -1
+    property double sessionRunningCarrier: 0
     // The standalone saved system the session runs, by UID: empty for a scan
     // list, Explore, a signal search or a wizard test. What the session may
     // write back to (radio controls, the decryption profile for future starts).
@@ -1405,15 +1407,19 @@ Window {
     // Issue #903: a change the decoder applied live leaves the saved row as it
     // was, so the attachment's compare with that row cannot see it: a decode
     // mode set from the control API, or from the Radio sheet with its save
-    // failed, and a tune off the system (an operator hold, even one released
-    // since). The decoder's snapshots show both; from then on the session's
-    // list is not the start tuning's, and goes to Imports only.
+    // failed, a tune off the system (an operator hold, even one released
+    // since), and a configuration applied from the control API that moved the
+    // receiver off its carrier. The decoder's snapshots show each; from then
+    // on the session's list is not the start tuning's, and goes to Imports
+    // only.
     function followRunningTuning() {
         if (decoderHost.sessionState !== 2 || !metrics.optionsKnown || Object.keys(mainRoot.sessionTuning).length === 0)
             return;
-        if (mainRoot.sessionRunningMode < 0)
+        if (mainRoot.sessionRunningMode < 0) {
             mainRoot.sessionRunningMode = metrics.decodeMode;
-        if (metrics.operatorTuned || metrics.decodeMode !== mainRoot.sessionRunningMode)
+            mainRoot.sessionRunningCarrier = metrics.carrierSeq;
+        }
+        if (metrics.operatorTuned || metrics.decodeMode !== mainRoot.sessionRunningMode || metrics.carrierSeq !== mainRoot.sessionRunningCarrier)
             mainRoot.sessionTuning = ({});
     }
 
@@ -2525,6 +2531,7 @@ Window {
     TalkgroupSaveFlow {
         id: talkgroupSave
         objectName: "talkgroupSave"
+        sessionTuning: mainRoot.sessionTuning
         onSaved: function (uid, path) {
             if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
                 mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {

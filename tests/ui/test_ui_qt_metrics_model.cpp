@@ -2747,6 +2747,32 @@ test_scan_state() {
     freeState(&state);
 }
 
+/* Issue #903: the carrier count the decoder's snapshot carries (dsd_state::carrier_seq), which Save talkgroup list
+ * compares with the run's first to tell a configuration retune apart from the tuning the session started with. A move
+ * off the carrier is announced as a control change, read by property name as QML reads it. */
+static void
+test_carrier_seq() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    dsd_qt::MetricsModel model;
+    int controls = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controls; });
+    state.carrier_seq = 4U;
+    model.refresh(&opts, &state);
+    expect("the snapshot's carrier count", std::fabs(model.property("carrierSeq").toDouble() - 4.0) < 0.5);
+    const int before = controls;
+    state.carrier_seq = 5U;
+    model.refresh(&opts, &state);
+    expect("a move off the carrier is a control change",
+           controls == before + 1 && std::fabs(model.property("carrierSeq").toDouble() - 5.0) < 0.5);
+    model.refresh(&opts, &state);
+    expect("the same carrier changes nothing", controls == before + 1);
+    freeState(&state);
+}
+
 /* DMR RAS and the Relaxed CRC policy, from the app-control views every frontend reads (dmr_ras_view.h,
  * crc_policy_view.h): the site sheet's RAS field and hint, and the Settings switch with its "this channel" line. Read
  * by property name, as QML reads them. */
@@ -3172,6 +3198,7 @@ main(int argc, char** argv) {
     test_slot_kind_and_labels();
     test_scan_row();
     test_scan_state();
+    test_carrier_seq();
     test_scan_avoid_list_model_diff();
     test_scan_list_toggle_switch_and_hold();
     test_scan_list_toggle_refusals();

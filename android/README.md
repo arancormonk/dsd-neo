@@ -123,8 +123,8 @@ the export fails, the message says which and where the list got to: the
 exported file, and Imports if adding it there worked. Nothing is retried. If
 the saved system was deleted, retuned or acquired another
 group file while saving, or the session stopped running the tuning it started
-with (a decode mode applied from the control API, or a frequency you tuned by
-hand), the export remains in Imports without changing that system.
+with (a decode mode or configuration applied from the control API, or a frequency
+you tuned by hand), the export remains in Imports without changing that system.
 Explore sessions, scan lists and operator holds save to Imports for later
 selection in a saved system. Scan-row exports are refused by the decoder, so
 Save is not offered there. A pending save survives the session ending: a result

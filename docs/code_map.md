@@ -19275,13 +19275,17 @@ Qt Quick frontend (`src/ui/qt`):
   frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted, and
   emptied by `followRunningTuning()` once the decoder's snapshots show a change applied live that the saved row does not
   carry: a decode mode other than the run's first snapshot's, set from the control API or from the Radio sheet with its
-  save failed, or an operator hold, released or not). The flow reads every completion since the last poll
+  save failed, an operator hold, released or not, or a carrier count (`MetricsModel::carrierSeq`, `dsd_state::
+  carrier_seq`) other than the first snapshot's, which a configuration applied from the control API that retunes the
+  receiver moves and a trunk follow does not). The flow reads every completion since the last poll
   (`UiController::talkgroupExportResults`, from `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap
-  past the 64 kept). A request's completion runs registration in Imports, then `SavedSystemsModel::attachGroupList()`; each step reports its own result, and a failed
+  past the 64 kept). A request's completion runs registration in Imports, then `SavedSystemsModel::attachGroupList()`
+  while the session's tuning is still the one the request captured; each step reports its own result, and a failed
   one ends the request where the list got to (the exported file, and its Imports row if that worked), with no step
   offered again: the user saves again if they want. A request with no completion in 15 s offers Try again, which
   replaces it (its late result matches nothing); one whose completion may be in a gap ends, reported as not received.
-  A request that ends with no Imports row for its file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  A request that ends with no Imports row for its file releases its reserved name. A live change applied in the same
+  poll as the export, before any snapshot shows it, is not seen (decided limit). The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares

@@ -13,6 +13,9 @@ Item {
     // Every completion the controller's last poll read, oldest first, and the newest sequence it could not read.
     property var results: uiController.talkgroupExportResults
     property var pending: null
+    // The tuning the session runs (Main's sessionTuning): emptied once its snapshots show a live change. A list is
+    // attached only while it is still the tuning its request captured.
+    property var sessionTuning: ({})
     property string lastSequence: "0"
     property int timeoutMs: 15000
     property bool retryAvailable: false
@@ -63,6 +66,16 @@ Item {
         for (var i = 0; i < fields.length; ++i)
             tuning[fields[i]] = system[fields[i]];
         return tuning;
+    }
+    function sameTuning(a, b) {
+        var keys = Object.keys(a || {});
+        if (keys.length !== Object.keys(b || {}).length)
+            return false;
+        for (var i = 0; i < keys.length; ++i) {
+            if (!b.hasOwnProperty(keys[i]) || String(a[keys[i]]) !== String(b[keys[i]]))
+                return false;
+        }
+        return true;
     }
     // The request ends with no Imports row for its file: its name goes back.
     function end(request) {
@@ -148,7 +161,7 @@ Item {
             return;
         }
         // Resolved by the captured UUID now, never a row index: the row can have become another system.
-        if (!systems.groupListAttachable(request.uid, request.tuning)) {
+        if (!sameTuning(request.tuning, sessionTuning) || !systems.groupListAttachable(request.uid, request.tuning)) {
             message = qsTr("Talkgroup list saved in Imports; system association was not changed: the system was removed, retuned or already has a talkgroup list");
             return;
         }
