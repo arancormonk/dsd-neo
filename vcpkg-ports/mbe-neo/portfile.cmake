@@ -30,6 +30,7 @@ if(EXISTS "${SOURCE_PATH}/cmake/Pffft.cmake")
     # From 2.6.12 mbelib embeds pffft-neo, which ships its notices as files.
     list(
         APPEND _mbe_notices
+        "${MBELIB_PFFFT_SOURCE_PATH}/README.md"
         "${MBELIB_PFFFT_SOURCE_PATH}/LICENSE"
         "${MBELIB_PFFFT_SOURCE_PATH}/third_party/pffft/LICENSE.txt"
         "${MBELIB_PFFFT_SOURCE_PATH}/third_party/pffft/LicenseRef-PFFFT.txt"

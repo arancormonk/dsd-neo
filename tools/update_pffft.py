@@ -33,7 +33,7 @@ def update_pins(sha, pins=PINS):
     sha = sha.lower()
     archive = download_archive(sha)
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
-        for name in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE",
+        for name in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "README.md", "LICENSE",
                      "third_party/pffft/LICENSE.txt", "third_party/pffft/LicenseRef-PFFFT.txt"):
             if not source.getmember(f"pffft-neo-{sha}/{name}").isfile():
                 raise ValueError(f"PFFFT archive is missing {name}")

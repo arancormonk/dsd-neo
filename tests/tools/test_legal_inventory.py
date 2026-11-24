@@ -690,6 +690,12 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("pffft/PFFFT-NOTICES.txt", result.stderr)
         (self.mbe / "pffft/PFFFT-NOTICES.txt").write_text("restored\n", encoding="utf-8")
+        # An inventory that names neither FFT does not fall back to the fork's notices.
+        (self.mbe / "legal/components.json").write_text('{"components": []}\n', encoding="utf-8")
+        result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("names neither", " ".join(result.stderr.split()))
+        (self.mbe / "legal/components.json").write_text(MBE_COMPONENTS % "pffft", encoding="utf-8")
         notice = self.mbe / "LicenseRef-ETSI-EN-300-395-2-data.txt"
         notice.unlink()
         result = self.run_cmake(f"-DDSD_MBELIB_NOTICE_DIR={self.mbe}", "-P", ROOT / "cmake/MbelibNotices.cmake")

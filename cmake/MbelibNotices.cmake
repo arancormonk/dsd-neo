@@ -46,8 +46,13 @@ if(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft-neo\"")
         pffft-neo/third_party/pffft/LICENSE.txt
         pffft-neo/third_party/pffft/LicenseRef-PFFFT.txt
     )
-else()
+elseif(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft\"")
     list(APPEND _mbe_required_notices pffft/LICENSE.txt pffft/PFFFT-NOTICES.txt)
+else()
+    message(
+        FATAL_ERROR
+        "mbelib-neo's ${_mbe_components} names neither the pffft-neo nor the pffft component; install mbelib-neo 2.6+ including its documentation, or set DSD_MBELIB_NOTICE_DIR to that installation's share/doc/mbelib-neo directory."
+    )
 endif()
 foreach(_notice IN LISTS _mbe_required_notices)
     if(NOT EXISTS "${DSD_MBELIB_NOTICE_DIR}/${_notice}")
