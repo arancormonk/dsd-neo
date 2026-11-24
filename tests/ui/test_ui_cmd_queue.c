@@ -144,6 +144,8 @@
 static dsd_rtl_stream_metrics_hooks g_cmd_rx_fake_hooks;
 static int g_cmd_rx_resolves;
 static int g_cmd_default_syncs;
+/* Every lookup of the session's own squelch (dsd_squelch_channel_gate(), issue #899 round 12). */
+static int g_cmd_session_lookups;
 static void cmd_rx_runs(const dsd_squelch_setting* gate);
 #endif
 
@@ -745,6 +747,19 @@ dsd_squelch_setting
 __wrap_dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
     g_cmd_rx_resolves++;
     return __real_dsd_scan_mode_channel_squelch(opts, state);
+}
+
+/* Every lookup of a channel's or the session's squelch (dsd_squelch_channel_gate()). */
+dsd_squelch_setting __real_dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_state* state,
+                                                    const dsd_scan_option_values* row, int analog);
+dsd_squelch_setting __wrap_dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_state* state,
+                                                    const dsd_scan_option_values* row, int analog);
+
+dsd_squelch_setting
+__wrap_dsd_squelch_channel_gate(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row,
+                                int analog) {
+    g_cmd_session_lookups++;
+    return __real_dsd_squelch_channel_gate(opts, state, row, analog);
 }
 
 /* The receive family a case watches (1 analog, 0 digital, -1 none), and the times the receiver came to run
@@ -12717,7 +12732,9 @@ test_squelch_setting_command(void) {
  * no analog-default policy (dsd_squelch_analog_default_sync(), round 7): the settle is a branch on what the decoder
  * knows. A command then re-resolves, and writes nothing the
  * receiver runs already. Before round 5 every drain resolved the receiver's gates and took the retune-profile lock to
- * hand an outstanding retune a landing gate, whether or not anything was outstanding.
+ * hand an outstanding retune a landing gate, whether or not anything was outstanding. Round 12: with a write due and a
+ * receive request the receiver holds pending across many drains, no drain looks the session's squelch up
+ * (dsd_squelch_channel_gate()) until the request settles; the next drain then resolves and writes.
  */
 static int
 test_idle_digital_drain_resolves_nothing(void) {
@@ -12750,6 +12767,20 @@ test_idle_digital_drain_resolves_nothing(void) {
     rc |= expect_int("idle drain: no gate written", channel_gate_fake_writes() - writes, 0);
     rc |= expect_int("idle drain: no receiver read", channel_gate_fake_reads() - reads, 0);
     rc |= expect_int("idle drain: no default-policy work", g_cmd_default_syncs, 0);
+    /* A write due while a receive request is still pending: nothing is resolved, the session's squelch included. */
+    g_cmd_session_lookups = 0;
+    channel_gate_fake_requests_pending(1);
+    dsd_engine_receiver_gate_due();
+    for (int i = 0; i < 50; i++) {
+        rc |= expect_int("idle drain: pending, nothing queued", dsd_app_drain_cmds(opts, state), 0);
+    }
+    rc |= expect_int("idle drain: pending, no session lookup", g_cmd_session_lookups, 0);
+    rc |= expect_int("idle drain: pending, no gate resolved", g_cmd_rx_resolves, 0);
+    rc |= expect_int("idle drain: pending, no gate written", channel_gate_fake_writes() - writes, 0);
+    channel_gate_fake_requests_pending(0);
+    rc |= expect_int("idle drain: settled, nothing queued", dsd_app_drain_cmds(opts, state), 0);
+    rc |= expect_true("idle drain: settled, the session looked up", g_cmd_session_lookups > 0);
+    rc |= expect_int("idle drain: settled, the due write", channel_gate_fake_writes() - writes, 1);
     /* A command re-resolves; the receiver runs the session's gate already, so nothing changes. */
     rc |= expect_int("idle drain: a command", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);

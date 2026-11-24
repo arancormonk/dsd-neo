@@ -11516,6 +11516,7 @@ if(
             "LINKER:--wrap=rtl_stream_write_squelch_gate"
             "LINKER:--wrap=rtl_stream_gate_closed_start"
             "LINKER:--wrap=dsd_scan_mode_channel_squelch"
+            "LINKER:--wrap=dsd_squelch_channel_gate"
             "LINKER:--wrap=dsd_squelch_analog_default_sync"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
