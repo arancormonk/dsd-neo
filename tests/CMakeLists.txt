@@ -10307,10 +10307,31 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             COMMAND dsd-neo_test_engine_tune_failure_reconcile
         )
     endif()
+    # Non-LTO copies of the accessors the scan timing case counts through --wrap (issue #899): in an LTO build the
+    # library's copies would be inlined into their callers before the wrap applies, and the counts would read 0.
+    add_library(
+        dsd-neo_test_scan_timing_seams
+        OBJECT
+        ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
+    )
+    target_include_directories(
+        dsd-neo_test_scan_timing_seams
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    set_target_properties(
+        dsd-neo_test_scan_timing_seams
+        PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+            INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+    )
     add_executable(
         dsd-neo_test_engine_scan_timing
         engine/test_engine_scan_timing.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+        $<TARGET_OBJECTS:dsd-neo_test_scan_timing_seams>
     )
     target_include_directories(
         dsd-neo_test_engine_scan_timing
@@ -11501,6 +11522,29 @@ if(
     target_compile_definitions(
         dsd-neo_test_app_command_queue
         PRIVATE DSD_NEO_TEST_RTL_WRAP DSD_NEO_TEST_ANALOG_WRAP
+    )
+    # A non-LTO copy of the squelch lookups the idle-drain case counts through --wrap (issue #899): in an LTO build the
+    # library's copies could be inlined into their callers before the wrap applies, and a lookup would go uncounted.
+    add_library(
+        dsd-neo_test_cmd_queue_seams
+        OBJECT
+        ${PROJECT_SOURCE_DIR}/src/runtime/squelch_analog_default.c
+    )
+    target_include_directories(
+        dsd-neo_test_cmd_queue_seams
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    set_target_properties(
+        dsd-neo_test_cmd_queue_seams
+        PROPERTIES
+            INTERPROCEDURAL_OPTIMIZATION OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+            INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+    )
+    target_sources(
+        dsd-neo_test_app_command_queue
+        PRIVATE $<TARGET_OBJECTS:dsd-neo_test_cmd_queue_seams>
     )
     target_link_options(
         dsd-neo_test_app_command_queue
