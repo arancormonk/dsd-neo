@@ -967,6 +967,44 @@ test_transient_follows_the_target_on_air() {
            model.viewedOwner() == kSysA && model.count() == 1 && find(model, 710).isValid());
 }
 
+/* Issue #903 (PR2 review r1, P2): the session's heard cards are the scan target's on air, not only its owner's. Two
+ * targets no saved system owns (imported or frequency-only) share no cards, nor do two entries of one saved system,
+ * which share only its remembered list. */
+void
+test_transient_scoped_to_the_target() {
+    Store held("tg_list_target_scope.json");
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 660, 1000);
+    Fixture fixture;
+    fixture.opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-y");
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    model.setHeardStore(&held.store);
+    history.beginSession();
+    history.setSessionOwners(history.session(), QString(),
+                             {{QStringLiteral("t-a1"), kSysA}, {QStringLiteral("t-a2"), kSysA}});
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    fixture.commitOn(42, now, "t-y", true, false);
+    fixture.commitOn(721, now + 5, "t-a1", true, false);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 target scope: the unowned target's call is its card", model.count() == 1 && find(model, 42).isValid());
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-z");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 target scope: another unowned target heard nothing",
+           model.viewedOwner().isEmpty() && model.count() == 0);
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-a2");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 target scope: a system's other entry shows its remembered list, not the first entry's calls",
+           model.viewedOwner() == kSysA && model.count() == 1 && find(model, 660).isValid()
+               && !find(model, 721).isValid());
+    DSD_SNPRINTF(fixture.state->trunk_scan_active_id, sizeof(fixture.state->trunk_scan_active_id), "%s", "t-a1");
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 target scope: the first entry shows its own call too",
+           model.count() == 2 && find(model, 660).isValid() && find(model, 721).isValid());
+}
+
 /* One card per talkgroup number: every variant of it (and an NXDN Type-D id by its 11 bits) is one card, and Forget
  * removes them all, and this session's calls of it, until a later call. */
 void
@@ -1267,6 +1305,7 @@ main(int argc, char** argv) {
     test_pattern_row_equality();
     test_remembered_cards_at_session_start();
     test_transient_follows_the_target_on_air();
+    test_transient_scoped_to_the_target();
     test_variants_one_card_and_forget();
     test_listed_rows_cover_remembered();
     test_incremental_updates();

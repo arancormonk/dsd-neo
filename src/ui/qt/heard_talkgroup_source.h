@@ -42,12 +42,14 @@ class HeardTalkgroupSource {
 
     /**
      * @brief The distinct talkgroups of the voice rows logged by decode session @p forSession (0 = every session)
-     *        whose fragments the saved system @p owner owns (empty: the fragments no saved system owns), in no order.
+     *        on scan target @p channel (a row's ChannelRole id; empty: off any scan target) whose fragments the saved
+     *        system @p owner owns (empty: the fragments no saved system owns), in no order.
      *
      * A fragment's owner is resolved where its ring was read, from the ring's own session (issue #903), whether or not
      * its talkgroup may be learnt. Ids of 0, ids that do not fit 32 bits and private calls' radios are left out.
      */
-    virtual QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner) const = 0;
+    virtual QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner,
+                                                     const QString& channel) const = 0;
 
     /** @brief The newest ingest serial given (0 before any): a fragment ingested later has a greater one. */
     virtual quint64 heardSerial() const = 0;
@@ -63,7 +65,7 @@ class HeardTalkgroupSource {
 
 } // namespace dsd_qt
 
-#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/2"
+#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/3"
 Q_DECLARE_INTERFACE(dsd_qt::HeardTalkgroupSource, DSD_QT_HEARD_TALKGROUP_SOURCE_IID)
 
 #endif /* DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_SOURCE_H_ */

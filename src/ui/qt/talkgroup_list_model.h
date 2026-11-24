@@ -337,10 +337,11 @@ class TalkgroupListModel : public QAbstractListModel {
     void dropRows(const QVector<bool>& drop);
     void updateCategories(const QSet<QString>& categoryTags);
     void updateCounts(int oldCount);
-    /** @brief The owner a call heard now would have (HeardTalkgroupSource::heardOwnerOnAir()); none without a typed
-     * history. */
-    QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot) const;
-    void setViewedOwner(const QString& owner);
+    /** @brief The owner a call heard now would have (HeardTalkgroupSource::heardOwnerOnAir()), none without a typed
+     * history; @p channel takes the scan target it would be heard on (its channel label; empty off any scan target). */
+    QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, QString* channel) const;
+    /** @brief View @p owner's remembered talkgroups, and the session's heard on scan target @p target under it. */
+    void setViewedOwner(const QString& owner, const QString& target = QString());
     /** @brief Drop @p owner's heard cards from the list now (a forget or clear for the viewed owner). */
     void dropHeard(const QString& owner, const QSet<uint32_t>& ids, bool all);
 
@@ -361,9 +362,11 @@ class TalkgroupListModel : public QAbstractListModel {
     qint64 m_historySession = 0;
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;
-    /* Issue #903. The viewed owner (viewedOwner()) and the store its remembered cards come from. */
+    /* Issue #903. The viewed owner (viewedOwner()), the scan target on air (its channel label: the session's heard cards
+       are that target's), and the store the remembered cards come from. */
     QPointer<HeardTalkgroupStore> m_store;
     QString m_viewedOwner;
+    QString m_viewedTarget;
     bool m_remembering = false;
     bool m_hasRemembered = false;
     /* What must be read again: the policy's rows, the viewed owner's store entries, the history's fragments. */

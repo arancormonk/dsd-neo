@@ -2583,11 +2583,12 @@ class CallLogStore : public QAbstractListModel, public dsd_qt::HeardTalkgroupSou
 
     /* Issue #903: HeardTalkgroupSource, as CallHistoryModel answers it, over these rows. */
     QList<dsd_qt::HeardTalkgroupRow>
-    heardTalkgroups(qint64 forSession, const QString& owner) const override {
+    heardTalkgroups(qint64 forSession, const QString& owner, const QString& channel) const override {
         QHash<uint32_t, dsd_qt::HeardTalkgroupRow> heard;
         for (const StoreRow& row : m_rows) {
             if (row.kind != CallHistoryModel::KindVoice || (forSession > 0 && row.session != forSession)
-                || row.heardOwner != owner || row.tg == 0 || row.tg > UINT32_MAX || row.gi == 1) {
+                || row.heardOwner != owner || row.channel != channel || row.tg == 0 || row.tg > UINT32_MAX
+                || row.gi == 1) {
                 continue;
             }
             dsd_qt::HeardTalkgroupRow& entry = heard[static_cast<uint32_t>(row.tg)];

@@ -392,8 +392,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     }
 
     /** @brief HeardTalkgroupSource: read straight from the rows and their parts, no QVariant per row (issue #718),
-     * each fragment by its own session and owner (Row::viewOwner). */
-    QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner) const override;
+     * each fragment by its own session and owner (Row::viewOwner), on its row's scan target (Row::channel). */
+    QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner,
+                                             const QString& channel) const override;
 
     /** @brief HeardTalkgroupSource: the serial ingestReading() gave the newest fragment it took in. */
     quint64

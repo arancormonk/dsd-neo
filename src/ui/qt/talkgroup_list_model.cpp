@@ -280,7 +280,8 @@ TalkgroupListModel::setHeardStore(HeardTalkgroupStore* store) {
 }
 
 QString
-TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot) const {
+TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, QString* channel) const {
+    channel->clear();
     if (m_heardSource == nullptr || m_history == nullptr) {
         return {};
     }
@@ -291,13 +292,16 @@ TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* s
     const bool scanMember = opts_snapshot->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts_snapshot, snapshot) != 0;
     const quint64 ring =
         snapshot->event_history_s != nullptr ? static_cast<quint64>(snapshot->event_history_s[0].instance) : 0U;
-    return m_heardSource->heardOwnerOnAir(
-        ring, snapshot->operator_tuned != 0U, scanMember,
-        QString::fromUtf8(label, static_cast<qsizetype>(qstrnlen(label, sizeof(label)))));
+    *channel = QString::fromUtf8(label, static_cast<qsizetype>(qstrnlen(label, sizeof(label))));
+    return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U, scanMember, *channel);
 }
 
 void
-TalkgroupListModel::setViewedOwner(const QString& owner) {
+TalkgroupListModel::setViewedOwner(const QString& owner, const QString& target) {
+    if (target != m_viewedTarget) {
+        m_viewedTarget = target;
+        m_transientDirty = true;
+    }
     if (owner != m_viewedOwner) {
         m_viewedOwner = owner;
         m_rememberedDirty = true;
@@ -371,7 +375,9 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     if (contextId != m_contextId) {
         m_observedCrypto.clear();
     }
-    setViewedOwner(ownerOnAir(opts_snapshot, snapshot));
+    QString target;
+    const QString owner = ownerOnAir(opts_snapshot, snapshot, &target);
+    setViewedOwner(owner, target);
     observeDecryption(snapshot);
     const bool versionChanged = contextId != m_contextId || generation != m_generation;
     if (versionChanged || allowListChanged) {
@@ -601,9 +607,9 @@ void
 TalkgroupListModel::readTransient(QSet<uint32_t>& named) {
     QHash<uint32_t, QPair<qint64, quint64>> transient;
     if (m_history != nullptr) {
-        const QList<HeardTalkgroupRow> heard = m_heardSource != nullptr
-                                                   ? m_heardSource->heardTalkgroups(m_historySession, m_viewedOwner)
-                                                   : heardFromRoles();
+        const QList<HeardTalkgroupRow> heard =
+            m_heardSource != nullptr ? m_heardSource->heardTalkgroups(m_historySession, m_viewedOwner, m_viewedTarget)
+                                     : heardFromRoles();
         transient.reserve(heard.size());
         for (const HeardTalkgroupRow& row : heard) {
             transient.insert(row.id, qMakePair(row.last, row.serial));

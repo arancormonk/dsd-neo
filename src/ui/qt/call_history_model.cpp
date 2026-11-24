@@ -807,14 +807,22 @@ note_heard_fragment(QHash<uint32_t, HeardTalkgroupRow>& heard, uint32_t tg, qint
     row.serial = qMax(row.serial, serial);
 }
 
+/* Whether @p row is a talkgroup call heard on scan target @p channel. A private call's target is a radio, never a
+   talkgroup heard (issue #800); not knowing stays as before. A row keeps the scan target it was heard on, which no
+   merge crosses (rows_mergeable()). */
+bool
+heard_talkgroup_row(const CallHistoryModel::Row& row, const QString& channel) {
+    return row.kind == CallHistoryModel::KindVoice && row.tg != 0U && row.tg <= UINT32_MAX && row.gi != 1
+           && row.channel == channel;
+}
+
 } // namespace
 
 QList<HeardTalkgroupRow>
-CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner) const {
+CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner, const QString& channel) const {
     QHash<uint32_t, HeardTalkgroupRow> heard;
     for (const Row& row : m_rows) {
-        // A private call's target is a radio, never a talkgroup heard (issue #800); not knowing stays as before.
-        if (row.kind != KindVoice || row.tg == 0U || row.tg > UINT32_MAX || row.gi == 1) {
+        if (!heard_talkgroup_row(row, channel)) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);
