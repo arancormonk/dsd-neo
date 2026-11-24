@@ -5314,7 +5314,9 @@ suite runs under this compiler.
     receiver has moved and no row owns it until the next row commits, round 9; a stream reopen recognized as the
     pending row's landing owes it too, so a restaged tune that fails there keeps the gate closed, round 10; with
     nothing in flight to commit, an operator Hold keeps no row, `dsd_engine_channel_scan_hold_keeps_row()`, and the
-    scan recovers by its next timed step, round 10), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    scan recovers by its next timed step, round 10, a forced step paced -t from the first decision that finds the scan
+    so, `dsd_engine_channel_scan_owed_recovery_due()`, since a busy row's sync keeps refreshing the hangtime anchor
+    though the owed commit discards its frames, round 11), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
     tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
     a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
@@ -5331,7 +5333,8 @@ suite runs under this compiler.
     start that opens nothing could leave behind), which runs it from the first block instead of a closed start, so the
     audio output, rigctl and the frontends starting before the main loop mute nothing (round 9). Every start the decoder
     makes (the engine's, app-control's `svc_rtl_open_on_the_channel_squelch_locked()`) passes the session's own squelch
-    too, resolved on the decoder thread whatever is outstanding (the scan scope's configured setting while one is in
+    too (`dsd_engine_receiver_gate_resolve_start()`; a settle resolves nothing while anything is outstanding), resolved
+    on the decoder thread whatever is outstanding (the scan scope's configured setting while one is in
     force): a start that cannot resolve the gate (a tune outstanding, a command applying: the restart of a gain change
     or a go-to pending) starts an analog channel closed as before, and off the monitor runs that session squelch, never
     a row's own the options hold (round 10). The settle runs at
