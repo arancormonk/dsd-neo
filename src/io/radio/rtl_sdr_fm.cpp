@@ -12655,15 +12655,28 @@ rtl_stream_apply_cqpsk_toggle(int onoff) {
     }
 }
 
-extern "C" void
-rtl_stream_toggle_cqpsk(int onoff) {
+/* The toggle under the demod-family switch gate. With @p gate_boundary it is a squelch gate boundary of its own (issue
+   #899): off the analog monitor the receiver runs the session's gate and records that it left it, so a later write or
+   request selects the digital gate; back onto it, a new analog channel starts closed; under the switch gate, so the next
+   block already runs it. Without, the caller's own boundary follows (a profile applied, a retune landing). */
+static void
+rtl_stream_toggle_cqpsk_switched(int onoff, int gate_boundary) {
     /* Arm the gate unconditionally: deciding based on demod.cqpsk_enable here
      * would itself be a cross-thread read of a demod-owned field. The gate is
      * cheap when nothing changes and this path is rare (UI/profile switches). */
     const int gate = rtl_stream_enter_demod_family_switch_gate();
+    const int was_monitor = gate_boundary ? dsd_demod_analog_monitor_active(&demod) : 0;
     rtl_stream_apply_cqpsk_toggle(onoff);
+    if (gate_boundary) {
+        rtl_stream_gate_boundary(0, was_monitor);
+    }
     rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate);
+}
+
+extern "C" void
+rtl_stream_toggle_cqpsk(int onoff) {
+    rtl_stream_toggle_cqpsk_switched(onoff, 1);
 }
 
 /* ---------------- Deferred demod-profile application ----------------
@@ -12987,7 +13000,7 @@ rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int c
     }
     if (cqpsk >= 0) {
         if (use_gate) {
-            rtl_stream_toggle_cqpsk(cqpsk);
+            rtl_stream_toggle_cqpsk_switched(cqpsk, 0);
         } else {
             rtl_stream_apply_cqpsk_toggle(cqpsk);
         }
@@ -14861,7 +14874,7 @@ rtl_stream_apply_retune_symbols(const RtlRetuneProfile* profile, int lands_digit
     int channel_profile = -1;
     rtl_stream_retune_symbol_family(profile, lands_digital_family, &cqpsk, &channel_profile);
     if (cqpsk >= 0) {
-        rtl_stream_toggle_cqpsk(cqpsk);
+        rtl_stream_toggle_cqpsk_switched(cqpsk, 0);
     }
     if (profile->symbol_rate_hz > 0 && (profile->levels == 2 || profile->levels == 4)) {
         (void)rtl_stream_apply_decode_symbol_profile(profile->symbol_rate_hz, profile->levels, channel_profile,
@@ -21315,6 +21328,80 @@ channel_gate_test_finish_block(int n, int closed) {
     demod.voice_lane_active = saved_voice;
 }
 
+/* The monitor's output block of @p n samples that took a gate, flagged closed (@p closed) or open, through the output
+   resampler, as demod_finish_output_block() finishes it with the resampler on. Returns the samples it produced. */
+static size_t
+channel_gate_test_finish_resampled_block(int n, int closed) {
+    const int saved_voice = demod.voice_lane_active;
+    demod.voice_lane_active = 0;
+    for (int i = 0; i < n; i++) {
+        demod.result[i] = 0.0f;
+        demod.result_flags[i] = closed ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+    demod.result_len = n;
+    demod.result_flags_active = closed;
+    demod.channel_squelched = closed;
+    const float* data = NULL;
+    const float* voice = NULL;
+    const uint8_t* flags = NULL;
+    const size_t produced = demod_finish_output_block(&demod, &data, &voice, &flags);
+    demod.result_len = 0;
+    demod.result_flags_active = 0;
+    demod.channel_squelched = 0;
+    demod.voice_lane_active = saved_voice;
+    return produced;
+}
+
+/* An AM channel's closed start and open blocks with its output resampler on (round 10): counted in the output samples
+   produced (resamp_process_block_flags()), not the block's input length. */
+static void
+channel_gate_test_am_resampled_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_AM, 0);
+    const int saved_resamp = demod.resamp_enabled;
+    demod.resamp_enabled = resamp_design(&demod, 1, 2);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    const uint64_t closed_before = status.closed_samples;
+    const size_t produced =
+        channel_gate_test_finish_resampled_block(48, 1) + channel_gate_test_finish_resampled_block(48, 1);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_resampled_closed_produced = (int)produced;
+    out->am_resampled_closed_counted =
+        (demod.resamp_enabled && dsd_demod_am_active(&demod) && status.closed_samples == closed_before + produced) ? 1
+                                                                                                                   : 0;
+    rtl_stream_write_squelch_gate(&off, NULL, NULL);
+    const uint64_t unjudged_before = status.unjudged_samples;
+    const size_t open_produced = channel_gate_test_finish_resampled_block(48, 0);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_resampled_unjudged_counted =
+        (open_produced > 0U && status.unjudged_samples == unjudged_before + open_produced) ? 1 : 0;
+    demod.resamp_enabled = saved_resamp;
+}
+
+/* A direct rtl_stream_toggle_cqpsk() on the NFM monitor (round 10) is a gate boundary of its own: it takes the front
+   end off the monitor, so the receiver runs the session's gate from it, and a digital symbol request and the
+   decoder's write after it select the digital gate. */
+static void
+channel_gate_test_cqpsk_toggle_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting minus40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &minus40, &off);
+    rtl_stream_toggle_cqpsk(1);
+    out->cqpsk_toggle_off_monitor = !dsd_demod_analog_monitor_active(&demod);
+    out->cqpsk_toggle_runs_session = (!channel_gate_test_closed() && channel_gate_test_runs_level(0.0)) ? 1 : 0;
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 0);
+    test_stream_set(NULL);
+    family_test_demod_thread_boundary();
+    rtl_stream_write_squelch_gate(&noise10, &minus40, &off);
+    out->cqpsk_toggle_write_runs_digital = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+    rtl_stream_toggle_cqpsk(0);
+}
+
 /* One block of @p pairs complex samples of a low tone through the demod thread's squelch take, full_demod() and the
    status it publishes, as the demod thread runs them. */
 static void
@@ -21538,6 +21625,8 @@ channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital
     channel_gate_test_public_setter_cases(analog_opts, out);
     channel_gate_test_digital_row_cases(digital_opts, out);
     channel_gate_test_resolved_open_cases(analog_opts, out);
+    channel_gate_test_am_resampled_cases(analog_opts, out);
+    channel_gate_test_cqpsk_toggle_cases(analog_opts, out);
 }
 
 extern "C" int

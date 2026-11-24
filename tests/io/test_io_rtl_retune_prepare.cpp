@@ -1352,6 +1352,16 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("AM closed start: blocks before a delayed write are counted", r.am_closed_counted, 1);
     failed |= expect_int_eq("AM under Off: an open block is counted unjudged", r.am_unjudged_counted, 1);
     failed |=
+        expect_int_eq("resampled AM: two closed 48-sample blocks produce 24 each", r.am_resampled_closed_produced, 48);
+    failed |= expect_int_eq("resampled AM closed start: counted in produced samples", r.am_resampled_closed_counted, 1);
+    failed |=
+        expect_int_eq("resampled AM under Off: produced samples counted unjudged", r.am_resampled_unjudged_counted, 1);
+    failed |= expect_int_eq("direct CQPSK toggle on the monitor: off it", r.cqpsk_toggle_off_monitor, 1);
+    failed |=
+        expect_int_eq("direct CQPSK toggle: runs the session's Off, not noise +10", r.cqpsk_toggle_runs_session, 1);
+    failed |= expect_int_eq("direct CQPSK toggle, a digital request, a write: the digital -40 dB",
+                            r.cqpsk_toggle_write_runs_digital, 1);
+    failed |=
         expect_int_eq("public level setter Off, then the decoder's noise +10 write runs", r.public_level_then_write, 1);
     failed |= expect_int_eq("public setting setter Off, then the decoder's noise +10 write runs",
                             r.public_setting_then_write, 1);

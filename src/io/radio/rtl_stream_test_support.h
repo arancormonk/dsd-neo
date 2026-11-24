@@ -2180,6 +2180,10 @@ typedef struct rtl_stream_test_channel_gate_result {
     int encoder_uncounted;        /* the M17 encoder's monitor block: no landing telemetry */
     int am_closed_counted;        /* an AM channel's closed start: its blocks before a delayed write counted closed */
     int am_unjudged_counted;      /* ... and its open blocks under Off counted unjudged */
+    /* The same AM channel with its output resampler on (48 -> 24 kHz), counted in output samples: */
+    int am_resampled_closed_produced;  /* output samples two closed blocks of 48 produced (24 each, not 48) */
+    int am_resampled_closed_counted;   /* 1 when the closed count grew by exactly those */
+    int am_resampled_unjudged_counted; /* 1 when an open block's produced samples, under Off, were counted unjudged */
     /* The status a produced block publishes: an NFM channel under noise +10, then a marked landing's closed start: */
     int running_status_active; /* 1 when a block on the open channel published a dynamic squelch running */
     int closed_block_flagged; /* 1 when the block produced on the closed start was muted, every sample flagged closed */
@@ -2194,6 +2198,10 @@ typedef struct rtl_stream_test_channel_gate_result {
     int digital_grant_kept;           /* an unmarked retune (a grant) keeps the running -40 dB */
     int digital_repush_locks;         /* gate locks over 50 symbol requests on the digital family: 0 */
     int digital_repush_kept;          /* ... which keep the running -40 dB */
+    /* A direct CQPSK toggle on the NFM monitor written noise +10 (-40 dB for the digital family, Off the session's): */
+    int cqpsk_toggle_off_monitor;        /* 1 when the toggle took the front end off the monitor */
+    int cqpsk_toggle_runs_session;       /* ... and the receiver runs the session's Off from it, not noise +10 */
+    int cqpsk_toggle_write_runs_digital; /* a digital symbol request, then the decoder's write: the digital -40 dB */
 } rtl_stream_test_channel_gate_result;
 
 /* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
