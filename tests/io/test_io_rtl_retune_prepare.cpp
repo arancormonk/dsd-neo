@@ -1335,6 +1335,8 @@ test_analog_channel_starts_closed(void) {
     failed |= expect_int_eq("analog open: closed", r.open_closed, 1);
     failed |= expect_int_eq("analog open: the decoder's write opens it", r.open_opened, 1);
     failed |= expect_int_eq("analog open: one closed start counted", r.open_counted, 1);
+    failed |= expect_int_eq("analog open with a resolved gate: runs it, no closed start", r.resolved_open_runs, 1);
+    failed |= expect_int_eq("resolved gate: the next open starts closed", r.resolved_open_once, 1);
     failed |=
         expect_int_eq("typed digital row on -fA: off the monitor, family flag kept", r.typed_landing_off_monitor, 1);
     failed |= expect_int_eq("typed digital row on -fA: its landing does not start closed", r.typed_landing_open, 1);

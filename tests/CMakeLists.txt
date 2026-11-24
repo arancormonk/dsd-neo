@@ -27334,6 +27334,8 @@ if(DSD_ENABLE_QT_UI)
         explore-live-nfm
         scan-row
         scan-row-off
+        opening-nfm
+        opening-nfm-off
     )
         string(TOUPPER "${_listener_case}" _listener_name)
         string(REPLACE "-" "_" _listener_name "${_listener_name}")

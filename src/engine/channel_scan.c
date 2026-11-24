@@ -576,14 +576,26 @@ dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, in
         }
         s_rx_write_due = 1;
     }
-    if (receiver_gate_outstanding(state)) {
+    dsd_squelch_setting gate;
+    dsd_squelch_setting digital;
+    dsd_squelch_setting session;
+    if (!dsd_engine_receiver_gate_resolve(opts, state, &gate, &digital, &session)) {
         return;
     }
     s_rx_write_due = 0;
-    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
-    const dsd_squelch_setting digital = dsd_scan_mode_digital_squelch(opts, state);
-    const dsd_squelch_setting session = dsd_squelch_channel_gate(opts, state, NULL, 0);
     (void)dsd_rtl_stream_metrics_hook_write_squelch_gate(&gate, &digital, &session);
+}
+
+int
+dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                 dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    if (!opts || !gate || !digital || !session || s_rx_hold || receiver_gate_outstanding(state)) {
+        return 0;
+    }
+    *gate = dsd_scan_mode_channel_squelch(opts, state);
+    *digital = dsd_scan_mode_digital_squelch(opts, state);
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 1;
 }
 
 void

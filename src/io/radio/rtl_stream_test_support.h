@@ -2164,6 +2164,8 @@ typedef struct rtl_stream_test_channel_gate_result {
     int open_closed;                /* an analog stream open: closed */
     int open_opened;                /* ... the decoder's write opens it */
     int open_counted;               /* ... counted as one closed start */
+    int resolved_open_runs;         /* an open the decoder resolved noise +10 for: runs it, no closed start */
+    int resolved_open_once;         /* ... and the next open, none resolved, starts closed */
     /* A typed digital -Y row on an -fA session (its symbol profile, no digital family), landed marked from an analog
        channel written noise +10 with Off for the digital family: */
     int typed_landing_off_monitor;  /* 1 when it kept the analog family flag but left the monitor, as by design */

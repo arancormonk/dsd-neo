@@ -588,6 +588,12 @@ static dsd_squelch_setting g_gate_running = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQ
 static dsd_squelch_setting g_gate_session = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
 static int g_gate_monitor = 0;
 static std::atomic<int> g_gate_closed{0};
+/* The gate the decoder resolved for the stream the next open starts (rtl_stream_resolve_open_gate()): that open runs it
+   from its first block instead of a closed start. Each open forgets it, taken or not. */
+static int g_gate_open_resolved = 0;
+static dsd_squelch_setting g_gate_open_gate = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
+static dsd_squelch_setting g_gate_open_digital = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
+static dsd_squelch_setting g_gate_open_session = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
 /* When the closed start began, and what the last one lasted (rtl_stream_squelch_status::closed_ms): the mute a landing
    adds, the decoder's time to write the new channel's gate. */
 static uint64_t g_gate_closed_since_ns = 0U;
@@ -647,6 +653,7 @@ static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
 static void rtl_stream_gate_open(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital);
 static void rtl_stream_gate_boundary(int new_channel, int was_monitor);
 static void rtl_stream_store_channel_squelch(const dsd_squelch_setting* setting);
+static void rtl_stream_forget_open_gate(void);
 static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
@@ -10856,6 +10863,12 @@ extern "C" int dsd_rtl_stream_soft_stop(void);
  */
 extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
+    /* A gate the decoder resolved for this open (rtl_stream_resolve_open_gate()) is gone when it returns. */
+    struct OpenGateCleanup {
+        ~OpenGateCleanup() { rtl_stream_forget_open_gate(); }
+    } open_gate_cleanup;
+
+    (void)open_gate_cleanup;
     dsd_rtl_stream_forget_start_refusal();
     rtl_stream_advance_session_generation();
     if (!opts) {
@@ -13764,21 +13777,49 @@ rtl_stream_gate_boundary(int new_channel, int was_monitor) {
 
 /* A stream opens on a new channel: closed on the analog monitor, else under @p digital (NULL: @p gate), the session's
    own squelch. @p gate is what an analog open's decoder resolves to until it writes, and @p digital what the receiver
-   runs off the monitor. */
+   runs off the monitor. A gate the decoder resolved for this open (rtl_stream_resolve_open_gate()) runs instead, from
+   the first block, with no closed start. */
 static void
 rtl_stream_gate_open(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital) {
     const int monitor = dsd_demod_analog_monitor_active(&demod);
     std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    const int resolved = g_gate_open_resolved;
+    g_gate_open_resolved = 0;
+    if (resolved) {
+        gate = &g_gate_open_gate;
+        digital = &g_gate_open_digital;
+    }
     g_gate_monitor = monitor;
-    g_gate_session = digital ? *digital : *gate;
-    g_gate_running = monitor ? *gate : g_gate_session;
-    g_gate_closed.store(monitor, std::memory_order_release);
+    g_gate_session = resolved ? g_gate_open_session : (digital ? *digital : *gate);
+    g_gate_running = monitor ? *gate : (digital ? *digital : *gate);
+    const int closed = monitor && !resolved;
+    g_gate_closed.store(closed, std::memory_order_release);
     g_gate_closed_since_ns = dsd_realtime_mono_ns();
     g_gate_closed_starts.store(0, std::memory_order_relaxed);
     g_gate_closed_ms.store(0.0, std::memory_order_relaxed);
     g_gate_closed_samples.store(0U, std::memory_order_relaxed);
     g_gate_unjudged_samples.store(0U, std::memory_order_relaxed);
-    rtl_stream_gate_apply_locked(monitor ? &kGateClosed : &g_gate_running);
+    rtl_stream_gate_apply_locked(closed ? &kGateClosed : &g_gate_running);
+}
+
+extern "C" void
+rtl_stream_resolve_open_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                             const dsd_squelch_setting* session) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    g_gate_open_resolved = gate ? 1 : 0;
+    if (!gate) {
+        return;
+    }
+    g_gate_open_gate = *gate;
+    g_gate_open_digital = digital ? *digital : *gate;
+    g_gate_open_session = session ? *session : g_gate_open_digital;
+}
+
+/* The open is over, whatever came of it: a gate resolved for it is no later open's. */
+static void
+rtl_stream_forget_open_gate(void) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    g_gate_open_resolved = 0;
 }
 
 static int
@@ -21207,6 +21248,18 @@ channel_gate_test_family_cases(const dsd_opts* analog_opts, const dsd_opts* digi
     out->open_opened = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
     (void)rtl_stream_get_squelch_status(&status);
     out->open_counted = status.closed_starts == 1 ? 1 : 0;
+
+    /* An open the decoder resolved the gate for (round 9) runs it from its first block, with no closed start; the
+       next open has none resolved and starts closed. */
+    rtl_stream_resolve_open_gate(&noise10, &off, &off);
+    rtl_stream_gate_open(&off, NULL);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->resolved_open_runs = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+                               && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == 0)
+                                  ? 1
+                                  : 0;
+    rtl_stream_gate_open(&off, NULL);
+    out->resolved_open_once = channel_gate_test_closed() && rtl_stream_gate_closed_start();
 }
 
 /* A typed digital -Y row on an -fA session (round 8): its marked landing puts its symbol profile in place with no

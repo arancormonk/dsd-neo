@@ -4277,6 +4277,15 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
                 return -1;
             }
         }
+        /* With none of the decoder's tunes outstanding, the stream starts on the gate resolved now, from its first
+           block: nothing the engine starts before its first settle (the audio output, rigctl, the frontends) mutes
+           what the receiver produces meanwhile (issue #899). */
+        dsd_squelch_setting gate;
+        dsd_squelch_setting digital;
+        dsd_squelch_setting session;
+        if (dsd_engine_receiver_gate_resolve(opts, state, &gate, &digital, &session)) {
+            rtl_stream_resolve_open_gate(&gate, &digital, &session);
+        }
         if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
             LOG_ERROR("Failed to open radio stream.\n");
             rtl_stream_destroy(state->rtl_ctx);
@@ -4287,7 +4296,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
-        /* A new channel, closed on the analog family until the decoder writes its gate (issue #899). */
+        /* The decoder writes its gate at its first settle: a channel the open ran closed (a tune of its own was
+           outstanding) opens then (issue #899). */
         dsd_engine_receiver_gate_due();
         dsd_engine_note_run_stream_source(opts, state);
     }

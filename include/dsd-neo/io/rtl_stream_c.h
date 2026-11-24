@@ -1051,6 +1051,16 @@ void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_sq
 int rtl_stream_gate_closed_start(void);
 
 /**
+ * @brief The gate the decoder resolved for the stream the next rtl_stream_start() opens (issue #899): @p gate, @p
+ * digital and @p session as rtl_stream_write_squelch_gate() takes them (NULL @p gate: none). That open runs it from its
+ * first block instead of a closed start, so nothing the engine does between the stream's start and its first gate
+ * write mutes what the receiver produces meanwhile. The decoder resolves it only when none of its own tune or family
+ * requests is outstanding. Every open forgets it, taken or not. Decoder thread, before rtl_stream_start().
+ */
+void rtl_stream_resolve_open_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                  const dsd_squelch_setting* session);
+
+/**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),
  * rtl_stream_request_digital_family_landing()).
  *

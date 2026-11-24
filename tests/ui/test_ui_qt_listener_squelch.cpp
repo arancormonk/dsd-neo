@@ -37,10 +37,16 @@
  *                     down again after it.
  *   scan-row-off      the same list with the Settings default Off: the row runs no squelch and the idle channel holds
  *                     the scan (the control).
+ *   opening-nfm       the NFM saved system over the opening capture (the transmission from its first sample, then 2 s
+ *                     of noise): the receiver runs the resolved gate before its first block, so the opening plays from
+ *                     its talker's start; nothing the engine starts between the stream and its main loop mutes it.
+ *   opening-nfm-off   the same with the Settings default Off.
  *
  * Nothing in the fixture sets the startup squelch: the squelch the channel runs is read at the lifecycle's start (the
- * engine's setup and its stream open done) and, as the receiver ran it, from the dynamic squelch's status at the first
- * block the decoder reads, so the production startup path is what each case checks.
+ * engine's setup and its stream open done), where the receiver must already run it and not a closed start; then, as
+ * the receiver produced the samples the decoder's first read returned (its counts of closed-start and unjudged samples,
+ * kept where it produces them), and apart from that, from the dynamic squelch's status at that read. So the production
+ * startup path is what each case checks.
  *
  * Not covered here: the scan coordinator stepping between rows (an I/Q replay cannot retune; the rows' settings on air
  * through the real coordinator are ENGINE_TRUNK_SCAN_SCAN_LIST's), and the stream after a live switch back to a
@@ -174,6 +180,11 @@ segmentAt(double ms) {
    it, so the production startup path is what is seen, not a value the fixture set. */
 int g_firstReadSeen = 0;
 rtl_stream_squelch_status g_firstReadStatus = {};
+/* The samples the decoder's first read returned. The receiver counts where it produces them (the replay produces a
+   block only once the decoder reads) the analog monitor samples a closed start muted and those it produced open with
+   no dynamic squelch (rtl_stream_squelch_status::closed_samples, unjudged_samples): gate evidence for the samples the
+   read returned, apart from the status, which is the demodulator's latest. */
+int g_firstReadGot = 0;
 
 int
 countingReadEx(void* ctx, float* out, uint8_t* flags, size_t count, int* outGot) {
@@ -181,6 +192,7 @@ countingReadEx(void* ctx, float* out, uint8_t* flags, size_t count, int* outGot)
     const unsigned int rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
     if (rc >= 0 && outGot != nullptr && *outGot > 0 && !g_firstReadSeen) {
         g_firstReadSeen = 1;
+        g_firstReadGot = *outGot;
         (void)rtl_stream_get_squelch_status(&g_firstReadStatus);
     }
     if (rc >= 0 && outGot != nullptr && *outGot > 0 && rate > 0U) {
@@ -250,6 +262,11 @@ int g_startMode = -1;
 int g_startMargin = -1;
 double g_startLevel = -1.0;
 int g_startDefault = -1;
+/* Whether the receiver ran a closed start then: after the stream started, with the audio output, rigctl and the
+   frontends' start between it and the decoder's main loop. A live receiver produces from its start, so what it runs
+   here is what its first blocks run. */
+int g_startClosed = -1;
+int g_startAnalog = -1;
 
 /* After the engine installed its hooks and opened its (null) output: the monitor goes to the capture. */
 int
@@ -260,6 +277,8 @@ listenerStart(dsd_opts* opts, dsd_state* state, void* context) {
     g_startMargin = opts->rtl_squelch_margin_db;
     g_startLevel = opts->rtl_squelch_level;
     g_startDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? 1 : 0;
+    g_startClosed = rtl_stream_gate_closed_start();
+    g_startAnalog = dsd_opts_is_analog_family(opts) ? 1 : 0;
     opts->audio_out = 1;
     opts->audio_out_type = 8;
     dsd_udp_audio_hooks audio = {};
@@ -317,6 +336,33 @@ makeCapture(const QTemporaryDir& dir) {
                          && outMeta.open(QIODevice::WriteOnly) && outMeta.write(QJsonDocument(sidecar).toJson()) > 0;
     return written ? outMeta.fileName() : QString();
 }
+
+/* The opening capture in @p dir: the transmission from the capture's first sample, then idle noise; its sidecar's
+   path, or "" on failure. */
+QString
+makeOpeningCapture(const QTemporaryDir& dir) {
+    const qsizetype perMs = 2 * kRateHz / 1000; // cu8 I/Q
+    const QByteArray speech = fixtureBytes("speech_nfm_synth", 0, -1);
+    const QByteArray after = fixtureBytes("noise_floor", 0, static_cast<qsizetype>(kAfterMs) * perMs);
+    QFile meta(QStringLiteral(DSD_NEO_TEST_IQ_FIXTURE_DIR "/noise_floor.iq.json"));
+    if (speech.size() != static_cast<qsizetype>(kCarrierMs) * perMs
+        || after.size() != static_cast<qsizetype>(kAfterMs) * perMs || !meta.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QJsonObject sidecar = QJsonDocument::fromJson(meta.readAll()).object();
+    const QByteArray data = speech + after;
+    sidecar.insert(QStringLiteral("data_file"), QStringLiteral("opening.iq"));
+    sidecar.insert(QStringLiteral("data_bytes"), static_cast<qint64>(data.size()));
+    sidecar.insert(QStringLiteral("notes"), QStringLiteral("speech_nfm_synth, noise_floor 2 s"));
+    QFile out(dir.filePath(QStringLiteral("opening.iq")));
+    QFile outMeta(dir.filePath(QStringLiteral("opening.iq.json")));
+    const bool written = out.open(QIODevice::WriteOnly) && out.write(data) == data.size()
+                         && outMeta.open(QIODevice::WriteOnly) && outMeta.write(QJsonDocument(sidecar).toJson()) > 0;
+    return written ? outMeta.fileName() : QString();
+}
+
+/* The stream time the capture a case listens to lasts: the listening capture's, or the opening capture's. */
+double g_captureMs = kCarrierEndMs + kAfterMs;
 
 class Host : public dsd_qt::DecoderHost {
   public:
@@ -439,7 +485,7 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
                 g_heard.readMs, g_heard.blocks, g_heard.audibleMs[kIdle], g_heard.audibleMs[kCarrier],
                 g_heard.audibleMs[kAfter], g_heard.firstAudibleMs, g_heard.lastAudibleMs, g_heard.holdSeen[kIdle],
                 g_heard.holdSeen[kCarrier], g_heard.holdSeen[kAfter], g_heard.holdAtEnd);
-    expect("the engine runs the capture to its end", rc == 0 && g_heard.readMs > kCarrierEndMs + kAfterMs - 100.0);
+    expect("the engine runs the capture to its end", rc == 0 && g_heard.readMs > g_captureMs - 100.0);
     const auto at_start = std::make_unique<dsd_opts>();
     at_start->rtl_squelch_mode = g_startMode;
     at_start->rtl_squelch_margin_db = g_startMargin;
@@ -451,14 +497,38 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
     }
     expect("the channel runs the squelch it should when the engine starts",
            squelchIs(at_start.get(), wantMode, wantMargin) && inDefault == byDefault);
-    /* The receiver ran it from its first block: the noise squelch for a noise setting on the FM monitor, nothing
-       dynamic under a level or Off. */
+    /* The receiver ran the resolved gate before its first block (round 9): an analog start with no tune outstanding is
+       no closed start, so nothing the engine does between the stream's start and its main loop mutes what the
+       receiver produces meanwhile. */
+    if (g_startClosed != 0) {
+        DSD_FPRINTF(stderr, "  at the lifecycle's start the receiver runs a closed start (%d)\n", g_startClosed);
+    }
+    expect("the receiver runs the gate before its first block, not a closed start", g_startClosed == 0);
+    /* Gate evidence for the samples the first read returned, as the receiver produced them: none muted by a closed
+       start, and under a noise setting none produced open without it; under Off on the analog monitor they are
+       produced open with no dynamic squelch. */
     const bool wantNoise = wantMode == DSD_SQUELCH_MODE_NOISE;
+    const uint64_t got = static_cast<uint64_t>(g_firstReadGot);
+    const bool produced = g_firstReadSeen && g_firstReadStatus.closed_starts == 0
+                          && g_firstReadStatus.closed_samples == 0U
+                          && (wantNoise ? g_firstReadStatus.unjudged_samples == 0U
+                                        : g_startAnalog != 1 || g_firstReadStatus.unjudged_samples >= got);
+    if (!produced) {
+        DSD_FPRINTF(stderr,
+                    "  first read %d (%d samples): closed starts %d, closed samples %llu, unjudged samples %llu, want "
+                    "mode %d\n",
+                    g_firstReadSeen, g_firstReadGot, g_firstReadStatus.closed_starts,
+                    static_cast<unsigned long long>(g_firstReadStatus.closed_samples),
+                    static_cast<unsigned long long>(g_firstReadStatus.unjudged_samples), wantMode);
+    }
+    expect("the samples the first read returned were produced under that gate", produced);
+    /* And, separately, the status the demodulator published by then: the noise squelch for a noise setting on the FM
+       monitor, nothing dynamic under a level or Off. */
     if (!g_firstReadSeen || (g_firstReadStatus.active == 1) != (wantMode != DSD_SQUELCH_MODE_LEVEL)
         || (wantNoise && g_firstReadStatus.noise != 1)) {
         DSD_FPRINTF(stderr, "  first read %d: receiver squelch active %d noise %d, want mode %d\n", g_firstReadSeen,
                     g_firstReadStatus.active, g_firstReadStatus.noise, wantMode);
-        expect("the receiver runs that squelch from the first block the decoder reads", false);
+        expect("the receiver's status at the first read names that squelch", false);
     }
     return true;
 }
@@ -568,6 +638,29 @@ caseSavedNfm(dsd_qt::AppPrefs& prefs, const QString& capture, const QTemporaryDi
             expect("the speech level at the opening is the level later in the call",
                    onset > kAudibleDbfs && std::fabs(onset - steady) <= kOnsetLevelDb);
         }
+    }
+    return 0;
+}
+
+/* Round 9: a transmission on the air from the stream's first sample, on the NFM saved system (the Settings default,
+   or Off). The receiver runs the resolved gate before it produces anything, so the opening plays from its talker's
+   start (0.25 s in) whatever the engine did between the stream's start and its main loop: the decoder's first read
+   holds no sample a closed start muted. */
+int
+caseOpeningNfm(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
+    prefs.setSquelch(off ? QStringLiteral("off") : QStringLiteral("noise+10"));
+    dsd_qt::SessionArgsBuilder builder(&prefs);
+    Host host;
+    expect("the NFM saved system starts",
+           builder.start(nfmSystem(), &host, QStringLiteral("saved")).value("started").toBool());
+    g_captureMs = kCarrierMs + kAfterMs;
+    Session session;
+    if (listen(host.argv, capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE, off ? 0 : 10, !off, nullptr,
+               QString(), session)) {
+        const double audible = g_heard.audibleMs[kIdle] + g_heard.audibleMs[kCarrier] + g_heard.audibleMs[kAfter];
+        expect("the opening transmission plays from its talker's start",
+               g_heard.firstAudibleMs >= 0.0 && g_heard.firstAudibleMs <= 400.0);
+        expect("and most of it plays", audible >= 4000.0);
     }
     return 0;
 }
@@ -707,7 +800,8 @@ main(int argc, char** argv) {
     const QString which = argc > 1 ? QString::fromLatin1(argv[1]) : QString();
 #ifdef USE_RADIO
     QTemporaryDir dir;
-    const QString capture = dir.isValid() ? makeCapture(dir) : QString();
+    const bool opening = which.startsWith(QStringLiteral("opening-"));
+    const QString capture = dir.isValid() ? (opening ? makeOpeningCapture(dir) : makeCapture(dir)) : QString();
     expect("the listening capture is made", !capture.isEmpty());
     if (!capture.isEmpty()) {
         dsd_qt::AppPrefs prefs;
@@ -721,6 +815,10 @@ main(int argc, char** argv) {
             caseScanRow(prefs, capture, false);
         } else if (which == QStringLiteral("scan-row-off")) {
             caseScanRow(prefs, capture, true);
+        } else if (which == QStringLiteral("opening-nfm")) {
+            caseOpeningNfm(prefs, capture, false);
+        } else if (which == QStringLiteral("opening-nfm-off")) {
+            caseOpeningNfm(prefs, capture, true);
         } else {
             expect("a known case", false);
         }
