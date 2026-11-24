@@ -30,8 +30,15 @@ set(_mbe_required_notices
     legal/patents.md
 )
 # mbelib 2.6.12 embeds pffft-neo and installs its notices under pffft-neo/;
-# earlier 2.6 releases install the PFFFT fork's notices under pffft/.
-if(EXISTS "${DSD_MBELIB_NOTICE_DIR}/pffft-neo")
+# earlier 2.6 releases install the PFFFT fork's notices under pffft/. The
+# installed component inventory says which one this mbelib embeds, so a stale
+# subtree an in-place upgrade left behind cannot stand in for the other.
+set(_mbe_components "${DSD_MBELIB_NOTICE_DIR}/legal/components.json")
+set(_mbe_components_text "")
+if(EXISTS "${_mbe_components}")
+    file(READ "${_mbe_components}" _mbe_components_text)
+endif()
+if(_mbe_components_text MATCHES "\"id\"[ \t\r\n]*:[ \t\r\n]*\"pffft-neo\"")
     list(
         APPEND _mbe_required_notices
         pffft-neo/LICENSE

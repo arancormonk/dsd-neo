@@ -58,16 +58,40 @@ set(PFFFT_SOURCES
     "${DSD_PFFFT_SOURCE_DIR}/src/pffft_common.c"
 )
 set(PFFFT_INCLUDE_DIR "${DSD_PFFFT_SOURCE_DIR}/include/pffft")
+# Every file pffft.c, pffft_common.c and pffft_wide_tu.c compile from, so an
+# incomplete offline source fails here rather than mid-build.
+set(_pffft_sources
+    src/pffft.c
+    src/pffft_common.c
+    src/pffft_wide_tu.c
+    src/pffft_impl.h
+    src/pffft_internal.h
+    src/pffft_setup.h
+    src/pffft_priv_impl.h
+    src/pffft_passes_impl.h
+    src/pffft_pass_config.h
+    src/pffft_cplx_impl.h
+    src/pffft_real_impl.h
+    src/pffft_cpu_x86.h
+    src/pffft_wide_config.h
+    src/pffft_wide_impl.h
+    src/pffft_wide_select.h
+    src/pffft_wide_sizes.h
+    src/pffft_wide_api.h
+    src/simd/pf_float.h
+    src/simd/pf_scalar_float.h
+    src/simd/pf_sse1_float.h
+    src/simd/pf_fma_x86.h
+    src/simd/pf_neon_float.h
+    include/pffft/pffft.h
+)
 set(_pffft_notices
+    README.md
     LICENSE
     third_party/pffft/LICENSE.txt
     third_party/pffft/LicenseRef-PFFFT.txt
 )
-foreach(
-    _file
-    IN
-    ITEMS src/pffft_common.c include/pffft/pffft.h ${_pffft_notices}
-)
+foreach(_file IN LISTS _pffft_sources _pffft_notices)
     if(NOT EXISTS "${DSD_PFFFT_SOURCE_DIR}/${_file}")
         message(
             FATAL_ERROR
@@ -145,12 +169,14 @@ endif()
 # One stable build-tree location serves install(), Qt resources and packaging.
 set(DSD_PFFFT_LICENSE_DIR "${PROJECT_BINARY_DIR}/pffft-licenses")
 file(MAKE_DIRECTORY "${DSD_PFFFT_LICENSE_DIR}")
-# pffft-neo's own GPL-2.0-or-later license, the inherited PFFFT/FFTPACK
-# license, and pffft-neo's record of every retained upstream notice.
+# pffft-neo's README (its copyright notice and GPL-2.0-or-later grant), its
+# GPL text, the inherited PFFFT/FFTPACK license, and pffft-neo's record of
+# every retained upstream notice.
 foreach(
     _pair
     IN
     ITEMS
+        "README.md|pffft-neo-README.md"
         "LICENSE|pffft-neo-LICENSE.txt"
         "third_party/pffft/LICENSE.txt|pffft-LICENSE.txt"
         "third_party/pffft/LicenseRef-PFFFT.txt|pffft-NOTICES.txt"

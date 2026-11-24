@@ -457,7 +457,7 @@
       "license_declared": "NOASSERTION",
       "license_concluded": "NOASSERTION",
       "notices": [],
-      "assessment": "pffft-neo declares GPL-2.0-or-later AND LicenseRef-PFFFT: its contributions are GPL-2.0-or-later and it retains the PFFFT and FFTPACK notices. Its GPL text, the inherited PFFFT license and its retained-notice record are copied from the pinned source and shipped as pffft-neo-LICENSE.txt, pffft-LICENSE.txt and pffft-NOTICES.txt.",
+      "assessment": "pffft-neo declares GPL-2.0-or-later AND LicenseRef-PFFFT: its contributions are GPL-2.0-or-later and it retains the PFFFT and FFTPACK notices. Its README (copyright notice and license grant), GPL text, the inherited PFFFT license and its retained-notice record are copied from the pinned source and shipped as pffft-neo-README.md, pffft-neo-LICENSE.txt, pffft-LICENSE.txt and pffft-NOTICES.txt.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
@@ -468,6 +468,7 @@
           "dsd-neo.exe"
         ],
         "notices": {
+          "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
@@ -475,6 +476,7 @@
       },
       "android_release": {
         "notices": {
+          "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
@@ -485,6 +487,7 @@
           "dsd-neo"
         ],
         "notices": {
+          "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
           "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"

@@ -264,11 +264,13 @@ For cppcheck without a configured DSD build, set `DSD_PFFFT_SOURCE_DIR` to the
 pinned pffft-neo checkout; the CI cppcheck job acquires it with the pinned-Git helper.
 OSV scans the pinned commit explicitly; release SBOMs record its repository,
 revision and checksum before upload and attestation. Installed, Qt, Android and
-portable packages carry `pffft-neo-LICENSE.txt` (pffft-neo's GPL-2.0-or-later text),
-`pffft-LICENSE.txt` (the inherited PFFFT and FFTPACK license) and `pffft-NOTICES.txt`
-(pffft-neo's record of every retained upstream notice), copied from the pinned
-source's `LICENSE` and `third_party/pffft/` into the build tree's `pffft-licenses/`
-directory.
+portable packages carry `pffft-neo-README.md` (pffft-neo's copyright notice and
+GPL-2.0-or-later grant), `pffft-neo-LICENSE.txt` (its GPL text), `pffft-LICENSE.txt`
+(the inherited PFFFT and FFTPACK license) and `pffft-NOTICES.txt` (pffft-neo's record
+of every retained upstream notice), copied from the pinned source's `README.md`,
+`LICENSE` and `third_party/pffft/` into the build tree's `pffft-licenses/` directory.
+The configure check also requires every source file the build compiles from, so an
+incomplete offline source fails before the build.
 
 ### AUR and mbelib packaging
 
@@ -286,7 +288,10 @@ offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.
 When changing the mbelib revision, align these with that revision's PFFFT pin.
 mbelib 2.6.12 installs pffft-neo's notices under `share/doc/mbelib-neo/pffft-neo/`;
-earlier 2.6 releases install the PFFFT fork's under `pffft/`, and DSD accepts either.
+earlier 2.6 releases install the PFFFT fork's under `pffft/`. DSD requires the set
+that the installed `legal/components.json` names (component `pffft-neo` or `pffft`),
+so desktop installs accept either release. Release packages build the pinned mbelib,
+and their notice maps name its `pffft-neo/` files.
 
 DSD now requires mbelib-neo 2.6+ for its implementation-provenance remediation
 and installed component records. Keep the library's `share/doc/mbelib-neo/`
