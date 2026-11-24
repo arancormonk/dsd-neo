@@ -147,23 +147,6 @@ static int g_cmd_default_syncs;
 /* Every lookup of the session's own squelch (dsd_squelch_channel_gate(), issue #899 round 12). */
 static int g_cmd_session_lookups;
 
-/* Whether the call counts the wraps above take can be checked (issue #899): they count calls through --wrap, which an
-   LTO build can inline away, so an LTO test build (DSD_TEST_LTO_BUILD) checks the behaviour around them and skips the
-   counts, saying so once. */
-static int
-cmd_rx_counts_observable(void) {
-#if defined(DSD_TEST_LTO_BUILD)
-    static int said;
-    if (!said) {
-        said = 1;
-        DSD_FPRINTF(stderr, "SKIP: wrapped call counts in an LTO test build (the idle-drain case checks behaviour)\n");
-    }
-    return 0;
-#else
-    return 1;
-#endif
-}
-
 static void cmd_rx_runs(const dsd_squelch_setting* gate);
 #endif
 
@@ -12752,10 +12735,12 @@ test_squelch_setting_command(void) {
  * receiver runs already. Before round 5 every drain resolved the receiver's gates and took the retune-profile lock to
  * hand an outstanding retune a landing gate, whether or not anything was outstanding. Round 12: with a write due and a
  * receive request the receiver holds pending across many drains, no drain looks the session's squelch up
- * (dsd_squelch_channel_gate()) until the request settles; the next drain then resolves and writes.
+ * (dsd_squelch_channel_gate()) until the request settles; the next drain then resolves and writes. The resolves,
+ * default-policy runs and session lookups are counted through --wrap and checked with @p counts set, by the count-only
+ * APP_COMMAND_QUEUE_COST entry (main()'s --cost); APP_COMMAND_QUEUE checks the drains, writes and reads alone.
  */
 static int
-test_idle_digital_drain_resolves_nothing(void) {
+test_idle_digital_drain_resolves_nothing(int counts) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     static void* fake_ctx[2];
@@ -12770,7 +12755,6 @@ test_idle_digital_drain_resolves_nothing(void) {
     int rc = expect_int("idle drain: dmr", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, DSDCFG_MODE_DMR),
                         DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("idle drain: dmr drained", dsd_app_drain_cmds(opts, state), 1);
-    const int counts = cmd_rx_counts_observable();
     const dsd_squelch_setting session = dsd_squelch_setting_of_opts(opts);
     channel_gate_fake_open(0, &session, cmd_rx_runs);
     dsd_engine_receiver_gate_due();
@@ -33291,33 +33275,9 @@ test_scan_entry_toasts_fit_the_status_line(void) {
     return rc;
 }
 
-int
-main(void) {
-    if (dsd_socket_init() != 0) {
-        DSD_FPRINTF(stderr, "dsd_socket_init failed\n");
-        return 1;
-    }
-    cmd_rx_gates_open();
-    /* Where openAudioInput() is not wrapped (macOS, Windows, other compilers), the Pulse input command opens the real
-       device. libpulse then makes its runtime folder, in TMPDIR wherever XDG_RUNTIME_DIR is unset (the CI runners), and
-       leaves it. It gets a folder of this test's own, removed at the end, and a server that does not exist, so it
-       neither reaches a desktop's real sound server nor starts one. */
-    char pulse_runtime[DSD_TEST_PATH_MAX];
-    char pulse_server[DSD_TEST_PATH_MAX + 16];
-    if (!dsd_test_mkdtemp(pulse_runtime, sizeof pulse_runtime, "pulse_runtime")) {
-        DSD_FPRINTF(stderr, "FAIL: pulse runtime folder\n");
-        dsd_socket_cleanup();
-        return 1;
-    }
-    DSD_SNPRINTF(pulse_server, sizeof pulse_server, "unix:%s/no-server", pulse_runtime);
-    if (dsd_test_setenv("PULSE_RUNTIME_PATH", pulse_runtime, 1) != 0
-        || dsd_test_setenv("PULSE_SERVER", pulse_server, 1) != 0) {
-        DSD_FPRINTF(stderr, "FAIL: pulse environment\n");
-        (void)dsd_test_rmdir(pulse_runtime);
-        dsd_socket_cleanup();
-        return 1;
-    }
-    dsd_neo_log_set_tap(record_test_log, NULL);
+/* APP_COMMAND_QUEUE: every case, the --wrap cost counts aside. */
+static int
+cmd_queue_behaviour_cases(void) {
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
     rc |= test_runtime_config_apply_sets_the_decoder_options();
@@ -33401,7 +33361,7 @@ main(void) {
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();
-    rc |= test_idle_digital_drain_resolves_nothing();
+    rc |= test_idle_digital_drain_resolves_nothing(0);
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_config_to_dmr_on_the_same_input_keeps_off_off_the_nfm_channel();
 #endif
@@ -33816,6 +33776,57 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= expect_int("no case re-entered the P25 SM tick guard", g_guard_reentries, 0);
 #endif
+    return rc;
+}
+
+/* APP_COMMAND_QUEUE_COST: the idle drain's --wrap cost counts (issue #899), which only the radio build with the stream
+   wraps takes. */
+static int
+cmd_queue_cost_cases(void) {
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    return test_idle_digital_drain_resolves_nothing(1);
+#else
+    return 0;
+#endif
+}
+
+int
+main(int argc, char** argv) {
+    /* --cost: the count-only cases (APP_COMMAND_QUEUE_COST). They count calls an LTO build can inline away, so an LTO
+       test build skips them (CTest's 77). */
+    const int cost = argc > 1 && strcmp(argv[1], "--cost") == 0;
+#if defined(DSD_TEST_LTO_BUILD)
+    if (cost) {
+        DSD_FPRINTF(stderr, "skipped: --wrap cost counts in an LTO test build (DSD_TEST_LTO_BUILD)\n");
+        return 77;
+    }
+#endif
+    if (dsd_socket_init() != 0) {
+        DSD_FPRINTF(stderr, "dsd_socket_init failed\n");
+        return 1;
+    }
+    cmd_rx_gates_open();
+    /* Where openAudioInput() is not wrapped (macOS, Windows, other compilers), the Pulse input command opens the real
+       device. libpulse then makes its runtime folder, in TMPDIR wherever XDG_RUNTIME_DIR is unset (the CI runners), and
+       leaves it. It gets a folder of this test's own, removed at the end, and a server that does not exist, so it
+       neither reaches a desktop's real sound server nor starts one. */
+    char pulse_runtime[DSD_TEST_PATH_MAX];
+    char pulse_server[DSD_TEST_PATH_MAX + 16];
+    if (!dsd_test_mkdtemp(pulse_runtime, sizeof pulse_runtime, "pulse_runtime")) {
+        DSD_FPRINTF(stderr, "FAIL: pulse runtime folder\n");
+        dsd_socket_cleanup();
+        return 1;
+    }
+    DSD_SNPRINTF(pulse_server, sizeof pulse_server, "unix:%s/no-server", pulse_runtime);
+    if (dsd_test_setenv("PULSE_RUNTIME_PATH", pulse_runtime, 1) != 0
+        || dsd_test_setenv("PULSE_SERVER", pulse_server, 1) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: pulse environment\n");
+        (void)dsd_test_rmdir(pulse_runtime);
+        dsd_socket_cleanup();
+        return 1;
+    }
+    dsd_neo_log_set_tap(record_test_log, NULL);
+    int rc = cost ? cmd_queue_cost_cases() : cmd_queue_behaviour_cases();
     if (dsd_test_rmdir(pulse_runtime) != 0) {
         DSD_FPRINTF(stderr, "FAIL: the pulse runtime folder %s could not be removed\n", pulse_runtime);
         rc = 1;

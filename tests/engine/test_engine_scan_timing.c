@@ -92,14 +92,12 @@ int __wrap_dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode
    cost). */
 static int g_mono_reads;
 static int g_scan_ext_lookups;
-#if !defined(DSD_TEST_LTO_BUILD)
 /* What a healthy digital -Y pass of test_healthy_digital_pass_costs() makes of each. */
 static const int kHealthyPassMonoReads = 1;
 static const int kHealthyPassScanLookups = 1;
 /* And what its -Y timing tick makes of them (the tick is handed its clock samples). */
 static const int kHealthyTickMonoReads = 0;
 static const int kHealthyTickScanLookups = 1;
-#endif
 double __real_dsd_decode_now_mono_s(void);
 double __wrap_dsd_decode_now_mono_s(void);
 void* __real_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
@@ -712,10 +710,12 @@ test_owed_recovery_publishes_the_armed_span(void) {
  * row committed and syncing (no recovery owed, nothing avoided, no visit cap): the engine's real no-carrier decision
  * stays, and the decode monotonic clock reads and the -Y scan's extension lookups it makes are counted
  * (test-only wraps). The counts are this pass's own: one more clock read (a rule sampling the clock apart from the
- * forced rules' one sample) or one more lookup (a recovery check that looks the scan up unarmed) fails.
+ * forced rules' one sample) or one more lookup (a recovery check that looks the scan up unarmed) fails. The counts are
+ * checked with @p counts set, by the count-only ENGINE_SCAN_TIMING_COST entry (main()'s --cost); ENGINE_SCAN_TIMING
+ * runs the pass and its tick for their behaviour alone.
  */
 static void
-test_healthy_digital_pass_costs(void) {
+test_healthy_digital_pass_costs(int counts) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     assert(opts && state);
@@ -746,14 +746,7 @@ test_healthy_digital_pass_costs(void) {
     const int reads = g_mono_reads;
     const int lookups = g_scan_ext_lookups;
     assert(g_tune_calls == 1); /* it stayed */
-#if defined(DSD_TEST_LTO_BUILD)
-    /* The counts are of calls through --wrap, which an LTO build can inline away: the pass and its tick still run. */
-    (void)reads;
-    (void)lookups;
-    DSD_FPRINTF(stderr, "SKIP: healthy digital -Y pass cost counts in an LTO test build (the pass still runs)\n");
-    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
-#else
-    if (reads != kHealthyPassMonoReads || lookups != kHealthyPassScanLookups) {
+    if (counts && (reads != kHealthyPassMonoReads || lookups != kHealthyPassScanLookups)) {
         DSD_FPRINTF(stderr, "a healthy digital -Y pass: %d decode clock reads and %d -Y scan lookups, want %d and %d\n",
                     reads, lookups, kHealthyPassMonoReads, kHealthyPassScanLookups);
         assert(0);
@@ -764,8 +757,9 @@ test_healthy_digital_pass_costs(void) {
     g_owed_window_calls = 0;
     dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
     const int tick_reads = g_mono_reads - 1;
-    if (g_owed_window_calls != 0 || tick_reads != kHealthyTickMonoReads
-        || g_scan_ext_lookups != kHealthyTickScanLookups) {
+    if (counts
+        && (g_owed_window_calls != 0 || tick_reads != kHealthyTickMonoReads
+            || g_scan_ext_lookups != kHealthyTickScanLookups)) {
         DSD_FPRINTF(stderr,
                     "a healthy digital -Y tick: %d owed-window calls, %d decode clock reads and %d -Y scan lookups, "
                     "want 0, %d and %d\n",
@@ -773,7 +767,6 @@ test_healthy_digital_pass_costs(void) {
                     kHealthyTickScanLookups);
         assert(0);
     }
-#endif
     dsd_engine_channel_scan_leave(opts, state);
     dsd_decode_clock_use_system();
     freeState(state);
@@ -781,15 +774,31 @@ test_healthy_digital_pass_costs(void) {
     free(opts);
 }
 
+/* ENGINE_SCAN_TIMING_COST: the --wrap cost counts alone (issue #899). They count calls an LTO build can inline away, so
+   an LTO test build skips them (CTest's 77). */
+static int
+scan_timing_cost_cases(void) {
+#if defined(DSD_TEST_LTO_BUILD)
+    DSD_FPRINTF(stderr, "skipped: --wrap cost counts in an LTO test build (DSD_TEST_LTO_BUILD)\n");
+    return 77;
+#else
+    test_healthy_digital_pass_costs(1);
+    return 0;
+#endif
+}
+
 int
-main(void) {
+main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--cost") == 0) {
+        return scan_timing_cost_cases();
+    }
     test_owed_commit_recovers_under_continuing_sync(0);
     test_owed_commit_recovers_under_continuing_sync(1);
     test_owed_recovery_step_staging_no_tune(0);
     test_owed_recovery_step_staging_no_tune(1);
     test_owed_recovery_cooldown_with_sync_stopped();
     test_owed_recovery_publishes_the_armed_span();
-    test_healthy_digital_pass_costs();
+    test_healthy_digital_pass_costs(0);
     test_legacy_deadline_matches_rotation();
     test_analog_carrier_deadline_matches_rotation();
     test_scan_retune_publication(0, 0, 0);

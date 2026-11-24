@@ -9,37 +9,42 @@ set(_DSD_NEO_RR_FIXTURE_DIR
     "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
 )
 
-# Whether these tests are built with link-time optimization (issue #899). The cost counters
-# some cases keep (calls, lookups and reads counted through --wrap) cannot see a call that
-# LTO inlined before the wrap applied, so those cases skip their counts in an LTO test build
-# (DSD_TEST_LTO_BUILD) and still check the behaviour around them. No preset or CI job builds
-# tests with LTO; this only keeps such a build honest.
+# Whether these tests may be built with link-time optimization (issue #899). The cost counters
+# some cases keep (calls, lookups and reads counted through --wrap) cannot see a call that LTO
+# inlined before the wrap applied. Their count-only CTest entries (*_COST) return CTest's skip
+# code 77 in such a build (DSD_TEST_LTO_BUILD); the behaviour entries run as always. Fail-safe:
+# LTO or IPO requested for any configuration, or -flto as an argument in any configuration's
+# compile or executable link flags, sets it for every configuration. Over-skipping is accepted:
+# it only loses coverage in configurations no preset or CI job builds.
 set(_DSD_TEST_LTO_BUILD OFF)
-if(
-    CMAKE_INTERPROCEDURAL_OPTIMIZATION
-    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE
-    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO
-    OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL
-    OR DSD_ENABLE_LTO
-)
+if(DSD_ENABLE_LTO OR CMAKE_INTERPROCEDURAL_OPTIMIZATION)
     set(_DSD_TEST_LTO_BUILD ON)
 endif()
+set(_dsd_lto_flag_vars CMAKE_C_FLAGS CMAKE_CXX_FLAGS CMAKE_EXE_LINKER_FLAGS)
 foreach(
-    _dsd_flags_var
-    CMAKE_C_FLAGS
-    CMAKE_CXX_FLAGS
-    CMAKE_C_FLAGS_DEBUG
-    CMAKE_CXX_FLAGS_DEBUG
-    CMAKE_C_FLAGS_RELEASE
-    CMAKE_CXX_FLAGS_RELEASE
-    CMAKE_C_FLAGS_RELWITHDEBINFO
-    CMAKE_CXX_FLAGS_RELWITHDEBINFO
-    CMAKE_C_FLAGS_MINSIZEREL
-    CMAKE_CXX_FLAGS_MINSIZEREL
+    _dsd_lto_config
+    IN
+    LISTS CMAKE_CONFIGURATION_TYPES CMAKE_BUILD_TYPE
+    ITEMS Debug Release RelWithDebInfo MinSizeRel
 )
-    if("${${_dsd_flags_var}}" MATCHES "(^| )-flto($| |=)")
+    string(TOUPPER "${_dsd_lto_config}" _dsd_lto_config)
+    if(CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_dsd_lto_config})
         set(_DSD_TEST_LTO_BUILD ON)
     endif()
+    list(
+        APPEND _dsd_lto_flag_vars
+        CMAKE_C_FLAGS_${_dsd_lto_config}
+        CMAKE_CXX_FLAGS_${_dsd_lto_config}
+        CMAKE_EXE_LINKER_FLAGS_${_dsd_lto_config}
+    )
+endforeach()
+foreach(_dsd_lto_flags_var IN LISTS _dsd_lto_flag_vars)
+    separate_arguments(_dsd_lto_args NATIVE_COMMAND "${${_dsd_lto_flags_var}}")
+    foreach(_dsd_lto_arg IN LISTS _dsd_lto_args)
+        if(_dsd_lto_arg STREQUAL "-flto" OR _dsd_lto_arg MATCHES "^-flto=")
+            set(_DSD_TEST_LTO_BUILD ON)
+        endif()
+    endforeach()
 endforeach()
 
 # Release-style configurations put -DNDEBUG on the command line, and nearly
@@ -10372,6 +10377,12 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         )
     endif()
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
+    # The healthy -Y pass's --wrap cost counts alone (issue #899): skipped (77) in an LTO test build.
+    add_test(
+        NAME ENGINE_SCAN_TIMING_COST
+        COMMAND dsd-neo_test_engine_scan_timing --cost
+    )
+    set_tests_properties(ENGINE_SCAN_TIMING_COST PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
@@ -11598,6 +11609,22 @@ if(
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 set_tests_properties(APP_COMMAND_QUEUE PROPERTIES TIMEOUT 120)
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    # The idle drain's --wrap cost counts alone (issue #899): skipped (77) in an LTO test build.
+    add_test(
+        NAME APP_COMMAND_QUEUE_COST
+        COMMAND dsd-neo_test_app_command_queue --cost
+    )
+    set_tests_properties(
+        APP_COMMAND_QUEUE_COST
+        PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+    )
+endif()
 
 add_executable(dsd-neo_test_ui_key_cleanup ui/test_ui_key_cleanup.c)
 target_link_libraries(
