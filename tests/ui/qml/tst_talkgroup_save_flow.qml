@@ -62,9 +62,14 @@ Item {
         id: bridge
         property bool accept: true
         property int calls: 0
+        // What app-control's horizon reads after a submit; "0" is unknown.
+        property string horizon: "0"
         function saveTalkgroupList(context, generation, path) {
             calls++;
             return accept;
+        }
+        function talkgroupExportHorizon() {
+            return horizon;
         }
     }
     Loader {
@@ -100,6 +105,7 @@ Item {
             systems.hasList = false;
             bridge.accept = true;
             bridge.calls = 0;
+            bridge.horizon = "0";
         }
         function result(sequence, context, generation, path, success) {
             return {
@@ -342,6 +348,49 @@ Item {
             compare(bridge.calls, 1);
             compare(loader.item.stalled, null);
             compare(loader.item.retryAvailable, false);
+        }
+        // A failure lost with more completions than app-control keeps: the gap reaches the horizon read at the
+        // submission, so the result can never come. The request is reported and let go of, with its name.
+        function test_lost_failure_past_its_horizon_is_let_go() {
+            bridge.horizon = "9";
+            verify(loader.item.save("original", "7", 1));
+            library.written = false;
+            deliver([result("80", "3", 1, "/other.csv", true)], "79");
+            compare(loader.item.pending, null);
+            verify(loader.item.message.indexOf("not received") >= 0);
+            verify(loader.item.retryAvailable);
+            compare(loader.item.abandoned.length, 0);
+            compare(library.released, ["/owned/list.csv"]);
+        }
+        // Below its horizon a request may still finish: it waits, keeping its name, until a later batch reaches the
+        // horizon without its result. A request given up on by the timeout is let go of the same way.
+        function test_lost_failure_waits_for_its_horizon_data() {
+            return [{tag: "missed", timeout: false}, {tag: "timed out", timeout: true}];
+        }
+        function test_lost_failure_waits_for_its_horizon(data) {
+            bridge.horizon = "100";
+            loader.item.timeoutMs = 50;
+            verify(loader.item.save("original", "7", 1));
+            library.written = false;
+            if (data.timeout)
+                tryCompare(loader.item, "retryAvailable", true);
+            deliver([result("80", "3", 1, "/other.csv", true)], "79");
+            compare(loader.item.abandoned.length, 1);
+            compare(library.released, []);
+            deliver([result("99", "3", 1, "/other.csv", true)]);
+            compare(loader.item.abandoned.length, 1, "a request that can still finish was let go of");
+            deliver([result("100", "3", 1, "/other.csv", true)]);
+            compare(loader.item.abandoned.length, 0);
+            compare(library.released, ["/owned/list.csv"]);
+            compare(library.registrations, 0);
+        }
+        // An unknown horizon ("0") never lets a request go: it waits for its result as before.
+        function test_unknown_horizon_keeps_waiting() {
+            verify(loader.item.save("original", "7", 1));
+            library.written = false;
+            deliver([result("900", "3", 1, "/other.csv", true)], "899");
+            compare(loader.item.abandoned.length, 1);
+            compare(library.released, []);
         }
         function test_failed_registration_retries_registration_only() {
             library.failRegister = true;

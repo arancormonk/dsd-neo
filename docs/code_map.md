@@ -6673,6 +6673,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
     `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
     completion (the control API, which reports a `result_gap` when more completed than the history held).
+    `dsd_app_tg_export_result_horizon()` bounds an export's result: every export the queue takes gets exactly one, so a
+    submission's result is at or below the newest sequence plus one per export still queued plus one for the command
+    being applied, read after the submit (issue #903: Save talkgroup list lets go of a request whose result was lost).
     `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
     open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
     sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
@@ -19254,9 +19257,11 @@ Qt Quick frontend (`src/ui/qt`):
   on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
   export releases its reserved name. A completion lost in a gap is recovered from the file
   (`ImportedFilesModel::talkgroupListWritten()`: the decoder writes it only on success): an existing file is registered,
-  or owed to Imports and retried at each later poll when the index cannot be saved. Known limit: a failure lost in a
-  gap leaves no file, so that request waits for a completion that never comes and keeps its reserved name for the
-  process lifetime (a gap does not prove the request's own completion was in it). The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  or owed to Imports and retried at each later poll when the index cannot be saved. A failure lost in a gap leaves no
+  file: the request waits while its result can still come, until the flow has read (or seen missed) every result up to
+  the horizon read after its submit (`CommandBridge::talkgroupExportHorizon()`, `dsd_app_tg_export_result_horizon()`:
+  the newest result's sequence, plus one per export still queued and one for a command being applied, since each
+  export the queue takes gets exactly one result); then it is let go of with its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares

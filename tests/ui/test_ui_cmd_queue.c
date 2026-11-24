@@ -9337,6 +9337,56 @@ test_talkgroup_export_result(void) {
     return rc;
 }
 
+/* Issue #903: every export's result is at or below the horizon read after its submission, failures and other commands
+ * in between included, and the horizon counts only exports. */
+static int
+test_talkgroup_export_horizon(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 64];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
+    } storage = {0};
+
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
+    /* A destination that cannot be written: each export fails, and still publishes its one result. */
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
+                 "dsd_neo_903_missing_dir/horizon.csv");
+    dsd_app_tg_export_result result = {0};
+    dsd_app_tg_export_result_get(&result);
+    const uint64_t newest = result.sequence;
+    int rc = expect_true("an idle queue leaves room for one command being applied",
+                         dsd_app_tg_export_result_horizon() == newest + 1U);
+    uint64_t horizons[2] = {0, 0};
+    for (int i = 0; i < 2; ++i) {
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        horizons[i] = dsd_app_tg_export_result_horizon();
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    }
+    rc |= expect_true("each queued export counts, other commands do not",
+                      horizons[0] == newest + 2U && horizons[1] == newest + 3U);
+    rc |= expect_int("the exports and the other commands drain", dsd_app_drain_cmds(opts, state), 4);
+    dsd_app_tg_export_result read[2];
+    rc |= expect_int("both exports published a result", dsd_app_tg_export_results_since(newest, read, 2), 2);
+    rc |= expect_true("each result is at or below its submission's horizon",
+                      read[0].sequence <= horizons[0] && read[1].sequence <= horizons[1] && !read[0].success
+                          && !read[1].success);
+    rc |= expect_true("drained, the horizon is one past the newest result",
+                      dsd_app_tg_export_result_horizon() == read[1].sequence + 1U);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* WP-D1: exercise the decoder-thread API, including the resulting effective policy. */
 static int
 test_talkgroup_row_commands(void) {
@@ -32176,6 +32226,7 @@ main(void) {
     rc |= test_talkgroup_row_record_after_mode();
     rc |= test_talkgroup_row_token_commands();
     rc |= test_talkgroup_export_result();
+    rc |= test_talkgroup_export_horizon();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

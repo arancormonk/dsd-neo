@@ -265,6 +265,11 @@ CommandBridge::saveTalkgroupList(const QString& context, unsigned int generation
         dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, payload.constData(), static_cast<size_t>(payload.size())));
 }
 
+QString
+CommandBridge::talkgroupExportHorizon() {
+    return QString::number(dsd_app_tg_export_result_horizon());
+}
+
 // End WP-D1.
 
 bool

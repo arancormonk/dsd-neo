@@ -239,6 +239,21 @@ dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_resul
     return n;
 }
 
+uint64_t
+dsd_app_tg_export_result_horizon(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    /* One for a command dsd_app_drain_cmds() took off the queue and has not published yet: it may be an export. */
+    uint64_t horizon = g_tg_export_result.sequence + 1U;
+    for (size_t i = g_head; i != g_tail; i = (i + 1U) % DSD_APP_CMD_Q_CAP) {
+        if (g_q[i].id == DSD_APP_CMD_TG_LIST_EXPORT) {
+            horizon++;
+        }
+    }
+    dsd_mutex_unlock(&g_mu);
+    return horizon;
+}
+
 /* Called after dispatch, including envelope rejection, before erasing the queued
  * request. Publish only export fields; other command payloads may carry secrets. */
 static void

@@ -803,6 +803,12 @@ enum { DSD_APP_RESULT_HISTORY = 64 };
  * count. Only the last DSD_APP_RESULT_HISTORY are kept, so a reader that falls further behind sees a gap in the
  * sequence numbers. For a consumer that must see every result, not just the latest (the control API). */
 int dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_result* out, int cap);
+/** The sequence by which every TG_LIST_EXPORT submitted so far has its result: the newest result's, plus one for each
+ * export still queued and one for a command the decoder may be applying. Each export the queue takes gets exactly one
+ * result, so a submission's result is at or below a horizon read after its submit returned. A reader that has read
+ * every result up to that horizon, or seen a gap that reaches it, without finding the submission's knows the result
+ * was lost and can never come (issue #903). */
+uint64_t dsd_app_tg_export_result_horizon(void);
 uint64_t dsd_app_command_session_generation(void);
 int dsd_app_decryption_result_get(dsd_app_decryption_result* out);
 /** dsd_app_tg_export_results_since() for decryption results. */

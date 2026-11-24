@@ -1885,6 +1885,12 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* No export result ever comes here: an unknown horizon, which never lets a request go. */
+    Q_INVOKABLE static QString
+    talkgroupExportHorizon() {
+        return QStringLiteral("0");
+    }
+
     Q_INVOKABLE QVariantList
     lastTalkgroupEdit() const {
         return m_talkgroupEdit;
