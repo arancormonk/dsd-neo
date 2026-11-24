@@ -51,6 +51,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -918,6 +920,55 @@ testKnownFrequencySessionTargetOwners(const QString& dir) {
                               {QStringLiteral("path"), QDir(dir).filePath(QStringLiteral("owners-missing.csv"))},
                               {QStringLiteral("targetSource"), QStringLiteral("entries")}};
     assert(index.sessionTargetOwners({first, missing}).isEmpty());
+}
+
+/* Issue #903: a launched list's owners come from one index of its entries, not one walk of the entries per row of its
+   file. Every list of a session at the engine's target cap: reading the owners costs about what reading the same
+   files' targets does (sessionTargets()), where a walk per row took over ten times that. The bound is relative, so a
+   slow or sanitized runner slows both sides alike. A uid repeated by a later entry is still its first entry's. */
+static void
+testKnownFrequencySessionTargetOwnersAtScale(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const int targets = static_cast<int>(dsd_trunk_scan_max_targets());
+    QVariantList session;
+    for (int l = 0; l < DSD_TRUNK_SCAN_MAX_LISTS; ++l) {
+        QString text = QStringLiteral("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n");
+        QVariantList entries;
+        for (int i = 0; i < targets; ++i) {
+            const QString uid = QStringLiteral("l%1t%2").arg(l).arg(i);
+            text += uid + QStringLiteral(",dmr-conventional,%1,,,,,T\n").arg(451000000 + (i * 12500));
+            entries.append(QVariantMap{{QStringLiteral("uid"), uid},
+                                       {QStringLiteral("kind"), QStringLiteral("system")},
+                                       {QStringLiteral("systemUid"), QStringLiteral("sys-%1-%2").arg(l).arg(i)},
+                                       {QStringLiteral("enabled"), true}});
+        }
+        entries.append(QVariantMap{{QStringLiteral("uid"), QStringLiteral("l%1t0").arg(l)},
+                                   {QStringLiteral("kind"), QStringLiteral("freq")},
+                                   {QStringLiteral("enabled"), true}});
+        const QString path = QDir(dir).filePath(QStringLiteral("owners-scale-%1.csv").arg(l));
+        writeFile(path, text.toUtf8().constData());
+        session.append(QVariantMap{{QStringLiteral("uid"), QStringLiteral("owners-scale-%1").arg(l)},
+                                   {QStringLiteral("path"), path},
+                                   {QStringLiteral("targetSource"), QStringLiteral("entries")},
+                                   {QStringLiteral("entries"), entries}});
+    }
+    QElapsedTimer timer;
+    timer.start();
+    const QVariantList read = index.sessionTargets(session);
+    const qint64 readMs = timer.elapsed();
+    timer.restart();
+    const QVariantMap owners = index.sessionTargetOwners(session);
+    const qint64 ownersMs = timer.elapsed();
+    const qsizetype total = qsizetype{targets} * DSD_TRUNK_SCAN_MAX_LISTS;
+    assert(read.size() == total);
+    assert(owners.size() == total);
+    assert(owners.value(QStringLiteral("l0t0")).toString() == QStringLiteral("sys-0-0"));
+    const int last = DSD_TRUNK_SCAN_MAX_LISTS - 1;
+    assert(owners.value(QStringLiteral("l%1t%2").arg(last).arg(targets - 1)).toString()
+           == QStringLiteral("sys-%1-%2").arg(last).arg(targets - 1));
+    assert(ownersMs <= (readMs * 4) + 250);
 }
 
 /* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
@@ -3147,6 +3198,7 @@ main(int argc, char** argv) {
     testKnownFrequencyEngineGrammar(temp.path());
     testKnownFrequencySessionTargetsShared(temp.path());
     testKnownFrequencySessionTargetOwners(temp.path());
+    testKnownFrequencySessionTargetOwnersAtScale(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
     testKnownFrequencyWatchesUnparsedFiles(temp.path());

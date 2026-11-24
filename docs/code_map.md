@@ -17128,7 +17128,8 @@ Qt Quick frontend (`src/ui/qt`):
     `beginSessionWithOwners(label, uid, single, scan)` (`Main.startWithMap()`'s call): the saved system of a
     saved-system start, or for a scan-list start each target id one saved system's entry gives (`KnownFrequencyIndex::sessionTargetOwners()`: every launched
     target file read before the engine's id dedupe; an id an imported file, a frequency entry or another saved system
-    also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owner()`). Explore and Signal
+    also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owners()`, one index of a list's
+    entries per list, each id by its first entry). Explore and Signal
     search own nothing. Owners are bound to ring generations (`HeardOwners::rings`, `HeardRingGeneration`): a row's
     session is that of the generation holding its push stamp (`heard_owners_session_of()`; none, so no owner, for a
     stamp no generation holds). A ring's first generation is the session it was first walked in, by the model or the

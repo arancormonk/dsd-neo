@@ -74,7 +74,7 @@ class KnownFrequencyIndex : public QObject {
      *
      * @p lists as sessionTargets() takes them, each also with the list's `targetSource` and `entries`. Every row of
      * every list's file counts, before the engine keeps only an id's first: an id is named only when every row that
-     * gives it is one saved system's entry (scan_list_entry_owner()), so an id a frequency entry, an imported target
+     * gives it is one saved system's entry (scan_list_entry_owners()), so an id a frequency entry, an imported target
      * file or another saved system also gives is no one's. A list whose file cannot be read names nothing at all.
      */
     Q_INVOKABLE QVariantMap sessionTargetOwners(const QVariantList& lists) const;

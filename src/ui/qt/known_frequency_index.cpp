@@ -798,12 +798,13 @@ KnownFrequencyIndex::sessionTargetOwners(const QVariantList& lists) const {
             // What it gives is not known, so neither is which ids it shares.
             return {};
         }
+        const QHash<QString, QString> entryOwners = scan_list_entry_owners(list);
         for (const EngineCsvRow& row : csv.rows) {
             const QString id = engineTargetId(row.line, csv.columns.id);
             if (id.isEmpty()) {
                 continue;
             }
-            const QString owner = scan_list_entry_owner(list, id);
+            const QString owner = entryOwners.value(id);
             const auto held = owners.constFind(id);
             if (owner.isEmpty() || (held != owners.constEnd() && held.value() != owner)) {
                 shared.insert(id);
