@@ -1207,12 +1207,17 @@ typedef struct {
                                   (every block that took its closed gate, one finished after the opening write too) */
     uint64_t unjudged_samples; /**< analog monitor samples produced open with no dynamic squelch since the stream
                                     opened */
-    dsd_squelch_setting runs;  /**< the setting the receiver's next block takes (issue #899): a closed start runs a
-                                    LEVEL setting no channel power reaches (DSD_SQUELCH_LEVEL_CLOSED) */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */
 int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
+
+/**
+ * @brief Fill @p out with the squelch setting the receiver's next block takes (issue #899): what a start runs before
+ * the decoder's first write, for a check of the startup path. A closed start runs a LEVEL setting no channel power
+ * reaches (DSD_SQUELCH_LEVEL_CLOSED). Not part of the status the UI polls. 0, or -1 for NULL. Any thread.
+ */
+int rtl_stream_get_squelch_running(dsd_squelch_setting* out);
 
 /**
  * @brief Enable or disable RTL-SDR bias tee at runtime.

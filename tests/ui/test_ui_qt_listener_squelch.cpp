@@ -47,7 +47,7 @@
  *
  * Nothing in the fixture sets the startup squelch: the squelch the channel runs is read at the lifecycle's start (the
  * engine's setup and its stream open done, before the decoder's first settle), where the receiver must already run it,
- * the setting its next block takes (rtl_stream_squelch_status::runs), and not a closed start; then, as
+ * the setting its next block takes (rtl_stream_get_squelch_running()), and not a closed start; then, as
  * the receiver produced the samples the decoder's first read returned (its counts of closed-start and unjudged samples,
  * kept where it produces them), and apart from that, from the dynamic squelch's status at that read. So the production
  * startup path is what each case checks.
@@ -276,7 +276,7 @@ int g_startDefault = -1;
    here is what its first blocks run. */
 int g_startClosed = -1;
 int g_startAnalog = -1;
-/* The setting the receiver's next block takes then (rtl_stream_squelch_status::runs): what its first blocks run, before
+/* The setting the receiver's next block takes then (rtl_stream_get_squelch_running()): what its first blocks run, before
    the decoder's first settle could correct it. */
 dsd_squelch_setting g_startRuns = {DSD_SQUELCH_MODE_LEVEL, -1.0, 0};
 /* A receive request queued as the engine stops (second-session-nfm's first session), and whether it was still pending
@@ -295,9 +295,7 @@ listenerStart(dsd_opts* opts, dsd_state* state, void* context) {
     g_startDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? 1 : 0;
     g_startClosed = rtl_stream_gate_closed_start();
     g_startAnalog = dsd_opts_is_analog_family(opts) ? 1 : 0;
-    rtl_stream_squelch_status status = {};
-    (void)rtl_stream_get_squelch_status(&status);
-    g_startRuns = status.runs;
+    (void)rtl_stream_get_squelch_running(&g_startRuns);
     opts->audio_out = 1;
     opts->audio_out_type = 8;
     dsd_udp_audio_hooks audio = {};

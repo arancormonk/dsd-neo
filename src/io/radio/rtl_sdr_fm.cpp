@@ -21268,15 +21268,17 @@ channel_gate_test_resolved_open_cases(const dsd_opts* analog_opts, rtl_stream_te
     rtl_stream_gate_open(&resolved);
     rtl_stream_squelch_status status{};
     (void)rtl_stream_get_squelch_status(&status);
+    dsd_squelch_setting runs{};
+    (void)rtl_stream_get_squelch_running(&runs);
     out->resolved_open_runs = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
                                && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == 0
-                               && dsd_squelch_setting_equal(&status.runs, &noise10))
+                               && dsd_squelch_setting_equal(&runs, &noise10))
                                   ? 1
                                   : 0;
     channel_gate_test_open_unresolved(&off);
-    (void)rtl_stream_get_squelch_status(&status);
+    (void)rtl_stream_get_squelch_running(&runs);
     out->resolved_open_once = (channel_gate_test_closed() && rtl_stream_gate_closed_start()
-                               && status.runs.mode == DSD_SQUELCH_MODE_LEVEL && status.runs.level > 1.0e30)
+                               && runs.mode == DSD_SQUELCH_MODE_LEVEL && runs.level > 1.0e30)
                                   ? 1
                                   : 0;
 }
@@ -22783,12 +22785,20 @@ rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->closed_ms = g_gate_closed_ms.load(std::memory_order_relaxed);
     out->closed_samples = g_gate_closed_samples.load(std::memory_order_relaxed);
     out->unjudged_samples = g_gate_unjudged_samples.load(std::memory_order_relaxed);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_get_squelch_running(dsd_squelch_setting* out) {
+    if (!out) {
+        return -1;
+    }
     /* What the next block takes (demod_take_squelch_setting()): the word, and under a LEVEL word its level. */
     const uint32_t word = g_squelch_auto_word.load(std::memory_order_acquire);
     const int mode = (int)(word & 0xFFU);
-    out->runs = dsd_squelch_mode_is_dynamic(mode)
-                    ? dsd_squelch_setting_dynamic(mode, (int)((word >> 8) & 0xFFU))
-                    : dsd_squelch_setting_of_level((double)demod.channel_squelch_level.load(std::memory_order_relaxed));
+    *out = dsd_squelch_mode_is_dynamic(mode)
+               ? dsd_squelch_setting_dynamic(mode, (int)((word >> 8) & 0xFFU))
+               : dsd_squelch_setting_of_level((double)demod.channel_squelch_level.load(std::memory_order_relaxed));
     return 0;
 }
 
