@@ -2422,11 +2422,15 @@ suite runs under this compiler.
   RTL-family input other than an I/Q replay, Pulse, UDP or TCP PCM; not files, stdin, symbol captures or
   `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
   cleared when a proof revises a committed row while the input in force is not live, or after a render of the epoch's
-  staged row since that commit saw non-live input (a staged row a commit just cleared says nothing either way). All three ride
-  `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
-  `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2
-  (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup"). Test:
-  `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
+  staged row since that commit saw non-live input (a staged row a commit just cleared says nothing either way). A proof
+  noted while the input is not live closes it for good on the row that carries it: the note records the verdict on
+  the call (`dsd_call_snapshot::heard_live_input`), closes the epoch's staged row's latch at once (so a commit after a
+  switch back to live input, with no render between, reads it shut), and every render that copies the proof ANDs it
+  in, including the render that begins a row after the note. All three ride `push_event_history()`,
+  `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot, `dsd_app_history_tap_copy()`).
+  Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2 (Protocols, "P25 verified
+  talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup"). Test: `CORE_HEARD_TALKGROUP` (its
+  build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,

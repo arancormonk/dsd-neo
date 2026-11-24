@@ -2383,6 +2383,10 @@ watchdog_event_current_load_heard(const dsd_call_snapshot* call, int staged_is_o
     }
     ctx->heard_variant = call->heard_variant;
     ctx->heard_id = call->heard_variant != (uint8_t)DSD_HEARD_TG_NONE ? call->heard_id : 0U;
+    /* A proof noted while the input was not live leaves the row that carries it not live (loaded after the label). */
+    if (call->heard_variant != (uint8_t)DSD_HEARD_TG_NONE && call->heard_live_input == 0U) {
+        ctx->live_input = 0U;
+    }
 }
 
 // The frequency the call was heard on and the access code it was heard with, resolved per render

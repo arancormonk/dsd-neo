@@ -1583,7 +1583,7 @@ dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epo
    the next render (the epoch-change path commits the staged row as it stands) from losing it. Caller holds the
    call-state mutex. */
 static void
-call_state_stamp_verified_rows(const dsd_opts* opts, dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
+call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
                                const dsd_call_snapshot* call) {
     if (state->event_history_s == NULL) {
         return;
@@ -1591,10 +1591,12 @@ call_state_stamp_verified_rows(const dsd_opts* opts, dsd_state* state, const dsd
     Event_History_I* ring = &state->event_history_s[slot];
     const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     int changed = 0;
-    /* Whether the input is live now (issue #903): the input in force as the proof arrives, and, when the epoch's own
+    /* Whether the input is live now (issue #903): the input in force as the proof arrived, and, when the epoch's own
        staged row was rendered since its last commit, that row's live-input latch, which every render ANDs with the
-       input then. A staged row no render built yet (a commit just cleared it) says nothing either way. */
-    uint8_t live_now = (uint8_t)dsd_opts_input_is_live(opts);
+       input then. A staged row no render built yet (a commit just cleared it) says nothing either way. A proof noted
+       while the input is not live closes the staged row's latch too, so a commit after a switch back to a live input
+       (with no render between) still reads it shut; a render that begins the row ANDs it with the call's verdict. */
+    uint8_t live_now = call->heard_live_input;
     if (lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
         Event_History* staged = &ring->Event_History_Items[0];
         staged->heard_variant = call->heard_variant;
@@ -1602,6 +1604,7 @@ call_state_stamp_verified_rows(const dsd_opts* opts, dsd_state* state, const dsd
         if (staged->channel_label_resolved != 0U) {
             live_now = (uint8_t)(live_now != 0U && staged->live_input != 0U);
         }
+        staged->live_input = (uint8_t)(staged->live_input != 0U && live_now != 0U);
         changed = 1;
     }
     const uint8_t index =
@@ -1669,7 +1672,8 @@ dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint
     if (dsd_heard_tg_ordinary(in)) {
         snapshot->heard_variant = (uint8_t)in->variant;
         snapshot->heard_id = in->id;
-        call_state_stamp_verified_rows(opts, state, ext, slot, snapshot);
+        snapshot->heard_live_input = (uint8_t)dsd_opts_input_is_live(opts);
+        call_state_stamp_verified_rows(state, ext, slot, snapshot);
     }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);

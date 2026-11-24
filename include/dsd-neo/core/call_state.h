@@ -446,9 +446,12 @@ typedef struct {
      * over-the-air id (NXDN Type-D: the full prefix and id). @ref heard_noted is 1 once the first note classified the
      * epoch, whatever it found, so later notes never classify again. A new epoch, a reacquired one included, starts
      * with none: a proof is never inherited from a grant, an earlier epoch or a reacquired identity.
+     * @ref heard_live_input is 1 when the decoder input was live (dsd_opts_input_is_live()) as that proof was noted:
+     * a row that carries the proof is live only if it is too, whatever the input when the row renders or commits.
      */
     uint8_t heard_noted;
     uint8_t heard_variant;
+    uint8_t heard_live_input;
     uint32_t heard_id;
 } dsd_call_snapshot;
 

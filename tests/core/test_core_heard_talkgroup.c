@@ -541,6 +541,69 @@ test_live_input_revision_reads_current_input(void) {
     fixture_close(&f);
 }
 
+/* A proof noted while the input is not live closes the live-input latch of the row it lands in, whatever the input is
+   by the time that row next renders or commits: live, then a file as the proof arrives, then live again. */
+static void
+test_live_input_proof_latches_staged_row(void) {
+    proof_fixture f;
+    /* The staged row a live render built: the proof writes its latch shut, and the commit after the switch back reads
+       it so. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot call = slot_call(&f);
+    assert(row(&f, 0)->channel_label_resolved != 0U && row(&f, 0)->live_input == 1U);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 0)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 0)->live_input == 0U);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+
+    /* The same through the epoch-change commit, which renders nothing. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    call = slot_call(&f);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    assert(observe(&f, 101U, 201U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+
+    /* A proof noted before the epoch's first render: the row that render begins once the input is live again carries
+       the proof and is not live. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 200U,
+        .observed_m = g_now_m,
+    };
+    assert(dsd_call_state_observe(f.state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    call = slot_call(&f);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    f.opts->audio_in_type = AUDIO_IN_RTL;
+    dsd_event_sync_slot(f.opts, f.state, 0U);
+    assert(row(&f, 0)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 0)->live_input == 0U);
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+
+    /* A proof noted while live leaves a live row live. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    call = slot_call(&f);
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 1U);
+    fixture_close(&f);
+}
+
 /* ---- Receive filters (issue #903): traffic a filter says is not this system proves no talkgroup ---- */
 
 /* One access-code filter and the protocol it judges: the code the carrier is decoded with (@ref set_code, known or
@@ -798,6 +861,7 @@ main(void) {
     test_live_input_merge();
     test_live_input_committed_revision();
     test_live_input_revision_reads_current_input();
+    test_live_input_proof_latches_staged_row();
     test_receive_filter_rejects();
     test_receive_filter_checking();
     test_receive_filter_rejects_midcall();
