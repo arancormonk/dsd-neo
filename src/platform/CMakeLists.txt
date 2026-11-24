@@ -1,6 +1,6 @@
 # Platform abstraction library
 
-add_library(dsd-neo_platform)
+add_library(dsd-neo_platform STATIC)
 
 # Platform-specific sources
 if(WIN32)
@@ -78,10 +78,3 @@ target_include_directories(
 )
 
 target_link_libraries(dsd-neo_platform PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_platform
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

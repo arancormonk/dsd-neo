@@ -6,7 +6,9 @@ should be included via `#include <dsd-neo/...>`.
 ## Top-Level Layout
 
 - `apps/` — executable targets (currently `apps/dsd-cli` → `dsd-neo`)
-- `src/<module>/` — implementation code for each module
+- `src/<module>/` — implementation code for each module, built as static libraries (`add_library(<name> STATIC)`)
+  that are linked into the programs and never installed; the top-level `CMakeLists.txt` keeps `BUILD_SHARED_LIBS` off
+  inside the project, so a packager's `BUILD_SHARED_LIBS=ON` cannot make any of them shared
 - `include/dsd-neo/<module>/` — public headers for each module
 - `tests/<area>/` — unit tests (CTest)
 - `cmake/` — CMake helper modules and install/uninstall scripts

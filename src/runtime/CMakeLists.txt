@@ -1,5 +1,5 @@
 # Runtime module library
-add_library(dsd-neo_runtime)
+add_library(dsd-neo_runtime STATIC)
 
 target_sources(
     dsd-neo_runtime
@@ -214,10 +214,3 @@ if(WIN32)
 endif()
 
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_runtime
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
