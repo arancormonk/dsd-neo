@@ -164,6 +164,256 @@ Item {
             testContext.useLifecycleHost(false);
         }
 
+        // Issue #901 r4 F3: the other slot's optional label is drawn text with no node of its own. One stable node,
+        // the identity line, reads the slot with the call (or the idle state). At 320 dp a short identity left room
+        // for the label and a long one did not, so each change hid or showed the label's node; hidden, it still
+        // took the label's text as its name, so six lead-slot changes renamed it six times, under the session's
+        // Settings too. Now neither a fit change nor a lead-slot change shows, hides or renames anything but the
+        // identity line, whose name holds the slot whether the label is drawn or not, and which says nothing while
+        // the Monitor is covered.
+        function setSlotCall(slot, name) {
+            var p = "slot" + slot;
+            var v = {};
+            v[p + "CallKind"] = 2;
+            v[p + "CallName"] = name;
+            v[p + "TgText"] = name;
+            v[p + "TgId"] = 4000 + slot;
+            v[p + "TgLabel"] = name;
+            v[p + "SrcText"] = "700" + slot;
+            v[p + "ProtocolLabel"] = "DMR";
+            v[p + "CallSeconds"] = 12;
+            v[p + "CallState"] = 2;
+            testContext.setMetrics(v);
+        }
+        function test_g_other_slot_label_has_no_node_of_its_own() {
+            var monitor = findChild(app, "monitorScreen");
+            var panel = findChild(monitor, "otherSlotPanel");
+            var label = findChild(monitor, "otherSlotLabel");
+            var identity = findChild(monitor, "otherSlotNode");
+            var drawnIdentity = findChild(monitor, "otherSlotIdentity");
+            var width = app.width;
+            app.width = 320;
+            try {
+                setSlotCall(1, "4001");
+                setSlotCall(2, "4002");
+                testContext.setMetrics({leadSlot: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                verify(panel.visible, "the other slot's strip is shown");
+                verify(panel.plan.label, "a short identity leaves the label room");
+                var node = testContext.accessibleNode(identity);
+                verify(node.exists && node.inTree, "the identity line is a node");
+                var unread = [];
+                var noteRead = function (when) {
+                    var name = testContext.accessibleNode(identity).name;
+                    if (!/SLOT 2/.test(name))
+                        unread.push(when + ": " + name);
+                };
+                noteRead("label drawn");
+                testContext.startAccessibilityCount();
+                for (var i = 0; i < 3; ++i) {
+                    setSlotCall(2, "Dispatcher North Zone Seven Long");
+                    waitForRendering(app.contentItem);
+                    verify(!panel.plan.label, "a long identity leaves the label out");
+                    noteRead("label left out");
+                    setSlotCall(2, "4002");
+                    waitForRendering(app.contentItem);
+                    verify(panel.plan.label, "a short identity draws it again");
+                }
+                for (i = 0; i < 6; ++i) {
+                    testContext.setMetrics({leadSlot: i % 2 === 0 ? 2 : 1});
+                    waitForRendering(app.contentItem);
+                }
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(showHide(label), 0, "the label showed or hid: " + churn(counts));
+                compare(testContext.accessibilityCountWithin(label, "NameChanged"), 0, "the label renamed: " + churn(counts));
+                compare(showHide(panel), 0, "the strip showed or hid something: " + churn(counts));
+                compare(unread.length, 0, "the identity line does not read the slot: " + JSON.stringify(unread));
+                // The sweep: every optional item the strip, the hero's subline and a call row draw by fit is drawn
+                // text or a drawn tag with no node in the tree, which its node-owning line reads instead, so a fit
+                // change raises nothing from it.
+                callHistory.push("TODAY");
+                var list = findChild(monitor, "recentCallsList");
+                tryVerify(function () { return list.itemAtIndex(0) !== null; }, 1000, "a call row");
+                var optional = [label, drawnIdentity, findChild(monitor, "otherPrivateTag"), findChild(monitor, "otherEmergencyTag"),
+                                findChild(monitor, "otherEncTag")];
+                for (var name of ["heroPrivateTag", "heroIds", "heroIdentityNote", "heroEmergencyTag", "heroEncTag",
+                                  "heroAlgorithm", "heroChannel"])
+                    optional.push(findChild(monitor, name));
+                for (name of ["rowEmergencyTag", "rowRecordingGlyph", "rowEncTag", "callRowTime", "callRowName", "callRowMeta"])
+                    optional.push(findChild(list.itemAtIndex(0), name));
+                for (var item of optional) {
+                    verify(item !== null, "an optional item is missing");
+                    verify(!testContext.accessibleNode(item).inTree, item.objectName + " has a node of its own");
+                }
+                // Covered by the session's Settings: the identity says nothing and nothing in the strip renames.
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(identity); }, 1000, "the Settings cover the Monitor");
+                waitForRendering(app.contentItem);
+                compare(testContext.accessibleNode(identity).name, "", "covered, the identity is unnamed");
+                testContext.startAccessibilityCount();
+                for (i = 0; i < 6; ++i) {
+                    testContext.setMetrics({leadSlot: i % 2 === 0 ? 2 : 1});
+                    setSlotCall(2, i % 2 === 0 ? "Dispatcher North Zone Seven Long" : "4002");
+                    waitForRendering(app.contentItem);
+                }
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(testContext.accessibilityCountWithin(panel, "NameChanged"), 0, "covered, the strip renamed: " + churn(counts));
+                compare(showHide(panel), 0, "covered, the strip showed or hid: " + churn(counts));
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.sessionDestination = "";
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
+        // Issue #901 r5 H2: the strip's one node covers what it reads, the slot label, the identity and the tags, and
+        // stops at Skip. It started after the drawn label (at 411 dp idle the label was at x 16-127 and the node from
+        // x 137), so a touch on the label found no node. Idle at 411 dp and with a call at 320 dp.
+        function test_h_a_touch_on_the_slot_label_finds_the_strip() {
+            var monitor = findChild(app, "monitorScreen");
+            var panel = findChild(monitor, "otherSlotPanel");
+            var label = findChild(monitor, "otherSlotLabel");
+            var drawnIdentity = findChild(monitor, "otherSlotIdentity");
+            var skip = findChild(monitor, "otherSlotSkip");
+            var width = app.width;
+            var touched = function (item) {
+                var hit = testContext.accessibleNodeAt(item, item.width / 2, item.height / 2);
+                return hit.exists && hit.object ? hit.object.objectName : "";
+            };
+            try {
+                // r6 J2: idle at 320 dp and 2.0 too, where the node stopped at Skip's hidden place and cut the label.
+                for (var step of [{width: 411, scale: 1.0, active: false}, {width: 320, scale: 2.0, active: false},
+                                  {width: 320, scale: 1.0, active: true}]) {
+                    var tag = step.width + "@" + step.scale + (step.active ? " with a call" : " idle");
+                    app.width = step.width;
+                    Ui.Theme.fontScale = step.scale;
+                    setSlotCall(1, "4001");
+                    setSlotCall(2, "4002");
+                    testContext.setMetrics({leadSlot: 1, slot2CallState: step.active ? 2 : 0});
+                    waitForRendering(app.contentItem);
+                    wait(20);
+                    verify(panel.visible && label.visible, tag + ": the label is drawn");
+                    verify(!label.truncated, tag + ": the label is cut, " + label.width + " of " + label.implicitWidth + " px");
+                    compare(touched(label), "otherSlotNode", tag + ": a touch on the label");
+                    if (step.active) {
+                        verify(drawnIdentity.visible);
+                        compare(touched(drawnIdentity), "otherSlotNode", "a touch on the identity");
+                        verify(touched(skip) !== "otherSlotNode", "a touch on Skip finds the line");
+                    }
+                }
+            } finally {
+                Ui.Theme.resetFontScale();
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
+        // Issue #901 r6 J3: the strip's name changes once as its call ends. Built from the label's text and the drawn
+        // identity's visibility, it was renamed twice when slot 2's call ended with slot 1 still on air: first to
+        // "SLOT 2 · idle, 4002" (the label had changed, the identity was still shown), then to "SLOT 2 · idle". Each
+        // name the node takes across the change is recorded as it is set: exactly one, the idle name, with one
+        // NameChanged from the node; and back once to the call's name as a call starts again. Also as the leading call
+        // ends and the strip turns to the other slot (r7 K2), and through the held ended state for both (r8 L5).
+        function test_h2_the_strip_renames_once_as_its_call_ends() {
+            var monitor = findChild(app, "monitorScreen");
+            var node = findChild(monitor, "otherSlotNode");
+            var width = app.width;
+            var names = [];
+            var record = function () {
+                names.push(node.Accessible.name);
+            };
+            try {
+                app.width = 411;
+                setSlotCall(1, "4001");
+                setSlotCall(2, "4002");
+                testContext.setMetrics({leadSlot: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                compare(node.Accessible.name, "SLOT 2, TG 4002", "the strip reads the call");
+                node.Accessible.nameChanged.connect(record);
+                testContext.startAccessibilityCount();
+                testContext.setMetrics({slot2CallState: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 2 · idle"]), "the names the strip took as its call ended");
+                var owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as its call ended: " + churn(counts));
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetrics({slot2CallState: 2});
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 2, TG 4002"]), "the names the strip took as a call started");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as a call started: " + churn(counts));
+                // r7 K2: the leading call ends and slot 2 takes the hero in one snapshot; the strip turns to slot 1,
+                // now idle. Its name came from separate bindings for the slot and its state, which settle one after
+                // another, and said "SLOT 2 · idle", the slot still on air, before "SLOT 1 · idle". MetricsModel takes
+                // the whole snapshot before it signals; the fixture's map signals key by key, so the case sets the
+                // ended state before the lead, which is what the first signal of a snapshot finds.
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetric("slot1CallState", 1);
+                testContext.setMetric("leadSlot", 2);
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 1 · idle"]), "the names the strip took as the leading call ended");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as the leading call ended: " + churn(counts));
+                // And back: slot 1 on air again under slot 2's lead, its call in the strip.
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetric("slot1CallState", 2);
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 1, TG 4001"]), "the names the strip took as slot 1's call came back");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as slot 1's call came back: " + churn(counts));
+                // r8 L5: through the held ended state. 3 is DSD_APP_CALL_LINE_ENDED, whose hold keeps the call's
+                // identity and flags (MetricsModel::slotCallView()); 1 is DSD_APP_CALL_LINE_IDLE. The strip turns idle
+                // once, at 3, and says nothing more at 1, for the non-leading call (slot 1 under slot 2's lead) and the
+                // leading one (slot 2, the lead going back to slot 1).
+                var step = function (label, metrics, expected) {
+                    names = [];
+                    testContext.startAccessibilityCount();
+                    for (var key in metrics)
+                        testContext.setMetric(key, metrics[key]);
+                    waitForRendering(app.contentItem);
+                    wait(20);
+                    var stepCounts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(JSON.stringify(names), JSON.stringify(expected), "the names the strip took as " + label);
+                    var stepOwned = stepCounts.owners["otherSlotNode"] || {};
+                    compare(stepOwned.NameChanged || 0, expected.length, "the strip's renames as " + label + ": " + churn(stepCounts));
+                };
+                step("the non-leading call ended, held", {slot1CallState: 3}, ["SLOT 1 · idle"]);
+                step("the non-leading call's hold ran out", {slot1CallState: 1}, []);
+                step("slot 1's call came back again", {slot1CallState: 2}, ["SLOT 1, TG 4001"]);
+                step("the leading call ended, held", {slot2CallState: 3, leadSlot: 1}, ["SLOT 2 · idle"]);
+                step("the leading call's hold ran out", {slot2CallState: 1}, []);
+            } finally {
+                node.Accessible.nameChanged.disconnect(record);
+                testContext.stopAccessibilityCount();
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
         // A tick that changes no reading costs nothing. Qt already keeps it so (an equal model is not reloaded, an
         // equal name not announced); this guards it.
         function test_a_steady_ticks_raise_nothing() {
@@ -248,12 +498,14 @@ Item {
 
         // A rotation that mixes two-slot DMR with single-slot NXDN and P25 keeps the monitor's layout still once it
         // has visited a two-slot carrier: the slot strip's place stays reserved, so the scan buttons and the call
-        // list never move, and no geometry change reaches an accessibility client on a hop. The slot label itself
-        // comes and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide.
+        // list never move, and no geometry change reaches an accessibility client on a hop. The slot's node comes
+        // and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide: the
+        // strip line's node (`otherSlotNode`), which reads the idle state too (issue #901 r4 F3, r5 H2: the label
+        // it replaced as that node is drawn text now).
         function test_d_two_slot_hops_leave_the_monitor_still() {
             var monitor = findChild(app, "monitorScreen");
             verify(monitor !== null && monitor.visible, "the monitor is on screen");
-            var label = findChild(monitor, "otherSlotLabel");
+            var label = findChild(monitor, "otherSlotNode");
             var still = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton", "recentCallsList"].map(function (name) {
                 var found = findChild(monitor, name);
                 verify(found !== null && found.visible, name + " must be on screen");
@@ -264,15 +516,15 @@ Item {
             testContext.startAccessibilityCount();
             for (var i = 1; i <= hops; ++i) {
                 testContext.publishTarget(reading(i));
-                compare(label.visible, i % 3 === 0, "hop " + i + ": the slot label follows the carrier");
+                compare(label.visible, i % 3 === 0, "hop " + i + ": the slot's node follows the carrier");
             }
             var counts = testContext.accessibilityCount();
             for (var item of still)
                 compare(testContext.accessibilityCountWithin(item, "LocationChanged"), 0, item.objectName + ": "
                         + JSON.stringify(counts.chains));
             var shown = showHide(app.contentItem) - showHide(label);
-            compare(shown, 0, "only the slot label shows or hides: " + churn(counts));
-            // The label hides on every hop away from DMR (Qt reports its return as a creation, which Android does not
+            compare(shown, 0, "only the slot's node shows or hides: " + churn(counts));
+            // The slot's node hides on every hop away from DMR (Qt reports its return as a creation, which Android does not
             // forward), and never more than once per carrier change.
             var changes = 2 * Math.floor(hops / 3);
             verify(showHide(label) >= changes / 2 && showHide(label) <= changes, churn(counts));
@@ -334,7 +586,8 @@ Item {
         // heard on its own (tst_a11y_paced_names.qml holds a flapping step to the floor).
         function test_f_hops_with_details_open_rename_once_each() {
             var monitor = findChild(app, "monitorScreen");
-            var label = findChild(monitor, "otherSlotLabel");
+            // The slot's node (r4 F3, r5 H2), as in case D.
+            var label = findChild(monitor, "otherSlotNode");
             var closed = closedSheets();
             var floor = Ui.Navigation.speechStepFloorMs;
             Ui.Navigation.speechStepFloorMs = 1;
@@ -361,7 +614,7 @@ Item {
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
             Ui.Navigation.speechStepFloorMs = floor;
-            compare(showHide(monitor) - showHide(label), 0, "only the slot label shows or hides: " + churn(counts));
+            compare(showHide(monitor) - showHide(label), 0, "only the slot's node shows or hides: " + churn(counts));
             compare(testContext.accessibilityCountWithin(monitor, "LocationChanged"), 0, JSON.stringify(counts.chains));
             // Each hop moves to another carrier, so the strip (its FREQ) renames once a hop, and nothing more than once.
             var renames = renamesByOwner(counts);
@@ -886,6 +1139,439 @@ Item {
                 compare(place.Accessible.name, "Story, Iowa");
             } finally {
                 testContext.stopAccessibilityCount();
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
+        // Issue #901 (D8): a change of Compact view holds or shows lines and site buttons in every card, in place, with
+        // no rebuild of the cards. At 300 mixed cards it makes and destroys no delegate and raises no show or hide in
+        // the section; while Systems is shown and in reach it has Home refresh Android's copy of the tree once. Made
+        // where it is made (Settings, the session menu: Home hidden, on another tab, or under a sheet) it refreshes
+        // nothing there and owes the refresh until Systems is shown and in reach again, through a rebuild of the cards
+        // meanwhile, and then gives it once. Counts are printed.
+        function test_m6_density_change_refreshes_the_tree_once() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            var report = [];
+            var imported = null;
+            var rebuilt = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"rebuilt\" }", app);
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                prefs.compactView = false;
+                var csv = testContext.writeFixtureCsv("density-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
+                imported = importedFiles.importGeneratedFile(csv, "Density provenance.csv", "group",
+                    {origin: "radioreference", rrSid: 12, rrSiteIds: "16863", rrKind: "group"});
+                verify(imported.ok);
+                var rows = [];
+                for (var i = 0; i < 300; ++i) {
+                    var twin = i % 30 === 7;
+                    var row = {name: twin ? "Bench " + String(300 - i).padStart(3, "0") : "Bench " + String(299 - i).padStart(3, "0"),
+                        sourceType: twin ? "usb" : "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"};
+                    if (i % 4 === 0)
+                        row.place = {states: [{stid: 90, name: "Westmark"}], counties: [], candidateStates: [90]};
+                    var kind = i % 6;
+                    if (kind === 1 || kind === 2 || kind === 4 || kind === 5)
+                        Object.assign(row, {rrSid: 1000 + i, rrSiteId: 1, siteName: "S"});
+                    else if (kind === 3)
+                        Object.assign(row, {trunking: true, groupCsvPath: imported.path});
+                    rows.push(row);
+                    if (kind === 5)
+                        rows.push(Object.assign({}, row, {rrSiteId: 2, siteName: "T"}));
+                }
+                verify(savedSystems.addAll(rows, "") >= 0);
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 300);
+                waitForRendering(home);
+                wait(50); // the tree refresh the cards' arrival owes
+                var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                compare(repeater.count, 300);
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
+                rebuilt.target = savedSystemCards;
+                var refreshes = function () {
+                    var refresh = findChild(app, "savedSystemsTreeRefresh");
+                    return refresh ? showHide(refresh) : 0;
+                };
+                // Counts what @a change raises, in the section and of the tree refresh.
+                var step = function (label, change, wantRefresh, quietSection) {
+                    testContext.startAccessibilityCount();
+                    var started = Date.now();
+                    change();
+                    wait(0);
+                    section.forceLayout();
+                    var ms = Date.now() - started;
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    var inSection = showHide(section);
+                    var refreshed = refreshes();
+                    report.push(label + " " + ms + " ms, " + inSection + " shows or hides in the section, " + refreshed
+                        + " tree refresh, " + (typed(counts, "ObjectShow") + typed(counts, "ObjectHide")) + " anywhere");
+                    compare(made + gone, 0, label + ": no delegate made or destroyed");
+                    compare(repeater.count, 300, label + ": 300 rows");
+                    if (quietSection)
+                        compare(inSection, 0, label + ": no show or hide in the section: " + churn(counts));
+                    compare(refreshed, wantRefresh, label + ": the tree refresh: " + churn(counts));
+                };
+                var flip = function () {
+                    prefs.compactView = !prefs.compactView;
+                };
+                step("compact, Systems shown", flip, 1, true);
+                verify(home.compactView);
+                var first = repeater.itemAt(0);
+                verify(findChild(first, "savedSystemPlace").visible && findChild(first, "savedSystemPlace").opacity === 0,
+                    "the place line is held, not hidden");
+                step("full, Systems shown", flip, 1, true);
+
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                wait(50);
+                step("compact, Home hidden", flip, 0, true);
+                step("Home shown again", function () {
+                    app.currentTab = 0;
+                    tryCompare(home, "visible", true);
+                }, 1, false);
+
+                rebuilt.clear();
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                wait(50);
+                step("full, Home hidden, the cards rebuilt", function () {
+                    flip();
+                    verify(savedSystems.update(0, Object.assign(savedSystems.get(0), {freqMhz: "852.5"})));
+                    tryVerify(function () {
+                        return rebuilt.count > 0;
+                    }, 1000, "the cards rebuilt while hidden");
+                }, 0, true);
+                step("Home shown again after the rebuild", function () {
+                    app.currentTab = 0;
+                    tryCompare(home, "visible", true);
+                }, 1, false);
+
+                home.showSection("explore");
+                wait(50);
+                step("compact, on Explore", flip, 0, true);
+                step("back on Systems", function () {
+                    home.showSection("systems");
+                }, 1, false);
+
+                var sheet = findChild(home, "systemsSortSheet");
+                sheet.open("Sort systems", ["Name"], null);
+                tryCompare(sheet, "visible", true);
+                wait(50);
+                step("full, under a sheet", flip, 0, true);
+                step("the sheet closed", function () {
+                    sheet.visible = false;
+                }, 1, false);
+                verify(!home.compactView);
+                console.log("a11y counts for a density change, 300 cards: " + report.join("; "));
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
+                rebuilt.destroy();
+                for (var modal of Ui.Navigation.modals.slice())
+                    modal.visible = false;
+                app.currentTab = 0;
+                prefs.compactView = false;
+                home.showSection("systems");
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                if (imported && imported.ok)
+                    importedFiles.remove(importedFiles.rowForPath(imported.path));
+            }
+        }
+
+        // Issue #901: Compact view flipped with the session menu closed (from Settings, or the menu's own item, which
+        // closes it first) changes nothing in the closed menu: no row is rebuilt, so nothing shows or hides, and
+        // nothing in it is renamed. The item's On/Off is the menu's describe(), which the row calls in its own
+        // binding, so the menu's action list neither reads the preference nor holds a function, and its re-runs (each
+        // metrics tick or hop) give the Repeater an equal model. Opened, the row reads the state and follows a change
+        // in place.
+        function test_m8_closed_session_menu_ignores_a_density_change() {
+            testContext.setLifecyclePhase(0);
+            var menu = findChild(app, "sessionMenu");
+            verify(!menu.visible, "the session menu starts closed");
+            var repeater = findItem(menu, function (item) {
+                return item.itemAdded !== undefined && item.count === menu.actions.length && item.count > 0
+                    && item.itemAt(0).modelData.key === menu.actions[0].key;
+            });
+            verify(repeater !== null, "the menu's rows");
+            var rowsMade = 0;
+            var onRow = function () {
+                ++rowsMade;
+            };
+            var indexOfCompact = function () {
+                for (var i = 0; i < menu.actions.length; ++i) {
+                    if (menu.actions[i].key === "compactView")
+                        return i;
+                }
+                return -1;
+            };
+            repeater.itemAdded.connect(onRow);
+            repeater.itemRemoved.connect(onRow);
+            try {
+                prefs.compactView = false;
+                wait(50);
+                var at = indexOfCompact();
+                verify(at >= 0, "the menu offers Compact view");
+                for (var on of [true, false, true]) {
+                    rowsMade = 0;
+                    testContext.startAccessibilityCount();
+                    prefs.compactView = on;
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(rowsMade, 0, "the flip rebuilt the closed menu's rows");
+                    compare(showHide(menu), 0, "shows or hides in the closed menu: " + churn(counts));
+                    compare(testContext.accessibilityCountWithin(menu, "NameChanged"), 0, "renames in the closed menu: "
+                        + churn(counts));
+                    compare(menu.actionDescription(indexOfCompact()), on ? "On" : "Off");
+                }
+                compare(menu.actions[at].description, undefined, "the action list holds the state");
+                compare(typeof menu.describe, "function", "the row's state comes from the menu's describe()");
+                compare(menu.actionDescription(at), "On");
+                // Metrics ticks and hops re-run the action list: an equal list, no row rebuilt.
+                rowsMade = 0;
+                testContext.tickMetrics(5);
+                for (var i = 1; i <= 3; ++i)
+                    testContext.publishTarget(reading(i));
+                wait(50);
+                compare(rowsMade, 0, "a tick or a hop rebuilt the menu's rows");
+                // Open, the row says the state and follows a change in place.
+                menu.open();
+                tryCompare(menu, "visible", true);
+                waitForRendering(menu);
+                var line = findChild(menu, "actionMenuDescription" + indexOfCompact());
+                var button = findChild(menu, "sessionMenuCompactView");
+                compare(line.text, "On");
+                compare(button.accessibleName, "Compact view. On");
+                rowsMade = 0;
+                prefs.compactView = false;
+                tryCompare(line, "text", "Off");
+                compare(button.accessibleName, "Compact view. Off");
+                compare(rowsMade, 0, "the open menu rebuilt its rows");
+            } finally {
+                testContext.stopAccessibilityCount();
+                repeater.itemAdded.disconnect(onRow);
+                repeater.itemRemoved.disconnect(onRow);
+                menu.visible = false;
+                prefs.compactView = false;
+            }
+        }
+
+        // Issue #901 (r2 D1): Compact view flipped in the session's Settings, which covers the Monitor without hiding
+        // it, re-laid out and scrolled the Monitor's calls behind it: at 320 dp and text 1.6 with 250 calls and the
+        // list at row 160, eight window-level hides, each a blocking query of Android's bridge. The Monitor keeps its
+        // model but takes the new density only once it is in reach again: while covered a flip raises no show or
+        // hide anywhere and moves nothing; uncovered, the rows take the new height once and the list goes to its
+        // start. A flip and a flip back under the cover leave nothing to apply. The session's History and Home are
+        // hidden meanwhile (their lists detached), so they have nothing to lay out either.
+        function test_m9_covered_monitor_takes_the_density_when_shown() {
+            var monitor = findChild(app, "monitorScreen");
+            var list = findChild(monitor, "recentCallsList");
+            var width = app.width;
+            prefs.compactView = false;
+            app.width = 320;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                callHistory.clearAll();
+                callHistory.pushMany(250, "TODAY");
+                tryCompare(list, "count", 250);
+                verify(monitor.visible && !monitor.compactView);
+                var fullRow = monitor.callRowHeight;
+                list.positionViewAtIndex(160, ListView.Beginning);
+                waitForRendering(app.contentItem);
+                var deep = list.contentY;
+                verify(deep - list.originY > 100 * fullRow, "the list is deep in the calls: " + deep);
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(list); }, 1000, "the session's Settings cover the Monitor");
+                verify(monitor.visible, "covered, not hidden");
+                for (var name of ["homeScreen", "idleHistoryScreen", "sessionHistoryScreen"])
+                    verify(!findChild(app, name).visible, name + " is hidden under the session's Settings");
+                waitForRendering(app.contentItem);
+                wait(50);
+
+                for (var on of [true, false, true]) {
+                    testContext.startAccessibilityCount();
+                    prefs.compactView = on;
+                    wait(0);
+                    waitForRendering(app.contentItem);
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0,
+                            "covered, a flip to " + on + " raised shows or hides: " + churn(counts));
+                    verify(!monitor.compactView, "covered, the Monitor keeps the density it shows");
+                    compare(monitor.callRowHeight, fullRow);
+                    compare(list.contentY, deep, "covered, the list did not move");
+                }
+
+                // Uncovered: the new density once, and the list at its start.
+                app.sessionDestination = "";
+                tryVerify(function () { return Ui.Navigation.allows(list); }, 1000, "the Monitor in reach again");
+                tryVerify(function () { return monitor.compactView; }, 1000, "uncovered, the Monitor takes compact view");
+                verify(monitor.callRowHeight < fullRow, "compact rows are shorter");
+                tryVerify(function () { return Math.abs(list.contentY - list.originY) < 1; }, 1000,
+                          "the list at its start: " + list.contentY + " vs " + list.originY);
+                waitForRendering(app.contentItem);
+                var row = list.itemAtIndex(0);
+                verify(row !== null && Math.abs(row.height - monitor.callRowHeight) < 0.5, "the rows at the compact height");
+
+                // A flip and a flip back under the cover: nothing to apply, the list stays where it is.
+                list.positionViewAtIndex(160, ListView.Beginning);
+                waitForRendering(app.contentItem);
+                deep = list.contentY;
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(list); }, 1000);
+                prefs.compactView = false;
+                prefs.compactView = true;
+                app.sessionDestination = "";
+                tryVerify(function () { return Ui.Navigation.allows(list); }, 1000);
+                waitForRendering(app.contentItem);
+                wait(50);
+                verify(monitor.compactView);
+                compare(list.contentY, deep, "no change to apply: the list keeps its place");
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.sessionDestination = "";
+                prefs.compactView = false;
+                Ui.Theme.resetFontScale();
+                app.width = width;
+                callHistory.clearAll();
+            }
+        }
+
+        // B11 (issue #901): a card's heading and controls (the section heading, the site button, Play, More, a scan
+        // list's Play and More) carry no name or description while covered by a sheet or hidden with Home, as while
+        // held: Android keeps the nodes it already fetched, and reads a covered node's cached interface by what it says
+        // now. Their interfaces are made first, while shown; a late press on them under the sheet does nothing.
+        function test_m7_covered_cards_say_nothing() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var played = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"playSystem\" }", app);
+            var chosen = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"chooseSites\" }", app);
+            var listPlayed = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"playScanList\" }", app);
+            played.target = home;
+            chosen.target = home;
+            listPlayed.target = home;
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                while (scanLists.count)
+                    scanLists.remove(0);
+                verify(savedSystems.add({name: "Ridge", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5",
+                    rrSid: 41, rrSiteId: 410, siteName: "North", place: {states: [{stid: 90, name: "Westmark"}], counties: [],
+                    candidateStates: [90]}}));
+                verify(savedSystems.add({name: "Valley", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "852.5"}));
+                verify(scanLists.add({name: "Coast loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+                prefs.systemsSort = "place";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 2);
+                waitForRendering(home);
+                var entry = null;
+                var other = null;
+                var repeater = findChild(home, "savedSystemCardsRepeater");
+                for (var i = 0; i < repeater.count; ++i) {
+                    var row = repeater.itemAt(i);
+                    if (row.held)
+                        continue;
+                    if (row.title === "Ridge")
+                        entry = row;
+                    else if (row.title === "Valley")
+                        other = row;
+                }
+                verify(entry !== null && other !== null);
+                var parts = ["savedSystemSection", "homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"].map(function (name) {
+                    var item = findChild(entry, name);
+                    verify(item !== null, name);
+                    return [name, item];
+                });
+                var expectSaid = function (label, said) {
+                    for (var pair of parts) {
+                        var node = testContext.accessibleNode(pair[1]);
+                        verify(node.exists, label + ": " + pair[0] + " has its interface");
+                        if (said) {
+                            verify(node.name.length > 0, label + ": " + pair[0] + " named");
+                        } else {
+                            compare(node.name, "", label + ": " + pair[0] + " unnamed");
+                            compare(node.description, "", label + ": " + pair[0] + " no description");
+                        }
+                    }
+                };
+                expectSaid("shown", true);
+
+                var menu = findChild(home, "savedSystemManageSheet");
+                home.manageCard(other.leadUid, "Valley", false, false);
+                tryCompare(menu, "visible", true);
+                var opened = menu.systemUid;
+                expectSaid("under a sheet", false);
+                for (var pair of parts)
+                    testContext.pressAccessible(pair[1]);
+                wait(50);
+                compare(played.count, 0, "a late Play under the sheet plays nothing");
+                compare(chosen.count, 0, "a late site button under the sheet opens no chooser");
+                compare(menu.systemUid, opened, "a late More under the sheet opens no other menu");
+                menu.visible = false;
+                tryCompare(menu, "visible", false);
+                expectSaid("the sheet closed", true);
+
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                expectSaid("Home hidden", false);
+                app.currentTab = 0;
+                tryCompare(home, "visible", true);
+
+                home.showSection("scanLists");
+                var list = findChild(findChild(home, "listenScanListsSection"), "scanListCard");
+                tryCompare(list, "visible", true);
+                waitForRendering(home);
+                parts = ["scanListPlay", "scanListManageButton"].map(function (name) {
+                    return [name, findChild(list, name)];
+                });
+                expectSaid("scan list shown", true);
+                var scanMenu = findChild(home, "scanListManageSheet");
+                scanMenu.openFor(0);
+                tryCompare(scanMenu, "visible", true);
+                expectSaid("scan list under a sheet", false);
+                verify(testContext.pressAccessible(parts[0][1]), "Play offers its press");
+                wait(50);
+                compare(listPlayed.count, 0, "a late scan-list Play under the sheet plays nothing");
+                scanMenu.visible = false;
+                tryCompare(scanMenu, "visible", false);
+                expectSaid("scan list, the sheet closed", true);
+            } finally {
+                for (var modal of Ui.Navigation.modals.slice())
+                    modal.visible = false;
+                app.currentTab = 0;
+                home.showSection("systems");
+                played.destroy();
+                chosen.destroy();
+                listPlayed.destroy();
+                while (scanLists.count)
+                    scanLists.remove(0);
                 testContext.resetSystemsSort();
                 while (savedSystems.count)
                     savedSystems.remove(0);

@@ -469,9 +469,12 @@ session_args_scan_extra_safe(const QString& tokens) {
                                "--no-scan-voice-only",
                                "--scan-skip-silent",
                                "--no-scan-skip-silent"};
+    /* The Skip silent channels box owns the switch, not how long the check reads (issue #834): the extra options may
+       set that length for the session, its value checked where the decoder parses it. */
     return std::none_of(parts.cbegin(), parts.cend(), [&prefixes](const QString& token) {
-        return std::any_of(prefixes.cbegin(), prefixes.cend(),
-                           [&token](const QString& prefix) { return token.startsWith(prefix); });
+        return !long_option_is(token, QLatin1String("--scan-skip-silent-ms"))
+               && std::any_of(prefixes.cbegin(), prefixes.cend(),
+                              [&token](const QString& prefix) { return token.startsWith(prefix); });
     });
 }
 

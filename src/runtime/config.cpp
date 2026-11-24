@@ -186,6 +186,10 @@ config_snapshot_equals_block_b(const dsdneoRuntimeConfig& lhs, const dsdneoRunti
     CONFIG_EQ_FIELD(dmr_t3_cc_freq_is_set);
     CONFIG_EQ_FIELD(dmr_t3_cc_lcn_is_set);
     CONFIG_EQ_FIELD(dmr_t3_start_lcn_is_set);
+    CONFIG_EQ_FIELD(dmr_t3_step_hz_invalid);
+    CONFIG_EQ_FIELD(dmr_t3_cc_freq_invalid);
+    CONFIG_EQ_FIELD(dmr_t3_cc_lcn_invalid);
+    CONFIG_EQ_FIELD(dmr_t3_start_lcn_invalid);
     return true;
 }
 
@@ -836,14 +840,17 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
     const dsd_env_value t3step_value("DSD_NEO_DMR_T3_STEP_HZ");
     const char* t3step = t3step_value.c_str();
     c.dmr_t3_step_hz_is_set = env_parse_long_range(t3step, 1, 1000000000L, &c.dmr_t3_step_hz);
+    c.dmr_t3_step_hz_invalid = env_is_set(t3step) && !c.dmr_t3_step_hz_is_set;
 
     const dsd_env_value t3ccl_value("DSD_NEO_DMR_T3_CC_LCN");
     const char* t3ccl = t3ccl_value.c_str();
     c.dmr_t3_cc_lcn_is_set = env_parse_long_range(t3ccl, 1, 1000000000L, &c.dmr_t3_cc_lcn);
+    c.dmr_t3_cc_lcn_invalid = env_is_set(t3ccl) && !c.dmr_t3_cc_lcn_is_set;
 
     const dsd_env_value t3start_value("DSD_NEO_DMR_T3_START_LCN");
     const char* t3start = t3start_value.c_str();
     c.dmr_t3_start_lcn_is_set = env_parse_long_range(t3start, 1, 1000000000L, &c.dmr_t3_start_lcn);
+    c.dmr_t3_start_lcn_invalid = env_is_set(t3start) && !c.dmr_t3_start_lcn_is_set;
 
     const dsd_env_value t3ccf_value("DSD_NEO_DMR_T3_CC_FREQ");
     const char* t3ccf = t3ccf_value.c_str();
@@ -860,6 +867,7 @@ config_init_input_and_dmr_t3(dsdneoRuntimeConfig& c) {
             }
         }
     }
+    c.dmr_t3_cc_freq_invalid = env_is_set(t3ccf) && !c.dmr_t3_cc_freq_is_set;
 
     /* DMR TIII heuristic fill */
     const dsd_env_value t3h_value("DSD_NEO_DMR_T3_HEUR");

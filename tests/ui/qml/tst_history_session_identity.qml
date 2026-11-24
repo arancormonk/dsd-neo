@@ -310,5 +310,138 @@ Item {
             compare(callHistory.sessionUid, "previous-session")
             compare(loader.item.startError, "Enter hang time in seconds from 0 to 30.")
         }
+
+        // Issue #901 (B8): the rows the Monitor's list has built.
+        function monitorRows() {
+            var list = findChild(findChild(loader.item, "monitorScreen"), "recentCallsList")
+            var rows = 0
+            for (var child of list.contentItem.children) {
+                if (child.metaText !== undefined && child.node !== undefined)
+                    ++rows
+            }
+            return rows
+        }
+        // A cold launch with calls kept from earlier sessions: Main keeps the
+        // Monitor hidden under Home, and it builds no row for them, nor for
+        // calls landing meanwhile. Shown by a start, it lists the session's
+        // calls only, and the session's Settings, which covers it while it
+        // stays drawn, leave its rows in place.
+        function test_hidden_monitor_builds_no_rows_until_a_session_shows_it() {
+            loader.source = ""
+            callHistory.clearAll()
+            callHistory.pushMany(12, "TODAY")
+            loader.source = uiDir + "/Main.qml"
+            verify(loader.item !== null)
+            var monitor = findChild(loader.item, "monitorScreen")
+            var list = findChild(monitor, "recentCallsList")
+            verify(!monitor.visible, "no session, no Monitor")
+            wait(50)
+            compare(monitorRows(), 0, "a hidden Monitor built rows for the kept calls")
+            callHistory.pushAt(Math.floor(Date.now() / 1000) - 60)
+            wait(50)
+            compare(monitorRows(), 0, "a call landing under the hidden Monitor built a row")
+            loader.item.startSystem(0)
+            compare(decoderHost.sessionState, 1)
+            var name = callHistory.pushAt(1262304000)
+            tryVerify(function () { return monitor.visible }, 1000, "the session shows the Monitor")
+            compare(monitorView.count, 1, "the session's call, and only that, is the Monitor's")
+            tryCompare(list, "count", 1)
+            tryVerify(function () { return monitorRows() === 1 }, 1000, "the Monitor lists the session's call")
+            compare(list.itemAtIndex(0).name, name)
+            loader.item.sessionDestination = "settings"
+            wait(50)
+            verify(monitor.visible, "the session's Settings covers the Monitor without hiding it")
+            compare(list.model, monitorView, "covered, the Monitor keeps its calls")
+            compare(monitorRows(), 1)
+            loader.item.sessionDestination = ""
+        }
+
+        // Issue #901 (r2 D2): the Monitor's list has no current row. Handing it a model that holds calls (a session
+        // starting with calls kept from earlier ones) made Qt select row 0, before the session's filter took the
+        // old rows away, and a new call then took the keyboard from the disclosure. Every attach, a session
+        // restart's included, keeps it at -1.
+        function test_attaching_the_calls_keeps_no_current_row() {
+            loader.source = ""
+            callHistory.clearAll()
+            callHistory.pushMany(12, "TODAY")
+            loader.source = uiDir + "/Main.qml"
+            verify(loader.item !== null)
+            var monitor = findChild(loader.item, "monitorScreen")
+            var list = findChild(monitor, "recentCallsList")
+            var details = findChild(monitor, "monitorDetailsRow")
+            for (var round = 0; round < 2; ++round) {
+                loader.item.startSystem(0)
+                compare(decoderHost.sessionState, 1)
+                tryVerify(function () { return monitor.visible && list.model === monitorView }, 1000, "the session shows the Monitor")
+                compare(list.currentIndex, -1, "round " + round + ": attached with no current row")
+                details.forceActiveFocus()
+                verify(details.activeFocus, "the disclosure takes the keyboard")
+                var name = callHistory.pushAt(1262304000 + round)
+                tryVerify(function () { return monitorRows() >= 1 }, 1000, "the session's call is listed")
+                wait(50)
+                compare(list.currentIndex, -1, "round " + round + ": a new call is no current row")
+                verify(details.activeFocus, "round " + round + ": the new call took the keyboard from the disclosure")
+                // The session ends with its calls kept: Home shows, the Monitor is hidden under it.
+                decoderHost.stop()
+                tryVerify(function () { return !monitor.visible }, 2000, "no session, no Monitor")
+                tryCompare(list, "model", null)
+            }
+        }
+
+        // Issue #901 r3 M1: the Monitor takes its calls only once the new session's filter is in. It was handed them
+        // as soon as the start showed it, before Main had told the view which session to show: with 100 calls kept
+        // from earlier sessions it built six rows of the previous session's, then destroyed them, before the first
+        // call of the new one. Through the whole start the list holds no earlier call and builds no row; once the
+        // start returns it shows the new session's calls. Hidden, it lets them go at once, and a UI that rejoins a
+        // running session (no start) takes that session's calls as it is shown.
+        function test_a_start_hands_the_monitor_its_own_calls_only() {
+            loader.source = ""
+            callHistory.clearAll()
+            callHistory.pushMany(100, "TODAY")
+            loader.source = uiDir + "/Main.qml"
+            verify(loader.item !== null)
+            var monitor = findChild(loader.item, "monitorScreen")
+            var list = findChild(monitor, "recentCallsList")
+            var seen = {rows: 0, count: 0, attachedVisible: false}
+            var note = function () {
+                seen.rows = Math.max(seen.rows, monitorRows())
+                seen.count = Math.max(seen.count, list.count)
+                seen.attachedVisible = seen.attachedVisible || (list.model !== null && monitor.visible)
+            }
+            list.contentItem.childrenChanged.connect(note)
+            list.countChanged.connect(note)
+            list.modelChanged.connect(note)
+            try {
+                for (var round = 0; round < 2; ++round) {
+                    seen = {rows: 0, count: 0, attachedVisible: false}
+                    loader.item.startSystem(0)
+                    compare(decoderHost.sessionState, 1)
+                    verify(monitor.visible, "round " + round + ": the start shows the Monitor")
+                    compare(seen.count, 0, "round " + round + ": the list held earlier calls during the start: " + JSON.stringify(seen))
+                    compare(seen.rows, 0, "round " + round + ": the list built rows of earlier calls during the start")
+                    compare(list.model, monitorView, "round " + round + ": the Monitor has its calls once the start returns")
+                    compare(monitorView.historySession, callHistory.session)
+                    compare(list.count, 0, "round " + round + ": the new session has no call yet")
+                    var name = callHistory.pushAt(1262304000 + round)
+                    tryVerify(function () { return monitorRows() === 1 }, 1000, "round " + round + ": the session's call is listed")
+                    compare(list.itemAtIndex(0).name, name)
+                    decoderHost.stop()
+                    tryVerify(function () { return !monitor.visible }, 2000, "no session, no Monitor")
+                    compare(list.model, null, "round " + round + ": hidden, the Monitor lets its calls go")
+                }
+                // A relaunched UI finds the session running: shown, the Monitor takes that session's calls.
+                callHistory.beginSession()
+                var kept = callHistory.pushAt(1262304100)
+                testContext.setLifecyclePhase(2)
+                tryVerify(function () { return monitor.visible }, 1000, "the running session shows the Monitor")
+                compare(list.model, monitorView, "the rejoined session's calls")
+                tryVerify(function () { return monitorRows() === 1 }, 1000, "the rejoined session's call is listed")
+                compare(list.itemAtIndex(0).name, kept)
+            } finally {
+                list.contentItem.childrenChanged.disconnect(note)
+                list.countChanged.disconnect(note)
+                list.modelChanged.disconnect(note)
+            }
+        }
     }
 }

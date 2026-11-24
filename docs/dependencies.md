@@ -68,7 +68,7 @@ Optional compiled dependencies are:
 Vendored and embedded third-party components include:
 
 - ezpwd Reed-Solomon under `src/third_party/ezpwd/`
-- PFFFT from the immutable `arancormonk/pffft` fork revision in
+- pffft-neo (derived from PFFFT) from the immutable `arancormonk/pffft-neo` revision in
   `tools/ci-dependency-pins.env`, compiled into the internal `dsd-neo_pffft` target
 - TETRA_crypto TEA1/TEA2/TEA3 keystream generators from the immutable
   `MidnightBlueLabs/TETRA_crypto` revision in `tools/ci-dependency-pins.env`,
@@ -230,40 +230,53 @@ Native Airspy R2/Mini support is optional (`DSD_ENABLE_AIRSPY`, `DSD_REQUIRE_AIR
 ## Pinned PFFFT source
 
 `cmake/Pffft.cmake` uses CMake 3.20-compatible FetchContent to acquire the fixed
-commit archive with TLS and SHA-256 verification. Only `pffft.c` and
-`pffft_common.c` are compiled (with MSVC on x64 also `pffft_wide_tu.c`, the
-fork's 8-lane AVX2 backend as a translation unit of its own, built with
-`/arch:AVX2 /GL-` and run only after PFFFT's CPU check; GCC and Clang build that
-backend inside `pffft.c`); the fork's top-level project and FFTPACK reference
-implementation are not built. The first configure needs HTTPS access to
-codeload.github.com. PFFFT stays embedded, with no additional runtime package.
+commit archive of <https://github.com/arancormonk/pffft-neo> with TLS and SHA-256
+verification. Only `pffft.c` and `pffft_common.c` are compiled (with MSVC on x64
+also `pffft_wide_tu.c`, pffft-neo's 8-lane AVX2 backend as a translation unit of
+its own, built with `/arch:AVX2 /GL-` and run only after its CPU check; GCC and
+Clang build that backend inside `pffft.c`); pffft-neo's own CMake project, tests
+and benchmarks are not built. The first configure needs HTTPS access to
+codeload.github.com. The FFT stays embedded, with no additional runtime package.
 
 For fresh offline builds, extract the pinned archive and configure with
-`-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft` and
+`-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft-neo` and
 `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`, together with the
 [TETRA_crypto override](#pinned-tetra_crypto-source). The override accepts a
 checkout or source archive without Git metadata; its provenance is the
 packager's responsibility.
 Cached build trees can reconfigure with disconnected mode alone. Turn that mode
-off before updating a downloaded pin. The fork selects SIMD only when supported
-by the compiler target; `-DDSD_PFFFT_ENABLE_SIMD=OFF` selects scalar-one code.
+off before updating a downloaded pin. pffft-neo selects SSE or NEON only when the
+compiler target supports it (it has no AltiVec or WebAssembly backend), and other
+targets use scalar-one code; `-DDSD_PFFFT_ENABLE_SIMD=OFF` selects scalar-one code
+everywhere.
 Debug builds disable explicit FMA and floating-point contraction in the FFT.
 
-To update, run `python3 tools/update_pffft.py FULL_COMMIT_SHA`. Review the fork
-changes and both updated pins, then run FFT/spectrum and I/Q replay tests,
-sanitizers, acquisition checks, and quality preflight. Roll back by restoring
-both pin lines and reconfiguring. No patches are applied to downloaded sources.
+To update, run `python3 tools/update_pffft.py FULL_COMMIT_SHA`. Review the pffft-neo
+changes, both updated pins and any change to `LICENSES/LicenseRef-PFFFT.txt` (the
+helper rewrites it and its `legal/components.json` hash), then run FFT/spectrum and
+I/Q replay tests, sanitizers, acquisition checks, and quality preflight. Roll back by
+restoring those files and reconfiguring. No patches are applied to downloaded sources.
 `tests/tools/test_pffft_acquisition.py` exercises network, cached/offline, invalid
 source-layout, missing-path and checksum-error cases, including source archives.
 
 The only project header that includes PFFFT is `src/io/radio/rtl_fft_cache.h`.
 Analyzers exclude the resolved dependency location, including a source override.
 For cppcheck without a configured DSD build, set `DSD_PFFFT_SOURCE_DIR` to the
-pinned fork checkout; the CI cppcheck job acquires it with the pinned-Git helper.
+pinned pffft-neo checkout; the CI cppcheck job acquires it with the pinned-Git helper.
 OSV scans the pinned commit explicitly; release SBOMs record its repository,
 revision and checksum before upload and attestation. Installed, Qt, Android and
-portable packages carry `pffft-LICENSE.txt` and `pffft-NOTICES.txt`, generated
-under the build tree's `pffft-licenses/` directory.
+portable packages carry `pffft-neo-README.md` (pffft-neo's copyright notice and
+GPL-2.0-or-later grant), `pffft-neo-LICENSE.txt` (its GPL text) and `pffft-LICENSE.txt`
+(the inherited PFFFT and FFTPACK license), copied from the pinned source's `README.md`,
+`LICENSE` and `third_party/pffft/` into the build tree's `pffft-licenses/` directory.
+The component inventory declares pffft-neo as `GPL-2.0-or-later AND LicenseRef-PFFFT`,
+so its record of every retained upstream notice is tracked as
+`LICENSES/LicenseRef-PFFFT.txt` (installed with the other license texts and carried in
+SBOMs). Configure fails when it differs from the pinned source's
+`third_party/pffft/LicenseRef-PFFFT.txt`; `tools/update_pffft.py` rewrites it and its
+hash in `legal/components.json` together with the pins.
+The configure check also requires every source file the build compiles from, so an
+incomplete offline source fails before the build.
 
 ### AUR and mbelib packaging
 
@@ -271,14 +284,20 @@ Run `python3 tools/update_aur_pffft.py /path/to/PKGBUILD`, then regenerate
 `.SRCINFO` with `makepkg --printsrcinfo`. The helper adds the archive and checksum
 to makepkg's source acquisition, supplies an offline CMake override, and rejects
 stale pins for migrated sources. It also accepts older releases that still carry
-their FFT. Both AUR CI jobs use it; recipe-only updates increment `pkgrel`.
+their FFT, and moves a recipe written for the PFFFT fork to pffft-neo's archive.
+Both AUR CI jobs use it; recipe-only updates increment `pkgrel`.
 Neither DSD nor mbelib needs a separate PFFFT dependency package.
 
-The mbelib vcpkg overlay pins release 2.6.11. It acquires
+The mbelib vcpkg overlay pins release 2.6.12, which embeds pffft-neo. It acquires
 mbelib's FFT through vcpkg's verified download/cache mechanism and passes an
 offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.
 When changing the mbelib revision, align these with that revision's PFFFT pin.
+mbelib 2.6.12 installs pffft-neo's notices under `share/doc/mbelib-neo/pffft-neo/`;
+earlier 2.6 releases install the PFFFT fork's under `pffft/`. DSD requires the set
+that the installed `legal/components.json` names (component `pffft-neo` or `pffft`),
+so desktop installs accept either release. Release packages build the pinned mbelib,
+and their notice maps name its `pffft-neo/` files.
 
 DSD now requires mbelib-neo 2.6+ for its implementation-provenance remediation
 and installed component records. Keep the library's `share/doc/mbelib-neo/`

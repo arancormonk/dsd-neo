@@ -623,6 +623,100 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup src", identity.src, 0x345678);
     rc |= expect_int("Motorola extended regroup type", identity.is_group, 1);
     rc |= expect_int("Motorola extended regroup service", identity.svc_bits, 0x80);
+    rc |= expect_int("Motorola extended regroup zero SUID: no home", identity.home_valid, 0);
+    /* The Source SUID after the working address (octets 10-16): the talker's home identity, as in 0x21, once the length
+       octet declares all 16 octets. */
+    mac[3] = 0x10;
+    mac[10] = 0xAB;
+    mac[11] = 0xCD;
+    mac[12] = 0xE2;
+    mac[13] = 0xA7; /* WACN 0xABCDE, System ID 0x2A7 */
+    mac[14] = 0x12;
+    mac[15] = 0xD6;
+    mac[16] = 0x87; /* unit 1234567 */
+    rc |= expect_int("Motorola extended regroup SUID present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+    rc |= expect_int("Motorola extended regroup source stays the working address", identity.src, 0x345678);
+    rc |= expect_int("Motorola extended regroup home", identity.home_valid, 1);
+    rc |= expect_int("Motorola extended regroup home wacn", (int)identity.home_wacn, 0xABCDE);
+    rc |= expect_int("Motorola extended regroup home sysid", (int)identity.home_sysid, 0x2A7);
+    rc |= expect_int("Motorola extended regroup home unit", (int)identity.home_unit, 1234567);
+    /* A structure that declares nine octets is not the layout the decoder knows: it names no identity, and what
+       follows is another message, never the SUID. */
+    mac[3] = 0x09;
+    rc |= expect_int("Motorola short regroup names no identity", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
+    rc |= expect_int("Motorola short regroup names no home", identity.home_valid, 0);
+    /* Nor does one that declares more than it has room for: 18 octets on a 17-octet FACCH. */
+    mac[3] = 0x12;
+    rc |= expect_int("Motorola long regroup names no identity", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);
+    /* A complete 16-octet structure cut off by the span names nothing either. */
+    mac[3] = 0x10;
+    rc |= expect_int("Motorola regroup cut by the span names no identity",
+                     p25p2_mac_decode_voice_identity_span(0, 9, mac, &identity), 0);
+    mac[3] = 0x10;
+    /* Behind a four-octet Motorola message (0xBF), the 0xA0 ends at octet 20: inside a SACCH, past an LCCH's 18. */
+    unsigned long long shifted[24] = {0};
+    shifted[1] = 0xBF;
+    shifted[2] = 0x90;
+    shifted[3] = 0x04;
+    for (int k = 1; k <= 16; k++) {
+        shifted[4 + k] = mac[k];
+    }
+    rc |= expect_int("SACCH-span regroup identity present",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_SACCH, shifted, &identity), 1);
+    rc |= expect_int("SACCH-span regroup home", identity.home_valid, 1);
+    rc |= expect_int("LCCH-span regroup identity absent",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 0);
+    rc |= expect_int("LCCH-span regroup names no home", identity.home_valid, 0);
+
+    /* The same 0xBF prefix, then a nine-octet 0xA0 (declared 9): it ends at octet 13, inside an LCCH, so the segments
+       find it, but a length the decoder does not know names no identity. */
+    DSD_MEMSET(shifted, 0, sizeof(shifted));
+    shifted[1] = 0xBF;
+    shifted[2] = 0x90;
+    shifted[3] = 0x04;
+    shifted[5] = 0xA0;
+    shifted[6] = 0x90;
+    shifted[7] = 0x09;
+    shifted[8] = 0x00;
+    shifted[9] = 0x67;
+    shifted[10] = 0x89;
+    shifted[11] = 0x34;
+    shifted[12] = 0x56;
+    shifted[13] = 0x78;
+    rc |= expect_int("LCCH-span short regroup names no identity",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 0);
+    rc |= expect_int("LCCH-span short regroup names no home", identity.home_valid, 0);
+
+    /* A short 0xA0 (declared 9) followed by an abbreviated group voice user: the next message starts after the nine
+       octets, and the last voice user names the call. */
+    unsigned long long two[24] = {0};
+    two[1] = 0xA0;
+    two[2] = 0x90;
+    two[3] = 0x09;
+    two[5] = 0x67;
+    two[6] = 0x89;
+    two[7] = 0x34;
+    two[8] = 0x56;
+    two[9] = 0x78;
+    two[10] = 0x01;
+    two[11] = 0x00;
+    two[12] = 0x12;
+    two[13] = 0x34;
+    two[14] = 0x00;
+    two[15] = 0x0B;
+    two[16] = 0xBA;
+    rc |= expect_int("short regroup then group voice present", p25p2_mac_decode_voice_identity(0, two, &identity), 1);
+    rc |= expect_int("short regroup then group voice: the group voice user's tg", identity.tg, 0x1234);
+    rc |= expect_int("short regroup then group voice: its src", identity.src, 0x000BBA);
+
+    /* A span too short for the structure: its fields are past the message area, never an identity. */
+    unsigned long long tiny[24] = {0};
+    tiny[1] = 0x01;
+    tiny[3] = 0x12;
+    tiny[4] = 0x34;
+    tiny[7] = 0x05;
+    rc |= expect_int("span 4 group voice absent", p25p2_mac_decode_voice_identity_span(1, 4, tiny, &identity), 0);
+    rc |= expect_int("span 1 group voice absent", p25p2_mac_decode_voice_identity_span(1, 1, tiny, &identity), 0);
 
     /* Extended forms: the Source Address stays the source; the Source SUID is the talker's home identity. */
     static const uint8_t k_ext_opcodes[] = {0x21u, 0x22u};

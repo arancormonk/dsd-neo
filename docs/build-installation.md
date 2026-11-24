@@ -255,13 +255,19 @@ tools/scan_build.sh --strict \
 The build downloads two pinned, checksum-verified sources and compiles them into DSD-neo, so neither needs a runtime
 package:
 
-- a PFFFT fork (the FFT). Offline builds pass `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft`.
+- a pffft-neo revision (the FFT). Offline builds pass `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft-neo`.
 - a TETRA_crypto revision (the TEA1/TEA2/TEA3 keystream generators). Offline builds pass
   `-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO=/absolute/path/to/TETRA_crypto`.
 
 A fresh offline build passes both overrides and `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`. `docs/dependencies.md`
 ("Pinned PFFFT source", "Pinned TETRA_crypto source") has the pin and update procedure, scalar builds and AUR
 packaging; the checksums are in `tools/ci-dependency-pins.env`.
+
+DSD-neo's own libraries (`libdsd-neo_*`) are always static and linked into its programs, and `cmake --install` installs
+none of them. They are internal, with no stable interface: they call into each other and the tests replace some of
+their functions at link time. `BUILD_SHARED_LIBS=ON`, which some distribution macros pass to every build, is
+ignored, and configure says so. Installs made by earlier releases put `libdsd-neo_*.a` archives in the library folder (`lib/` under the
+install prefix); nothing uses them, and a newer install neither replaces nor uninstalls them, so delete them by hand.
 
 ## Standard Build Variables
 

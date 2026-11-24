@@ -242,17 +242,24 @@ p25p2_vpdu_voice_observable(const dsd_opts* opts, const dsd_state* state, int sl
            && p25p2_vpdu_voice_is_addressable(opts, state, slot);
 }
 
-/* What a voice user that observed the slot's call names beyond the observation: its home identity, only from a MAC
- * whose CRC passed (the CRC/FEC publication rule), and its identity for the trunk state machine's record. The identity
- * tracking reads the source field as received: a special address there is evidence (it names no radio, so the talker
- * kept for display loses its verdict), never an omitted field. An extended voice user naming its talker by a home SUID
- * alone (Source Address 0) names no local radio either: the working address the call keeps from an earlier talker
- * loses its verdict, so no alias is learned for it. */
+/* What a voice user that observed the slot's call names beyond the observation: its home identity, bound to the
+ * working address it carried, or that working address alone, which takes away a home an earlier talker's voice user
+ * left on the call (p25p2_note_voice_home()); both only from a MAC whose CRC passed (the CRC/FEC publication rule). And
+ * its identity for the trunk state machine's record. The identity tracking reads the source field as received: a
+ * special address there is evidence (it names no radio, so the talker kept for display loses its verdict), never an
+ * omitted field. An extended voice user naming its talker by a home SUID alone (Source Address 0) names no local radio
+ * either: the working address the call keeps from an earlier talker loses its verdict, so no alias is learned for it. */
 static void
 p25p2_vpdu_note_voice_user(const dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                            uint64_t source, const dsd_call_source_home* home, int crc_ok) {
-    if (home != NULL && crc_ok) {
-        p25p2_note_voice_home(opts, state, slot, home);
+    if (crc_ok) {
+        const uint32_t working = p25_source_id_is_subscriber(source) ? (uint32_t)source : 0U;
+        dsd_call_source_home bound = {0};
+        if (home != NULL) {
+            bound = *home;
+            bound.source = working;
+        }
+        p25p2_note_voice_home(opts, state, slot, working, &bound);
     }
     const uint8_t home_only = (uint8_t)(home != NULL && home->valid != 0U && !p25_source_id_is_subscriber(source));
     p25_sm_note_call_identity(state, slot, (uint32_t)source, (uint32_t)target, kind == DSD_CALL_KIND_GROUP_VOICE,
@@ -3241,10 +3248,94 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+/* Motorola Group Regroup Voice Channel User - Extended (MFID90 0xA0, 16 octets): opcode, MFID, length, service
+ * options, the supergroup (octets 5-6), the Source Address, the talker's working address (7-9), then its Source SUID
+ * (10-16: WACN 20 bits, System ID 12 bits, unit ID 24 bits), as the standard extended voice users carry them. Layout as
+ * OP25 (tk_p25.py, op 0xa0 mfid 0x90: sg msg[4:6], sa msg[6:9], ssuid msg[9:16]) and SDRTrunk
+ * (MotorolaGroupRegroupVoiceChannelUserExtended: SOURCE_ADDRESS octet 7, SOURCE_SUID_WACN octet 10, SOURCE_SUID_ID
+ * octet 14) decode it. Its length octet (octet 3, low six bits, counting the whole message) is the only part of it
+ * the decoder takes on trust: a message is handled only when it declares the 16 octets that layout has (or 0, which
+ * leaves the opcode table's 16) and the segment and the transport hold all of them. Anything else (a shorter or
+ * longer structure, one cut off by the span) names no group, source or home: its octets past the ones declared are
+ * another message, the NAC, the CRC or padding, never checked call metadata. */
+static int
+p25p2_vpdu_moto_regroup_ext_complete(const p25p2_vpdu_ctx* ctx) {
+    const unsigned int declared = (unsigned int)(ctx->mac[3 + ctx->len_a] & 0x3FU);
+    return (declared == 16U || declared == 0U) && ctx->len_b >= 16 && ctx->len_a + 16 <= ctx->mac_res->span;
+}
+
+/* A complete 0xA0 (p25p2_vpdu_moto_regroup_ext_complete()) whose length octet declares the SUID itself: the opcode
+ * table's 16 say nothing of what was sent. */
+static int
+p25p2_vpdu_moto_regroup_ext_suid_held(const p25p2_vpdu_ctx* ctx) {
+    return p25p2_vpdu_moto_regroup_ext_complete(ctx) && (ctx->mac[3 + ctx->len_a] & 0x3FU) == 16U;
+}
+
+/* The 0xA0 voice user's Source SUID as the talker's home identity (p25p2_vpdu_source_home()); none when the segment
+ * does not hold it. */
+static void
+p25p2_vpdu_moto_regroup_ext_home(const p25p2_vpdu_ctx* ctx, dsd_call_source_home* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (p25p2_vpdu_moto_regroup_ext_suid_held(ctx)) {
+        p25p2_vpdu_source_home(ctx->mac, 10 + ctx->len_a, out);
+    }
+}
+
+/* The 0xA0 voice user's Source SUID as printed: its own unit ID (octets 14-16), which is not the working address of
+ * octets 7-9. */
+static void
+p25p2_vpdu_print_moto_regroup_ext_suid(const p25p2_vpdu_ctx* ctx) {
+    if (!p25p2_vpdu_moto_regroup_ext_suid_held(ctx)) {
+        return;
+    }
+    const int at = 10 + ctx->len_a;
+    DSD_FPRINTF(stderr, " EXT - FQSUID: %05X:%03X.%u", (unsigned int)p25p2_vpdu_fqid_wacn(ctx->mac, at),
+                (unsigned int)p25p2_vpdu_fqid_sysid(ctx->mac, at), (unsigned int)p25p2_vpdu_u24(ctx->mac, at + 4));
+}
+
+/* A complete Motorola 0xA0 voice user (p25p2_vpdu_moto_regroup_ext_complete()): the supergroup's call, its patch,
+ * the talker's affiliation and home, as the standard extended voice users record them. */
+static void
+p25p2_vpdu_handle_moto_regroup_ext(p25p2_vpdu_ctx* ctx) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    const unsigned long long int* MAC = ctx->mac;
+    const int len_a = ctx->len_a;
+    const int slot = ctx->slot;
+    /* Octets 5-6 the supergroup, 7-9 the talker's working address; its Source SUID follows
+       (p25p2_vpdu_moto_regroup_ext_home()). */
+    int svc = MAC[4 + len_a];
+    int gr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
+    int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
+    dsd_call_source_home home = {0};
+    p25p2_vpdu_moto_regroup_ext_home(ctx, &home);
+    DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
+    p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
+    DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
+    const int tracked_voice =
+        p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                 (uint64_t)(uint32_t)src, &home, svc, ctx->pdu_type, ctx->crc_ok);
+    if (tracked_voice) {
+        p25p2_vpdu_store_slot_svc(state, slot, svc);
+    }
+    if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
+        p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
+    }
+
+    p25p2_vpdu_print_moto_regroup_ext_suid(ctx);
+
+    // A failed-CRC PDU (-F) records no affiliation either; the patch note above already said so.
+    if (ctx->crc_ok && src != 0 && gr != 0) {
+        p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
+    }
+    if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
+        && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
+    }
+}
+
 static void
 p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
-    dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
-    dsd_state* state VPDU_MAYBE_UNUSED = ctx->state;
     int type = ctx->type;
     const unsigned long long int* MAC = ctx->mac;
     struct p25p2_mac_result mac_res VPDU_MAYBE_UNUSED = *ctx->mac_res;
@@ -3256,35 +3347,10 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
     UNUSED4(type, mac_res, len_c, slot);
 
     if (MAC[1 + len_a] == 0xA0 && MAC[2 + len_a] == 0x90) {
-
-        int svc = MAC[4 + len_a];
-        int gr = (MAC[5 + len_a] << 8) | MAC[6 + len_a];
-        int src = (MAC[7 + len_a] << 16) | (MAC[8 + len_a] << 8) | MAC[9 + len_a];
-        DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
-        p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
-        DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int tracked_voice =
-            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, NULL, svc, ctx->pdu_type, ctx->crc_ok);
-        if (tracked_voice) {
-            p25p2_vpdu_store_slot_svc(state, slot, svc);
-        }
-        if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
-            p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
-        }
-
-        uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
-        mfid90_wacn >>= 4;
-        uint16_t mfid90_sys = (uint16_t)(((MAC[12 + len_a] & 0x0F) << 8) | MAC[13 + len_a]);
-        DSD_FPRINTF(stderr, " EXT - FQSUID: %05X:%03X.%d", mfid90_wacn, mfid90_sys, src);
-
-        // A failed-CRC PDU (-F) records no affiliation either; the patch note above already said so.
-        if (ctx->crc_ok && src != 0 && gr != 0) {
-            p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
-        }
-        if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
-            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
-            p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
+        if (p25p2_vpdu_moto_regroup_ext_complete(ctx)) {
+            p25p2_vpdu_handle_moto_regroup_ext(ctx);
+        } else {
+            DSD_FPRINTF(stderr, "\n MFID90 Group Regroup Voice: length %d not decoded", (int)(MAC[3 + len_a] & 0x3F));
         }
     }
 

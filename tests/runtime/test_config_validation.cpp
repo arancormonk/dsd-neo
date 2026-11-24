@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <errno.h>
+#include <initializer_list>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -1597,6 +1598,78 @@ test_scan_max_visit_ms_validation(void) {
     return rc;
 }
 
+/* The skip-silent reading length (#834): [trunking] scan_skip_silent_ms takes 0 or 10..500. The loader refuses any other
+ * value and keeps the one it had, so 1..9, past 500 and negative are each an ERROR naming the window, at the top level
+ * and in a profile alike; text that is no whole number is the schema walk's integer error. 0, 10, 85 and 500 are
+ * silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic at all. */
+static int
+run_scan_skip_silent_ms_case(const char* ini, const char* section, const char* key, int level, const char* text) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+
+    int found = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (strcmp(diags.items[i].section, section) == 0 && strcmp(diags.items[i].key, key) == 0) {
+            found++;
+            if ((int)diags.items[i].level != level || (text && !strstr(diags.items[i].message, text))) {
+                found += 100;
+            }
+        }
+    }
+    const int want = level < 0 ? 0 : 1;
+    int result = 0;
+    if (found != want || diags.count != want) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %d diagnostic(s) on %s.%s, %d in all, want %d\n", ini, found, section, key,
+                    diags.count, want);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s.%s: %s\n", diags.items[i].section, diags.items[i].key, diags.items[i].message);
+        }
+        result = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_scan_skip_silent_ms_validation(void) {
+    static const char* const window = "use 0 for the calibrated reading or 10..500";
+    int rc = 0;
+    for (const char* value : {"0", "10", "85", "500"}) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = %s\n", value);
+        rc |= run_scan_skip_silent_ms_case(ini, "trunking", "scan_skip_silent_ms", -1, NULL);
+        DSD_SNPRINTF(ini, sizeof ini, "[profile.quick]\ntrunking.scan_skip_silent_ms = %s\n", value);
+        rc |= run_scan_skip_silent_ms_case(ini, "profile.quick", "trunking.scan_skip_silent_ms", -1, NULL);
+    }
+    for (const char* value : {"1", "9", "501", "-10"}) {
+        char ini[128];
+        char text[96];
+        DSD_SNPRINTF(text, sizeof text, "Value %s is refused, not clamped; %s", value, window);
+        DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = %s\n", value);
+        rc |= run_scan_skip_silent_ms_case(ini, "trunking", "scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
+        DSD_SNPRINTF(ini, sizeof ini, "[profile.quick]\ntrunking.scan_skip_silent_ms = %s\n", value);
+        rc |=
+            run_scan_skip_silent_ms_case(ini, "profile.quick", "trunking.scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
+    }
+    for (const char* value : {"abc", "50ms"}) {
+        char ini[128];
+        char text[64];
+        DSD_SNPRINTF(text, sizeof text, "Invalid integer value '%s'", value);
+        DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = %s\n", value);
+        rc |= run_scan_skip_silent_ms_case(ini, "trunking", "scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
+        DSD_SNPRINTF(ini, sizeof ini, "[profile.quick]\ntrunking.scan_skip_silent_ms = %s\n", value);
+        rc |=
+            run_scan_skip_silent_ms_case(ini, "profile.quick", "trunking.scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
+    }
+    return rc;
+}
+
 /* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
  * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
  * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
@@ -1688,6 +1761,21 @@ test_rdio_analog_validation(void) {
                                  "Value -1 is out of range [0, 2147483647] and is refused");
     rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
                                  "Invalid integer value '2147483648'");
+    return rc;
+}
+
+/* Issue #888: [recording] rdio_unknown_talkgroup (0..2147483647) is refused outside its range, as the analog talkgroup
+ * is: an ERROR, never the schema walk's clamping warning. */
+int
+test_rdio_unknown_talkgroup_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "0", -1, NULL);
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483647", -1, NULL);
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "-1", DSDCFG_DIAG_ERROR,
+                                 "Value -1 is out of range [0, 2147483647] and is refused");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
+                                 "Invalid integer value '2147483648'");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
     return rc;
 }
 } // namespace
@@ -2432,9 +2520,11 @@ main(void) {
     rc |= test_rtl_bw_khz_selectable_list();
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
+    rc |= test_scan_skip_silent_ms_validation();
     rc |= test_analog_max_gap_validation();
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
+    rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();

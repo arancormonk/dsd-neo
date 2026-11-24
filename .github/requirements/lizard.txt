@@ -4,9 +4,9 @@
 #
 #    uv tool run --python 3.14 --from pip-tools pip-compile --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file=.github/requirements/lizard.txt --strip-extras --upgrade .github/requirements/lizard.in
 #
-lizard==1.25.1 \
-    --hash=sha256:3513ce263d17ed580f8efa202658b02c684d5da2b39ef40c7663971be822a9d6 \
-    --hash=sha256:789e7103875cb15aac273e1701cd72d4b9d5fa521790e258fe071dbf79dbc4ee
+lizard==1.26.1 \
+    --hash=sha256:344e2bfb1b41d31207223ba844fac1f84da80053edf901b3df4ee051b152d0f5 \
+    --hash=sha256:9a4d7372faa12dbe725cfb6dcadf9bed4916f9176a154b285917713012ac35c3
     # via -r lizard.in
 pathspec==1.1.1 \
     --hash=sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a \

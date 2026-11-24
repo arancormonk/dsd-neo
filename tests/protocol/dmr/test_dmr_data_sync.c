@@ -64,11 +64,13 @@ static int g_boundary_at;
    and stands erasures in for every symbol after it; -1 for none. */
 static int g_interrupt_at;
 static int g_confidence_calls;
+static int g_control_confidence_calls;
 
 static void
 reset_fixture(void) {
     g_interrupt_at = -1;
     g_confidence_calls = 0;
+    g_control_confidence_calls = 0;
     g_hamming_ok = 1;
     g_golay_ok = 1;
     g_decoded_slot = 1;
@@ -251,6 +253,17 @@ dmr_confidence_note_data_burst(const dsd_opts* opts, dsd_state* state, unsigned 
     (void)state;
     (void)color_code;
     g_confidence_calls++;
+    return g_confidence_result;
+}
+
+/* A control burst's note (a CSBK, MBC header or continuation), counted apart from the data bursts'. */
+dmr_confidence_result
+dmr_confidence_note_control_burst(const dsd_opts* opts, dsd_state* state, unsigned int color_code) {
+    (void)opts;
+    (void)state;
+    (void)color_code;
+    g_confidence_calls++;
+    g_control_confidence_calls++;
     return g_confidence_result;
 }
 
@@ -985,6 +998,32 @@ test_confidence_pending_and_reject_gate_dispatch(void) {
     assert(state.dmrburstR == 7U);
 }
 
+/* A control burst (CSBK, MBC header, MBC continuation) notes its colour code through the control note, whose
+   evidence waits for the PDU's acceptance; every other data burst through the data note (discussion #900). */
+static void
+test_control_bursts_use_the_control_note(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+
+    static const struct {
+        uint8_t burst;
+        int control;
+    } cases[] = {{3U, 1}, {4U, 1}, {5U, 1}, {6U, 0}, {7U, 0}, {9U, 0}};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        prepare_state(&state, payload, reliab);
+        reset_fixture();
+        g_decoded_burst = cases[i].burst;
+        dmr_data_sync(&opts, &state);
+        assert(g_confidence_calls == 1);
+        assert(g_control_confidence_calls == cases[i].control);
+        assert(g_handler_calls == 1 && g_handler_burst == cases[i].burst);
+    }
+}
+
 static void
 test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
     static dsd_opts opts;
@@ -1118,6 +1157,7 @@ main(void) {
     test_direct_mode_sync_overrides_cach_slot();
     test_burst_origin_from_sync();
     test_confidence_pending_and_reject_gate_dispatch();
+    test_control_bursts_use_the_control_note();
     test_connect_plus_idle_bursts_clear_tuned_sync_times();
     DSD_FPRINTF(stdout, "DMR_DATA_SYNC: OK\n");
     return 0;

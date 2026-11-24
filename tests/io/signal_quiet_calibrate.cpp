@@ -3,13 +3,19 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Calibration driver for the scan skip-silent check's quiet threshold (issue #834), deliberately not a CTest: it runs
- * the stand-alone quiet detector, the one the shared tap runs, over hundreds of rendered conditions and thousands of
+/* Calibration driver for the scan skip-silent check's quiet threshold (issue #834), run by hand: it runs the
+ * stand-alone quiet detector, the one the shared tap runs, over hundreds of rendered conditions and thousands of
  * trials each, minutes on every core. docs/signal-search.md "Quiet-channel calibration" gives the method and results.
+ * CTest runs it only on one condition at a time over a tiny source set (IO_SIGNAL_QUIET_CALIBRATE_CHOOSE), to check
+ * that it refuses a short source a chosen condition uses and no other.
  *
  *   dsd-neo_test_signal_quiet_calibrate --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N]
  *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
- *       [--neighbour-levels DB,DB,...] [--modes-file FILE]
+ *       [--neighbour-levels DB,DB,...] [--modes-file FILE] [--windows N]
+ *
+ * --windows N (1..DSD_SIGNAL_QUIET_WINDOWS_MAX) judges N sub-windows of the shipped length instead of the calibrated
+ * nine, through the request's own count (issue #834 follow-up): a short check of another reading length, not a
+ * calibration. Without it every request asks for the default count, so the output is unchanged.
  *
  * DIR holds the clean 48 kHz sources tools/scan_quiet_reception.py --export-sources writes, from the same generators
  * that measured each mode's reception threshold. Each is interpolated to the capture rate in the frequency domain, so
@@ -27,7 +33,8 @@
  *           the same ratio; the estimator sets only the floor the guard compares.
  * validate  every condition at one threshold, estimator and guard, fresh seeds: quiet and busy verdicts (an invalid
  *           result is busy)
- * snr       the rendered S/N of each wanted signal measured back from the samples, against the target
+ * snr       the rendered S/N of each wanted signal (of the conditions --filter selects) measured back from the
+ *           samples, against the target
  * cost      CPU per quiet request on noise (shipped parameters), and per request of the floor guard's reference alone
  *           (the same bin selection and quartile, nine times)
  *
@@ -84,6 +91,17 @@ constexpr double kNoiseSigma = 1e-3;        /* per component; keeps a +50 dB nei
 constexpr double kMarginDb = 1.0;           /* active trials sit this far below each mode's reception threshold */
 constexpr int kBlockIn = 9600;              /* interpolation block at 48 kHz: 200 ms, its middle half kept */
 constexpr double kTrialSeconds = 0.128;     /* coloured-noise transform: longer than any nine sub-windows */
+constexpr double kLongTrialSeconds = 0.768; /* the same, for --windows above nine: longer than any fifty */
+
+/* --windows: the sub-window count every request asks for, 0 for the default (DSD_SIGNAL_QUIET_WINDOWS). Set once
+   from the command line, before any condition is built. */
+int g_windows = 0;
+
+int
+windows_judged() {
+    return g_windows ? g_windows : DSD_SIGNAL_QUIET_WINDOWS;
+}
+
 constexpr double kBurstGapSeconds = 0.0325; /* DMR MS: 60 ms frame less the 27.5 ms symbol transmission period */
 
 /* ------------------------------------------------------------------------------------------------ modes */
@@ -410,6 +428,13 @@ struct AlignedBuffer {
     explicit AlignedBuffer(size_t n) : data(new cf[n]) {}
 };
 
+/* The samples place_waveform() makes of @p s at @p rate: one hop of output per hop of input. */
+int64_t
+placed_size(const Waveform& s, uint32_t rate) {
+    const int64_t hop_in = kBlockIn / 2, hop_out = (int64_t)kBlockIn * rate / kSourceRate / 2;
+    return (int64_t)s.base.size() / hop_in * hop_out;
+}
+
 /* Band-limited interpolation of a 48 kHz waveform to @p rate: 200 ms blocks every 100 ms, each zero-padded in the
  * frequency domain, keeping each block's middle 100 ms (the waveform is read circularly; trials stay clear of the
  * wrap). The 48 kHz spectrum and so each band's power are kept; nothing appears above 24 kHz. */
@@ -419,7 +444,7 @@ place_waveform(const Waveform& s, uint32_t rate) {
     const int hop_out = n_out / 2;
     const long long total_in = (long long)s.base.size();
     Placed p;
-    p.x.assign((size_t)(total_in / hop_in) * (size_t)hop_out, cf(0, 0));
+    p.x.assign((size_t)placed_size(s, rate), cf(0, 0));
     dsd_io::FftSetupCache small, large;
     AlignedBuffer in((size_t)n_in), out((size_t)n_out);
     for (long long b = 0; b < total_in / hop_in; ++b) {
@@ -515,7 +540,7 @@ channel_hz(const Condition& c) {
 
 int
 transform_points(uint32_t rate) {
-    return (int)std::lround(rate * kTrialSeconds);
+    return (int)std::lround(rate * (windows_judged() > DSD_SIGNAL_QUIET_WINDOWS ? kLongTrialSeconds : kTrialSeconds));
 }
 
 /* The detector's transform size for the request: at least 8 bins across its narrowest class. */
@@ -531,7 +556,7 @@ fft_points(const Condition& c) {
     return dsd_signal_fft_size_for_width(c.rate, narrowest);
 }
 
-/* The nine sub-windows' length for the request (the detector's rule: the smallest whole number of transforms of at
+/* The sub-windows' length for the request (nine, or --windows) (the detector's rule: the smallest whole number of transforms of at
  * least 10 ms each). */
 int
 quiet_span(const Condition& c) {
@@ -540,7 +565,7 @@ quiet_span(const Condition& c) {
         return 0;
     }
     const long long frames = ((long long)c.rate + 100LL * n - 1) / (100LL * n);
-    return (int)(DSD_SIGNAL_QUIET_WINDOWS * frames * n);
+    return (int)(windows_judged() * frames * n);
 }
 
 int
@@ -966,6 +991,34 @@ droop_gain(const Placed& p, int64_t index, bool late) {
     return std::sqrt(low ? lo : hi);
 }
 
+/* The starts [first, last) a @p span-sample trial at @p rate is drawn from, in a placed waveform of @p size samples
+ * whose burst train (when @p bursts) runs from capture sample @p burst_on to @p burst_off: clear of the placement's
+ * wrap at both ends, and for a burst train starting no earlier than one inter-burst gap before the first burst, as
+ * at any phase of the train, and ending inside the last burst. Empty (last <= first) when the waveform is too short
+ * for the span; choose() refuses such a condition before any trial runs. */
+std::pair<int64_t, int64_t>
+start_range(int64_t size, bool bursts, int64_t burst_on, int64_t burst_off, uint32_t rate, int span) {
+    int64_t first = (int64_t)rate / 10, last = size - span - (int64_t)rate / 10;
+    if (bursts) {
+        first = std::max(first, burst_on - (int64_t)(kBurstGapSeconds * rate));
+        last = std::min(last, burst_off - span);
+    }
+    return {first, last};
+}
+
+/* start_range() for @p s placed at @p rate, from its 48 kHz samples and burst mask as place_waveform() maps them. */
+std::pair<int64_t, int64_t>
+source_start_range(const Waveform& s, uint32_t rate, int span) {
+    const auto keyed = [](uint8_t v) { return v != 0; };
+    const auto on = std::find_if(s.on.begin(), s.on.end(), keyed);
+    if (on == s.on.end()) {
+        return start_range(placed_size(s, rate), false, 0, 0, rate, span);
+    }
+    const auto off = std::find_if(s.on.rbegin(), s.on.rend(), keyed).base();
+    return start_range(placed_size(s, rate), true, (int64_t)(on - s.on.begin()) * rate / kSourceRate,
+                       (int64_t)(off - s.on.begin()) * rate / kSourceRate, rate, span);
+}
+
 /* Add one carrier at a random start, phase and (DMR MS droop) side; returns the start in the placed waveform.
  * @p placed is indexed by waveform. */
 int64_t
@@ -975,14 +1028,12 @@ add_carrier(const Condition& c, const Carrier& k, const std::vector<Placed>& pla
     const double wanted = std::pow(10.0, c.snr_db / 10.0) * c.noise_in_width;
     const double power = k.neighbour ? wanted * std::pow(10.0, k.rel_db / 10.0) : wanted * k.share;
     const double amplitude = std::sqrt(power / sources[(size_t)k.source].band_power);
-    int64_t first = (int64_t)c.rate / 10, last = (int64_t)p.x.size() - c.span - (int64_t)c.rate / 10;
-    if (!p.bursts.empty()) {
-        /* An ongoing burst train: the trial starts no earlier than one inter-burst gap before the first burst, as at
-         * any phase of the train, and ends inside the last burst. */
-        first = std::max(first, p.bursts.front().first - (int64_t)(kBurstGapSeconds * c.rate));
-        last = std::min(last, p.bursts.back().second - c.span);
-    }
-    const int64_t start = first + (int64_t)(rng.next() % (uint64_t)(last - first));
+    const bool bursts = !p.bursts.empty();
+    const std::pair<int64_t, int64_t> range =
+        start_range((int64_t)p.x.size(), bursts, bursts ? p.bursts.front().first : 0,
+                    bursts ? p.bursts.back().second : 0, c.rate, c.span);
+    const int64_t first = range.first;
+    const int64_t start = first + (int64_t)(rng.next() % (uint64_t)(range.second - first));
     const double step = 2 * kPi * (channel_hz(c) + k.offset_hz) / c.rate;
     std::complex<double> rot = std::polar(amplitude, 2 * kPi * rng.uniform());
     const std::complex<double> turn = std::polar(1.0, step);
@@ -1023,6 +1074,7 @@ dsd_signal_quiet_request
 request_for(const Condition& c, long trial) {
     dsd_signal_quiet_request r{};
     r.request_id = (uint64_t)trial + 1;
+    r.windows = (uint32_t)g_windows;
     /* The RTL tap's geometry: tuned Fs/4 above the channel, the ingest rotation moving the channel to the samples'
      * 0 Hz (src/io/radio/rtl_sdr_fm.cpp demod_feed_signal_search()). */
     r.capture.rate_hz = c.rate;
@@ -1303,6 +1355,13 @@ in_width_power(dsd_io::FftSetupCache& fft, const std::vector<cf>& x, uint32_t ra
     return in;
 }
 
+/* The conditions run_snr() measures: one wanted signal on the channel, on the bin grid for an analog one. */
+bool
+snr_measured(const Condition& c) {
+    return (c.group == "digital" && std::fabs(c.carriers[0].offset_hz) < 0.5)
+           || (c.group == "analog" && !c.grid_shift_hz);
+}
+
 /* One wanted signal's S/N measured back from @p o.trials renders: its in-width power (a burst train's as band_power():
  * its in-width share times its power during the bursts) over the in-width power of the floor rendered alone. */
 double
@@ -1332,30 +1391,31 @@ measured_snr_db(Condition c, const Options& o, const std::vector<Placed>& placed
     return 10 * std::log10(signal / noise);
 }
 
-/* The S/N cross-check: each wanted signal on frequency over a white floor, rendered as the trials are. */
+/* The S/N cross-check: each chosen wanted signal on frequency over a white floor, rendered as the trials are. */
 int
 run_snr(const Options& o, const std::vector<Source>& sources, const std::vector<Waveform>& waves,
-        const std::vector<Condition>& all) {
+        const std::vector<Condition>& all, const std::vector<size_t>& chosen) {
     FILE* f = dsd_fopen_private(o.out.c_str(), "w");
     if (!f) {
         return 1;
     }
     DSD_FPRINTF(f, "condition,target_snr_db,measured_snr_db,trials\n");
     for (uint32_t rate : kRates) {
-        std::vector<size_t> chosen;
+        std::vector<size_t> here;
         std::vector<bool> needed(waves.size(), false);
-        for (size_t i = 0; i < all.size(); ++i) {
+        for (size_t i : chosen) {
             const Condition& c = all[i];
-            const bool plain = (c.group == "digital" && std::fabs(c.carriers[0].offset_hz) < 0.5)
-                               || (c.group == "analog" && !c.grid_shift_hz);
-            if (plain && c.rate == rate) {
-                chosen.push_back(i);
+            if (c.rate == rate) {
+                here.push_back(i);
                 needed[(size_t)sources[(size_t)c.carriers[0].source].wave] = true;
             }
         }
+        if (here.empty()) {
+            continue;
+        }
         const std::vector<Placed> placed = place_waveforms(rate, o, waves, needed);
         dsd_io::FftSetupCache fft;
-        for (size_t i : chosen) {
+        for (size_t i : here) {
             DSD_FPRINTF(f, "%s,%.2f,%.3f,%ld\n", all[i].name.c_str(), all[i].snr_db,
                         measured_snr_db(all[i], o, placed, sources, fft), o.trials);
         }
@@ -1384,7 +1444,7 @@ reference_work(const Condition& c, const std::vector<double>& power, std::vector
     }
     const double half_width = widest / 2;
     double sum = 0;
-    for (int w = 0; w < DSD_SIGNAL_QUIET_WINDOWS; ++w) {
+    for (int w = 0; w < windows_judged(); ++w) {
         size_t count = 0;
         for (int m = -n / 2; m < n / 2; ++m) {
             double delta = m * bin_hz - r.capture.rotation_hz;
@@ -1493,6 +1553,15 @@ parse_number(const std::string& key, const char* value, Options* o) {
     if (key == "--neighbour-levels") {
         return parse_levels(value, &o->neighbour_levels);
     }
+    if (key == "--windows") {
+        double windows = 0;
+        if (!parse_double(value, &windows) || windows < 1 || windows > DSD_SIGNAL_QUIET_WINDOWS_MAX
+            || std::abs(windows - std::round(windows)) > 1e-9) {
+            return false;
+        }
+        g_windows = (int)std::lround(windows);
+        return true;
+    }
     if (key == "--estimator") {
         o->estimator = std::strcmp(value, "trimmed") == 0  ? DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
                        : std::strcmp(value, "lowest") == 0 ? DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK
@@ -1536,20 +1605,65 @@ parse_options(int argc, char** argv, Options* o) {
     return argc % 2 != 0 && finish_options(o);
 }
 
-/* The conditions --filter selects into @p chosen; false when a condition cannot be rendered. */
+/* False, with the reason, when a carrier's source is too short to place a @p span-sample trial at the condition's
+ * rate (source_start_range() empty). */
 bool
-choose(const std::vector<Condition>& all, const Options& o, std::vector<size_t>* chosen) {
-    for (size_t i = 0; i < all.size(); ++i) {
-        const Condition& c = all[i];
-        const bool sources_ok =
-            std::all_of(c.carriers.begin(), c.carriers.end(), [](const Carrier& k) { return k.source >= 0; });
-        if (!sources_ok || c.span <= 0 || c.span > transform_points(c.rate)) {
-            DSD_FPRINTF(stderr, "condition %s: missing source or bad span %d\n", c.name.c_str(), c.span);
+source_long_enough(const Condition& c, const Carrier& k, int span, const std::vector<Source>& sources,
+                   const std::vector<Waveform>& waves) {
+    const Source& src = sources[(size_t)k.source];
+    const Waveform& s = waves[(size_t)src.wave];
+    const std::pair<int64_t, int64_t> range = source_start_range(s, c.rate, span);
+    if (range.second > range.first) {
+        return true;
+    }
+    const bool bursts = std::any_of(s.on.begin(), s.on.end(), [](uint8_t v) { return v != 0; });
+    DSD_FPRINTF(stderr,
+                "condition %s: source %s (%.3f s) is too short to place a %d-sample trial at %u Hz (%.3f s) 100 ms "
+                "clear of its ends%s; export longer sources\n",
+                c.name.c_str(), src.row.c_str(), (double)s.base.size() / kSourceRate, span, c.rate,
+                (double)span / c.rate, bursts ? ", from one burst gap before its first burst to inside its last" : "");
+    return false;
+}
+
+/* False, with the reason, when condition @p c cannot be rendered for the phase: a missing source or a bad span, or a
+ * source too short to place what the phase renders (the trials' span for every carrier; the snr phase's longer one for
+ * the wanted signal alone, the one carrier it renders). */
+bool
+renderable(const Condition& c, const Options& o, const std::vector<Source>& sources,
+           const std::vector<Waveform>& waves) {
+    if (o.phase == "snr") {
+        if (c.carriers[0].source < 0) {
+            DSD_FPRINTF(stderr, "condition %s: missing source\n", c.name.c_str());
             return false;
         }
-        if (o.filter.empty() || c.name.find(o.filter) != std::string::npos) {
-            chosen->push_back(i);
+        return source_long_enough(c, c.carriers[0], transform_points(c.rate), sources, waves);
+    }
+    const bool sources_ok =
+        std::all_of(c.carriers.begin(), c.carriers.end(), [](const Carrier& k) { return k.source >= 0; });
+    if (!sources_ok || c.span <= 0 || c.span > transform_points(c.rate)) {
+        DSD_FPRINTF(stderr, "condition %s: missing source or bad span %d\n", c.name.c_str(), c.span);
+        return false;
+    }
+    return std::all_of(c.carriers.begin(), c.carriers.end(),
+                       [&](const Carrier& k) { return source_long_enough(c, k, c.span, sources, waves); });
+}
+
+/* The conditions the phase renders into @p chosen: those --filter selects, and of them the snr phase's the ones it
+ * measures (snr_measured()). False when one of them cannot be rendered (renderable()), said before any trial runs.
+ * Only the chosen conditions are checked, so a source that none of them uses may be short or missing. */
+bool
+choose(const std::vector<Condition>& all, const Options& o, const std::vector<Source>& sources,
+       const std::vector<Waveform>& waves, std::vector<size_t>* chosen) {
+    for (size_t i = 0; i < all.size(); ++i) {
+        const Condition& c = all[i];
+        if ((!o.filter.empty() && c.name.find(o.filter) == std::string::npos)
+            || (o.phase == "snr" && !snr_measured(c))) {
+            continue;
         }
+        if (!renderable(c, o, sources, waves)) {
+            return false;
+        }
+        chosen->push_back(i);
     }
     return true;
 }
@@ -1581,13 +1695,13 @@ main(int argc, char** argv) {
     }
     const std::vector<Condition> all = build_conditions(sources, modes, o.neighbour_levels);
     std::vector<size_t> chosen;
-    if (!choose(all, o, &chosen)) {
+    if (!choose(all, o, sources, waves, &chosen)) {
         return 1;
     }
     DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each, %zu waveform(s) from %zu source row(s)\n",
                 chosen.size(), all.size(), o.trials, waves.size(), sources.size());
     if (o.phase == "snr") {
-        return run_snr(o, sources, waves, all);
+        return run_snr(o, sources, waves, all, chosen);
     }
     return run_trials(o, sources, waves, all, chosen);
 }

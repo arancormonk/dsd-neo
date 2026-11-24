@@ -15,7 +15,7 @@
 
 /* Whether @p lpcn names a Tier III channel. ETSI TS 102 361-4 §7.1.1.1.1.1.1 and the flexible channel plan: CHAN is
    1..4094; 0 is CHNULL and 4095 (0xFFF) the escape whose channel an appended MBC's CdefParms define. The same rule
-   guards a grant, a C_MOVE, the CdefParms LPCN and the channel map they teach. */
+   guards a grant, the CdefParms LPCN and the channel map they teach. */
 static inline int
 dmr_t3_lpcn_is_channel(uint32_t lpcn) {
     return (lpcn >= 1U && lpcn <= 4094U) ? 1 : 0;

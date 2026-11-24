@@ -230,6 +230,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_api_delete_after_upload = 0;
     opts->rdio_analog_system_id = 0;
     opts->rdio_analog_talkgroup = 0;
+    opts->rdio_unknown_talkgroup = 0;
     opts->record_unknown_only = 0;
     opts->analog_record_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     opts->analog_record_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
@@ -416,6 +417,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
     opts->scan_skip_silent = 0;
+    opts->scan_skip_silent_ms = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
     opts->scan_max_visit_ms = 0;
@@ -1484,6 +1486,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
+    state->ysf_call_cm = 9;
     state->ysf_fich_confirmed = 0;
 
     //DSTAR Call Strings

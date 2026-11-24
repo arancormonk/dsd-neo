@@ -16,13 +16,16 @@
 extern "C" {
 #endif
 
-void ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+/* A 20-byte DCH: @p field names what it carries (0 CSD1, 1 CSD2, 2 text sorted by @p fn of @p ft, anything else
+   nothing), as the frame's type and number say; the FICH block number plays no part. */
+void ysf_dch_decode(dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
                     const uint8_t input[160]);
 void ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
                      const uint8_t input[80]);
 uint16_t ysf_crc16(const uint8_t* bits, int len);
 int ysf_conv_fich(const uint8_t input[100], uint8_t dest[32], uint32_t* v_error_out);
-int ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+/* De-interleaves, Viterbi-decodes and CRC-checks a 180-dibit DCH, then decodes it as @p field (ysf_dch_decode()). */
+int ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
                  uint8_t input[180]);
 int ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
                   uint8_t input[100]);

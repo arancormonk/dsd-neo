@@ -362,6 +362,58 @@ test_quiet_check_hears_the_gate(void) {
     dsd_frame_sync_hooks_set(NULL);
 }
 
+/* A control burst (a CSBK, an MBC header) counts its colour code toward the lock, but its evidence waits for its PDU
+   (discussion #900): repeated MBC headers whose continuation never arrives, on a locked colour code, note no PROVEN
+   activity and leave dsd_state::dmr_confidence_lock_m alone. The PDU's acceptance stamps it; a locking pair of
+   control bursts locks the gate without evidence. */
+static void
+test_control_bursts_defer_lock_evidence(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.scan_skip_silent = 1;
+    static dsd_state state;
+    init_state(&state);
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+
+    dsd_decode_clock_use_test(GATE_TEST_T0_NS);
+    at_ms(10000);
+    quiet_notes_clear();
+    assert(dmr_confidence_note_data_burst(&opts, &state, 6) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_data_burst(&opts, &state, 6) == DMR_CONFIDENCE_LOCKED);
+    const double locked_m = state.dmr_confidence_lock_m;
+    assert(locked_m > 0.0 && g_quiet_proven == 1);
+
+    at_ms(20000);
+    for (int i = 0; i < 8; i++) {
+        assert(dmr_confidence_note_control_burst(&opts, &state, 6) == DMR_CONFIDENCE_LOCKED);
+    }
+    assert(g_quiet_proven == 1);
+    assert(fabs(state.dmr_confidence_lock_m - locked_m) < 1e-9);
+    assert(state.dmr_color_code == 6U);
+
+    dmr_confidence_note_control_accepted(&state);
+    assert(stamped_at_ms(&state, 20000));
+
+    /* Locked by control bursts alone: locked, the received colour code noted, no evidence until a PDU passes. */
+    init_state(&state);
+    quiet_notes_clear();
+    assert(dmr_confidence_note_control_burst(&opts, &state, 7) == DMR_CONFIDENCE_PENDING);
+    assert(dmr_confidence_note_control_burst(&opts, &state, 7) == DMR_CONFIDENCE_LOCKED);
+    assert(state.dmr_confidence_locked == 1 && state.dmr_color_code == 7U);
+    assert(state.rx_id.valid == DSD_RXID_ACCESS && state.rx_id.access == 7U);
+    assert(g_quiet_proven == 0 && state.dmr_confidence_lock_m < 0.5);
+
+    /* Unlocked, an accepted PDU notes nothing. */
+    init_state(&state);
+    dmr_confidence_note_control_accepted(&state);
+    assert(state.dmr_confidence_lock_m < 0.5);
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_decode_clock_use_system();
+}
+
 int
 main(void) {
     test_single_data_burst_does_not_lock();
@@ -377,6 +429,7 @@ main(void) {
     test_validated_content_stamps_decode_time();
     test_lock_marks_two_slot_carrier();
     test_quiet_check_hears_the_gate();
+    test_control_bursts_defer_lock_evidence();
     printf("DMR confidence gate: OK\n");
     return 0;
 }
