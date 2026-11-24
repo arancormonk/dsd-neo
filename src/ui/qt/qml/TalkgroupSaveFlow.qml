@@ -249,8 +249,10 @@ Item {
         stalled = null;
         retryAvailable = false;
         // No system is changed for a file that is gone, and its name stays reserved: the decoder may still write it.
+        // The export is lost with it, so the next Try again starts a new one, as after a failed export.
         if (!stepFileKept(request)) {
-            message = "";
+            retryAvailable = true;
+            message = qsTr("Talkgroup list export failed or was canceled. Try again.");
             return false;
         }
         if (request.step === "register")

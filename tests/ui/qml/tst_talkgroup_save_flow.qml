@@ -308,7 +308,7 @@ Item {
             compare(loader.item.message, "Talkgroup list saved");
         }
         // The attachment is retried in a later session, after the user removed the exported list in Imports (or the
-        // file went): the system is left as it was, and no step or export is started for it.
+        // file went): the system is left as it was, the export reads as failed, and the next Try again exports anew.
         function test_attachment_retry_after_the_list_went_data() {
             return [{tag: "removed from Imports", written: false, listed: false},
                     {tag: "file gone, row kept", written: false, listed: true},
@@ -329,10 +329,24 @@ Item {
             verify(!loader.item.save("original", "8", 2));
             compare(systems.attempts, 1, "a list no longer in Imports was attached");
             compare(systems.updates, 0);
-            compare(bridge.calls, 1, "a new export was started");
+            compare(bridge.calls, 1, "a new export was started before the next tap");
             compare(loader.item.stalled, null);
+            verify(loader.item.retryAvailable);
+            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
+            library.written = true;
+            library.listed = true;
+            verify(loader.item.save("original", "8", 2, {
+                freqMhz: "851.0125",
+                groupCsvPath: ""
+            }));
+            compare(bridge.calls, 2, "the next Try again did not export anew");
+            verify(loader.item.pending !== null);
+            compare(loader.item.pending.context, "8");
+            verify(loader.item.pending.path !== "/owned/list.csv");
             compare(loader.item.retryAvailable, false);
-            compare(loader.item.message, "");
+            deliver([result("7", "8", 2, loader.item.pending.path, true)]);
+            compare(systems.updates, 1);
+            compare(loader.item.message, "Talkgroup list saved");
         }
         // The same for a registration retry: a file that went leaves nothing to add to Imports.
         function test_registration_retry_after_the_file_went() {
@@ -347,7 +361,10 @@ Item {
             compare(systems.attempts, 0);
             compare(bridge.calls, 1);
             compare(loader.item.stalled, null);
-            compare(loader.item.retryAvailable, false);
+            verify(loader.item.retryAvailable);
+            compare(loader.item.message, "Talkgroup list export failed or was canceled. Try again.");
+            verify(loader.item.save("original", "7", 1));
+            compare(bridge.calls, 2, "the next Try again did not export anew");
         }
         // A failure lost with more completions than app-control keeps: the gap reaches the horizon read at the
         // submission, so the result can never come. The request is reported and let go of, with its name.
