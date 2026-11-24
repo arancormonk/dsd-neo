@@ -36,20 +36,45 @@ struct HeardTalkgroupRow {
     quint64 serial = 0;
 };
 
+/**
+ * @brief The scan target a session's heard talkgroups are scoped to (HeardTalkgroupSource::heardTalkgroups()): a
+ *        trunk-scan target by its id, a `-Y` scan-list row by the frequency it is tuned on (its label is only a display
+ *        name: two rows may share one, or have none), or none, off any scan target.
+ */
+struct HeardTarget {
+    /* The channel label a call heard on it takes (a row's ChannelRole): the trunk-scan target id, the -Y row's name
+       (empty for an unnamed row), empty off any scan target. */
+    QString channel;
+    /* A -Y scan-list row: its frequency (dsd_opts_tuned_freq_hz(); 0 when not known) names the row as well. */
+    bool scanListRow = false;
+    qint64 freqHz = 0;
+};
+
+inline bool
+operator==(const HeardTarget& a, const HeardTarget& b) {
+    return a.channel == b.channel && a.scanListRow == b.scanListRow && a.freqHz == b.freqHz;
+}
+
+inline bool
+operator!=(const HeardTarget& a, const HeardTarget& b) {
+    return !(a == b);
+}
+
 class HeardTalkgroupSource {
   public:
     virtual ~HeardTalkgroupSource() = default;
 
     /**
      * @brief The distinct talkgroups of the voice rows logged by decode session @p forSession (0 = every session)
-     *        on scan target @p channel (a row's ChannelRole id; empty: off any scan target) whose fragments the saved
-     *        system @p owner owns (empty: the fragments no saved system owns), in no order.
+     *        on scan target @p target (a row's ChannelRole id, and for a -Y row the frequency each fragment was heard
+     *        on; empty: off any scan target) whose fragments the saved system @p owner owns (empty: the fragments no
+     *        saved system owns), in no order.
      *
      * A fragment's owner is resolved where its ring was read, from the ring's own session (issue #903), whether or not
      * its talkgroup may be learnt. Ids of 0, ids that do not fit 32 bits and private calls' radios are left out.
      */
     virtual QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner,
-                                                     const QString& channel) const = 0;
+                                                     const HeardTarget& target) const = 0;
 
     /** @brief The newest ingest serial given (0 before any): a fragment ingested later has a greater one. */
     virtual quint64 heardSerial() const = 0;
@@ -65,7 +90,7 @@ class HeardTalkgroupSource {
 
 } // namespace dsd_qt
 
-#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/3"
+#define DSD_QT_HEARD_TALKGROUP_SOURCE_IID "org.dsd-neo.ui.HeardTalkgroupSource/4"
 Q_DECLARE_INTERFACE(dsd_qt::HeardTalkgroupSource, DSD_QT_HEARD_TALKGROUP_SOURCE_IID)
 
 #endif /* DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_SOURCE_H_ */

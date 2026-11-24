@@ -19201,7 +19201,11 @@ Qt Quick frontend (`src/ui/qt`):
     saved system owns. Its cards are that owner's store entries (`entriesFor()`) plus this session's history fragments
     whose `viewOwner` (resolved where the ring was read, from the ring's own session, whatever their proof) is that
     owner, or for an empty owner the fragments no system owns, on the scan target on air (the row's channel, the
-    snapshot's `dsd_channel_label_current()`; empty off any scan target): non-learnable traffic still shows for the
+    snapshot's `dsd_channel_label_current()`; empty off any scan target; `HeardTarget`), and on a `-Y` row also the
+    frequency the fragment was heard on (`FragmentPart::freqHz`) against the tuned frequency (`dsd_opts_tuned_freq_hz()`):
+    a `-Y` row's name is only a label, which two rows may share or lack, so two unnamed rows, or two named alike, are
+    two targets (a legacy rigctl `-Y` scan writes no tuned frequency, so its rows are told apart by name only).
+    Non-learnable traffic still shows for the
     session, and another target's (two unowned targets, or two entries of one saved system, included) or an Explore
     stretch's calls never do; the remembered entries are the owner's, whatever target. One card per number:
     `HeardTalkgroupStore::policyId()` (NXDN Type-D by its 11-bit id, as the call state numbers it) collapses variants. `LastHeardRole` is the newest of

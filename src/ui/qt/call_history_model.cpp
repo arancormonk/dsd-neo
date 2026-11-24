@@ -808,34 +808,43 @@ note_heard_fragment(QHash<uint32_t, HeardTalkgroupRow>& heard, uint32_t tg, qint
     row.serial = qMax(row.serial, serial);
 }
 
-/* Whether @p row is a talkgroup call heard on scan target @p channel. A private call's target is a radio, never a
-   talkgroup heard (issue #800); not knowing stays as before. A row keeps the scan target it was heard on, which no
-   merge crosses (rows_mergeable()). */
+/* Whether @p row is a talkgroup call heard on scan target @p target's channel. A private call's target is a radio,
+   never a talkgroup heard (issue #800); not knowing stays as before. A row keeps the scan target it was heard on, which
+   no merge crosses (rows_mergeable()). */
 bool
-heard_talkgroup_row(const CallHistoryModel::Row& row, const QString& channel) {
+heard_talkgroup_row(const CallHistoryModel::Row& row, const HeardTarget& target) {
     return row.kind == CallHistoryModel::KindVoice && row.tg != 0U && row.tg <= UINT32_MAX && row.gi != 1
-           && row.channel == channel;
+           && row.channel == target.channel;
+}
+
+/* Whether a fragment heard on @p freqHz was heard on @p target: a -Y row is named by its frequency too (issue #903). */
+bool
+heard_on_target(const HeardTarget& target, qint64 freqHz) {
+    return !target.scanListRow || freqHz == target.freqHz;
 }
 
 } // namespace
 
 QList<HeardTalkgroupRow>
-CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner, const QString& channel) const {
+CallHistoryModel::heardTalkgroups(qint64 forSession, const QString& owner, const HeardTarget& target) const {
     QHash<uint32_t, HeardTalkgroupRow> heard;
     for (const Row& row : m_rows) {
-        if (!heard_talkgroup_row(row, channel)) {
+        if (!heard_talkgroup_row(row, target)) {
             continue;
         }
         const auto tg = static_cast<uint32_t>(row.tg);
-        // Issue #903: each fragment by its own session and owner; a row of one fragment a reload gave is its own part.
+        // Issue #903: each fragment by its own session, owner and frequency; a row of one fragment a reload gave is its
+        // own part.
         if (row.parts.isEmpty()) {
-            if ((forSession <= 0 || row.session == forSession) && row.viewOwner == owner) {
+            if ((forSession <= 0 || row.session == forSession) && row.viewOwner == owner
+                && heard_on_target(target, row.freqHz)) {
                 note_heard_fragment(heard, tg, row.when, row.end, row.heardSerial);
             }
             continue;
         }
         for (const FragmentPart& part : row.parts) {
-            if (!part.withdrawn && (forSession <= 0 || part.session == forSession) && part.viewOwner == owner) {
+            if (!part.withdrawn && (forSession <= 0 || part.session == forSession) && part.viewOwner == owner
+                && heard_on_target(target, part.freqHz)) {
                 note_heard_fragment(heard, tg, part.when, part.end, part.heardSerial);
             }
         }

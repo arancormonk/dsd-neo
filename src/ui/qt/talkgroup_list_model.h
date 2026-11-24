@@ -41,15 +41,15 @@
 // Qt template conversions require this in some consumers; IWYU's answer depends on instantiation.
 #include <type_traits> // IWYU pragma: keep
 
+#include "heard_talkgroup_source.h"
+
 template <class T>
 class QSet;
 
 namespace dsd_qt {
 
-class HeardTalkgroupSource;
 class HeardTalkgroupStore;
 class TalkgroupCoverage;
-struct HeardTalkgroupRow;
 
 class TalkgroupListModel : public QAbstractListModel {
     Q_OBJECT
@@ -339,10 +339,11 @@ class TalkgroupListModel : public QAbstractListModel {
     void updateCategories(const QSet<QString>& categoryTags);
     void updateCounts(int oldCount);
     /** @brief The owner a call heard now would have (HeardTalkgroupSource::heardOwnerOnAir()), none without a typed
-     * history; @p channel takes the scan target it would be heard on (its channel label; empty off any scan target). */
-    QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, QString* channel) const;
+     * history; @p target takes the scan target it would be heard on (its channel label, and for a -Y row its tuned
+     * frequency; none off any scan target). */
+    QString ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, HeardTarget* target) const;
     /** @brief View @p owner's remembered talkgroups, and the session's heard on scan target @p target under it. */
-    void setViewedOwner(const QString& owner, const QString& target = QString());
+    void setViewedOwner(const QString& owner, const HeardTarget& target = HeardTarget());
     /** @brief Drop @p owner's heard cards from the list now (a forget or clear for the viewed owner). */
     void dropHeard(const QString& owner, const QSet<uint32_t>& ids, bool all);
 
@@ -363,11 +364,11 @@ class TalkgroupListModel : public QAbstractListModel {
     qint64 m_historySession = 0;
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;
-    /* Issue #903. The viewed owner (viewedOwner()), the scan target on air (its channel label: the session's heard cards
-       are that target's), and the store the remembered cards come from. */
+    /* Issue #903. The viewed owner (viewedOwner()), the scan target on air (the session's heard cards are that
+       target's), and the store the remembered cards come from. */
     QPointer<HeardTalkgroupStore> m_store;
     QString m_viewedOwner;
-    QString m_viewedTarget;
+    HeardTarget m_viewedTarget;
     bool m_remembering = false;
     bool m_hasRemembered = false;
     /* What must be read again: the policy's rows, the viewed owner's store entries, the history's fragments. */

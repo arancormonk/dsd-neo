@@ -280,24 +280,28 @@ TalkgroupListModel::setHeardStore(HeardTalkgroupStore* store) {
 }
 
 QString
-TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, QString* channel) const {
-    channel->clear();
+TalkgroupListModel::ownerOnAir(const dsd_opts* opts_snapshot, const dsd_state* snapshot, HeardTarget* target) const {
+    *target = HeardTarget();
     if (m_heardSource == nullptr || m_history == nullptr) {
         return {};
     }
-    // The stamps a call heard now takes (watchdog_event_stamp_tuner_owner(), dsd_channel_label_current()), in the
-    // session its ring is bound to.
+    // The stamps a call heard now takes (watchdog_event_stamp_tuner_owner(), dsd_channel_label_current(), the tuned
+    // frequency), in the session its ring is bound to.
     char label[DSD_CHANNEL_LABEL_SIZE] = {0};
     (void)dsd_channel_label_current(opts_snapshot, snapshot, label, sizeof(label));
-    const bool scanMember = opts_snapshot->scanner_mode == 1 || dsd_trunk_scan_owns_tuner(opts_snapshot, snapshot) != 0;
+    const bool trunkScan = dsd_trunk_scan_owns_tuner(opts_snapshot, snapshot) != 0;
+    const bool scanMember = opts_snapshot->scanner_mode == 1 || trunkScan;
     const quint64 ring =
         snapshot->event_history_s != nullptr ? static_cast<quint64>(snapshot->event_history_s[0].instance) : 0U;
-    *channel = QString::fromUtf8(label, static_cast<qsizetype>(qstrnlen(label, sizeof(label))));
-    return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U, scanMember, *channel);
+    target->channel = QString::fromUtf8(label, static_cast<qsizetype>(qstrnlen(label, sizeof(label))));
+    // A -Y row's name is only a label, which two rows may share or lack: the row is the frequency it is tuned on.
+    target->scanListRow = opts_snapshot->scanner_mode == 1 && !trunkScan;
+    target->freqHz = target->scanListRow ? static_cast<qint64>(dsd_opts_tuned_freq_hz(opts_snapshot)) : 0;
+    return m_heardSource->heardOwnerOnAir(ring, snapshot->operator_tuned != 0U, scanMember, target->channel);
 }
 
 void
-TalkgroupListModel::setViewedOwner(const QString& owner, const QString& target) {
+TalkgroupListModel::setViewedOwner(const QString& owner, const HeardTarget& target) {
     if (target != m_viewedTarget) {
         m_viewedTarget = target;
         m_transientDirty = true;
@@ -375,7 +379,7 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     if (contextId != m_contextId) {
         m_observedCrypto.clear();
     }
-    QString target;
+    HeardTarget target;
     const QString owner = ownerOnAir(opts_snapshot, snapshot, &target);
     setViewedOwner(owner, target);
     observeDecryption(snapshot);

@@ -25,11 +25,15 @@
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+/* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
+extern "C" {
 #include <dsd-neo/core/state.h>
+}
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1005,6 +1009,65 @@ test_transient_scoped_to_the_target() {
            model.count() == 2 && find(model, 660).isValid() && find(model, 721).isValid());
 }
 
+/* Issue #903 (PR2 review r2, P2): a -Y row's name is only its label: two unnamed rows, or two rows named alike, are two
+ * scan targets, each named by the frequency it is tuned on. The session's heard cards are the row's on air, and the
+ * name still matches, so two rows on one frequency with other names stay apart too. */
+void
+test_transient_scoped_to_the_scan_list_row() {
+    Fixture fixture;
+    constexpr long kRowA = 451000000L;
+    constexpr long kRowB = 451012500L;
+    fixture.opts->scanner_mode = 1;
+    fixture.opts->audio_in_type = AUDIO_IN_RTL;
+    fixture.state->lcn_freq_count = 2;
+    fixture.state->trunk_lcn_freq[0] = kRowA;
+    fixture.state->trunk_lcn_freq[1] = kRowB;
+    CallHistoryModel history;
+    TalkgroupListModel model(&history);
+    history.beginSession();
+    history.setSessionOwners(history.session(), QString(), {});
+    model.setHistorySession(history.session());
+    const time_t now = time(nullptr);
+    // The scanner on the first row, which hears group 42, then on the second.
+    const auto onRow = [&fixture](int row) {
+        fixture.state->lcn_freq_roll = row + 1;
+        fixture.opts->rtlsdr_center_freq = static_cast<uint32_t>(*dsd_state_trunk_lcn_slot(fixture.state, row));
+    };
+    const auto heardOnRow = [&fixture](uint32_t tg, time_t when, int row) {
+        char label[DSD_CHANNEL_LABEL_SIZE] = {0};
+        (void)dsd_channel_label_current(fixture.opts, fixture.state, label, sizeof(label));
+        fixture.commitOn(tg, when, label, true, false);
+        fixture.rings[0].Event_History_Items[1].freq_hz = *dsd_state_trunk_lcn_slot(fixture.state, row);
+    };
+    onRow(0);
+    heardOnRow(42, now, 0);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y unnamed: the first row's call is its card", model.count() == 1 && find(model, 42).isValid());
+    onRow(1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y unnamed: another unnamed row heard nothing", model.count() == 0);
+    heardOnRow(43, now + 5, 1);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y unnamed: the second row's own call only", model.count() == 1 && find(model, 43).isValid());
+    onRow(0);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y unnamed: back on the first row, its call only", model.count() == 1 && find(model, 42).isValid());
+
+    // Two rows named alike: the name is the label, the frequency still tells them apart.
+    expect("903 -Y named: the rows are named", dsd_state_trunk_lcn_name_set(fixture.state, 0, "Dispatch") == 0
+                                                   && dsd_state_trunk_lcn_name_set(fixture.state, 1, "Dispatch") == 0);
+    heardOnRow(44, now + 10, 0);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y named: the first Dispatch row's call is its card", model.count() == 1 && find(model, 44).isValid());
+    onRow(1);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 -Y named: the other Dispatch row heard nothing", model.count() == 0);
+    dsd_state_trunk_lcn_free(fixture.state);
+}
+
 /* One card per talkgroup number: every variant of it (and an NXDN Type-D id by its 11 bits) is one card, and Forget
  * removes them all, and this session's calls of it, until a later call. */
 void
@@ -1306,6 +1369,7 @@ main(int argc, char** argv) {
     test_remembered_cards_at_session_start();
     test_transient_follows_the_target_on_air();
     test_transient_scoped_to_the_target();
+    test_transient_scoped_to_the_scan_list_row();
     test_variants_one_card_and_forget();
     test_listed_rows_cover_remembered();
     test_incremental_updates();
