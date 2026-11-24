@@ -5189,7 +5189,8 @@ demod_finish_voice_lane(struct demod_state* d, int resample, int phase, size_t c
 
 /* The analog monitor's @p n output samples of a block (issue #899): muted by a closed start (closed outright, so
    flagged), or produced open with no dynamic squelch judging them (no flags, and no level gate that closed the block).
-   Nothing off the monitor (the M17 encoder's FM audio) is counted. */
+   Counted on FM and AM alike, whatever scaling their output takes; nothing off the monitor (the M17 encoder's FM audio,
+   symbol and discriminator output) is. */
 static void
 demod_count_monitor_gate(const struct demod_state* d, int flagged, size_t n) {
     if (!dsd_demod_analog_monitor_active(d)) {
@@ -5234,6 +5235,8 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
         }
         if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
+        }
+        if (!digital_output) {
             demod_count_monitor_gate(d, flagged, (size_t)out_n);
         }
         *out_data = d->resamp_outbuf;
@@ -5243,6 +5246,8 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
+    }
+    if (!digital_output) {
         demod_count_monitor_gate(d, flagged, (size_t)d->result_len);
     }
     *out_data = d->result;
@@ -21298,6 +21303,21 @@ channel_gate_test_telemetry_cases(const dsd_opts* analog_opts, rtl_stream_test_c
         (encoder && after.unjudged_samples == status.unjudged_samples && after.closed_samples == status.closed_samples)
             ? 1
             : 0;
+
+    /* An AM channel (-fM), whose output is not FM-scaled (round 9): its closed start's blocks before a delayed write,
+       and its open blocks under Off. */
+    channel_gate_test_open(analog_opts);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_AM, 0);
+    const int am_closed = dsd_demod_am_active(&demod) && channel_gate_test_closed();
+    channel_gate_test_finish_block(48, 1);
+    channel_gate_test_finish_block(48, 1);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_closed_counted = (am_closed && status.closed_samples == 96U) ? 1 : 0;
+    rtl_stream_write_squelch_gate(&off, NULL);
+    const uint64_t am_unjudged_before = status.unjudged_samples;
+    channel_gate_test_finish_block(24, 0);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_unjudged_counted = status.unjudged_samples == am_unjudged_before + 24U ? 1 : 0;
 }
 
 /* What a channel-gate case runs inside channel_gate_test_fixture(): @p analog_opts an -fA session's, @p digital_opts a
