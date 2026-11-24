@@ -636,6 +636,7 @@ static std::atomic<uint32_t> g_replay_pending_previous_center_hz{0};
 
 static void rtl_stream_consume_demod_profile_request(void);
 static void rtl_stream_clear_demod_profile_request(void);
+static void rtl_stream_retire_stopped_stream_requests(void);
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
@@ -11003,6 +11004,7 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_thread_join(demod.thread);
         stream_set_lifecycle_flag(g_stream->demod_thread_started, 0);
     }
+    rtl_stream_retire_stopped_stream_requests();
     /* No block of this stream reaches the search tap any more. Left there, its capture would outlive it: a search
        started on the next stream before that stream's first block would take the time since this one's last block for
        a stalled input. */
@@ -13647,6 +13649,27 @@ rtl_stream_consume_demod_profile_request(void) {
     rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
 }
 
+/* Drop the queued request no demod thread will take, and settle every request numbered so far (g_profile_req_m held):
+ * none of them lands on a stream after this. */
+static void
+rtl_stream_retire_demod_profile_request_locked(void) {
+    g_profile_req_pending.store(0, std::memory_order_relaxed);
+    g_profile_req_has_demod = 0;
+    g_profile_req_analog_family = -1;
+    g_profile_req_digital_landing = 0;
+    g_profile_req_landing_explicit = 0;
+    rtl_stream_settle_all_requests();
+}
+
+/* A stopped stream's requests (issue #899): its demod thread is joined, so a request it never took cannot land on it,
+ * nor on the next stream, whose open discards it. Retired here, it no longer reads as outstanding to the decoder
+ * between the stop and that open, where it would hold the next stream's start closed. */
+static void
+rtl_stream_retire_stopped_stream_requests(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    rtl_stream_retire_demod_profile_request_locked();
+}
+
 /* Discard any unconsumed queued request, and the digital decode modes a
  * decoder noted. Called from dsd_rtl_stream_open before the pipeline threads
  * start, so a request queued while a previous session was tearing down cannot
@@ -13656,16 +13679,11 @@ rtl_stream_consume_demod_profile_request(void) {
 static void
 rtl_stream_clear_demod_profile_request(void) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
-    g_profile_req_pending.store(0, std::memory_order_relaxed);
-    g_profile_req_has_demod = 0;
-    g_profile_req_analog_family = -1;
-    g_profile_req_digital_landing = 0;
-    g_profile_req_landing_explicit = 0;
     /* A refusal the previous stream recorded is not this stream's: it opens on the options as they are, so a request
        its predecessor refused says nothing about what it runs. */
     g_rx_req_refused_seq.store(0U, std::memory_order_relaxed);
     g_rx_req_replaced_run.store(0U, std::memory_order_relaxed);
-    rtl_stream_settle_all_requests();
+    rtl_stream_retire_demod_profile_request_locked();
     g_noted_digital_modes.store(0U, std::memory_order_release);
 }
 
