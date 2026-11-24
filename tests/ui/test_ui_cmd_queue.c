@@ -11429,6 +11429,15 @@ static int g_config_rtl_create_squelch_mode = -1;
 static int g_config_rtl_create_squelch_margin = -1;
 /* The receiver channel the last create opened (issue #899), and whether it opened closed (on the analog family). */
 static int g_config_rtl_create_closed = -1;
+/* The squelch gate the last start was passed (rtl_stream_start_gated(), issue #899): whether one was, and resolved (-1:
+   none), and what the options copy of the last create gives a start passed none. */
+static int g_config_rtl_start_gate_given = -1;
+/* While set, a started receiver still has a request of the decoder's unsettled (a tune outstanding across the start),
+   so the decoder writes no gate after it. */
+static int g_config_rtl_start_leaves_pending = 0;
+static int g_config_rtl_start_gate_resolved = -1;
+static dsd_squelch_setting g_config_rtl_create_configured = {DSD_SQUELCH_MODE_LEVEL, 0.0,
+                                                             DSD_SQUELCH_MARGIN_DEFAULT_DB};
 static int g_config_rtl_create_frame_p25p1 = -1;
 /* Issue #578: 1 has a create succeed, with a context of zeroed storage (the stream calls left unwrapped do nothing with
    it), so the start after it runs; 0, the default, fails every create. The device string, family and analog profile
@@ -11564,6 +11573,7 @@ reset_config_rtl_wrap(void) {
     g_config_rtl_next_fail_opens = 0;
     g_config_rtl_creates = 0;
     g_config_rtl_create_closed = -1;
+    g_config_rtl_start_gate_given = g_config_rtl_start_gate_resolved = -1;
     g_config_rtl_create_capture = -1;
     g_config_rtl_captures = 0;
     g_config_rtl_fail_after_capture = g_config_rtl_opened_capture = 0;
@@ -11622,6 +11632,8 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
         const dsd_squelch_setting opened = dsd_squelch_setting_of_opts(opts);
         channel_gate_fake_open(dsd_opts_is_analog_family(opts), &opened, cmd_rx_runs);
         g_config_rtl_create_closed = channel_gate_fake_closed();
+        /* What the receiver's options copy gives a start passed no gate (rtl_stream_start()). */
+        g_config_rtl_create_configured = dsd_squelch_setting_configured(opts);
     }
     *out_ctx = g_config_rtl_open_ok ? (RtlSdrContext*)g_config_rtl_ctx : NULL;
     ++g_config_rtl_creates;
@@ -11631,7 +11643,6 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 int
 __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
-    (void)start_gate;
     ++g_config_rtl_starts;
     g_config_rtl_refused = 0;
     const int capturing = g_config_rtl_create_capture == 1;
@@ -11646,6 +11657,16 @@ __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* s
         g_config_rtl_opened_capture = capturing;
         config_rtl_start_latch(1);
         g_fake_replay.running_hz = g_fake_replay.created_hz;
+        /* The receiver opens on the gate the start passes it (issue #899): with none, on the options copy's own. */
+        g_config_rtl_start_gate_given = start_gate != NULL;
+        g_config_rtl_start_gate_resolved = start_gate ? start_gate->resolved : -1;
+        if (g_config_rtl_open_ok) {
+            const dsd_squelch_setting* none = &g_config_rtl_create_configured;
+            channel_gate_fake_start(g_config_rtl_create_analog_only == 1, start_gate && start_gate->resolved,
+                                    start_gate ? &start_gate->gate : none, start_gate ? &start_gate->digital : none,
+                                    start_gate ? &start_gate->session : none, cmd_rx_runs);
+            channel_gate_fake_requests_pending(g_config_rtl_start_leaves_pending);
+        }
         return 0;
     }
     --g_config_rtl_fail_starts;
@@ -17152,6 +17173,70 @@ free_inherited_nfm_row(dsd_opts* opts, dsd_state* state) {
     freeState(state);
     free(state);
     free(opts);
+}
+
+/*
+ * Issue #899 (targeted review of round 10): the stream restart service hands the receiver the session's own squelch.
+ * A DMR session configured Off runs a DMR row with its own -40 dB (the options hold it), and a tune to the next DMR row
+ * is outstanding across a stream restart (DSD_APP_CMD_RTL_RESTART, through svc_rtl_open_on_the_channel_squelch_locked()):
+ * the start's gate is unresolved and the decoder writes none after it, so the receiver runs what the start gate it was
+ * passed gives: off the monitor the session's Off, and the next row's landing before its commit (a marked new channel on
+ * the digital family) Off too, never the outgoing row's -40 dB. A service that passed no gate, or the options'
+ * setting, opens on -40 dB.
+ */
+static int
+test_restart_opens_on_the_session_squelch(void) {
+    static void* fake_ctx[2];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("restart session gate: fixtures", 0);
+    }
+    init_stream_replan_context(opts, state, fake_ctx, "soapy", 48, 48000);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    dsd_squelch_setting_store(opts, &off);
+    int rc = submit_decode_mode(opts, state, DSDCFG_MODE_DMR, "restart session gate");
+    opts->scanner_mode = 1;
+    dsd_scan_option_values own;
+    DSD_MEMSET(&own, 0, sizeof own);
+    own.present = DSD_SCAN_OPT_SQUELCH;
+    own.squelch_db = -40;
+    rc |= expect_int("restart session gate: dmr row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("restart session gate: dmr row", dsd_scan_mode_options(opts, state, &own), 0);
+    rc |= expect_squelch_db("restart session gate: the row runs its own", opts->rtl_squelch_level, -40.0);
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_config_rtl_start_leaves_pending = 1;
+    rc |= expect_int("restart session gate: queued", dsd_app_command_action(DSD_APP_CMD_RTL_RESTART),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("restart session gate: drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("restart session gate: one open", g_config_rtl_creates, 1);
+    rc |= expect_int("restart session gate: the start is passed a gate", g_config_rtl_start_gate_given, 1);
+    rc |= expect_int("restart session gate: unresolved under the command", g_config_rtl_start_gate_resolved, 0);
+    const dsd_squelch_setting opened = channel_gate_fake_gate();
+    if (channel_gate_fake_closed() || !dsd_squelch_setting_is_off(&opened)) {
+        DSD_FPRINTF(stderr,
+                    "restart session gate: the restarted receiver runs closed %d, mode %d level %g; want the "
+                    "session's Off\n",
+                    channel_gate_fake_closed(), opened.mode, opened.level);
+        rc |= 1;
+    }
+    /* The next row's landing before its commit: a marked new channel on the digital family, no write meanwhile. */
+    rtl_stream_prepare_retune_new_channel_for_target(152000000U, 1);
+    const dsd_squelch_setting landed = channel_gate_fake_gate();
+    if (channel_gate_fake_closed() || !dsd_squelch_setting_is_off(&landed)) {
+        DSD_FPRINTF(stderr,
+                    "restart session gate: the next row's landing runs closed %d, mode %d level %g; want the session's "
+                    "Off\n",
+                    channel_gate_fake_closed(), landed.mode, landed.level);
+        rc |= 1;
+    }
+    g_config_rtl_start_leaves_pending = 0;
+    channel_gate_fake_requests_pending(0);
+    free_inherited_nfm_row(opts, state);
+    return rc;
 }
 
 /*
@@ -33281,6 +33366,7 @@ main(void) {
     rc |= test_streams_and_channels_open_on_the_analog_default();
     rc |= test_config_apply_under_a_row_keeps_its_gate();
     rc |= test_config_reopen_opens_on_the_gate_of_what_it_opens();
+    rc |= test_restart_opens_on_the_session_squelch();
 #endif
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();

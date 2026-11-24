@@ -27,6 +27,13 @@ typedef void (*channel_gate_fake_apply_fn)(const dsd_squelch_setting* gate);
    does not hear); @p apply (may be NULL) takes each gate the receiver comes to run from here on. No request is
    unsettled. */
 void channel_gate_fake_open(int analog, const dsd_squelch_setting* gate, channel_gate_fake_apply_fn apply);
+/* A stream start on the gate the decoder passed it (rtl_stream_start_gate, rtl_stream_gate_open()): resolved
+   (@p resolved), it runs @p gate on the analog family (@p analog) or @p digital off it from its first block, no closed
+   start; unresolved, it starts closed on the analog family and runs @p session off it. Either way @p session is what a
+   later new channel off the monitor runs until the decoder writes. @p apply as channel_gate_fake_open(). */
+void channel_gate_fake_start(int analog, int resolved, const dsd_squelch_setting* gate,
+                             const dsd_squelch_setting* digital, const dsd_squelch_setting* session,
+                             channel_gate_fake_apply_fn apply);
 /* A retune or family switch landed, the receiver on the analog monitor when @p analog (a typed digital row's symbol
    profile on the analog family is off it): a new channel (@p new_channel: a marked retune, a switch into analog, a
    return to the monitor) starts closed on the monitor; off it a new channel, or one that left the monitor, runs the

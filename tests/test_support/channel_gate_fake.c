@@ -45,6 +45,16 @@ channel_gate_fake_open(int analog, const dsd_squelch_setting* gate, channel_gate
 }
 
 void
+channel_gate_fake_start(int analog, int resolved, const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                        const dsd_squelch_setting* session, channel_gate_fake_apply_fn apply) {
+    channel_gate_fake_open(analog, session, apply);
+    if (resolved) {
+        g_gate = analog ? *gate : *digital;
+        g_closed = 0;
+    }
+}
+
+void
 channel_gate_fake_land(int new_channel, int analog) {
     const int was_analog = g_analog;
     g_analog = analog ? 1 : 0;
