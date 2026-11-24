@@ -18488,9 +18488,9 @@ Qt Quick frontend (`src/ui/qt`):
   An export name stays reserved while the decoder may still write it (issue #903): a registration hands it to its row,
   and `releaseTalkgroupListPath()` gives back the name of an export that failed or was never queued; an export whose
   answer is late keeps it. `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an
-  update in place and a removal read; load keeps the pruned user files apart (`takePrunedUserPaths()`), and
-  `talkgroupListExportPath()` knows an exported list by the name `newTalkgroupListPath()` gave it (talkgroups-<uuid>.csv
-  in the library), which no RadioReference file takes.
+  update in place and a removal read. Load keeps each pruned row, origin and all, in the stored index (every save
+  writes it back, unless a live row took its path) until `settlePrunedFiles()`; `prunedUserFile(path)` reads its
+  origin, never the file's name (issue #903).
   Document probes (#831): a document opened from another app is told apart before anything is asked.
   `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
   the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
@@ -19149,14 +19149,17 @@ Qt Quick frontend (`src/ui/qt`):
   returns false stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only
   when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
-  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
-  library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
-  launch. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. A
+  saved system naming a pruned user's file (`prunedUserFile()`) as its group list keeps its site; one the library holds
+  no row for counts as RadioReference's. The library keeps the pruned rows in its index until every clear is saved
+  (`settlePrunedFiles()`), so a launch whose clear fails prunes them again at the next with their origin (issue #903:
+  a picked list, or an export a backup restore renamed, keeps its site); the second rule covers a reference to a
+  library file the index never held. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
   library's load and in that cleanup alike (`json_store_definitely_missing()`, issue #828): a file whose stat fails
   any other way (a folder that cannot be searched for now) keeps its row and every reference. Tests:
   `UI_QT_IMPORTED_FILES` (`test_remove_finishes_on_retry`, `test_unsearchable_copy_is_not_pruned`),
   `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
-  `test_startup_keeps_paths_it_cannot_check`),
+  `test_startup_retry_keeps_a_user_file_origin`, `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - Replacing a library file in place (discussion #748): an update (`beginImport()` with the row's `replacePath`, Update
   from file) and `refreshGeneratedFile()` (RadioReference refresh) validate the staged copy on the import worker first

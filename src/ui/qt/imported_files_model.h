@@ -132,12 +132,6 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE QString newTalkgroupListPath() const;
     /**
-     * Issue #903: whether @p path has the form newTalkgroupListPath() gives (talkgroups-<uuid>.csv directly in the
-     * library), which no RadioReference file takes: a list the user exported, by its name alone. The origin of a pruned
-     * export a saved system still names, once the index row that held its origin is gone.
-     */
-    static bool talkgroupListExportPath(const QString& path);
-    /**
      * Whether an exported list is at @p path: a regular file, not a symlink, directly in the library folder, which is
      * where registerTalkgroupList() accepts one. The engine writes an export there only once it succeeded, so the
      * save flow reads this as "the export completed" when its completion was missed, apart from whether Imports could
@@ -290,10 +284,18 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE QStringList takePrunedPaths();
     /**
-     * @brief Of the paths load() pruned, those whose file was the user's own (not fromRadioReference()), then forgets
-     * them: a saved system naming one as its group list keeps its site (SavedSystemsModel::clearCsvPath()).
+     * @brief Issue #903: whether load() pruned a row at @p path whose file was the user's own (not
+     * fromRadioReference()): a saved system naming it as its group list keeps its site (SavedSystemsModel::
+     * clearCsvPath()). The pruned rows stay in the stored index, which every save writes them back to, until
+     * settlePrunedFiles(): a launch whose clear of their references could not be saved prunes them again at the next,
+     * origin and all. False for a path no pruned row held (its origin is not known).
      */
-    QStringList takePrunedUserPaths();
+    bool prunedUserFile(const QString& path) const;
+    /**
+     * @brief The references to the files load() pruned are cleared and saved: the stored index lets their rows go.
+     * False when the index could not be saved; the next launch prunes them again.
+     */
+    bool settlePrunedFiles();
 
   Q_SIGNALS:
     void countChanged();
@@ -445,7 +447,8 @@ class ImportedFilesModel : public QAbstractListModel {
     BeforeUserReplace m_beforeUserReplace;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
-    QStringList m_pruned_user_paths;
+    /* The rows load() pruned, kept in the stored index (saveRows()) until settlePrunedFiles(). */
+    QList<Row> m_pruned_rows;
     /* The library revision: every change takes the next one. */
     quint64 m_revision = 0;
 

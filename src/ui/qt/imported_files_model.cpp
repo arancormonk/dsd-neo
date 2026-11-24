@@ -518,35 +518,16 @@ ImportedFilesModel::libraryRoot() {
     return json_store_path(QStringLiteral("imports"));
 }
 
-namespace {
-/* The file name of an exported talkgroup list: newTalkgroupListPath() gives no other file in the library this form. */
-const QLatin1String kExportPrefix("talkgroups-");
-const QLatin1String kExportSuffix(".csv");
-} // namespace
-
 QString
 ImportedFilesModel::newTalkgroupListPath() const {
     QDir dir(libraryRoot());
     if (!dir.mkpath(QStringLiteral("."))) {
         return {};
     }
-    const QString path =
-        dir.absoluteFilePath(kExportPrefix + QUuid::createUuid().toString(QUuid::WithoutBraces) + kExportSuffix);
+    const QString path = dir.absoluteFilePath(
+        QStringLiteral("talkgroups-%1.csv").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
     reserved_exports().insert(path);
     return path;
-}
-
-bool
-ImportedFilesModel::talkgroupListExportPath(const QString& path) {
-    const QFileInfo file(path);
-    const QString name = file.fileName();
-    if (QDir::cleanPath(file.absolutePath()) != QDir::cleanPath(QDir(libraryRoot()).absolutePath())
-        || !name.startsWith(kExportPrefix) || !name.endsWith(kExportSuffix)) {
-        return false;
-    }
-    const QString id = name.mid(kExportPrefix.size(), name.size() - kExportPrefix.size() - kExportSuffix.size());
-    const QUuid uuid = QUuid::fromString(id);
-    return !uuid.isNull() && uuid.toString(QUuid::WithoutBraces) == id;
 }
 
 bool
@@ -1406,9 +1387,7 @@ ImportedFilesModel::load() {
         if (row.path.isEmpty() || json_store_definitely_missing(row.path)) {
             if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
                 m_pruned_paths.append(row.path);
-                if (!rowFromRadioReference(row)) {
-                    m_pruned_user_paths.append(row.path);
-                }
+                m_pruned_rows.append(row);
             }
             continue;
         }
@@ -1418,15 +1397,15 @@ ImportedFilesModel::load() {
         row.revision = ++m_revision;
         rows.append(row);
     }
-    const bool pruned = rows.size() != array.size();
+    // A row with no path, or no row at all, names nothing: its drop is saved now. A row whose file is gone stays
+    // stored, its origin with it, until settlePrunedFiles() (issue #903).
+    const bool dropped = rows.size() + m_pruned_rows.size() != array.size();
     beginResetModel();
     m_rows = std::move(rows);
     endResetModel();
     Q_EMIT countChanged();
     Q_EMIT entriesChanged();
-    if (pruned) {
-        // Persist the prune, or every launch re-stats files that are gone and
-        // the index keeps advertising rows the library no longer has.
+    if (dropped) {
         save();
     }
     reclaimRevisions(bundles);
@@ -1508,11 +1487,21 @@ ImportedFilesModel::takePrunedPaths() {
     return paths;
 }
 
-QStringList
-ImportedFilesModel::takePrunedUserPaths() {
-    QStringList paths;
-    paths.swap(m_pruned_user_paths);
-    return paths;
+bool
+ImportedFilesModel::prunedUserFile(const QString& path) const {
+    return std::any_of(m_pruned_rows.cbegin(), m_pruned_rows.cend(),
+                       [&path](const Row& row) { return row.path == path && !rowFromRadioReference(row); });
+}
+
+bool
+ImportedFilesModel::settlePrunedFiles() {
+    if (m_pruned_rows.isEmpty()) {
+        return true;
+    }
+    // Persist the prune, or every launch re-stats files that are gone and the index keeps advertising rows the
+    // library no longer has.
+    m_pruned_rows.clear();
+    return save();
 }
 
 bool
@@ -1525,6 +1514,14 @@ ImportedFilesModel::saveRows(const QList<Row>& rows) const {
     QJsonArray array;
     for (const Row& row : rows) {
         array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
+    }
+    // A pruned row stays stored until settlePrunedFiles(), unless a row of the library took its path since.
+    for (const Row& row : m_pruned_rows) {
+        const bool taken =
+            std::any_of(rows.cbegin(), rows.cend(), [&row](const Row& live) { return live.path == row.path; });
+        if (!taken) {
+            array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
+        }
     }
     return json_store_save_array(QLatin1String(kStoreFileName), array);
 }

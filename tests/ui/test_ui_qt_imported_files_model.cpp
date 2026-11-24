@@ -514,6 +514,8 @@ test_imported_files_model(void) {
         const QStringList pruned = model.takePrunedPaths();
         expect("prune reports the vanished path", pruned == QStringList{storedGroupPath});
         expect("prune is reported only once", model.takePrunedPaths().isEmpty());
+        // Issue #903: the owner cleared what named it; only then does the stored index let the row go.
+        expect("the settled prune is saved", model.settlePrunedFiles());
     }
 
     {
@@ -1885,25 +1887,29 @@ test_file_origin_through_removal() {
         expect("origin: updating the user's own list asks nothing of the systems naming it", calls == 0);
     }
     expect("origin: both files vanish", QFile::remove(radioReference) && QFile::remove(exported));
+    {
+        dsd_qt::ImportedFilesModel model(&host);
+        const QStringList pruned = model.takePrunedPaths();
+        expect("origin: both pruned", pruned.contains(radioReference) && pruned.contains(exported));
+        expect("origin: only the export is the user's",
+               model.prunedUserFile(exported) && !model.prunedUserFile(radioReference));
+        expect("origin: a path no pruned row held is no user's file",
+               !model.prunedUserFile(fixtures.filePath("x.csv")));
+        // Issue #903: kept, origin and all, until the owner settles the prune; a save before then keeps them stored.
+        const QString later = model.newTalkgroupListPath();
+        expect("origin: a save before the settle",
+               write_file(later, "id,mode,name\n44,A,Later\n") && model.registerTalkgroupList(later));
+    }
+    {
+        dsd_qt::ImportedFilesModel model(&host);
+        expect("origin: the next load still has both, and whose each was",
+               model.takePrunedPaths().size() == 2 && model.prunedUserFile(exported)
+                   && !model.prunedUserFile(radioReference));
+        expect("origin: settled", model.settlePrunedFiles() && !model.prunedUserFile(exported));
+    }
     dsd_qt::ImportedFilesModel model(&host);
-    const QStringList pruned = model.takePrunedPaths();
-    const QStringList user = model.takePrunedUserPaths();
-    expect("origin: both pruned", pruned.contains(radioReference) && pruned.contains(exported));
-    expect("origin: only the export is the user's", user == QStringList{exported});
-    expect("origin: read once", model.takePrunedUserPaths().isEmpty());
-    // Its name keeps an export's origin once no row holds it; no other name in the library has that form.
-    using dsd_qt::ImportedFilesModel;
-    const QString root = ImportedFilesModel::libraryRoot();
-    expect("origin: an export is known by its name",
-           ImportedFilesModel::talkgroupListExportPath(exported)
-               && ImportedFilesModel::talkgroupListExportPath(model.newTalkgroupListPath()));
-    expect("origin: a RadioReference file is no export", !ImportedFilesModel::talkgroupListExportPath(radioReference));
-    expect("origin: nor a name close to one",
-           !ImportedFilesModel::talkgroupListExportPath(root + "/talkgroups-1.csv")
-               && !ImportedFilesModel::talkgroupListExportPath(QString(exported).replace(".csv", ".txt"))
-               && !ImportedFilesModel::talkgroupListExportPath(
-                   root + "/talkgroups-" + QFileInfo(exported).completeBaseName().mid(11).toUpper() + ".csv")
-               && !ImportedFilesModel::talkgroupListExportPath(root + "/sub/" + QFileInfo(exported).fileName()));
+    expect("origin: a settled prune is gone from the index",
+           model.takePrunedPaths().isEmpty() && !model.prunedUserFile(exported));
 }
 
 /* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the
