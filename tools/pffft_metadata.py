@@ -10,6 +10,9 @@ import re
 PINS = Path(__file__).resolve().with_name("ci-dependency-pins.env")
 REPO = "https://github.com/arancormonk/pffft-neo"
 PACKAGE_ID = "SPDXRef-Package-dsd-pffft"
+# pffft-neo's declared license; the LicenseRef text is its retained-notice record, tracked in LICENSES/.
+LICENSE_DECLARED = "GPL-2.0-or-later AND LicenseRef-PFFFT"
+LICENSEREF = PINS.parents[1] / "LICENSES" / "LicenseRef-PFFFT.txt"
 
 
 def read_pins(path=PINS):
@@ -32,7 +35,7 @@ def add_spdx(document, pins):
         "name": "pffft-neo", "SPDXID": PACKAGE_ID, "versionInfo": sha,
         "downloadLocation": f"{REPO}/archive/{sha}.tar.gz",
         "homepage": REPO, "filesAnalyzed": False,
-        "licenseConcluded": "NOASSERTION", "licenseDeclared": "NOASSERTION",
+        "licenseConcluded": "NOASSERTION", "licenseDeclared": LICENSE_DECLARED,
         "copyrightText": "NOASSERTION",
         "sourceInfo": f"Compiled into dsd-neo from {REPO} at commit {sha}",
         "checksums": [{"algorithm": "SHA256", "checksumValue": pins["PFFFT_ARCHIVE_SHA256"]}],
@@ -43,6 +46,14 @@ def add_spdx(document, pins):
         "spdxElementId": document["SPDXID"], "relationshipType": "DESCRIBES",
         "relatedSpdxElement": PACKAGE_ID,
     })
+    # SPDX needs the text of every LicenseRef a package names; legal_inventory.py reuses this record.
+    text = LICENSEREF.read_text(encoding="utf-8")
+    extracted = document.setdefault("hasExtractedLicensingInfos", [])
+    known = [record for record in extracted if record.get("licenseId") == "LicenseRef-PFFFT"]
+    if any(record.get("extractedText") != text for record in known):
+        raise ValueError("SBOM already carries a different LicenseRef-PFFFT text")
+    if not known:
+        extracted.append({"licenseId": "LicenseRef-PFFFT", "extractedText": text, "name": "LicenseRef-PFFFT"})
     return document
 
 

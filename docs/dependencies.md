@@ -252,9 +252,10 @@ everywhere.
 Debug builds disable explicit FMA and floating-point contraction in the FFT.
 
 To update, run `python3 tools/update_pffft.py FULL_COMMIT_SHA`. Review the pffft-neo
-changes and both updated pins, then run FFT/spectrum and I/Q replay tests,
-sanitizers, acquisition checks, and quality preflight. Roll back by restoring
-both pin lines and reconfiguring. No patches are applied to downloaded sources.
+changes, both updated pins and any change to `LICENSES/LicenseRef-PFFFT.txt` (the
+helper rewrites it and its `legal/components.json` hash), then run FFT/spectrum and
+I/Q replay tests, sanitizers, acquisition checks, and quality preflight. Roll back by
+restoring those files and reconfiguring. No patches are applied to downloaded sources.
 `tests/tools/test_pffft_acquisition.py` exercises network, cached/offline, invalid
 source-layout, missing-path and checksum-error cases, including source archives.
 
@@ -265,10 +266,15 @@ pinned pffft-neo checkout; the CI cppcheck job acquires it with the pinned-Git h
 OSV scans the pinned commit explicitly; release SBOMs record its repository,
 revision and checksum before upload and attestation. Installed, Qt, Android and
 portable packages carry `pffft-neo-README.md` (pffft-neo's copyright notice and
-GPL-2.0-or-later grant), `pffft-neo-LICENSE.txt` (its GPL text), `pffft-LICENSE.txt`
-(the inherited PFFFT and FFTPACK license) and `pffft-NOTICES.txt` (pffft-neo's record
-of every retained upstream notice), copied from the pinned source's `README.md`,
+GPL-2.0-or-later grant), `pffft-neo-LICENSE.txt` (its GPL text) and `pffft-LICENSE.txt`
+(the inherited PFFFT and FFTPACK license), copied from the pinned source's `README.md`,
 `LICENSE` and `third_party/pffft/` into the build tree's `pffft-licenses/` directory.
+The component inventory declares pffft-neo as `GPL-2.0-or-later AND LicenseRef-PFFFT`,
+so its record of every retained upstream notice is tracked as
+`LICENSES/LicenseRef-PFFFT.txt` (installed with the other license texts and carried in
+SBOMs). Configure fails when it differs from the pinned source's
+`third_party/pffft/LicenseRef-PFFFT.txt`; `tools/update_pffft.py` rewrites it and its
+hash in `legal/components.json` together with the pins.
 The configure check also requires every source file the build compiles from, so an
 incomplete offline source fails before the build.
 

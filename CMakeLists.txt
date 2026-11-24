@@ -1409,7 +1409,6 @@ install(
         "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-README.md"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-LICENSE.txt"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     COMPONENT legal
 )

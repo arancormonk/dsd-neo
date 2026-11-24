@@ -716,7 +716,6 @@ class NoticeStagingTests(unittest.TestCase):
         build = self.work / "build"
         for name in ("pffft-licenses/pffft-neo-README.md", "pffft-licenses/pffft-neo-LICENSE.txt",
                      "pffft-licenses/pffft-LICENSE.txt",
-                     "pffft-licenses/pffft-NOTICES.txt",
                      "tetra_crypto-licenses/tetra_crypto-LICENSE.txt", "qt-source/qt-source.txt"):
             (build / name).parent.mkdir(parents=True, exist_ok=True)
             (build / name).write_text(name + "\n", encoding="utf-8")
@@ -769,9 +768,9 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
         (share / "mpg123/copyright").write_text("restored\n", encoding="utf-8")
         self.assertEqual(self.run_cmake(*args).returncode, 0)
-        (build / "pffft-licenses/pffft-NOTICES.txt").unlink()
+        (build / "pffft-licenses/pffft-LICENSE.txt").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
-        (build / "pffft-licenses/pffft-NOTICES.txt").write_text("restored\n", encoding="utf-8")
+        (build / "pffft-licenses/pffft-LICENSE.txt").write_text("restored\n", encoding="utf-8")
         (self.mbe / "legal/status.md").unlink()
         self.assertNotEqual(self.run_cmake(*args).returncode, 0)
 

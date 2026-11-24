@@ -170,8 +170,8 @@ endif()
 set(DSD_PFFFT_LICENSE_DIR "${PROJECT_BINARY_DIR}/pffft-licenses")
 file(MAKE_DIRECTORY "${DSD_PFFFT_LICENSE_DIR}")
 # pffft-neo's README (its copyright notice and GPL-2.0-or-later grant), its
-# GPL text, the inherited PFFFT/FFTPACK license, and pffft-neo's record of
-# every retained upstream notice.
+# GPL text and the inherited PFFFT/FFTPACK license. Its record of every
+# retained upstream notice ships from LICENSES/ (below).
 foreach(
     _pair
     IN
@@ -179,7 +179,6 @@ foreach(
         "README.md|pffft-neo-README.md"
         "LICENSE|pffft-neo-LICENSE.txt"
         "third_party/pffft/LICENSE.txt|pffft-LICENSE.txt"
-        "third_party/pffft/LicenseRef-PFFFT.txt|pffft-NOTICES.txt"
 )
     string(REPLACE "|" ";" _pair "${_pair}")
     list(GET _pair 0 _from)
@@ -190,3 +189,29 @@ foreach(
         COPYONLY
     )
 endforeach()
+
+# The component inventory declares pffft-neo as GPL-2.0-or-later AND
+# LicenseRef-PFFFT, so the LicenseRef text is tracked in LICENSES/ (installed
+# with the other license texts and recorded in SBOMs). It must be the pinned
+# source's own record; tools/update_pffft.py refreshes it with the pin.
+set(_pffft_licenseref
+    "${CMAKE_CURRENT_LIST_DIR}/../LICENSES/LicenseRef-PFFFT.txt"
+)
+set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pffft_licenseref}"
+)
+file(READ "${_pffft_licenseref}" _pffft_tracked)
+file(
+    READ "${DSD_PFFFT_SOURCE_DIR}/third_party/pffft/LicenseRef-PFFFT.txt"
+    _pffft_pinned
+)
+string(REPLACE "\r\n" "\n" _pffft_tracked "${_pffft_tracked}")
+string(REPLACE "\r\n" "\n" _pffft_pinned "${_pffft_pinned}")
+if(NOT _pffft_tracked STREQUAL _pffft_pinned)
+    message(
+        FATAL_ERROR
+        "LICENSES/LicenseRef-PFFFT.txt differs from the pinned pffft-neo's third_party/pffft/LicenseRef-PFFFT.txt; refresh it with tools/update_pffft.py."
+    )
+endif()

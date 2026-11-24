@@ -454,15 +454,19 @@
         "windows",
         "android"
       ],
-      "license_declared": "NOASSERTION",
-      "license_concluded": "NOASSERTION",
-      "notices": [],
-      "assessment": "pffft-neo declares GPL-2.0-or-later AND LicenseRef-PFFFT: its contributions are GPL-2.0-or-later and it retains the PFFFT and FFTPACK notices. Its README (copyright notice and license grant), GPL text, the inherited PFFFT license and its retained-notice record are copied from the pinned source and shipped as pffft-neo-README.md, pffft-neo-LICENSE.txt, pffft-LICENSE.txt and pffft-NOTICES.txt.",
+      "license_declared": "GPL-2.0-or-later AND LicenseRef-PFFFT",
+      "license_concluded": "GPL-2.0-or-later AND LicenseRef-PFFFT",
+      "notices": [
+        "LICENSES/LicenseRef-PFFFT.txt"
+      ],
+      "assessment": "pffft-neo's contributions are GPL-2.0-or-later and it retains the PFFFT and FFTPACK notices (LicenseRef-PFFFT). Its README (copyright notice and license grant), GPL text and the inherited PFFFT license are copied from the pinned source and shipped as pffft-neo-README.md, pffft-neo-LICENSE.txt and pffft-LICENSE.txt; its retained-notice record is tracked as LICENSES/LicenseRef-PFFFT.txt, which configure checks against the pinned source.",
       "copyright_permission": "notice-retained",
       "gpl_compatibility": "reviewed-terms",
       "patent_status": "not-cleared",
       "review_date": "2026-11-23",
-      "notice_sha256": {},
+      "notice_sha256": {
+        "LICENSES/LicenseRef-PFFFT.txt": "c2bc1b84e8eb267b46fc25cc62bab7db5ba6b0ad538ed50e802cfd6b139fb2b0"
+      },
       "windows_release": {
         "binaries": [
           "dsd-neo.exe"
@@ -471,7 +475,7 @@
           "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
-          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+          "licenses/LicenseRef-PFFFT.txt": "repo:LICENSES/LicenseRef-PFFFT.txt"
         }
       },
       "android_release": {
@@ -479,7 +483,7 @@
           "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
-          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+          "licenses/LicenseRef-PFFFT.txt": "repo:LICENSES/LicenseRef-PFFFT.txt"
         }
       },
       "macos_release": {
@@ -490,7 +494,7 @@
           "licenses/pffft-neo-README.md": "build:pffft-licenses/pffft-neo-README.md",
           "licenses/pffft-neo-LICENSE.txt": "build:pffft-licenses/pffft-neo-LICENSE.txt",
           "licenses/pffft-LICENSE.txt": "build:pffft-licenses/pffft-LICENSE.txt",
-          "licenses/pffft-NOTICES.txt": "build:pffft-licenses/pffft-NOTICES.txt"
+          "licenses/LicenseRef-PFFFT.txt": "repo:LICENSES/LicenseRef-PFFFT.txt"
         }
       },
       "pin": "PFFFT_SHA"
