@@ -39,7 +39,6 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "test_support.h"
 
 enum { LC_HEADER = 1, LC_TERMINATOR = 2, LC_EMBEDDED = 3 };
 

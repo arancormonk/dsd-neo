@@ -21,7 +21,6 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"

@@ -6,6 +6,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/threading.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/state_fwd.h"
 
