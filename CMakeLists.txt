@@ -1392,8 +1392,14 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/legal
     COMPONENT legal
 )
+# mbelib's notice folder, without the other FFT's notice tree (MbelibNotices.cmake).
 install(
-    DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/"
+    DIRECTORY ${DSD_MBELIB_NOTICE_DIRS}
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
+    COMPONENT legal
+)
+install(
+    FILES ${DSD_MBELIB_NOTICE_FILES}
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
     COMPONENT legal
 )
@@ -1405,8 +1411,9 @@ install(
 )
 install(
     FILES
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-README.md"
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-LICENSE.txt"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     COMPONENT legal
 )

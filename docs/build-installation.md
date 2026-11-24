@@ -255,7 +255,7 @@ tools/scan_build.sh --strict \
 The build downloads two pinned, checksum-verified sources and compiles them into DSD-neo, so neither needs a runtime
 package:
 
-- a PFFFT fork (the FFT). Offline builds pass `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft`.
+- a pffft-neo revision (the FFT). Offline builds pass `-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT=/absolute/path/to/pffft-neo`.
 - a TETRA_crypto revision (the TEA1/TEA2/TEA3 keystream generators). Offline builds pass
   `-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO=/absolute/path/to/TETRA_crypto`.
 

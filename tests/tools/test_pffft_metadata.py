@@ -73,7 +73,14 @@ class PinTests(unittest.TestCase):
         sbom = metadata.add_spdx({"SPDXID": "SPDXRef-DOCUMENT", "packages": []}, pins)
         package = sbom["packages"][0]
         self.assertEqual(package["versionInfo"], pins["PFFFT_SHA"])
+        self.assertEqual(package["licenseDeclared"], "GPL-2.0-or-later AND LicenseRef-PFFFT")
+        extracted = sbom["hasExtractedLicensingInfos"]
+        self.assertEqual([record["licenseId"] for record in extracted], ["LicenseRef-PFFFT"])
+        self.assertEqual(extracted[0]["extractedText"], (ROOT / "LICENSES/LicenseRef-PFFFT.txt").read_text())
+        self.assertEqual(package["name"], "pffft-neo")
+        self.assertEqual(metadata.REPO, "https://github.com/arancormonk/pffft-neo")
         self.assertIn(metadata.REPO, package["downloadLocation"])
+        self.assertIn("pkg:github/arancormonk/pffft-neo@", package["externalRefs"][0]["referenceLocator"])
         self.assertEqual(package["checksums"][0]["checksumValue"], pins["PFFFT_ARCHIVE_SHA256"])
         self.assertEqual(sbom["relationships"][0]["relatedSpdxElement"], package["SPDXID"])
         with self.assertRaises(ValueError):
@@ -93,6 +100,24 @@ class PinTests(unittest.TestCase):
         self.assertIn(pins["PFFFT_SHA"], result)
         self.assertIn('-DFETCHCONTENT_FULLY_DISCONNECTED=ON', result)
         self.assertIn('grep -qx "PFFFT_SHA=$_pffft_sha"', result)
+        self.assertIn("arancormonk/pffft-neo/tar.gz/", result)
+        self.assertIn('-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/pffft-neo-$_pffft_sha"', result)
+        # A recipe published for the PFFFT fork moves to pffft-neo's archive and unpack directory.
+        published = result.replace("pffft-neo-", "pffft-").replace("pffft-neo/", "pffft/")
+        self.assertNotIn("pffft-neo", published)
+        self.assertEqual(aur.update(published, pins), result)
+        braced = published.replace('pffft-$_pffft_sha" \\', 'pffft-${_pffft_sha}" \\')
+        self.assertIn('"$srcdir/pffft-${_pffft_sha}"', braced)
+        self.assertIn('"$srcdir/pffft-neo-${_pffft_sha}"', aur.update(braced, pins))
+        # An override this helper did not write, and cannot move, is refused rather than kept.
+        with self.assertRaisesRegex(ValueError, "override"):
+            aur.update(result.replace('"$srcdir/pffft-neo-$_pffft_sha"', '"$srcdir/fft"'), pins)
+        # A second override after the right one is not hidden by it.
+        doubled = result.replace('"$srcdir/pffft-neo-$_pffft_sha" \\\n',
+                                 '"$srcdir/pffft-neo-$_pffft_sha" \\\n        -DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT="$srcdir/fft" \\\n')
+        self.assertIn('"$srcdir/fft"', doubled)
+        with self.assertRaisesRegex(ValueError, "override"):
+            aur.update(doubled, pins)
 
     @unittest.skipUnless(sys.platform != "win32" and shutil.which("bash"), "AUR requires a Unix shell")
     def test_aur_transition_and_stale_pin(self):
@@ -128,7 +153,7 @@ class PinTests(unittest.TestCase):
             sha = "1" * 40
             self.assertEqual(updater.download_archive(sha), b"archive")
             opener.open.assert_called_with(
-                f"https://codeload.github.com/arancormonk/pffft/tar.gz/{sha}", timeout=120)
+                f"https://codeload.github.com/arancormonk/pffft-neo/tar.gz/{sha}", timeout=120)
             opener.add_handler.assert_called_once()
             handler = opener.add_handler.call_args.args[0]
             self.assertIsInstance(handler, updater.urllib.request.HTTPSHandler)
@@ -140,27 +165,74 @@ class PinTests(unittest.TestCase):
         sha = "1" * 40
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w:gz") as archive:
-            for path in ("src/pffft.c", "src/pffft_common.c", "include/pffft/pffft.h", "LICENSE.txt"):
-                entry = tarfile.TarInfo(f"pffft-{sha}/{path}")
-                archive.addfile(entry, io.BytesIO())
+            # Exactly the files cmake/Pffft.cmake requires.
+            for path in updater.required_files():
+                entry = tarfile.TarInfo(f"pffft-neo-{sha}/{path}")
+                body = b"Retained notices v2\r\n" if path == updater.LICENSEREF_MEMBER else b""
+                entry.size = len(body)
+                archive.addfile(entry, io.BytesIO(body))
         payload = data.getvalue()
+
+        def without(name):
+            # The same archive without one file the build requires.
+            data = io.BytesIO()
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as source, \
+                    tarfile.open(fileobj=data, mode="w:gz") as archive:
+                for entry in source.getmembers():
+                    if entry.name != f"pffft-neo-{sha}/{name}":
+                        archive.addfile(entry, source.extractfile(entry))
+            return data.getvalue()
         with tempfile.TemporaryDirectory() as directory:
-            pins = Path(directory) / "pins.env"
+            # A scratch tree with the three files the updater moves together; the repository's stay untouched.
+            root = Path(directory)
+            pins, licenseref, inventory = (root / "tools/ci-dependency-pins.env",
+                                           root / "LICENSES/LicenseRef-PFFFT.txt", root / "legal/components.json")
+            for path in (pins, licenseref, inventory):
+                path.parent.mkdir(parents=True)
             pins.write_text("OTHER=keep\nPFFFT_SHA=" + "0" * 40 + "\nPFFFT_ARCHIVE_SHA256=" + "0" * 64 + "\n")
+            licenseref.write_text("Retained notices v1\n")
+            inventory.write_text('{"notice_sha256": {"LICENSES/LicenseRef-PFFFT.txt": "' + "0" * 64 + '"}}\n')
             with patch.object(updater, "download_archive", return_value=payload):
-                updater.update_pins(sha, pins)
+                updater.update_pins(sha, root)
             self.assertEqual(metadata.read_pins(pins), {
                 "PFFFT_SHA": sha, "PFFFT_ARCHIVE_SHA256": hashlib.sha256(payload).hexdigest(),
             })
-            before = pins.read_bytes()
-            self.assertIn(b"OTHER=keep", before)
+            self.assertEqual(licenseref.read_bytes(), b"Retained notices v2\r\n")
+            # The inventory records the hash over LF line endings, as legal_inventory.py checks it.
+            self.assertIn(hashlib.sha256(b"Retained notices v2\n").hexdigest(), inventory.read_text())
+            before = [path.read_bytes() for path in (pins, licenseref, inventory)]
+            self.assertIn(b"OTHER=keep", before[0])
+            for name in ("README.md", "src/pffft_impl.h"):
+                with patch.object(updater, "download_archive", return_value=without(name)):
+                    with self.assertRaisesRegex(KeyError, name):
+                        updater.update_pins(sha, root)
+                self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
             with patch.object(updater, "download_archive", side_effect=OSError("offline")):
                 with self.assertRaises(OSError):
-                    updater.update_pins("2" * 40, pins)
-            self.assertEqual(pins.read_bytes(), before)
+                    updater.update_pins("2" * 40, root)
+            self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
             with self.assertRaises(ValueError):
-                updater.update_pins("master", pins)
-            self.assertEqual(pins.read_bytes(), before)
+                updater.update_pins("master", root)
+            self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
+            # A failure moving the last file (the pins) puts back the two already replaced.
+            licenseref.write_bytes(b"Retained notices v1\n")
+            before = [path.read_bytes() for path in (pins, licenseref, inventory)]
+            real_replace = updater.os.replace
+            moves = []
+
+            def failing_replace(source, destination):
+                moves.append(destination)
+                if Path(destination) == pins:
+                    raise OSError("read-only tools/")
+                real_replace(source, destination)
+            with patch.object(updater, "download_archive", return_value=payload), \
+                    patch.object(updater.os, "replace", side_effect=failing_replace):
+                with self.assertRaisesRegex(OSError, "read-only"):
+                    updater.update_pins(sha, root)
+            self.assertEqual([Path(path) for path in moves], [licenseref, inventory, pins])
+            self.assertEqual([path.read_bytes() for path in (pins, licenseref, inventory)], before)
+            self.assertEqual(sorted(path.name for path in root.rglob("*") if path.is_file()),
+                             ["LicenseRef-PFFFT.txt", "ci-dependency-pins.env", "components.json"])
 
 
 if __name__ == "__main__":
