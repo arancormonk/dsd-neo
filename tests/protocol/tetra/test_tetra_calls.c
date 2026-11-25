@@ -3504,9 +3504,9 @@ test_record_changes_reach_the_call(void) {
 }
 
 /* Not trunking, a reallocation of the heard call to another carrier moves its channel but not the receiver: the call
- * keeps the frequency of the carrier it was first published on, through the allocation's republication (a MAC-RESOURCE to the
- * call's party, a D-SETUP naming another carrier) and through the later signalling of the call (D-TX GRANTED), and so
- * does its history row, staged and committed, which the exports read. */
+ * keeps the frequency of the carrier it was first published on, through the allocation's republication (a
+ * MAC-RESOURCE to the call's party, a D-SETUP naming another carrier) and through the later signalling of the call
+ * (D-TX GRANTED), and so does its history row, staged and committed, which the exports read. */
 static void
 test_trunk_off_reallocation_keeps_the_heard_carrier(void) {
     session s = session_open();
