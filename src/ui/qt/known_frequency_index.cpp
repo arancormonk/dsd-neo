@@ -560,7 +560,8 @@ rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& co
 
 /* The channel width @p mode names: a decode flag, compared exactly since its case is significant (-fm is dPMR, -fM is
    AM), or a channel-map mode, scan target type or protocol name, compared without case. NXDN48, dPMR and D-STAR run the
-   receiver's 6.25 kHz channel; any other mode a 12.5 kHz one. */
+   receiver's 6.25 kHz channel; TETRA (-fT, never P25's -ft) a 25 kHz carrier (EN 300 392-2 4.5.1, EN 300 396-2 4.5 and
+   6.2); any other mode a 12.5 kHz one. */
 static bool
 amMode(const QString& mode) {
     static const QSet<QString> amNames{QStringLiteral("am"), QStringLiteral("am-conventional")};
@@ -574,6 +575,9 @@ modeWidth(const QString& mode) {
     const QString name = mode.toLower();
     if (amMode(mode)) {
         return 6000;
+    }
+    if (mode == QStringLiteral("-fT")) {
+        return 25000;
     }
     if (narrowFlags.contains(mode) || narrowNames.contains(name) || name.startsWith(QLatin1String("nxdn48"))) {
         return 6250;

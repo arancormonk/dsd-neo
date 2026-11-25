@@ -10,16 +10,16 @@ not a finding that every component is cleared for redistribution.
 
 ## Vendored Libraries
 
-- **mbelib-neo** (linked vocoder; pinned release 2.6.11, GPL-2.0-or-later project
-  contributions with ISC/PFFFT components and unresolved ETSI table terms) —
+- **mbelib-neo** (linked vocoder; pinned release 2.6.12, GPL-2.0-or-later project
+  contributions with ISC/pffft-neo components and unresolved ETSI table terms) —
   <https://github.com/arancormonk/mbelib-neo>. Its full installed notices and
   legal records accompany packages in `licenses/mbelib-neo/`. TETRA table
   permission/GPL compatibility and patent questions remain open; do not label
   the entire dependency as cleared GPL code. See its pinned
-  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.11/legal/status.md).
+  [status](https://github.com/arancormonk/mbelib-neo/blob/v2.6.12/legal/status.md).
 
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
-- **PFFFT** (target `dsd-neo_pffft`; Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. The BSD-like license and compiled backend notices are installed as `share/doc/dsd-neo/licenses/pffft-LICENSE.txt` and `pffft-NOTICES.txt`. See `docs/dependencies.md` for offline builds and updates.
+- **pffft-neo** (target `dsd-neo_pffft`; arancormonk, derived from PFFFT by Julien Pommier and contributors, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) — downloaded from <https://github.com/arancormonk/pffft-neo> at the immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. GPL-2.0-or-later for pffft-neo's contributions, with the inherited BSD-like PFFFT/FFTPACK notices retained. Its README (copyright notice and license grant), GPL text and the inherited PFFFT license are installed as `share/doc/dsd-neo/licenses/pffft-neo-README.md`, `pffft-neo-LICENSE.txt` and `pffft-LICENSE.txt`; its record of every retained notice is `LICENSES/LicenseRef-PFFFT.txt` (installed as `licenses/LicenseRef-PFFFT.txt`), checked at configure time against the pinned source. See `docs/dependencies.md` for offline builds and updates.
 - **TETRA_crypto** (target `dsd-neo_tetra_crypto`; Copyright 2023 Midnight Blue) — the TEA1, TEA2 and TEA3 keystream
   generators (`tea1.c`, `tea2.c`, `tea3.c`), downloaded from <https://github.com/MidnightBlueLabs/TETRA_crypto> at the
   immutable revision and SHA-256 in `tools/ci-dependency-pins.env`. Apache-2.0; the license text is installed as
@@ -202,7 +202,7 @@ not a finding that every component is cleared for redistribution.
     `70e397d01cfc6e95eef97afac6961214ad9037c9`.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
-license texts currently include the ezpwd, pinned PFFFT and pinned TETRA_crypto notices under
+license texts currently include the ezpwd, pinned pffft-neo and pinned TETRA_crypto notices under
 `share/doc/dsd-neo/licenses/`, plus the IBM Plex font notice for builds that bundle the Qt frontend and the
 librtlsdr/libusb notices for the Android package. The Windows, AppImage and macOS release packages, which bundle a
 librtlsdr built with `0002` and `0003`, carry its GPL text as `licenses/librtlsdr-GPL-2.0-or-later.txt`,

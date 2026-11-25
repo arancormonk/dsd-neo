@@ -368,9 +368,13 @@ int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
  *
  * DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED and DM-GSETUP describe the call on the channel, which publishes
  * on canonical slot 0 with what the security class leaves in the clear (DM-2-B hides the destination); DM-TX CEASED,
- * DM-RELEASE, DM-DISCONNECT and DM-GRELEASE end it as terminators. A DM-2-C burst, whose addresses and message type
- * are encrypted, publishes an encrypted call without identities. DM-SDS DATA and DM-SDS UDATA become data notices, a
- * repeat of the last within a few seconds not again. @p opts may be NULL.
+ * DM-RELEASE, DM-DISCONNECT and DM-GRELEASE end it as terminators. A DM-RESERVED for that call after a call
+ * transaction ends the transmission's canonical call, keeping the call open for the reservation, and the call itself at
+ * the reservation's end; one during a gateway set-up keeps the set-up (tetra_dmo_reservation()); none opens traffic.
+ * A DM-2-C burst, whose addresses and message type are encrypted, publishes an encrypted call without identities.
+ * DM-SDS DATA and DM-SDS UDATA become data notices, a repeat of the last within a few seconds not again. What the PDU
+ * proved goes to the burst's proof (tetra_confirm_note_proof()): a call or short data PDU DMO_SERVICE, a DM-2-C one
+ * DMO_OPAQUE. @p opts may be NULL.
  */
 void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
 

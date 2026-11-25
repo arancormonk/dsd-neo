@@ -14,6 +14,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -29,6 +30,42 @@ check(bool ok) {
     if (!ok) {
         ++failures;
         std::fputs("scan-list assertion failed\n", stderr);
+    }
+}
+
+static void
+expect(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+    }
+    check(ok);
+}
+
+/* Issue #834: the Skip silent channels box owns --scan-skip-silent and --no-scan-skip-silent, but not how long the
+   check reads. A list's extra options may set that length in either spelling, the space form's value as the next
+   token; the decoder checks the range. */
+static void
+test_skip_silent_length_extra(const QVariantMap& list) {
+    SessionArgPrefs prefs;
+    QString error;
+    for (const auto& extra : {QStringLiteral("--scan-skip-silent-ms 50"), QStringLiteral("--scan-skip-silent-ms=50")}) {
+        expect("the scan gate takes the skip-silent length", session_args_scan_extra_safe(extra));
+        prefs.extraArgs = extra;
+        const QStringList args = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
+        const QStringList tokens = extra.split(QLatin1Char(' '));
+        expect("a scan list with the skip-silent length starts, the length passed as typed",
+               error.isEmpty() && args.size() > tokens.size() && args.mid(args.size() - tokens.size()) == tokens
+                   && args.count(QStringLiteral("--scan-skip-silent")) == 1);
+    }
+    for (const auto& extra : {QStringLiteral("--scan-skip-silent-ms 50 --scan-skip-silent"),
+                              QStringLiteral("--scan-skip-silent-ms=50 --no-scan-skip-silent"),
+                              QStringLiteral("--scan-skip-silent=1"), QStringLiteral("--no-scan-skip-silent-ms=50")}) {
+        expect("the scan gate still refuses the skip-silent switches beside the length",
+               !session_args_scan_extra_safe(extra));
+        prefs.extraArgs = extra;
+        expect("a scan list carrying a skip-silent switch is refused",
+               session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error).isEmpty()
+                   && error == session_args_error_text(SessionArgsError::UnsafeOption));
     }
 }
 
@@ -130,6 +167,56 @@ main(int argc, char** argv) {
     check(!build().ok && build().error.contains("Example: Analog entries take no channel map; remove it"));
     check(!build().error.contains("trunked"));
     sys.remove("chanCsvPath");
+    // Issue #890: a Signal search save keeps its measured width as its only Extra arguments. Exactly one width option of
+    // the system's own analog kind, in whole Hz within the range the target's options parser takes, reaches the row's
+    // options column (written as --name value, ahead of the squelch); anything else in Extra arguments stays refused.
+    const QByteArray amRow = "am-conventional,851500000,,,,,,,,,,\"Example\",--am-bandwidth-hz 8333\n";
+    for (const auto& extra :
+         QStringList{"--am-bandwidth-hz 8333", "  --am-bandwidth-hz   8333 ", "--am-bandwidth-hz=8333"}) {
+        sys["extraArgs"] = extra;
+        check(build().ok && build().csv.endsWith(amRow));
+    }
+    sys["decodeFlag"] = "-fA";
+    sys["extraArgs"] = "--nfm-bandwidth-hz 12500";
+    sys["radioSettings"] = QVariantMap{{"squelch", "auto+12"}};
+    check(build().ok
+          && build().csv.endsWith("nfm-conventional,851500000,,,,,,,,,,\"Example\",--nfm-bandwidth-hz 12500 --squelch "
+                                  "auto+12\n"));
+    sys.remove("radioSettings");
+    const QString refused = QStringLiteral("Example: This saved system has standalone Extra arguments.");
+    const QList<QPair<QString, QString>> refusedExtras{{"-fA", "--am-bandwidth-hz 8333"},
+                                                       {"-fM", "--nfm-bandwidth-hz 12500"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500 -F"},
+                                                       {"-fA", "-F --nfm-bandwidth-hz 12500"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500 --nfm-bandwidth-hz 9000"},
+                                                       {"-fA", "--nfm-bandwidth-hz"},
+                                                       {"-fA", "--nfm-bandwidth-hz="},
+                                                       {"-fA", "--nfm-bandwidth-hz 7999"},
+                                                       {"-fA", "--nfm-bandwidth-hz 25001"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500.5"},
+                                                       {"-fA", "--nfm-bandwidth-hz '12500'"},
+                                                       {"-fA", "--nfm-bandwidth-hz +12500"},
+                                                       {"-fM", "--am-bandwidth-hz 4999"},
+                                                       {"-fM", "--am-bandwidth-hz 20001"},
+                                                       {"-ft", "--nfm-bandwidth-hz 12500"},
+                                                       {"-fs", "--am-bandwidth-hz 8333"}};
+    for (const auto& extra : refusedExtras) {
+        sys["decodeFlag"] = extra.first;
+        sys["extraArgs"] = extra.second;
+        const auto refusedTargets = build();
+        check(!refusedTargets.ok && refusedTargets.error.startsWith(refused));
+        if (refusedTargets.ok) {
+            std::fprintf(stderr, "accepted %s '%s'\n", qPrintable(extra.first), qPrintable(extra.second));
+        }
+    }
+    sys.remove("extraArgs");
+    sys["decodeFlag"] = "-fM";
+    // The rate warning reads the same width: the option of the system's own kind, else none.
+    check(scan_list_saved_system_width_hz("--am-bandwidth-hz 8333", DSD_ANALOG_DEMOD_AM) == 8333);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz=12500", DSD_ANALOG_DEMOD_FM) == 12500);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz 12500", DSD_ANALOG_DEMOD_AM) == 0);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz 12500 -F", DSD_ANALOG_DEMOD_FM) == 0);
+    check(scan_list_saved_system_width_hz(QString(), DSD_ANALOG_DEMOD_FM) == 0);
     // The analog kind the starter and the editor share: the protocol of a frequency entry, the exact flag of a
     // saved system's.
     const QVariantMap systemEntry{{"kind", "system"}};
@@ -305,6 +392,7 @@ main(int argc, char** argv) {
           && args.contains("--src-csv") && args.contains("--trunk-scan-dwell-ms")
           && args.contains("--trunk-scan-activity-hold-ms") && args.contains("--enc-lockout")
           && args.contains("--auto-ppm"));
+    test_skip_silent_length_extra(list);
     for (const auto& field : {"gainDb", "bandwidthKhz", "biasTee"}) {
         const auto prior = list.value(field);
         list[field] = "invalid";

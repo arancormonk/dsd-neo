@@ -345,7 +345,8 @@ roaming_call_fixture(dsd_opts* opts, uint64_t src) {
         .observed_m = 1.0,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    const dsd_call_source_home home = {.wacn = 0xABCDEU, .sysid = 0x2A7U, .unit = 1234567U, .valid = 1U};
+    const dsd_call_source_home home = {
+        .wacn = 0xABCDEU, .sysid = 0x2A7U, .unit = 1234567U, .source = (uint32_t)src, .valid = 1U};
     (void)dsd_call_state_note_source_home(state, 0U, DSD_SYNC_P25P2_POS, &home, NULL);
     dsd_call_snapshot call;
     if (src != 0U && dsd_call_state_get(state, 0U, &call) > 0) {
@@ -408,6 +409,33 @@ test_roaming_radio_alias_is_shown_not_learned(dsd_opts* opts) {
     apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
     expect_true("motorola alias of another home's 3002 is deferred", state->generic_talker_alias[0][0] == '\0');
     expect_true("another home's 3002 not learned", !alias_learned_for(state, 3002U));
+    free_fixture(state);
+
+    /* The roamer named by its home alone, then another radio's abbreviated voice user (working address 3002) on the
+       same call with no end decoded: 3002 talks now, so its alias matches and the roamer's no longer does. */
+    state = roaming_call_fixture(opts, 0U);
+    const dsd_call_observation abbreviated = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 4660U,
+        .policy_target_id = 4660U,
+        .ota_source_id = 3002U,
+        .observed_m = 2.0,
+    };
+    expect_true("abbreviated voice user keeps the call",
+                dsd_call_state_observe(state, &abbreviated, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    int dropped = 0;
+    expect_true("abbreviated voice user noted",
+                dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
+    expect_true("abbreviated voice user drops the roamer's home", dropped == 1);
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A7U, 1234567U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias of the earlier roamer is deferred", state->generic_talker_alias[0][0] == '\0');
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A7U, 3002U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias of the radio talking now shows",
+                strstr(state->generic_talker_alias[0], "APXROAM") != NULL);
     free_fixture(state);
 
     /* A local radio (working address = the alias's unit ID) is still learned. */

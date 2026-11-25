@@ -111,12 +111,21 @@ int rtl_signal_search_bypassed(void);
 void rtl_signal_search_set_owner(uint64_t session);
 uint64_t rtl_signal_search_owner(void);
 int rtl_signal_capture_get(dsd_signal_capture* capture);
+/** The tap's capture word (lock-free, acquire): it moves whenever a fed block's capture differs from the published one
+ * in generation, centre or capture offset, and at a reset (rtl_signal_measure_reset()). Drops and gain do not move it.
+ * A reader that remembers the word rtl_signal_capture_get_seq() gave knows, with one load, whether the capture may
+ * have changed since (issue #834). */
+uint32_t rtl_signal_capture_seq(void);
+/** rtl_signal_capture_get() and the capture word in one snapshot, so the word read never belongs to a newer capture
+ * than the one returned. Returns rtl_signal_capture_get()'s result; @p seq (optional) takes the word either way. */
+int rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq);
 uint64_t rtl_signal_capture_last_ms(void);
 void rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture* capture);
 
 /* Scan quiet measurement: whether one landed channel carries no power above its local noise floor over
- * DSD_SIGNAL_QUIET_WINDOWS back-to-back sub-windows, each the smallest whole number of transforms of at least 10 ms
- * (at least 90 ms in all), judged in every requested width class. */
+ * back-to-back sub-windows (DSD_SIGNAL_QUIET_WINDOWS unless the request asks for another count), each the smallest
+ * whole number of transforms of at least 10 ms (at least 90 ms in all at the calibrated count), judged in every
+ * requested width class. */
 
 /** Width classes a quiet request judges (bit mask): 12.5 kHz, 6.25 kHz, and the analog width of the request. */
 enum {
@@ -131,8 +140,11 @@ enum {
     DSD_SIGNAL_QUIET_WIDTH_6K25_HZ = 6250,
 };
 
-/** Sub-windows per quiet request. */
-#define DSD_SIGNAL_QUIET_WINDOWS 9
+/** Sub-windows per quiet request: the calibrated count, the one a request with windows 0 judges. */
+#define DSD_SIGNAL_QUIET_WINDOWS     9
+
+/** The most sub-windows a quiet request may ask for (dsd_signal_quiet_request.windows). */
+#define DSD_SIGNAL_QUIET_WINDOWS_MAX 50
 
 /** How a quiet measurement estimates the local noise floor from the eight sideband blocks beside the channel, the
  * floor the guard compares with the capture-wide noise reference. */
@@ -168,6 +180,12 @@ typedef struct {
     /** The analog class's width, DSD_ANALOG_AM_WIDTH_MIN_HZ to DSD_ANALOG_NFM_WIDTH_MAX_HZ, with
      * DSD_SIGNAL_QUIET_CLASS_ANALOG; 0 without it. */
     uint32_t analog_width_hz;
+    /** Sub-windows to judge: 0 for DSD_SIGNAL_QUIET_WINDOWS (the calibrated reading), else 1 to
+     * DSD_SIGNAL_QUIET_WINDOWS_MAX. Each keeps its length (the smallest whole number of transforms of at least
+     * 10 ms). */
+    uint32_t windows;
+    /** Sample pairs dropped before the first transform: where the reading starts in the stream, nothing else. */
+    uint32_t lead_pairs;
 } dsd_signal_quiet_request;
 
 typedef struct {
@@ -200,6 +218,8 @@ dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
  * 0: at any other rate a scan visit makes no quiet check. The rates are those the capture paths run: the RTL rate
  * planner's, an Airspy's, and the common RTL-SDR rates a SoapySDR device may be given. */
 int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
+/** How many capture rates dsd_signal_quiet_rate_supported() admits. */
+#define DSD_SIGNAL_QUIET_RATE_COUNT 16
 
 /** 1 when an analog class of @p width_hz for analog @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or
  * DSD_ANALOG_DEMOD_AM, as dsd_opts.analog_demod carries it) at capture rate @p rate_hz was rendered and validated as

@@ -162,14 +162,8 @@ void dmr_note_burst_lane(const dsd_opts* opts, dsd_state* state);
  * or CACH fails. */
 void dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state);
 
-/** A standalone CSBK (one decoded block, 96 bits and 12 octets): dmr_cspdu_mbc() with no appended block. */
 void dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
                uint32_t IrrecoverableErrors);
-/** A CSBK or an assembled MBC: @p appended_blocks is the number of continuation blocks received after the header (0
- * for a standalone CSBK), each 96 bits and 12 octets more in @p cs_pdu_bits and @p cs_pdu. A handler reads an appended
- * block only when it was received. */
-void dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
-                   uint32_t IrrecoverableErrors, uint8_t appended_blocks);
 
 void dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
                  uint32_t IrrecoverableErrors);

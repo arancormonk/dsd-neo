@@ -88,6 +88,8 @@ target_sources(
         # Source CSV parsing owns a candidate alias store before installing it.
         ${PROJECT_SOURCE_DIR}/src/core/file/source_alias_csv.c
         ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+        # The DMR Tier III channel overrides file (--dmr-chan-overrides).
+        ${PROJECT_SOURCE_DIR}/src/core/file/dmr_chan_overrides_csv.c
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         # p25_bandplan_csv.c seeds the live IDEN tables through this.
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c

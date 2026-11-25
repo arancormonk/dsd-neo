@@ -174,7 +174,9 @@ typedef struct {
 
     // Voice channel context (valid when state == DMR_SM_TUNED)
     long vc_freq_hz;
-    int vc_lpcn;             // the followed call's channel (0: none), named once by the grant that tuned it
+    /* The followed call's channel (0: none or unknown): the grant that tuned it, or the latest in-place grant accepted
+       on the followed slot (one naming no channel, an absolute grant's CdefParms CHAN 0, makes it unknown). */
+    int vc_lpcn;
     uint8_t vc_channel_kind; // dsd_call_channel_kind of vc_lpcn
     int vc_tg;
     int vc_dst;
@@ -242,6 +244,16 @@ typedef struct {
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
     int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
+    /* vc_clear_*: the addresses a standard P_CLEAR is matched to (dmr_sm_names_followed_call()): the grant (or status)
+       the machine followed, or the latest in-place grant accepted on the followed slot since, even one naming the call
+       a checked LC named there already. That grant leaves the grant identity (vc_tg/vc_dst/vc_src, which a later grant
+       for the slot is compared with, dmr_sm_grant_replaces_followed()) as it was, so the P_CLEAR addresses are kept
+       apart. vc_addresses_known: they are valid. Unlike vc_identity_known it outlives a new transmission on the slot
+       (a private call's reverse leg), and it goes only when those addresses are replaced or cleared. */
+    int vc_addresses_known;
+    uint32_t vc_clear_target; // the talkgroup for a group call, the called unit for a private one
+    uint32_t vc_clear_source; // a private call's calling unit (0: not known)
+    int vc_clear_is_group;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
@@ -417,6 +429,20 @@ int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
  *  a checked CSBK teaches the Tier III channel map is confirmed (dsd_state::dmr_lcn_trust 2) only there, and only
  *  there may a grant act on an unconfirmed mapping. */
 int dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state);
+
+/** @brief Whether the machine follows a call (TUNED to its carrier), whatever the tuner reads. */
+int dmr_sm_follows_call(const dmr_sm_ctx_t* ctx);
+
+/** @brief Whether the machine follows a call on timeslot @p slot (0 or 1) of the carrier it is TUNED to: the followed
+ *  call's slot, or either slot before a slotless grant's first voice names one. */
+int dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot);
+
+/** @brief Whether an address received on @p slot of the followed carrier names the followed call (a P_CLEAR's, TS
+ *  102 361-4 Table 7.30): dmr_sm_follows_slot(), and @p target the followed call's talkgroup when @p is_group, or
+ *  either party of a followed private call when not, as the machine records the call (the followed grant's identity,
+ *  or an in-place grant's on the followed slot since). A call a later LC names on the slot is not matched.
+ */
+int dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is

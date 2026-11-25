@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dmr_chan_overrides_csv.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -12,6 +13,16 @@
 #include "fuzz_support.h"
 
 #include <stdlib.h>
+
+/* Take every row the DMR channel overrides reader accepts, and check it is in the documented range. */
+static int
+take_override_row(uint16_t lpcn, long hz, void* ctx) {
+    (void)ctx;
+    if (lpcn < 1U || lpcn > 4094U || hz < 0 || (hz != 0 && hz < 100000L)) {
+        abort();
+    }
+    return 0;
+}
 
 static int
 set_path(char* dst, size_t dst_size, const char* path) {
@@ -66,7 +77,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         return 0;
     }
 
-    switch (selector % 8U) {
+    switch (selector % 9U) {
         case 0:
             (void)csvGroupImportPath(path, state);
             fuzz_group_lookups(opts, state, data, size);
@@ -89,7 +100,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         case 4: (void)csvVertexKsImport(state, path); break;
         case 5: (void)csvDmrTgKeyImport(state, path); break;
         case 6: (void)csvP25BandplanImportPath(path, state); break;
-        default: (void)csvSrcImportPath(path, state); break;
+        case 7: (void)csvSrcImportPath(path, state); break;
+        default: (void)dsd_csv_dmr_chan_overrides_read(path, take_override_row, NULL); break;
     }
 
     dsd_state_ext_free_all(state);

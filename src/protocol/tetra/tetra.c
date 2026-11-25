@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
@@ -358,6 +359,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
 static void
 tetra_nb_speech_decoded(dsd_state* state, const tetra_nb_ctx* ctx) {
     tetra_confirm_note_block(state);
+    tetra_confirm_note_proof(state, ctx->direct ? DSD_TETRA_BURST_PROOF_DMO_SPEECH : DSD_TETRA_BURST_PROOF_TMO);
     if (!ctx->direct && !ctx->uplink) {
         tetra_sm_note_home_crc(state);
     }
@@ -756,14 +758,18 @@ tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
 
 /* Direct-mode synchronisation burst whose SCH/S (@p sch_s, CRC passed) carries a DMO system code. Its SCH/H follows
    the training sequence at once, with no broadcast block as in a trunked SB; it is read here and the broadcast
-   block's 15 dibits skipped after it, so the burst consumes as many dibits as a trunked one. */
-static void
+   block's 15 dibits skipped after it, so the burst consumes as many dibits as a trunked one. A read that a carrier
+   boundary crossed (a replay retune inside it) or an input interruption cut is lost (tetra_confirm_burst_current()):
+   nothing of the burst is applied, logged as a call or published, so the mode, DM colour code, protection and call it
+   describes never land on the carrier the receiver is on now, and an interrupted read on the same trunked carrier
+   ends none of its calls (tetra_enter_dmo() runs after the check). Returns 1 when the burst was taken, for its
+   polarity. */
+static int
 tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
-        return;
+        return 0;
     }
-    tetra_enter_dmo(opts, state);
     uint8_t b2_dibits[SB_BKN2_DIBITS];
     float b2_soft[SB_BKN2_DIBITS];
     uint16_t b2_costs[NB_BLOCK_BITS];
@@ -773,6 +779,12 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
 
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
     skipDibit(opts, state, SB_BB_DIBITS);
+    if (!tetra_confirm_burst_current(state)) {
+        return 0;
+    }
+    /* Direct mode is taken on only for a burst read whole: a cut one leaves the trunked carrier, its calls, fragments
+     * and uplink protection as they were. */
+    tetra_enter_dmo(opts, state);
     (void)tetra_dmo_parse_sync_s(sch_s, &s);
 
     tetra_expand_sb_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
@@ -801,6 +813,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
+    return 1;
 }
 
 /* The captured BSCH (or direct-mode SCH/S) block to SB_TYPE2 bits in @p decoded: descramble, deinterleave with
@@ -890,8 +903,9 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
         skipDibit(opts, state, SB_BKN2_DIBITS + SB_BB_DIBITS);
         return 1;
     }
-    tetra_dmo_process_dsb(opts, state, pre);
-    tetra_dmo_dsb_commit_polarity(state);
+    if (tetra_dmo_process_dsb(opts, state, pre)) {
+        tetra_dmo_dsb_commit_polarity(state);
+    }
     return 1;
 }
 
@@ -940,6 +954,8 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (tetra_bsch_parse(decoded, SB_TYPE1, opts, state) == TETRA_BSCH_FOREIGN) {
         tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
         tetra_confirm_note_block(state);
+        /* No evidence about the followed carrier, but a trunked cell's checked broadcast on the channel all the same. */
+        tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_TMO);
         return 0;
     }
     tetra_tmo_sb_commit_polarity(state);
@@ -998,6 +1014,13 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     }
     skipDibit(opts, state, SB_BB_DIBITS);
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
+    if (!tetra_confirm_burst_current(state)) {
+        /* A carrier boundary inside the read (a replay retune) or an input interruption lost the burst: its BSCH, or
+         * the DSB only the soft decision decodes, is the last carrier's, so neither its network and colour code nor
+         * its polarity is taken on for the carrier the receiver is on now. */
+        state->tetra_sync.sb1_soft_valid = 0;
+        return;
+    }
     if (tetra_sb_bsch(opts, state, ts)) {
         tetra_sb_block2(opts, state, b2_dibits, b2_soft);
     }
@@ -1227,16 +1250,26 @@ tetra_publish(dsd_state* state) {
 }
 
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
- * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show, and end the burst
- * for them with that publication (tetra_burst_done()), whichever burst it was and however its decode ended. Last, the
- * move to the main carrier a SYSINFO of the burst staged, if one did (tetra_sm_after_burst()): every other burst costs
- * the flag read. Returns 1 when the burst decoded a block whose CRC passed. */
+ * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show (unless the burst's
+ * read was lost), and end the burst for them (tetra_burst_done()), whichever burst it was and however its decode ended.
+ * The burst closes with what it proved (tetra_burst_proof()): checked content, trunked or direct mode, is reported to a
+ * -Y row and a scan quiet check as PROVEN content (issue #890); a burst that proved only the TETRA profile, failed, or
+ * whose read was lost reports nothing. Last, the move to the main carrier a SYSINFO of the burst staged, if one did
+ * (tetra_sm_after_burst()): every other burst costs the flag read. Returns 1 when the burst decoded a block whose CRC
+ * passed. */
 static int
 tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     state->tetra_sync.block1_follows_training = (uint8_t)((ts->dmo || ts->uplink) ? 1 : 0);
-    tetra_publish(state);
+    /* A burst whose read was lost is of no carrier the receiver is on: the publication stays as the boundary left it
+     * (tetra_forget_carrier()), until a burst of the next carrier says what it is. */
+    if (tetra_confirm_burst_current(state)) {
+        tetra_publish(state);
+    }
     tetra_burst_done(opts, state);
     const int proven = tetra_confirm_burst_end(state);
+    if (tetra_burst_proof_is_content(tetra_burst_proof(state))) {
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    }
     if (ts->sm.acq.staged_hz != 0) {
         tetra_sm_after_burst(opts, state);
     }

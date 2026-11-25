@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/access_code.h>
@@ -3798,6 +3799,44 @@ test_patch_and_slot_helpers(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Discussion #900 F3: the Channels panel opens on its own while Tier III channels are missing a frequency, with the
+   menu toggle off; the toggle still opens it, and compact mode never shows it. */
+static void
+test_channels_panel_opens_for_missing_t3_channels(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    static dsd_ui_dmr_t3_view view;
+    DSD_MEMSET(&view, 0, sizeof(view));
+    assert(ui_channels_panel_open(opts, state) == 0);
+    state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
+    view.present = 1U;
+    view.dmr_decoding = 1U;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    view.missing.missing[12 >> 3] = (uint8_t)(1U << (12 & 7));
+    assert(ui_channels_panel_open(opts, state) == 1);
+    opts->frontend_terminal_display.terminal_compact = 1;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    opts->frontend_terminal_display.terminal_compact = 0;
+    /* A carrier naming another system (Connect Plus, or P25 under Auto) has that system's map: the Tier III channels
+       missing a frequency are not listed there, as Qt's NO FREQ is hidden. */
+    view.other_system_here = 1U;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    view.other_system_here = 0U;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    /* A live mode change left DMR off: no Tier III grant is followed, so none is missing a frequency
+       (the same rule as Qt's NO FREQ). */
+    view.dmr_decoding = 0U;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    view.dmr_decoding = 1U;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    view.missing.missing[12 >> 3] = 0U;
+    opts->frontend_display.show_channels = 1;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    free(state);
+    free(opts);
+}
+
 static void
 test_lock_and_protocol_helpers(void) {
     static dsd_opts opts;
@@ -5885,6 +5924,7 @@ main(void) {
     test_sync_tree_follows_scan_class();
     test_history_merged_slot_tags();
     test_patch_and_slot_helpers();
+    test_channels_panel_opens_for_missing_t3_channels();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();
     test_slot_header_burst_column_is_fixed();

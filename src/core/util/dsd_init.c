@@ -136,6 +136,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     //csv import filenames
     opts->group_in_file[0] = 0;
     opts->chan_in_file[0] = 0;
+    opts->dmr_chan_overrides_file[0] = 0;
     opts->key_in_file[0] = 0;
     opts->p25_bandplan_in_file[0] = 0;
     opts->src_in_file[0] = 0;
@@ -230,6 +231,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_api_delete_after_upload = 0;
     opts->rdio_analog_system_id = 0;
     opts->rdio_analog_talkgroup = 0;
+    opts->rdio_unknown_talkgroup = 0;
     opts->record_unknown_only = 0;
     opts->analog_record_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     opts->analog_record_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
@@ -416,6 +418,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
     opts->scan_skip_silent = 0;
+    opts->scan_skip_silent_ms = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
     opts->scan_max_visit_ms = 0;
@@ -801,6 +804,8 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->frame_dispatch_active = 0;
     state->frame_dispatch_synctype = DSD_SYNC_NONE;
     state->frame_dispatch_carrier_seq = 0U;
+    state->scan_landing_visit = 0U;
+    state->frame_dispatch_scan_visit = 0U;
     state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     state->lastp25type = 0;
     state->offset = 0;
@@ -928,8 +933,8 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_confirm_last_frame_valid = 0;
     state->dpmr_confirm_last_frame_symbol = 0;
     state->dpmr_scrambled = 0;
-    state->dpmr_voice_mode = 0;
-    state->dpmr_expected_pair = 0;
+    state->dpmr_mode = 0;
+    state->dpmr_scramble_place = 0;
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
 }
@@ -1486,6 +1491,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
+    state->ysf_call_cm = 9;
     state->ysf_fich_confirmed = 0;
 
     //DSTAR Call Strings
@@ -1551,10 +1557,8 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
-    state->m17_text_meta_control_or = 0;
-    state->m17_text_meta_expected_bitmap = 0;
-    state->m17_text_meta_received_bitmap = 0;
-    DSD_MEMSET(state->m17_text_meta, 0, sizeof(state->m17_text_meta));
+    /* A new session: no M17 network end lost yet (the fallback has the M17 extension's lifetime). */
+    state->m17_ip_ended_lost = 0;
 }
 
 static void
@@ -1641,6 +1645,7 @@ freeState(dsd_state* state) {
         return;
     }
 
+    state->m17_ip_ended_lost = 0; // the M17 lost-end fallback goes with the M17 extension freed below
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);

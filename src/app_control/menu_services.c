@@ -45,6 +45,7 @@
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -745,7 +746,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * behind would let a stale "learned off the control channel, unconfirmed" byte
  * refuse an off-CC tune to a frequency the new CSV asserts (lpcn_is_trusted()
  * acts on an imported mapping anywhere). Clearing it matches what -C produces
- * at startup, and dmr_chan_map_note() records provenance again for any LCN the
+ * at startup, and dmr_t3_chan_learn() records provenance again for any LCN the
  * new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
  *
@@ -807,6 +808,8 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->scan_visit_roll_seen = 0;
     dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
+    // And the DMR rows' origins: every row the file sets is the file's, which nothing over the air overwrites.
+    dmr_t3_chan_note_map_loaded(dst);
     // So is the NXDN DFA record: the rows it named went with the old map, and a row the new file sets is the file's.
     dsd_nxdn_dfa_disown_all(dst);
     dst->trunk_chan_map_seq++;
@@ -833,6 +836,28 @@ svc_refuse_import_for_next_start(dsd_state* state, const char* what, char* why) 
 static void
 svc_next_start_p25_bandplan(dsdneoUserConfig* save, const void* ctx) {
     DSD_SNPRINTF(save->trunk_p25_bandplan_csv, sizeof save->trunk_p25_bandplan_csv, "%s", (const char*)ctx);
+}
+
+/*
+ * Whether an imported map has a row to load: a channel row with a frequency, or a positional (hunt list) slot with
+ * one. A Tier III control frequency seeded under key 0 (CHNULL) names no channel, so only its slot counts (issue
+ * #900); a zero-frequency placeholder counts for neither.
+ */
+static int
+chan_map_has_usable_row(const dsd_state* imported) {
+    if (imported->trunk_chan_map_used_count > 0U) {
+        return 1;
+    }
+    int slots = imported->lcn_freq_count > 0 ? imported->lcn_freq_count : 0;
+    if (slots > DSD_TRUNK_LCN_EMBEDDED && imported->trunk_lcn_freq_ext == NULL) {
+        slots = DSD_TRUNK_LCN_EMBEDDED; // chan_map_adopt() refuses this shape; read only what exists
+    }
+    for (int i = 0; i < slots; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(imported, i) != 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int
@@ -868,8 +893,9 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // The importer reports success for any file it could open, so a mispicked
     // CSV (a talkgroup list, a header-only file) parses to an empty map. Adopting
     // that would replace the live map with zeros; refuse instead, which is what
-    // the additive import used to do by doing nothing.
-    const int mapped_any = (imported->trunk_chan_map_used_count > 0);
+    // the additive import used to do by doing nothing. A file whose only rows are
+    // positional (a hunt list) is not empty.
+    const int mapped_any = chan_map_has_usable_row(imported);
     const int adopted = (import_rc == 0 && mapped_any && chan_map_adopt(opts, state, imported) == 0);
     if (adopted) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
@@ -970,6 +996,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // "learned off the control channel, unconfirmed" byte would refuse an off-CC
     // tune to whatever frequency is mapped there next.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
+    dmr_t3_chan_note_map_cleared(state);
     dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;
     return 0;
@@ -2077,7 +2104,7 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
 /* Tell the scans where the stream a restart stopped opened again, if at all (issue #644): a tune the stop dropped lands
    when the new stream opened on its target, and the note goes either way. */
 static void
-svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int rc) {
+svc_rtl_scans_stream_reopened(const dsd_opts* opts, dsd_state* state, int rc) {
     const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
     dsd_engine_manual_tune_stream_reopened(opts, state, opened);
     dsd_engine_channel_scan_stream_reopened(opts, state, opened);
@@ -2847,6 +2874,12 @@ svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     return rc;
 }
 
+void
+svc_operator_carrier_boundary(dsd_opts* opts, dsd_state* state, int guard_held) {
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
+    dmr_t3_chan_network_changed(opts, state);
+}
+
 /* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
    carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
    @p guard_held says whether the caller holds the P25 SM tick guard. */
@@ -2857,7 +2890,7 @@ svc_rtl_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, int guard_held) {
     }
     const int rc = svc_rtl_tune_only(opts, state, hz);
     if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, guard_held);
+        svc_operator_carrier_boundary(opts, state, guard_held);
     }
     return rc;
 }
@@ -2894,7 +2927,7 @@ svc_pause_trunk_scan_for_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, svc
         if (out_paused) {
             *out_paused = paused;
         }
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_operator_carrier_boundary(opts, state, 1);
         svc_trunk_scan_settle_gain(opts, state, &report);
     }
     p25_sm_tick_guard_leave();

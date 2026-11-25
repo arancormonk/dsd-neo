@@ -94,8 +94,8 @@ Under `--trunk-scan` the channel being heard is labelled by the target `id` inst
 
 Target list limits and validation:
 
-- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (about 100 KB; the exact size
-  depends on the build), and the list is capped by a 256 MB budget for those snapshots - about 2,400 targets. A CSV
+- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (about 122 KB; the exact size
+  depends on the build), and the list is capped by a 256 MB budget for those snapshots - about 2,100 targets. A CSV
   past the cap is rejected while parsing, with an error naming this build's per-target size and target cap.
 - Blank rows are skipped.
 - Every data row must contain the seven fields above.
@@ -223,10 +223,16 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   [Startup control-channel hunt](cli.md#startup-control-channel-hunt)), except in an EDACS session. Explicit decoder
   modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: digital conventional targets hold only from decoded voice media (headers and data no longer
-  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)),
-  with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
-  hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
-  targets are unchanged (control-only rotates after dwell). The scanner-wide
+  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)).
+  Decoded voice is a frame the vocoder decoded with nothing concealed: a frame that failed, or that the vocoder
+  repeated, muted or replaced, plays as before but never holds, and M17 voice holds only in a build with Codec2.
+  Only speech the decoder could play counts, clear or decrypted: encrypted voice without a key never holds, in any
+  protocol, whatever its frames decode as; without `--scan-voice-only` such a call holds the target on its checked call
+  signalling, as any call does. It
+  must be heard on the target's own visit: a call from the target before, or voice decoded while the scan is still
+  tuning to the target, holds nothing. The per-target `dwell_ms` is the qualify window in which voice must appear and
+  `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next
+  scan tick; trunked targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).
@@ -570,10 +576,14 @@ During scanning:
   does not refresh the hold, so `-e` has no effect on this row.
   Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
   before HDU/LDU2 metadata arrives.
+- A conventional target holds only on what was received on its own visit: a call report decoded while the scan was
+  still tuning to the target, or from a frame that began on the target before it (two targets can share a
+  frequency), holds nothing. A sync loss keeps the hold a visit already earned.
 - With `--scan-voice-only`, all digital conventional types, including P25, hold only from decoded voice media, not
   headers or voice-start reports alone (an analog target holds on carrier; see
   [Analog NFM and AM targets](#analog-nfm-and-am-targets)). The hold refreshes from decoded voice media (stamped
-  with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
+  with a retained media time, so LC-less and just-ended voice hold; only frames the vocoder decoded with nothing
+  concealed, heard on the target's own visit), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
@@ -674,8 +684,8 @@ written to its file.
 - The lists are the files loaded at start: none can be added or removed while the scan runs, and a config loaded
   meanwhile changes them only at the next start. To keep a list ready, load it switched off and switch it on when you
   need it.
-- Memory: every target of every list, on or off, keeps its own snapshot of decoder state (about 100 KB), and the lists
-  together share the one budget under [Target CSV](#target-csv) (about 2,400 targets), where a target several lists
+- Memory: every target of every list, on or off, keeps its own snapshot of decoder state (about 122 KB), and the lists
+  together share the one budget under [Target CSV](#target-csv) (about 2,100 targets), where a target several lists
   hold counts once.
 - Lists are a trunk-scan feature. A `-Y` conventional scan has none: it takes one channel map, and a second `-C` is
   refused.
@@ -1030,8 +1040,12 @@ turned it on).
   judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
   `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
   skips, never an extra one.
-- An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms. A reading of 90 ms or more always
-  holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
+- An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms (ETSI TS 102 361-1 clauses 4.2.2
+  and 10.2.3). Back-to-back slices of at most 13.75 ms hold one slice wholly inside one of those bursts at any phase
+  once there are at least ceil(32.5 / slice length) + 2 of them: six at the check's slice lengths. The nine slices of
+  the reading are three more than that, so the burst timing alone never makes such a channel read silent. This is
+  about an ongoing train of bursts: a single short burst (a wake-up, a data or status burst) can fall outside the
+  reading (see the [limits](#limits)).
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
   1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
   supported sample rate, with or without busy neighbours (10,316 signal conditions, 30.9 million trials). Every NFM
@@ -1044,31 +1058,30 @@ turned it on).
 
 - A visit is skipped at most once. The check starts as soon as the channel lands, on a `-Y` row as on a trunk-scan
   target. It waits for the first samples from the new frequency (up to 1 second after the tune lands, or after the check
-  starts again later in the visit), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on
-  the answer at its next check: on a channel with nothing on it that comes every 300 symbols of the sync search (62.5 ms
-  at 4800 symbols/s, 125 ms at 2400 symbols/s). Noise on some channels keeps looking like the start of a frame (NXDN48
-  and dPMR noise often does); there the scan also checks at the end of each such frame, and a reading it starts there
-  first lets 125 ms of the new channel's samples go by. So a skipped visit lasts about as long as the tune and the
-  reading take, not a whole dwell or hangtime.
+  starts again later in the visit), and starts its reading as soon as they come: it lets the first 10 ms of them go by,
+  then reads for about 90 ms, and has up to 400 ms for its answer. The scan acts on the answer as soon as it comes. A
+  frame being decoded comes first: noise on some channels keeps looking like the start of a frame (NXDN48 and dPMR
+  noise often does), and a reading that waits for such frames to end (rather than starting at once) first lets 125 ms
+  of the new channel's samples go by. So a skipped visit lasts about as long as the tune, the receiver's retune mute
+  and the reading take, not a whole dwell or hangtime.
 - The skip races the channel's normal wait: a trunk-scan conventional target's idle dwell (`dwell_ms`, 3 s by default;
   `-t` does not set it), or a `-Y` row's hangtime (`-t`). A dwell or hangtime shorter than the check's own time gains
   nothing: the visit ends on its dwell before the answer comes, and no skip line is logged. On the rtl_tcp loopback
-  bench below the check took about 0.27 to 0.39 s at the default retune mute, less with a shorter mute, and up to about
-  0.5 s on NXDN48 noise. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
+  bench below a skipped visit took about 0.24 s at the default retune mute and 0.15 s with a shorter one, NXDN48 and
+  dPMR noise included. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
   left as soon as the check answers, so the extra time is spent only on channels that read busy or get no check, which
   is where a call may be starting.
 - Measured on a synthetic test scene over an rtl_tcp loopback (`tools/bench_scan_skip_silent.py`: 12 silent channels and
-  three that each call for 4 s about every 20 s, 240 s per run, with a 3 s dwell, or `-t 2`), every silent DMR, NFM and
-  P25 visit was skipped and no channel was skipped while a call was on it (a call that started during the reading was
-  missed up to once a run, a limit listed below). With the default retune mute a skipped visit took 0.27 to 0.34 s on
-  the rtl_tcp loopback; with a 25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp
-  loopback, not real hardware) it took 0.17 to 0.26 s. The scan caught 17 to 27 of the 35 calls with the setting on,
-  against 2 of 34 with it off (`-Y`, default mute). On a second loopback scene whose silent channels are NXDN48 and dPMR
-  channels carrying only noise, 99 to 100 % of those visits were skipped, in a median of 0.30 to 0.49 s each (0 to 65 %
-  before these fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a
-  host busy with other work). On the noise scene it rose by up to about 0.5 points on the rtl_tcp loopback (from
-  2.79 to 3.31 % on trunk scan with the 25 ms mute), because the scan made more visits: about twice as many on trunk
-  scan, and five to seven times as many on `-Y`, whose NXDN48 noise rows had been held to the visit cap before.
+  three that each call for 4 s about every 20 s, 240 s per run, three runs, with a 3 s dwell, or `-t 2`), every silent
+  DMR, NFM and P25 visit was skipped, and no channel was skipped while a call was on air through the reading. With a
+  25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp loopback, not real hardware) a
+  skipped visit took a median of 0.15 s (0.24 s before the check acted as soon as its capture and answer were there),
+  and with the default mute 0.24 s (0.32 s before). On a second scene whose silent channels are NXDN48 and dPMR
+  channels carrying only noise, every visit was skipped, in a median of 0.15 s (0.28 s on dPMR and 0.39 s on NXDN48
+  before). On the desktop's own RTL-SDR a skip took 0.17 s over USB (0.24 s before), 0.26 s through an rtl_tcp server
+  (0.35 s before) and 0.52 s through SoapySDR, unchanged: there the time is the wait for the receiver's first samples
+  after the retune and the delivery of the reading's samples. CPU use was the same as before per second of scan (2.0 to
+  2.8 % of one core on a host busy with other work), with more visits per second.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example
@@ -1080,6 +1093,31 @@ turned it on).
 - The signal reading is never activity. It never holds a channel, never counts as a decode, never extends a dwell or
   hold, and nothing it measures goes to call history, event or location files, or counts as activity for trunk scan.
   It can only make a visit shorter.
+
+### Reading length (experts)
+
+`--scan-skip-silent-ms <ms>` (or `[trunking] scan_skip_silent_ms`) sets how long the reading lasts, for users who
+accept more missed calls for a faster scan. The value is rounded up to whole 10 ms slices: 81 to 90 gives the
+calibrated nine, 60 gives six, 500 gives fifty. Each slice keeps its length at the receiver's rate (10.0 to 11.5 ms),
+so the reading lasts that many slices of it: 60 reads for 60 to 69 ms. Unset (or 0 in a config file), the check reads
+its calibrated nine slices, exactly as without the option. It is session-wide, like `--scan-skip-silent`, and an
+`options` cell refuses it.
+
+- Only the nine-slice reading was calibrated. The 5.0 dB threshold and the 8.7 dB guard stay the same at every
+  length, but below nine slices they are not calibrated: a weak signal, or one that fades during the reading, is more
+  likely to read silent and be skipped. A short check at 1.536 Msps (not a calibration) found no live signal read
+  silent at six slices, live DMR read silent at three, and weak M17 and dPMR read silent at one.
+- A channel that can carry a single DMR radio is still read for at least six slices (60 to 69 ms): a typed DMR row or
+  `dmr-conventional` target, or an untyped row or a row in mode `inherit` while the DMR decoder is on. Six slices is
+  the fewest that always hold one slice wholly inside a burst of an ongoing DMR transmission (above).
+- Longer readings (above 90 ms) skip less often and are less likely to skip a weak live signal, at the cost of a
+  longer skip. The time the scan waits for the answer grows with them.
+- When the setting shortens the reading, the first check logs
+  `WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to 53 ms), shorter than the calibrated 9: a weak or fading signal can read silent and be skipped.`
+  (with the span at the receiver's rate), and the first DMR channel read for its floor logs
+  `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.`
+  A value that rounds to nine or more slices logs nothing. The option has no effect without `--scan-skip-silent`, and
+  says so at start.
 
 ### When a channel is never skipped
 
@@ -1097,9 +1135,11 @@ turned it on).
   runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone or code, even one that ends before its
   tone check finishes. A sync alone does not count: noise that only looks like the start of a frame (NXDN48 and dPMR
   noise often does) no longer keeps a silent channel. A frame whose verdict is still open (one that passed part of its
-  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR frame type that carries
-  no check of its own) holds the skip back while it waits; if the check's answer is more than a quarter of a second old
-  by then, the visit keeps its normal timing.
+  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR voice frame with one of
+  its two control halves checked) holds the skip back while it waits; if the check's answer is more than a quarter of a
+  second old by then, the visit keeps its normal timing. A D-STAR transmission proved only by its sync words (two exact
+  resync words in a row, with no header or D-PRS CRC) plays, but it is no checked content: its superframes hold the skip
+  back while they keep coming, and the check can still skip the channel once they stop.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
@@ -1138,7 +1178,8 @@ brackets below), and the log says how to fix it; see
   width set is checked at its 6 kHz default. The same goes for the `-8` analog monitor beside a digital decoder: with
   no NFM width set, the rows and targets it plays on get no check.
 - An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
-  the check (`modes`). Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
+  the check (`modes`). TETRA frames are still checked for the `-Y` hangtime (see below); only this quiet check has no
+  TETRA width. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
   checked. Type the rows (a `mode` column), or choose decoders without those modes. An untyped row also gets no check
   while the M17 encoder runs, or when none of the decoders in use is one the check knows (P25, DMR, NXDN, YSF, M17,
   dPMR or D-STAR).
@@ -1198,6 +1239,8 @@ Turning the setting on accepts these:
   hang time, or dPMR Mode 2 replies sent without a hang period.
 - A signal more than about 1 dB weaker than the weakest one DSD-neo still receives can read silent, so a weak
   transmission can be skipped.
+- The calibration used steady signals (with the power droop inside a DMR burst), not fading: a signal that fades
+  through the whole reading, from a radio on the move for example, can read silent and be skipped.
 - An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
   nothing there.
 - Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
@@ -1228,8 +1271,15 @@ passed since the radio started listening again after the retune: a retune mutes 
 second on a HackRF at its lowest rates), and a row is never left before it has been heard for `-t`. The Scan Timing
 countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
-such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice, X2-TDMA and TETRA frames, which
-have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
+such frame, so a late-joined D-STAR call waiting for its header is not cut. A D-STAR call's resync words alone are
+not checked content: the row leaves once `-t` has passed since the call's last header, slow-data header or D-PRS record
+whose CRC passed (since the landing when none did), however long its superframes keep coming, unless
+`--scan-voice-only` holds it on its decoded voice. ProVoice and X2-TDMA frames, which have no such check, keep the row
+while they keep coming. TETRA bursts keep it only when their checks passed on something the channel carries: trunked
+signalling or speech (an idle control channel included, under `-fT`), a direct mode call or short data message, an
+encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks, a direct mode burst of which
+only the first half decoded, and a direct mode channel reservation do not keep it, so a reserved channel with no talker
+is left once `-t` has run out. DMR, P25, ProVoice and EDACS syncs restart the hangtime
 themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
 check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
 control-channel checks. The one exception is the start of an NXDN48 call whose first frame passed a strong check on
@@ -1363,6 +1413,10 @@ An explicit target option overrides the corresponding session default, and leavi
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
 on saved-system Extra arguments does not apply to a CSV's validated scoped options.
+A manual list refuses a saved system with Extra arguments, with one exception: an NFM or AM system
+whose Extra arguments are only its own channel width (`--nfm-bandwidth-hz N` for NFM,
+`--am-bandwidth-hz N` for AM), as **Save as system** from Signal search writes them. The list
+scans that system at that width.
 Imported targets are read-only in the editor; use **Update from file** in the
 imports library to replace their contents.
 
@@ -1396,8 +1450,10 @@ The editor's Advanced section has **Voice only** and **Skip silent channels** ch
 stores its own, but they are session settings (`--scan-voice-only`, `--scan-skip-silent`): lists that differ cannot
 scan together, Extra decoder arguments may not carry those switches, and a change applies at the next start. An
 unchecked box starts the scan with `--no-scan-voice-only` or `--no-scan-skip-silent`, so a config file loaded with
-`--config` in Extra decoder arguments cannot turn that setting on. See
-[Skipping silent channels](#skipping-silent-channels).
+`--config` in Extra decoder arguments cannot turn that setting on. The checkbox does not set how long the check
+reads: Extra decoder arguments may carry `--scan-skip-silent-ms <ms>` (or `--scan-skip-silent-ms=<ms>`) for the
+whole session, and the decoder checks its range. See [Skipping silent channels](#skipping-silent-channels) and
+[Reading length (experts)](#reading-length-experts).
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
 arguments to cap every target in the session, or import a target CSV whose `options`
 cells cap individual targets. Per-target squelch is likewise CSV-only: import a target CSV

@@ -46,7 +46,6 @@ typedef struct dstar_sd_ctx_s {
     uint16_t crc_cmp;
     uint8_t
         header_flag1; /* the header's first flag byte as received: the header CRC covers it, never its display copy */
-    int len;
 } dstar_sd_ctx;
 
 /* Printable ASCII, space included: the only bytes slow data puts on the console or in a stored message. Control bytes
@@ -89,26 +88,43 @@ dstar_sd_pack_bytes(const uint8_t* sd, uint8_t* sd_bytes) {
     }
 }
 
+enum {
+    DSTAR_SD_BLOCK_BYTES = 6, /* a mini-header and up to five data bytes, over two voice frames */
+    DSTAR_SD_BLOCKS = 10,     /* blocks in one superframe's 60 slow-data bytes */
+    DSTAR_SD_BLOCK_DATA_MAX = 5,
+};
+
+/* The blocks a rebroadcast header fills: its 41 octets, five per block. */
+enum { DSTAR_SD_HEADER_BLOCKS = 9 };
+
+/* A mini-header's type; its low nibble counts the block's data bytes. A rebroadcast header's blocks are type 5 with
+ * five bytes; a code squelch block is type 0xC (JARL STD 6.0 section 6.5; MMDVMHost's DSTAR_SLOW_DATA_TYPE_SQUELCH). */
+#define DSTAR_SD_TYPE_MASK    0xF0U
+#define DSTAR_SD_HEADER_MINI  0x55U
+#define DSTAR_SD_TYPE_SQUELCH 0xC0U
+
+/* The block a rebroadcast header starts at, or -1 for none: the nine blocks right after the [Sync] frame, or after the
+ * code squelch block, when the radio sends one, which takes the two data frames right after it (JARL STD 6.0 sections
+ * 6.4 and 6.5). A header after code squelch fills the superframe to its end. */
 static int
-dstar_sd_payload_len(const uint8_t* sd_bytes) {
-    int len = sd_bytes[0] & 0xF;
-    return len + 1;
+dstar_sd_header_block(const uint8_t* payload) {
+    if (payload[0] == DSTAR_SD_HEADER_MINI) {
+        return 0;
+    }
+    if ((payload[0] & DSTAR_SD_TYPE_MASK) == DSTAR_SD_TYPE_SQUELCH
+        && payload[DSTAR_SD_BLOCK_BYTES] == DSTAR_SD_HEADER_MINI) {
+        return 1;
+    }
+    return -1;
 }
 
+/* The five data bytes of each block from block @p first on, mini-headers left out, into @p hd_bytes: a rebroadcast
+ * header's 41 octets from its first block. What lies past the superframe's last block stays 0. */
 static void
-dstar_sd_load_truncated_payload(const uint8_t* sd_bytes, uint8_t* hd_bytes, int len) {
-    int i;
-    int j;
-    int marker;
-
-    for (i = 0, j = 0; i < 50; i++) {
-        j++;
-        hd_bytes[i] = sd_bytes[j];
-        for (marker = 1; marker <= 9; marker++) {
-            if (j == len * marker - 1) {
-                j++;
-            }
-        }
+dstar_sd_load_block_data(const uint8_t* payload, int first, uint8_t* hd_bytes) {
+    for (int b = first; b < DSTAR_SD_BLOCKS; b++) {
+        DSD_MEMCPY(hd_bytes + ((size_t)(b - first) * DSTAR_SD_BLOCK_DATA_MAX),
+                   payload + ((size_t)b * DSTAR_SD_BLOCK_BYTES) + 1U, DSTAR_SD_BLOCK_DATA_MAX);
     }
 }
 
@@ -209,26 +225,20 @@ dstar_sd_handle_header_format(const dsd_opts* opts, dsd_state* state, const dsta
 /* ---- D-PRS (GPS-A) records: JARL STD 6.0 section 6.8.1 and Ap2.1, issue #800 2.10 ---- */
 
 enum {
-    DSTAR_SD_BLOCK_BYTES = 6, /* a mini-header and up to five data bytes, over two voice frames */
-    DSTAR_SD_BLOCKS = 10,     /* blocks in one superframe's 60 slow-data bytes */
-    DSTAR_SD_BLOCK_DATA_MAX = 5,
     DSTAR_DPRS_TAG_LEN = 5,     /* "$$CRC" */
     DSTAR_DPRS_PREFIX_LEN = 10, /* "$$CRCxxxx," */
 };
 
-/* The mini-header type of a GPS block; its low nibble counts the block's data bytes. */
-#define DSTAR_SD_TYPE_MASK 0xF0U
-#define DSTAR_SD_TYPE_GPS  0x30U
+/* The mini-header type of a GPS block. */
+#define DSTAR_SD_TYPE_GPS 0x30U
 
-/* The blocks a rebroadcast header fills at the start of its superframe: its 41 octets, five per block. */
-enum { DSTAR_SD_HEADER_BLOCKS = 9 };
-
-/* The first block of a superframe that may carry text or GPS data: after a rebroadcast header's nine (@p header), else
- * the first. The header CRC covers the header's octets, not its blocks' mini-headers, so a header block whose
- * mini-header was received as another type still holds header octets: none of them is text or GPS data. */
+/* The first block of a superframe that may carry text or GPS data: after a rebroadcast header's nine (@p header_block,
+ * where it starts: dstar_sd_header_block()), else the first. The header CRC covers the header's octets, not its
+ * blocks' mini-headers, so a header block whose mini-header was received as another type still holds header octets:
+ * none of them is text or GPS data. */
 static int
-dstar_sd_first_block(int header) {
-    return header ? DSTAR_SD_HEADER_BLOCKS : 0;
+dstar_sd_first_block(int header_block) {
+    return header_block >= 0 ? header_block + DSTAR_SD_HEADER_BLOCKS : 0;
 }
 
 /* An APRS position (APRS 1.0.1 chapter 6, as D-PRS fixes it): latitude ddmm.hh and longitude dddmm.hh, in degrees,
@@ -740,13 +750,14 @@ dstar_sd_print_unknown(const uint8_t* raw, int first) {
     }
 }
 
-/* Every superframe, a rebroadcast header's after the header itself (@p header: its first nine blocks are the header's,
- * whatever their mini-headers say, dstar_sd_first_block()): each other block classified by its own mini-header. Text
+/* Every superframe, a rebroadcast header's after the header itself (@p header_block: the nine blocks from there are the
+ * header's, whatever their mini-headers say, dstar_sd_first_block()): each other block classified by its own
+ * mini-header. Text
  * blocks make the message (the block a header leaves after its nine among them); GPS blocks the -Z "GPS DATA:" dump;
  * the blocks of no known kind, when no text block came, the "_UNK:" dump. */
 static void
-dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx, int header) {
-    const int first = dstar_sd_first_block(header);
+dstar_sd_handle_typed_blocks(const dsd_opts* opts, dsd_state* state, const dstar_sd_ctx* ctx, int header_block) {
+    const int first = dstar_sd_first_block(header_block);
     /* Without the slow-data state (it could not be created) no message is assembled. */
     dstar_sd_state* sd = dstar_sd_st(state);
     const int text = sd != NULL && dstar_sd_collect_text(opts, state, &sd->text, ctx->payload, first);
@@ -799,8 +810,9 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     dstar_sd_pack_bytes(sd, ctx.sd_bytes);
     DSD_MEMCPY(ctx.payload, ctx.sd_bytes, sizeof(ctx.payload));
 
-    ctx.len = dstar_sd_payload_len(ctx.sd_bytes);
-    dstar_sd_load_truncated_payload(ctx.sd_bytes, ctx.hd_bytes, ctx.len);
+    /* A header first: it may name the call the superframe's other blocks belong to. */
+    const int header_block = dstar_sd_header_block(ctx.payload);
+    dstar_sd_load_block_data(ctx.payload, header_block >= 0 ? header_block : 0, ctx.hd_bytes);
     ctx.crc_ext = (uint16_t)((ctx.hd_bytes[39] << 8) + ctx.hd_bytes[40]);
     ctx.crc_cmp = dstar_crc16(ctx.hd_bytes, 39);
     ctx.header_flag1 = ctx.hd_bytes[0];
@@ -811,13 +823,11 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     dstar_sd_sanitize_bytes(ctx.hd_bytes);
     dstar_sd_capture_display_strings(&ctx);
 
-    /* A header first: it may name the call the superframe's other blocks belong to. */
-    const int header = ctx.payload[0] == 0x55;
-    if (header) {
+    if (header_block >= 0) {
         dstar_sd_handle_header_format(opts, state, &ctx);
     }
-    dstar_sd_handle_typed_blocks(opts, state, &ctx, header);
-    dstar_sd_collect_gps(opts, state, ctx.payload, dstar_sd_first_block(header));
+    dstar_sd_handle_typed_blocks(opts, state, &ctx, header_block);
+    dstar_sd_collect_gps(opts, state, ctx.payload, dstar_sd_first_block(header_block));
 
     dstar_sd_print_payload(opts, &ctx);
 }

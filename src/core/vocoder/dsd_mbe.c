@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1051,6 +1052,13 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
     frame_ctx->capture = MBE_CAPTURE_X2;
 }
 
+/* Whether a frame the NXDN decoder decodes for NXDN or a scrambled dPMR half runs the Scramble LFSR: Scramble (cipher
+   0x01), or a forced key, with a key loaded. */
+static int
+mbe_nxdn_cipher1_applies(const dsd_state* state) {
+    return (state->nxdn_cipher_type == 0x01 || state->M == 1) && dsd_key_scalar_present(state, 0);
+}
+
 static void
 mbe_apply_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
     if (state->nxdn_payload_mi == 0) {
@@ -1236,9 +1244,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     // dPMR halves', only.
     const int nxdn_crypto =
         frame_ctx->protocol == DSD_VOICE_PROTOCOL_NXDN || frame_ctx->protocol == DSD_VOICE_PROTOCOL_DPMR;
-    if (nxdn_crypto
-        && ((state->nxdn_cipher_type == 0x01 && dsd_key_scalar_present(state, 0))
-            || (state->M == 1 && dsd_key_scalar_present(state, 0)))) {
+    if (nxdn_crypto && mbe_nxdn_cipher1_applies(state)) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
     }
 
@@ -2494,10 +2500,40 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
     }
 }
 
+/* The call slot a frame of @p protocol on @p current_slot is media of: X2-TDMA, DMR and P25 Phase 2 by the slot being
+   decoded, every other protocol slot 0. */
+static uint8_t
+mbe_checked_media_slot(int protocol, int current_slot) {
+    if ((DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_DMR(protocol) || DSD_SYNC_IS_P25P2(protocol))
+        && current_slot == 1) {
+        return 1U;
+    }
+    return 0U;
+}
+
+/* What the vocoder output for the frame (issue #890): decoded speech, the scan's voice credit
+   (dsd_call_state_note_checked_media()). A speech frame mbelib-neo synthesized with nothing concealed counts only when
+   the voice chain could play it as speech: the receive policy admits it (@p j's admission) and it is clear or decrypted
+   (mbe_frame_decodable(), the chain's own decodability, never a user mute). Encrypted voice without a key never counts,
+   whatever its FEC made of the ciphertext, in every protocol; nor does a failed, concealed, muted or tone frame, though
+   it plays. Judged by the frame's own protocol (a YSF or dPMR frame through another protocol's decoder included), and
+   only while a scan that reads it runs: otherwise nothing more is done on the voice path. */
+static void
+mbe_note_checked_media(const dsd_opts* opts, dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                       const mbe_frame_judgement* j) {
+    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH || !dsd_scan_uses_checked_media(opts, state) || !j->admitted
+        || !mbe_frame_decodable(state, slot, frame_ctx, j)) {
+        return;
+    }
+    const int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
+    (void)dsd_call_state_note_checked_media(state, mbe_checked_media_slot(protocol, state->currentslot), protocol, 0.0);
+}
+
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int slot = state->currentslot == 1 ? 1 : 0;
     const mbe_frame_judgement judgement = mbe_frame_judge(opts, state, slot, frame_ctx);
+    mbe_note_checked_media(opts, state, slot, frame_ctx, &judgement);
     // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
     // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
     // type or the mute. An exhausted keystream produced no decoded media: keep that silence out of the HPF so its
@@ -2533,31 +2569,31 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
     }
 }
 
-// Each file replays its own traffic. An SDRTrunk JSON export leaves its last
-// call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
-// publishes neither, so the output gates would judge it on the previous file's
-// talkgroup, or as an unclassified live P25 call. Start each file as a fresh
-// -r run does: no call and no protocol.
+/* Plays the open raw .imb/.amb/.dmb file's frames to its end, or until the exit flag is set. */
 static void
-mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
-    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
+play_mbe_file_frames(dsd_opts* opts, dsd_state* state, int want_static_wav) {
+    char imbe_d[88];
+    char ambe_d[49];
+    char file_err_str[260];
+    while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
+        if (state->mbe_file_type == 0) {
+            if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        } else if (state->mbe_file_type > 0) {
+            if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        }
+        if (dsd_exitflag_load() == 1) {
+            dsd_request_shutdown(opts, state);
+            break;
+        }
     }
-    state->synctype = DSD_SYNC_NONE;
-    state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
-    // gain (issue #518).
-    dsd_voice_hpf_reset(state, -1);
-    dsd_voice_level_reset(state, -1);
 }
 
 void
 playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
-
-    char imbe_d[88];
-    char ambe_d[49];
-    char file_err_str[260];
-
     // Playback mode: keep static WAV writing functional even when audio output is disabled (-o null).
     const int want_static_wav = (opts->wav_out_f != NULL && opts->static_wav_file == 1) ? 1 : 0;
 
@@ -2567,25 +2603,20 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         if (opts->mbe_in_f == NULL) {
             continue;
         }
-        mbe_file_end_replayed_call(opts, state);
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+        if (state->mbe_file_type != 3) {
+            dsd_mbe_file_end_replayed_call(opts, state);
+        }
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
-        while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
-            if (state->mbe_file_type == 0) {
-                if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            } else if (state->mbe_file_type == 3) {
-                read_sdrtrunk_json_format(opts, state);
-            } else if (state->mbe_file_type > 0) {
-                if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            }
+        if (state->mbe_file_type == 3) {
+            // The reader takes the whole SDRTrunk file, or refuses it, in one call: it is never read again from the
+            // start, and it ends the earlier file's call, and resets the speech decoder, only once it has read and
+            // checked the file with no Stop (issue #888).
+            read_sdrtrunk_json_format(opts, state);
             if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);
-                break;
             }
+        } else {
+            play_mbe_file_frames(opts, state, want_static_wav);
         }
         if (opts->mbe_in_f != NULL) {
             fclose(opts->mbe_in_f); //close file after playing it
@@ -2797,6 +2828,16 @@ void
 processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
     processMbeFrameInternal(opts, state, protocol, NULL, NULL, NULL, imbe_fr, ambe_fr, imbe7100_fr);
+}
+
+void
+dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
+    if (state == NULL || !mbe_nxdn_cipher1_applies(state)) {
+        return;
+    }
+    char keystream[49] = {0};
+    mbe_apply_nxdn_cipher1(state, keystream); /* zeros in: the 49 key bits a decoded frame would have taken */
+    DSD_SECURE_ZERO(keystream, sizeof(keystream));
 }
 
 void

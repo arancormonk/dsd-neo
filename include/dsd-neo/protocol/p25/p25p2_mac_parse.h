@@ -62,8 +62,8 @@ struct p25p2_mac_voice_identity {
     int is_group;
     int svc_bits;
     int source_optional;
-    /* An extended voice user's (0x21 / 0x22) Source SUID when its unit ID names a radio: the talker's home identity,
-       never its source (@ref src stays the working address). home_valid 0: none. */
+    /* An extended voice user's (0x21 / 0x22, and Motorola's 0xA0 supergroup form) Source SUID when its unit ID names a
+       radio: the talker's home identity, never its source (@ref src stays the working address). home_valid 0: none. */
     int home_valid;
     uint32_t home_wacn;
     uint32_t home_sysid;
@@ -111,6 +111,13 @@ int p25p2_mac_parse_span(int type, int span, const unsigned long long mac[24], s
  *         or a negative value on invalid input.
  */
 int p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out);
+/**
+ * As p25p2_mac_decode_voice_identity(), segmenting within the @p span octets the transport carries (p25p2_mac_span():
+ * an LCCH carries fewer than a SACCH), so no voice user, and no home SUID, is read from octets past the message
+ * area. p25p2_mac_decode_voice_identity() uses the SACCH or FACCH span of @p type.
+ */
+int p25p2_mac_decode_voice_identity_span(int type, int span, const unsigned long long mac[24],
+                                         struct p25p2_mac_voice_identity* out);
 int p25p2_mac_decode_iden_standard(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_vuhf(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_tdma(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);

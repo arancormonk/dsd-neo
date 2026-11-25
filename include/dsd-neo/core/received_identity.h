@@ -321,6 +321,10 @@ int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t ne
  * external scanner's move to another channel may be the only sign of) and a record a sync of another protocol dropped
  * name none until fresh checked evidence. */
 uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
+/** The DMR trunking system (dsd_rxid_dmr_trunk) the record's DMR trunking parts (site text, network and site numbers,
+ * brand, system code, Capacity Max marker, rest LSN, free LCN) name now: NONE when the record is not DMR's or none of
+ * them is valid. */
+uint8_t dsd_rxid_dmr_trunk_named(const dsd_state* state);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */
 void dsd_rxid_note_dmr_ras(dsd_state* state);

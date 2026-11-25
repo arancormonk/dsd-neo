@@ -38,6 +38,7 @@
 #include <cstring>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/position_view.h>
@@ -61,6 +62,7 @@ extern "C" {
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -84,6 +86,7 @@ extern "C" {
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "dmr_channels_model.h"
 #include "json_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
@@ -530,6 +533,7 @@ connectEveryMetricsSignal(dsd_qt::MetricsModel& metrics, const std::function<voi
         &dsd_qt::MetricsModel::toneFilterChanged,     &dsd_qt::MetricsModel::toneFilterSettingChanged,
         &dsd_qt::MetricsModel::tetraChanged,          &dsd_qt::MetricsModel::uiMessageChanged,
         &dsd_qt::MetricsModel::decodeNowMsChanged,    &dsd_qt::MetricsModel::callBusyChanged,
+        &dsd_qt::MetricsModel::uiMessageSeqChanged,
     };
     std::vector<QMetaMethod> watched;
     for (const Signal signal : kSignals) {
@@ -2098,6 +2102,243 @@ test_positions_poll_without_redraw() {
 
 } // namespace
 
+/* Discussion #900 F3: a channel edit from the Channels sheet goes through the real bridge and queue as
+ * DSD_APP_CMD_DMR_CHANNEL_SET against the row the sheet read. The controller's tick reports this bridge's answers once
+ * each, with what was asked (the frequency included) and never another caller's, and the sheet's model reads the row
+ * the decoder holds now from the next snapshot, and from the held one as soon as the sheet opens. An applied edit is
+ * kept on the saved system named when it was sent, whatever the session runs by its answer; a failed write says so.
+ * A request the stop dropped is answered too. */
+static void
+test_dmr_channel_bridge() {
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(dmr_t3_chan_learn(&opts, &state, 18U, 451012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    Host host;
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    controller.setCommandBridge(&bridge);
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    check(systems.add({{"name", "Site A"}, {"decodeFlag", "-fs"}})
+          && systems.add({{"name", "Site B"}, {"decodeFlag", ""}}));
+    const QString siteA = systems.get(0).value("uid").toString();
+    const QString siteB = systems.get(1).value("uid").toString();
+    bridge.setSavedSystems(&systems);
+    dsd_qt::DmrChannelsModel channels;
+    controller.setDmrChannels(&channels);
+    controller.setPollIntervalMs(50);
+    const auto tick = [&]() {
+        dsd_app_telemetry_publish_opts_snapshot(&opts);
+        dsd_app_telemetry_publish_snapshot(&state);
+        dsd_app_request_redraw();
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    QList<QVariantMap> answers;
+    QObject::connect(&bridge, &dsd_qt::CommandBridge::dmrChannelResultReceived,
+                     [&answers](const QVariantMap& result) { answers.append(result); });
+    tick();
+    check(channels.channels().isEmpty()); // closed: nothing read
+    channels.setActive(true);             // opened: the held snapshot at once, no tick needed
+    check(channels.channel(18).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_SITE
+          && !channels.session().isEmpty());
+    channels.setSessionSystemUid(siteA);
+    const QVariantMap row = channels.channel(12);
+    const quint32 generation = channels.generation();
+    const qint64 rowHz = row.value("hz").toLongLong();
+    const int rowOrigin = row.value("originCode").toInt();
+
+    check(!bridge.setDmrChannel(0, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation)); // no such channel
+    check(!bridge.setDmrChannel(4095, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation));
+    check(!bridge.setDmrChannel(12, 4, 451137500, rowHz, rowOrigin, generation));                // no such operation
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 99999, rowHz, rowOrigin, generation)); // nor frequency
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, 256, generation));   // nor origin
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation, siteA,
+                                QStringLiteral("not a session")));
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
+
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation,
+                               channels.sessionSystemUid(), channels.session()));
+    const quint32 request = bridge.lastDmrChannelRequest();
+    check(request != 0U);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    /* DMR uses the user's frequency; the shared map row under it is untouched. */
+    check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L && state.trunk_chan_map[12] == rowHz);
+    const uint32_t revisionAfter = dmr_t3_chan_revision(&state);
+    /* Another caller's request is not this bridge's to report. */
+    dsd_app_dmr_channel_set_payload other = {};
+    other.session_seq = dsd_app_command_session_generation();
+    other.request = dsd_app_dmr_channel_request_next();
+    other.lpcn = 13U;
+    other.op = DSD_UI_DMR_T3_OP_HIDE;
+    other.generation = generation;
+    check(dsd_app_command_dmr_channel_set(&other) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 1);
+    const QVariantMap ok = answers.value(0);
+    check(ok.value("request").toUInt() == request && ok.value("lpcn").toInt() == 12
+          && ok.value("op").toInt() == DSD_UI_DMR_T3_OP_SET && ok.value("hz").toLongLong() == 451137500
+          && ok.value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_OK && ok.value("result").toString() == "ok"
+          && ok.value("revision").toUInt() == revisionAfter);
+    check(ok.value("systemUid").toString() == siteA && ok.value("saved").toBool()
+          && ok.value("saveError").toString().isEmpty());
+    const auto entry = [](int lpcn, qint64 hz) { return QVariant(QVariantMap{{"lpcn", lpcn}, {"hz", hz}}); };
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    check(bridge.dmrChannelResult() == ok);
+    check(channels.channel(12).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_USER
+          && channels.channel(12).value("hz").toLongLong() == 451137500
+          && !channels.channel(12).value("missing").toBool());
+    check(channels.revision() == dmr_t3_chan_revision(&state));
+
+    /* Against the row as it was: stale, and nothing changes. */
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation, siteA, channels.session()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 2 && answers.value(1).value("result").toString() == "stale"
+          && answers.value(1).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_STALE);
+    check(!answers.value(1).value("saved").toBool() && answers.value(1).value("saveError").toString().isEmpty());
+    check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L && state.trunk_chan_map[12] == rowHz);
+    check(systems.dmrChannels(siteA).size() == 1); // a refusal keeps nothing
+    tick();
+    check(answers.size() == 2); // each answer once
+
+    /* Sent while the session ran site A, answered after it runs site B: kept on site A. */
+    const QVariantMap eighteen = channels.channel(18);
+    check(bridge.setDmrChannel(18, DSD_UI_DMR_T3_OP_HIDE, 0, eighteen.value("hz").toLongLong(),
+                               eighteen.value("originCode").toInt(), channels.generation(), channels.sessionSystemUid(),
+                               channels.session()));
+    channels.setSessionSystemUid(siteB);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 3 && answers.value(2).value("result").toString() == "ok"
+          && answers.value(2).value("systemUid").toString() == siteA && answers.value(2).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500), entry(18, 0)})
+          && systems.dmrChannels(siteB).isEmpty());
+
+    /* A session that keeps nothing: applied, kept nowhere, no error. */
+    check(
+        bridge.setDmrChannel(19, DSD_UI_DMR_T3_OP_SET, 451150000, 0, DSD_UI_DMR_T3_ORIGIN_NONE, channels.generation()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 4 && answers.value(3).value("result").toString() == "ok"
+          && !answers.value(3).value("saved").toBool() && answers.value(3).value("saveError").toString().isEmpty());
+
+    /* The write fails: applied live, and the answer says it was not kept. */
+    const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+    check(QFile::rename(store, store + QStringLiteral(".aside")) && QDir().mkdir(store));
+    check(bridge.setDmrChannel(18, DSD_UI_DMR_T3_OP_RESTORE, 0, 0, DSD_UI_DMR_T3_ORIGIN_USER, channels.generation(),
+                               siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 5 && answers.value(4).value("result").toString() == "ok"
+          && !answers.value(4).value("saved").toBool()
+          && answers.value(4).value("saveError").toString() == "not-saved");
+    check(systems.dmrChannels(siteA).size() == 2);
+    /* Saving it again (the Channels sheet's Try saving again): still blocked, then kept once the store can be
+       written. */
+    QVariantMap again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "not-saved");
+    check(QDir().rmdir(store) && QFile::rename(store + QStringLiteral(".aside"), store));
+    again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(again.value("saved").toBool() && again.value("saveError").toString().isEmpty());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    /* A restore no saved entry made (a channel file of the user's set it) is not saved. */
+    again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "session-only");
+    again = bridge.saveDmrChannelEdit(QString(), 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "no-system");
+
+    /* The receiver is on another system by the time the decoder applies it: refused, with its own key, and kept
+       nowhere. */
+    state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_P25);
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER,
+                               channels.generation(), siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 6 && answers.value(5).value("result").toString() == "other-system"
+          && !answers.value(5).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    state.rx_id.family = static_cast<uint8_t>(DSD_RXID_FAMILY_NONE);
+
+    /* A live mode change left DMR off by the time the decoder applies it: refused with its
+       own key, kept nowhere, and the open sheet lists nothing and offers no edit. */
+    opts.frame_dmr = 0;
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER,
+                               channels.generation(), siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 7 && answers.value(6).value("result").toString() == "no-dmr"
+          && answers.value(6).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_NO_DMR
+          && !answers.value(6).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    check(!channels.dmrDecoding() && !channels.editable() && channels.channels().isEmpty());
+    opts.frame_dmr = 1;
+    tick();
+    check(channels.dmrDecoding() && channels.editable() && !channels.channels().isEmpty());
+
+    /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));
+    dsd_app_frontend_runtime_stop();
+    host.setPhase(Host::Idle);
+    check(answers.size() == 8 && answers.value(7).value("result").toString() == "dropped"
+          && answers.value(7).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
+          && !answers.value(7).value("saved").toBool());
+    check(channels.channels().isEmpty()); // a stopped session lists nothing
+    while (systems.count() > 0 && systems.remove(0)) {}
+    freeState(&state);
+}
+
+/* The decoder applied an edit and the app quits before the next tick polls its answer (Android's
+ * activity teardown exits the event loop, and main() then destroys the bridge and the saved systems). The answer is
+ * settled as the loop quits: the edit is kept on the saved system it was sent for. */
+static void
+test_dmr_channel_saved_when_the_app_quits() {
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    check(systems.add({{"name", "Site A"}, {"decodeFlag", "-fs"}}));
+    const QString siteA = systems.get(0).value("uid").toString();
+    {
+        dsd_qt::CommandBridge bridge;
+        bridge.setSavedSystems(&systems);
+        QList<QVariantMap> answers;
+        QObject::connect(&bridge, &dsd_qt::CommandBridge::dmrChannelResultReceived,
+                         [&answers](const QVariantMap& result) { answers.append(result); });
+        check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, 0, DSD_UI_DMR_T3_ORIGIN_NONE,
+                                   dmr_t3_chan_generation(&state), siteA));
+        check(dsd_app_drain_cmds(&opts, &state) == 1); // applied on the decoder thread; no tick polls it
+        check(dmr_t3_chan_effective_hz(&state, 12U) == 451137500L);
+        check(answers.isEmpty() && systems.dmrChannels(siteA).isEmpty());
+        QTimer::singleShot(0, QCoreApplication::instance(), []() { QCoreApplication::exit(0); });
+        check(QCoreApplication::exec() == 0);
+        check(answers.size() == 1 && answers.value(0).value("result").toString() == "ok"
+              && answers.value(0).value("saved").toBool());
+        check(systems.dmrChannels(siteA) == QVariantList({QVariantMap{{"lpcn", 12}, {"hz", 451137500}}}));
+    }
+    dsd_app_frontend_runtime_stop();
+    while (systems.count() > 0 && systems.remove(0)) {}
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     dsd_qt::applyQmlGcPolicy();
@@ -2123,6 +2364,8 @@ main(int argc, char** argv) {
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();
     test_reload_bridge();
+    test_dmr_channel_bridge();
+    test_dmr_channel_saved_when_the_app_quits();
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_scan_step_bridge();

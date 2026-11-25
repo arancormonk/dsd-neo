@@ -351,6 +351,17 @@ target_link_libraries(
 # (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. Also no-op LIP and
 # Cellocator service decoders for tests that compile dmr_pdu.c and define neither. The targets that need it are listed
 # once, after they are defined (_dsd_dmr_decoder_stub_targets).
+# The DMR module's channel query (dmr_t3_chan_effective_hz()) for tests that compile the call view without the module.
+add_library(
+    dsd-neo_test_dmr_t3_effective_stub
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_t3_effective_stub.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_effective_stub
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_dmr_decoder_stubs
     STATIC
@@ -1239,6 +1250,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/dmr_ras_view.h
   CXX
 )
+# Discussion #900: the DMR Tier III channel record the snapshots carry.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW
+  dsd-neo/app_control/dmr_t3_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW_CXX
+  dsd-neo/app_control/dmr_t3_view.h
+  CXX
+)
 # Issue #521: the shared squelch readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_squelch_view
@@ -2064,6 +2088,23 @@ target_link_libraries(
 )
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
+# Issue #890 (B18): one CRC-bearing RF header through both waveforms, the real slicer and soft cost.
+add_executable(
+    dsd-neo_test_dstar_header_polarity
+    protocol/dstar/test_dstar_header_polarity.c
+)
+target_include_directories(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+# The real slicer (dsd_dibit.c, core) reads symbols through dsd_symbol.c (dsp), which writes audio through core:
+# list core on both sides of dsp so a single-pass static link (GNU ld, as in the scan-build job) resolves the cycle.
+target_link_libraries(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE dsd-neo_proto_dstar dsd-neo_core dsd-neo_dsp dsd-neo_core
+)
+add_test(NAME DSTAR_HEADER_POLARITY COMMAND dsd-neo_test_dstar_header_polarity)
+
 add_executable(
     dsd-neo_test_dstar_process
     protocol/dstar/test_dstar_process.c
@@ -2232,6 +2273,11 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
@@ -2253,6 +2299,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -2283,6 +2330,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
@@ -3325,6 +3373,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+    # chan_map_adopt()/svc_clear_channel_map() note the DMR rows' origins (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
@@ -3784,7 +3834,15 @@ add_executable(
     dsd-neo_test_app_control_call_view
     ui/test_app_control_call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_call_view
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_call_view
@@ -4102,8 +4160,16 @@ add_executable(
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_notification_status
@@ -4129,6 +4195,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
         ui/test_ui_ncurses_trunk_display_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -4156,8 +4223,15 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -4207,8 +4281,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -4229,6 +4305,11 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        )
+        # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+        target_link_libraries(
+            ${_target}
+            PRIVATE dsd-neo_test_dmr_t3_effective_stub
         )
         target_compile_definitions(${_target} PRIVATE NCURSES_REENTRANT=0)
         target_include_directories(
@@ -5134,7 +5215,15 @@ add_executable(
     dsd-neo_test_ui_qt_call_line
     ui/test_ui_qt_call_line.cpp
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
@@ -5272,6 +5361,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5304,6 +5394,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
@@ -5400,12 +5491,46 @@ if(DSD_ENABLE_QT_UI)
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
+    # Issue #902: the frontend's one local-day source, on a fake real clock, across midnight, sleeps, the app coming
+    # back on screen and the days time zones reshape (each case names its zone through the test hooks, not TZ). A
+    # QGuiApplication, so the real applicationStateChanged signal reaches it.
+    add_executable(
+        dsd-neo_test_ui_qt_local_day_watch
+        ui/test_ui_qt_local_day_watch.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE Qt6::Core Qt6::Gui
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_local_day_watch
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LOCAL_DAY_WATCH
+        COMMAND dsd-neo_test_ui_qt_local_day_watch
+    )
+    set_tests_properties(
+        UI_QT_LOCAL_DAY_WATCH
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
         ui/test_ui_qt_site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5441,6 +5566,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5530,8 +5656,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -5545,6 +5673,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -5575,6 +5708,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5620,6 +5754,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
@@ -5662,6 +5797,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5699,6 +5835,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5923,6 +6060,7 @@ if(DSD_ENABLE_QT_UI)
         # An update lets the saved systems naming the file go of their site first.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
     )
     target_include_directories(
@@ -6155,6 +6293,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_rr_place_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/rr_place_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
@@ -6341,6 +6480,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
     )
     target_include_directories(
@@ -6485,6 +6625,9 @@ if(DSD_ENABLE_QT_UI)
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
+            # Discussion #900 F3: the Channels sheet's production model over a synthetic Tier III view.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             # The Activity screen's production model over the real view.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
@@ -6543,6 +6686,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
@@ -6591,6 +6735,8 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             PRIVATE
                 QT_NO_KEYWORDS
+                # Issue #902: the local-day watch's clock and zone, which the harness's day control drives.
+                DSD_NEO_TEST_HOOKS
                 QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui/qml"
                 DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
                 DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
@@ -6607,6 +6753,16 @@ if(DSD_ENABLE_QT_UI)
             target_compile_options(dsd-neo_test_ui_qt_qml PRIVATE /fp:precise)
         endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
+        # Every run of the QML executable: headless, and (issue #902) in America/Los_Angeles, a zone west of UTC with
+        # daylight saving, so the date cases can assert literal local dates. TZ is set here, before the process starts,
+        # never by the running suite (docs/testing.md, "Environment variables in tests"). Not on Windows, whose C
+        # runtime reads no IANA name in TZ: there testContext.localTimeZoneIs() is false and those cases skip.
+        set(_dsd_qml_test_env
+            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        if(NOT WIN32)
+            list(APPEND _dsd_qml_test_env "TZ=America/Los_Angeles")
+        endif()
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
             NAME UI_QT_QML_ACTION_MENU
@@ -6616,9 +6772,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_ACTION_MENU
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_MODAL_INPUT
@@ -6628,9 +6782,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_MODAL_INPUT
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_CSV_IMPORT_FLOW
@@ -6640,9 +6792,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_CSV_IMPORT_FLOW
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_BACK_MODALS
@@ -6652,9 +6802,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_BACK_MODALS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_SESSION_TOOLS
@@ -6664,9 +6812,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_SESSION_TOOLS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         foreach(
             _case
@@ -6685,6 +6831,7 @@ if(DSD_ENABLE_QT_UI)
                 monitor_receiver
                 document_picker
                 file_browser
+                dmr_channels
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -6695,9 +6842,7 @@ if(DSD_ENABLE_QT_UI)
             )
             set_tests_properties(
                 UI_QT_QML_${_case_upper}
-                PROPERTIES
-                    ENVIRONMENT
-                        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+                PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
             )
         endforeach()
         # Issue #782: accessibility event churn. Its own directory and run,
@@ -6714,8 +6859,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_A11Y_CHURN
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+                ENVIRONMENT "${_dsd_qml_test_env};DSD_QML_TEST_ACCESSIBILITY=1"
         )
         # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
         # an index naming it and a file the folder lacks, as the APK staging writes one.
@@ -6752,8 +6896,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_CALL_LISTS
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+                ENVIRONMENT "${_dsd_qml_test_env};QT_FORCE_STDERR_LOGGING=1"
         )
     endif()
 endif()
@@ -6809,6 +6952,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6825,6 +6971,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_event_history
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
@@ -6858,6 +7008,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6874,6 +7027,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_unit_activity
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_unit_activity
@@ -6906,6 +7063,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6923,6 +7083,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_position_view
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_position_view
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_position_view
@@ -6973,6 +7137,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6987,6 +7154,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_history_tap
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_history_tap
@@ -7006,6 +7177,9 @@ add_executable(
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
@@ -7013,6 +7187,11 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_opts_snapshot
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
@@ -7217,6 +7396,82 @@ target_link_libraries(
     dsd-neo_test_runtime_rdio_export
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# The cases that need a simulated failure at one call (a hard link, a private open, the worker's join) replace those
+# calls with test doubles through GNU ld --wrap, so they exist only where it links, like the other wrap tests (on POSIX
+# dsd_thread_join() is pthread_join()). --wrap reaches only calls the linker resolves into this executable: the
+# callers in dsd-neo_runtime and dsd-neo_platform must be static libraries (a shared one, as BUILD_SHARED_LIBS makes,
+# has bound them already), and their objects not LTO ones, which can inline or resolve the wrapped calls before the
+# linker sees them. LTO is left out however it is asked: DSD_ENABLE_LTO, -flto in CMAKE_C_FLAGS or CMAKE_CXX_FLAGS (as
+# CFLAGS/CXXFLAGS set them), and, per configuration, -flto in CMAKE_<LANG>_FLAGS_<CONFIG> or the target's
+# INTERPROCEDURAL_OPTIMIZATION or INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (set from
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target alike), through generator expressions, so a
+# multi-config build decides per configuration. The cases are skipped there. The definition and the link options
+# follow the same answer, as --wrap without the __wrap_ definitions would not link.
+get_target_property(_dsd_rdio_runtime_type dsd-neo_runtime TYPE)
+get_target_property(_dsd_rdio_platform_type dsd-neo_platform TYPE)
+set(_dsd_rdio_lto_configs "")
+set(_dsd_rdio_cfgs
+    ${CMAKE_CONFIGURATION_TYPES}
+    ${CMAKE_BUILD_TYPE}
+    Debug
+    Release
+    RelWithDebInfo
+    MinSizeRel
+)
+list(REMOVE_DUPLICATES _dsd_rdio_cfgs)
+foreach(_dsd_rdio_cfg IN LISTS _dsd_rdio_cfgs)
+    string(TOUPPER "${_dsd_rdio_cfg}" _dsd_rdio_cfg_upper)
+    if(
+        "${CMAKE_C_FLAGS_${_dsd_rdio_cfg_upper}} ${CMAKE_CXX_FLAGS_${_dsd_rdio_cfg_upper}}"
+            MATCHES
+            "-flto"
+    )
+        list(APPEND _dsd_rdio_lto_configs "${_dsd_rdio_cfg}")
+    endif()
+endforeach()
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    AND NOT DSD_ENABLE_LTO
+    AND _dsd_rdio_runtime_type STREQUAL "STATIC_LIBRARY"
+    AND _dsd_rdio_platform_type STREQUAL "STATIC_LIBRARY"
+    AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
+)
+    set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
+    set(_dsd_rdio_ipo
+        "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    )
+    set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
+    if(_dsd_rdio_lto_configs)
+        string(REPLACE ";" "," _dsd_rdio_lto_list "${_dsd_rdio_lto_configs}")
+        set(_dsd_rdio_wrap
+            "$<AND:${_dsd_rdio_wrap},$<NOT:$<CONFIG:${_dsd_rdio_lto_list}>>>"
+        )
+        unset(_dsd_rdio_lto_list)
+    endif()
+    target_compile_definitions(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
+    )
+    target_link_options(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_hard_link>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private_ex>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=pthread_join>"
+    )
+    unset(_dsd_rdio_wrap)
+    unset(_dsd_rdio_ipo)
+    unset(_dsd_rdio_tgt)
+endif()
+unset(_dsd_rdio_cfg_upper)
+unset(_dsd_rdio_cfg)
+unset(_dsd_rdio_cfgs)
+unset(_dsd_rdio_lto_configs)
+unset(_dsd_rdio_platform_type)
+unset(_dsd_rdio_runtime_type)
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as
@@ -9402,6 +9657,42 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
+# Issue #888: the per-call WAV size probe measures a recording past 2 GiB (a sparse file) as its real 64-bit size. It
+# exists for Windows, where long is 32 bits; the sparse case exits 77 (skipped) where the filesystem cannot make one.
+add_executable(dsd-neo_test_core_wav_size_probe core/test_core_wav_size_probe.c)
+target_include_directories(
+    dsd-neo_test_core_wav_size_probe
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+endif()
+add_test(NAME CORE_WAV_SIZE_PROBE COMMAND dsd-neo_test_core_wav_size_probe)
+set_tests_properties(CORE_WAV_SIZE_PROBE PROPERTIES SKIP_RETURN_CODE 77)
+
 # Speech level parity (issue #518): one deterministic talker (test_support/speech_synth.h) played as digital voice and
 # as analog FM and AM comes out at the speech AGC's -20 dBFS active speech level (P.56), digital and analog alike. The
 # tool writes the talker, encodes it with mbelib-neo's IMBE 4400, AMBE+2 2450 and AMBE 2400 encoders into the .imb,
@@ -9635,6 +9926,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+        ${PROJECT_SOURCE_DIR}/tests/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -9676,6 +9968,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_last_applied_freq"
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=processFrame"
+            # Real TETRA bursts a scripted frame decodes read their symbols here (issue #890).
+            "-Wl,--wrap=getDibitAndSoftSymbol"
+            "-Wl,--wrap=get_dibit_and_analog_signal"
+            "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
@@ -9688,6 +9984,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_capture_get_seq"
+            "-Wl,--wrap=rtl_signal_capture_seq"
             "-Wl,--wrap=rtl_signal_quiet_request"
             "-Wl,--wrap=rtl_signal_quiet_status"
             "-Wl,--wrap=rtl_signal_quiet_take"
@@ -10331,6 +10629,30 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_test_support
     )
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
+    # --dmr-chan-overrides lies over the -C map before the first frame (discussion #900 F3).
+    add_executable(
+        dsd-neo_test_engine_dmr_chan_overrides
+        engine/test_engine_dmr_chan_overrides.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=UDPBind"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_DMR_CHAN_OVERRIDES
+        COMMAND dsd-neo_test_engine_dmr_chan_overrides
+    )
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
@@ -10501,6 +10823,12 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # The DMR channel provenance a target switch saves and restores, and its writers (the air's and the user's), which
+    # a test seeds through (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_overlay.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/dmr_chan_overrides_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
@@ -10569,6 +10897,7 @@ add_executable(
     engine/test_engine_dmr_cc_recovery.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_include_directories(
@@ -10595,6 +10924,7 @@ add_executable(
     dsd-neo_test_engine_trunk_scan_pause
     engine/test_engine_trunk_scan_pause.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
@@ -10735,6 +11065,7 @@ add_executable(
     engine/test_engine_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
 )
 target_include_directories(
     dsd-neo_test_engine_scan_squelch_gate
@@ -10966,17 +11297,23 @@ target_link_libraries(
 
 # The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
 # landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
-# radio pipeline, and the host's link wraps a GNU-style linker.
+# radio pipeline, and the host's link wraps a GNU-style linker. The radio code is the test-hook build, whose signal tap
+# counts the scan quiet check's requests (none under I/Q replay).
 if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
     target_include_directories(
         dsd-neo_test_y_call_hold_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_y_call_hold_replay
         PRIVATE
+            "-Wl,--start-group"
             dsd-neo_engine
+            dsd-neo_io_radio_private_test_support
+            "-Wl,--end-group"
             ${LIBS}
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_channel_scan_step"
@@ -11219,6 +11556,7 @@ add_executable(
     dsd-neo_test_core_wav_journal
     core/test_core_wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
 )
 target_include_directories(
     dsd-neo_test_core_wav_journal
@@ -11228,6 +11566,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/core/file
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 target_compile_definitions(
     dsd-neo_test_core_wav_journal
@@ -11291,8 +11630,14 @@ add_test(
 set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
 
 # The received identity across the P25 watchdog's retunes and the decoder's passes, run on two threads at once (a
-# ThreadSanitizer build checks them). The rigctl peer is replaced through the linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# ThreadSanitizer build checks them). Both tests here replace the rigctl peer through the linker, so GNU ld and lld
+# only, and only with static libraries: --wrap rewrites the calls dsd-neo_engine's archive members make, never those
+# already bound inside a shared libdsd-neo_engine.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_rxid_watchdog_race
         engine/test_engine_rxid_watchdog_race.c
@@ -11352,8 +11697,13 @@ endif()
 
 # The P25 watchdog thread is a beat and the decoder thread runs its ticks: a release the beat paces tunes from the decoder
 # thread, beside the hunt's writes and reads (run it under tsan-debug too). The rigctl peer is replaced through the
-# linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# linker, so GNU ld and lld only, and only with static libraries: --wrap never reaches the calls inside a shared
+# libdsd-neo_engine, which would reach the real rigctl client instead.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_p25_watchdog_decoder_tick
         engine/test_engine_p25_watchdog_decoder_tick.c
@@ -14121,6 +14471,8 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_m17_eot.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_call_end.c
 )
 target_include_directories(
     dsd-neo_test_m17_sync_dispatch
@@ -14163,8 +14515,13 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
 # Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
-# wraps record the order of writes and drains where the linker can wrap them.
-if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+# wraps record the order of writes and drains where the linker can wrap them. GNU ld --wrap reaches only calls linked
+# into the executable, so the wraps need a static build.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
         PRIVATE DSD_NEO_TEST_AUDIO_WRAP
@@ -14175,6 +14532,23 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_drain"
             "-Wl,--wrap=dsd_audio_output_health_get"
+    )
+endif()
+# Issue #890: calloc is wrapped to fail the M17 extension's allocation, and the real-time clock to age a network
+# stream. The M17 decoder must be linked into the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    target_compile_definitions(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE "-Wl,--wrap=calloc" "-Wl,--wrap=dsd_realtime_mono_ms"
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
@@ -14210,6 +14584,7 @@ add_executable(
     protocol/m17/test_m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
@@ -14235,6 +14610,23 @@ target_link_libraries(
     dsd-neo_test_m17_gnss_position
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
+# Issue #890: calloc is wrapped to count and fail the M17 extension's allocation. The M17 decoder must be linked into
+# the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    target_compile_definitions(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE "-Wl,--wrap=calloc"
+    )
+endif()
 add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
@@ -14408,8 +14800,8 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
-# DMR Tier III C_MOVE parsed by TS 102 361-4 Table 7.17 and printed only (no row, no grant, no tune, no slot or burst
-# change; FID 0 only), next to the logical and absolute grants that still tune
+# DMR Tier III C_MOVE as Move TSCC (TS 102 361-4 Table 7.17; FID 0 only): informational (no row, no grant, no tune, no
+# slot or burst change; an absolute move learns the TSCC), next to the logical and absolute grants that still tune
 add_executable(
     dsd-neo_test_dmr_t3_cmove
     protocol/dmr/test_dmr_t3_cmove.c
@@ -14424,10 +14816,15 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -14459,7 +14856,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 
-# DMR Tier III forced release via TG hold override on P_CLEAR
+# DMR Tier III P_CLEAR: addressed to the followed call on its slot; TG hold forces the release
 add_executable(
     dsd-neo_test_dmr_t3_force_release
     protocol/dmr/test_dmr_t3_force_release.c
@@ -14476,10 +14873,15 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
@@ -14507,7 +14909,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
-# DMR Tier III grant, then a C_MOVE (another TSCC: the followed call stays), then P_CLEAR -> return CC
+# DMR Tier III grant -> Move TSCC (call stays) -> P_CLEAR -> return CC
 add_executable(
     dsd-neo_test_dmr_t3_move_release
     protocol/dmr/test_dmr_t3_move_release.c
@@ -14522,10 +14924,15 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -14572,10 +14979,15 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_confidence.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
@@ -16183,6 +16595,7 @@ add_executable(
     protocol/dmr/test_dmr_csbk_helpers.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_include_directories(
     dsd-neo_test_dmr_csbk_helpers
@@ -17510,7 +17923,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_grant_policy
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(
     dsd-neo_test_dmr_grant_policy
@@ -17518,11 +17931,27 @@ target_link_libraries(
 )
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
 
+# DMR Tier III channel provenance: one over-the-air writer, origins, network change, notices (discussion #900 F2)
+add_executable(
+    dsd-neo_test_dmr_t3_channels
+    protocol/dmr/test_dmr_t3_channels.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_channels
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_channels
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_T3_CHANNELS COMMAND dsd-neo_test_dmr_t3_channels)
+
 # DMR talkgroup priority and preemption (busy view, hold-or-preempt gate, slot identities, ledger)
 add_executable(dsd-neo_test_dmr_preempt protocol/dmr/test_dmr_preempt.c)
 target_include_directories(
     dsd-neo_test_dmr_preempt
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_preempt PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_PREEMPT COMMAND dsd-neo_test_dmr_preempt)
@@ -17905,6 +18334,44 @@ target_link_libraries(
 )
 add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
 set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
+
+# Synchronisation bursts whose read a carrier boundary crossed or an input interruption cut (issue #890), served through
+# GNU ld --wrap seams around the symbol readers and decoded by the real decoder.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_tetra_burst_cut
+        protocol/tetra/test_tetra_burst_cut.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_tetra.c
+    )
+    target_include_directories(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+            ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+    )
+    target_link_libraries(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_tetra
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            "-Wl,--end-group"
+            dsd-neo_fec
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    target_link_options(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=getDibitAndSoftSymbol
+            -Wl,--wrap=skipDibit
+    )
+    add_test(NAME TETRA_BURST_CUT COMMAND dsd-neo_test_tetra_burst_cut)
+    set_tests_properties(TETRA_BURST_CUT PROPERTIES LABELS "protocol;tetra")
+endif()
 
 unset(_dsd_tetra_target)
 unset(_dsd_tetra_test_name)
@@ -18306,6 +18773,43 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_history_carry
 )
 set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
+# dPMR headers and end frames read inside the hunt (issue #890): checked before they are accepted, in both polarities,
+# with no frame of another protocol lost to a rejected candidate.
+add_executable(
+    dsd-neo_test_frame_sync_dpmr
+    dsp/test_frame_sync_dpmr.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(dsd-neo_test_frame_sync_dpmr PRIVATE USE_RADIO)
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME FRAME_SYNC_DPMR COMMAND dsd-neo_test_frame_sync_dpmr)
+# A dPMR header or end frame is accepted on its frame's last symbol, so the symbol-timing diagnostic does not measure it.
+add_test(
+    NAME FRAME_SYNC_DPMR_SYMBOL_TIMING
+    COMMAND dsd-neo_test_frame_sync_dpmr symbol-timing
+)
+set_tests_properties(
+    FRAME_SYNC_DPMR_SYMBOL_TIMING
+    PROPERTIES ENVIRONMENT "DSD_NEO_DEBUG_SYMBOL_TIMING=1"
+)
 
 # The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
 # on the stream that frame was read on.
@@ -23425,11 +23929,11 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
         PROPERTIES LABELS "iq-decode" TIMEOUT 240
     )
-    # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
-    # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
-    # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
-    # noise-equivalent bits, not a decode (#407). It still syncs, so it still exercises
-    # the matcher and the frame reader; what it pins now is that a frame which proves
+    # The off-air dpmr capture read in the default polarity, which it is not received at
+    # (DECODE_IQ_DPMR_OFF_AIR reads it with -xd): its bits are the wrong way up, so the
+    # Src=1601621 this case used to assert was dpmr_ids_are_strong()'s Hamming fallback
+    # firing on them, not a decode (#407). It still syncs, so it still exercises the
+    # matcher and the frame reader; what it pins now is that a frame which proves
     # nothing publishes nothing.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_DPMR_MARGINAL
@@ -23437,6 +23941,29 @@ if(DSD_HAS_RADIO)
         -fm
         "dPMR Frame Sync 2"
         "Src=[0-9]"
+    )
+    # The same capture at its own polarity (-xd, issue #890): one key-up's nine Communications_Start headers back to
+    # back, eight powersave headers (WU 8 down to 1) and the normal one, each with both MI copies passing the CRC-8,
+    # called and calling 3939*5* (0x57FFFF), channel code 2; then its superframes, whose CCH halves pass the CRC-7
+    # (-Z prints each frame's two verdicts: 56 of 57 pass both). The headers open one call, not nine: one event row. The
+    # end frame lies past the capture's 10 s.
+    add_test(
+        NAME DECODE_IQ_DPMR_OFF_AIR
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=-fm -xd -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/dpmr.iq.json"
+            "-DEXPECTED=Comms Start[^\n]* Called=3939[*]5[*] Src=3939[*]5[*][^\n]* Channel Code=02"
+            -DMIN_MATCHES=9 "-DEXPECTED2=CCH OK/OK" -DMIN_MATCHES2=50
+            "-DEXPECTED3=Powersave WU=1[^0-9]"
+            "-DEVENT_EXPECTED=dPMR CC: 02; TGT: 3939[*]5[*]; SRC: 3939[*]5[*];"
+            "-DEVENT_COUNT_REGEX=dPMR CC:" -DEVENT_COUNT=1
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_DPMR_OFF_AIR"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_DPMR_OFF_AIR
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
 
@@ -23470,8 +23997,9 @@ if(DSD_HAS_RADIO)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_AM_MONITOR MONITOR am_tone_synth -fM 96000)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_SOURCE_MONITOR MONITOR_8 dstar -fd)
     endif()
-    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first frame of the
-    # transmission's first voice superframe, which decodes with nothing to correct.
+    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first voice frame
+    # behind the first resynchronization word the hunt matches in the second call, which decodes with nothing to
+    # correct.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DSTAR_AMBE
         dstar
@@ -24039,17 +24567,17 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
         FILES 0
     )
-    # Voice plays and is captured only from a confirmed transmission. The capture's two RF headers fail their CRC, so
-    # the superframes behind them confirm nothing and are withheld; the third superframe runs on from the second and
-    # opens the one capture, with the 84 frames of the four superframes from there.
+    # Voice plays and is captured only from a confirmed transmission. The capture holds two, each behind an RF header
+    # whose CRC passes (both are +headers, read on the slicer's polarity): the repeater's 7-frame reply, which its end
+    # pattern closes, and the call after it, voice frame 0 behind its header included: one capture each, 113 frames.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DSTAR
         dstar
         -fd
         "SRC: KB7WUK"
         EXT .dmb
-        FILES 1
-        MIN_FRAMES 84
+        FILES 2
+        MIN_FRAMES 113
     )
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NXDN48
@@ -24096,6 +24624,49 @@ if(DSD_HAS_RADIO)
         EXT .amb
         MIN_FILES 1
         MIN_FRAMES 160
+    )
+    # rdio-scanner DirWatch export of a digital call with no talkgroup (issue #888), through
+    # tests/rdio_dirwatch_check.cmake, which reads the finalized WAV/JSON pairs and the journal. The synthetic M17 call
+    # is named by callsigns alone (target BROADCAST). Replayed, it is exported under its frequency in kHz, labelled by
+    # its protocol and MHz; decoded from the replay's discriminator audio (an audio input, no frequency) under
+    # --rdio-unknown-talkgroup, labelled by its protocol alone, with freq 0 and no freqList; without the option it is
+    # recorded but not exported, said once. Only a Codec2 build decodes its voice.
+    if(DSD_HAS_CODEC2)
+        add_test(
+            NAME DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fz"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17.iq.json"
+                "-DEXPECTED=SRC: N0CALL"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG"
+                "-DTARGET=BROADCAST"
+                "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=M17 CAN 7 851.3750 MHz,freq=851375000,system=48,short_name=M17_CAN_7,emergency=false,encrypted=false"
+                "-DAUDIO_TALKGROUP=4242"
+                "-DAUDIO_SIDECAR=talkgroup_tag=M17 CAN 7,freq=0,system=48,short_name=M17_CAN_7"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            PROPERTIES LABELS "iq-decode" TIMEOUT 360
+        )
+    endif()
+    # The synthetic YSF call names no target or source and ends with the capture, on no terminator: a YSF call takes
+    # the fallback only once it has ended on a decoded terminator, so in every leg it is recorded but not exported,
+    # said once.
+    add_test(
+        NAME DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fy"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_synth.iq.json"
+            "-DEXPECTED=FN: [1-8]/8 "
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG"
+            "-DNO_FALLBACK=ON" "-DRF_SIDECAR=" "-DAUDIO_TALKGROUP=4242"
+            "-DAUDIO_SIDECAR=" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        PROPERTIES LABELS "iq-decode" TIMEOUT 360
     )
     # The digital voice chain (issue #653): tests/iq_voice_chain_check.cmake replays a fixture with per-call WAVs (-P)
     # under integer output to stdout, float output (-y) to stdout and the null output, and requires byte-identical
@@ -26836,6 +27407,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp # Discussion #900
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_status.cpp
@@ -26859,6 +27431,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -26914,6 +27487,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_tap
         ui/test_ui_qt_call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -26953,6 +27527,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -27725,7 +28300,8 @@ if(Python3_Interpreter_FOUND)
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
     # tools/bench_scan_skip_silent.py reports per mode only what the run decoded: an
-    # untyped -Y map runs -ft on every row (issue #834). numpy, as above.
+    # untyped -Y map runs -ft on every row (issue #834). numpy, as above. Its DMR
+    # cases score the call the DMR test generator builds.
     add_test(
         NAME TOOLS_BENCH_SCAN_SKIP_SILENT
         COMMAND
@@ -27735,7 +28311,11 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(
         TOOLS_BENCH_SCAN_SKIP_SILENT
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            ENVIRONMENT
+                "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
@@ -27886,6 +28466,23 @@ if(DSD_ENABLE_QT_UI)
         NAME UI_QT_P25_NETWORK_MODEL
         COMMAND dsd-neo_test_ui_qt_p25_network_model
     )
+    # Discussion #900 F3: the DMR Tier III Channels sheet's model over a synthetic view.
+    add_executable(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        ui/test_ui_qt_dmr_channels_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE dsd-neo_ui_qt ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_DMR_CHANNELS_MODEL
+        COMMAND dsd-neo_test_ui_qt_dmr_channels_model
+    )
     # The Activity screen's model over the unit activity ring and view.
     add_executable(
         dsd-neo_test_ui_qt_unit_activity_model
@@ -27948,6 +28545,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -28005,6 +28603,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -28706,7 +29305,7 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
-    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    # The scan quiet-threshold calibration (docs/signal-search.md), run by hand: minutes on every core.
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
@@ -28725,6 +29324,22 @@ if(DSD_HAS_RADIO)
             Threads::Threads
             ${LIBS}
     )
+    # The calibration driver checks the sources of the conditions --filter selects for the phase, and only those
+    # (issue #834): one condition at a time on a tiny source set it makes in its temp directory, in seconds.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_choose_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            PROPERTIES TIMEOUT 120
+        )
+    endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(
@@ -28754,6 +29369,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The DMR channel provenance a visit must leave alone (discussion #900).
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
@@ -28778,6 +29395,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The DMR channel provenance the session keeps across visits (discussion #900).
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c

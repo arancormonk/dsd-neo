@@ -23,7 +23,7 @@ import unittest
 from pathlib import Path
 
 import unittest_shards
-from test_stage_runtime_dlls import pe_image
+from test_stage_runtime_dlls import pe_image, pwsh_cache_folder, pwsh_env
 
 ROOT = Path(os.environ.get("DSD_TEST_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 PWSH = os.environ.get("DSD_NEO_TEST_PWSH") or shutil.which("pwsh")
@@ -943,6 +943,10 @@ RELEASE_DEPENDENTS = dict(DEPENDENCIES, **{
 
 @unittest.skipUnless(PWSH or REQUIRE_TOOLS, "pwsh is required")
 class SoapyReleaseScripts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.pwsh_cache = pwsh_cache_folder(cls)
+
     def setUp(self):
         if not PWSH:
             self.fail("pwsh is required (DSD_NEO_REQUIRE_TEST_TOOLS=1)")
@@ -954,7 +958,8 @@ class SoapyReleaseScripts(unittest.TestCase):
         script = self.work / f"run-{len(list(self.work.glob('run-*.ps1')))}.ps1"
         script.write_text(script_text, encoding="utf-8")
         result = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-File", str(script), *map(str, args)],
-                                env=env, cwd=self.work, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                env=pwsh_env(self.pwsh_cache, env), cwd=self.work, check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return (result.returncode, normalized(result.stdout.decode("utf-8", "replace")),
                 normalized(result.stderr.decode("utf-8", "replace")))
 
@@ -1095,7 +1100,7 @@ class SoapyReleaseScripts(unittest.TestCase):
         build = self.work / "build"
         (build / "apps/dsd-cli/Release").mkdir(parents=True)
         (build / "apps/dsd-cli/Release/dsd-neo.exe").write_bytes(pe_image(b"dsd-neo", dll=False))
-        for directory, names in (("pffft-licenses", ("pffft-LICENSE.txt", "pffft-NOTICES.txt")),
+        for directory, names in (("pffft-licenses", ("pffft-neo-README.md", "pffft-neo-LICENSE.txt", "pffft-LICENSE.txt")),
                                  ("tetra_crypto-licenses", ("tetra_crypto-LICENSE.txt",))):
             (build / directory).mkdir()
             for name in names:

@@ -16,11 +16,11 @@
  *
  * So the frame body has to say something checkable before the decoder opens a call, synthesizes
  * voice, or tells the SPS hunt that this profile is carrying traffic (issue #399). The CRC-16s
- * on the LSF and on a packet's end are proof by themselves, as is a PRBS9 lock. A LICH whose
- * six Golay(24,12) blocks all clear is not: extended Golay corrects three errors and detects
- * four, so it accepts a meaningful share of random words, and the run of them a whole LICH needs
- * still turns up on noise. That has to repeat -- two frames running, which a real stream does
- * continuously and noise does not.
+ * on the LSF (the LSF frame's, or one rebuilt whole from six LICH chunks) and on a packet's end
+ * are proof by themselves, as is a PRBS9 lock. A LICH whose four Golay(24,12) blocks all clear is
+ * not: extended Golay corrects three errors and detects four, so it accepts a meaningful share of
+ * random words, and the run of them a whole LICH needs still turns up on noise. That has to
+ * repeat -- two frames running, which a real stream does continuously and noise does not.
  *
  * Sibling of src/protocol/nxdn/nxdn_confirm.{c,h} and src/protocol/dmr/dmr_confidence.{c,h},
  * which do the same job for those protocols.
@@ -38,8 +38,9 @@ extern "C" {
 
 /** @brief How much a passing check is worth. */
 typedef enum {
-    M17_EVIDENCE_WEAK = 1,  /**< A LICH whose six Golay(24,12) blocks cleared. */
-    M17_EVIDENCE_STRONG = 2 /**< A CRC-16: LSF or packet. Also a PRBS9 BERT lock. */
+    M17_EVIDENCE_WEAK = 1,  /**< A LICH whose four Golay(24,12) blocks cleared. */
+    M17_EVIDENCE_STRONG = 2 /**< A CRC-16: an LSF (its frame's, or rebuilt whole from the LICH) or a packet. Also a
+                                 PRBS9 BERT lock. */
 } m17_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
@@ -49,8 +50,35 @@ typedef enum {
  * stream frames. */
 #define M17_CONFIRM_PARTIAL_HOLD_MS 80U
 
-/** @brief Forget everything learned about the current transmission. */
+/** @brief dsd_state::m17_str_dt with no link setup decoded: no stream type, so nothing plays, marks media or names a
+ * signature (the value noCarrier() and initState() have always left). */
+#define M17_STREAM_TYPE_UNKNOWN     9U
+
+/**
+ * @brief The one M17 transmission boundary (issue #890): drop everything held from the transmission, so nothing of it
+ * is ever combined with the next one's: its confirmation; its decoded link setup (the stream type, M17_STREAM_TYPE_UNKNOWN,
+ * the CAN, encryption type and subtype, whether the payload decrypted, the META/IV, the signature advertisement, whether
+ * a checked LSF bound them, and the stream mode an LSF declared); the raw LSF bits (dsd_state::m17_lsf) and the LICH
+ * chunks held in them with their binding; the packet and the BERT receiver; the 1600 bit/s arbitrary data and the text
+ * META being assembled (in the M17 extension); the network stream; and the signature (m17_confirm_reset_signature()).
+ *
+ * Every end runs it: the EOT marker, a lost carrier and a carrier boundary at once; a decoded EOS and a packet's end at
+ * the next transmission's first frame (m17_retire_if_ended() in m17.c), so the marker after them is still recognized; a
+ * network stream's end or replacement at once. Every start runs it too: an LSF frame whose CRC passed, a network stream
+ * admitted.
+ */
 void m17_confirm_reset(dsd_state* state);
+
+/**
+ * @brief Forget the transmission's stream signature: the digest and its voice run, the signature chunks collected,
+ * the verdict and whether the transmission ended. Whether the signature is advertised stays: that is the decoded link
+ * setup's (m17_confirm_reset() forgets it), so a repeat of a checked LSF whose CRC failed does not take it back.
+ *
+ * The transmitter signs the digest of every stream frame since the stream began (M17 spec 2.0.11, Digital
+ * Signatures), so this runs only where a transmission begins or ends, never at an LSF applied mid-stream (a LICH
+ * rebuild, an IP frame's LSF).
+ */
+void m17_confirm_reset_signature(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void m17_confirm_begin_frame(dsd_state* state);

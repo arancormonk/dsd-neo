@@ -792,7 +792,7 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
 }
 
 void
-dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, int opened) {
     (void)opts;
     (void)state;
     note_scan_stream_reopened(opened);

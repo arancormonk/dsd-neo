@@ -18,15 +18,16 @@
  *   refusal is cached: published again with the same facts and revisions while the stream keeps the output generation
  *   it refused, the visit starts nothing and reads no capture; an edit, a rate or receive change starts it again.
  * - WAIT_CAPTURE: waits for the tap's capture of the landed channel: a capture of the stream's live output generation,
- *   newer than the one read at the tune request, centred where the visit landed. Looked at no more often than every
- *   50 ms, for no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
+ *   newer than the one read at the tune request, centred where the visit landed. The hunt's legacy points look at it
+ *   no more often than every 50 ms; the hunt's event service (dsd_engine_scan_quiet_event_service()) looks once
+ *   whenever the tap's capture word moves. For no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
  *   the tuning ledger published its completion, which the hunt reads lock-free), or after the check started again on a
  *   visit it already published. A frame boundary of the synced-frames loop services the check too
  *   (dsd_engine_scan_quiet_frame_service()): it reads the capture without moving that 50 ms schedule and requests only
  *   SCAN_QUIET_FRAME_SETTLE_MS after the first qualifying capture the service saw (a retry: after the retryable
  *   failure), and a capture seen in time is no capture failure: its deadline is max(origin + 1000 ms, settle start +
  *   125 ms), and a capture still there past it is requested.
- * - REQUESTED: the tap measures; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
+ * - REQUESTED: the tap measures, from SCAN_QUIET_LEAD_MS after the capture; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
  *   capture again, at most 3 times a visit; clipping, a non-finite sample, a failed transform or the deadline end it.
  * - READY: a quiet result the scan may skip on, for 250 ms.
  * - DONE: terminal for the visit (busy, failed, timed out, refused by the tap, activity, declined, applied): no new
@@ -68,6 +69,15 @@ enum {
     /** A request a frame-boundary service starts waits this long (issue #834 R1): from the first qualifying capture the
         service saw, or from the retryable failure it collected. */
     SCAN_QUIET_FRAME_SETTLE_MS = 125,
+    /** Every request's reading starts this many ms of samples after its capture's first block (issue #834 follow-up,
+        D1-a): the request's lead, which the tap drops unmeasured. */
+    SCAN_QUIET_LEAD_MS = 10,
+    /** A reading set shorter than the calibrated one (--scan-skip-silent-ms) still judges this many sub-windows on a
+        visit that can carry a single DMR radio: the fewest of at most 13.75 ms that always hold one wholly inside a
+        burst of an ongoing normal-burst train (ETSI TS 102 361-1 clauses 4.2.2 and 10.2.3; IO_SIGNAL_MEASURE). */
+    SCAN_QUIET_DMR_MIN_WINDOWS = 6,
+    /** The answer deadline grows by this much for each sub-window a reading has above the calibrated nine. */
+    SCAN_QUIET_DEADLINE_PER_WINDOW_MS = 12,
 };
 
 /** The longest a PARTIAL content note holds a quiet result back, in ms (decode clock): above every protocol's hold. */
@@ -120,6 +130,9 @@ typedef struct {
     uint32_t analog_width_hz; /**< the analog class's configured width; 0 without it */
     uint32_t dsp_rate_hz;     /**< the DSP rate in force */
     uint32_t frequency_hz;    /**< where the visit lands */
+    /** The visit can carry a single DMR radio's bursts (scan_quiet_mode_dmr()): a shortened reading keeps
+        SCAN_QUIET_DMR_MIN_WINDOWS sub-windows on it. */
+    uint8_t dmr;
     /** Why the facts give the visit no check (dsd_scan_quiet_reason: MODES or NO_WIDTH, scan_quiet_facts_reason()),
         NONE when they give one, and for a trunked target, which is never checked by design. */
     uint8_t reason;
@@ -128,6 +141,34 @@ typedef struct {
 
 /** Read the counters a check snapshots. */
 void scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, scan_quiet_revisions* out);
+
+/** Whether a visit in @p mode can carry a single DMR radio: a DMR row or target, or one that inherits a decoder set with
+ * DMR on (an untyped -Y row, or a typed one in mode inherit). */
+uint8_t scan_quiet_mode_dmr(const dsd_opts* opts, dsd_scan_mode mode);
+
+/** The visit fact scan_quiet_eligibility::dmr for @p mode: scan_quiet_mode_dmr() while --scan-skip-silent-ms shortens
+ * readings (the only time the DMR floor matters), else 0, so the calibrated reading's facts are unchanged. */
+uint8_t scan_quiet_visit_dmr(const dsd_opts* opts, dsd_scan_mode mode);
+
+/** The sub-window count --scan-skip-silent-ms asks for (its ms rounded up to whole 10 ms sub-windows), 0 when unset:
+ * the calibrated reading. */
+uint32_t scan_quiet_setting_windows(const dsd_opts* opts);
+
+/** The sub-window count a request asks for: 0 (the calibrated reading) with the setting unset, else the setting's,
+ * and at least SCAN_QUIET_DMR_MIN_WINDOWS on a visit that can carry DMR (@p dmr). */
+uint32_t scan_quiet_request_windows(uint32_t setting_windows, int dmr);
+
+/** The answer deadline of a request judging @p windows sub-windows (0: the calibrated nine), in ms after it. */
+uint32_t scan_quiet_request_deadline_ms(uint32_t windows);
+
+/** Format the WARN line of a reading shortened by --scan-skip-silent-ms (@p setting_ms) to @p windows sub-windows at
+ * capture rate @p rate_hz, with the span those sub-windows take over every checked width there; with @p dmr_floor the
+ * line for a DMR visit read for @p windows sub-windows, the DMR floor, instead. Radio builds only. Returns the snprintf
+ * result. */
+#ifdef USE_RADIO
+int scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_t windows, uint32_t rate_hz,
+                                 int dmr_floor);
+#endif
 
 /** The width classes of a typed row's or a conventional target's @p mode; 0 for a mode in no class. */
 uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);
@@ -304,7 +345,7 @@ int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 /** A protocol's gate verdict on the frame being decoded (dsd_frame_sync_hook_content_evidence()): PROVEN moves the
  * activity sequence once a frame and drops any wait (it dominates PARTIAL, in the frame or before it); PARTIAL makes
  * the frame wait up to @p hold_ms (at most SCAN_QUIET_PENDING_MAX_MS) for its verdict, from the frame's end, or from
- * now when no frame is pending. */
+ * now when no frame is pending. SYNC_ONLY (issue #890) is taken as PARTIAL: a wait, never activity. */
 void dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_ms);
 /** The frame sync returned a sync: its frame's verdict is pending until dsd_engine_scan_quiet_frame_end(). Moves no
  * activity. */
@@ -322,6 +363,15 @@ void dsd_engine_scan_quiet_pending_reset(dsd_state* state);
  * 300-symbol point: this is what runs the check through them. DSD_SCAN_QUIET_NONE at once with the setting off (one
  * load), for another owner's check, or none. */
 int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, int owner_kind);
+/** The event service the frame-sync hunt runs before each symbol while a check is under way
+ * (dsd_frame_sync_hook_scan_quiet_event(), issue #834 follow-up): it acts as soon as the tap's capture word moves
+ * (WAIT_CAPTURE), the request's status word leaves pending (REQUESTED) or a READY result is free of a frame verdict,
+ * and otherwise does nothing but those lock-free loads. It never ends a check for time (the hunt's 300-symbol point,
+ * engine publications and frame boundaries keep every expiry), never moves the 50 ms legacy schedule, and requests a
+ * capture no earlier than a frame boundary may once a settle is in force. A READY result is handed back by events at
+ * most once. DSD_SCAN_QUIET_NONE with the setting off (one load) or no check under way. */
+int dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state);
+
 /** The -Y frame-boundary yield of the synced-frames loop: 1 when the scan is -Y with skip-silent on and the -Y check's
  * frame-boundary service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's
  * hand-back. */
@@ -339,8 +389,10 @@ int dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state,
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);
 /** The setting changed (dsd_scan_quiet_setting_changed()): as dsd_engine_scan_quiet_invalidate(). With @p turned_on
  * (off before, on now) the setting applies from the next visit, that is from the next scan tune: the visit landed now
- * is DONE, and so is any visit tuned before, in flight or landed but not yet noted, at its publication. */
-void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on);
+ * is DONE, and so is any visit tuned before, in flight or landed but not yet noted, at its publication. With
+ * @p reading_changed (the switch or the reading length differs from before) a shortened reading's WARN lines are
+ * logged again. */
+void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed);
 
 /* Facts the scans own, read by the check. */
 /** The trunk-scan coordinator's session-edit counter (0 with none). trunk_scan.c. */

@@ -211,14 +211,31 @@ Notes:
   frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
   itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
   learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
+- **DMR Tier III keys.** A Tier III row is keyed by the decimal channel number (LPCN) a grant names, `1..4094`; a
+  row keyed `0` seeds the control-channel hunt and names no channel a grant uses. See [DMR Tier III](#dmr-tier-iii)
+  below.
 
-Example:
+Example (a Connect Plus map, as in `examples/connect_plus_chan.csv`):
 
 ```csv
 ChannelNumber(dec),frequency(Hz),note
 999,862093750,default cc
 1,863093750
 2,862093750
+```
+
+The `999` row seeds the control channel at the front of the hunt list. That works for Connect Plus, whose channel
+numbers never reach 999. On DMR Tier III, 999 is a real channel number, so a grant to channel 999 would tune the
+control channel: seed it under key `0` instead. A key `0` row takes its place in the list and names no channel a DMR
+grant can use. It does fill channel `0` of the shared map, so in one session that decodes both DMR and P25, a P25
+grant for channel `0` can resolve to that row until the site's band plan arrives; trunk-scan targets keep their own
+channel `0`.
+
+```csv
+ChannelNumber(dec),frequency(Hz),note
+0,451112500,default cc
+5,451012500
+7,451312500
 ```
 
 Example with names (`examples/conventional_scan_named.csv`):
@@ -252,6 +269,65 @@ channel,frequency_hz,name,mode,options
 7,150000000,Inherit configured decoder,,
 8,453212500,Public works NFM noise squelch,nfm,--nfm-bandwidth-hz 12500 --squelch noise+12
 ```
+
+### DMR Tier III
+
+A Tier III row is keyed by the channel number a grant names: the logical physical channel number (LPCN), in decimal,
+`1..4094`. It is the number dsd-neo shows for Tier III everywhere (the event history, the terminal's Channels panel,
+the app's Channels sheet); Tier III numbers are never shown in hex.
+
+- **Lists that count timeslots.** DSD+ and some RadioReference sites give each timeslot its own number
+  (`2 x channel + slot`). Convert such a number `N` to `floor((N - 1) / 2)`: `603` and `604` are both channel `301`.
+  If the channel numbers dsd-neo shows are about half of the ones in your list, your list counts timeslots. See
+  [DMR Tier III channel maps](radioreference-import.md#dmr-tier-iii-channel-maps) for RadioReference's Ch ID.
+- **Key `0` rows seed the hunt.** Channel `0` is the null channel, which no grant names. A row keyed `0` puts its
+  frequency in the control-channel hunt list, in file order; that is how a control channel frequency is given. It
+  also fills channel `0` of the shared map, which only matters when one session decodes both DMR and P25 (see the
+  Connect Plus note above). Do not seed it under `999` as Connect Plus maps do: on Tier III, 999 is a real channel.
+- **What dsd-neo learns by itself.** Frequencies the site sends over the air, from messages that passed their check:
+  a grant that carries its own frequency (an absolute grant), the channel frequency announcement (C_BCAST
+  Chan_Freq), and the control channel an absolute announcement (Ann_WD_TSCC) or move (C_MOVE, P_CLEAR) names. A
+  learned frequency fills a row the map leaves empty or replaces an earlier learned one; it never replaces a row from
+  your file or one you entered. A neighbour site's frequencies (Vote_Now, Adjacent_Site) only fill empty rows. The
+  learned rows are dropped when the receiver moves to another network; the rows from your file stay.
+- **What needs entering.** Many sites send only a channel number in their grants and never that channel's
+  frequency. dsd-neo cannot follow calls on such a channel until it has a frequency: give it in the channel map, in
+  the `--dmr-chan-overrides` file below, or in the app's Channels sheet. Each one is logged once (`DMR Tier III:
+  channel 12 has no frequency; dsd-neo cannot retune to its calls`), the terminal's Channels panel lists it, the app
+  shows a NO FREQ count, and the summary at exit lists them all. `(unchecked)` marks a channel only grants that `-F`
+  accepted as RAS named.
+
+#### Your channels file (`--dmr-chan-overrides <file>`)
+
+Your own Tier III channels. DMR Tier III uses them in place of the channel map's rows for those channels; the channel
+map itself is not changed, so P25, NXDN and the other trunking protocols, which share its channel numbers, never see
+them.
+
+1. `lpcn` (decimal, `1..4094`): the channel number dsd-neo shows.
+2. `frequency_hz` (decimal Hz, `100000..2147483647`), or `0` to hide the channel: its calls are not followed, and it
+   is not reported as missing.
+
+```csv
+lpcn,frequency_hz
+12,451012500
+40,451137500
+41,0
+```
+
+- A first line that does not start with a number is a header. Blank lines are skipped.
+- A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows. A channel
+  given twice keeps its later row.
+- At most 256 channels; a row naming one more is skipped with a warning.
+- The rows are applied before the first frame and stay in force when the map is imported again, reloaded, cleared or
+  refreshed from RadioReference. Nothing heard over the air replaces them. Take a row out and, from the next start,
+  the channel's frequency from the map or the air is used again; Remove in the app does the same at once.
+- dsd-neo never writes the file and never changes the channel map file. The Android app writes one into its private
+  folder for each start of a saved system that has channels of yours.
+- Applied only when the session decodes DMR frames and runs no trunk scan, judged after the config file (its
+  `[mode] decode`), `--profile` and the command line. MBE playback (`-r`), M17 encoding and the M17 UDP/IP decoder
+  (`-fU`) decode no frames. Any other session starts without it, logs one notice
+  (`DMR Tier III channels in <file> not applied: ...`) and never opens the file, so a missing file does not stop it.
+  A session that applies it stops at start when the file is missing or cannot be read. There is no INI key.
 
 ### Scoped row options
 
@@ -1319,6 +1395,8 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+- At most 4096 frequency rows, each at most 1023 bytes counting its line ending; the limits and the grid checks are in
+  [Environment Variables](cli.md#environment-variables-advanced-tuning).
 
 ### Frontend-generated scan lists
 

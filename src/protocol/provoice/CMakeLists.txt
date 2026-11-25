@@ -1,4 +1,4 @@
-add_library(dsd-neo_proto_provoice)
+add_library(dsd-neo_proto_provoice STATIC)
 
 target_sources(
     dsd-neo_proto_provoice
@@ -17,10 +17,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_provoice PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_provoice
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

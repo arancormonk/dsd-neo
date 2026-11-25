@@ -4,8 +4,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO arancormonk/mbelib-neo
-    REF ec8f7d1353d2e234daf61790402866d13a5fd706
-    SHA512 a91bd76b4c6239d9dfba12238b2defa307445ea40cd639d14e30d0fd7c97d3da194fc5cefcf0d8082c867babf2f81904e85435f0e3086543770dcd2ea447c503
+    REF c1ba39a4bcf4be99d7a55426072c521f45801d16
+    SHA512 a189c41d421fc442e11f5de84a10d9cc3ef0a2f744d439ffaa02e135bb0fbf50199644b7659c5f5aa8f8d0a34963d4e841898cbf0e803c3ccb220e10c0e20b5e
 )
 
 set(_mbe_pffft_options)
@@ -27,10 +27,13 @@ if(EXISTS "${SOURCE_PATH}/cmake/Pffft.cmake")
         "-DFETCHCONTENT_SOURCE_DIR_MBELIB_PFFFT=${MBELIB_PFFFT_SOURCE_PATH}"
         -DFETCHCONTENT_FULLY_DISCONNECTED=ON
     )
+    # From 2.6.12 mbelib embeds pffft-neo, which ships its notices as files.
     list(
         APPEND _mbe_notices
-        "${MBELIB_PFFFT_SOURCE_PATH}/LICENSE.txt"
-        "${CURRENT_PACKAGES_DIR}/share/doc/mbelib-neo/pffft/PFFFT-NOTICES.txt"
+        "${MBELIB_PFFFT_SOURCE_PATH}/README.md"
+        "${MBELIB_PFFFT_SOURCE_PATH}/LICENSE"
+        "${MBELIB_PFFFT_SOURCE_PATH}/third_party/pffft/LICENSE.txt"
+        "${MBELIB_PFFFT_SOURCE_PATH}/third_party/pffft/LicenseRef-PFFFT.txt"
     )
 endif()
 

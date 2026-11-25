@@ -58,6 +58,14 @@ def main():
                   error="existing absolute PFFFT source directory")
         configure(args.cmake, source, work / "layout", f"-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT={source}",
                   error="Incompatible PFFFT source directory")
+        # The tracked LicenseRef-PFFFT text must be the pinned source's retained-notice record.
+        licenseref = source / "LICENSES/LicenseRef-PFFFT.txt"
+        tracked = licenseref.read_bytes()
+        licenseref.write_bytes(tracked + b"edited\n")
+        configure(args.cmake, source, work / "licenseref", f"-DFETCHCONTENT_SOURCE_DIR_DSD_PFFFT={local}",
+                  f"-DFETCHCONTENT_SOURCE_DIR_DSD_TETRA_CRYPTO={tea}", "-DFETCHCONTENT_FULLY_DISCONNECTED=ON",
+                  error="LICENSES/LicenseRef-PFFFT.txt differs")
+        licenseref.write_bytes(tracked)
         pins = source / "tools/ci-dependency-pins.env"
         text = pins.read_text()
         checksum = next(line for line in text.splitlines() if line.startswith("PFFFT_ARCHIVE_SHA256="))

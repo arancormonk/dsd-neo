@@ -200,6 +200,9 @@ static void
 send_burst_bits(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], const uint8_t reserved[3],
                 uint8_t databurst) {
     uint8_t info[196];
+    // Each burst is its slot's next one, a TDMA frame (288 symbols) after the last: an MBC continuation joins its
+    // header only there.
+    state->symbol_clock += 288U;
     dmr_test_encode_bptc_196x96(bits, reserved, info);
     dmr_data_burst_handler(opts, state, info, databurst, NULL);
 }
@@ -287,7 +290,7 @@ send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn, int con
 
     uint8_t block[96] = {0};
     put_bits(block, 0, 1, 1U);     // last block
-    put_bits(block, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT)
+    put_bits(block, 2, 6, 0x31U);  // CSBKO: the header's (CG_AP, TS 102 361-4 Table 7.16)
     put_bits(block, 22, 12, lpcn); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
@@ -370,7 +373,7 @@ test_ras_data_provenance(dsd_opts* opts, dsd_state* state) {
         const uint16_t lpcn = ras ? 291U : 292U;
         send_mbc_grant(opts, state, ras, lpcn, 1);
         expect_event(state, slot, before++, 1, ras ? DSD_CRC_RAS_UNVERIFIED : 0U,
-                     ras ? "Learned LCN 0291 -> 851.012500 MHz" : "Learned LCN 0292 -> 851.012500 MHz");
+                     ras ? "Learned channel 291 -> 851.012500 MHz" : "Learned channel 292 -> 851.012500 MHz");
     }
 
     // The separate relaxed-CRC configuration accepts failures but never runs the RAS heuristic: the same RAS-shaped
@@ -572,8 +575,9 @@ capture_mbc(dsd_opts* opts, dsd_state* state, uint8_t csbko, uint8_t fid, uint8_
 }
 
 /* Only an MBC whose block repeats its header's CSBKO (an absolute-parameters block, TS 102 361-4 Tables 7.16, 7.18 and
-   7.21) is checked for another message's block. A manufacturer's MBC (here C_MOVE's opcode under FID 0x10) carries
-   payload in those bits (TS 102 361-1 §7.4.0, Figures 7.12 and 7.13): its block is its own whatever they hold. */
+   7.21) is checked for another message's block, which refuses it as malformed. A manufacturer's MBC (here C_MOVE's
+   opcode under FID 0x10) carries payload in those bits (TS 102 361-1 §7.4.0, Figures 7.12 and 7.13): its block is its
+   own whatever they hold. */
 static int
 test_t3_foreign_block_check_only_where_repeated(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
@@ -581,14 +585,14 @@ test_t3_foreign_block_check_only_where_repeated(dsd_opts* opts, dsd_state* state
     opts->aggressive_framesync = 0;
     char out[4096];
     int rc = capture_mbc(opts, state, 57U, 0x10U, 0x15U, out, sizeof out);
-    if (rc != 0 || strstr(out, "Manufacturer CSBK: FID 10; Opcode 39;") == NULL
-        || strstr(out, "Another Message") != NULL) {
+    if (rc != 0 || strstr(out, "Manufacturer CSBK: FID 10; Opcode 39;") == NULL || strstr(out, "Malformed") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: a manufacturer's MBC block is its own: '%s'\n", out);
         rc = 1;
     }
     int standard = capture_mbc(opts, state, 57U, 0x00U, 0x15U, out, sizeof out);
-    if (standard != 0 || strstr(out, "MBC Appended Block of Another Message (Op 15);") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: a C_MOVE's block of another message is named: '%s'\n", out);
+    if (standard != 0 || strstr(out, "Malformed Control Signalling Block (CSBKO 39); ignored") == NULL
+        || strstr(out, "Move TSCC") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a C_MOVE with another message's block is refused: '%s'\n", out);
         standard = 1;
     }
     return rc | standard;
@@ -633,23 +637,24 @@ capture_cmove(dsd_opts* opts, dsd_state* state, int as_mbc, char* out, size_t ou
     return dsd_test_capture_stderr_read(&cap, out, out_size) != 0;
 }
 
-/* A C_MOVE's absolute TSCC frequency comes only from an MV_AP block that was received: the assembled MBC prints it; the
-   same header heard as a standalone CSBK (one decoded block) prints no frequency from the bits past it. */
+/* A C_MOVE's absolute TSCC frequency comes only from an MV_AP block that was received: the assembled MBC prints it and
+   the channel map learns it (a checked Move TSCC, discussion #900); the same header heard as a standalone CSBK (one
+   decoded block) names 0xFFF with no MV_AP, so it is malformed and refused, reading no frequency from the bits past
+   it. */
 static int
 test_t3_cmove_appended_block(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
     state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
     char out[4096];
     int rc = capture_cmove(opts, state, 1, out, sizeof out);
-    if (rc != 0 || strstr(out, "Move TSCC (C_MOVE) - Absolute") == NULL
-        || strstr(out, "TSCC APCN: 0303; RX INT: 851; RX STEP: 100;") == NULL
-        || strstr(out, "Frequency: 851.012500 MHz") == NULL || state->trunk_chan_map[303] != 0) {
+    if (rc != 0 || strstr(out, "Move TSCC: MS 0 to channel 303 (851.012500 MHz)") == NULL
+        || state->trunk_chan_map[303] != 851012500L) {
         DSD_FPRINTF(stderr, "FAIL: assembled C_MOVE MBC prints its MV_AP block: '%s'\n", out);
         rc = 1;
     }
     int lone = capture_cmove(opts, state, 0, out, sizeof out);
-    if (lone != 0 || strstr(out, "Move TSCC (C_MOVE) - Absolute") == NULL || strstr(out, "APCN") != NULL
-        || strstr(out, "Frequency") != NULL) {
+    if (lone != 0 || strstr(out, "Malformed Control Signalling Block (CSBKO 39); ignored") == NULL
+        || strstr(out, "Move TSCC") != NULL || strstr(out, "MHz") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: a standalone C_MOVE header reads no MV_AP block: '%s'\n", out);
         lone = 1;
     }

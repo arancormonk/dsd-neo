@@ -23,6 +23,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -37,7 +38,9 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#include "../../test_support/dmr_mbc_test_support.h"
 #include "../../test_support/radio_policy_test.h"
+#include "dmr_t3_channels_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -75,6 +78,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)observation;
     (void)notice;
     (void)slot;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
     return 0;
 }
 
@@ -263,7 +275,7 @@ abs_tv_grant_block(dsd_opts* opts, dsd_state* st, uint8_t block_op, uint16_t lpc
     write_bits_u32(bits, 32U, tg, 24U);
     write_bits_u32(bits, 56U, src, 24U);
     write_abs_channel(bits, block_op, lpcn, freq_hz);
-    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+    dsd_test_dmr_cspdu_mbc_blocks(opts, st, bits, bytes, 1U);
 }
 
 /* A CRC-valid absolute TV_GRANT with its own appended block naming LPCN @p lpcn on @p freq_hz. */
@@ -285,7 +297,7 @@ c_bcast_chan_freq_block(dsd_opts* opts, dsd_state* st, uint16_t channel, uint8_t
     write_bits_u32(bits, 16U, 5U, 5U);
     write_bits_u32(bits, 68U, channel, 12U);
     write_abs_channel(bits, block_op, lpcn, freq_hz);
-    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+    dsd_test_dmr_cspdu_mbc_blocks(opts, st, bits, bytes, 1U);
 }
 
 /* A CRC-valid C_BCAST Chan_Freq with its own appended block announcing LPCN @p lpcn on @p freq_hz. */
@@ -308,7 +320,22 @@ c_bcast_other_site(dsd_opts* opts, dsd_state* st, uint8_t a_type, uint16_t apcn,
     bits[56] = 1U;
     write_bits_u32(bits, 68U, 0x0FFFU, 12U);
     write_abs_channel(bits, 40U, apcn, freq_hz);
-    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 1U);
+    dsd_test_dmr_cspdu_mbc_blocks(opts, st, bits, bytes, 1U);
+}
+
+/* A CRC-valid Tier III private grant through the CSBK layer: PV_GRANT (48) for voice, PD_GRANT (51) for data. */
+static void
+private_grant(dsd_opts* opts, dsd_state* st, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t dst, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = opcode;
+    write_bits_u32(bits, 16U, lpcn, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, dst, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
 
 /* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
@@ -327,6 +354,21 @@ vc(const dsd_state* st) {
 static dmr_sm_ctx_t*
 sm(void) {
     return dmr_sm_get_ctx();
+}
+
+/* A mapping of @p lpcn to @p hz the air taught this site off the control channel and nothing has confirmed yet: a SITE
+   row of trust 1, as the channel map's one over-the-air writer (dmr_t3_chan_learn()) leaves it. */
+static void
+seed_learned(dsd_state* st, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(st);
+    if (ext == NULL) {
+        abort();
+    }
+    dsd_state_dmr_lcn_ota_set(st, lpcn, 0);
+    dsd_state_set_trunk_chan_freq(st, lpcn, hz);
+    dsd_state_dmr_lcn_ota_set(st, lpcn, 1);
+    ext->origin[lpcn] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    st->dmr_lcn_trust[lpcn] = 1U;
 }
 
 /* ---- Cases ---- */
@@ -929,6 +971,48 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
+/* A private data grant from 3003 to 2002 on the followed slot of a private voice call from 1001 to 2002 is another
+   call (its kind and parties differ, though it names the same destination): it ends that assignment (issue #903), and
+   its repeat is followed with a dwell of its own, not bound to the voice call's transmission. The carrier is the data
+   grant's then: a p50 preempt elsewhere is refused within its dwell, though the voice call (p100) it replaced was past
+   its own, and taken once the data call's dwell ran out. */
+static int
+test_in_place_private_data_grant_starts_its_own_dwell(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 1001, "A", 100, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    private_grant(opts, st, 48U, LPCN_A, 0, 2002, 1001);
+    int rc = expect_true("the private voice call is followed", vc(st) == VC_A && sm()->vc_dst == 2002);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    const uint64_t voice_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    rc |= expect_true("the voice call is published", voice_epoch != 0U && call.ota_source_id == 1001U);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    rc |= expect_true("the data grant ends the voice call's assignment",
+                      sm()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0);
+    const double assigned_m = dsd_decode_now_mono_s();
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    rc |= expect_true("its repeat follows the data call", vc(st) == VC_A && sm()->vc_data_call == 1
+                                                              && sm()->slots[0].source == 3003U
+                                                              && sm()->slots[0].data_call == 1U);
+    rc |= expect_true("the data grant is not bound to the voice call", sm()->slots[0].call_epoch != voice_epoch);
+    rc |= expect_true("the data grant's dwell runs from its assignment",
+                      fabs(sm()->slots[0].follow_m - assigned_m) < 1e-6);
+    clock_at(1.02);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(1.05);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("a p50 preempt within the data call's dwell is refused", vc(st) == VC_A);
+    clock_at(1.8);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt past the data call's dwell is followed", vc(st) == VC_B && sm()->vc_tg == 50);
+    return rc;
+}
+
 /* The CRC provenance of slot 0's active call (0xFF: none active). */
 static uint8_t
 slot0_call_crc(const dsd_state* st, uint32_t* target) {
@@ -986,6 +1070,499 @@ canonical_call_begins(dsd_state* st, int slot, uint32_t tg, uint32_t src) {
         .ota_source_id = src,
     };
     (void)dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+/* The transmission of @p slot's canonical call (0: none). */
+static uint64_t
+slot_transmission(const dsd_state* st, int slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, (uint8_t)slot, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+}
+
+/* Late-entry voice without an LC (DSD_CALL_KIND_VOICE) on the companion slot is voice all the same: an in-place
+   private data grant for that slot names another call, so it is not bound to the voice transmission, at the grant nor
+   at the next voice. */
+static int
+test_in_place_data_grant_never_binds_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    int rc = expect_true("the group call is followed", vc(st) == VC_A && sm()->vc_slot == 0);
+    clock_at(0.3);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    const uint64_t voice_epoch = slot_transmission(st, 1);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    rc |= expect_true("the data grant names the companion slot",
+                      vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].source == 3003U);
+    rc |= expect_true("the data grant is not bound to the late-entry voice",
+                      voice_epoch != 0U && sm()->slots[1].call_epoch != voice_epoch);
+    clock_at(0.6);
+    voice(opts, st, 1);
+    rc |= expect_true("nor at its next voice", sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    return rc;
+}
+
+/* A private data grant on the followed slot of an active private voice call ends that assignment (issue #903); its
+   repeat is followed as a data call that awaits its own call. The next transmission there, late-entry voice without an
+   LC, is not that call: the data grant never binds to it. */
+static int
+test_deferred_data_grant_never_binds_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 48U, LPCN_A, 0, 2002, 1001);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    const uint64_t voice_epoch = slot_transmission(st, 0);
+    clock_at(0.6);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant ends the voice assignment", sm()->state == DMR_SM_ON_CC);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    rc |= expect_true("its repeat is followed and awaits its call",
+                      vc(st) == VC_A && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    clock_at(0.9);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    const uint64_t late_epoch = slot_transmission(st, 0);
+    rc |=
+        expect_true("late-entry voice opened a transmission of its own", late_epoch != 0U && late_epoch != voice_epoch);
+    rc |= expect_true("the followed data grant is not bound to the late-entry voice",
+                      sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch != late_epoch);
+    return rc;
+}
+
+/* A low-priority private data grant in place on the companion slot, then two LC-less voice transmissions there: the
+   grant waits for its own call, and it never stands for that voice. The voice call is unknown, so a p50 preempt
+   elsewhere is refused past every dwell (an unknown call is protected), not judged against the data grant's p10. */
+static int
+test_unbound_data_grant_never_describes_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 2002, "A", 10, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    int rc = expect_true("the data grant names the companion slot",
+                         vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    clock_at(0.6);
+    (void)dsd_call_state_end_ex(st, 1U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(0.7);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    rc |= expect_true("the data grant still awaits its call",
+                      sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(1.5);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt is refused over the unknown voice call", vc(st) == VC_A && sm()->vc_tg == 100);
+    return rc;
+}
+
+/* A followed private data grant's slot carries LC-less voice: that voice is another call, and the first voice sync
+   gives it nothing of the data grant's (no talker, no target, no private voice class). */
+static int
+test_data_grant_never_names_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the late-entry voice stays anonymous",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.kind == DSD_CALL_KIND_VOICE && call.ota_source_id == 0U && call.ota_target_id == 0U
+                          && call.policy_target_id == 0U);
+    return rc;
+}
+
+/* A followed private data grant's slot carries a voice call a checked LC names (TG 400). Its first voice publishes
+   nothing of the data grant's, and it is the slot's first voice all the same: an in-place voice grant naming that call
+   (TG 400) while it goes on changes only the P_CLEAR addresses, never publishes over the call playing. One
+   transmission, TG 400. A voice grant naming another call there (TG 500) ends the assignment (issue #903). */
+static int
+test_data_follow_first_voice_consumes_publication(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 400U, 4U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 400U, 4U);
+    voice(opts, st, 0);
+    const uint64_t voice_epoch = slot_transmission(st, 0);
+    rc |= expect_true("the first voice is handled", voice_epoch != 0U && sm()->vc_identity_published == 1);
+    clock_at(0.4);
+    tv_grant(opts, st, LPCN_A, 0, 400, 5);
+    rc |= expect_true("the voice grant for the LC's call is in place",
+                      vc(st) == VC_A && sm()->state == DMR_SM_TUNED && sm()->vc_clear_target == 400U);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("TG 400 goes on as one transmission",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && dsd_call_snapshot_transmission(&call) == voice_epoch && call.policy_target_id == 400U
+                          && call.ota_source_id == 4U);
+    clock_at(0.6);
+    tv_grant(opts, st, LPCN_A, 0, 500, 5);
+    rc |= expect_true("a voice grant for another call ends the assignment", sm()->state == DMR_SM_ON_CC);
+    return rc;
+}
+
+/* Hold 200: the companion slot plays TG 200 (its LC names it) beside the followed call when a private data grant in
+   place replaces that slot's record. The data grant is not that call (unbound), so the slot's call is unknown, but the
+   call playing is still the Hold group's: a second TG 200 grant on another carrier never displaces it by Hold. (On the
+   followed slot such a grant ends the assignment instead, issue #903.) */
+static int
+test_pending_data_grant_keeps_hold_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    voice(opts, st, 1);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    int rc = expect_true("the data grant replaces the companion slot's record unbound",
+                         vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    st->tg_hold = 200;
+    clock_at(0.6);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the Hold call playing keeps the receiver", vc(st) == VC_A);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* Hold 200: slot 0 still holds an ACTIVE P25 TG 200 record (another protocol's, never ended) when a private data
+   grant for this carrier is adopted in place, and DMR voice passes on the slot. The record is not a DMR call, so it
+   claims no Hold: a DMR TG 200 grant on another carrier is followed by Hold. */
+static int
+test_other_protocol_record_claims_no_hold(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0020U] = CC_HZ;
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 200U,
+        .policy_target_id = 200U,
+        .ota_source_id = 2U,
+    };
+    (void)dsd_call_state_observe(st, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, 0x0020U, 0, 2002, 3003);
+    int rc = expect_true("the data grant adopts the carrier unbound",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == CC_HZ && sm()->slots[0].data_call == 1U
+                             && sm()->slots[0].call_epoch == 0U);
+    clock_at(0.6);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the P25 TG 200 record is still active",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && DSD_SYNC_IS_P25P1(call.protocol) && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the DMR TG 200 grant elsewhere is followed by Hold", vc(st) == VC_B && sm()->vc_tg == 200);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* Hold 200: a TG 200 voice call on the companion slot (its LC names it) loses its terminator, so its record stays
+   ACTIVE, while a private data grant in place keeps that slot busy with data past the voice hangtime. Decided limit
+   (fail-closed): the ACTIVE DMR record still claims Hold, so a second TG 200 grant on another carrier never pulls the
+   receiver away. */
+static int
+test_missed_terminator_keeps_hold_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    voice(opts, st, 1);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    int rc = expect_true("the data grant replaces the companion slot's record unbound",
+                         vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    for (int i = 1; i <= 6; i++) {
+        clock_at(0.5 + (0.5 * i));
+        dmr_sm_emit_data_sync(opts, st, 1);
+    }
+    dsd_call_snapshot call;
+    rc |= expect_true("data keeps the carrier past the voice hangtime with TG 200's record active",
+                      vc(st) == VC_A && dsd_call_state_get(st, 1U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the ACTIVE TG 200 record keeps the receiver by Hold", vc(st) == VC_A);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A RAS-accepted group status on LSN 1 is followed; before its voice a checked status
+   names another group on LSN 3 (the followed slot). The followed call takes the status's channel, and the status's
+   flags are ORed into the earlier RAS mark, never replacing it: its first voice publishes LSN 3, still unverified. */
+static int
+test_xpt_status_rename_takes_its_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 100, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    int rc = expect_true("the RAS status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    st->event_crc_invalid[0] = 0U;
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 300U, 1);
+    rc |= expect_true("the checked status renames the followed call with its channel",
+                      sm()->vc_tg == 300 && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED && sm()->vc_lpcn == 3
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes LSN 3 with the RAS mark kept",
+                      target == 300U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == 3U && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 100 on LSN 1 is followed; before its voice a RAS-accepted status
+   names TG 200 on LSN 3 (the followed slot), then a checked one names TG 200 again, on LSN 1. The group is unchanged,
+   but the followed channel is the last status's: the first voice publishes TG 200 on LSN 1, never LSN 3, and the
+   checked status never clears the RAS status's mark (the flags are ORed). */
+static int
+test_xpt_same_group_status_moves_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 100, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 200U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("TG 200 on LSN 3", sm()->vc_tg == 200 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 200U, 1);
+    rc |= expect_true("the same group on LSN 1 takes that channel, its RAS mark kept",
+                      sm()->vc_tg == 200 && sm()->vc_lpcn == 1 && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes TG 200 on LSN 1, unverified",
+                      target == 200U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == 1U && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 71 on LSN 1 is followed, a status names TG 83 on LSN 3 (the
+   followed slot), then a private status names the slot's call on LSN 1. The private call's identity is unknown, but its
+   channel is LSN 1: the call its LC names there takes LSN 1, never LSN 3. */
+static int
+test_xpt_private_status_keeps_its_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 71, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 83U, 1);
+    rc |= expect_true("TG 83 on LSN 3", sm()->vc_tg == 83 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 0U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the private status's channel and provenance are the followed call's",
+                      sm()->vc_identity_known == 0 && sm()->vc_lpcn == 1
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 2002U,
+        .policy_target_id = 2002U,
+        .ota_source_id = 1001U,
+    };
+    (void)dsd_call_state_observe(st, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 1001U);
+    rc |= expect_true("the private call's LC takes LSN 1 with the status's provenance",
+                      sm()->slots[0].channel == 1 && sm()->slots[0].channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->slots[0].channel_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the private call publishes LSN 1", dsd_call_state_get(st, 0U, &call) > 0
+                                                              && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                              && call.ota_target_id == 2002U && call.channel == 1U
+                                                              && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* A RAS-accepted (-F) Tier III grant names TG 71 from radio 777 on VC_A; before its voice a checked XPT status names TG
+   71 on the followed slot. The status names the group and channel, not the talker: its flags are ORed into the grant's,
+   so the first voice publishes radio 777 with the RAS mark kept, never as verified. */
+static int
+test_xpt_status_keeps_grant_ras_mark(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 71, 777);
+    st->event_crc_invalid[0] = 0U;
+    int rc = expect_true("the RAS grant is followed", vc(st) == VC_A && sm()->vc_tg == 71 && sm()->vc_src == 777
+                                                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 71U, 1);
+    rc |= expect_true("the checked status keeps the grant's talker and RAS mark",
+                      sm()->vc_tg == 71 && sm()->vc_src == 777 && sm()->vc_lpcn == 1
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes radio 777 with the RAS mark",
+                      target == 71U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.ota_source_id == 777U);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 71 on LSN 1 is followed, a status names TG 71 on LSN 3, a checked
+   voice LC (radio 5) then names the slot's call and takes LSN 3, and a last status names TG 71 on LSN 1 before the
+   first voice. The LC's parties and binding stand, but the pending channel is refreshed: the first voice publishes
+   LSN 1, with the LC's talker. */
+static int
+test_xpt_status_refreshes_lc_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 71, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 71U, 1);
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 71U, 5U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 71U, 5U);
+    const uint64_t epoch = sm()->slots[0].call_epoch;
+    rc |= expect_true("the LC takes LSN 3",
+                      sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC && sm()->slots[0].channel == 3 && epoch != 0U);
+    clock_at(0.25);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 71U, 1);
+    rc |= expect_true("the status refreshes the pending channel and keeps the LC's parties and binding",
+                      sm()->vc_lpcn == 1 && sm()->slots[0].channel == 1
+                          && sm()->slots[0].channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC && sm()->slots[0].source == 5U
+                          && sm()->slots[0].call_epoch == epoch);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes LSN 1 with the LC's talker",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.ota_source_id == 5U && call.channel == 1U
+                          && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
+   absolute grant (CdefParms CHAN 0) names that call in place on the same frequency. It is the call a P_CLEAR is matched
+   to now (vc_clear_*), but it leaves the grant identity, which a later grant for the slot is compared with
+   (dmr_sm_grant_replaces_followed(), issue #903), as it was: the followed grant's, its channel and its RAS mark. The LC's
+   call is not renamed by the grant (it holds the slot's call) and takes the carrier's channel with that RAS mark, never
+   as verified; so does a companion LC's. */
+static int
+test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    st->event_crc_invalid[0] = 0U;
+    int rc = expect_true("the RAS grant is followed", vc(st) == VC_A && sm()->vc_lpcn == (int)LPCN_A);
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    clock_at(0.3);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
+    ev.slot = 0;
+    rc |= expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
+    rc |=
+        expect_true("the clear's addresses are the grant's", sm()->vc_clear_target == 200U && sm()->vc_clear_is_group);
+    rc |= expect_true("the grant identity, its channel and RAS mark stay",
+                      sm()->vc_tg == 100 && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED
+                          && sm()->vc_lpcn == (int)LPCN_A);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the followed slot's call stays the LC's, with the carrier's channel unverified",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.policy_target_id == 200U && call.channel == LPCN_A
+                          && (call.crc_invalid & (uint8_t)DSD_CRC_RAS_UNVERIFIED) != 0U);
+    clock_at(0.4);
+    canonical_call_begins(st, 1, 300U, 3U);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 300U, 3U);
+    voice(opts, st, 1);
+    rc |= expect_true("the companion call takes the carrier's channel unverified",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == LPCN_A
+                          && (call.crc_invalid & (uint8_t)DSD_CRC_RAS_UNVERIFIED) != 0U);
+    return rc;
+}
+
+/* A grant naming another call on the followed slot ends that assignment (issue #903), and its repeat is followed with
+   its own channel and provenance: a verified absolute grant (CdefParms CHAN 0) leaves the followed channel unknown,
+   and a RAS-accepted grant naming LPCN 16 after it gives the call that channel as RAS-unverified, never the earlier
+   grant's provenance. */
+static int
+test_in_place_grant_names_channel_with_its_provenance(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
+    ev.slot = 0;
+    int rc = expect_true("the absolute grant for another call ends the assignment",
+                         dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_REFUSED && sm()->state == DMR_SM_ON_CC);
+    rc |= expect_true("its repeat is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    rc |= expect_true("its channel is unknown", sm()->vc_tg == 200 && sm()->vc_lpcn == 0);
+    clock_at(0.3);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the RAS grant names the channel", sm()->vc_tg == 300 && sm()->vc_lpcn == (int)LPCN_A
+                                                             && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.4);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the call publishes the channel as RAS-unverified",
+                      target == 300U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == LPCN_A);
+    return rc;
 }
 
 /* Whether @p slot's canonical call is ACTIVE naming group @p tg, and the slot's record is bound to it. */
@@ -1428,8 +2005,9 @@ hold_grant_followed_off_cc(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long fr
 
 /* An LPCN mapping learned off the control channel (trust 1) is confirmed (2) when a checked absolute grant heard on the
    control channel names the same frequency for it: a later LPCN-only Hold grant heard off the control channel is then
-   followed. An absolute grant naming another frequency for it changes neither its frequency nor its provenance, nor
-   does one heard off the control channel, and an imported mapping (0) is never rewritten. */
+   followed. A checked absolute grant on the control channel naming another frequency for it is the site's plan
+   changing (discussion #900): the row takes that frequency, learned on the control channel. One heard off the control
+   channel confirms nothing, and an imported mapping (0) is never rewritten. */
 static int
 test_control_channel_confirms_learned_lpcn(dsd_opts* opts, dsd_state* st) {
     const uint16_t lpcn_d = 0x0013U;
@@ -1437,24 +2015,27 @@ test_control_channel_confirms_learned_lpcn(dsd_opts* opts, dsd_state* st) {
     for (int variant = 0; variant < 4; variant++) {
         init_env(opts, st, 2.0);
         seed_row(st, 2300, "B", 0, 0); // the confirming grant's own call is not followed
-        const uint8_t trust = variant == 2 ? 0U : 1U;
-        st->trunk_chan_map[lpcn_d] = VC_B;
-        st->dmr_lcn_trust[lpcn_d] = trust;
+        if (variant == 2) {
+            st->trunk_chan_map[lpcn_d] = VC_B; // a channel map file's row
+            st->dmr_lcn_trust[lpcn_d] = 0U;
+        } else {
+            seed_learned(st, lpcn_d, VC_B);
+        }
         if (variant == 3) {
             tv_grant(opts, st, LPCN_A, 0, 1100, 1);
             clock_at(0.1);
             voice(opts, st, 0);
         }
         abs_tv_grant(opts, st, lpcn_d, variant == 0 || variant == 3 ? VC_B : VC_C, 1, 2300, 3);
-        const int followed = hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B);
+        const int followed = hold_grant_followed_off_cc(opts, st, lpcn_d, variant == 1 ? VC_C : VC_B);
         if (variant == 0) {
             rc |= expect_true("the control channel confirms a learned mapping of the same frequency",
                               st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 2U);
             rc |= expect_true("a hold grant on the confirmed mapping is followed off the control channel", followed);
         } else if (variant == 1) {
-            rc |= expect_true("another frequency on the control channel neither confirms nor rewrites the mapping",
-                              st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
-            rc |= expect_true("a hold grant on the still unconfirmed mapping is not followed", !followed);
+            rc |= expect_true("another frequency on the control channel replaces the mapping, learned there",
+                              st->trunk_chan_map[lpcn_d] == VC_C && st->dmr_lcn_trust[lpcn_d] == 2U);
+            rc |= expect_true("a hold grant on the replaced mapping is followed off the control channel", followed);
         } else if (variant == 2) {
             rc |= expect_true("an imported mapping keeps its frequency and provenance",
                               st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 0U);
@@ -1468,8 +2049,9 @@ test_control_channel_confirms_learned_lpcn(dsd_opts* opts, dsd_state* st) {
 
 /* Only a message whose own CRC passed confirms a mapping: an absolute grant or a C_BCAST Chan_Freq heard on the control
    channel but accepted under -F RAS handling, or an MBC whose header CRC failed, leaves a learned mapping of the same
-   frequency unconfirmed (1), so a Hold grant on it heard off the control channel is still refused. Such a message
-   still teaches an empty cell as it always has (2 on the control channel). */
+   frequency unconfirmed (1), so a Hold grant on it heard off the control channel is still refused. A RAS-accepted one
+   still teaches an empty cell (UNVERIFIED, 2 on the control channel); one whose CRC failed teaches nothing (discussion
+   #900). */
 static int
 test_unchecked_message_never_confirms(dsd_opts* opts, dsd_state* st) {
     const uint16_t lpcn_d = 0x0013U;
@@ -1480,8 +2062,8 @@ test_unchecked_message_never_confirms(dsd_opts* opts, dsd_state* st) {
         for (int announce = 0; announce < 2; announce++) {
             init_env(opts, st, 2.0);
             seed_row(st, 2300, "B", 0, 0);
-            st->trunk_chan_map[lpcn_d] = VC_B;
-            st->dmr_lcn_trust[lpcn_d] = 1U;
+            seed_learned(st, lpcn_d, VC_B);
+            st->dmr_ras_signatures = 2U; // RAS confirmed on the carrier: -F accepts the RAS-marked message
             st->event_crc_invalid[0] = flags[f];
             if (announce) {
                 c_bcast_chan_freq(opts, st, lpcn_d, VC_B);
@@ -1493,8 +2075,14 @@ test_unchecked_message_never_confirms(dsd_opts* opts, dsd_state* st) {
             st->event_crc_invalid[0] = 0U;
             rc |= expect_true("an unchecked message on the control channel confirms no mapping",
                               st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
-            rc |= expect_true("an unchecked message on the control channel still teaches an empty cell",
-                              st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+            if (flags[f] == (uint8_t)DSD_CRC_RAS_UNVERIFIED) {
+                rc |= expect_true("a RAS-accepted message on the control channel still teaches an empty cell",
+                                  st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U
+                                      && dmr_t3_chan_origin(st, lpcn_e) == DMR_CHAN_ORIGIN_UNVERIFIED);
+            } else {
+                rc |= expect_true("a message whose CRC failed teaches nothing (discussion #900)",
+                                  st->trunk_chan_map[lpcn_e] == 0 && st->dmr_lcn_trust[lpcn_e] == 0U);
+            }
             rc |= expect_true("a hold grant on a mapping an unchecked message named is not followed",
                               !hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
         }
@@ -1504,8 +2092,8 @@ test_unchecked_message_never_confirms(dsd_opts* opts, dsd_state* st) {
 
 /* Another site's channel (a C_BCAST Vote_Now or Adjacent site announcement, heard on the control channel) never confirms
    an entry of this site's map, even at the same LPCN and frequency: it stays unconfirmed (1) and a Hold grant on it
-   heard off the control channel is refused. An announced APCN the map does not hold is still stored as it always has
-   been (2 on the control channel). */
+   heard off the control channel is refused. An announced APCN the map does not hold is stored as a neighbour's
+   frequency (NEIGHBOUR, discussion #900), never confirmed (1). */
 static int
 test_other_site_announcement_never_confirms(dsd_opts* opts, dsd_state* st) {
     const uint16_t lpcn_d = 0x0013U;
@@ -1514,14 +2102,14 @@ test_other_site_announcement_never_confirms(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     for (int t = 0; t < 2; t++) {
         init_env(opts, st, 2.0);
-        st->trunk_chan_map[lpcn_d] = VC_B;
-        st->dmr_lcn_trust[lpcn_d] = 1U;
+        seed_learned(st, lpcn_d, VC_B);
         c_bcast_other_site(opts, st, types[t], lpcn_d, VC_B);
         c_bcast_other_site(opts, st, types[t], lpcn_e, VC_C);
         rc |= expect_true("another site's announcement confirms no mapping of this site",
                           st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U);
-        rc |= expect_true("another site's announcement is stored as before",
-                          st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
+        rc |= expect_true("another site's announcement is stored as a neighbour's, never confirmed",
+                          st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 1U
+                              && dmr_t3_chan_origin(st, lpcn_e) == DMR_CHAN_ORIGIN_NEIGHBOUR);
         rc |= expect_true("a hold grant on a mapping only another site's announcement named is not followed",
                           !hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
     }
@@ -1563,8 +2151,7 @@ test_composite_payload_counts_as_control_channel(dsd_opts* opts, dsd_state* st) 
     const uint16_t lpcn_f = 0x0015U;
     init_env(opts, st, 2.0);
     st->trunk_chan_map[0x0020U] = CC_HZ;
-    st->trunk_chan_map[lpcn_d] = VC_B;
-    st->dmr_lcn_trust[lpcn_d] = 1U;
+    seed_learned(st, lpcn_d, VC_B);
     seed_row(st, 2300, "B", 0, 0);
     clock_at(1.0);
     tv_grant(opts, st, 0x0020U, 1, 100, 1);
@@ -1599,8 +2186,7 @@ test_off_control_channel_receiver_confirms_nothing(dsd_opts* opts, dsd_state* st
     for (int variant = 0; variant < 4; variant++) {
         init_env(opts, st, 2.0);
         seed_row(st, 2300, "B", 0, 0); // the confirming grant's own call is not followed
-        st->trunk_chan_map[lpcn_d] = VC_B;
-        st->dmr_lcn_trust[lpcn_d] = 1U;
+        seed_learned(st, lpcn_d, VC_B);
         if (variant <= 1) {
             opts->audio_in_type = AUDIO_IN_RTL;
             opts->rtlsdr_center_freq = (uint32_t)CC_HZ;
@@ -1643,8 +2229,7 @@ test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
         for (int own = 0; own < 2; own++) {
             init_env(opts, st, 2.0);
             seed_row(st, 2300, "B", 0, 0);
-            st->trunk_chan_map[lpcn_d] = VC_B;
-            st->dmr_lcn_trust[lpcn_d] = 1U;
+            seed_learned(st, lpcn_d, VC_B);
             if (announce) {
                 c_bcast_chan_freq_block(opts, st, lpcn_d, own ? 40U : 49U, lpcn_d, VC_B);
             } else {
@@ -1685,21 +2270,20 @@ test_foreign_block_never_confirms(dsd_opts* opts, dsd_state* st) {
 }
 
 /* A C_BCAST Chan_Freq whose header names the absolute escape (0xFFF) names the LPCN its appended block defines, as an
-   absolute grant does, but only to confirm: heard on the control channel it confirms a learned mapping of that LPCN and
-   frequency, so a Hold grant on it heard off the control channel is followed, while an LPCN the map does not hold stays
-   empty (first learning as it always was). */
+   absolute grant does (discussion #900): heard on the control channel it confirms a learned mapping of that LPCN and
+   frequency, so a Hold grant on it heard off the control channel is followed, and it teaches an LPCN the map does not
+   hold yet. */
 static int
 test_absolute_chan_freq_names_its_block_channel(dsd_opts* opts, dsd_state* st) {
     const uint16_t lpcn_d = 0x0013U;
     const uint16_t lpcn_e = 0x0014U;
     init_env(opts, st, 2.0);
-    st->trunk_chan_map[lpcn_d] = VC_B;
-    st->dmr_lcn_trust[lpcn_d] = 1U;
+    seed_learned(st, lpcn_d, VC_B);
     c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_d, VC_B);
     c_bcast_chan_freq_block(opts, st, 0x0FFFU, 40U, lpcn_e, VC_C);
     int rc = expect_true("an absolute Chan_Freq confirms its block's LPCN", st->dmr_lcn_trust[lpcn_d] == 2U);
-    rc |= expect_true("an absolute Chan_Freq teaches no empty LPCN",
-                      st->trunk_chan_map[lpcn_e] == 0 && st->dmr_lcn_trust[lpcn_e] == 0U);
+    rc |= expect_true("an absolute Chan_Freq teaches its block's LPCN (discussion #900)",
+                      st->trunk_chan_map[lpcn_e] == VC_C && st->dmr_lcn_trust[lpcn_e] == 2U);
     rc |= expect_true("a hold grant on the confirmed mapping is followed off the control channel",
                       hold_grant_followed_off_cc(opts, st, lpcn_d, VC_B));
     return rc;
@@ -1716,8 +2300,7 @@ test_chan_freq_conflicting_channels_name_nothing(dsd_opts* opts, dsd_state* st) 
     c_bcast_chan_freq_block(opts, st, lpcn_d, 40U, lpcn_e, VC_C);
     int rc = expect_true("a Chan_Freq whose block defines another LPCN teaches neither",
                          st->trunk_chan_map[lpcn_d] == 0 && st->trunk_chan_map[lpcn_e] == 0);
-    st->trunk_chan_map[lpcn_d] = VC_B;
-    st->dmr_lcn_trust[lpcn_d] = 1U;
+    seed_learned(st, lpcn_d, VC_B);
     c_bcast_chan_freq_block(opts, st, lpcn_d, 40U, lpcn_e, VC_B);
     rc |= expect_true("a Chan_Freq whose block defines another LPCN confirms no mapping",
                       st->trunk_chan_map[lpcn_d] == VC_B && st->dmr_lcn_trust[lpcn_d] == 1U
@@ -1745,7 +2328,7 @@ test_absolute_parameters_need_one_block(dsd_opts* opts, dsd_state* st) {
     write_bits_u32(bits, 56U, 3U, 24U);
     write_abs_channel(bits, 49U, lpcn_d, VC_C);
     write_bits_u32(bits, 194U, 49U, 6U);
-    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 2U);
+    dsd_test_dmr_cspdu_mbc_blocks(opts, st, bits, bytes, 2U);
     int rc = expect_true("a grant with two continuations names no channel",
                          st->trunk_chan_map[lpcn_d] == 0 && sm()->state != DMR_SM_TUNED && g_tunes == 0);
 
@@ -1755,7 +2338,7 @@ test_absolute_parameters_need_one_block(dsd_opts* opts, dsd_state* st) {
     write_bits_u32(bits, 68U, lpcn_d, 12U);
     write_abs_channel(bits, 40U, lpcn_d, VC_C);
     write_bits_u32(bits, 194U, 40U, 6U);
-    dmr_cspdu_mbc(opts, st, bits, bytes, 1U, 0U, 2U);
+    dsd_test_dmr_cspdu_mbc_blocks(opts, st, bits, bytes, 2U);
     rc |= expect_true("a Chan_Freq with two continuations teaches nothing", st->trunk_chan_map[lpcn_d] == 0);
     return rc;
 }
@@ -2356,6 +2939,7 @@ main(void) {
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_followed_media_change_returns_to_cc(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
+    rc |= test_in_place_private_data_grant_starts_its_own_dwell(opts, st);
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
     rc |= test_radio_block_keeps_resident_call(opts, st);
@@ -2392,6 +2976,21 @@ main(void) {
     rc |= test_slotless_follow_first_voice_is_heard(opts, st);
     rc |= test_slotless_follow_binds_on_accepted_voice(opts, st);
     rc |= test_grant_origin_values(opts, st);
+    rc |= test_in_place_data_grant_never_binds_late_entry_voice(opts, st);
+    rc |= test_deferred_data_grant_never_binds_late_entry_voice(opts, st);
+    rc |= test_unbound_data_grant_never_describes_voice(opts, st);
+    rc |= test_data_grant_never_names_late_entry_voice(opts, st);
+    rc |= test_data_follow_first_voice_consumes_publication(opts, st);
+    rc |= test_pending_data_grant_keeps_hold_call(opts, st);
+    rc |= test_other_protocol_record_claims_no_hold(opts, st);
+    rc |= test_missed_terminator_keeps_hold_call(opts, st);
+    rc |= test_xpt_status_rename_takes_its_channel(opts, st);
+    rc |= test_xpt_same_group_status_moves_channel(opts, st);
+    rc |= test_xpt_private_status_keeps_its_channel(opts, st);
+    rc |= test_xpt_status_keeps_grant_ras_mark(opts, st);
+    rc |= test_xpt_status_refreshes_lc_channel(opts, st);
+    rc |= test_in_place_chan0_grant_drops_channel(opts, st);
+    rc |= test_in_place_grant_names_channel_with_its_provenance(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

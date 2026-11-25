@@ -472,6 +472,14 @@ cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, i
     return 1;
 }
 
+/* --profile: bootstrap reads its name (bootstrap_cli_try_profile_option()) before this parser runs, as the next
+   argument whatever it starts with, and dsd_cli_compact_args() steps over it the same way. A pre-scan here steps over it
+   too, so a profile named "--" or "--print-config" is the name it is, never the end of the options or a one-shot. */
+static int
+cli_option_value_read_by_bootstrap(const char* arg) {
+    return strcmp(arg, "--profile") == 0;
+}
+
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
@@ -486,8 +494,8 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
-        if (dsd_cli_option_takes_free_value(arg)) {
-            advance = 2; /* a token is any text, a one-shot option's name included */
+        if (dsd_cli_option_takes_free_value(arg) || cli_option_value_read_by_bootstrap(arg)) {
+            advance = 2; /* a token or a profile name is any text, a one-shot option's name included */
             continue;
         }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
@@ -893,10 +901,11 @@ enum {
     CLI_SCAN_VOICE_ONLY_SEEN = 1 << 9,
     CLI_SCAN_MAX_VISIT_SEEN = 1 << 10,
     CLI_SCAN_SKIP_SILENT_SEEN = 1 << 11,
-    CLI_TRUNK_SCAN_SEEN = 1 << 12, /* --trunk-scan or --trunk-scan-off */
-    CLI_RTL_UDP_CONTROL_SEEN = 1 << 13,
-    CLI_AUTO_PPM_SEEN = 1 << 14,
-    CLI_RTLTCP_AUTOTUNE_SEEN = 1 << 15,
+    CLI_SCAN_SKIP_SILENT_MS_SEEN = 1 << 12,
+    CLI_TRUNK_SCAN_SEEN = 1 << 13, /* --trunk-scan or --trunk-scan-off */
+    CLI_RTL_UDP_CONTROL_SEEN = 1 << 14,
+    CLI_AUTO_PPM_SEEN = 1 << 15,
+    CLI_RTLTCP_AUTOTUNE_SEEN = 1 << 16,
 };
 
 /**
@@ -1287,6 +1296,25 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
     return 0;
 }
 
+/* --dmr-chan-overrides (discussion #900 F3): only kept here. The engine decides at start whether the session takes it
+   (one that decodes DMR and runs no trunk scan) and only then opens it, so a session that ignores the option never
+   needs the file; one that takes it refuses a file it cannot open (dmr_t3_overlay_load_csv()). */
+static int
+cli_set_dmr_chan_overrides(dsd_opts* opts, const char* path, int* out_exit_rc) {
+    if (path == NULL || path[0] == '\0') {
+        LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (strlen(path) >= sizeof opts->dmr_chan_overrides_file) {
+        LOG_ERROR("--dmr-chan-overrides path is too long\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    DSD_SNPRINTF(opts->dmr_chan_overrides_file, sizeof opts->dmr_chan_overrides_file, "%s", path);
+    return 1;
+}
+
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -1410,6 +1438,12 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--profile") == 0) { /* cli_option_value_read_by_bootstrap(): bootstrap reads the name */  \
+            if (i + 1 < argc) {                                                                                        \
+                arg_advance = 2;                                                                                       \
+            }                                                                                                          \
+            continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--airspy-", 9) == 0) {                                                                   \
             arg_advance = cli_parse_airspy_option(argc, argv, i, opts);                                                \
@@ -1991,6 +2025,28 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             analog_cli_seen |= CLI_SCAN_SKIP_SILENT_SEEN;                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--scan-skip-silent-ms") == 0) {                                                           \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--scan-skip-silent-ms requires a millisecond value\n");                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--scan-skip-silent-ms", DSD_PARSE_ARGS_NEXT_ARG(),                         \
+                                           DSD_SCAN_SKIP_SILENT_MS_MIN, DSD_SCAN_SKIP_SILENT_MS_MAX,                   \
+                                           &opts->scan_skip_silent_ms, out_exit_rc)) {                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            analog_cli_seen |= CLI_SCAN_SKIP_SILENT_MS_SEEN;                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--scan-skip-silent-ms=", 22) == 0) {                                                     \
+            if (!cli_parse_ms_range_option("--scan-skip-silent-ms", argv[i] + 22, DSD_SCAN_SKIP_SILENT_MS_MIN,         \
+                                           DSD_SCAN_SKIP_SILENT_MS_MAX, &opts->scan_skip_silent_ms, out_exit_rc)) {    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            analog_cli_seen |= CLI_SCAN_SKIP_SILENT_MS_SEEN;                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--scan-voice-qualify-ms") == 0) {                                                         \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--scan-voice-qualify-ms requires a millisecond value\n");                                   \
@@ -2237,6 +2293,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-unknown-talkgroup") == 0) {                                                        \
+            if (!cli_has_value("--rdio-unknown-talkgroup", i, argc, out_exit_rc)                                       \
+                || !cli_parse_int_range_option("--rdio-unknown-talkgroup", DSD_PARSE_ARGS_NEXT_ARG(), 0, 2147483647,   \
+                                               &opts->rdio_unknown_talkgroup, out_exit_rc)) {                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
             recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
@@ -2345,6 +2409,23 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-tg-key-csv=", 17) == 0) {                                                          \
             dmr_tg_key_csv_cli = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-chan-overrides") == 0) {                                                            \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");                                               \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_set_dmr_chan_overrides(opts, DSD_PARSE_ARGS_NEXT_ARG(), out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-chan-overrides=", 21) == 0) {                                                      \
+            if (!cli_set_dmr_chan_overrides(opts, argv[i] + 21, out_exit_rc)) {                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-bandplan") == 0) {                                                                  \
@@ -3058,9 +3139,21 @@ dsd_warn_ineffective_scan_opt(int active, unsigned int cli_seen, const char* fla
     LOG_WARN("WARNING: %s has no effect without -Y or --trunk-scan.\n", cli_seen ? flag : ini_key);
 }
 
+/* The skip-silent reading length (#834) only shapes the skip-silent check: under a scan with skip-silent off it does
+ * nothing, and the warning names the flag or the [trunking] key as dsd_warn_ineffective_scan_opt() does. */
+static void
+dsd_warn_skip_silent_ms_without_skip_silent(const dsd_opts* opts, unsigned int seen) {
+    if (opts->scan_skip_silent_ms <= 0 || opts->scan_skip_silent) {
+        return;
+    }
+    LOG_WARN("WARNING: %s has no effect without --scan-skip-silent.\n",
+             (seen & CLI_SCAN_SKIP_SILENT_MS_SEEN) ? "--scan-skip-silent-ms" : "[trunking] scan_skip_silent_ms");
+}
+
 static void
 dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
     if (opts->scanner_mode || opts->trunk_scan_enabled) {
+        dsd_warn_skip_silent_ms_without_skip_silent(opts, seen);
         return;
     }
     dsd_warn_ineffective_scan_opt(opts->scan_voice_only, seen & CLI_SCAN_VOICE_ONLY_SEEN, "--scan-voice-only",
@@ -3069,6 +3162,8 @@ dsd_warn_ineffective_scan_opts(const dsd_opts* opts, unsigned int seen) {
                                   "[trunking] scan_max_visit_ms");
     dsd_warn_ineffective_scan_opt(opts->scan_skip_silent, seen & CLI_SCAN_SKIP_SILENT_SEEN, "--scan-skip-silent",
                                   "[trunking] scan_skip_silent");
+    dsd_warn_ineffective_scan_opt(opts->scan_skip_silent_ms > 0, seen & CLI_SCAN_SKIP_SILENT_MS_SEEN,
+                                  "--scan-skip-silent-ms", "[trunking] scan_skip_silent_ms");
 }
 
 /* What runs once every option has been read, whatever order they came in. @p analog_cli_seen has bit

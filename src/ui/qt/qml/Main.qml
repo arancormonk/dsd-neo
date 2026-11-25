@@ -1795,6 +1795,13 @@ Window {
         });
     }
 
+    // Issue #901 r3 M1: true while startWithMap() runs. The host's start
+    // shows the Monitor before the start has told monitorView which session
+    // to show (beginSessionOn(), at its end), so the Monitor's list waits for
+    // it (MonitorScreen.callsPending) instead of building the previous
+    // session's rows and destroying them.
+    property bool sessionStarting: false
+
     /**
      * Start a session from a system map.
      *
@@ -1820,6 +1827,16 @@ Window {
      * foreground superseded shows nothing: siteRoaming says what follows.
      */
     function startWithMap(sys, row, scan, options) {
+        var was = mainRoot.sessionStarting;
+        mainRoot.sessionStarting = true;
+        try {
+            startSession(sys, row, scan, options);
+        } finally {
+            mainRoot.sessionStarting = was;
+        }
+    }
+    // startWithMap()'s body.
+    function startSession(sys, row, scan, options) {
         var roam = !scan && options && options.roam ? options.roam : null;
         cancelPendingRestart(roam ? "roamStart" : "start");
         mainRoot.awaitingSessionInitialized = false;
@@ -2343,6 +2360,7 @@ Window {
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
         sessionSystemUid: mainRoot.sessionSavedSystemUid
+        callsPending: mainRoot.sessionStarting
         onSystemProfileSaved: function (uid) {
             if (mainRoot.sessionSavedSystemUid === uid)
                 mainRoot.sessionSystem = savedSystems.getByUid(uid);
@@ -2758,6 +2776,13 @@ Window {
         objectName: "sessionMenu"
         anchors.fill: safeArea
         title: qsTr("Session options")
+        // Issue #901: the Compact view row's On/Off, read by the row in its
+        // own binding (ActionMenu.describe), never by the action list below:
+        // a change of the preference with the menu closed then re-runs
+        // nothing and rebuilds no row of it.
+        describe: function (key) {
+            return key === "compactView" ? (prefs.compactView ? qsTr("On") : qsTr("Off")) : "";
+        }
         actions: {
             var items = [];
             if (monitor.sitesAvailable)
@@ -2774,6 +2799,10 @@ Window {
             // Issue #800: every protocol can carry positions, so always offered.
             items.push({text: qsTr("Map"), key: "map", objectName: "sessionMenuMap"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
+            // Issue #901: the Settings switch, one tap from the session it changes. Its On/Off is the menu's
+            // describe(), never the preference read here: a change of it would re-run this list and rebuild every
+            // row of the closed menu, and a function in the list is unequal to the last run's on every re-run.
+            items.push({text: qsTr("Compact view"), key: "compactView", objectName: "sessionMenuCompactView"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
             items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
             if (mainRoot.sessionRow >= 0)
@@ -2800,6 +2829,8 @@ Window {
                 mainRoot.diagnosticsOpen = true;
             else if (key === "map")
                 mainRoot.openMap();
+            else if (key === "compactView")
+                prefs.compactView = !prefs.compactView;
             else if (key === "edit" && mainRoot.sessionRow >= 0) {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;
@@ -2859,6 +2890,13 @@ Window {
         target: diagnosticsLog
         property: "active"
         value: diagnosticsScreen.visible
+    }
+
+    // Discussion #900 F3: the saved system a Tier III channel edit is kept on.
+    Binding {
+        target: dmrChannels
+        property: "sessionSystemUid"
+        value: mainRoot.sessionSavedSystemUid
     }
 
     LicensesScreen {

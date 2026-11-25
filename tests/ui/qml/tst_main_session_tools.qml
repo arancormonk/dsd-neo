@@ -473,6 +473,41 @@ Item {
                 savedSystems.remove(saved);
             }
         }
+        // Issue #901: Compact view in the session menu, just before Settings, says whether it is on and flips it. It
+        // opens nothing, so the keyboard focus returns to Session options at once.
+        function test_session_menu_compact_view() {
+            prefs.compactView = false;
+            var monitor = findChild(app, "monitorScreen");
+            var button = findChild(monitor, "sessionOptionsButton");
+            var menu = findChild(app, "sessionMenu");
+            try {
+                for (var want of [true, false]) {
+                    tryVerify(function () { return monitor.enabled && button.visible && button.enabled; }, 3000, "the monitor is up");
+                    tryVerify(function () { button.forceActiveFocus(); return button.activeFocus; }, 2000, "Session options takes the keyboard");
+                    keyClick(Qt.Key_Return);
+                    tryVerify(function () { return menu.visible; }, 1000, "Return on Session options opens the menu");
+                    var keys = menu.actions.map(function (action) { return action.key; });
+                    var index = keys.indexOf("compactView");
+                    verify(index >= 0, "Compact view is offered");
+                    compare(keys[index + 1], "settings", "just before Settings");
+                    var row = findChild(menu, "sessionMenuCompactView");
+                    verify(row !== null && row.visible);
+                    compare(row.text, "Compact view");
+                    var description = findChild(menu, "actionMenuDescription" + index);
+                    compare(description.text, want ? "Off" : "On");
+                    compare(row.accessibleName, "Compact view. " + (want ? "Off" : "On"));
+                    row.forceActiveFocus();
+                    keyClick(Qt.Key_Return);
+                    verify(!menu.visible);
+                    compare(prefs.compactView, want);
+                    compare(Ui.Navigation.layers.length + Ui.Navigation.modals.length, 0, "nothing opened");
+                    tryVerify(function () { return button.activeFocus; }, 1000, "Session options takes the focus back");
+                }
+            } finally {
+                menu.visible = false;
+                prefs.compactView = false;
+            }
+        }
         // Activity is the session's own log: the session's end closes it and
         // leaves the tab where it was, with no screen of it outside a session.
         function test_activity_closes_with_the_session() {

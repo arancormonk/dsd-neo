@@ -11,8 +11,8 @@
  * 12-symbol FS2 word matches about one window in 2048 of receiver noise -- roughly one
  * false frame a second at 2400 baud -- and there is no repeat guard behind it. What the
  * frame body then offered was not a check: identity publishing rode on
- * dpmr_ids_are_strong(), which accepted a CCH whose two leading Hamming(12,8) blocks
- * merely report correctable. Thirteen of the sixteen syndromes are correctable, so a
+ * dpmr_ids_are_strong(), which then accepted a CCH whose two leading Hamming(12,8) blocks
+ * merely reported correctable. Thirteen of the sixteen syndromes are correctable, so a
  * random block passes about 81% of the time and the predicate passes (13/16)^4, about
  * 44%, of noise superframes. Voice playback was gated on less still: a decoded 3-bit
  * CommunicationMode landing in {0, 1, 5}, three values in eight. On an open squelch the
@@ -80,8 +80,7 @@ void dpmr_confirm_reset(dsd_state* state);
  *
  * @p frame_symbol is dsd_state::symbolcnt at the same point of every frame. A frame runs on only from one read
  * DPMR_CONFIRM_FRAME_SYMBOLS (within the slip) before it; one that does not starts the weak streak over, so two weak
- * frames confirm only when the second follows the first, and drops the predicted superframe pair
- * (dsd_state::dpmr_expected_pair, issue #903). Without this call a frame runs on (the unit tests' frames,
+ * frames confirm only when the second follows the first. Without this call a frame runs on (the unit tests' frames,
  * one after another).
  */
 void dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol);

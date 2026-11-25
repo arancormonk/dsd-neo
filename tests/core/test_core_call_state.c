@@ -520,6 +520,37 @@ test_snapshot_clone(dsd_state* state) {
     free(clone);
 }
 
+/* Issue #888: a call context restored from its snapshot (a trunk-scan hop back) turns a call that ended on its own
+   terminator into a teardown, and clears its own-terminator mark with it: the end reason and the mark stay one
+   verdict. Before, the restore rewrote the reason to EXPLICIT and kept own_terminator 1. */
+static void
+test_context_restore_clears_the_own_terminator_mark(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    dsd_call_context_snapshot* saved = (dsd_call_context_snapshot*)calloc(1U, sizeof(*saved));
+    assert(state != NULL && saved != NULL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_YSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end_own_terminator(state, 0U, 2.0, DSD_SYNC_YSF_POS, DSD_CALL_KIND_GROUP_VOICE) == 1);
+    dsd_call_snapshot ended;
+    assert(dsd_call_state_get(state, 0U, &ended) == 1);
+    assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR && ended.own_terminator == 1U);
+    assert(dsd_call_context_copy_snapshot(state, saved) == 1);
+    assert(dsd_call_context_restore_snapshot(state, saved) == 1);
+    dsd_call_snapshot restored;
+    assert(dsd_call_state_get(state, 0U, &restored) == 1);
+    assert(restored.epoch == ended.epoch && restored.phase == DSD_CALL_PHASE_ENDED);
+    assert(restored.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(restored.own_terminator == 0U);
+    free(saved);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 static void
 test_voice_specialization_and_sparse_metadata(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
@@ -1347,6 +1378,7 @@ main(void) {
     test_recent_activity(state);
     test_recent_activity_runs_on_the_decode_clock();
     test_snapshot_clone(state);
+    test_context_restore_clears_the_own_terminator_mark();
     test_voice_specialization_and_sparse_metadata();
     test_explicit_identity_specializes_provisional_voice();
     test_explicit_begin_keeps_real_provisional_boundaries();

@@ -64,6 +64,11 @@ dsd_cli_usage_rdio_options(void) {
     printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for analog calls with no known frequency\n");
     printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
     printf("                 is exported under it in kHz.)\n");
+    printf(
+        "      --rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and no known "
+        "frequency\n");
+    printf("                 (audio input, or an SDRTrunk .mbe call played with -r; 0 to 2147483647, 0 = not\n");
+    printf("                 exported, the default. A call with a frequency is exported under it in kHz.)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
     printf("      --rdio-api-key <key>  rdio-scanner API key for trunk-recorder-call-upload\n");
     printf("      --rdio-upload-timeout-ms <ms>  API upload timeout per call (default 5000)\n");
@@ -503,6 +508,11 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("Trunking Options:\n");
     printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)\n");
     printf("                 Optional name, mode and key columns; see examples/conventional_scan_modes.csv.\n");
+    printf("      --dmr-chan-overrides <file>  Your DMR Tier III channels over the channel map: lpcn,frequency_hz\n");
+    printf("                 rows (decimal; 0 hides the channel), up to 256. For DMR Tier III only; the channel\n");
+    printf("                 map other trunking protocols use is not changed. Ignored, with a notice and the\n");
+    printf("                 file unread, when the session does not decode DMR frames (-r, -fU too) or runs\n");
+    printf("                 a trunk scan.\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
     printf("      --src-csv <file>   Source ID (radio ID) alias list CSV: id,name[,tags]; labels only, no policy.\n");
@@ -531,6 +541,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --scan-skip-silent  Skip a silent conventional scan channel after a quick RF check; applies to\n");
     printf("                 -Y and --trunk-scan conventional targets, never a row option.\n");
     printf("      --no-scan-skip-silent  Turn --scan-skip-silent off (also over a config file value).\n");
+    printf("      --scan-skip-silent-ms <ms>  Expert: length of the skip-silent reading, rounded up to 10 ms slices\n");
+    printf("                 (10..500; default the calibrated nine slices). Fewer than nine slices (10..80 ms)\n");
+    printf("                 are not calibrated: a weak or fading signal can read silent and be skipped; DMR\n");
+    printf("                 channels are still read for at least six slices (60 ms or a little more).\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");

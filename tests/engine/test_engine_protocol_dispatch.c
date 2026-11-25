@@ -312,10 +312,10 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
                                                      : (int)verdict));
     /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
     assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
-    /* Issue #834: a frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA) is noted for the -Y step as it
-       is dispatched, once; any other frame, or a synctype no handler takes, is not. */
-    const int unchecked = expected_handler == TEST_HANDLER_X2TDMA || expected_handler == TEST_HANDLER_PROVOICE
-                          || expected_handler == TEST_HANDLER_TETRA;
+    /* Issue #834: a frame of a protocol with no content check (X2-TDMA, ProVoice) is noted for the -Y step as it is
+       dispatched, once; any other frame, or a synctype no handler takes, is not. A TETRA burst is not one since issue
+       #890: its decoder reports the content its CRCs checked (tetra_burst_proof()), and a failed burst holds no row. */
+    const int unchecked = expected_handler == TEST_HANDLER_X2TDMA || expected_handler == TEST_HANDLER_PROVOICE;
     assert(state->scan_y_unchecked_seq == (unchecked ? 1U : 0U));
     /* Its -Y call marker moves only when its decoder took it, on the carrier it was dispatched on and uninterrupted:
        a ProVoice sync its decoder has not confirmed (UNPRODUCTIVE), a frame dropped or cut, is no call. Nor is an

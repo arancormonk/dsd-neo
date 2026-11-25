@@ -25,11 +25,12 @@
 #include "dsd-neo/runtime/config.h"
 #include "dsd-neo/runtime/decode_mode.h"
 
-/* The drain's own dispatch of a config apply; what a scan list toggle would retain does not apply to one. */
+/* The drain's own dispatch of a config apply; what a scan list toggle or a channel edit would retain does not apply to
+   one. */
 static int
 apply_config_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd) {
-    int32_t scan_list_code = 0;
-    return apply_cmd(opts, state, cmd, &scan_list_code);
+    ui_cmd_result_codes codes = {0, 0};
+    return apply_cmd(opts, state, cmd, &codes);
 }
 
 static int test_context;

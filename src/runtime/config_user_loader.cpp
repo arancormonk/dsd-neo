@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/platform.h>
@@ -618,12 +619,29 @@ apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const
     return 1;
 }
 
+/* The skip-silent reading length (#834) is refused, never clamped: a value other than 0 or 10..500, or not a whole
+   number, is reported and the one already loaded (0, for a base file) stays. --validate-config reports it as an
+   error. */
+static void
+apply_trunking_scan_skip_silent_ms(dsdneoUserConfig* cfg, const char* val) {
+    int ms = 0;
+    if (dsd_parse_int_strict(val, 10, 0, DSD_SCAN_SKIP_SILENT_MS_MAX, &ms) != 0
+        || !dsd_scan_skip_silent_ms_is_valid(ms)) {
+        LOG_WARN("Config: invalid scan_skip_silent_ms = '%s' (expected 0 or %d to %d); keeping %d\n", val ? val : "",
+                 DSD_SCAN_SKIP_SILENT_MS_MIN, DSD_SCAN_SKIP_SILENT_MS_MAX, cfg->trunk_scan_skip_silent_ms);
+        return;
+    }
+    cfg->trunk_scan_skip_silent_ms = ms;
+}
+
 static int
 apply_trunking_section_scan_timing_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "scan_voice_only") == 0) {
         assign_bool_key(&cfg->trunk_scan_voice_only, val);
     } else if (strcmp(key_lc, "scan_skip_silent") == 0) {
         assign_bool_key(&cfg->trunk_scan_skip_silent, val);
+    } else if (strcmp(key_lc, "scan_skip_silent_ms") == 0) {
+        apply_trunking_scan_skip_silent_ms(cfg, val);
     } else if (strcmp(key_lc, "scan_voice_qualify_ms") == 0) {
         int parsed = 0;
         if (user_config_parse_int_value(val, &parsed) == 0) {
@@ -929,6 +947,8 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
         apply_recording_refused_range("rdio_analog_system_id", val, 0, 65535, &cfg->rdio_analog_system_id);
     } else if (strcmp(key_lc, "rdio_analog_talkgroup") == 0) {
         apply_recording_refused_range("rdio_analog_talkgroup", val, 0, 2147483647, &cfg->rdio_analog_talkgroup);
+    } else if (strcmp(key_lc, "rdio_unknown_talkgroup") == 0) {
+        apply_recording_refused_range("rdio_unknown_talkgroup", val, 0, 2147483647, &cfg->rdio_unknown_talkgroup);
     } else {
         return 0;
     }

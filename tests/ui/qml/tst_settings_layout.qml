@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 Item {
     width: 420
@@ -32,6 +33,8 @@ Item {
 
         function cleanup() {
             appLoader.source = "";
+            Ui.Theme.resetFontScale();
+            prefs.compactView = false;
             prefs.chooseFilesInApp = false;
             testContext.setFileBrowserSupported(false);
             testContext.useRadioReferenceModel(null);
@@ -390,6 +393,45 @@ Item {
             compare(row.checked, true);
             row.activate();
             compare(prefs.chooseFilesInApp, false);
+            compare(row.checked, false);
+        }
+
+        // Issue #901: the Compact view switch closes the Appearance card, under the theme note, at every text size.
+        function test_compact_view_row_data() {
+            return [{tag: "1.0", scale: 1.0}, {tag: "2.0", scale: 2.0}];
+        }
+        function test_compact_view_row(data) {
+            Ui.Theme.fontScale = data.scale;
+            prefs.compactView = false;
+            waitForRendering(settings);
+            var card = findChild(settings, "settingsAppearanceCard");
+            var note = findChild(settings, "settingsAppearanceNote");
+            var row = findChild(settings, "settingsCompactView");
+            verify(card !== null && note !== null && row !== null);
+            verify(note.visible, "the theme follows the system, so its note is shown");
+            verify(row.visible);
+            compare(row.title, "Compact view");
+            compare(row.subtitle, "Fit more systems, scan lists and calls on the screen.");
+            var cardTop = card.mapToItem(settings, 0, 0).y;
+            var noteBottom = note.mapToItem(settings, 0, note.height).y;
+            var rowTop = row.mapToItem(settings, 0, 0).y;
+            var rowBottom = row.mapToItem(settings, 0, row.height).y;
+            var rowLeft = row.mapToItem(settings, 0, 0).x;
+            var cardLeft = card.mapToItem(settings, 0, 0).x;
+            verify(rowTop >= noteBottom, "the row " + rowTop + " starts below the note's bottom " + noteBottom);
+            verify(rowTop > cardTop && rowBottom <= cardTop + card.height,
+                   "the row " + rowTop + ".." + rowBottom + " inside the card " + cardTop + ".." + (cardTop + card.height));
+            compare(rowLeft, cardLeft, "the row spans the card, as the Units card's does");
+            compare(row.width, card.width);
+            verify(row.height >= Ui.Theme.minimumTouchSize);
+            var units = findChild(settings, "settingsUnitsHeader");
+            verify(units.mapToItem(settings, 0, 0).y > rowBottom, "the Units card follows");
+            compare(row.checked, false, "off by default");
+            row.activate();
+            compare(prefs.compactView, true);
+            compare(row.checked, true);
+            row.activate();
+            compare(prefs.compactView, false);
             compare(row.checked, false);
         }
 

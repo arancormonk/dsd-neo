@@ -764,6 +764,19 @@ test_plan_blocked(void) {
     expect_str("no frequency text", plan.freq_mhz, "");
     expect("required-map warning raised",
            warned(&plan.warnings, "RadioReference has no usable channel numbers for this site, so no channel "
+                                  "map was generated. This system needs a channel map unless the site sends "
+                                  "frequencies - the talkgroup list still imports."));
+    expect("tier3 drops the blanket claim", !warned(&plan.warnings, "needs one to follow a call"));
+    dsd_rr_import_plan_free(&plan);
+
+    /* Connect Plus grants name an LCN and no frequency, so its wording keeps the claim. */
+    dsd_rr_system_info conplus;
+    info_set(&conplus, DSD_RR_PROTO_DMR_CONPLUS, 0);
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("con+ no-frequency plan builds",
+           dsd_rr_import_plan_build(&conplus, bare, 1U, selected, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("con+ required-map warning keeps its claim",
+           warned(&plan.warnings, "RadioReference has no usable channel numbers for this site, so no channel "
                                   "map was generated. This system needs one to follow a call - the talkgroup "
                                   "list still imports."));
     dsd_rr_import_plan_free(&plan);

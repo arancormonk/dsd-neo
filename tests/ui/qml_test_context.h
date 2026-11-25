@@ -52,6 +52,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QInputMethodEvent>
+#include <QJSEngine>
 #include <QKeyEvent>
 #include <QList>
 #include <QMetaEnum>
@@ -69,6 +70,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTimeZone>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
@@ -80,6 +82,7 @@
 #include <condition_variable>
 #include <ctime>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -95,6 +98,7 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -118,16 +122,19 @@
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
+#include "dmr_channels_model.h" // Discussion #900 F3
 #include "document_import_transport.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "local_day_watch.h"
 #include "location_feed.h"
 #include "location_requests.h"
 #include "map_view_item.h"
 #include "p25_network_model.h" // WP-F2
+#include "platform_path.h"
 #include "position_model.h"
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -580,9 +587,11 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
   protected:
     bool
-    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                           bool zip) override {
-        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                           const RecordingSelectionToken& token) override {
+        return holdTransfers
+               || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip, token);
     }
 
     /* The project's LICENSE and the index naming it and a file the package lacks, compiled in by tests/CMakeLists.txt;
@@ -1426,6 +1435,8 @@ class CommandRecorder : public QObject {
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
+    /* Discussion #900 F3: as CommandBridge publishes the newest queued channel edit. */
+    Q_PROPERTY(quint32 lastDmrChannelRequest READ lastDmrChannelRequest NOTIFY lastDmrChannelRequestChanged)
     quint64 m_next_key_request = 1;
     QString m_last_key_request;
     QVariantList m_last_selection;
@@ -1737,6 +1748,87 @@ class CommandRecorder : public QObject {
         return m_lockout_accepted;
     }
 
+    /* Discussion #900 F3: a DMR Tier III channel edit, recorded as {request, lpcn, op, hz, expectedHz, expectedOrigin,
+     * generation, systemUid, session}. Queued unless setDmrChannelAccepted(false); a case answers it with
+     * answerDmrChannel(), as the bridge's poll would. */
+    Q_INVOKABLE bool
+    setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin, quint32 generation,
+                  const QString& systemUid = QString(), const QString& session = QString()) {
+        if (!m_dmr_channel_accepted) {
+            return false;
+        }
+        m_last_dmr_channel_request++;
+        m_dmr_channel_requests.append(QVariantMap{{"request", m_last_dmr_channel_request},
+                                                  {"lpcn", lpcn},
+                                                  {"op", op},
+                                                  {"hz", hz},
+                                                  {"expectedHz", expectedHz},
+                                                  {"expectedOrigin", expectedOrigin},
+                                                  {"generation", generation},
+                                                  {"systemUid", systemUid},
+                                                  {"session", session}});
+        Q_EMIT lastDmrChannelRequestChanged();
+        return true;
+    }
+
+    quint32
+    lastDmrChannelRequest() const {
+        return m_last_dmr_channel_request;
+    }
+
+    Q_INVOKABLE void
+    setDmrChannelAccepted(bool accepted) {
+        m_dmr_channel_accepted = accepted;
+    }
+
+    Q_INVOKABLE QVariantList
+    dmrChannelRequests() const {
+        return m_dmr_channel_requests;
+    }
+
+    /* The answer to the newest request (or @p answer's own `request`), with CommandBridge's keys: `result` ("ok" by
+     * default), `saved` (default: a uid was sent and the result is ok), `saveError` (default ""). */
+    Q_INVOKABLE void
+    answerDmrChannel(const QVariantMap& answer) {
+        const QVariantMap asked =
+            m_dmr_channel_requests.isEmpty() ? QVariantMap() : m_dmr_channel_requests.last().toMap();
+        QVariantMap result = asked;
+        for (auto it = answer.cbegin(); it != answer.cend(); ++it) {
+            result.insert(it.key(), it.value());
+        }
+        const QString key = result.value(QStringLiteral("result"), QStringLiteral("ok")).toString();
+        result.insert(QStringLiteral("result"), key);
+        if (!answer.contains(QStringLiteral("saved"))) {
+            result.insert(QStringLiteral("saved"),
+                          key == QStringLiteral("ok")
+                              && !result.value(QStringLiteral("systemUid")).toString().isEmpty());
+        }
+        if (!answer.contains(QStringLiteral("saveError"))) {
+            result.insert(QStringLiteral("saveError"), QString());
+        }
+        Q_EMIT dmrChannelResultReceived(result);
+    }
+
+    /* Discussion #900 F3: the Channels sheet's "Try saving again", recorded as {systemUid, lpcn, op, hz}, answered as
+     * CommandBridge::saveDmrChannelEdit() answers: setDmrChannelSaveResult()'s map, {saved: true} until a case sets
+     * one. */
+    Q_INVOKABLE QVariantMap
+    saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz) {
+        m_dmr_channel_saves.append(
+            QVariantMap{{"systemUid", systemUid}, {"lpcn", lpcn}, {"op", op}, {"hz", QVariant::fromValue(hz)}});
+        return m_dmr_channel_save_result;
+    }
+
+    Q_INVOKABLE void
+    setDmrChannelSaveResult(const QVariantMap& result) {
+        m_dmr_channel_save_result = result;
+    }
+
+    Q_INVOKABLE QVariantList
+    dmrChannelSaves() const {
+        return m_dmr_channel_saves;
+    }
+
     /* Relaxed CRC set to a value (DSD_APP_CMD_AGGR_SYNC_TOGGLE with a payload). */
     Q_INVOKABLE bool
     setRelaxedCrc(bool on) {
@@ -1894,10 +1986,20 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /** @brief The rows asked for are kept either way; a refused request (a full queue) sends nothing. */
     Q_INVOKABLE bool
     setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
         m_last_selection = rows;
+        if (!m_talkgroup_selection_accepted) {
+            return false;
+        }
         return setAllTalkgroupsListening(listen, QString());
+    }
+
+    /** @brief Whether setTalkgroupSelection() reports the request queued, so a case can refuse it. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        m_talkgroup_selection_accepted = accepted;
     }
 
     Q_INVOKABLE QVariantList
@@ -2158,6 +2260,10 @@ class CommandRecorder : public QObject {
         m_last_scan_row_edit.clear();
         m_scan_row_edit_calls = 0;
         m_lockout_accepted = true;
+        m_dmr_channel_accepted = true;
+        m_dmr_channel_requests.clear();
+        m_dmr_channel_saves.clear();
+        m_dmr_channel_save_result = dmrChannelSaved();
         m_lockout_requests.clear();
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
@@ -2184,6 +2290,7 @@ class CommandRecorder : public QObject {
         m_all_talkgroups_listen_calls = 0;
         m_last_all_talkgroups_listen = false;
         m_last_all_talkgroups_tag.clear();
+        m_talkgroup_selection_accepted = true;
     }
 
     int
@@ -2426,6 +2533,9 @@ class CommandRecorder : public QObject {
   Q_SIGNALS:
     /* #786: as CommandBridge says it of each queued command that changes what the session follows. */
     void operatorIntentSubmitted(const QString& kind);
+    /* Discussion #900 F3: as CommandBridge says it of an answered channel edit. */
+    void dmrChannelResultReceived(const QVariantMap& result);
+    void lastDmrChannelRequestChanged();
 
   private:
     int m_lockout_slot_calls = 0;
@@ -2466,6 +2576,17 @@ class CommandRecorder : public QObject {
     QVariantList m_lockout_requests;
     bool m_relaxed_crc_accepted = true;
     QVariantList m_relaxed_crc_requests;
+    bool m_dmr_channel_accepted = true;
+    quint32 m_last_dmr_channel_request = 0;
+    QVariantList m_dmr_channel_requests;
+
+    static QVariantMap
+    dmrChannelSaved() {
+        return {{"saved", true}, {"saveError", QString()}};
+    }
+
+    QVariantList m_dmr_channel_saves;
+    QVariantMap m_dmr_channel_save_result = dmrChannelSaved();
     bool m_recording_accepted = true;
     QString m_recording_refusal;
     QVariantList m_recording_requests;
@@ -2507,6 +2628,7 @@ class CommandRecorder : public QObject {
     int m_all_talkgroups_listen_calls = 0;
     bool m_last_all_talkgroups_listen = false;
     QString m_last_all_talkgroups_tag;
+    bool m_talkgroup_selection_accepted = true;
 };
 
 /**
@@ -3082,6 +3204,41 @@ class CallLogStore : public QAbstractListModel {
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::WhenRole});
         return name;
+    }
+
+    /**
+     * @brief Prepend one emergency call stamped @p when (0: a call whose time is not known; issue #901, its age).
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushEmergencyAt(qint64 when) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        m_rows[0].when = when;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::EmergencyRole, CallHistoryModel::WhenRole});
+        return name;
+    }
+
+    /**
+     * @brief Give the newest row the call name @p name and the system name @p systemName, and mark it encrypted
+     *        and an emergency as @p enc and @p emergency say (issue #901 r2 C2: names that hold a field's words).
+     * @return false with no rows.
+     */
+    Q_INVOKABLE bool
+    nameNewest(const QString& name, const QString& systemName, bool enc, bool emergency) {
+        if (m_rows.isEmpty()) {
+            return false;
+        }
+        m_rows[0].name = name;
+        m_rows[0].systemName = systemName;
+        m_rows[0].enc = enc;
+        m_rows[0].emergency = emergency;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::NameRole, CallHistoryModel::SystemNameRole, CallHistoryModel::EncRole,
+                            CallHistoryModel::EmergencyRole});
+        return true;
     }
 
     /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
@@ -3731,14 +3888,15 @@ class RecordingsFake : public QQmlPropertyMap {
     /** @brief Every key at rest: an empty, indexed store on available storage with the default limit. */
     static QVariantMap
     rest() {
-        return {{QStringLiteral("ready"), true},        {QStringLiteral("indexed"), true},
-                {QStringLiteral("available"), true},    {QStringLiteral("usedBytes"), 0},
-                {QStringLiteral("recordingCount"), 0},  {QStringLiteral("unfinishedCount"), 0},
-                {QStringLiteral("unfinishedBytes"), 0}, {QStringLiteral("folders"), QVariantList()},
-                {QStringLiteral("freeBytes"), -1},      {QStringLiteral("lowSpace"), false},
-                {QStringLiteral("removedByLimit"), 0},  {QStringLiteral("deletesWaiting"), 0},
-                {QStringLiteral("deleteFailures"), 0},  {QStringLiteral("lastDeleteError"), QString()},
-                {QStringLiteral("limitMb"), 1000},      {QStringLiteral("revision"), 0.0}};
+        return {{QStringLiteral("ready"), true},         {QStringLiteral("indexed"), true},
+                {QStringLiteral("available"), true},     {QStringLiteral("usedBytes"), 0},
+                {QStringLiteral("recordingCount"), 0},   {QStringLiteral("unfinishedCount"), 0},
+                {QStringLiteral("unfinishedBytes"), 0},  {QStringLiteral("folders"), QVariantList()},
+                {QStringLiteral("freeBytes"), -1},       {QStringLiteral("lowSpace"), false},
+                {QStringLiteral("removedByLimit"), 0},   {QStringLiteral("deletesWaiting"), 0},
+                {QStringLiteral("deleteFailures"), 0},   {QStringLiteral("lastDeleteError"), QString()},
+                {QStringLiteral("deletesCancelled"), 0}, {QStringLiteral("deletesSkipped"), 0},
+                {QStringLiteral("limitMb"), 1000},       {QStringLiteral("revision"), 0.0}};
     }
 
     /** @brief A recordingsForDetection() map with every key the store gives, each at a blank value. */
@@ -3776,44 +3934,89 @@ class RecordingsFake : public QQmlPropertyMap {
         m_selectionCount = 0;
         m_selectionBytes = 0;
         m_selectionPaths.clear();
+        m_loading = false;
+        m_storageAway = false;
+        m_deleteRefusal.clear();
         Q_EMIT changed();
     }
 
-    Q_INVOKABLE void
+    /* Each delete request is noted, and refused (false) while setLoading(true), as the store refuses one while a
+     * folder is read again, or while setStorageAway(true), as it refuses one naming a recording on storage that is
+     * not connected; deleteRefusal() says which. */
+    Q_INVOKABLE bool
     deleteRecordings(const QStringList& ids) {
         note(QStringLiteral("deleteRecordings"), {{QStringLiteral("ids"), ids}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteRecording(const QString& id) {
         note(QStringLiteral("deleteRecording"), {{QStringLiteral("id"), id}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteFolder(const QString& uid) {
         note(QStringLiteral("deleteFolder"), {{QStringLiteral("uid"), uid}});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteUnfinished() {
         note(QStringLiteral("deleteUnfinished"), {});
+        return askDelete();
     }
 
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     deleteAll() {
         note(QStringLiteral("deleteAll"), {});
+        return askDelete();
+    }
+
+    Q_INVOKABLE QString
+    deleteRefusal() const {
+        return m_deleteRefusal;
+    }
+
+    /** @brief Whether a folder is being read again: exports and delete requests are refused meanwhile. */
+    Q_INVOKABLE void
+    setLoading(bool loading) {
+        m_loading = loading;
+    }
+
+    /** @brief Whether a delete names a recording on storage that is not connected: it is refused. */
+    Q_INVOKABLE void
+    setStorageAway(bool away) {
+        m_storageAway = away;
     }
 
     Q_INVOKABLE QVariantMap
     selectForExport(const QString& folderUid, const QString& preset) {
         note(QStringLiteral("selectForExport"),
              {{QStringLiteral("folderUid"), folderUid}, {QStringLiteral("preset"), preset}});
+        if (m_loading) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("day"), selectionDay()},
+                    {QStringLiteral("loading"), true}};
+        }
         return selection();
     }
 
     Q_INVOKABLE QVariantMap
     selectRecordings(const QStringList& ids) {
         note(QStringLiteral("selectRecordings"), {{QStringLiteral("ids"), ids}});
+        if (m_loading) {
+            return {{QStringLiteral("selection"), 0},
+                    {QStringLiteral("paths"), QStringList()},
+                    {QStringLiteral("names"), QStringList()},
+                    {QStringLiteral("count"), 0},
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("loading"), true}};
+        }
         return selection();
     }
 
@@ -3833,6 +4036,8 @@ class RecordingsFake : public QQmlPropertyMap {
         note(QStringLiteral("acknowledgeNotices"), {});
         insert(QStringLiteral("removedByLimit"), 0);
         insert(QStringLiteral("deleteFailures"), 0);
+        insert(QStringLiteral("deletesCancelled"), 0);
+        insert(QStringLiteral("deletesSkipped"), 0);
         insert(QStringLiteral("lastDeleteError"), QString());
     }
 
@@ -3909,6 +4114,8 @@ class RecordingsFake : public QQmlPropertyMap {
         Q_EMIT revisionChanged();
     }
 
+    /* A selection names the day the store read at the press (`day`): a fixed one, never the UI clock's today, so a
+     * name built from a second reading of the clock shows. */
     QVariantMap
     selection() {
         if (m_selectionCount <= 0) {
@@ -3916,13 +4123,34 @@ class RecordingsFake : public QQmlPropertyMap {
                     {QStringLiteral("paths"), QStringList()},
                     {QStringLiteral("names"), QStringList()},
                     {QStringLiteral("count"), 0},
-                    {QStringLiteral("bytes"), 0}};
+                    {QStringLiteral("bytes"), 0},
+                    {QStringLiteral("day"), selectionDay()}};
+        }
+        // Each file as a store selects it (issue #902), read now: zeros for a path with no file.
+        QVariantList sizes;
+        QVariantList secs;
+        QVariantList nanos;
+        for (const QString& path : std::as_const(m_selectionPaths)) {
+            dsd_file_identity_t file{};
+            (void)dsd_path_file_identity(dsd_qt::platform_path(path).constData(), &file);
+            sizes.append(static_cast<qint64>(file.size));
+            secs.append(static_cast<qint64>(file.mtime_s));
+            nanos.append(static_cast<int>(file.mtime_ns));
         }
         return {{QStringLiteral("selection"), ++m_lastSelection},
                 {QStringLiteral("paths"), m_selectionPaths},
                 {QStringLiteral("names"), m_selectionPaths},
                 {QStringLiteral("count"), m_selectionCount},
-                {QStringLiteral("bytes"), m_selectionBytes}};
+                {QStringLiteral("bytes"), m_selectionBytes},
+                {QStringLiteral("day"), selectionDay()},
+                {QStringLiteral("sizes"), sizes},
+                {QStringLiteral("mtimeSecs"), secs},
+                {QStringLiteral("mtimeNanos"), nanos}};
+    }
+
+    static QString
+    selectionDay() {
+        return QStringLiteral("2001-02-03");
     }
 
     QVariantList m_calls;
@@ -3931,6 +4159,20 @@ class RecordingsFake : public QQmlPropertyMap {
     qint64 m_selectionBytes = 0;
     QStringList m_selectionPaths;
     int m_lastSelection = 0;
+    bool m_loading = false;
+    bool m_storageAway = false;
+    QString m_deleteRefusal;
+
+    bool
+    askDelete() {
+        m_deleteRefusal.clear();
+        if (m_loading) {
+            m_deleteRefusal = QStringLiteral("loading");
+        } else if (m_storageAway) {
+            m_deleteRefusal = QStringLiteral("storageAway");
+        }
+        return m_deleteRefusal.isEmpty();
+    }
 };
 
 class RadioReferenceRecorder : public QQmlPropertyMap {
@@ -4273,6 +4515,9 @@ class Setup : public QObject {
         if (m_activity_state) {
             dsd_state_ext_free_all(m_activity_state.get());
         }
+        if (m_dmr_state) {
+            dsd_state_ext_free_all(m_dmr_state.get());
+        }
     }
 
     Q_INVOKABLE bool
@@ -4556,6 +4801,72 @@ class Setup : public QObject {
         }
         state->p25_nb_count = count;
         m_network->replaceForTarget(state);
+    }
+
+    /**
+     * @brief Discussion #900 F3: publish a DMR Tier III channel record to `dmrChannels` (the real DmrChannelsModel), as
+     * UiController's tick does from a snapshot. The model reads it only while a sheet has it active.
+     *
+     * @p spec: `missing` [{lpcn, slot (0/1, the view's), group, data, caller, recipient, agoMs (heard that long before
+     * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the
+     * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz (the
+     * frequency DMR uses), hidden, baseHz (a USER row's: the shared map row under the entry, what Restore shows)}],
+     * `names` [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`,
+     * `session` (default 1), `trunkScan`, `otherSystem` (other_system_here), `dmrDecoding` (default true). Every call
+     * is a new body (content_seq and missing_seq move), as a snapshot copied anew is.
+     */
+    Q_INVOKABLE void
+    setDmrChannelsView(const QVariantMap& spec) {
+        if (m_dmr_channels == nullptr) {
+            return;
+        }
+        if (!m_dmr_state) {
+            m_dmr_state = std::make_unique<dsd_state>();
+            m_dmr_opts = std::make_unique<dsd_opts>();
+            m_dmr_view = std::make_unique<dsd_ui_dmr_t3_view>();
+            m_dmr_heard_base = dsd_decode_now_mono_ms();
+        }
+        dsd_state* state = m_dmr_state.get();
+        dsd_ui_dmr_t3_view* view = m_dmr_view.get();
+        const uint64_t seq = view->content_seq + 1U;
+        DSD_MEMSET(view, 0, sizeof(*view));
+        DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
+        (void)dsd_tg_policy_clear(state);
+        view->present = 1U;
+        view->other_system_here = spec.value(QStringLiteral("otherSystem")).toBool() ? 1U : 0U;
+        view->dmr_decoding = spec.value(QStringLiteral("dmrDecoding"), true).toBool() ? 1U : 0U;
+        view->tier3 = view->other_system_here == 0U && spec.value(QStringLiteral("tier3"), true).toBool() ? 1U : 0U;
+        view->cc_hz = spec.value(QStringLiteral("ccHz"), 0).toLongLong();
+        view->cc_confirmed_here = view->cc_hz > 0 ? 1U : 0U;
+        view->generation = spec.value(QStringLiteral("generation"), 1).toUInt();
+        view->revision = spec.value(QStringLiteral("revision"), 1).toUInt();
+        view->content_seq = seq;
+        view->missing_seq = seq;
+        dmrMissing(view, spec);
+        dmrChannelRows(state, view, spec.value(QStringLiteral("channels")).toList());
+        for (const QVariant& v : spec.value(QStringLiteral("names")).toList()) {
+            const QVariantMap n = v.toMap();
+            dsd_tg_policy_entry entry = {};
+            const QByteArray name = n.value(QStringLiteral("name")).toString().toUtf8();
+            if (dsd_tg_policy_make_exact_entry(n.value(QStringLiteral("tg")).toUInt(), "A", name.constData(),
+                                               DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+                == 0) {
+                (void)dsd_tg_policy_append_exact(state, &entry);
+            }
+        }
+        state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = view;
+        m_dmr_opts->trunk_scan_enabled = spec.value(QStringLiteral("trunkScan")).toBool() ? 1 : 0;
+        m_dmr_channels->refresh(m_dmr_opts.get(), state, spec.value(QStringLiteral("session"), 1).toULongLong());
+    }
+
+    /** @brief No live session: `dmrChannels` lists nothing. The next record's heard times count from now. */
+    Q_INVOKABLE void
+    clearDmrChannels() {
+        m_dmr_heard_base = dsd_decode_now_mono_ms();
+        if (m_dmr_channels != nullptr) {
+            m_dmr_channels->clear();
+            m_dmr_channels->setSessionSystemUid(QString());
+        }
     }
 
     /**
@@ -5516,6 +5827,23 @@ class Setup : public QObject {
     postStoreNotice(const QString& fileName, const QString& keptName) {
         std::thread poster(
             [fileName, keptName] { dsd_qt::json_store_post_notice({fileName, QStringLiteral("test"), keptName}); });
+        poster.join();
+    }
+
+    /**
+     * @brief Discussion #900: withdraw the notice for @p fileName and, when @p episode is 1 or more, post failure
+     *        @p episode of it, both from one thread before `storeNotices` takes either, as a start that passed a saved
+     *        system's channels and a start that failed them again can.
+     */
+    Q_INVOKABLE void
+    repostStoreNotice(const QString& fileName, int episode) {
+        std::thread poster([fileName, episode] {
+            dsd_qt::json_store_withdraw_notice(fileName);
+            if (episode > 0) {
+                dsd_qt::json_store_post_notice(
+                    {fileName, QStringLiteral("test"), QString(), static_cast<quint64>(episode)});
+            }
+        });
         poster.join();
     }
 
@@ -6718,6 +7046,14 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastTuneHz() : 0.0;
     }
 
+    /** @brief Refuse (false) or admit the next bulk talkgroup requests, as a full command queue would. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        if (m_commands != nullptr) {
+            m_commands->setTalkgroupSelectionAccepted(accepted);
+        }
+    }
+
     /** @brief Refuse (false) or admit the next tuner releases, as a full command queue would. */
     Q_INVOKABLE void
     setReleaseTunerAccepted(bool accepted) {
@@ -6931,6 +7267,42 @@ class Setup : public QObject {
         return missing;
     }
 
+    /**
+     * @brief Issue #902: run the shared LocalDayWatch (savedSystems.localDay) and savedSystems.realtimeNowMs() on a fake
+     * real clock at @p ms (Unix ms), the watch checked at once; a later call moves that clock and checks again.
+     * resetLocalDay() and each new engine go back to the real clock and the run's own time zone.
+     */
+    Q_INVOKABLE void
+    setLocalNowMs(double ms) {
+        local_now_ms() = static_cast<qint64>(ms);
+        dsd_qt::LocalDayWatch::setClockForTest(&Setup::local_now_clock);
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(&Setup::local_now_clock);
+        }
+    }
+
+    /**
+     * @brief Issue #902: whether the process's local zone is @p id (an IANA name), for QDateTime and JavaScript dates
+     * alike, at every date the QML fixtures use. The suite never sets the zone itself: writing TZ while Qt's threads
+     * read it is a race (docs/testing.md, "Environment variables in tests"). CTest starts the QML runs with
+     * TZ=America/Los_Angeles; a run without it (one started by hand, or Windows, whose C runtime reads no IANA name in
+     * TZ) answers false, and a case then skips what needs that zone.
+     */
+    Q_INVOKABLE bool
+    localTimeZoneIs(const QString& id) const {
+        return local_zone_is(id, m_engine);
+    }
+
+    /** @brief Issue #902: the real clock again for the local-day watch and savedSystems (a case's cleanup). */
+    Q_INVOKABLE void
+    resetLocalDay() {
+        dsd_qt::LocalDayWatch::resetClockForTest();
+        /* Here, not on a new engine: its model starts on the real clock, and the old one is gone. */
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(nullptr);
+        }
+    }
+
   public Q_SLOTS:
 
     /**
@@ -6983,6 +7355,8 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
+        /* Issue #902: each test file starts on the real clock. */
+        dsd_qt::LocalDayWatch::resetClockForTest();
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
@@ -7059,6 +7433,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
+        /* Issue #901: compact view off, as on a fresh install. */
+        prefs[QStringLiteral("compactView")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -7159,6 +7535,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("relaxedCrcRowOverride")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        metrics[QStringLiteral("uiMessageSeq")] = 0U;
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is
         // idle, so it is simply the wall clock the screens used to read.
         metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();
@@ -7231,6 +7608,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("callBusy")] = false;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // Discussion #900 F3: the Monitor's NO FREQ count and the Site sheet's Channels entry.
+        metrics[QStringLiteral("noFreqCount")] = 0;
+        metrics[QStringLiteral("dmrTier3")] = false;
+        metrics[QStringLiteral("dmrUserChannels")] = false;
         metrics[QStringLiteral("persistTgLockouts")] = true;
         metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
         metrics[QStringLiteral("callSkipCount")] = 0;
@@ -7598,6 +7979,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("replayFiles"), m_replay_files);
         m_network = new dsd_qt::P25NetworkModel(engine);
         ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
+        m_dmr_channels = new dsd_qt::DmrChannelsModel(engine);
+        ctx->setContextProperty(QStringLiteral("dmrChannels"), m_dmr_channels); // Discussion #900 F3
         // The Activity screen's production model and filter, fed by pushUnitActivity().
         m_activity = new dsd_qt::UnitActivityModel(engine);
         m_activity_view = new dsd_qt::UnitActivityFilterModel(engine);
@@ -7653,6 +8036,8 @@ class Setup : public QObject {
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
         app_prefs->setSystemsSort(QStringLiteral("added"));
+        /* Issue #901: and compact view off, as on a fresh install, whatever a test file before this one left. */
+        app_prefs->setCompactView(false);
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between
@@ -7720,6 +8105,50 @@ class Setup : public QObject {
     hostReadingsInstalled() const {
         return m_engine->rootContext()->contextProperty(QStringLiteral("decoderHost")).value<QObject*>()
                == m_host_readings;
+    }
+
+    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, has @p id's offsets at
+       every date the QML fixtures use, across both of 2025's and 2026's transitions: two zones that agree in January
+       and July can still part in November (America/Vancouver kept UTC-7 from November 2026, America/Los_Angeles went
+       back to UTC-8). */
+    static bool
+    local_zone_is(const QString& id, QJSEngine* engine) {
+        const QTimeZone named{id.toUtf8()};
+        if (!named.isValid()) {
+            return false;
+        }
+        /* UTC noon on: 2025-06-14, 2025-10-26, 2025-11-01, 2025-11-03, 2025-12-31, 2026-01-01, 2026-03-07, 2026-03-09,
+           2026-11-02, 2026-11-09, 2026-11-21, 2026-12-31, 2027-01-01. */
+        static constexpr qint64 kProbes[] = {
+            Q_INT64_C(1749902400000), Q_INT64_C(1761480000000), Q_INT64_C(1761998400000), Q_INT64_C(1762171200000),
+            Q_INT64_C(1767182400000), Q_INT64_C(1767268800000), Q_INT64_C(1772884800000), Q_INT64_C(1773057600000),
+            Q_INT64_C(1793620800000), Q_INT64_C(1794225600000), Q_INT64_C(1795262400000), Q_INT64_C(1798718400000),
+            Q_INT64_C(1798804800000)};
+        for (const qint64 probe : kProbes) {
+            const QDateTime at = QDateTime::fromMSecsSinceEpoch(probe, QTimeZone::UTC);
+            const int offset = named.offsetFromUtc(at);
+            if (at.toLocalTime().offsetFromUtc() != offset) {
+                return false;
+            }
+            if (engine != nullptr
+                && engine->evaluate(QStringLiteral("new Date(%1).getTimezoneOffset()").arg(probe)).toInt()
+                       != -offset / 60) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /* Issue #902: the fake real clock setLocalNowMs() runs the local-day watch on. */
+    static qint64&
+    local_now_ms() {
+        static qint64 ms = 0;
+        return ms;
+    }
+
+    static qint64
+    local_now_clock() {
+        return local_now_ms();
     }
 
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
@@ -7801,11 +8230,81 @@ class Setup : public QObject {
     dsd_qt::P25NetworkModel* m_network = nullptr;
     /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
     std::unique_ptr<dsd_state> m_network_state;
+    /* Discussion #900 F3: the Channels sheet's model, and the snapshot setDmrChannelsView() publishes to it. */
+    dsd_qt::DmrChannelsModel* m_dmr_channels = nullptr;
+    std::unique_ptr<dsd_state> m_dmr_state;
+    std::unique_ptr<dsd_opts> m_dmr_opts;
+    std::unique_ptr<dsd_ui_dmr_t3_view> m_dmr_view;
+    uint64_t m_dmr_heard_base = 0;
     dsd_qt::UnitActivityModel* m_activity = nullptr;
     dsd_qt::UnitActivityFilterModel* m_activity_view = nullptr;
     dsd_qt::PositionModel* m_positions = nullptr;
     /* The log pushUnitActivity() writes, built on first use, on a made-up P25 system. */
     std::unique_ptr<dsd_state> m_activity_state;
+
+    static void
+    dmrSetBit(uint8_t* set, unsigned lpcn) {
+        if (lpcn > 0U && lpcn < static_cast<unsigned>(DSD_UI_DMR_T3_ROWS)) {
+            set[lpcn >> 3] = static_cast<uint8_t>(set[lpcn >> 3] | (1U << (lpcn & 7U)));
+        }
+    }
+
+    void
+    dmrMissing(dsd_ui_dmr_t3_view* view, const QVariantMap& spec) const {
+        for (const QVariant& v : spec.value(QStringLiteral("missing")).toList()) {
+            const QVariantMap m = v.toMap();
+            if (view->missing.detail_count >= DSD_UI_DMR_T3_MISSING_DETAILS) {
+                break;
+            }
+            dsd_ui_dmr_t3_missing_detail& d = view->missing.details[view->missing.detail_count++];
+            d.lpcn = static_cast<uint16_t>(m.value(QStringLiteral("lpcn")).toUInt());
+            d.slot = static_cast<uint8_t>(m.value(QStringLiteral("slot")).toUInt());
+            d.group = m.value(QStringLiteral("group"), true).toBool() ? 1U : 0U;
+            d.data = m.value(QStringLiteral("data")).toBool() ? 1U : 0U;
+            d.unverified = m.value(QStringLiteral("unverified")).toBool() ? 1U : 0U;
+            d.caller = m.value(QStringLiteral("caller")).toUInt();
+            d.recipient = m.value(QStringLiteral("recipient")).toUInt();
+            d.last_heard_ms = m.contains(QStringLiteral("agoMs"))
+                                  ? m_dmr_heard_base - m.value(QStringLiteral("agoMs")).toULongLong()
+                                  : 0U;
+            dmrSetBit(view->missing.missing, d.lpcn);
+            if (d.unverified == 0U) {
+                dmrSetBit(view->missing.checked, d.lpcn);
+            }
+        }
+        for (const QVariant& v : spec.value(QStringLiteral("extra")).toList()) {
+            dmrSetBit(view->missing.missing, v.toUInt());
+            dmrSetBit(view->missing.checked, v.toUInt());
+        }
+    }
+
+    static void
+    dmrChannelRows(dsd_state* state, dsd_ui_dmr_t3_view* view, const QVariantList& rows) {
+        for (const QVariant& v : rows) {
+            const QVariantMap c = v.toMap();
+            const unsigned lpcn = c.value(QStringLiteral("lpcn")).toUInt();
+            if (lpcn == 0U || lpcn >= static_cast<unsigned>(DSD_UI_DMR_T3_ROWS)) {
+                continue;
+            }
+            const int origin = c.value(QStringLiteral("origin"), DSD_UI_DMR_T3_ORIGIN_FILE).toInt();
+            const bool hidden = c.value(QStringLiteral("hidden")).toBool();
+            const long hz = hidden ? 0L : static_cast<long>(c.value(QStringLiteral("hz")).toLongLong());
+            const bool user = origin == DSD_UI_DMR_T3_ORIGIN_USER;
+            view->origin[lpcn] = static_cast<uint8_t>(origin);
+            view->channel_hz[lpcn] = hz;
+            /* The user's entry lies beside the shared map row, which keeps what Restore shows (base_hz); any other row
+               is the shared one. */
+            const long shared = user ? static_cast<long>(c.value(QStringLiteral("baseHz")).toLongLong()) : hz;
+            state->trunk_chan_map[lpcn] = shared;
+            if (user && view->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
+                dsd_ui_dmr_t3_overlay_row& row = view->overlay[view->overlay_count++];
+                row.lpcn = static_cast<uint16_t>(lpcn);
+                row.hidden = hidden ? 1U : 0U;
+                row.hz = hz;
+                row.base_hz = shared;
+            }
+        }
+    }
 
     dsd_state*
     activityState() {

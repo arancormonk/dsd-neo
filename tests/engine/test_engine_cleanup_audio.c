@@ -328,6 +328,32 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
     free(opts);
 }
 
+/* Issue #890: the M17 network lost-end fallback has the M17 extension's lifetime, the decoder session: a new state
+   (initState()) starts without it, and the session's end (dsd_engine_cleanup(), which frees the extension) clears it,
+   so a host reusing its state starts the next session with neither the ended-stream table nor the fallback. */
+static int
+test_session_boundary_clears_the_m17_lost_end_fallback(void) {
+    int rc = 0;
+    // dsd_state is multi-megabyte; keep it off the function stack.
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        DSD_FPRINTF(stderr, "alloc-failed: runtime\n");
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    state->m17_ip_ended_lost = 1U; /* what a state reused from an earlier session may hold */
+    initState(state);
+    rc |= expect_true("m17-lost-end-cleared-by-init", state->m17_ip_ended_lost == 0U);
+    state->m17_ip_ended_lost = 1U;
+    dsd_engine_cleanup(opts, state);
+    rc |= expect_true("m17-lost-end-cleared-by-cleanup", state->m17_ip_ended_lost == 0U);
+    free_runtime_quietly(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -407,6 +433,9 @@ main(void) {
 
     // Test 7: the exit autosave of an I/Q replay session keeps the loaded config's [input] (issue #743, B1).
     rc |= test_cleanup_autosaves_a_replay_with_the_loaded_input();
+
+    // Test 8: the session boundary clears the M17 lost-end fallback (issue #890).
+    rc |= test_session_boundary_clears_the_m17_lost_end_fallback();
 
     if (rc == 0) {
         printf("ENGINE_CLEANUP_AUDIO: OK\n");

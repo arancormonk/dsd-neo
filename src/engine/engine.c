@@ -74,6 +74,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -429,6 +430,56 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Whether the run decodes frames (liveScanner()). MBE playback (-r), the M17 encoders and the M17 UDP/IP decoder (-fU)
+ * run their own loop instead (dsd_engine_run_dispatch_frameless_mode()), whatever the decode mode says. */
+static int
+dsd_engine_run_decodes_frames(const dsd_opts* opts) {
+    return opts->playfiles != 1 && opts->m17encoder != 1 && opts->m17encoderbrt != 1 && opts->m17encoderpkt != 1
+           && opts->m17decoderip != 1;
+}
+
+/* The startup channel map's rows are the map file's (dmr_t3_chan_note_map_loaded()), as a live import makes them. The
+ * DMR record is made here, before the first frame, so a checked grant for a mapped channel keeps its Tier III evidence
+ * (the grant path never allocates the record). A state that already has the record (a host reusing it for another run)
+ * keeps the origins it holds; without one, every row already reads as the file's. A trunk scan loads each target's map
+ * itself. */
+static void
+note_startup_channel_map(const dsd_opts* opts, dsd_state* state) {
+    if (opts->chan_in_file[0] != '\0' && opts->trunk_scan_enabled != 1 && !dmr_t3_chan_recorded(state)) {
+        dmr_t3_chan_note_map_loaded(state);
+    }
+}
+
+/* The user's Tier III channels (--dmr-chan-overrides, discussion #900 F3), which DMR's lookups read over the channel
+ * map: applied here, before the first frame. Only a session that decodes DMR frames and runs no trunk scan takes them,
+ * judged on the options as the config file (its [mode] decode), the profile and the command line left them: no Tier III
+ * lookup runs in a session without DMR, nor in a run mode that decodes no frames, and a trunk scan keeps each target's
+ * own channels. Any other session starts without the file, with one notice, and never opens it (the command line only
+ * keeps the path), so a missing file stops nothing there. A session that takes it opens it here: a file that is
+ * missing or cannot be read stops the start, as a channel map does; a bad row is skipped with a warning. */
+static int
+import_dmr_chan_overrides_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->dmr_chan_overrides_file[0] == '\0') {
+        return 0;
+    }
+    if (!dsd_engine_run_decodes_frames(opts)) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: this run mode decodes no frames.\n",
+                 opts->dmr_chan_overrides_file);
+        return 0;
+    }
+    if (opts->frame_dmr != 1) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: this session does not decode DMR.\n",
+                 opts->dmr_chan_overrides_file);
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        LOG_INFO("NOTICE: DMR Tier III channels in %s not applied: a trunk scan uses each target's own channel map.\n",
+                 opts->dmr_chan_overrides_file);
+        return 0;
+    }
+    return dmr_t3_overlay_load_csv(opts, state, opts->dmr_chan_overrides_file) < 0 ? -1 : 0;
+}
+
 static const char*
 group_import_failure_text(dsd_group_import_failure failure) {
     switch (failure) {
@@ -487,7 +538,11 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (import_global_channel_map_if_needed(opts, state) != 0) {
         return -1;
     }
+    note_startup_channel_map(opts, state);
     if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    if (import_dmr_chan_overrides_if_needed(opts, state) != 0) {
         return -1;
     }
     if (import_group_csv_if_needed(opts, state) != 0) {
@@ -1672,6 +1727,8 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, dsd_engine_channel_scan_row_values(state, row, &scratch), e);
     }
+    /* Whether the row can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
+    e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the row no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
 }
@@ -1811,8 +1868,8 @@ no_carrier_hangtime_ran_out(const dsd_opts* opts, const dsd_state* state, time_t
    decides, before its time. Heard voice is the voice gate's alone. */
 /* Whether what the -Y row's frames said still holds it (issue #834; docs/trunk-scan.md), one rule for the frame
    boundary and noCarrier(), beside the hangtime anchor each checks itself: -t has not passed since the last checked
-   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA, whose frames hold the row
-   while they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
+   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, whose frames hold the row while
+   they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
    (SCAN_QUIET_PENDING_MAX_MS at most) that adds no -t. */
 static int
 live_scanner_y_frames_hold_row(const dsd_opts* opts, const dsd_state* state, double now_m) {
@@ -3297,6 +3354,9 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
     DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
+    /* An MBC is consecutive bursts on one carrier: a sync loss ends the one being assembled, as dmr_reset_blocks()
+       does. */
+    DSD_MEMSET(state->dmr_mbc_armed, 0, sizeof(state->dmr_mbc_armed));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
     DSD_MEMSET(state->cap_plus_csbk_crc_invalid, 0, sizeof(state->cap_plus_csbk_crc_invalid));
@@ -3725,17 +3785,8 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     /* dPMR: the superframe part the next frame's identity half is read against. */
     opts->dPMR_next_part_of_superframe = 0;
-    /* M17: the LSF from LICH chunks, the packet and the signature. */
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
+    /* M17: the LSF from LICH chunks, the packet, the signature and the texts went in carrier_boundary_forget_evidence()
+       (m17_confirm_reset(), the one M17 boundary, issue #890). */
     /* YSF: the text assembled frame by frame. */
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     /* P25 Phase 2: the slots' ESS_B, which a 2V burst ahead of any 4V burst would decode as the new carrier's
@@ -3828,6 +3879,16 @@ dsd_engine_note_run_start(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_scan_y_stay_begin(state);
 }
 
+/* Another receiver or input need not be on the same network: the DMR Tier III channels the air taught go (discussion
+   #900 F2), the channel map's own rows stay. A tune drops them only when the operator made it
+   (svc_operator_carrier_boundary()): a -Y step, a replay retune and a signal search visit keep them. */
+static void
+carrier_boundary_forget_network(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind) {
+    if (kind == DSD_CARRIER_BOUNDARY_SOURCE || kind == DSD_CARRIER_BOUNDARY_INPUT_SWITCH) {
+        dmr_t3_chan_network_changed(opts, state);
+    }
+}
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held) {
     if (!opts || !state) {
@@ -3888,6 +3949,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        DMR RAS evidence. */
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    carrier_boundary_forget_network(opts, state, kind);
     /* Nor are its P25 patches the next carrier's: a manual tune, a new source or input, a scan step or a replay retune
        names no system, so the table, its owner and its listening clock start over. */
     dsd_p25_patch_clear_all(state);
@@ -4044,30 +4106,9 @@ dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
 
 static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_str_dt = 9;
-    state->m17_bert_locked = 0;
-    state->m17_bert_lfsr = 1;
-    state->m17_bert_lock_count = 0;
-    state->m17_bert_window_bits = 0;
-    state->m17_bert_window_errors = 0;
-    state->m17_bert_bits = 0;
-    state->m17_bert_errors = 0;
-    state->m17_bert_resyncs = 0;
-    state->m17_can = 0;
-    state->m17_enc = 0;
-    state->m17_enc_st = 0;
-    state->m17_payload_decrypted = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
-    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    /* Everything the M17 transmission held (link setup, LSF bits and LICH chunks, packet, BERT receiver, signature,
+       texts) went with its evidence in no_carrier_reset_decode_state() (m17_confirm_reset(), the one M17 boundary,
+       issue #890). */
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
@@ -4217,6 +4258,8 @@ dsd_engine_no_carrier_identity_stale(dsd_state* state, int guard_held) {
     dmr_ras_reset(state);
     (void)dsd_engine_apply_dmr_leave(state);
     dsd_rxid_mark_stale(state);
+    /* So is the carrier's Tier III control-channel evidence: a fresh checked C_ALOHA or C_SYS_Parms names it again. */
+    dmr_t3_cc_note_reception_lost(state);
     if (!guard_held) {
         p25_sm_tick_guard_leave();
     }
@@ -5138,10 +5181,11 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     dsd_exitflag_store(1);
 
-    // Under trunk scan each target owns a channel map and a ledger, so the coordinator logs one
+    // Under trunk scan each target owns a channel map and its ledgers, so the coordinator logs one
     // summary per target from its snapshots as it shuts down. A paused scan's targets are in their
-    // snapshots too, and the live ledger is the manual session's own (issue #671).
-    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
+    // snapshots too, and the live ledgers are the manual session's own (issue #671).
+    const int log_session_ledgers = !dsd_trunk_scan_owns_tuner(opts, state);
+    if (log_session_ledgers) {
         nxdn_trunk_diag_log_summary(opts, state);
     }
     dsd_engine_cleanup_codec2(state);
@@ -5159,6 +5203,11 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
        now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
     dsd_engine_signal_search_release_site(state);
+    /* The DMR Tier III ledger is the session's again only now: a Signal search visit's site was installed until the
+       release above (discussion #900 F1). */
+    if (log_session_ledgers) {
+        dmr_t3_missing_log_summary(state);
+    }
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);
@@ -5180,6 +5229,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     /* A stopped decoder hears nothing: the next session starts with no received tone. */
     dsd_analog_rx_reset(state);
+    /* M17's session state goes with the extensions it belongs to. */
+    m17_end_session(state);
     dsd_state_ext_free_all(state);
     dsd_socket_cleanup();
 }
@@ -5373,9 +5424,11 @@ dsd_engine_run_mode_m17_decoder_ip(dsd_opts* opts, dsd_state* state, const dsd_e
     return processM17IPF(opts, state);
 }
 
+/* A run that decodes no frames (dsd_engine_run_decodes_frames() is 0): MBE playback, an M17 encoder or the M17 UDP/IP
+   decoder. */
 static int
-dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
-                             dsd_engine_run_started* lifecycle_started) {
+dsd_engine_run_dispatch_frameless_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                                       dsd_engine_run_started* lifecycle_started) {
     if (opts->playfiles == 1) {
         if (dsd_engine_lifecycle_start_if_needed(opts, state, hooks, lifecycle_started) != 0) {
             return -1;
@@ -5392,8 +5445,14 @@ dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_
     if (opts->m17encoderpkt == 1) {
         return dsd_engine_run_mode_m17_pkt(opts, state, hooks, lifecycle_started);
     }
-    if (opts->m17decoderip == 1) {
-        return dsd_engine_run_mode_m17_decoder_ip(opts, state, hooks, lifecycle_started);
+    return dsd_engine_run_mode_m17_decoder_ip(opts, state, hooks, lifecycle_started);
+}
+
+static int
+dsd_engine_run_dispatch_mode(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks,
+                             dsd_engine_run_started* lifecycle_started) {
+    if (!dsd_engine_run_decodes_frames(opts)) {
+        return dsd_engine_run_dispatch_frameless_mode(opts, state, hooks, lifecycle_started);
     }
     return liveScanner(opts, state, hooks, lifecycle_started);
 }

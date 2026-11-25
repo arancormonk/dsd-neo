@@ -56,6 +56,8 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -87,6 +89,7 @@
 #include <unistd.h>
 #endif
 #include "analog_tone_policy.h"
+#include "checked_media_test_support.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -439,6 +442,13 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
     ctx->state = (opts && state && opts->trunk_enable == 1 && state->p25_cc_freq == 0 && state->trunk_cc_freq != 0)
                      ? DMR_SM_ON_CC
                      : DMR_SM_IDLE;
+}
+
+/* The channel map writer's control-channel rule (dmr_t3_chan_learn()): known and not on a voice channel, as the real
+   machine reads it while it follows nothing. */
+int
+dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state) {
+    return opts != NULL && state != NULL && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 0;
 }
 
 void
@@ -2041,6 +2051,380 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     return test_rc;
 }
 
+/* Two DMR targets that share LPCN 12 (discussion #900 F2): A learns it over the air (SITE), B has it from a file. Each
+   switch saves the target left and restores the one parked on, so neither origin nor row leaks across. */
+static int
+test_dmr_channel_origins_restore_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    if (dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 1) {
+        DSD_FPRINTF(stderr, "dmr origins: target A did not learn LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 0
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+
+    dsd_state_set_trunk_chan_freq(&state, 12U, 453025000L);
+    dmr_t3_chan_note_map_loaded(&state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[12] != 452012500L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_SITE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 not restored (%ld, origin %d)\n", state.trunk_chan_map[12],
+                    (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 453025000L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_FILE
+        || dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: target B's file row not restored (%ld, origin %d)\n",
+                    state.trunk_chan_map[12], (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
+   start, so a checked grant for a mapped channel keeps its Tier III evidence on a fresh scan (the grant path allocates
+   no record), and the evidence goes and comes back with the target. */
+static int
+test_dmr_target_map_makes_the_record(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char chan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n14,452037500\n") != 0
+        || write_targets_file(dir,
+                              "a,dmr-trunk,452000000,chan.csv,250,,tier iii\n"
+                              "b,p25-trunk,851000000,,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "target map record: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (!dmr_t3_chan_recorded(&state) || state.trunk_chan_map[14] != 452037500L
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: none for A's map (recorded %d, row %ld, origin %d)\n",
+                    dmr_t3_chan_recorded(&state), state.trunk_chan_map[14], (int)dmr_t3_chan_origin(&state, 14U));
+        test_rc = 1;
+    }
+    /* A checked grant for mapped channel 14, the first thing A's control channel sends. */
+    dmr_t3_note_tier3_if_recorded(&state, 1);
+    if (!dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: the grant's Tier III evidence was dropped\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence leaked into B\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_t3_tier3_seen(&state)
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence not restored\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): what
+   another target left there never reaches a P25 target, where channel 0x0000 (IDEN 0, channel 0) is checked against
+   the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. */
+static int
+test_chan_map_zero_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,p25-trunk,851000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "row 0: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    dsd_state_set_trunk_chan_freq(&state, 0U, 452500000L);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 0) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed leaked into P25 target B (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    /* P25's channel cache for IDEN 0 channel 0, as process_channel_to_freq() writes it. */
+    dsd_state_set_trunk_chan_freq(&state, 0U, 851000000L);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[0] != 452500000L) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed not restored (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 851000000L) {
+        DSD_FPRINTF(stderr, "row 0: target B's channel 0 not restored (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int g_dmr_missing_summaries;
+static char g_dmr_missing_summary[2][256];
+
+#ifdef USE_RADIO
+static void qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx);
+#endif
+
+/* The process's one log tap (dsd_neo_log_set_tap() installs only the first): it counts the DMR per-target exit
+   summaries here and, with radio support, the quiet check's lines (qt_count_notice()). */
+static void
+trunk_scan_test_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    if (text != NULL && strncmp(text, "NOTICE: DMR Tier III (", 22) == 0) {
+        if (g_dmr_missing_summaries < 2) {
+            DSD_SNPRINTF(g_dmr_missing_summary[g_dmr_missing_summaries], sizeof g_dmr_missing_summary[0], "%s", text);
+        }
+        g_dmr_missing_summaries++;
+    }
+#ifdef USE_RADIO
+    qt_count_notice(level, text, ctx);
+#else
+    (void)level;
+    (void)ctx;
+#endif
+}
+
+/* Whether the live ledger holds exactly LPCN @p lpcn. */
+static int
+dmr_missing_only(const dsd_state* state, uint16_t lpcn) {
+    static dmr_t3_missing_ledger l;
+    dmr_t3_missing_copy(state, &l);
+    return dmr_t3_missing_count(state) == 1U && l.detail_count == 1U && l.details[0].lpcn == lpcn
+           && ((l.missing[lpcn >> 3] >> (lpcn & 7U)) & 1U) != 0U;
+}
+
+/* Two DMR targets each record their own channel granted without a frequency (discussion #900 F1): A's 12 and B's 30
+   leave and come back with their target, never show on the other, and the exit summary names each target's own. */
+static int
+test_dmr_missing_ledger_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr missing: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    const dmr_t3_grant_class group = {1U, 0U, 2002U, 1001U};
+    dmr_t3_missing_note_grant(opts, state, 12U, &group, 0U, 0);
+    if (!dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A did not record LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_missing_count(state) != 0U) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+    dmr_t3_missing_note_grant(opts, state, 30U, &group, 1U, 1);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || !dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's ledger not restored\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || !dmr_missing_only(state, 30U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target B's ledger not restored\n");
+        test_rc = 1;
+    }
+
+    g_dmr_missing_summaries = 0;
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (g_dmr_missing_summaries != 2 || strstr(g_dmr_missing_summary[0], "(a)") == NULL
+        || strstr(g_dmr_missing_summary[0], " 12") == NULL || strstr(g_dmr_missing_summary[1], "(b)") == NULL
+        || strstr(g_dmr_missing_summary[1], " 30 (unchecked)") == NULL) {
+        DSD_FPRINTF(stderr, "dmr missing: exit summaries %d [%s] [%s]\n", g_dmr_missing_summaries,
+                    g_dmr_missing_summary[0], g_dmr_missing_summary[1]);
+        test_rc = 1;
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Review Focus 3 (discussion #900 F3): the user's channels are the global map's and never a target's. A live edit is
+   refused under the scan, and even an overlay seeded on target A (unchecked, as no path under a scan can) is emptied
+   by the next target switch: it never shows on B, nor comes back with A. */
+static int
+test_dmr_overlay_never_crosses_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* A live edit is refused under the scan. */
+    if (dmr_t3_overlay_apply(opts, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
+        != DMR_T3_SET_TRUNK_SCAN) {
+        DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_chan_effective_hz(state, 12U) != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_overlay_get(state, 12U, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Fill every registration owner slot with values derived from @p tag (a distinct table per target). */
 static void
 seed_aff_owners(dsd_state* state, uint32_t tag) {
@@ -3367,6 +3751,24 @@ qt_shared_state(void) {
     return g_qt_shared_state;
 }
 
+static dsd_opts* g_qt_shared_opts;
+
+#ifdef USE_RADIO
+/* One heap-backed options fixture the quiet-check cases share, cleared for each case. */
+static dsd_opts*
+qt_shared_opts(void) {
+    if (!g_qt_shared_opts) {
+        g_qt_shared_opts = (dsd_opts*)calloc(1, sizeof *g_qt_shared_opts);
+        if (!g_qt_shared_opts) {
+            abort();
+        }
+        return g_qt_shared_opts;
+    }
+    DSD_MEMSET(g_qt_shared_opts, 0, sizeof *g_qt_shared_opts);
+    return g_qt_shared_opts;
+}
+#endif
+
 static void
 qt_shared_state_free(void) {
     if (g_qt_shared_state) {
@@ -3374,6 +3776,8 @@ qt_shared_state_free(void) {
     }
     free(g_qt_shared_state);
     g_qt_shared_state = NULL;
+    free(g_qt_shared_opts);
+    g_qt_shared_opts = NULL;
 }
 
 /* A trunk scan started from the menu after the run's first stream landed the receiver (run_landed 1): its first park is
@@ -5081,8 +5485,7 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
         update.observed_m = begin_m;
         (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &update);
     }
-    if (dsd_call_state_update_media(state, 0U, 1, begin_m) != 1
-        || dsd_call_state_update_media(state, 0U, 1, media_m) != 1) {
+    if (decoded_media(state, 0U, 1, begin_m) != 1 || decoded_media(state, 0U, 1, media_m) != 1) {
         DSD_FPRINTF(stderr, "voice-gate seed: media update failed\n");
         return -1;
     }
@@ -5172,6 +5575,433 @@ test_conventional_voice_gate_voice_header_no_hold(void) {
     return rc;
 }
 
+static int expect_active_target(const dsd_state* state, const char* stage, size_t want);
+
+/* Issue #890: a scan observation counts only for the visit its read began on. A frame whose read began while the
+ * coordinator was on target a and that reports after b landed (the same decode time), a frame cut by an input
+ * interruption or a carrier boundary, and a report decoded while b's park is in flight (the frame is a's, its index
+ * already b's) hold nothing; a report from b's own frame does. @p body names two conventional targets of @p report's
+ * family (on two frequencies, or two types of one family on one frequency). */
+typedef void (*conventional_report_fn)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int);
+
+static int
+run_conventional_activity_origin_case(const char* tag, const char* body, conventional_report_fn report) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    /* A frame whose read begins on a. */
+    const uint64_t visit_a = state.scan_landing_visit;
+    const uint32_t carrier_a = state.carrier_seq;
+    if (visit_a == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's landing set no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "origin: rotation to b", 1U);
+    if (state.scan_landing_visit == visit_a || state.scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's landing set no visit of its own\n", tag);
+        test_rc = 1;
+    }
+    /* That frame reports now, at b's landing time. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_a;
+    state.frame_dispatch_scan_visit = visit_a;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    /* b's own frames, cut by an input interruption and by a carrier boundary. */
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    state.input_interrupted = 1;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.input_interrupted = 0;
+    state.frame_dispatch_carrier_seq = state.carrier_seq - 1U;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a delayed, interrupted or cut report held b\n", tag);
+        test_rc = 1;
+    }
+    /* Back on a: a report from its own frame holds it past the dwell. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report of the visit's own frame did not hold it\n", tag);
+        test_rc = 1;
+    }
+
+    /* A park in flight: the index is b's, the receiver still a's. What is decoded then holds nothing. a's hold ends
+       at 2.52 and its dwell at 2.77. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(2.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(&state, "origin: rotation to b in flight", 1U);
+    if (g_scan_tune_pending_request == 0U || state.scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park is not in flight (request %llu, visit %llu)\n", tag,
+                    (unsigned long long)g_scan_tune_pending_request, (unsigned long long)state.scan_landing_visit);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(2.86);
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(2.87);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "origin: b landed", 1U);
+    if (state.scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park landed no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(3.15);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report decoded while b's park was in flight held b\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a restart of the radio stream (a gain, bandwidth or device change) while a conventional target is landed
+ * forgets every landing at the stream's start; when the new stream opens on the same source and the target's frequency
+ * the target lands again under a new visit: a frame read before the restart holds nothing, and its own traffic after
+ * the restart holds it. With @p elsewhere the stream opens on another centre: no landing, nothing holds the target. */
+static int
+run_conventional_activity_after_restart_case(int elsewhere) {
+    const char* tag = elsewhere ? "restart elsewhere" : "restart on the target";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_before = state.scan_landing_visit;
+    const uint32_t carrier_before = state.carrier_seq;
+    state.carrier_source_key = 1U;
+    trunk_scan_test_set_now(0.05);
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    /* The stream start (dsd_engine_note_stream_source()): the same source's reopen is a stream gap, and every landing
+       is forgotten. */
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    opts.rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (elsewhere ? state.scan_landing_visit != 0U
+                  : (state.scan_landing_visit == 0U || state.scan_landing_visit == visit_before
+                     || !dsd_engine_trunk_scan_target_confirmed(&state, 0))) {
+        DSD_FPRINTF(stderr, "%s: visit %llu after the reopen (before %llu)\n", tag,
+                    (unsigned long long)state.scan_landing_visit, (unsigned long long)visit_before);
+        test_rc = 1;
+    }
+    /* A frame read before the restart reports now: nothing. Then the target's own traffic after it. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_before;
+    state.frame_dispatch_scan_visit = visit_before;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, tag, elsewhere ? 1U : 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a stream that reopens on the landed target's frequency lands nothing again when the scan was paused
+ * meanwhile (@p mode 0), when the target on air had a park in flight at the stop rather than a landing (1: the park's
+ * own reopen rule decides it at the next tick, not this one), or when the stream reopened on another radio source (2).
+ */
+static int
+run_restart_relands_nothing_case(int mode) {
+    static const char* const tags[] = {"restart while paused", "restart with a park in flight",
+                                       "restart on another source"};
+    const char* tag = tags[mode];
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    uint32_t reopen_hz = 461000000U;
+    if (mode == 1) {
+        /* The rotation to b goes in flight. */
+        g_scan_tune_to_freq_pending = 1;
+        g_scan_tune_pending_request = 0U;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        g_scan_tune_to_freq_pending = 0;
+        test_rc |= expect_active_target(&state, tag, 1U);
+        reopen_hz = 462000000U;
+    }
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    p25_sm_tick_guard_leave();
+    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
+        DSD_FPRINTF(stderr, "%s: the pause failed\n", tag);
+        test_rc = 1;
+    }
+    p25_sm_tick_guard_enter();
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    if (mode == 2) {
+        state.carrier_source_key = 2U;
+    }
+    opts.rtlsdr_center_freq = reopen_hz;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (state.scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state.scan_landing_visit);
+        test_rc = 1;
+    }
+    g_scan_tune_pending_request = 0U;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a visit that is stale while the carrier count is unchanged (a trunk-scan rotation between two targets
+ * moves no carrier boundary): a frame dispatched under the visit before, its carrier the current one, holds nothing. */
+static int
+test_conventional_activity_stale_visit_same_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "stale visit: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: on b", 1U);
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq; /* the carrier count is the current one */
+    state.frame_dispatch_scan_visit = visit_a;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: a's report held nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_activity_after_a_stream_restart(void) {
+    int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
+    for (int mode = 0; mode < 3; mode++) {
+        rc |= run_restart_relands_nothing_case(mode);
+    }
+    return rc;
+}
+
+static int
+test_conventional_activity_binds_its_visit(void) {
+    int rc = run_conventional_activity_origin_case("two frequencies",
+                                                   "a,dmr-conventional,461000000,,250,2000,\n"
+                                                   "b,dmr-conventional,462000000,,250,2000,\n",
+                                                   dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_conventional_activity_origin_case("one frequency",
+                                                "a,nxdn-conventional,461000000,,250,2000,\n"
+                                                "b,nxdn48-conventional,461000000,,250,2000,\n",
+                                                dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* Issue #890: under --scan-voice-only a target holds only on checked media of its own landed visit. A call whose frames
+ * were read on target a, decoded and ended after b landed (its last frame at b's landing time), holds b nothing; nor do
+ * media marks without checked media (frames the vocoder failed or concealed) past the dwell, nor checked media decoded
+ * while a park is in flight. b's own checked media holds b, through a sync loss. @p body names two conventional
+ * targets. */
+static int
+run_voice_gate_media_origin_case(const char* tag, const char* body) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: voice origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    const uint32_t carrier_a = state.carrier_seq;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: rotation to b", 1U);
+    /* Frames read on a, decoded now: checked media up to b's landing time, then the call ends. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_a;
+    state.frame_dispatch_scan_visit = visit_a;
+    if (seed_voice_gate_media_epoch(&state, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    state.frame_dispatch_active = 0;
+    (void)dsd_call_state_end_ex(&state, 0U, 0.26, DSD_CALL_END_TERMINATOR);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a's ended call held b\n", tag);
+        test_rc = 1;
+    }
+
+    /* On a (landed 0.52): marks without checked media, past a's 250 ms dwell. */
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1001U;
+    obs.policy_target_id = 1001U;
+    obs.observed_m = 0.53;
+    (void)dsd_call_state_observe(&state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    for (int f = 0; f < 13; f++) {
+        (void)dsd_call_state_update_media(&state, 0U, 1, 0.53 + (0.02 * f));
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media marks with no checked media held a\n", tag);
+        test_rc = 1;
+    }
+
+    /* On b (landed 0.78): its own checked media holds it past its dwell, a sync loss after it too. */
+    if (seed_voice_gate_media_epoch(&state, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    (void)dsd_call_state_end_ex(&state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
+    trunk_scan_test_set_now(1.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: b held by its own media past a sync loss", 1U);
+
+    /* b's hold ends at 1.20 and its dwell at 1.45: the park to a goes in flight, and media decoded meanwhile is no
+       media of a's. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(1.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(&state, "voice origin: rotation to a in flight", 0U);
+    if (g_scan_tune_pending_request == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's park is not in flight\n", tag);
+        test_rc = 1;
+    }
+    if (seed_voice_gate_media_epoch(&state, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(1.71);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: a landed", 0U);
+    trunk_scan_test_set_now(1.97);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media decoded while a's park was in flight held a\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_voice_gate_media_binds_its_visit(void) {
+    int rc = run_voice_gate_media_origin_case("two frequencies", "a,dmr-conventional,461000000,,250,250,\n"
+                                                                 "b,dmr-conventional,462000000,,250,250,\n");
+    rc |= run_voice_gate_media_origin_case("one frequency", "a,nxdn-conventional,461000000,,250,250,\n"
+                                                            "b,nxdn48-conventional,461000000,,250,250,\n");
+    return rc;
+}
+
 /* With the gate on, decoded voice media holds a conventional target with no header ever
  * reported: the 250 ms dwell would otherwise rotate at 0.25. Fresh media refreshes the
  * hold, and the target rotates only after the hold lapses and the dwell re-elapses. */
@@ -5219,7 +6049,7 @@ test_conventional_voice_gate_media_hold(void) {
     }
 
     // Fresh media refreshes the hold: without it the 0.25 media would lapse at 0.50.
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -5325,8 +6155,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
             obs.ota_source_id = 2002U;
             obs.observed_m = 0.10;
             if (dsd_call_state_ensure(state) <= 0 || dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.10) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.25) != 1) {
+                || decoded_media(state, 0U, 1, 0.10) != 1 || decoded_media(state, 0U, 1, 0.25) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional voice-gate media seed failed\n");
                 test_rc = 1;
                 goto cleanup;
@@ -5343,7 +6172,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
                 DSD_FPRINTF(stderr, "P25 conventional fresh media did not publish VOICE\n");
                 test_rc = 1;
             }
-            if (dsd_call_state_update_media(state, 0U, 1, 0.49) != 1
+            if (decoded_media(state, 0U, 1, 0.49) != 1
                 || dsd_call_state_end_ex(state, 0U, 0.50, DSD_CALL_END_TERMINATOR) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional media refresh/end failed\n");
                 test_rc = 1;
@@ -12189,7 +13018,7 @@ test_scan_timing_voice_gate_phases(void) {
     test_rc |= expect_scan_timing(&state, "voice", DSD_SCAN_STAY_VOICE, 0.50, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "voice", 0.25, 250U);
 
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "scan timing voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -23040,6 +23869,10 @@ typedef struct {
     int analog_ok;
     uint32_t refused_rate_hz; /* one capture rate the calibration did not validate, 0 for none */
     uint32_t session;         /* rtl_stream_session_generation(): the stream opens and stops */
+    uint32_t word_bumps;      /* moves the capture word with the capture unchanged (a reset) */
+    int word_loads;           /* rtl_signal_capture_seq() loads */
+    uint32_t late_ticket;     /* an earlier request's ticket the tap still answers (quiet), 0 for none */
+    uint32_t late_request_id;
 } quiet_fake_tap;
 
 static quiet_fake_tap g_tap;
@@ -23052,6 +23885,30 @@ rtl_signal_capture_get(dsd_signal_capture* capture) {
     }
     *capture = g_tap.capture;
     return 1;
+}
+
+/* The tap's capture word: a function of the capture the fake holds, so a case that changes the capture moves it. */
+static uint32_t
+quiet_fake_capture_word(void) {
+    if (!g_tap.have_capture) {
+        return 0x9e3779b9U ^ g_tap.word_bumps;
+    }
+    return (g_tap.capture.generation * 2654435761U) ^ g_tap.capture.capture_hz
+           ^ (uint32_t)g_tap.capture.capture_offset_hz ^ (g_tap.word_bumps << 24);
+}
+
+uint32_t
+rtl_signal_capture_seq(void) {
+    g_tap.word_loads++;
+    return quiet_fake_capture_word();
+}
+
+int
+rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq) {
+    if (seq) {
+        *seq = quiet_fake_capture_word();
+    }
+    return rtl_signal_capture_get(capture);
 }
 
 int
@@ -23073,6 +23930,9 @@ rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* tick
 
 int
 rtl_signal_quiet_status(uint32_t ticket) {
+    if (ticket != 0U && ticket == g_tap.late_ticket) {
+        return 1;
+    }
     if (ticket == 0U || ticket != g_tap.ticket) {
         return -1;
     }
@@ -23089,6 +23949,13 @@ rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result) {
     if (status < 0) {
         result->failure = DSD_SIGNAL_MEASURE_SUPERSEDED;
         return -1;
+    }
+    if (ticket == g_tap.late_ticket) {
+        result->valid = 1U;
+        result->quiet = 1U;
+        result->request_id = g_tap.late_request_id;
+        g_tap.late_ticket = 0U;
+        return 1;
     }
     *result = g_tap.result;
     result->request_id = g_tap.last_request.request_id;
@@ -23150,6 +24017,7 @@ enum {
 };
 
 static const uint32_t k_qt_hz_a = 452000000U;
+static const uint32_t k_qt_hz_b = 453000000U;
 
 static uint32_t g_quiet_stream_gen = 0U;
 
@@ -23338,6 +24206,9 @@ qt_pass(dsd_opts* opts, dsd_state* state) {
 
 static int g_qt_notices = 0;
 static char g_qt_notice[192];
+/* The shortened-reading WARN lines (issue #834 follow-up, D3): how many, and the last. */
+static int g_qt_short_warns = 0;
+static char g_qt_short_warn[320];
 /* The silent-channel skip's WARN lines (issue #834 R6), counted by the same tap: a process installs one tap only. */
 static int g_qt_warns = 0;
 static char g_qt_warn[512];
@@ -23354,13 +24225,17 @@ qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_qt_warns++;
         DSD_SNPRINTF(g_qt_warn, sizeof g_qt_warn, "%s", text);
     }
+    if (text && strncmp(text, "WARNING: scan: --scan-skip-silent-ms", 36) == 0) {
+        g_qt_short_warns++;
+        DSD_SNPRINTF(g_qt_short_warn, sizeof g_qt_short_warn, "%s", text);
+    }
 }
 
 static void
 qt_notices_watch(int on) {
     g_qt_notices = 0;
     g_qt_notice[0] = '\0';
-    dsd_neo_log_set_tap(on ? qt_count_notice : NULL, NULL);
+    dsd_neo_log_set_tap(on ? trunk_scan_test_log_tap : NULL, NULL);
 }
 
 /* A pass that publishes the target on air measures it, and the tap finds it quiet: READY, handed back. */
@@ -23400,9 +24275,13 @@ qt_frame(dsd_state* state, int level, uint32_t hold_ms) {
     dsd_engine_scan_quiet_frame_end(state);
 }
 
+/* How often the check read its clock in the portable cases: what a service does when it has something to do. */
+static int g_qt_clock_reads = 0;
+
 /* The check's clock in the portable cases: the rig's, which moves only when a case moves it. */
 static uint64_t
 qt_seam_clock(void) {
+    g_qt_clock_reads++;
     return g_quiet_rt_ms;
 }
 
@@ -23637,7 +24516,7 @@ test_scan_quiet_evidence_notes_bookkeeping(void) {
     dsd_engine_scan_quiet_pending_reset(state_p);
     rc |= qt_expect("the frame loop's early leave clears it", owner->pending_until_m < 1e-9 && !owner->frame_pending);
     qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     rc |= qt_expect("the setting's change clears it", owner->pending_until_m < 1e-9);
     dsd_state_ext_free_all(state_p);
     dsd_decode_clock_use_system();
@@ -23686,6 +24565,69 @@ test_scan_quiet_evidence_hook_off_is_one_load(void) {
     rc |= qt_expect("no scan owner made", dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
     dsd_frame_sync_hooks_set(&saved);
     dsd_state_ext_free_all(state_p);
+    return rc;
+}
+
+/* Issue #890: a transmission only its sync words confirmed (D-STAR's two exact resync words, SYNC_ONLY) is no heard
+   content. Through the runtime wrapper it stores nothing for the -Y step, with the setting off or on. To a quiet check
+   it is a verdict still open: a READY quiet result is held while such frames keep coming, never ended as activity, and
+   handed back once their hold runs out. A CRC-proven frame still ends the check. */
+static int
+test_scan_quiet_sync_only_is_no_content(void) {
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        opts.scan_skip_silent = on;
+        const uint32_t content = state_p->scan_y_content_seq;
+        const uint32_t partial = state_p->scan_y_partial_seq;
+        dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+        rc |= qt_expect(on ? "on: SYNC_ONLY stores no -Y content or open verdict"
+                           : "off: SYNC_ONLY stores no -Y content or open verdict",
+                        state_p->scan_y_content_seq == content && state_p->scan_y_partial_seq == partial);
+    }
+    dsd_state_ext_free_all(state_p);
+
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    const uint64_t activity = owner ? owner->activity_seq : 0U;
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    rc |= qt_expect_held(&opts, state_p, "a resync-confirmed frame: held");
+    rc |= qt_expect("a resync-confirmed frame is no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(10U + 420U + 839U);
+    rc |= qt_expect_held(&opts, state_p, "the next one renews the wait: held");
+    rc |= qt_expect("still no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U + 841U);
+    rc |= qt_expect("the frames stopped: the hunt hands back",
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the frames stopped: the tick skips", 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+
+    /* A CRC after the resync-confirmed frames still ends the check: nothing skips. */
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(430U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= qt_expect("a header CRC: no hand-back", dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "a header CRC: the target stays", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23897,6 +24839,619 @@ test_scan_quiet_frame_boundary_late_capture_and_retry(void) {
     rc |= qt_capture_bound_case(1);
     rc |= qt_late_retry_case(800U);
     rc |= qt_late_retry_case(950U);
+    return rc;
+}
+
+/* --- Issue #834 follow-up: the hunt's event service (dsd_engine_scan_quiet_event_service()), which acts as soon as the
+ * tap's capture word or the request's status word moves, never ends a check for time, never moves the 50 ms legacy
+ * schedule, and requests no earlier than a frame boundary may once a settle is in force. --- */
+
+/* The event service @p ms of realtime later. */
+static int
+qt_event_after(dsd_opts* opts, dsd_state* state, uint64_t ms) {
+    g_quiet_rt_ms += ms;
+    return dsd_engine_scan_quiet_event_service(opts, state);
+}
+
+/* A capture appears: the event service requests at once, with the 10 ms lead; nothing moved: no capture read; the
+   answer is collected as its status word turns done, and handed back once by events (the hunt's point still hands
+   back); an event read leaves the legacy 50 ms schedule alone. */
+static int
+test_scan_quiet_event_acts_when_ready(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    int rc = qt_expect("published with no capture yet", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    const int reads = g_tap.capture_reads;
+    rc |= qt_expect("nothing moved: no capture read", qt_event_after(opts, state_p, 2U) == DSD_SCAN_QUIET_LIVE
+                                                          && g_tap.capture_reads == reads && g_tap.word_loads > 0);
+    /* A capture of the old generation moves the word but does not qualify: read once, nothing asked. */
+    quiet_tap_capture(k_qt_hz_a, QT_GEN);
+    g_quiet_rt_ms = landed_ms + 20U;
+    rc |= qt_expect("a capture that does not qualify: read, waits",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && g_tap.capture_reads == reads + 1 && g_tap.requests == 0);
+    /* The legacy schedule the publication at +10 set: its next read is due at +60, and the event read did not move
+       it. */
+    g_quiet_rt_ms = landed_ms + 60U;
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the legacy point still reads at +60", g_tap.capture_reads == reads + 2);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed_ms + 61U;
+    rc |= qt_expect("the landed capture: requested at once",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    rc |= qt_expect("with a 10 ms lead", g_tap.last_request.lead_pairs == 1536000U / 100U);
+    rc |= qt_expect("pending: nothing taken", qt_event_after(opts, state_p, 50U) == DSD_SCAN_QUIET_LIVE
+                                                  && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 50U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the answer: handed back at once",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("handed back by events once", qt_event_after(opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE
+                                                      && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    rc |= qt_expect("the hunt's point still hands it back",
+                    quiet_service_after(opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("and the tick applies it", quiet_apply(opts, state_p, SCAN_QUIET_OWNER_TRUNK) == 1);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* A settle in force: a frame boundary saw the capture first, so the event service requests only once its 125 ms have
+   run; and a lost guard leaves READY to the hunt's point, not to events. */
+static int
+test_scan_quiet_event_respects_the_settle(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    int rc = qt_expect("a frame boundary sees it first: settling",
+                       qt_frame_at(opts, state_p, landed_ms, 100U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+    for (uint64_t at = 101U; at < 225U; at += 7U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("no event request inside the settle", g_tap.requests == 0);
+    g_quiet_rt_ms = landed_ms + 226U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests",
+                    g_tap.requests == 1 && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 100U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |=
+        qt_expect("ready: handed back", dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    scan_quiet_reconcile_declined(opts, state_p, SCAN_QUIET_OWNER_TRUNK, 1);
+    rc |= qt_expect("a tick that lost its guard: still READY, not handed back by events again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_READY
+                        && qt_event_after(opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE);
+    rc |=
+        qt_expect("the hunt's point hands it back", quiet_service_after(opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* The late retry of qt_late_retry_case() with short hunts between the frames: a retryable failure collected at a
+   frame boundary @p failed_at ms in sets a settle; events never end the visit past the 1 s bound (main's frame
+   boundary would still request it) and never request inside the settle; the first event past it requests. A failure
+   past its deadline, or a result past its age, gives no hand-back. */
+static int
+qt_event_late_retry_case(uint64_t failed_at) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + failed_at - 200U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + failed_at - 10U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    rc |= qt_expect("the failure collected at a frame boundary",
+                    qt_frame_at(opts, state_p, landed_ms, failed_at) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    uint64_t at = failed_at + 1U;
+    for (; at < failed_at + SCAN_QUIET_FRAME_SETTLE_MS; at += 7U) {
+        if (at >= failed_at + 80U && at < failed_at + 87U) {
+            (void)qt_frame_at(opts, state_p, landed_ms, at);
+        } else {
+            g_quiet_rt_ms = landed_ms + at;
+            (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+        }
+        rc |= qt_expect("inside the settle: waiting, never ended",
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    }
+    g_quiet_rt_ms = landed_ms + failed_at + SCAN_QUIET_FRAME_SETTLE_MS;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    /* This answer completes past its 400 ms deadline: no READY, no hand-back. */
+    g_quiet_rt_ms += SCAN_QUIET_REQUEST_DEADLINE_MS;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("an answer past its deadline: DONE, no hand-back",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_NONE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* A READY result a PARTIAL frame verdict holds: events hand it back once the hold ends inside its 250 ms age, and not
+   at all once the age ran out first. */
+static int
+qt_event_hold_case(uint32_t hold_ms, int expect_hand_back) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 120U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    qt_decode_at(120U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, hold_ms);
+    rc |= qt_expect("collected, held by the frame's verdict",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    int handed = 0;
+    for (uint64_t at = 130U; at <= 120U + hold_ms + 20U && !handed; at += 10U) {
+        g_quiet_rt_ms = landed_ms + at;
+        qt_decode_at(at);
+        const int answer = dsd_engine_scan_quiet_event_service(opts, state_p);
+        handed = answer == DSD_SCAN_QUIET_HAND_BACK;
+        if (!handed && 120U + hold_ms > at) {
+            rc |= qt_expect("inside the hold: not handed back", answer == DSD_SCAN_QUIET_LIVE);
+        }
+    }
+    rc |= qt_expect(expect_hand_back ? "the hold ends inside the age: handed back"
+                                     : "the age ran out first: never handed back",
+                    handed == expect_hand_back);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* The event service's hand-back, taken by the tick as the hunt's would be: the target skips with one NOTICE, and the
+   next target is tuned once. */
+static int
+test_scan_quiet_event_hand_back_skips_the_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 110U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the event service hands back",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    qt_decode_at(110U);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("the tick skips the target, with one NOTICE",
+                    g_qt_notices == 1 && dsd_engine_trunk_scan_active_index(state_p) == 1U);
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* --- Issue #834 follow-up, D3: --scan-skip-silent-ms sets the reading's sub-window count. --- */
+
+static const char k_qt_p25_targets[] = "a,p25-conventional,452000000,,2000,1000,\n"
+                                       "b,p25-conventional,453000000,,2000,1000,\n";
+
+/* The rig's first visit published by the outer pass at +10 ms with its capture there, with @p ms set: the request's
+   sub-window count, or -1 when nothing was asked. */
+static int
+qt_reading_windows(const char* body, int ms, int* warns) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path, body);
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return -2;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = ms;
+    g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
+    g_qt_short_warns = 0;
+    qt_notices_watch(1);
+    g_qt_short_warns = 0;
+    qt_decode_at(10U);
+    qt_pass(opts, state_p);
+    const int windows = g_tap.requests == 1 ? (int)g_tap.last_request.windows : -1;
+    if (warns) {
+        *warns = g_qt_short_warns;
+    }
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return windows;
+}
+
+/* Unset: the calibrated reading (0, the detector's nine). 30 ms: three sub-windows on a P25 target, six (the DMR
+   floor) on a DMR target, each with its WARN lines once; 85 ms rounds to the calibrated nine and warns nothing;
+   500 ms: fifty, with no warning. */
+static int
+test_scan_quiet_reading_length_per_visit(void) {
+    int warns = 0;
+    int rc = qt_expect("unset: the calibrated reading",
+                       qt_reading_windows(k_qt_dwell_targets, 0, &warns) == 0 && warns == 0);
+    rc |=
+        qt_expect("30 ms on a P25 target: three", qt_reading_windows(k_qt_p25_targets, 30, &warns) == 3 && warns == 1);
+    rc |= qt_expect("the warning names the reading",
+                    strstr(g_qt_short_warn, "--scan-skip-silent-ms 30 reads 3 slices (30 to ") != NULL
+                        && strstr(g_qt_short_warn, "shorter than the calibrated 9") != NULL);
+    rc |= qt_expect("30 ms on a DMR target: the floor of six",
+                    qt_reading_windows(k_qt_dwell_targets, 30, &warns) == 6 && warns == 2);
+    rc |= qt_expect("the DMR line names the floor",
+                    strstr(g_qt_short_warn, "DMR channels are read for 6 slices") != NULL);
+    rc |= qt_expect("85 ms rounds to nine: no warning",
+                    qt_reading_windows(k_qt_p25_targets, 85, &warns) == 9 && warns == 0);
+    rc |= qt_expect("500 ms: fifty", qt_reading_windows(k_qt_dwell_targets, 500, &warns) == 50 && warns == 0);
+    char line[320];
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 5, 1536000U, 0);
+    rc |= qt_expect("the span at 1.536 Msps",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to "
+                                 "53 ms), shorter than the calibrated 9: a weak or fading signal "
+                                 "can read silent and be skipped.\n")
+                        == 0);
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 6, 1024000U, 1);
+    rc |= qt_expect("one length at 1.024 Msps",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50: DMR channels are "
+                                 "read for 6 slices (60 ms), the fewest that always hold one "
+                                 "whole slice inside a burst of an ongoing DMR transmission.\n")
+                        == 0);
+    rc |= qt_expect("the helpers",
+                    scan_quiet_request_windows(0U, 1) == 0U && scan_quiet_request_windows(3U, 0) == 3U
+                        && scan_quiet_request_windows(3U, 1) == 6U && scan_quiet_request_windows(7U, 1) == 7U
+                        && scan_quiet_request_deadline_ms(0U) == 400U && scan_quiet_request_deadline_ms(9U) == 400U
+                        && scan_quiet_request_deadline_ms(50U) == 892U);
+    return rc;
+}
+
+/* A fifty-sub-window reading's answer has 892 ms: one completing 1 ms before is taken, one completing at it is not. */
+static int
+qt_long_deadline_case(uint64_t completes_after) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    opts->scan_skip_silent_ms = 500;
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested with fifty",
+                       scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.last_request.windows == 50U);
+    g_quiet_rt_ms = landed_ms + 10U + completes_after;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    const int answer = dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect(completes_after < 892U ? "1 ms before the grown deadline: taken" : "at the grown deadline: not",
+                    completes_after < 892U
+                        ? answer == DSD_SCAN_QUIET_HAND_BACK
+                        : (answer == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE));
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_reading_length_deadline(void) {
+    return qt_long_deadline_case(891U) | qt_long_deadline_case(892U);
+}
+
+/* Issue #834 follow-up: a retryable failure at +950 ms with only short hunts after it (no frame boundary): the event
+   service keeps the capture it sees inside the settle. With events alone the first event past the settle requests;
+   a hunt point past the 1 s bound then requests it as a frame boundary's sighting lets it (a legacy point requests at
+   once), and never ends the visit. */
+static int
+qt_event_retry_without_frames_case(int legacy_at_1007) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 750U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 940U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    (void)qt_frame_at(opts, state_p, landed_ms, 950U);
+    rc |= qt_expect("the failure collected at +950", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    for (uint64_t at = 951U; at < 950U + SCAN_QUIET_FRAME_SETTLE_MS; at += 7U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+        if (legacy_at_1007 && at == 1007U) {
+            (void)dsd_engine_scan_quiet_service(opts, state_p); /* the hunt's point past the 1 s bound */
+            rc |= qt_expect("the hunt's point past the bound requests the capture seen in time",
+                            scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+            quiet_rig_finish(opts, state_p, dir, path);
+            return rc;
+        }
+    }
+    rc |= qt_expect("events alone: still waiting out the settle, never ended",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 950U + SCAN_QUIET_FRAME_SETTLE_MS;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_event_retry_without_frames(void) {
+    return qt_event_retry_without_frames_case(0) | qt_event_retry_without_frames_case(1);
+}
+
+/* Issue #834 follow-up: events that cannot lead to a request are taken once. A capture a frame boundary saw goes away
+   inside the settle (the tap reset): one read, then no clock or capture reads until the word moves. A word change past
+   the 1 s bound with no capture seen: taken once. */
+static int
+test_scan_quiet_event_takes_dead_events_once(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    int rc = qt_expect("a frame boundary sees it: settling",
+                       qt_frame_at(opts, state_p, landed_ms, 100U) == DSD_SCAN_QUIET_LIVE);
+    g_tap.have_capture = 0;
+    g_tap.word_bumps++; /* the tap reset: the word moves, the capture is gone */
+    g_quiet_rt_ms = landed_ms + 150U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    const int reads = g_tap.capture_reads;
+    const int clocks = g_qt_clock_reads;
+    for (uint64_t at = 230U; at < 400U; at += 3U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("the capture gone: no polling past the settle",
+                    g_tap.capture_reads == reads && g_qt_clock_reads == clocks && g_tap.requests == 0);
+    quiet_rig_finish(opts, state_p, dir, path);
+
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed2_ms = qt_publish_without_capture(opts, state_p, 10U);
+    g_quiet_rt_ms = landed2_ms + 20U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed2_ms + 1001U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    const int clocks2 = g_qt_clock_reads;
+    for (uint64_t at = 1002U; at < 1100U; at += 3U) {
+        g_quiet_rt_ms = landed2_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("a word change past the bound: taken once", g_qt_clock_reads == clocks2 && g_tap.requests == 0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* Issue #834 follow-up: a failure the event service collects keeps the legacy 50 ms schedule; and a READY result past
+   its age is declined by events but left READY (a revision change could still restart the visit), for the legacy
+   service to end. */
+static int
+test_scan_quiet_event_keeps_legacy_timing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    g_quiet_rt_ms = landed_ms + 60U;
+    (void)dsd_engine_scan_quiet_service(opts, state_p); /* a legacy read: the next one is due at +110 */
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed_ms + 61U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    int rc = qt_expect("the event requests", g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 62U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_DROPPED);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the drop collected: waiting again", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    g_quiet_rt_ms = landed_ms + 63U;
+    quiet_publish(opts, state_p);
+    rc |= qt_expect("a publication inside the 50 ms schedule asks nothing", g_tap.requests == 1);
+    quiet_rig_finish(opts, state_p, dir, path);
+
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    const uint64_t landed2_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed2_ms + 10U;
+    quiet_publish(opts, state_p);
+    g_quiet_rt_ms = landed2_ms + 120U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    qt_decode_at(120U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 300U);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    g_quiet_rt_ms = landed2_ms + 430U;
+    qt_decode_at(430U);
+    rc |= qt_expect("the hold ends past the age: declined by events",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE);
+    rc |= qt_expect("and left READY", scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the legacy service ends it", scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* Issue #834 follow-up, D3: the shortened reading's WARN line, once per setting and capture rate: a rate seen before
+   under the same setting logs nothing again, at any number of rates, a config apply that leaves the setting as it was
+   keeps that, and a real setting transition logs it again. */
+static int
+test_scan_quiet_short_warn_once_per_setting_and_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_p25_targets);
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return 1;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = 30;
+    qt_notices_watch(1);
+    g_qt_short_warns = 0;
+
+    /* apply: 0 none, 1 a config apply that leaves the setting as it was, 2 the setting to the default and back. */
+    static const struct {
+        uint32_t rate_hz;
+        int apply;
+        int want;
+    } steps[] = {
+        {960000U, 0, 1},  {1024000U, 0, 2}, {960000U, 0, 2},  {1152000U, 0, 3}, {1200000U, 0, 4},
+        {1280000U, 0, 5}, {1280000U, 0, 5}, {1280000U, 1, 5}, {1280000U, 2, 6}, {960000U, 0, 7},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        if (steps[i].apply == 1) {
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 0);
+        } else if (steps[i].apply == 2) {
+            opts->scan_skip_silent_ms = 0;
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
+            opts->scan_skip_silent_ms = 30;
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
+        }
+        if (i > 0) {
+            quiet_land_again(state_p, k_qt_hz_a);
+        }
+        g_tap.capture.rate_hz = steps[i].rate_hz;
+        g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
+        quiet_publish(opts, state_p);
+        rc |= qt_expect("one WARN line per setting and rate", g_qt_short_warns == steps[i].want);
+    }
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    char line[320];
+    (void)scan_quiet_format_short_warn(line, sizeof line, 60, 6, 1152000U, 1);
+    rc |= qt_expect("the span from the rounded totals, and the slice guarantee",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 60: DMR channels are read for 6 slices (61 to "
+                                 "64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR "
+                                 "transmission.\n")
+                        == 0);
+    return rc;
+}
+
+/* Issue #834 follow-up: a target's short dwell runs out while a long (fifty-slice) reading is still pending: the tick
+   rotates on its dwell, the old answer that comes after skips nothing, and the next target is measured on its own. */
+static int
+test_scan_quiet_short_dwell_beats_a_long_reading(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path,
+                                           "a,p25-conventional,452000000,,250,1000,\n"
+                                           "b,p25-conventional,453000000,,250,1000,\n");
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return 1;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = 500;
+    qt_notices_watch(1);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    qt_decode_at(10U);
+    qt_pass(opts, state_p);
+    int rc = qt_expect("a fifty-slice reading pending", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
+                                                            && g_tap.last_request.windows == 50U
+                                                            && dsd_trunk_scan_hook_dwell_due(opts, state_p) == 0);
+    const uint32_t a_ticket = g_tap.ticket;
+    const uint32_t a_request_id = g_tap.last_request.request_id;
+    /* The dwell runs out first: the hunt hands back on it (dwell_due), and only then does the loop tick. */
+    g_quiet_rt_ms = landed_ms + 300U;
+    qt_decode_at(300U);
+    rc |= qt_expect("the dwell is due with the reading still pending",
+                    dsd_trunk_scan_hook_dwell_due(opts, state_p) == 1
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("the dwell rotates and cancels A's reading", dsd_engine_trunk_scan_active_index(state_p) == 1U
+                                                                     && g_tap.last_cancel == a_ticket
+                                                                     && g_tap.ticket == 0U);
+    /* B's visit gets its own capture and request. */
+    g_quiet_stream_gen++;
+    quiet_tap_capture(k_qt_hz_b, g_quiet_stream_gen);
+    const uint64_t b_landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = b_landed_ms + 10U;
+    qt_decode_at(310U);
+    qt_pass(opts, state_p);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p); /* the hunt sees the capture word move */
+    const uint32_t b_ticket = g_tap.ticket;
+    rc |= qt_expect("B's own reading pending",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && b_ticket != 0U && b_ticket != a_ticket
+                        && g_tap.last_request.frequency_hz == k_qt_hz_b && g_tap.requests == 2);
+    /* The tap then answers A's old ticket, quiet, while B's request is live. */
+    g_tap.late_ticket = a_ticket;
+    g_tap.late_request_id = a_request_id;
+    g_scan_tune_watch_hz = (long int)k_qt_hz_a;
+    g_scan_tune_watch_calls = 0;
+    const uint64_t b_epoch = dsd_engine_scan_landing_get(state_p)->epoch;
+    g_quiet_rt_ms = b_landed_ms + 100U;
+    qt_decode_at(400U);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the hunt is not handed back for B", dsd_trunk_scan_hook_dwell_due(opts, state_p) == 0);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("A's old answer skips nothing: B stays pending, nothing tuned, no NOTICE",
+                    g_qt_notices == 0 && dsd_engine_trunk_scan_active_index(state_p) == 1U
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.ticket == b_ticket
+                        && g_scan_tune_watch_calls == 0 && dsd_engine_scan_landing_get(state_p)->epoch == b_epoch);
+    g_scan_tune_watch_hz = 0;
+    g_tap.late_ticket = 0U;
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_event_late_retry_and_holds(void) {
+    int rc = qt_event_late_retry_case(800U);
+    rc |= qt_event_late_retry_case(950U);
+    rc |= qt_event_hold_case(150U, 1);
+    rc |= qt_event_hold_case(300U, 0);
     return rc;
 }
 
@@ -24191,7 +25746,6 @@ test_scan_quiet_frame_boundary_setting_off(void) {
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-static const uint32_t k_qt_hz_b = 453000000U;
 static const char k_qt_targets[] = "a,dmr-conventional,452000000,,250,,\n"
                                    "b,dmr-conventional,453000000,,250,,\n";
 
@@ -24794,16 +26348,16 @@ qt_mut_hold_twice(dsd_opts* opts, dsd_state* state) {
 static void
 qt_mut_setting_off_on(dsd_opts* opts, dsd_state* state) {
     opts->scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state, 0);
+    dsd_engine_scan_quiet_setting_changed(state, 0, 1);
     opts->scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state, 1);
+    dsd_engine_scan_quiet_setting_changed(state, 1, 1);
 }
 
 /* The setting written while on, as a config apply that leaves it on does. */
 static void
 qt_mut_setting_reapplied(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    dsd_engine_scan_quiet_setting_changed(state, 0);
+    dsd_engine_scan_quiet_setting_changed(state, 0, 0);
 }
 
 static void
@@ -24916,7 +26470,7 @@ test_scan_quiet_mutation_sites_move_the_counters(void) {
     (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     QT_MOVED("a park in flight (tune_pending set)");
     g_scan_tune_to_freq_pending = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
     QT_MOVED("the setting");
     dsd_engine_scan_entry_hold_now(&state);
     QT_MOVED("-Y entry hold set");
@@ -25488,11 +27042,11 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
         return 1;
     }
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
     quiet_land_again(&state, k_qt_hz_a);
     g_quiet_rt_ms += 100U;
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    dsd_engine_scan_quiet_setting_changed(&state, 1, 1);
     int requests = g_tap.requests;
     int rc = qt_expect("on mid-visit: the visit wants no eligibility",
                        scan_quiet_wants_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
@@ -25524,7 +27078,7 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
        completed, a sync heard while off) with its landing not yet noted. */
     for (int landed = 0; landed <= 1; landed++) {
         opts.scan_skip_silent = 0;
-        dsd_engine_scan_quiet_setting_changed(&state, 0);
+        dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
         const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
         const int from = (int)dsd_engine_trunk_scan_active_index(&state);
         g_scan_tune_to_freq_pending = 1;
@@ -25538,7 +27092,7 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
             dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
         }
         opts.scan_skip_silent = 1;
-        dsd_engine_scan_quiet_setting_changed(&state, 1);
+        dsd_engine_scan_quiet_setting_changed(&state, 1, 1);
         scan_quiet_eligibility e = quiet_elig(&opts, &state);
         e.key.index = to;
         e.key.session = session;
@@ -26498,12 +28052,12 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* --- Issue #834 R6: the check says when and why it cannot check a visit, through the trunk scan's timing publication
  * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
-/* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
+/* Count the WARN lines from here (qt_count_notice(), through the process's one tap). */
 static void
 qt_warns_watch(void) {
     g_qt_warns = 0;
     g_qt_warn[0] = '\0';
-    dsd_neo_log_set_tap(qt_count_notice, NULL);
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
 }
 
 /* The quiet status and reason the timing publication carries. */
@@ -26618,12 +28172,12 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
 
     /* Off, then on: the visit on air waits for the next tune, which logs its line again. */
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     qt_decode_at(120U);
     qt_pass(&opts, state_p);
     rc |= qt_expect_quiet(state_p, "the setting off", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state_p, 1);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1, 1);
     qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     qt_decode_at(130U);
@@ -27046,12 +28600,12 @@ test_scan_quiet_input_has_no_check(void) {
     }
     const dsd_scan_timing_publication on = state_p->scan_timing;
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     trunk_scan_test_set_now(0.6);
     dsd_engine_trunk_scan_tick(&opts, state_p);
     const dsd_scan_timing_publication off = state_p->scan_timing;
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state_p, 1);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1, 1);
     trunk_scan_test_set_now(0.7);
     dsd_engine_trunk_scan_tick(&opts, state_p);
     dsd_engine_trunk_scan_tick(&opts, state_p);
@@ -27158,12 +28712,24 @@ test_scan_quiet_all(void) {
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
     rc |= test_scan_quiet_evidence_hook_off_is_one_load();
+    rc |= run_with_default_tune_hook(test_scan_quiet_sync_only_is_no_content);
     rc |= run_with_default_tune_hook(test_scan_quiet_rejected_sync_keeps_the_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_noise_frames_still_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_pending_verdict_holds_every_skip_point);
     rc |= run_with_default_tune_hook(test_scan_quiet_evidence_moves_no_trunk_activity);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_settles_before_requesting);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_late_capture_and_retry);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_acts_when_ready);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_respects_the_settle);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_late_retry_and_holds);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_hand_back_skips_the_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_per_visit);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_deadline);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_retry_without_frames);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_takes_dead_events_once);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_keeps_legacy_timing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_short_warn_once_per_setting_and_rate);
+    rc |= run_with_default_tune_hook(test_scan_quiet_short_dwell_beats_a_long_reading);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundaries_run_every_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);
@@ -27199,6 +28765,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_target_map_makes_the_record);
+    rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_overlay_never_crosses_targets);
+    rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
@@ -27281,6 +28852,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_p25_scan_retune_restarts_pending_cc_acquisition);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
+    rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
+    rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
@@ -27299,6 +28873,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_binds_its_visit);
     rc |= run_with_default_tune_hook(test_p25_conventional_voice_gate_media_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_terminator_before_first_tick);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
@@ -27564,6 +29139,28 @@ dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
 
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
+
+/* The DMR channel writer's notice (dmr_t3_channels.c, linked for the per-target provenance): DMR_T3_CHANNELS runs the
+   real emitter. */
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)observation;
+    (void)notice;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
+    return 0;
+}
 
 /* The close of the recordings no call owns, which a target switch runs as it leaves the carrier (issue #809 B4):
    counted. CORE_WAV_JOURNAL runs the real one through the real switch. */

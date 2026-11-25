@@ -73,6 +73,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -118,6 +119,7 @@
 #include <string.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
+#include "dmr_channel_commands.h"
 #include "key_commands.h"
 #include "next_start_check.h"
 #include "recording_view_internal.h"
@@ -300,6 +302,14 @@ recording_command_id(const struct dsd_app_command* c) {
    clears it before every dispatch, so it never outlives one apply. Decoder thread only. */
 static int g_config_recording_applied;
 
+/* What a command with a retained result did, handed back along apply_cmd() for the drain to publish: scan_list for a
+   DSD_APP_CMD_SCAN_LIST_SET (dsd_app_scan_list_set_code), dmr_channel for a DSD_APP_CMD_DMR_CHANNEL_SET
+   (dsd_app_dmr_channel_set_code). Other commands leave both as apply_cmd() set them. */
+typedef struct {
+    int32_t scan_list;
+    int32_t dmr_channel;
+} ui_cmd_result_codes;
+
 void
 dsd_app_command_session_set_open(int open) {
     ensure_mu_init();
@@ -311,6 +321,7 @@ dsd_app_command_session_set_open(int open) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
+        dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
@@ -1510,6 +1521,18 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system)
     ui_rxid_guard_leave(taken);
 }
 
+/* ui_user_move_forgets_identity() for a move that can leave the network followed: anything but a return to, or a
+   selection of, the control channel of the system already followed (@p same_system). The DMR Tier III channels the air
+   taught there are not the next network's (dmr_t3_chan_network_changed(), discussion #900 F2); a Return-to-CC goes
+   back to the same network and keeps them. */
+static void
+ui_user_move_leaves_network(dsd_opts* opts, dsd_state* state, int guard_held, int same_system) {
+    ui_user_move_forgets_identity(state, guard_held, same_system);
+    if (!same_system) {
+        dmr_t3_chan_network_changed(opts, state);
+    }
+}
+
 /* Whether a manual move to @p freq lands on the control channel of the P25 system the patch table belongs to (its
    p25_cc_freq, read before the move): a same-system move. */
 static int
@@ -2179,7 +2202,7 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
            as the frequency entry's other branch drops it. */
         dsd_analog_rx_reset(state);
         /* the selection ended the calls left */
-        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held, same_system);
+        ui_user_move_leaves_network(opts, state, g_apply_cmd_guard_held, same_system);
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
@@ -2338,7 +2361,7 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
         *scan_paused = trunk_scan_paused;
     } else {
         /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+        svc_operator_carrier_boundary(opts, state, 0);
     }
     dsd_frame_sync_reset_mod_state();
     dsd_analog_rx_reset(state);
@@ -2875,7 +2898,8 @@ ui_cmd_handle_scan_skip_silent_set(dsd_opts* opts, dsd_state* state, const struc
     if (opts && state && ui_cmd_parse_i32_payload(c, &on)) {
         const int was_on = opts->scan_skip_silent != 0;
         svc_set_scan_skip_silent(opts, on);
-        dsd_scan_quiet_setting_changed(state, !was_on && opts->scan_skip_silent);
+        const int now_on = opts->scan_skip_silent != 0;
+        dsd_scan_quiet_setting_changed(state, !was_on && now_on, was_on != now_on);
         ui_set_toast(state, 3, "Applied: Silent channel skip -> %s", opts->scan_skip_silent ? "On" : "Off");
     }
     return 1;
@@ -4156,9 +4180,9 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     if (opts->trunk_enable != 1) {
         /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
            (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, &judge, cand);
     }
     hand_tetra_sm_over(opts, state);
@@ -4215,9 +4239,9 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, judge, freq);
     }
     hand_tetra_sm_over(opts, state);
@@ -4999,7 +5023,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
         && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
+        svc_operator_carrier_boundary(opts, state, 1); // a config apply holds the guard
     }
     return rc;
 }
@@ -5135,6 +5159,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
+        dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
@@ -5491,6 +5516,14 @@ dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* paylo
 }
 
 int
+dsd_app_command_dmr_channel_set(const dsd_app_dmr_channel_set_payload* payload) {
+    if (!payload) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_DMR_CHANNEL_SET, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
     if (!payload) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
@@ -5544,6 +5577,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
     {DSD_APP_CMD_SCAN_AVOID_REMOVE, sizeof(dsd_app_scan_avoid_remove_payload)},
     {DSD_APP_CMD_SCAN_LIST_SET, sizeof(dsd_app_scan_list_set_payload)},
+    {DSD_APP_CMD_DMR_CHANNEL_SET, sizeof(dsd_app_dmr_channel_set_payload)},
     {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
@@ -7272,14 +7306,15 @@ enum { RR_APPLY_CHAN_FAILED = 1, RR_APPLY_GROUP_FAILED = 2 };
    protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
    this is an ordinary outcome, not an edge case. services.h says the same thing
    about why the clear counterparts exist: "the previous file would otherwise
-   stay live for the session". Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED,
-   or 0. */
+   stay live for the session". A channel map that fails to load clears the live one for the same reason (issue #900).
+   Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED, or 0. */
 static int
 rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
     int failed = 0;
     if (p->has_chan) {
         if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
             failed |= RR_APPLY_CHAN_FAILED;
+            (void)svc_clear_channel_map(opts, state);
         }
     } else {
         (void)svc_clear_channel_map(opts, state);
@@ -7609,18 +7644,24 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     }
     /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
-    if (rr_apply_moves_the_receiver(opts, &p)) {
+    const int moves = rr_apply_moves_the_receiver(opts, &p);
+    if (moves) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
            while the calls of the system it leaves are still active, before anything below ends them
            (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
            talkgroup (issue #575). The import runs under the P25 SM tick guard. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_operator_carrier_boundary(opts, state, 1);
     }
     (void)svc_leave_channel_scan(opts, state);
     char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];
     note[0] = '\0';
     if (rr_apply_mode(opts, state, mode, note, sizeof note) != UI_CMD_APPLY_COMPLETED) {
-        return UI_CMD_APPLY_FAILED;
+        return UI_CMD_APPLY_FAILED; // the previous mode and system stay, and so does what their network taught
+    }
+    if (!moves) {
+        /* No tuner moves, but the system the mode change committed replaces the old one: the DMR network baseline and
+           what the old network taught go, so the new system's first checked system code is no change of network. */
+        dmr_t3_chan_network_changed(opts, state);
     }
     rr_apply_edacs_variants(state, &p, mode);
     if (mode == DSDCFG_MODE_EDACS_PV) {
@@ -10731,10 +10772,14 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     }
     int kept = 0;
     const int skip_silent_was_on = opts->scan_skip_silent != 0;
+    const int skip_silent_ms_was = opts->scan_skip_silent_ms;
     const int rc = cfg_apply(opts, state, c, &kept);
     cfg_settle_retained_input(opts, state, c, kept);
     /* An apply may write the skip-silent setting and whatever else a scan quiet check was measured under (#834). */
-    dsd_scan_quiet_setting_changed(state, !skip_silent_was_on && opts->scan_skip_silent);
+    const int skip_silent_now_on = opts->scan_skip_silent != 0;
+    dsd_scan_quiet_setting_changed(state, !skip_silent_was_on && skip_silent_now_on,
+                                   skip_silent_was_on != skip_silent_now_on
+                                       || skip_silent_ms_was != opts->scan_skip_silent_ms);
     if (!kept) {
         DSD_MEMCPY(&opts->next_start, next_before, sizeof opts->next_start);
     }
@@ -10775,9 +10820,23 @@ ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return ui_cmd_dispatch(opts, state, c);
 }
 
-/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did (its retained result); other commands leave it. */
+/* The commands whose code the drain retains as their result: a scan list toggle and a Tier III channel edit. */
 static int
-apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
+apply_cmd_with_retained_result(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c,
+                               ui_cmd_result_codes* codes) {
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return apply_cmd_scan_list_set(opts, state, c, &codes->scan_list);
+    }
+    if (c->id == DSD_APP_CMD_DMR_CHANNEL_SET) {
+        codes->dmr_channel = dsd_app_apply_dmr_channel_set(opts, state, c);
+        return codes->dmr_channel == DSD_APP_DMR_CHANNEL_SET_OK ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+    }
+    return UI_CMD_APPLY_UNHANDLED;
+}
+
+/* @p codes receives what a command with a retained result did; other commands leave it. */
+static int
+apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_cmd_result_codes* codes) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
         apply_cmd_eye_spectrum,     apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_skip_slot,
@@ -10823,8 +10882,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #endif
-    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
-        return apply_cmd_scan_list_set(opts, state, c, scan_list_code);
+    r = apply_cmd_with_retained_result(opts, state, c, codes);
+    if (r) {
+        return r;
     }
     for (size_t i = 0; i < (sizeof k_command_groups / sizeof k_command_groups[0]); ++i) {
         r = k_command_groups[i](opts, state, c);
@@ -11290,7 +11350,7 @@ ui_group_list_release_calls(dsd_opts* opts, dsd_state* state, const ui_group_lis
 
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
-                 int32_t* scan_list_code) {
+                 ui_cmd_result_codes* codes) {
     /* Before the suspend, so it is the request the row in force made. */
     const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);
@@ -11306,7 +11366,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
        command that leaves the scope in force starts opens on the row's settings with the CQPSK state an open picks,
        and is asked for the row's profile at once (ui_publish_row_to_started_stream()). */
     const unsigned int starts_before = svc_rtl_start_count();
-    const int result = apply_cmd_unscoped(opts, state, c, scan_list_code);
+    const int result = apply_cmd_unscoped(opts, state, c, codes);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
@@ -11455,14 +11515,16 @@ cmd_chain_of(const dsd_opts* opts, const dsd_state* state) {
     return chain;
 }
 
-/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did, for its retained result (issue #697): SEARCH when
-   Signal search refuses it, the coordinator's answer once the handler asked it, INVALID for anything that stops it
-   before then. */
+/* @p codes receives what a DSD_APP_CMD_SCAN_LIST_SET (issue #697) or DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900) did,
+   for its retained result: SEARCH when Signal search refuses it, the handler's answer once it ran, INVALID for anything
+   that stops it before then. */
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
-    *scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_cmd_result_codes* codes) {
+    codes->scan_list = DSD_APP_SCAN_LIST_SET_INVALID;
+    codes->dmr_channel = DSD_APP_DMR_CHANNEL_SET_INVALID;
     if (!command_allowed_during_search(state, c)) {
-        *scan_list_code = DSD_APP_SCAN_LIST_SET_SEARCH;
+        codes->scan_list = DSD_APP_SCAN_LIST_SET_SEARCH;
+        codes->dmr_channel = DSD_APP_DMR_CHANNEL_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         return UI_CMD_APPLY_FAILED;
     }
@@ -11488,7 +11550,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
        compared across the whole command, so one that restates the chain in force, or a scoped one whose row puts the
        same chain back, keeps the P25 proof. */
     const dsd_frame_sync_chain chain_before = cmd_chain_of(opts, state);
-    const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
+    const int result = apply_cmd_scoped(opts, state, c, guarded, codes);
     dsd_frame_sync_note_chain_change(chain_before, cmd_chain_of(opts, state));
     g_apply_cmd_guard_held = 0;
     if (guarded) {
@@ -11721,6 +11783,9 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
     /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
+    /* A Tier III channel edit (discussion #900 F3) changes only the map: it takes effect from the next grant, and a
+       call already followed keeps its carrier, so it waits for the carrier to end rather than finalize that call. */
+    DSD_APP_CMD_DMR_CHANNEL_SET,
     /* Put back and clear (issue #672) are judged by their payload: command_scan_flag_edit_needs_frame_loop(). Avoid
        stays out: it steps the scan off the channel on air. */
 };
@@ -12088,6 +12153,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
+            dsd_app_dmr_channel_publish_result(&cmd, DSD_APP_DMR_CHANNEL_SET_INVALID, state);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
             if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
@@ -12097,15 +12163,16 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             n_applied++;
             continue;
         }
-        int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
-        const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        ui_cmd_result_codes codes = {DSD_APP_SCAN_LIST_SET_INVALID, DSD_APP_DMR_CHANNEL_SET_INVALID};
+        const int result = apply_cmd(opts, state, &cmd, &codes);
         ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
-        dsd_app_scan_list_publish_result(&cmd, scan_list_code, state);
+        dsd_app_scan_list_publish_result(&cmd, codes.scan_list, state);
+        dsd_app_dmr_channel_publish_result(&cmd, codes.dmr_channel, state);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
