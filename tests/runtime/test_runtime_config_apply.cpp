@@ -703,6 +703,9 @@ static float g_wrap_last_channel_squelch = -1.0f;
 static int g_wrap_opened_index = -1;
 static char g_wrap_opened_serial[DSD_RTL_SERIAL_MAX + 1];
 static char g_wrap_missing_serial[DSD_RTL_SERIAL_MAX + 1];
+/* Streams stopped and created so far. */
+static int g_wrap_stops = 0;
+static int g_wrap_creates = 0;
 
 /* The receiver's gate (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream opens
    closed on the analog family, under the options' squelch on the digital one; a retune marked a new channel lands at
@@ -714,6 +717,7 @@ static dsd_rtl_stream_metrics_hooks g_wrap_rx_hooks;
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    ++g_wrap_creates;
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
         /* The dongle the stream opens: by serial when the options name one, else by index. A serial the test made
            missing opens nothing, as a dongle not plugged in. */
@@ -765,6 +769,7 @@ __wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* s
 int
 __wrap_rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
+    ++g_wrap_stops;
     return 0;
 }
 
@@ -1261,6 +1266,53 @@ test_device_change_with_no_spec_remembered_creates_it(void) {
                                                 && strcmp(opts->audio_in_dev, "rtl:serial=BBBB") == 0
                                                 && strcmp(opts->rtl_dev_serial, "BBBB") == 0);
     rc |= expect_true("a save reloaded opens B", save_reload_selects(opts, state, 0, "BBBB"));
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * rtl_tcp runs; a Pulse [input] applied over it names "pulse" for the next start while the server's stream keeps
+ * running. A local device change then has no local RTL-SDR spec to rewrite: it is refused before anything stops. It
+ * used to stop the TCP stream and its capture, and the rollback of a missing serial opened "pulse" as a local dongle.
+ */
+static int
+test_device_change_over_a_staged_pcm_name_is_refused(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtltcp_enabled = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* the server's stream starts */
+    (void)dsd_app_drain_cmds(opts, state);
+    opts->iq_capture_requested = 1;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", "cap.iq");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_PULSE;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_true("the Pulse [input] is staged over the running rtl_tcp stream",
+                         opts->audio_in_type == AUDIO_IN_RTL && strcmp(opts->audio_in_dev, "pulse") == 0
+                             && state->rtl_ctx != NULL);
+
+    DSD_SNPRINTF(g_wrap_missing_serial, sizeof g_wrap_missing_serial, "%s", "MISSING");
+    const int stops = g_wrap_stops;
+    const int creates = g_wrap_creates;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "MISSING", 8U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the device change is refused", strstr(state->ui_msg, "Unsupported") != NULL);
+    rc |= expect_true("nothing stopped or opened", g_wrap_stops == stops && g_wrap_creates == creates);
+    rc |= expect_true("the TCP receiver and its capture run on",
+                      state->rtl_ctx != NULL && opts->iq_capture_requested == 1 && opts->rtltcp_enabled == 1
+                          && strcmp(opts->audio_in_dev, "pulse") == 0 && opts->rtl_dev_serial[0] == '\0');
+    g_wrap_missing_serial[0] = '\0';
+    opts->iq_capture_requested = 0;
     free_test_runtime(&runtime);
     return rc;
 }
@@ -4278,6 +4330,7 @@ main(void) {
     rc |= test_config_staged_then_device_change_opens_and_saves_it();
     rc |= test_rtl_row_opens_the_dongle_its_spec_names();
     rc |= test_device_change_with_no_spec_remembered_creates_it();
+    rc |= test_device_change_over_a_staged_pcm_name_is_refused();
     rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();

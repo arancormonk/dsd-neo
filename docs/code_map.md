@@ -8087,7 +8087,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note
   (a serial past `UI_RTL_TOAST_SERIAL_MAX` shown cut with `...`, so the note always fits the 128-byte toast). With no
   stream running before (an RTL-SDR input whose last start failed) the failed start puts back only the options and
-  opens nothing. The spec is the one record of the dongle an input opens: the change writes its selector where the next
+  opens nothing. With a stream running, the change needs its spec to be a local `rtl` one: a config can stage another
+  input's name there (a Pulse `[input]` writes `pulse` while an rtl_tcp stream runs on), so anything else is
+  `DSD_ERR_NOT_SUPPORTED` before anything stops. The spec is the one record of the dongle an input opens: the change writes its selector where the next
   open reads the spec (the running input's; with PCM running the one the RTL-SDR row opens, picked by the row's own
   rule, `dsd_app_radio_row_source_field()`, a spec a config staged in `audio_in_dev` before `radio_in_dev`, its tuning
   kept; with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`), and the RTL-SDR row selects the
