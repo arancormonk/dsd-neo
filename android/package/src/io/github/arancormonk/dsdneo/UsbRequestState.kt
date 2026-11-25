@@ -30,10 +30,12 @@ internal class UsbRequestState(private val now: () -> Long) {
         /**
          * A request for [source] / [serial] while [connectedSource] / [connectedSerial] is connected: keep a connection
          * that already satisfies it, release one that does not, or refuse while a session ([running]) may be using it.
+         * Serials compare as the kind's own ([UsbReceiverKind.sameSerial]: an RTL-SDR's exactly).
          */
         fun switchFor(connectedSource: String, connectedSerial: String, source: String, serial: String, running: Boolean): Switch {
             if (connectedSource.isEmpty()) return Switch.KEEP
-            val same = connectedSource == source && (serial.isEmpty() || connectedSerial.equals(serial, ignoreCase = true))
+            val same = connectedSource == source &&
+                (serial.isEmpty() || UsbReceiverKind.sameSerial(source, connectedSerial, serial))
             return when {
                 same -> Switch.KEEP
                 running -> Switch.REFUSE
@@ -59,9 +61,12 @@ internal class UsbRequestState(private val now: () -> Long) {
         private set
     private var promptedAtMs = 0L
 
-    /** Aims the request at [source] / [serial]; a different target retires the prompt for the old one. */
+    /**
+     * Aims the request at [source] / [serial]; a different target (another kind, or a serial that is not the same as
+     * the kind compares it) retires the prompt for the old one.
+     */
     fun select(source: String, serial: String) {
-        if (source != requestedSource || serial != requestedSerial) {
+        if (source != requestedSource || !UsbReceiverKind.sameSerial(source, serial, requestedSerial)) {
             pending = false
             device = null
         }
@@ -122,10 +127,13 @@ internal class UsbRequestState(private val now: () -> Long) {
         return true
     }
 
-    /** Whether a receiver of [source] with [serial] ("" when unreadable) is what the request asks for. */
+    /**
+     * Whether a receiver of [source] with [serial] ("" when unreadable) is what the request asks for, its serial
+     * compared as the kind's own ([UsbReceiverKind.sameSerial]).
+     */
     fun satisfiedBy(source: String, serial: String): Boolean =
         requestedSource.isNotEmpty() && source == requestedSource &&
-            (requestedSerial.isEmpty() || serial.equals(requestedSerial, ignoreCase = true))
+            (requestedSerial.isEmpty() || UsbReceiverKind.sameSerial(source, serial, requestedSerial))
 
     /**
      * Whether an attach of [source] / [serial] may replace the shown diagnostic: never over a live connection's text

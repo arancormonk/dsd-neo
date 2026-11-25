@@ -54,11 +54,12 @@ internal class UsbResetObligations {
     /**
      * Whether the device [name], with [vendorId]:[productId] and [serial] ("" when unreadable), owes a reset before it
      * is opened. An entry under that name that turns out to be another device (another VID:PID, or a serial both sides
-     * read and that differs) is dropped, which [entries] then shows.
+     * read and that differs) is dropped, which [entries] then shows. Serials compare exactly, as the engine matches an
+     * RTL-SDR's ([UsbReceiverKind.sameSerial]), so a replacement whose serial differs only in case is another device.
      */
     fun owes(name: String, vendorId: Int, productId: Int, serial: String): Boolean {
         val entry = owed[name] ?: return false
-        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !entry.serial.equals(serial, ignoreCase = true)
+        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !sameSerial(entry.serial, clean(serial))
         if (entry.vendorId != vendorId || entry.productId != productId || serialDiffers) {
             owed.remove(name)
             noteBeforeRestore(name, changed = true)
@@ -123,4 +124,19 @@ internal class UsbResetObligations {
 
     // One line per entry, tab-separated: a serial can never break the record.
     private fun clean(text: String) = text.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+
+    /**
+     * Whether a [stored] serial is the device's [live] one. Records written before the broker kept an RTL-SDR's whole
+     * serial hold its last 16 characters: for a serial of 16 characters or fewer that is the whole serial, so the two
+     * compare equal as they are; a 16-character record is read as such a record of a longer live serial that ends with
+     * it (the attachment name and VID:PID already match).
+     */
+    private fun sameSerial(stored: String, live: String): Boolean =
+        UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, stored, live) ||
+            (stored.length == LEGACY_SERIAL_LENGTH && live.length > LEGACY_SERIAL_LENGTH && live.endsWith(stored))
+
+    private companion object {
+        /** How many trailing characters of a serial the broker kept before it kept an RTL-SDR's whole serial. */
+        const val LEGACY_SERIAL_LENGTH = 16
+    }
 }

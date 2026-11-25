@@ -292,7 +292,14 @@ start with its kind and leaves the broker not ready; a start while the previous 
 the Airspy gets the same rule; a serial request keeps its serial; a configured session refuses a switch; the Qt
 thread's switches run in order on the main thread; a released connection waits only on its own descriptor; a bus
 listing made stale by an attach, a replug or a detach is dropped; and a serial read held up inside an attach blocks
-neither the poll nor another broadcast. The reset obligation (#782) runs first as plain Kotlin
+neither the poll nor another broadcast. An RTL-SDR requested by serial (`rtl_serial_*`) is matched whole and exactly
+(another case, or its last 16 characters, is "Requested RTL-SDR serial not found"); two readable dongles with that serial
+are refused when found, when already connected, at a session's take and when a grant makes the second readable, while
+one not readable never counts; a session's take follows the serial its own arguments name, switching the connection at
+once while permission holds and otherwise failing the start with a prompt for it (`UsbRequestStateTest.kt` and
+`UsbResetObligationsTest.kt` pin the same exact comparison, the Airspy's staying without case, and a legacy record of a
+serial's last 16 characters; `UsbReceiverKindTest.kt` reads the serial from the final arguments by the engine's device
+field grammar, a scheme in any case included, and `DecoderServiceUsbTest.kt` that the service passes it). The reset obligation (#782) runs first as plain Kotlin
 (`UsbResetObligationsTest.kt`: one receiver's obligation never reaches another, a refused reset keeps it, a detach or
 another device under the same name drops it, a new process keeps only what is still attached, and what this process
 recorded wins over the store), then through the manager (the `reset_owed_*` cases): a stall the engine reports travels

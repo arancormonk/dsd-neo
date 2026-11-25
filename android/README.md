@@ -1563,6 +1563,21 @@ receivers requires the current session to have ended (one still configured, or
 still holding its descriptor, counts). Both drivers share the vendored
 libusb target, and Java retains descriptor ownership until native transfers end.
 
+An RTL-SDR can be chosen by its USB serial, for several dongles whose order on
+the bus changes: a saved system's or scan list's "Serial (empty selects first
+device)" field, which starts the session with `-i rtl:serial=<sn>`. The broker
+asks for that dongle and compares its whole serial exactly, as the engine does
+(an Airspy's last 16 characters still compare without case); a request for one
+not attached says "Requested RTL-SDR serial not found". Two dongles the app may
+read with the same serial are refused ("2 RTL-SDRs carry serial 00000001; give
+each its own with rtl_eeprom -s"), when found, when already connected and when
+a grant makes the second readable; a dongle without permission reads no serial
+and never counts. A start takes the dongle its final arguments name
+(`UsbReceiverKind.rtlSerialOfArgs()`), so an Advanced `-i rtl:serial=B` wins over
+the saved serial: a connection to another dongle is switched for it at once
+while permission holds, or the start fails with the broker's reason and a
+permission prompt for it. The engine checks the descriptor's serial again.
+
 ### Receiver status on Listen
 
 Listen keeps the receiver's status in a pill beside the title, in a header that
@@ -1681,7 +1696,7 @@ state X)`, `usb: <device> is no longer attached; not reopened`, ...).
 `UsbRequestState.kt`. Each permission prompt is a new generation: its
 `PendingIntent` uses the generation as request code (`FLAG_CANCEL_CURRENT`) and
 carries it as an extra, and a reply for another generation or device is ignored.
-The Airspy serial search's hop to the next device keeps the request's generation
+The serial search's hop to the next device (an Airspy's or an RTL-SDR's) keeps the request's generation
 and restarts its wait. A prompt left unanswered for 60 s expires on the host's
 250 ms status poll: the record says "No answer to the permission request",
 Connect comes back, and nothing prompts again until asked; a late answer is
@@ -1695,7 +1710,7 @@ the card's text only when nothing is connected and either nothing was requested 
 it is the requested receiver (an RTL-SDR plugged in never clears "Requested Airspy
 serial not found"); a request
 that finds its receiver already open rewrites "Ready: <device>". Asking for
-another receiver while a session runs (the other kind, or another Airspy serial)
+another receiver while a session runs (the other kind, or another serial)
 is refused with "Stop the current receiver before switching USB devices", which is
 request feedback, not a device failure.
 
@@ -1751,7 +1766,9 @@ session whose descriptor came owing one and was refused its reset) or a reset
 succeeds (`nativeUsbResetOwed()`). So every "stopped sending samples" ending of an
 RTL-SDR leaves it owing the reset its notice promises. The broker records it on the
 physical attachment (`UsbResetObligations.kt`: the device name, with VID:PID and
-serial; a device keeps its name while it stays attached, so only a detach ends the
+serial, compared exactly; a record kept the last 16 characters of a serial before
+the broker kept it whole, and still matches a longer serial that ends with it; a
+device keeps its name while it stays attached, so only a detach ends the
 attachment) after each run, and before it lets a connection go, and hands it with
 the next descriptor of that attachment; the open resets first. A refused reset keeps
 it; a detach drops it. Selecting another receiver never applies one attachment's to
