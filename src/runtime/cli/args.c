@@ -843,6 +843,32 @@ cli_parse_rdio_system_id_option(const char* option_name, const char* in, int* ou
     return 1;
 }
 
+/* --rdio-mode (issue #931): one of off|dirwatch|api|both in any case. Each occurrence is checked as it is read, so a
+   later valid one does not hide an earlier typo, and an empty value is refused rather than read as off. */
+static int
+cli_parse_rdio_mode_option(const char* value, int* out, int* out_exit_rc) {
+    int mode = DSD_RDIO_MODE_OFF;
+    if (value && value[0] != '\0' && dsd_rdio_mode_from_string(value, &mode) == 0) {
+        *out = mode;
+        return 1;
+    }
+    LOG_ERROR("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", value ? value : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+/* --frontend (issue #931): each occurrence, in either form, is checked as it is read, so a later valid one does not
+   hide an earlier invalid one. */
+static int
+cli_parse_frontend_option(const char* value, dsd_frontend_kind* out, int* out_exit_rc) {
+    if (cli_parse_frontend_kind(value, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", value ? value : "");
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
 static int
 cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out, int* out_exit_rc) {
     return cli_parse_int_range_option(option_name, in, min_ms, max_ms, out, out_exit_rc);
@@ -2239,10 +2265,16 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             frontend_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
+            if (!cli_parse_frontend_option(frontend_cli, &opts->frontend_kind, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--frontend=", 11) == 0) {                                                                \
             frontend_cli = argv[i] + 11;                                                                               \
+            if (!cli_parse_frontend_option(frontend_cli, &opts->frontend_kind, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--input-volume") == 0) {                                                                  \
@@ -2285,6 +2317,9 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
+            if (!cli_parse_rdio_mode_option(rdio_mode_cli, &opts->rdio_mode, out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-system-id") == 0) {                                                                \
@@ -2874,18 +2909,11 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
                                                                                                                        \
-    if (frontend_cli) {                                                                                                \
-        dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
-        if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
-            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", frontend_cli);              \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-        opts->frontend_kind = frontend;                                                                                \
+    if (frontend_cli) { /* each occurrence was read and checked where it stands (cli_parse_frontend_option()) */       \
         if (dsd_strcasecmp(frontend_cli, "native") == 0) {                                                             \
             LOG_INFO("NOTICE: Frontend: native compatibility alias uses headless mode\n");                             \
         } else {                                                                                                       \
-            LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(frontend));                                      \
+            LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(opts->frontend_kind));                           \
         }                                                                                                              \
     }                                                                                                                  \
                                                                                                                        \
@@ -2956,14 +2984,8 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         LOG_INFO("NOTICE: P25 SM log file: %s\n", opts->p25_sm_log_file);                                              \
     }                                                                                                                  \
                                                                                                                        \
-    if (rdio_mode_cli) {                                                                                               \
-        int mode = DSD_RDIO_MODE_OFF;                                                                                  \
-        if (dsd_rdio_mode_from_string(rdio_mode_cli, &mode) == 0) {                                                    \
-            opts->rdio_mode = mode;                                                                                    \
-            LOG_INFO("NOTICE: Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));                      \
-        } else {                                                                                                       \
-            LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);            \
-        }                                                                                                              \
+    if (rdio_mode_cli) { /* each occurrence was read and checked where it stands (cli_parse_rdio_mode_option()) */     \
+        LOG_INFO("NOTICE: Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));                          \
     }                                                                                                                  \
     if (rdio_system_id_cli) { /* read and checked where each occurrence stands */                                      \
         LOG_INFO("NOTICE: Rdio system ID: %d\n", opts->rdio_system_id);                                                \

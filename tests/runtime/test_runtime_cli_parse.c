@@ -8693,6 +8693,100 @@ test_wide_values_clamp_before_narrowing(void) {
     return test_rc;
 }
 
+/* Issue #931 (B7): --rdio-mode and --frontend check each occurrence as it is read, so a later valid one does not hide
+ * an earlier invalid one (both used to keep only the last; an invalid --rdio-mode only warned). An empty --rdio-mode
+ * is refused rather than read as off; valid spellings stay case-insensitive, and so does the native frontend alias. */
+static int
+test_enum_options_checked_per_occurrence(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        const char* d;
+        int want_rc;
+        int want_mode;
+        int want_frontend;
+        const char* want_text;
+    } cases[] = {
+        {"--rdio-mode", "DirWatch", NULL, NULL, DSD_PARSE_CONTINUE, DSD_RDIO_MODE_DIRWATCH, -1, NULL},
+        {"--rdio-mode", "api", "--rdio-mode", "BOTH", DSD_PARSE_CONTINUE, DSD_RDIO_MODE_BOTH, -1, NULL},
+        {
+            "--rdio-mode",
+            "bad",
+            "--rdio-mode",
+            "api",
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value \"bad\" (expected off|dirwatch|api|both)",
+        },
+        {
+            "--rdio-mode",
+            "api",
+            "--rdio-mode",
+            "dirwach",
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value \"dirwach\" (expected off|dirwatch|api|both)",
+        },
+        {
+            "--rdio-mode",
+            "",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value \"\" (expected off|dirwatch|api|both)",
+        },
+        {"--frontend", "NATIVE", NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_NONE, "native compatibility alias"},
+        {"--frontend=Terminal", NULL, NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_TERMINAL, NULL},
+        {
+            "--frontend=bad",
+            "--frontend",
+            "none",
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --frontend value \"bad\" (expected none|terminal|native)",
+        },
+        {
+            "--frontend",
+            "bad",
+            "--frontend=none",
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --frontend value \"bad\" (expected none|terminal|native)",
+        },
+        {"--frontend=", NULL, NULL, NULL, DSD_PARSE_ERROR, -1, -1, "Invalid --frontend value \"\""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, cases[i].d, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        const int mode_ok = cases[i].want_mode < 0 || run.opts->rdio_mode == cases[i].want_mode;
+        const int frontend_ok = cases[i].want_frontend < 0 || (int)run.opts->frontend_kind == cases[i].want_frontend;
+        if (run.rc != cases[i].want_rc || !mode_ok || !frontend_ok || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s %s: rc=%d mode=%d frontend=%d exit_rc=%d\n%s\n", cases[i].a,
+                        cases[i].b ? cases[i].b : "", cases[i].c ? cases[i].c : "", cases[i].d ? cases[i].d : "",
+                        run.rc, run.opts->rdio_mode, (int)run.opts->frontend_kind, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* Issue #931 (B3): --rdio-system-id and --rdio-analog-system-id take 0..2147483647 and refuse anything else with exit 1
  * and the range named, never clamped (154437 used to become 65535). Each occurrence is checked as it is read: a later
  * valid one does not hide an earlier invalid one. */
@@ -14451,6 +14545,7 @@ main(void) {
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();
     rc |= test_rdio_system_id_range();
+    rc |= test_enum_options_checked_per_occurrence();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

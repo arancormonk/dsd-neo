@@ -516,7 +516,7 @@ audio input) sound no alert.
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
 | `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
-| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
+| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both; any other value, an empty one included, is refused with a warning and the mode already loaded stays | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID, 0 to 2147483647 (`--rdio-system-id`) | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
 | `rdio_api_key` | STRING | rdio API key | (empty) |

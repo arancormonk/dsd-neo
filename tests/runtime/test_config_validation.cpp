@@ -1786,6 +1786,10 @@ test_rdio_system_by_frequency_validation(void) {
 int
 test_rdio_analog_validation(void) {
     int rc = 0;
+    /* Issue #931 (B7): the loader refuses an invalid or empty rdio_mode, and the validator reports both as errors. */
+    rc |= run_recording_key_case("rdio_mode", "DirWatch", -1, NULL);
+    rc |= run_recording_key_case("rdio_mode", "dirwach", DSDCFG_DIAG_ERROR, "Invalid value 'dirwach'");
+    rc |= run_recording_key_case("rdio_mode", "\"\"", DSDCFG_DIAG_ERROR, "Invalid value ''");
     for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
         rc |= run_recording_key_case(key, "0", -1, NULL);
         rc |= run_recording_key_case(key, "65536", -1, NULL);

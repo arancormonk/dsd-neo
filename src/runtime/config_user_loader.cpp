@@ -935,6 +935,20 @@ apply_recording_refused_range(const char* name, const char* val, int min_value, 
 }
 } // namespace
 
+/* Issue #931: rdio_mode is off, dirwatch, api or both, in any case. Anything else, an empty value included (the
+   parser reads "" as off), is refused with a warning and the mode already loaded stays, as --validate-config reports it
+   as an error. */
+static void
+apply_recording_rdio_mode(dsdneoUserConfig* cfg, const char* val) {
+    int mode = DSD_RDIO_MODE_OFF;
+    if (!val || val[0] == '\0' || dsd_rdio_mode_from_string(val, &mode) != 0) {
+        LOG_WARN("Config: invalid rdio_mode = '%s' (expected off|dirwatch|api|both); keeping %s\n", val ? val : "",
+                 dsd_rdio_mode_to_string(cfg->rdio_mode));
+        return;
+    }
+    cfg->rdio_mode = mode;
+}
+
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
@@ -967,10 +981,7 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
 static int
 apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "rdio_mode") == 0) {
-        int mode = DSD_RDIO_MODE_OFF;
-        if (dsd_rdio_mode_from_string(val, &mode) == 0) {
-            cfg->rdio_mode = mode;
-        }
+        apply_recording_rdio_mode(cfg, val);
     } else if (strcmp(key_lc, "rdio_system_id") == 0) {
         apply_recording_refused_range("rdio_system_id", val, 0, 2147483647, &cfg->rdio_system_id);
     } else if (strcmp(key_lc, "rdio_api_url") == 0) {

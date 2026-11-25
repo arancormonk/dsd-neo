@@ -389,7 +389,8 @@ Windows console runs:
   recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls and
   conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner), [Digital calls with no
-  talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner))
+  talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). The mode is not case-sensitive; any
+  other value, an empty one included, is refused (exit code 1), each time the option is given.
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
     `<id>.<n>.rdio-upload-audio` and `<id>.<n>.rdio-upload-meta` (a hard link where the drive supports one, else a
     copy), where `<id>` is a random id drawn once a process (an app keeps it across its sessions) and `<n>` a number.

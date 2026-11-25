@@ -5743,6 +5743,40 @@ test_recording_rdio_system_id_range(void) {
     return rc;
 }
 
+/* Issue #931 (B7): [recording] rdio_mode takes off|dirwatch|api|both in any case. An invalid value, or an empty one
+   (which the parser reads as off), is refused with a warning and the mode already loaded stays, in a base file and in a
+   profile over a valid base alike; --validate-config already reports both as errors. */
+static int
+test_recording_rdio_mode_refused(void) {
+    int rc = 0;
+    for (const char* value : {"apii", "dirwach", "\"\"", "\"api \""}) {
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_mode = api\nrdio_mode = %s\n", value);
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_text(ini, &cfg) != 0 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || strstr(g_log_text, "rdio_mode") == nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: rdio_mode = %s was not refused with a warning (%d; log: '%s')\n", value,
+                        cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_mode = api\n\n[profile.p]\nrecording.rdio_mode = %s\n", value);
+        dsdneoUserConfig prof{};
+        if (load_profile_text(ini, "p", &prof) != 0 || prof.rdio_mode != DSD_RDIO_MODE_API) {
+            DSD_FPRINTF(stderr, "FAIL: profile rdio_mode = %s over base api left %d\n", value, prof.rdio_mode);
+            rc |= 1;
+        }
+    }
+    dsdneoUserConfig prof{};
+    if (load_profile_text("[recording]\nrdio_mode = api\n\n[profile.p]\nrecording.rdio_mode = DirWatch\n", "p", &prof)
+            != 0
+        || prof.rdio_mode != DSD_RDIO_MODE_DIRWATCH) {
+        DSD_FPRINTF(stderr, "FAIL: profile rdio_mode = DirWatch did not load (%d)\n", prof.rdio_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
 /* Issue #888: [recording] rdio_unknown_talkgroup loads, reaches dsd_opts, and saves back; 0 (the default) is not
    written, and loads as 0. A value outside 0..2147483647, or not a whole number, is refused with a warning and the
    value already loaded stays: never clamped. */
@@ -7416,6 +7450,7 @@ main(void) {
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
     rc |= test_recording_rdio_system_id_range();
+    rc |= test_recording_rdio_mode_refused();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
