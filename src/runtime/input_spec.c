@@ -788,12 +788,178 @@ dsd_rtl_input_spec_apply(dsd_opts* opts) {
         rtl_spec_apply_tuning_fields(opts, fields, count, first);
         return 1;
     }
-    int parsed = 0;
-    if (rtl_spec_int_field(fields, count, 1, &parsed)) {
-        opts->rtl_dev_index = parsed;
+    /* The device field is read before anything is set, so a field it refuses changes nothing (B1: an unreadable field
+       used to leave the device as it was, and `00000001` opened index 1). */
+    int index = 0;
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    serial[0] = '\0';
+    const char* dev_field = rtl_spec_field(fields, count, 1);
+    const dsd_rtl_dev_kind dev = dsd_rtl_device_field_parse(dev_field, &index, serial, sizeof serial);
+    if (dev == DSD_RTL_DEV_INVALID) {
+        LOG_ERROR("Invalid device \"%s\" in %s: give a device index (0, 1, ...) or a USB serial of up to %d printable "
+                  "characters with no ':' or '\"' (serial=<sn> for a serial that is a plain number).\n",
+                  dev_field ? dev_field : "", opts->audio_in_dev, DSD_RTL_SERIAL_MAX);
+        return -1;
+    }
+    if (dev == DSD_RTL_DEV_INDEX) {
+        opts->rtl_dev_index = index;
+        opts->rtl_dev_serial[0] = '\0';
+    } else if (dev == DSD_RTL_DEV_SERIAL) {
+        DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", serial);
     }
     rtl_spec_apply_tuning_fields(opts, fields, count, first);
     return 1;
+}
+
+int
+dsd_rtl_serial_is_valid(const char* serial) {
+    if (!serial) {
+        return 0;
+    }
+    const size_t len = strlen(serial);
+    if (len == 0U || len > (size_t)DSD_RTL_SERIAL_MAX || serial[0] == ' ' || serial[len - 1U] == ' ') {
+        return 0;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const unsigned char c = (unsigned char)serial[i];
+        if (c < 0x20U || c > 0x7EU || c == ':' || c == '"') {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* 1 with the value of @p field, a decimal number with no leading zero (or "0") that fits an int. */
+static int
+rtl_device_field_canonical_index(const char* field, int* out) {
+    if (field[0] < '0' || field[0] > '9' || (field[0] == '0' && field[1] != '\0')) {
+        return 0;
+    }
+    for (const char* c = field; *c != '\0'; c++) {
+        if (*c < '0' || *c > '9') {
+            return 0;
+        }
+    }
+    int value = 0;
+    if (dsd_parse_int_strict(field, 10, 0, INT_MAX, &value) != 0) {
+        return 0;
+    }
+    *out = value;
+    return 1;
+}
+
+dsd_rtl_dev_kind
+dsd_rtl_device_field_parse(const char* field, int* index, char* serial, size_t serial_size) {
+    if (!field || field[0] == '\0') {
+        return DSD_RTL_DEV_EMPTY;
+    }
+    int value = 0;
+    if (rtl_device_field_canonical_index(field, &value)) {
+        if (index) {
+            *index = value;
+        }
+        return DSD_RTL_DEV_INDEX;
+    }
+    static const char k_serial_key[] = "serial=";
+    const char* sn = field;
+    if (strncmp(field, k_serial_key, sizeof k_serial_key - 1U) == 0) {
+        sn = field + sizeof k_serial_key - 1U;
+    }
+    if (!dsd_rtl_serial_is_valid(sn)) {
+        return DSD_RTL_DEV_INVALID;
+    }
+    if (serial) {
+        if (strlen(sn) >= serial_size) {
+            return DSD_RTL_DEV_INVALID;
+        }
+        DSD_SNPRINTF(serial, serial_size, "%s", sn);
+    }
+    return DSD_RTL_DEV_SERIAL;
+}
+
+int
+dsd_rtl_device_field_format(int index, const char* serial, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    int n = 0;
+    if (serial && serial[0] != '\0') {
+        if (!dsd_rtl_serial_is_valid(serial)) {
+            return -1;
+        }
+        n = DSD_SNPRINTF(out, out_size, "serial=%s", serial);
+    } else {
+        if (index < 0) {
+            return -1;
+        }
+        n = DSD_SNPRINTF(out, out_size, "%d", index);
+    }
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
+int
+dsd_rtl_spec_set_device(char* spec, size_t spec_size, int index, const char* serial) {
+    if (!spec || spec_size == 0U || !dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        return -1;
+    }
+    char dev[DSD_RTL_SERIAL_MAX + 8];
+    if (dsd_rtl_device_field_format(index, serial, dev, sizeof dev) != 0) {
+        return -1;
+    }
+    /* The fields after the device, with their leading ':' ("" for `rtl` and `rtl:<dev>`). */
+    const char* tail = (strncmp(spec, "rtl:", 4) == 0) ? strchr(spec + 4, ':') : NULL;
+    const size_t tail_len = tail ? strlen(tail) : 0U;
+    const size_t need = 4U + strlen(dev) + tail_len;
+    if (need >= spec_size) {
+        return -1;
+    }
+    char* built = (char*)malloc(need + 1U);
+    if (!built) {
+        return -1;
+    }
+    DSD_SNPRINTF(built, need + 1U, "rtl:%s%s", dev, tail ? tail : "");
+    DSD_MEMCPY(spec, built, need + 1U);
+    free(built);
+    return 0;
+}
+
+void
+dsd_input_spec_normalize_scheme(char* spec) {
+    static const char* const k_schemes[] = {"pulse", "rtl",   "rtltcp", "airspy", "soapy", "iqreplay",
+                                            "iqtcp", "iqudp", "tcp",    "udp",    "m17udp"};
+    if (!spec) {
+        return;
+    }
+    const char* colon = strchr(spec, ':');
+    if (!colon) {
+        return;
+    }
+    const size_t len = (size_t)(colon - spec);
+    for (size_t k = 0; k < sizeof k_schemes / sizeof k_schemes[0]; k++) {
+        const char* scheme = k_schemes[k];
+        if (strlen(scheme) != len) {
+            continue;
+        }
+        size_t i = 0;
+        for (; i < len; i++) {
+            char c = spec[i];
+            if (c >= 'A' && c <= 'Z') {
+                c = (char)(c - 'A' + 'a');
+            }
+            if (c != scheme[i]) {
+                break;
+            }
+        }
+        if (i == len) {
+            DSD_MEMCPY(spec, scheme, len);
+            return;
+        }
+    }
 }
 
 /* The longest spec an endpoint is read from: -i holds 2047 characters. */

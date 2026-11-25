@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -3600,6 +3601,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
             }                                                                                                          \
             DSD_STRNCPY(opts->audio_in_dev, optarg, 2047);                                                             \
             opts->audio_in_dev[2047] = '\0';                                                                           \
+            dsd_input_spec_normalize_scheme(opts->audio_in_dev);                                                       \
             opts->input_cli_seen = 1;                                                                                  \
             if (cli_read_iq_stream_spec(opts, out_exit_rc) != 0) {                                                     \
                 return DSD_PARSE_ERROR;                                                                                \

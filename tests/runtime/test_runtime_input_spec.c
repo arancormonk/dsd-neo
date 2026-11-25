@@ -1190,6 +1190,199 @@ test_spec_empty_tuning_fields_keep_the_options(void) {
     return rc;
 }
 
+/* The device field names a dongle by index or USB serial: a decimal number with no leading zero is an index (every
+   index script reads as before), serial=<sn> is always a serial, anything else is a serial. `00000001` opened index 1,
+   `ABC123` was ignored (the device stayed as it was), and `1abc` opened index 1. */
+static int
+test_rtl_device_field_grammar(void) {
+    static const struct {
+        const char* field;
+        dsd_rtl_dev_kind kind;
+        int index;
+        const char* serial;
+    } k_cases[] = {
+        {"", DSD_RTL_DEV_EMPTY, -1, ""},
+        {"0", DSD_RTL_DEV_INDEX, 0, ""},
+        {"1", DSD_RTL_DEV_INDEX, 1, ""},
+        {"12", DSD_RTL_DEV_INDEX, 12, ""},
+        {"2147483647", DSD_RTL_DEV_INDEX, 2147483647, ""},
+        {"2147483648", DSD_RTL_DEV_SERIAL, -1, "2147483648"},
+        {"00000001", DSD_RTL_DEV_SERIAL, -1, "00000001"},
+        {"0000001", DSD_RTL_DEV_SERIAL, -1, "0000001"},
+        {"01", DSD_RTL_DEV_SERIAL, -1, "01"},
+        {"+1", DSD_RTL_DEV_SERIAL, -1, "+1"},
+        {"-1", DSD_RTL_DEV_SERIAL, -1, "-1"},
+        {"1abc", DSD_RTL_DEV_SERIAL, -1, "1abc"},
+        {"A1B2", DSD_RTL_DEV_SERIAL, -1, "A1B2"},
+        {"serial=1090", DSD_RTL_DEV_SERIAL, -1, "1090"},
+        {"serial=00000001", DSD_RTL_DEV_SERIAL, -1, "00000001"},
+        {"SN 12 A", DSD_RTL_DEV_SERIAL, -1, "SN 12 A"},
+        {"serial=", DSD_RTL_DEV_INVALID, -1, ""},
+        {" 1", DSD_RTL_DEV_INVALID, -1, ""},
+        {"A ", DSD_RTL_DEV_INVALID, -1, ""},
+        {"serial= A", DSD_RTL_DEV_INVALID, -1, ""},
+        {"A\"B", DSD_RTL_DEV_INVALID, -1, ""},
+        {"A\tB", DSD_RTL_DEV_INVALID, -1, ""},
+        {"A\xc3\xa9", DSD_RTL_DEV_INVALID, -1, ""},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        int index = -1;
+        char serial[DSD_RTL_SERIAL_MAX + 1] = "";
+        const dsd_rtl_dev_kind kind = dsd_rtl_device_field_parse(k_cases[i].field, &index, serial, sizeof serial);
+        if (kind != k_cases[i].kind || index != k_cases[i].index || strcmp(serial, k_cases[i].serial) != 0) {
+            DSD_FPRINTF(stderr, "device field \"%s\": kind %d index %d serial \"%s\"\n", k_cases[i].field, (int)kind,
+                        index, serial);
+            rc = 1;
+        }
+    }
+    /* The longest serial, and one byte more. */
+    char longest[DSD_RTL_SERIAL_MAX + 2];
+    DSD_MEMSET(longest, 'S', sizeof longest);
+    longest[DSD_RTL_SERIAL_MAX] = '\0';
+    char serial[DSD_RTL_SERIAL_MAX + 1] = "";
+    if (dsd_rtl_device_field_parse(longest, NULL, serial, sizeof serial) != DSD_RTL_DEV_SERIAL
+        || strcmp(serial, longest) != 0) {
+        DSD_FPRINTF(stderr, "the longest serial was refused\n");
+        rc = 1;
+    }
+    longest[DSD_RTL_SERIAL_MAX] = 'S';
+    longest[DSD_RTL_SERIAL_MAX + 1] = '\0';
+    if (dsd_rtl_device_field_parse(longest, NULL, NULL, 0) != DSD_RTL_DEV_INVALID) {
+        DSD_FPRINTF(stderr, "a serial one byte too long was accepted\n");
+        rc = 1;
+    }
+    /* A serial that does not fit the caller's buffer is refused, not cut. */
+    char small[4];
+    if (dsd_rtl_device_field_parse("ABCD", NULL, small, sizeof small) != DSD_RTL_DEV_INVALID) {
+        DSD_FPRINTF(stderr, "a serial past the buffer was accepted\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+/* The spec sets one of index and serial and clears the other; a refused device field refuses the spec, which then
+   changes nothing. */
+static int
+test_rtl_spec_device_by_serial(void) {
+    int rc = 0;
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtl_dev_index = 2;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:00000001:851.375M:22");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtl_dev_serial, "00000001") != 0
+        || opts->rtlsdr_center_freq != 851375000U || opts->rtl_gain_value != 22) {
+        DSD_FPRINTF(stderr, "rtl:00000001: serial \"%s\" freq %u gain %d\n", opts->rtl_dev_serial,
+                    opts->rtlsdr_center_freq, opts->rtl_gain_value);
+        rc = 1;
+    }
+    /* An empty device field keeps the serial. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl::852M");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtl_dev_serial, "00000001") != 0) {
+        DSD_FPRINTF(stderr, "rtl::852M dropped the serial\n");
+        rc = 1;
+    }
+    /* An index clears it. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:1:852M");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dev_serial[0] != '\0' || opts->rtl_dev_index != 1) {
+        DSD_FPRINTF(stderr, "rtl:1 kept serial \"%s\" / index %d\n", opts->rtl_dev_serial, opts->rtl_dev_index);
+        rc = 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=1090:853M");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtl_dev_serial, "1090") != 0) {
+        DSD_FPRINTF(stderr, "rtl:serial=1090: serial \"%s\"\n", opts->rtl_dev_serial);
+        rc = 1;
+    }
+    /* Refused: nothing changes, the frequency included. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=:860M");
+    if (dsd_rtl_input_spec_apply(opts) != -1 || strcmp(opts->rtl_dev_serial, "1090") != 0
+        || opts->rtlsdr_center_freq != 853000000U) {
+        DSD_FPRINTF(stderr, "rtl:serial=: was not refused cleanly\n");
+        rc = 1;
+    }
+    /* rtl_tcp's field 1 is the host, never a serial. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:00000001:1234:851M");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtl_dev_serial, "1090") != 0
+        || strcmp(opts->rtltcp_hostname, "00000001") != 0) {
+        DSD_FPRINTF(stderr, "rtltcp field 1 touched the serial\n");
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+static int
+expect_spec(const char* what, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: \"%s\", expected \"%s\"\n", what, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* The spec's device field is rewritten in place of the old one, every other field kept; a result that does not fit
+   leaves the spec as it was. */
+static int
+test_rtl_spec_set_device(void) {
+    int rc = 0;
+    char spec[64];
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtl:0:851.375M:22:-2:24:0:2:bias");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 0, "00000001") != 0);
+    rc |= expect_spec("index to serial", spec, "rtl:serial=00000001:851.375M:22:-2:24:0:2:bias");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 3, "") != 0);
+    rc |= expect_spec("serial to index", spec, "rtl:3:851.375M:22:-2:24:0:2:bias");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtl");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 2, NULL) != 0);
+    rc |= expect_spec("bare rtl", spec, "rtl:2");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtl:");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 0, "1090") != 0);
+    rc |= expect_spec("empty device", spec, "rtl:serial=1090");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtl::851M");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 1, NULL) != 0);
+    rc |= expect_spec("empty device with tail", spec, "rtl:1:851M");
+    /* Not an rtl spec, an invalid serial, a result past the buffer: refused, unchanged. */
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtltcp:host:1234");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 1, NULL) != -1);
+    rc |= expect_spec("rtltcp", spec, "rtltcp:host:1234");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "rtl:0:851M");
+    rc |= (dsd_rtl_spec_set_device(spec, sizeof spec, 0, "A:B") != -1);
+    rc |= expect_spec("invalid serial", spec, "rtl:0:851M");
+    char tight[16];
+    DSD_SNPRINTF(tight, sizeof tight, "%s", "rtl:0:851.375M");
+    rc |= (dsd_rtl_spec_set_device(tight, sizeof tight, 0, "00000001") != -1);
+    rc |= expect_spec("past the buffer", tight, "rtl:0:851.375M");
+    if (rc) {
+        DSD_FPRINTF(stderr, "dsd_rtl_spec_set_device failed\n");
+    }
+    return rc;
+}
+
+/* `-i RTL:0000001` names an RTL-SDR: a known scheme in another case is lower-cased, nothing else is. */
+static int
+test_input_spec_scheme_case(void) {
+    int rc = 0;
+    char spec[64];
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "RTL:0000001:851M");
+    dsd_input_spec_normalize_scheme(spec);
+    rc |= expect_spec("RTL:", spec, "rtl:0000001:851M");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "RtlTcp:Host:1234");
+    dsd_input_spec_normalize_scheme(spec);
+    rc |= expect_spec("RtlTcp:", spec, "rtltcp:Host:1234");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "RTL");
+    dsd_input_spec_normalize_scheme(spec);
+    rc |= expect_spec("bare RTL", spec, "RTL");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "C:\\Captures\\RTL.wav");
+    dsd_input_spec_normalize_scheme(spec);
+    rc |= expect_spec("drive letter", spec, "C:\\Captures\\RTL.wav");
+    DSD_SNPRINTF(spec, sizeof spec, "%s", "RTLX:1");
+    dsd_input_spec_normalize_scheme(spec);
+    rc |= expect_spec("unknown scheme", spec, "RTLX:1");
+    return rc;
+}
+
 static int
 test_spec_empty_fields_keep_their_place(void) {
     return test_spec_empty_device_keeps_its_place() | test_spec_empty_port_keeps_its_place()
@@ -1364,6 +1557,10 @@ main(void) {
     rc |= test_spec_gain_overflow_refused();
     rc |= test_spec_frequency_rounds_to_the_hz();
     rc |= test_spec_squelch_grammar();
+    rc |= test_rtl_device_field_grammar();
+    rc |= test_rtl_spec_device_by_serial();
+    rc |= test_rtl_spec_set_device();
+    rc |= test_input_spec_scheme_case();
     rc |= test_spec_squelch_field_parse();
     rc |= test_spec_squelch_field_refused();
     rc |= test_soapy_tuning_fields_keep_their_place();

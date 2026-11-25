@@ -72,10 +72,67 @@ int dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied);
  */
 int dsd_spec_squelch_field_parse(const char* input, const char* text, dsd_squelch_setting* out);
 
+/** How an `rtl:` spec's device field names its dongle (dsd_rtl_device_field_parse()). */
+typedef enum {
+    DSD_RTL_DEV_EMPTY = 0, /* no device field: the device stays as it is */
+    DSD_RTL_DEV_INDEX,     /* a device index */
+    DSD_RTL_DEV_SERIAL,    /* a USB serial */
+    DSD_RTL_DEV_INVALID    /* neither: refused */
+} dsd_rtl_dev_kind;
+
+/**
+ * @brief 1 when @p serial can name an RTL-SDR: 1 to DSD_RTL_SERIAL_MAX bytes of printable ASCII (0x20-0x7E), with no
+ *        ':' (the spec's field separator) or '"' (the INI quote), and no space at either end; 0 otherwise.
+ */
+int dsd_rtl_serial_is_valid(const char* serial);
+
+/**
+ * @brief Read an `rtl:` spec's device field.
+ *
+ * A decimal number with no leading zero (`0`, `1`, `12`) that fits an int is a device index, so every script that
+ * names its dongle by index reads as before. `serial=<sn>` is always a serial, for a serial such as `1090` that would
+ * read as an index. Any other text (`00000001`, `0000001`, `A1B2`) is a serial. A serial must pass
+ * dsd_rtl_serial_is_valid(). Nothing needs the hardware: the field means the same with or without dongles.
+ *
+ * @param field The field's text (NULL or "" is DSD_RTL_DEV_EMPTY).
+ * @param index Receives the index for DSD_RTL_DEV_INDEX (may be NULL); untouched otherwise.
+ * @param serial Receives the serial for DSD_RTL_DEV_SERIAL (may be NULL); untouched otherwise.
+ * @param serial_size Capacity of @p serial; a serial that does not fit is DSD_RTL_DEV_INVALID.
+ */
+dsd_rtl_dev_kind dsd_rtl_device_field_parse(const char* field, int* index, char* serial, size_t serial_size);
+
+/**
+ * @brief Write the device field that names @p serial (when non-empty) or @p index: `serial=<sn>` (always the explicit
+ *        form, so a serial never reads back as an index) or the index in decimal.
+ *
+ * @return 0, or -1 on bad arguments, an invalid serial, a negative index or a field that does not fit @p out (then "").
+ */
+int dsd_rtl_device_field_format(int index, const char* serial, char* out, size_t out_size);
+
+/**
+ * @brief Set the device field of the `rtl` / `rtl:...` spec in @p spec to @p serial (when non-empty) or @p index
+ *        (dsd_rtl_device_field_format()), keeping every other field: `rtl` becomes `rtl:<dev>`.
+ *
+ * The new spec is built aside and copied only when it fits @p spec_size.
+ *
+ * @return 0 when rewritten; -1 when @p spec is not an `rtl` spec, on bad arguments, or when the result does not fit
+ *         (then @p spec is unchanged).
+ */
+int dsd_rtl_spec_set_device(char* spec, size_t spec_size, int index, const char* serial);
+
+/**
+ * @brief Lower-case the scheme of an input spec written in another case (`RTL:0:851M` → `rtl:0:851M`), in place.
+ *
+ * Only a scheme followed by ':' that matches a known input kind (pulse, rtl, rtltcp, airspy, soapy, iqreplay, iqtcp,
+ * iqudp, tcp, udp, m17udp) ignoring case is changed; the rest of the spec, and any other input, is left as written.
+ */
+void dsd_input_spec_normalize_scheme(char* spec);
+
 /**
  * @brief Read an RTL-SDR or rtl_tcp input spec into the options it sets.
  *
- * `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` sets the device index, and
+ * `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` sets the device (an index or a serial,
+ * dsd_rtl_device_field_parse(); one clears the other, and a field it refuses is logged and refuses the spec), and
  * `rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]` the host and port, then the tuning fields in order:
  * the frequency (Hz, or with a k/M/G suffix), the tuner gain, the PPM, the DSP bandwidth (a selectable one,
  * dsd_analog_rtl_dsp_bw_is_selectable(); anything else reads as the 48 kHz default), the squelch (as `--squelch`
@@ -87,7 +144,7 @@ int dsd_spec_squelch_field_parse(const char* input, const char* text, dsd_squelc
  * --print-config before that, so both report the same settings.
  *
  * @return 1 when @p opts holds such a spec and it was read, 0 for any other input (nothing changed), -1 on bad
- *         arguments, a refused port or a refused squelch field.
+ *         arguments, a refused device field, port or squelch field.
  */
 int dsd_rtl_input_spec_apply(dsd_opts* opts);
 
