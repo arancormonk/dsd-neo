@@ -3512,55 +3512,25 @@ nxdn_tx_source_note(dsd_state* state, uint32_t source) {
     state->nxdn_tx_source.source = source;
 }
 
-/* Whether the live NXDN call, before @p info publishes, is the call @p info names (its destination): a VCALL repeated
- * within the transmission, whose cipher the hysteresis applies from this call's own earlier VCALLs. */
-static int
-nxdn_vcall_continues_live_call(const dsd_state* state, const struct nxdn_vcall_info* info) {
-    dsd_call_snapshot call;
-    if (info->destination_id == 0U || dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol)) {
-        return 0;
-    }
-    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
-    return target == (uint64_t)info->destination_id;
-}
-
-/* What the conventional scan hold takes of a checked VCALL's encryption (issue #903): 1 encrypted, 0 clear, -1 not
- * known, when the VCALL refreshes no hold. Within the live call, the cipher applied and this VCALL's own indication
- * both a cipher is encrypted, whatever the algorithm (the hysteresis may still apply the call's earlier one); one
- * saying clear and the other a cipher is a lone contradiction the hysteresis holds back, not known. A VCALL naming
- * another call is judged as --enc-lockout judges it (nxdn_vcall_cipher_applied()): a cipher carried from an earlier
- * call is not this call's, so it is encrypted only once its own cipher is the one applied. */
-static int
-nxdn_vcall_scan_encrypted(const dsd_state* state, const struct nxdn_vcall_info* info) {
-    const int own = info->cipher_type != 0U;
-    const int applied = state->nxdn_cipher_type != 0U;
-    if (nxdn_vcall_continues_live_call(state, info)) {
-        return own == applied ? own : -1;
-    }
-    return nxdn_vcall_cipher_applied(state, info) && applied;
-}
-
 /* A checked VCALL of a confirmed transmission, of a call type that opens a call (nxdn_call_type_opens_call(): 010 is a
  * TX_REL's alone), classified by its call type (nxdn_call_type_kind()). */
 static void
 nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info,
                           const nxdn_key_choice* loaded) {
     const dsd_call_kind kind = nxdn_call_type_kind(info->call_type, info->idas);
-    const int encrypted = nxdn_vcall_scan_encrypted(state, info);
-    if (kind != DSD_CALL_KIND_VOICE && encrypted >= 0) {
+    if (kind != DSD_CALL_KIND_VOICE) {
         // Reached, like the publish below, only once the frame's content has confirmed the transmission:
         // a miscorrected VCALL carries a garbage destination_id, and letting it refresh the
         // conventional scan hold would park the coordinator on noise for a full activity_hold_ms
-        // per corrupt burst. The call's encryption is nxdn_vcall_scan_encrypted()'s (issue #903): the classification
-        // nxdn_vcall_apply_state() just applied, not the raw element field -- a lone flipped cipher_type would
-        // otherwise drop the hold mid-call under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent,
-        // so within the live call a disagreement on whether it is encrypted refreshes no hold -- and never a cipher
-        // carried from an earlier call.
+        // per corrupt burst. The call is encrypted by the lockout's rule (nxdn_vcall_cipher_applied(), issue #903):
+        // the classification nxdn_vcall_apply_state() just applied, not the raw element field -- a lone flipped
+        // cipher_type would otherwise drop the hold mid-call under --enc-lockout, the exact defect nxdn_enc_class.c
+        // exists to prevent -- and only when that is this VCALL's own cipher, never one carried from an earlier call.
         // Its source is the one it names (nxdn_vcall_source()), as the publication and the held call take it. A
         // generic voice call (011, 101) is of neither class, so it never holds the scan as a group call.
-        dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, info->destination_id, nxdn_vcall_source(info),
-                                                       kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, encrypted, 0);
+        dsd_trunk_scan_hook_nxdn_conventional_activity(
+            opts, state, info->destination_id, nxdn_vcall_source(info), kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0,
+            nxdn_vcall_cipher_applied(state, info) && state->nxdn_cipher_type != 0U, 0);
     }
     nxdn_vcall_publish(opts, state, info, loaded);
     nxdn_tx_source_note(state, nxdn_vcall_source(info));

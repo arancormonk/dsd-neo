@@ -13327,16 +13327,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     indication (`nxdn_vcall_run_enc_lockout()`, issue #903): the VCALL's own cipher, once it is the cipher applied
     (`nxdn_vcall_cipher_applied()`). A cipher the hysteresis still carries from an earlier call (a DCR call's scrambler,
     or DES that VCALLs naming no party established during it), holding the VCALL's back, neither locks the call out
-    nor releases its entry. The conventional scan activity report (`nxdn_vcall_scan_encrypted()`) takes the same rule
-    for a VCALL naming another call than the live one: reported encrypted only when its own cipher is the one applied
-    and is not clear. Within the live call (`nxdn_vcall_continues_live_call()`: the VCALL names its destination) it
-    takes the call's encryption: the cipher applied and the VCALL's own both a cipher is encrypted whatever the
-    algorithm (an AES VCALL while the hysteresis still applies the call's DES), and one clear and the other a cipher is
-    not known, so that VCALL refreshes no hold (`test_scan_report_keeps_an_encrypted_call_encrypted()`). The report
-    names the source the VCALL names (`nxdn_vcall_source()`:
+    nor releases its entry. The conventional scan activity report takes the same rule: a VCALL is reported encrypted
+    only when its own cipher is the one applied and is not clear, and with the source it names (`nxdn_vcall_source()`:
     none when its Voice Call Option says the field carries none, as for an interconnect or speed dial call), as the
-    publication and the held call take it. 011/101 have no class and lock nothing out. CC Option bit 6 is
-    Intra/Inter and prints "Inter-System".
+    publication and the held call take it. Decided limit (issue #903): the report keeps no per-call memory of
+    encryption, so a VCALL whose own cipher the hysteresis has not yet applied is reported clear, whatever the call
+    carried before: the first cipher indication of a call (`test_scan_report_takes_the_calls_own_encryption()`), and
+    on an established encrypted call a VCALL naming another algorithm (AES while DES is still applied) until its
+    repeat applies it. With encrypted following off, that one VCALL can refresh the conventional scan hold. 011/101
+    have no class and lock nothing out. CC Option bit 6 is Intra/Inter and prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
