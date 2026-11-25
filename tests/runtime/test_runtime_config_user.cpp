@@ -2198,9 +2198,11 @@ test_rtl_serial_snapshot_names_the_running_dongle(void) {
         {"rtl:serial=1090:851.375M", 0, "", "1090", 0, 0},
         {"rtl:A1B2:851.375M", 0, "", "A1B2", 0, 0},
         {"rtl:2:851.375M", 0, "OLD", "", 2, 0},
-        {"rtl", 3, "SESSION", "SESSION", 0, 0},
-        {"rtl::851.375M", 5, "", "", 5, 0},
-        {"rtl::851.375M", 5, "SESSION SN", "SESSION SN", 0, 0},
+        /* The spec alone names the dongle: a bare `rtl` or an empty field is index 0 with no serial, whatever the
+           options last held. */
+        {"rtl", 3, "SESSION", "", 0, 0},
+        {"rtl::851.375M", 5, "", "", 0, 0},
+        {"rtl::851.375M", 5, "SESSION SN", "", 0, 0},
         {"rtl:serial=:851.375M", 1, "", "", 0, 1},
     };
 
@@ -2339,6 +2341,37 @@ test_retained_index_beside_a_serial_survives_a_save(void) {
     }
     dsd_user_config_forget_retained_input(&state);
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
+ * The spec an RTL-SDR [input] builds is whole or none (dsd_user_config_radio_input_spec()): a buffer the complete spec
+ * does not fit (64 bytes for a 127-byte serial) gets -1 and an empty string, never a spec cut inside the serial, which
+ * would name another dongle (`rtl:serial=<shorter serial>`).
+ */
+static int
+test_rtl_input_spec_is_whole_or_none(void) {
+    auto cfg = std::unique_ptr<dsdneoUserConfig>(new dsdneoUserConfig{});
+    auto opts = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_user_config_init(cfg.get());
+    cfg->has_input = 1;
+    cfg->input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%s", "851.375M");
+    DSD_MEMSET(cfg->rtl_serial, 'S', DSD_RTL_SERIAL_MAX);
+    cfg->rtl_serial[DSD_RTL_SERIAL_MAX] = '\0';
+    char small[64];
+    DSD_MEMSET(small, 'x', sizeof small);
+    int rc = 0;
+    if (dsd_user_config_radio_input_spec(cfg.get(), opts.get(), small, sizeof small) != -1 || small[0] != '\0') {
+        DSD_FPRINTF(stderr, "FAIL: a 127-byte serial in 64 bytes gave '%.63s'\n", small);
+        rc |= 1;
+    }
+    char whole[512];
+    if (dsd_user_config_radio_input_spec(cfg.get(), opts.get(), whole, sizeof whole) != 0
+        || strncmp(whole, "rtl:serial=", 11) != 0 || strlen(whole) < 11U + DSD_RTL_SERIAL_MAX) {
+        DSD_FPRINTF(stderr, "FAIL: the whole spec: '%s'\n", whole);
+        rc |= 1;
+    }
     return rc;
 }
 
@@ -7216,6 +7249,7 @@ main(void) {
     rc |= test_rtl_serial_snapshot_names_the_running_dongle();
     rc |= test_retained_input_merges_the_rtl_selector();
     rc |= test_retained_index_beside_a_serial_survives_a_save();
+    rc |= test_rtl_input_spec_is_whole_or_none();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_iq_stream_input_load_apply_snapshot();
     rc |= test_validate_iq_stream_input();

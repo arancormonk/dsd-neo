@@ -5587,7 +5587,8 @@ suite runs under this compiler.
       (`cfg_rtl_selector_valid()`, which also checks the serial itself, since a config handed over whole through
       `dsd_app_command_apply_config()` never passed the loader). The render quotes the serial, which holds no `"` by the rule, so the comment
       stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
-      a serial or an index, the other cleared; a bare `rtl` or an empty field is the session's own selector. A serial
+      a serial or an index, the other cleared; a bare `rtl` or an empty field is index 0 with no serial, as a start of
+      the same spec opens it (the spec alone names the dongle, never the device the options last held). A serial
       saves no index (the one it opened at is where it resolved, not a choice); a config that names both (a retained
       `[input]`) renders `rtl_device` beside the serial, so a patch clearing the serial after a reload falls back on
       it. Tests:

@@ -801,11 +801,13 @@ dsd_rtl_input_spec_apply(dsd_opts* opts) {
                   dev_field ? dev_field : "", opts->audio_in_dev, DSD_RTL_SERIAL_MAX);
         return -1;
     }
-    if (dev == DSD_RTL_DEV_INDEX) {
-        opts->rtl_dev_index = index;
-        opts->rtl_dev_serial[0] = '\0';
-    } else if (dev == DSD_RTL_DEV_SERIAL) {
+    /* The spec alone names the dongle: an empty or absent device field (`rtl`, `rtl::851M`) is index 0 with no serial,
+       as the stream open reads it (dsd_rtl_spec_select_device()), never the device options from an earlier spec. */
+    if (dev == DSD_RTL_DEV_SERIAL) {
         DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", serial);
+    } else {
+        opts->rtl_dev_index = dev == DSD_RTL_DEV_INDEX ? index : 0;
+        opts->rtl_dev_serial[0] = '\0';
     }
     rtl_spec_apply_tuning_fields(opts, fields, count, first);
     return 1;
@@ -928,13 +930,10 @@ dsd_rtl_spec_set_device(char* spec, size_t spec_size, int index, const char* ser
     return 0;
 }
 
-int
-dsd_rtl_spec_select_device(dsd_opts* opts, const char* spec) {
-    if (!opts || !spec) {
-        return -1;
-    }
-    if (!dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
-        return 0;
+dsd_rtl_dev_kind
+dsd_rtl_spec_device(const char* spec, int* index, char* serial, size_t serial_size) {
+    if (!spec || !dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        return DSD_RTL_DEV_INVALID;
     }
     /* The device field: what follows `rtl:` up to the next ':' ("" for a bare `rtl`). One too long for any serial is
        refused, never cut into another. */
@@ -945,15 +944,26 @@ dsd_rtl_spec_select_device(dsd_opts* opts, const char* spec) {
         const char* end = strchr(start, ':');
         const size_t len = end ? (size_t)(end - start) : strlen(start);
         if (len >= sizeof field) {
-            return -1;
+            return DSD_RTL_DEV_INVALID;
         }
         DSD_MEMCPY(field, start, len);
         field[len] = '\0';
     }
+    return dsd_rtl_device_field_parse(field, index, serial, serial_size);
+}
+
+int
+dsd_rtl_spec_select_device(dsd_opts* opts, const char* spec) {
+    if (!opts || !spec) {
+        return -1;
+    }
+    if (!dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        return 0;
+    }
     int index = 0;
     char serial[DSD_RTL_SERIAL_MAX + 1];
     serial[0] = '\0';
-    const dsd_rtl_dev_kind kind = dsd_rtl_device_field_parse(field, &index, serial, sizeof serial);
+    const dsd_rtl_dev_kind kind = dsd_rtl_spec_device(spec, &index, serial, sizeof serial);
     if (kind == DSD_RTL_DEV_INVALID) {
         return -1;
     }

@@ -1131,10 +1131,14 @@ test_spec_empty_device_keeps_its_place(void) {
     if (!opts) {
         return 1;
     }
+    /* The empty device field keeps its place, so the later fields keep theirs; the field itself names index 0 with no
+       serial (the spec alone names the dongle), never the device options from an earlier spec. */
     opts->rtl_dev_index = 2;
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "CACHED");
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl::851.0125M:20:3");
-    if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dev_index != 2 || opts->rtlsdr_center_freq != 851012500U
-        || opts->rtl_gain_value != 20 || opts->rtlsdr_ppm_error != 3 || opts->rtl_dsp_bw_khz != 48) {
+    if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dev_index != 0 || opts->rtl_dev_serial[0] != '\0'
+        || opts->rtlsdr_center_freq != 851012500U || opts->rtl_gain_value != 20 || opts->rtlsdr_ppm_error != 3
+        || opts->rtl_dsp_bw_khz != 48) {
         DSD_FPRINTF(stderr, "rtl::851.0125M:20:3: dev %d freq %u gain %d ppm %d bw %d\n", opts->rtl_dev_index,
                     opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz);
         rc = 1;
@@ -1279,10 +1283,10 @@ test_rtl_spec_device_by_serial(void) {
                     opts->rtlsdr_center_freq, opts->rtl_gain_value);
         rc = 1;
     }
-    /* An empty device field keeps the serial. */
+    /* An empty device field is index 0 with no serial, as the stream open reads it: the spec alone names the dongle. */
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl::852M");
-    if (dsd_rtl_input_spec_apply(opts) != 1 || strcmp(opts->rtl_dev_serial, "00000001") != 0) {
-        DSD_FPRINTF(stderr, "rtl::852M dropped the serial\n");
+    if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_dev_serial[0] != '\0' || opts->rtl_dev_index != 0) {
+        DSD_FPRINTF(stderr, "rtl::852M kept serial \"%s\" / index %d\n", opts->rtl_dev_serial, opts->rtl_dev_index);
         rc = 1;
     }
     /* An index clears it. */
