@@ -9190,6 +9190,9 @@ static std::atomic<int (*)(int)> g_fd_reset_hook{nullptr};
 /* rtl_device_test_set_fd_identity_hook(): stands in for reading the descriptor's VID:PID and the opened handle's
  * strings, 0 or a negative errno. */
 static std::atomic<int (*)(int, struct rtl_usb_identity*)> g_fd_identity_hook{nullptr};
+/* rtl_device_test_set_fd_serial_descriptor_hook(): stands in for reading the serial string descriptor through the
+ * descriptor (its raw bytes, as GET_DESCRIPTOR returns them), the bytes read or a negative errno. */
+static std::atomic<int (*)(int, unsigned char*, int)> g_fd_serial_descriptor_hook{nullptr};
 
 extern "C" void
 rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
@@ -9204,6 +9207,11 @@ rtl_device_test_set_fd_reset_hook(int (*hook)(int)) {
 extern "C" void
 rtl_device_test_set_fd_identity_hook(int (*hook)(int, struct rtl_usb_identity*)) {
     g_fd_identity_hook.store(hook, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_set_fd_serial_descriptor_hook(int (*hook)(int, unsigned char*, int)) {
+    g_fd_serial_descriptor_hook.store(hook, std::memory_order_release);
 }
 #endif
 
@@ -9348,54 +9356,105 @@ rtl_usb_fd_serial_index(int fd) {
     return desc[16];
 }
 
-/* The serial through usbfs: rtl_usb_fd_serial_read() on the device. */
+/* The serial string descriptor through usbfs: rtl_usb_fd_serial_descriptor() on the device. */
 static int
-rtl_usb_fd_serial_read_usbfs(int fd, char* serial) {
+rtl_usb_fd_serial_descriptor_usbfs(int fd, unsigned char* buf, int size) {
     const int index = rtl_usb_fd_serial_index(fd);
     if (index <= 0) {
         return index == 0 ? -ENOENT : index;
     }
-    unsigned char buf[255];
-    int n = rtl_usb_fd_string_descriptor(fd, 0U, 0U, buf, (uint16_t)sizeof buf);
+    int n = rtl_usb_fd_string_descriptor(fd, 0U, 0U, buf, (uint16_t)size);
     if (n < 4) {
         return n < 0 ? n : -EIO;
     }
     const uint16_t langid = (uint16_t)(buf[2] | (buf[3] << 8));
-    n = rtl_usb_fd_string_descriptor(fd, (uint8_t)index, langid, buf, (uint16_t)sizeof buf);
-    if (n < 2 || buf[1] != 0x03U || (int)buf[0] > n) {
-        return n < 0 ? n : -EIO;
-    }
-    size_t out = 0;
-    for (int i = 2; i + 1 < (int)buf[0] && out < RTL_DEVICE_STRING_SIZE - 1U; i += 2) {
-        serial[out++] = buf[i + 1] != 0U ? '?' : (char)buf[i];
-    }
-    return 0;
+    return rtl_usb_fd_string_descriptor(fd, (uint8_t)index, langid, buf, (uint16_t)size);
 }
 #endif
 
-/* The serial of the dongle behind Android descriptor @p fd, read through the descriptor before anything opens it, as
- * librtlsdr reads it on a handle (libusb_get_string_descriptor_ascii(): the device's first language, '?' for a
- * character outside one byte), into @p serial (RTL_DEVICE_STRING_SIZE bytes, zeroed first): 0, or a negative errno
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* The descriptor a test's identity hook implies: its serial as UTF-16LE, one code unit per byte. */
+static int
+rtl_usb_fd_serial_descriptor_from_identity(int (*hook)(int, struct rtl_usb_identity*), int fd, unsigned char* buf,
+                                           int size) {
+    struct rtl_usb_identity id{};
+    const int rc = hook(fd, &id);
+    if (rc != 0) {
+        return rc;
+    }
+    const size_t len = strnlen(id.serial, sizeof id.serial);
+    if (len == 0U) {
+        return -ENOENT;
+    }
+    const int n = (int)(2U + 2U * len);
+    if (n > size || n > 255) {
+        return -EIO;
+    }
+    buf[0] = (unsigned char)n;
+    buf[1] = 0x03U;
+    for (size_t i = 0; i < len; i++) {
+        buf[2U + 2U * i] = (unsigned char)id.serial[i];
+        buf[3U + 2U * i] = 0U;
+    }
+    return n;
+}
+#endif
+
+/* The raw serial string descriptor of the dongle behind Android descriptor @p fd, read through the descriptor before
+ * anything opens it (GET_DESCRIPTOR in the device's first language), into @p buf: the bytes read, or a negative errno
  * when it cannot be read (-ENOENT: the device has no serial string). */
 static int
-rtl_usb_fd_serial_read(int fd, char* serial) {
-    DSD_MEMSET(serial, 0, RTL_DEVICE_STRING_SIZE);
+rtl_usb_fd_serial_descriptor(int fd, unsigned char* buf, int size) {
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const auto raw = g_fd_serial_descriptor_hook.load(std::memory_order_acquire)) {
+        return raw(fd, buf, size);
+    }
     if (const auto hook = g_fd_identity_hook.load(std::memory_order_acquire)) {
-        struct rtl_usb_identity id{};
-        const int rc = hook(fd, &id);
-        if (rc == 0) {
-            DSD_SNPRINTF(serial, RTL_DEVICE_STRING_SIZE, "%s", id.serial);
-        }
-        return rc;
+        return rtl_usb_fd_serial_descriptor_from_identity(hook, fd, buf, size);
     }
 #endif
 #if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
-    return rtl_usb_fd_serial_read_usbfs(fd, serial);
+    return rtl_usb_fd_serial_descriptor_usbfs(fd, buf, size);
 #else
     (void)fd;
+    (void)buf;
+    (void)size;
     return -ENOTSUP;
 #endif
+}
+
+/* Whether the serial string descriptor @p desc (@p n bytes read) holds exactly @p serial, compared losslessly: a string
+ * descriptor whose length covers the whole serial and nothing more (2 + 2 per character, all read), each UTF-16LE code
+ * unit equal to the serial's printable ASCII character. A NUL, a character past ASCII or a length that differs never
+ * matches, where a conversion to a C string would cut at the NUL or turn a character into a '?' a selector can hold. */
+static bool
+rtl_usb_serial_descriptor_is(const unsigned char* desc, int n, const char* serial) {
+    const size_t len = strlen(serial);
+    if (n < 2 || desc[1] != 0x03U || (int)desc[0] > n || (size_t)desc[0] != 2U + 2U * len) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const unsigned char lo = desc[2U + 2U * i];
+        const unsigned char hi = desc[3U + 2U * i];
+        if (hi != 0U || lo < 0x20U || lo > 0x7EU || lo != (unsigned char)serial[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The serial string descriptor @p desc (@p n bytes) for a log line, into @p out (RTL_DEVICE_STRING_SIZE bytes): each
+ * code unit that fits one byte as that byte (the log line escapes it for display, rtl_device_refuse_preopened()), a
+ * NUL or a character past one byte as '?'. */
+static void
+rtl_usb_serial_descriptor_text(const unsigned char* desc, int n, char* out) {
+    size_t k = 0;
+    const int end = (n >= 2 && (int)desc[0] <= n) ? (int)desc[0] : 0;
+    for (int i = 2; i + 1 < end && k < RTL_DEVICE_STRING_SIZE - 1U; i += 2) {
+        const bool one_byte = desc[i + 1] == 0U && desc[i] != 0U;
+        out[k++] = one_byte ? (char)desc[i] : '?';
+    }
+    out[k] = '\0';
 }
 
 /* What identifies the dongle behind Android descriptor @p fd (#782): its VID:PID, from the device descriptor usbfs
@@ -9579,13 +9638,16 @@ rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, co
  * the descriptor handed back and any reset it owes kept. 0 when it is the one. */
 static int
 rtl_device_preopened_check_serial(int fd, const char* serial) {
+    unsigned char desc[255];
+    const int n = rtl_usb_fd_serial_descriptor(fd, desc, (int)sizeof desc);
     char before[RTL_DEVICE_STRING_SIZE];
-    const int rc = rtl_usb_fd_serial_read(fd, before);
-    if (rc != 0) {
-        LOG_ERROR("RTL-SDR: could not read the serial through descriptor %d (errno %d).\n", fd, -rc);
-        before[0] = '\0';
+    before[0] = '\0';
+    if (n < 0) {
+        LOG_ERROR("RTL-SDR: could not read the serial through descriptor %d (errno %d).\n", fd, -n);
+        return rtl_device_refuse_preopened(nullptr, fd, serial, before);
     }
-    if (rc != 0 || strcmp(before, serial) != 0) {
+    if (!rtl_usb_serial_descriptor_is(desc, n, serial)) {
+        rtl_usb_serial_descriptor_text(desc, n, before);
         return rtl_device_refuse_preopened(nullptr, fd, serial, before);
     }
     return 0;
@@ -9797,8 +9859,10 @@ rtl_device_create_selected(int dev_index, const char* serial, struct input_ring_
             free(dev);
             return NULL;
         }
+        /* The descriptor is the one device there is, device 0, whatever index the options held (a serial chose it). */
+        dev->dev_index = 0;
         if (out_dev_index) {
-            *out_dev_index = opened_index;
+            *out_dev_index = 0;
         }
         return dev;
     }

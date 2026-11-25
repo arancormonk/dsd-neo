@@ -46,6 +46,7 @@
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 extern "C" void rtl_device_test_set_fd_reset_hook(int (*hook)(int));
 extern "C" void rtl_device_test_set_fd_identity_hook(int (*hook)(int, struct rtl_usb_identity*));
+extern "C" void rtl_device_test_set_fd_serial_descriptor_hook(int (*hook)(int, unsigned char*, int));
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
@@ -926,10 +927,100 @@ test_stream_descriptor_index_is_zero(void) {
     assert(caller->rtl_dev_index == 0 && strcmp(caller->audio_in_dev, "rtl:0:851.0125M") == 0);
     assert(args == "index=0,serial=00000007");
     assert(g_world.count_calls == 0);
+    /* A serial chooses the descriptor's dongle: it is device 0 too, whatever index the options held. */
+    set_devs({});
+    g_world.handle_serials[0] = "00000007";
+    g_world.handle_serial_count = 1;
+    assert(stream_start(dir, "rtl:serial=00000007:851.0125M", "", 5, caller.get(), &args));
+    assert(caller->rtl_dev_index == 0 && strcmp(caller->rtl_dev_serial, "00000007") == 0);
+    assert(strcmp(caller->audio_in_dev, "rtl:serial=00000007:851.0125M") == 0);
+    assert(args == "index=0,serial=00000007");
+    assert(g_world.count_calls == 0);
     rtl_device_set_preopened_fd(-1);
     rtl_device_test_set_fd_identity_hook(nullptr);
     rtl_device_test_set_open_fd_failure_hook(nullptr);
     assert(dsd_test_rmdir(dir) == 0);
+}
+
+/* The serial string descriptor read through the descriptor, as GET_DESCRIPTOR returns it: g_fd_desc_units UTF-16
+   code units, a length byte of g_fd_desc_length (0: the units' own), and g_fd_desc_read bytes read (0: all). */
+uint16_t g_fd_desc_units[16];
+int g_fd_desc_count = 0;
+int g_fd_desc_length = 0;
+int g_fd_desc_read = 0;
+
+int
+fd_serial_descriptor(int fd, unsigned char* buf, int size) {
+    (void)fd;
+    const int whole = 2 + 2 * g_fd_desc_count;
+    assert(whole <= size);
+    buf[0] = (unsigned char)(g_fd_desc_length != 0 ? g_fd_desc_length : whole);
+    buf[1] = 0x03U;
+    for (int i = 0; i < g_fd_desc_count; i++) {
+        buf[2 + 2 * i] = (unsigned char)(g_fd_desc_units[i] & 0xFFU);
+        buf[3 + 2 * i] = (unsigned char)(g_fd_desc_units[i] >> 8);
+    }
+    return g_fd_desc_read != 0 ? g_fd_desc_read : whole;
+}
+
+void
+set_fd_desc(std::initializer_list<uint16_t> units, int length, int read) {
+    g_fd_desc_count = 0;
+    for (const uint16_t u : units) {
+        g_fd_desc_units[g_fd_desc_count++] = u;
+    }
+    g_fd_desc_length = length;
+    g_fd_desc_read = read;
+}
+
+/* The serial read through an Android descriptor is compared with the one asked for code unit by code unit, over the
+   descriptor's whole length: a NUL inside it, a character past ASCII (which a conversion turns into a '?' a selector
+   can hold) or a length that differs never matches, and nothing opens. */
+void
+test_preopened_serial_compared_losslessly(void) {
+    rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
+    rtl_device_test_set_fd_serial_descriptor_hook(fd_serial_descriptor);
+
+    struct {
+        std::initializer_list<uint16_t> units;
+        int length;
+        int read;
+        const char* want;
+        bool opens;
+    } const cases[] = {
+        {{'A', 0x0000, 'B'}, 0, 0, "A", false}, /* "A", NUL, "B": not "A" */
+        {{'A', 0x0000}, 0, 0, "A", false},      /* a trailing NUL */
+        {{'A', 0x4E2D}, 0, 0, "A?", false},     /* "A中": not "A?" */
+        {{'A', 0x0142}, 0, 0, "AB", false},     /* a high byte set */
+        {{'A', 'B', 'C'}, 0, 0, "AB", false},   /* longer */
+        {{'A', 'B'}, 0, 0, "ABC", false},       /* shorter */
+        {{'A', 'B', 'C'}, 0, 6, "ABC", false},  /* not all of it read */
+        {{'A', 'B', 'C'}, 6, 0, "ABC", false},  /* a length byte that leaves a character out */
+        {{'A', 'B', 'C'}, 0, 0, "ABC", true},
+    };
+
+    for (const auto& c : cases) {
+        set_fd_desc(c.units, c.length, c.read);
+        set_devs({});
+        g_world.handle_serials[0] = c.want;
+        g_world.handle_serial_count = 1;
+        g_open_fd_calls = 0;
+        rig r;
+        dsd_input_failure_clear();
+        rtl_device_set_preopened_fd(9);
+        rtl_device* dev = rtl_device_create_selected(0, c.want, r.ring.get(), nullptr);
+        if (c.opens) {
+            assert(dev != nullptr && g_open_fd_calls == 1);
+            rtl_device_destroy(dev);
+        } else {
+            assert(dev == nullptr && g_open_fd_calls == 0 && r.dongle->calls[RTL_TEST_DONGLE_OPEN] == 0);
+            assert(reported_serial_failure() && rtl_device_preopened_fd_held() == -1);
+        }
+    }
+    rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_fd_serial_descriptor_hook(nullptr);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
+    dsd_input_failure_clear();
 }
 
 /* The serial a descriptor's dongle reports reaches the refusal's log line escaped. */
@@ -1068,6 +1159,7 @@ main(void) {
     test_preopened_owed_reset_paid_only_on_the_requested_dongle();
     test_preopened_by_index_records_its_serial();
     test_preopened_refusal_log_escaped();
+    test_preopened_serial_compared_losslessly();
     test_capture_names_the_dongle();
     test_stream_looks_the_serial_up_at_every_start();
     test_stream_selects_from_its_spec();
