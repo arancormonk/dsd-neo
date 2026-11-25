@@ -7179,6 +7179,28 @@ decode_mode_ensure_output(dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* decode_mode_apply_value_noted()'s mode change once it stands: what the session, the decoder's hunt and its calls
+   carry over from the mode before (@p was_edacs_session, @p mode_before) is settled for the mode now in force. */
+static void
+decode_mode_settle_committed(dsd_opts* opts, dsd_state* state, int was_edacs_session, uint32_t mode_before) {
+    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+    }
+    /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
+    state->tdma_carrier = 0U;
+    /* The decoder was hunting for a different protocol a moment ago: its
+       modulation votes describe frames of the old kind, and any call open on the
+       old protocol will never be closed by the new one. */
+    if (!dsd_scan_mode_updating(state)) {
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
+        reset_call_tracking(opts, state, 1);
+    }
+    /* After the outgoing calls ended and froze their identity. */
+    ui_commit_mode_identity(opts, state);
+    ui_commit_mode_tuning(opts, state, mode_before); // what the receiver decodes with (issue #903)
+}
+
 /**
  * @brief Switch which protocols are decoded, mid-session.
  *
@@ -7285,22 +7307,7 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
         ui_commit_mode_tuning(opts, state, mode_before); // put back: the decoders it left
         return UI_CMD_APPLY_FAILED;
     }
-    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
-    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
-        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
-    }
-    /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
-    state->tdma_carrier = 0U;
-    /* The decoder was hunting for a different protocol a moment ago: its
-       modulation votes describe frames of the old kind, and any call open on the
-       old protocol will never be closed by the new one. */
-    if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
-        reset_call_tracking(opts, state, 1);
-    }
-    /* After the outgoing calls ended and froze their identity. */
-    ui_commit_mode_identity(opts, state);
-    ui_commit_mode_tuning(opts, state, mode_before); // what the receiver decodes with (issue #903)
+    decode_mode_settle_committed(opts, state, was_edacs_session, mode_before);
     decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled, note, note_size);
     return UI_CMD_APPLY_COMPLETED;
 }
