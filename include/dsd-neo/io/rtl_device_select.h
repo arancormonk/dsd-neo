@@ -9,8 +9,9 @@
  *
  * One place for the listing the engine prints at startup and `--rtl-list` prints, and for the lookup of a serial an
  * `rtl:` spec names (dsd_rtl_device_field_parse()). A device whose strings cannot be read (Windows: another program
- * streams from it; elsewhere: no permission), or that reports an empty serial, is unreadable: it is listed as such,
- * never matches a serial and never counts as a duplicate. Matching is exact (strcmp), as librtlsdr's own
+ * streams from it; elsewhere: no permission) is unreadable and listed as such; one whose strings read but report no
+ * serial is listed with `SN: (none)` and can be opened by index only. Neither ever matches a serial or counts as a
+ * duplicate, and each is counted apart. Matching is exact (strcmp), as librtlsdr's own
  * rtlsdr_get_index_by_serial() and SoapyRTLSDR's are. Indexes are librtlsdr's and change between calls when dongles
  * come and go, so a serial is looked up again at every open.
  *
@@ -71,7 +72,8 @@ typedef enum {
 /** What a lookup saw. */
 struct rtl_device_find_report {
     int devices;    /**< devices enumerated */
-    int unreadable; /**< of them, unreadable (never matched) */
+    int unreadable; /**< of them, whose strings could not be read (never matched) */
+    int no_serial;  /**< of them, read but reporting no serial: index only (never matched) */
     int matches;    /**< readable devices carrying the serial, all of them counted */
     int index;      /**< the first match's index, -1 for none */
 };

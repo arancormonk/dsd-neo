@@ -1037,6 +1037,9 @@ dsd_engine_setup_select_rtl_serial(dsd_opts* opts) {
                   "cannot be matched.\n",
                   rep.unreadable);
     }
+    if (rep.no_serial > 0) {
+        LOG_ERROR("%d device(s) report no serial: they can be opened by index only.\n", rep.no_serial);
+    }
     LOG_ERROR("Run dsd-neo --rtl-list to see the serials of the connected devices.\n");
     return -1;
 }

@@ -190,8 +190,10 @@ rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report
         rtl_device_entry e;
         for (int i = 0; i < count; i++) {
             read_entry(o, i, &e);
-            if (!e.readable) {
+            if (!e.strings_read) {
                 rep.unreadable++;
+            } else if (!e.readable) {
+                rep.no_serial++;
             } else if (strcmp(e.serial, serial) == 0) {
                 rep.index = rep.matches == 0 ? i : rep.index;
                 rep.matches++;
@@ -358,12 +360,14 @@ void
 print_listing(const rtl_device_entry* list, int count, int total, int complete, FILE* out, FILE* err) {
     int duplicates = 0;
     int unreadable = 0;
+    int no_serial = 0;
     char line[RTL_DEVICE_LINE_SIZE];
     for (int i = 0; i < count; i++) {
         const rtl_device_entry* e = &list[i];
         const int shared = !complete ? -1 : (e->readable && serial_count(list, count, e) > 1) ? 1 : 0;
         duplicates |= shared > 0;
-        unreadable += e->readable ? 0 : 1;
+        unreadable += e->strings_read ? 0 : 1;
+        no_serial += (e->strings_read && !e->readable) ? 1 : 0;
         rtl_device_list_line(e, shared, line, sizeof line);
         DSD_FPRINTF(out, "%s\n", line);
     }
@@ -379,6 +383,9 @@ print_listing(const rtl_device_entry* list, int count, int total, int complete, 
     }
     if (unreadable > 0) {
         DSD_FPRINTF(err, "%d device(s) could not be read (in use by another program, or no permission).\n", unreadable);
+    }
+    if (no_serial > 0) {
+        DSD_FPRINTF(err, "%d device(s) report no serial: they can be opened by index only.\n", no_serial);
     }
 }
 

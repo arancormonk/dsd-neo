@@ -266,6 +266,27 @@ test_serial_not_found_refuses(void) {
     return rc;
 }
 
+/* A device that reports no serial is no device that could not be read: the not-found error counts each apart. */
+static int
+test_serial_not_found_counts_no_serial_apart(void) {
+    set_devices(3, NULL, "", "00000002");
+    run_result r;
+    if (run_local_rtl_setup("rtl:serial=1090:851.375M", &r) != 0) {
+        return 1;
+    }
+    int rc = expect_refused("no serial apart", &r);
+    rc |= expect_log("no serial apart", "1 device(s) could not be read (in use by another program, or no permission)");
+    rc |= expect_log("no serial apart", "1 device(s) report no serial: they can be opened by index only.");
+    rc |= expect_log("no serial listed", "1:  Realtek, RTL2838UHIDIR, SN: (none)");
+    set_devices(2, "", "00000002", NULL);
+    if (run_local_rtl_setup("rtl:serial=1090:851.375M", &r) != 0) {
+        return 1;
+    }
+    rc |= expect_true("no serial alone: none 'could not be read'", strstr(g_log, "could not be read") == NULL);
+    rc |= expect_log("no serial alone", "1 device(s) report no serial");
+    return rc;
+}
+
 static int
 test_serial_duplicate_refuses(void) {
     set_devices(3, "00000001", NULL, "00000001");
@@ -371,6 +392,7 @@ main(void) {
     rc |= test_selected_notice_escapes_the_serial();
     rc |= test_serial_not_found_refuses();
     rc |= test_serial_duplicate_refuses();
+    rc |= test_serial_not_found_counts_no_serial_apart();
     rc |= test_out_of_range_index();
     rc |= test_preopened_descriptor_skips_lookup();
     rc |= test_preopened_descriptor_index_is_zero();

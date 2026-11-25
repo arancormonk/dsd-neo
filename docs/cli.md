@@ -3452,7 +3452,8 @@ dongle:
   desktop the serial can only be read once it is open. Android, where the app hands over the connection, checks the
   serial before anything opens it (below).
 - No dongle with the serial: the start is refused, never falling back to device 0. The error names the serial, says
-  how many devices could not be read, and points at `--rtl-list`.
+  how many devices could not be read and how many report no serial (`SN: (none)` in `--rtl-list`: such a dongle can
+  be opened by index only), and points at `--rtl-list`.
 - Two or more dongles with the same serial (many generic dongles ship as `00000001`): the start is refused, since
   they cannot be told apart. Give each its own serial with `rtl_eeprom -s <serial>`, with only that dongle plugged in.
 - A dongle another program is using cannot be read on Windows (WinUSB lets one program open a device at a time), and

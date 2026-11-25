@@ -11740,10 +11740,11 @@ Key public headers:
     empty buffers), is `strings_read` 0, and only an entry with a serial is `readable`.
     `rtl_device_find_serial()` matches exactly (`strcmp`, as `rtlsdr_get_index_by_serial()`), counts every readable
     match however many devices there are (FOUND / NOT_FOUND / DUPLICATE / NO_DEVICES / FAILED, with the device,
-    unreadable and match counts and the first match's own index); an unreadable device never matches or counts as a
-    duplicate. librtlsdr's three reads go through `rtl_select_guarded_*()` (`radio/rtl_select_driver.h`, module-
-    private): MSVC `__try` wrappers against the exception a mismatched libusb DLL raises, which the identity unit's
-    real driver ops call too; `struct rtl_select_driver_ops` (`rtl_device_select_set_driver_ops()`, test hooks only)
+    unreadable, no-serial and match counts and the first match's own index); a device whose strings could not be read
+    (`unreadable`) and one that reads but reports no serial (`no_serial`, index only) are counted apart and noted apart
+    by the engine and `--rtl-list`, and neither ever matches or counts as a duplicate. librtlsdr's three reads go
+    through `rtl_select_guarded_*()` (`radio/rtl_select_driver.h`, module-private): MSVC `__try` wrappers against
+    the exception a mismatched libusb DLL raises, which the identity unit's real driver ops call too; `struct rtl_select_driver_ops` (`rtl_device_select_set_driver_ops()`, test hooks only)
     stands in for them. `rtl_device_create_selected()` takes the serial the `rtl:` spec names
     (`opts->rtl_dev_serial`, `dsd_rtl_device_field_parse()`) into the USB open (`rtl_device_open_by_serial()`): the
     serial is looked up at that open, the index found opened, and the raw handle's serial (`rtl_select_handle_serial()`)

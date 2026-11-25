@@ -280,8 +280,10 @@ test_unreadable_never_matches_and_lists_blank(void) {
     rtl_device_find_report rep;
     assert(find("", &rep) == RTL_DEVICE_FIND_FAILED);
     assert(find("STALE", &rep) == RTL_DEVICE_FIND_NOT_FOUND);
-    assert(rep.unreadable == 3 && rep.devices == 4);
-    assert(find("00000001", &rep) == RTL_DEVICE_FIND_FOUND && rep.index == 3 && rep.unreadable == 3);
+    /* Two whose strings could not be read, one that reads but reports no serial: counted apart. */
+    assert(rep.unreadable == 2 && rep.no_serial == 1 && rep.devices == 4);
+    assert(find("00000001", &rep) == RTL_DEVICE_FIND_FOUND && rep.index == 3 && rep.unreadable == 2);
+    assert(rep.no_serial == 1);
 
     rtl_device_entry list[4];
     DSD_MEMSET(list, 'x', sizeof list);
@@ -494,6 +496,25 @@ unplug_one_after_count(int n) {
     if (n == 1 && g_world.count > 0) {
         g_world.count--;
     }
+}
+
+/* A device whose strings could not be read and one that reports no serial are noted apart: only the first is "could
+   not be read"; the second can be opened by index only. */
+void
+test_list_cli_notes_unreadable_and_no_serial_apart(void) {
+    set_devs({nullptr, "", "00000003"});
+    cli_run run = run_cli();
+    assert(run.rc == 0);
+    assert(run.out.find("RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: (none)\n") != std::string::npos);
+    assert(run.err.find("1 device(s) could not be read (in use by another program, or no permission).")
+           != std::string::npos);
+    assert(run.err.find("1 device(s) report no serial: they can be opened by index only.") != std::string::npos);
+    /* No serial alone: no "could not be read" note at all. */
+    set_devs({"", "00000003"});
+    run = run_cli();
+    assert(run.err.find("could not be read") == std::string::npos);
+    assert(run.err.find("1 device(s) report no serial") != std::string::npos);
+    world_reset();
 }
 
 void
@@ -1170,6 +1191,7 @@ main(void) {
     test_no_devices_and_failed_enumeration();
     test_list_lines();
     test_list_cli_takes_the_growth();
+    test_list_cli_notes_unreadable_and_no_serial_apart();
     test_open_verified_serial();
     test_open_mismatch_then_retry();
     test_open_mismatch_twice_fails();

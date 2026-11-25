@@ -9762,10 +9762,10 @@ rtl_usb_serial_open_refused(const char* serial, rtl_device_find_result found, co
         LOG_ERROR("RTL-SDR: the device found with serial \"%s\" reported another serial when opened, twice; the "
                   "dongles are changing (plugged in or out).\n",
                   serial);
-    } else if (rep->unreadable > 0) {
+    } else if (rep->unreadable > 0 || rep->no_serial > 0) {
         LOG_ERROR("RTL-SDR: no device with serial \"%s\" (%d device(s) could not be read: in use by another program, "
-                  "or no permission).\n",
-                  serial, rep->unreadable);
+                  "or no permission; %d report no serial).\n",
+                  serial, rep->unreadable, rep->no_serial);
     } else {
         LOG_ERROR("RTL-SDR: no device with serial \"%s\".\n", serial);
     }
