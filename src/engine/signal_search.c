@@ -212,7 +212,9 @@ dsd_engine_signal_search_active(const dsd_state* state) {
 int
 dsd_engine_signal_search_tune_pending(const dsd_state* state) {
     const search_coord* c = state ? search_get(state) : NULL;
-    return c && c->ticket != 0U;
+    /* A tune the receiver deferred holds no ticket, but the TUNING phase retries it (search_wait_tune()) until its
+       landing is observed: the range's squelch is not the channel's being left. */
+    return c && (c->ticket != 0U || c->status.phase == DSD_SEARCH_TUNING);
 }
 
 static int

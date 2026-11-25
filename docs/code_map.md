@@ -6008,8 +6008,10 @@ suite runs under this compiler.
     (`dsd_engine_channel_scan_owed_recovery_window()`); `dsd_state::lcn_owed_recovery_armed`, set and cleared with it,
     lets a healthy pass's decision and tick skip the scan lookup, round 13), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
     a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
-    tune (`dsd_engine_signal_search_tune_pending()`; a search's ticket goes when its input is lost and when it stops, so
-    a stopped search never holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
+    tune (`dsd_engine_signal_search_tune_pending()`: its ticket, or the TUNING phase, which retries a tune the receiver
+    deferred with no ticket until its landing is observed, so the range's squelch is never written on the channel being
+    left; a search's ticket goes when its input is lost and when it stops, so a stopped search never
+    holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
     newest's `rtl_stream_receive_request_outcome()`, through the stream hooks; a stream's soft stop settles every request
     its joined demod thread never took, so none holds the next stream's start closed, round 10). It writes when one is due
     (`dsd_engine_receiver_gate_due()`: a stream open, a family request, a -Y commit or release, a trunk-scan landing, a
@@ -6084,6 +6086,7 @@ suite runs under this compiler.
     the stream's first sample heard from its talker's start inside its carrier, a second session after one stopped with
     a request its stream never took), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
+    `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
     `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
     edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running receiver

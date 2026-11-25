@@ -2259,6 +2259,29 @@ test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_sign
     assert(status.phase == DSD_SEARCH_STOPPED && tag_clear() && !dsd_engine_signal_search_tune_pending(s));
 }
 
+/* Issue #899: a visit's tune the receiver deferred holds no ticket, and the search retries it from
+   the TUNING phase. Until that retry lands, the tune is outstanding for the decoder's gate: the range's squelch, staged
+   at the queue, is not written onto the channel being left, so the write stays due for the landing. Before the fix
+   only a ticket counted, and the deferral let the gate write the range's squelch there and clear the write due. */
+static void
+test_deferred_visit_tune_stays_pending(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 77, 1, 0);
+    start_tag_session(o, s, &one);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && !dsd_engine_signal_search_tune_pending(s));
+    ready = 1;
+    defer = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !tune_pending && !status.hit.ended);
+    assert(dsd_engine_signal_search_tune_pending(s));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && tune_pending && dsd_engine_signal_search_tune_pending(s));
+    land(o, s);
+    assert(status.phase != DSD_SEARCH_TUNING && !dsd_engine_signal_search_tune_pending(s));
+    stop_tag_session(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
+}
+
 /* Hold and its release stay on the same visit: the tag does not change. */
 static void
 test_visit_tag_hold_keeps(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
@@ -5691,6 +5714,7 @@ main(void) {
     test_visit_tag_stop_restore(o, s, &config);
     test_visit_tag_stop_with_input_lost(o, s, &config);
     test_stop_then_input_lost_one_boundary(o, s, &config);
+    test_deferred_visit_tune_stays_pending(o, s, &config);
     test_visit_tag_hold_keeps(o, s, &config);
     test_session_end_keeps_tag_until_final_close(o, s, &config);
     test_visit_tag_cleared_at_search_start(o, s, &config);
