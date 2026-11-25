@@ -1199,8 +1199,7 @@ test_data_follow_first_voice_consumes_publication(dsd_opts* opts, dsd_state* st)
     rc |= expect_true("the first voice is handled", voice_epoch != 0U && sm()->vc_identity_published == 1);
     clock_at(0.4);
     tv_grant(opts, st, LPCN_A, 0, 400, 5);
-    rc |= expect_true("the voice grant for the LC's call is in place",
-                      vc(st) == VC_A && sm()->state == DMR_SM_TUNED && sm()->vc_clear_target == 400U);
+    rc |= expect_true("the voice grant for the LC's call is in place", vc(st) == VC_A && sm()->state == DMR_SM_TUNED);
     clock_at(0.5);
     voice(opts, st, 0);
     dsd_call_snapshot call;
@@ -1493,8 +1492,8 @@ test_xpt_status_refreshes_lc_channel(dsd_opts* opts, dsd_state* st) {
 /* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
    absolute grant (CdefParms CHAN 0) confirms that call in place on the same frequency. The followed call reads verified
    now, and its channel is unknown (the grant named none): neither the followed slot's call nor a companion LC's
-   publishes the RAS grant's channel. The grant is the call a P_CLEAR is matched to (vc_clear_*), while the grant
-   identity a later grant for the slot is compared with stays the followed grant's (issue #903). */
+   publishes the RAS grant's channel. The grant identity a later grant for the slot is compared with stays the followed
+   grant's (issue #903), and is never published under the in-place grant's evidence. */
 static int
 test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
@@ -1511,9 +1510,10 @@ test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     ev.slot = 0;
     rc |= expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
     rc |= expect_true("the followed call reads verified, its channel unknown",
-                      sm()->vc_clear_target == 200U && sm()->vc_crc_flags == 0U && sm()->vc_lpcn == 0
+                      sm()->vc_crc_flags == 0U && sm()->vc_lpcn == 0
                           && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE);
-    rc |= expect_true("the grant identity a later grant is compared with stays", sm()->vc_tg == 100);
+    rc |= expect_true("the grant identity a later grant is compared with stays, its publication spent",
+                      sm()->vc_tg == 100 && sm()->vc_identity_published == 1);
     voice(opts, st, 0);
     dsd_call_snapshot call;
     rc |= expect_true("the followed slot's call publishes no channel",
@@ -1525,6 +1525,37 @@ test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     voice(opts, st, 1);
     rc |= expect_true("the companion call publishes no channel",
                       dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == 0U);
+    return rc;
+}
+
+/* Under -F a RAS-accepted grant for TG 100 is followed, and before its first voice a checked LC names TG 200 on its slot
+   and a verified in-place grant confirms TG 200. TG 200 ends (its terminator) before any voice, and the next voice
+   there names nothing: the RAS grant's TG 100, still the grant identity a later grant is compared with, is never
+   published as that voice's call under the verified grant's provenance, nor at all. */
+static int
+test_in_place_verified_grant_spends_pending_publication(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    st->event_crc_invalid[0] = 0U;
+    int rc = expect_true("the RAS grant is followed, its publication pending",
+                         vc(st) == VC_A && sm()->vc_identity_published == 0);
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    clock_at(0.3);
+    tv_grant(opts, st, LPCN_A, 0, 200, 2);
+    rc |= expect_true("the verified grant is in place", vc(st) == VC_A && sm()->vc_tg == 100);
+    clock_at(0.4);
+    rc |= expect_true("TG 200 ends before any voice",
+                      dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR) > 0);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the next voice is not published as the RAS grant's TG 100",
+                      dsd_call_state_get(st, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+                          || call.policy_target_id != 100U);
     return rc;
 }
 
@@ -2987,6 +3018,7 @@ main(void) {
     rc |= test_xpt_status_keeps_grant_ras_mark(opts, st);
     rc |= test_xpt_status_refreshes_lc_channel(opts, st);
     rc |= test_in_place_chan0_grant_drops_channel(opts, st);
+    rc |= test_in_place_verified_grant_spends_pending_publication(opts, st);
     rc |= test_in_place_grant_names_channel_with_its_provenance(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

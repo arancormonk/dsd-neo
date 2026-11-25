@@ -14459,23 +14459,33 @@ Private per-protocol modules worth knowing about:
 - DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
-  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call's addresses
-  (`vc_clear_target`, `vc_clear_source`, `vc_clear_is_group`, with `vc_slot`: the followed grant's, or those of the
-  latest grant accepted on the followed slot since, a repeat of the followed grant included, and one whose call a
-  checked LC had named already; such a grant changes the clear's addresses and the followed channel's provenance,
-  never the grant identity `vc_tg`/`vc_dst`/`vc_src` a later grant for the slot is compared with). Those addresses
-  stay valid (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still
-  cleared by either party; only a new follow, a status follow or a release drops them, and a companion adopted for a
-  retired slot (`dmr_sm_end_changed_assignment()`) takes the addresses of the grant that named its call on the carrier,
-  or none (`dmr_sm_adopt_companion_clear_addresses()`, `test_p_clear_after_companion_adoption()`). Otherwise it prints "not for the followed
-  call" ("no followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or
-  release. Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy
-  companion slot keeps the carrier, zero hangtime included. Its slot release (`dmr_sm_release_slot()`) also retires
-  what would name a later transmission on that slot: its record, Capacity Plus seed and status-acquisition bit, and on
-  the followed slot the followed grant's pending publication and its acquisition, so a clear before the grant's first
-  voice leaves no acquisition holding the slot and the next anonymous voice there is not published as the cleared
-  grant's call (`test_p_clear_before_first_voice_retires_the_grant()`); the companion's call, activity and hangtime
-  and mono playout are untouched. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), the call being the followed grant's own identity
+  (`dmr_sm_grant_identity()`: `vc_tg`, or `vc_dst`/`vc_src`, while `vc_identity_known`), the one a later grant for the
+  slot is compared with. An in-place grant on the followed slot never changes it: a repeat of the followed grant
+  changes nothing at all (its record, dwell, channel, provenance and publication stay), and a grant naming the call a
+  checked LC named on the slot gives the followed channel that grant's number and provenance and spends the followed
+  grant's pending publication, but leaves the identity a clear is matched to the followed grant's. Decided limit (issue
+  #903, fail closed): no separate clear address is kept, so an addressed clear matches nothing while that identity
+  names no call: after the grant's transmission ends and another begins on the slot (a private call's reverse leg
+  included, `test_p_clear_private_reverse_leg()`), for the call a checked LC or an in-place grant names on the slot
+  instead of the followed grant's (`test_p_clear_in_place_grant_matching_slot_lc()`), for a companion adopted for a
+  retired slot (`dmr_sm_end_changed_assignment()`, whether or not a grant named its call,
+  `test_p_clear_after_companion_adoption()`), and under a status follow; such a call ends on its terminator, timeout or
+  hangtime. Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes
+  nothing: no burst hint, activity, force latch or release. Applied, it clears its own slot's burst hint and the
+  machine's voice flag for that slot only, so a busy companion slot keeps the carrier, zero hangtime included, unless
+  the clear is forced: a clear whose slot's call matches TG Hold (`dmr_cspdu_pf0_p_clear_from_hold()`, reasons 4 and
+  5) overrides the busy companion and returns to the control channel. Its slot release (`dmr_sm_release_slot()`, run
+  before a forced return too, so a return the tuner defers or refuses leaves the slot retired,
+  `test_p_clear_deferred_return_retires_the_slot()`) also retires what would name a later transmission on that slot:
+  its record, Capacity Plus seed and status-acquisition bit, its place in the carrier's acquisition
+  (`vc_cleared_slots`: no longer one of `dmr_sm_acquire_slots()`, until a grant names a call there anew, so a carrier
+  whose every acquisition slot was cleared holds nothing and returns at the next tick,
+  `test_p_clear_cleared_slot_holds_no_acquisition()`), and the followed grant's pending publication and acquisition on
+  the followed slot, or on either slot before a slotless grant's first voice (`test_p_clear_retires_a_slotless_grant()`),
+  so the next anonymous voice there is not published as the cleared grant's call
+  (`test_p_clear_before_first_voice_retires_the_grant()`); the companion's call, activity and hangtime and mono
+  playout are untouched. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
   followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
   call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
   followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Decided limit
@@ -14641,13 +14651,16 @@ Private per-protocol modules worth knowing about:
     tune, acquisition window, channel, CRC provenance, record and call (a new transmission, whatever its parties). The
     voice sync publishes the followed grant's identity only when its burst supplied accepted voice (a sync the
     confidence gate has not corroborated, as `dmrBSBootstrap()` emits it first, publishes nothing and leaves the
-    publication pending, `test_unaccepted_sync_publishes_no_grant()`), and only into a call that names nothing yet
+    publication pending, `test_unaccepted_sync_publishes_no_grant()`): voice accepted since the slot's previous sync
+    (`vc_voice_seen_m`), never voice an earlier sync already handled within the evidence window
+    (`test_publication_takes_the_bursts_own_verdict()`), and only into a call that names nothing yet
     (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
     grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
     splitting that call. Nor does it publish over a checked LC bound to the slot's active call
     (`dmr_sm_slot_lc_holds_call()`): an in-place grant on the followed slot naming the call the slot's record names
-    changes only the P_CLEAR addresses (`vc_clear_*`, `dmr_sm_names_followed_call()`), never the grant identity the
-    next grant for the slot is compared with. Nor does it publish a data grant's identity (`vc_data_call`): voice on
+    gives the followed channel its number and provenance and spends the pending publication
+    (`test_in_place_verified_grant_spends_pending_publication()`: the followed grant's parties are never published
+    under another grant's provenance), never changing the grant identity the next grant for the slot is compared with. Nor does it publish a data grant's identity (`vc_data_call`): voice on
     that slot is another call and stays as the voice names it (anonymous without an LC). That voice still spends the
     first-voice publication (`vc_identity_published`); only an in-place grant naming the followed slot anew (an adopted
     companion's) rearms it. A repeat is the same class and kind (group or private, voice

@@ -189,6 +189,14 @@ typedef struct {
        the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
        call of unknown identity). Cleared with the slots' records (every follow, release and acquisition). */
     int vc_acquire_slots;
+    /* Bit s: a P_CLEAR released slot s since the follow (dmr_sm_release_slot()): it holds no acquisition, carrier-wide
+       or the followed slot's, whatever the retention rule says of the carrier, until a grant names a call there anew.
+       Cleared with vc_acquire_slots. */
+    int vc_cleared_slots;
+    /* The accepted-voice time (dsd_state::dmr_confidence_voice_m) each slot's last voice sync saw: a grant is published
+       only on accepted voice newer than that (dmr_sm_publish_grant_identity()), never on voice an earlier sync already
+       handled. */
+    double vc_voice_seen_m[2];
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     int cc_hunt_index;
@@ -245,16 +253,6 @@ typedef struct {
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
     int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
-    /* vc_clear_*: the addresses a standard P_CLEAR is matched to (dmr_sm_names_followed_call()): the grant (or status)
-       the machine followed, or the latest in-place grant accepted on the followed slot since, even one naming the call
-       a checked LC named there already. That grant leaves the grant identity (vc_tg/vc_dst/vc_src, which a later grant
-       for the slot is compared with, dmr_sm_grant_replaces_followed()) as it was, so the P_CLEAR addresses are kept
-       apart. vc_addresses_known: they are valid. Unlike vc_identity_known it outlives a new transmission on the slot
-       (a private call's reverse leg), and it goes only when those addresses are replaced or cleared. */
-    int vc_addresses_known;
-    uint32_t vc_clear_target; // the talkgroup for a group call, the called unit for a private one
-    uint32_t vc_clear_source; // a private call's calling unit (0: not known)
-    int vc_clear_is_group;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
@@ -440,8 +438,10 @@ int dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot);
 
 /** @brief Whether an address received on @p slot of the followed carrier names the followed call (a P_CLEAR's, TS
  *  102 361-4 Table 7.30): dmr_sm_follows_slot(), and @p target the followed call's talkgroup when @p is_group, or
- *  either party of a followed private call when not, as the machine records the call (the followed grant's identity,
- *  or an in-place grant's on the followed slot since). A call a later LC names on the slot is not matched.
+ *  either party of a followed private call when not, as the followed grant's own identity names the call
+ *  (dmr_sm_grant_identity()). Fail closed: while that identity names no call (the call it named ended, a companion
+ *  adopted for a retired slot, a status follow), no address matches, nor does a call a later LC or in-place grant names
+ *  on the slot.
  */
 int dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target);
 
