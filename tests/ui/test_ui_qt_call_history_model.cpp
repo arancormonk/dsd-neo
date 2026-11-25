@@ -580,6 +580,139 @@ test_marked_and_serviced_notice_titles(void) {
     expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
+/* Issue #903: two NXDN Type-D calls to one 11-bit group under two prefixes, 03-0005 and 07-0005, from one radio
+ * number inside the merge window are two rows; the same prefix twice still folds into one conversation. */
+void
+test_type_d_prefixes_do_not_merge(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500800;
+    Event_History* a = ring.commit(0, 5, 100, when, when + 2, "03-0005");
+    a->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "03-0100");
+    Event_History* b = ring.commit(0, 5, 100, when + 3, when + 5, "07-0005");
+    b->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(b->src_str, sizeof(b->src_str), "%s", "07-0100");
+    model.refresh(ring.state);
+    expect("type-d prefixes: two rows", model.count() == 2);
+    Event_History* c = ring.commit(0, 5, 100, when + 6, when + 8, "07-0005");
+    c->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(c->src_str, sizeof(c->src_str), "%s", "07-0100");
+    model.refresh(ring.state);
+    expect("type-d same prefix folds", model.count() == 2);
+}
+
+/* Issue #903: a confirmed DCR call names no party; its call publishes the text identity "JPN DCR" with no number, so
+ * history keeps the row under that name (never "Call to 0"), where a bare sync's identity-less row is dropped. */
+void
+test_dcr_row_is_logged_by_name(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500600;
+    ring.commit(0, 0, 0, when, when + 3)->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("identity-less nxdn row dropped", model.count() == 0);
+    ring.commit(0, 0, 0, when + 100, when + 103, "JPN DCR")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("dcr row logged", model.count() == 1);
+    expect("dcr row named",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("JPN DCR"));
+}
+
+/* Issue #903: a DCR call ("JPN DCR", no numeric party) and an NXDN call that knows a party by number, here only its
+ * source, are two calls, as the call layer splits them (call_state_dcr_meets_numbered_party()): two adjacent rows on
+ * one named channel stay two rows, each way round. Two DCR rows still fold. */
+void
+test_dcr_and_numbered_rows_stay_apart(void) {
+    for (int pass = 0; pass < 2; pass++) {
+        const bool dcrFirst = pass == 1;
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        const time_t when = 1754500700;
+        const time_t later = when + 4;
+        Event_History* dcr =
+            ring.commit(0, 0, 0, dcrFirst ? when : later, dcrFirst ? when + 3 : later + 3, "JPN DCR", "", "Dispatch");
+        dcr->systype = DSD_SYNC_NXDN_POS;
+        model.refresh(ring.state);
+        Event_History* numbered =
+            ring.commit(0, 0, 123, dcrFirst ? later : when, dcrFirst ? later + 3 : when + 3, "", "", "Dispatch");
+        numbered->systype = DSD_SYNC_NXDN_POS;
+        model.refresh(ring.state);
+        expect(dcrFirst ? "dcr then source-only: two rows" : "source-only then dcr: two rows", model.count() == 2);
+    }
+
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500800;
+    ring.commit(0, 0, 0, when, when + 3, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    ring.commit(0, 0, 0, when + 4, when + 7, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("two dcr fragments fold", model.count() == 1);
+}
+
+/* Issue #903: an anonymous NXDN fragment on a named channel folds into the DCR row beside it (it names no party), but
+ * when an update of that fragment names a source, the radio never lands on the DCR row: a DCR call meets no numbered
+ * party on an update either (fragment_call_compatible()), so no "JPN DCR" row shows source 123. */
+void
+test_dcr_row_refuses_a_fragment_that_learns_a_source(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500900;
+    ring.commit(0, 0, 0, when, when + 3, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    Event_History* anonymous = ring.commit(0, 0, 0, when + 4, when + 7, "", "", "Dispatch");
+    anonymous->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("dcr + anonymous fragment: one row", model.count() == 1);
+
+    anonymous->source_id = 123;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    bool dcrWithSource = false;
+    for (int i = 0; i < model.count(); i++) {
+        const QModelIndex at = model.index(i);
+        if (model.data(at, CallHistoryModel::NameRole).toString() == QStringLiteral("JPN DCR")
+            && model.data(at, CallHistoryModel::SrcRole).toUInt() != 0U) {
+            dcrWithSource = true;
+        }
+    }
+    expect("dcr row never shows the fragment's later source", !dcrWithSource);
+}
+
+/* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
+ * number is (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text. A text
+ * target with no number and an M17 callsign keep naming their rows over the channel. */
+void
+test_type_d_text_yields_to_names(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500400;
+    ring.commit(0, 5, 100, when, when + 3, "03-0005", "", "Fire Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    ring.commit(0, 5, 101, when + 100, when + 103, "03-0005", "Metro Fire", "Fire Dispatch")->systype =
+        DSD_SYNC_NXDN_POS;
+    ring.commit(0, 5, 102, when + 200, when + 203, "03-0005", "", "")->systype = DSD_SYNC_NXDN_POS;
+    ring.commit(0, 0, 103, when + 300, when + 303, "CQCQCQ", "", "Fire Dispatch")->systype = DSD_SYNC_DSTAR_HD_POS;
+    ring.commit(0, 123456, 104, when + 400, when + 403, "N0CALL", "", "Fire Dispatch")->systype = DSD_SYNC_M17_LSF_POS;
+    model.refresh(ring.state);
+    QStringList names;
+    for (int i = 0; i < model.count(); i++) {
+        names << model.data(model.index(i), CallHistoryModel::NameRole).toString();
+    }
+    expect("type-d rows: five rows", model.count() == 5);
+    expect("type-d rows: channel, list name, text; text and callsign keep theirs",
+           names.contains(QStringLiteral("Fire Dispatch")) && names.contains(QStringLiteral("Metro Fire"))
+               && names.contains(QStringLiteral("03-0005")) && names.contains(QStringLiteral("CQCQCQ"))
+               && names.contains(QStringLiteral("N0CALL")));
+}
+
 /* The scan channel a row was heard on rides its own role. The system stays the
  * saved entry the session runs, for labelled and unlabelled rows alike, so the
  * "All systems" pill keeps offering what the Home screen lists and never a
@@ -7830,6 +7963,11 @@ main(int argc, char** argv) {
     test_labelled_notice_name_drops_its_own_channel_prefix();
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
+    test_type_d_text_yields_to_names();
+    test_dcr_row_is_logged_by_name();
+    test_dcr_and_numbered_rows_stay_apart();
+    test_dcr_row_refuses_a_fragment_that_learns_a_source();
+    test_type_d_prefixes_do_not_merge();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();

@@ -2811,6 +2811,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_proto_p25
             dsd-neo_core
             "-Wl,--end-group"
+            dsd-neo_test_support
             ${LIBS}
     )
 else()
@@ -2821,6 +2822,7 @@ else()
             dsd-neo_proto_dmr
             dsd-neo_proto_p25
             dsd-neo_core
+            dsd-neo_test_support
             ${LIBS}
     )
 endif()
@@ -2872,7 +2874,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_nxdn_element_bounds
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 target_link_libraries(
     dsd-neo_test_nxdn_element_bounds
@@ -14997,7 +15001,8 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
-# DMR Tier III C_MOVE as Move TSCC (informational; an absolute move learns the TSCC) and grant channels
+# DMR Tier III C_MOVE as Move TSCC (TS 102 361-4 Table 7.17; FID 0 only): informational (no row, no grant, no tune, no
+# slot or burst change; an absolute move learns the TSCC), next to the logical and absolute grants that still tune
 add_executable(
     dsd-neo_test_dmr_t3_cmove
     protocol/dmr/test_dmr_t3_cmove.c
@@ -15045,6 +15050,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
         dsd-neo_platform
         dsd-neo_test_runtime_link_only
         ${DSD_NEO_TEST_MATH_LIB}
@@ -16698,6 +16704,35 @@ add_test(
     COMMAND dsd-neo_test_dmr_flco_capmax_private
 )
 
+# Under FID 0 only FLCO 0x00 and 0x03 open voice calls; a RAS-relaxed LC never sets the Hytera XPT branding; the XPT
+# group alert names 250-254 as emergency groups and 255 as All Call.
+add_executable(dsd-neo_test_dmr_flco_fid0 protocol/dmr/test_dmr_flco_fid0.c)
+target_include_directories(
+    dsd-neo_test_dmr_flco_fid0
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_fid0
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_FLCO_FID0 COMMAND dsd-neo_test_dmr_flco_fid0)
+
+# The Capacity Plus and Connect Plus CSBK branding is set only from a CSBK whose own CRC passed (no RAS/-F acceptance),
+# and no RAS-accepted LC, CSBK or Capacity Max C_ALOHA clears or replaces a checked trunk brand.
+add_executable(
+    dsd-neo_test_dmr_csbk_branding
+    protocol/dmr/test_dmr_csbk_branding.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_csbk_branding
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_csbk_branding
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_CSBK_BRANDING COMMAND dsd-neo_test_dmr_csbk_branding)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c
@@ -18117,7 +18152,7 @@ add_test(NAME DMR_T3_CHANNELS COMMAND dsd-neo_test_dmr_t3_channels)
 add_executable(dsd-neo_test_dmr_preempt protocol/dmr/test_dmr_preempt.c)
 target_include_directories(
     dsd-neo_test_dmr_preempt
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_preempt PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_PREEMPT COMMAND dsd-neo_test_dmr_preempt)
@@ -18146,7 +18181,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_grant_tune_matrix
-    PRIVATE dsd-neo_proto_nxdn
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
 )
 add_test(
     NAME NXDN_GRANT_TUNE_MATRIX
@@ -18168,7 +18203,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
-    PRIVATE dsd-neo_proto_nxdn
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
 )
 add_test(
     NAME NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE
@@ -24280,7 +24315,7 @@ if(DSD_HAS_RADIO)
             ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
             "-DMODE=-fm -xd -Z"
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/dpmr.iq.json"
-            "-DEXPECTED=Comms Start[^\n]* TG=3939[*]5[*] Src=3939[*]5[*][^\n]* Channel Code=02"
+            "-DEXPECTED=Comms Start[^\n]* Called=3939[*]5[*] Src=3939[*]5[*][^\n]* Channel Code=02"
             -DMIN_MATCHES=9 "-DEXPECTED2=CCH OK/OK" -DMIN_MATCHES2=50
             "-DEXPECTED3=Powersave WU=1[^0-9]"
             "-DEVENT_EXPECTED=dPMR CC: 02; TGT: 3939[*]5[*]; SRC: 3939[*]5[*];"

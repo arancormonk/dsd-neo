@@ -249,10 +249,12 @@ recent_row_target(const dsd_state* state, uint8_t index, uint64_t* target) {
 
 /* ---- C_MOVE: Move TSCC ---- */
 
-/* A Move TSCC CSBK (Table 7.17): Mask, Reg, Backoff, Physical Channel Number @p pcn and MS address @p ms. With @p pcn
-   0xFFF and @p rx_int nonzero, its MV_AP block (Table 7.18) defines CHAN @p apcn on @p rx_int MHz plus @p rx_step
-   125 Hz steps, and it is handed over as a two-block MBC; otherwise as a single CSBK. */
+/* A Move TSCC CSBK (Table 7.17): Mask, Reg, Backoff, Physical Channel Number @p pcn and MS address @p ms, under
+   feature set @p fid (0, the standard one, unless a test names another). With @p pcn 0xFFF and @p rx_int nonzero, its
+   MV_AP block (Table 7.18) defines CHAN @p apcn on @p rx_int MHz plus @p rx_step 125 Hz steps, and it is handed over
+   as a two-block MBC; otherwise as a single CSBK. */
 typedef struct {
+    uint8_t fid;
     uint8_t mask;
     uint8_t reg;
     uint8_t backoff;
@@ -270,8 +272,10 @@ csbk_move_tscc(dsd_opts* opts, dsd_state* state, const move_tscc* mv) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(bytes, 0, sizeof(bytes));
     bytes[0] = 57U;
+    bytes[1] = mv->fid;
     bits[0] = 1U;
     put_bits(bits, 2U, 57U, 6U);
+    put_bits(bits, 8U, mv->fid, 8U);
     put_bits(bits, 25U, mv->mask, 5U);
     bits[35] = (uint8_t)(mv->reg & 1U);
     put_bits(bits, 36U, mv->backoff, 4U);
@@ -559,12 +563,35 @@ test_logical_move_tscc_uses_the_users_channels(dsd_opts* opts, dsd_state* state)
     assert(strstr(g_out, " Move TSCC: MS 79 to channel 293") != NULL && strstr(g_out, "MHz") == NULL);
 }
 
+/* Issue #903: opcode 57 under a manufacturer's feature set is not a C_MOVE (Table 7.17: "FID shall be set to 0000
+   0000"): it prints as a manufacturer CSBK, in its logical or its absolute form, and nothing else; no channel map row,
+   no candidate, and a followed call stays as it was. */
+static void
+test_move_tscc_needs_the_standard_fid(dsd_opts* opts, dsd_state* state) {
+    const move_tscc logical = {.fid = 0x10U, .mask = 3U, .reg = 1U, .backoff = 5U, .pcn = MV_LPCN3, .ms = 4321U};
+    const move_tscc absolute = {
+        .fid = 0x10U, .pcn = 0xFFFU, .ms = 4321U, .apcn = 0x0123U, .rx_int = 453U, .rx_step = 4000U};
+    const move_tscc* const forms[] = {&logical, &absolute};
+    for (size_t i = 0; i < sizeof forms / sizeof forms[0]; i++) {
+        follow_call_with_companion(opts, state);
+        const unsigned int tunes = state->p25_sm_tune_count;
+        const uint32_t revision = dmr_t3_chan_revision(state);
+        csbk_move_tscc_captured(opts, state, forms[i]);
+        assert(strstr(g_out, "Move TSCC") == NULL);
+        assert(strstr(g_out, "Manufacturer CSBK: FID 10; Opcode 39;") != NULL);
+        expect_followed_call_untouched(state, tunes);
+        assert(state->trunk_chan_map[0x0123U] == 0 && dmr_t3_chan_revision(state) == revision);
+        assert(candidates_count(state) == 0);
+    }
+}
+
 static void
 test_move_tscc_and_grant_channels(dsd_opts* opts, dsd_state* state) {
     dsd_decode_clock_use_test(k_t0_ns);
     test_logical_move_tscc_is_informational(opts, state);
     test_logical_move_tscc_uses_the_users_channels(opts, state);
     test_absolute_move_tscc_learns_the_tscc(opts, state);
+    test_move_tscc_needs_the_standard_fid(opts, state);
     test_grant_layout_move_follows_nothing(opts, state);
     test_t3_grant_lpcn_kind(opts, state);
     test_t3_absolute_grant_uses_mbc_lpcn(opts, state);

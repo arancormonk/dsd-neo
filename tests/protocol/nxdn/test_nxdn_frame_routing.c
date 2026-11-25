@@ -4,6 +4,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -121,8 +122,6 @@ static int g_stub_cac_resets_sync;
 /* The SCCH's message retunes the receiver (a busy repeater message followed, a preemption): the tune's result, or
    -1 for no tune. */
 static int g_stub_scch_tune = -1;
-/* The SCCH names the Type-D layout, as nxdn_scch_prepare_type_d() does for every SCCH that passes its CRC. */
-static int g_stub_scch_names_type_d;
 /* The SCCH stub's content is not defined by TS 1-E (nxdn_scch_content_valid(): it marks the frame's SCCH invalid). */
 static int g_stub_scch_invalid;
 /* The SCCH stub places the scrambler register at this frame's start, as a verified SCCH does (0: no). */
@@ -144,8 +143,8 @@ static unsigned long long g_stub_facch_delivers_iv;
 static unsigned long long g_stub_facch_loads_key;
 /* The DCR SACCH2 is a first block, which resets the scrambler register (nxdn_update_sacch2_identity_state()). */
 static int g_stub_sacch2_resets_register;
-/* The location category the FACCH1 decoder read. */
-static char g_facch_category[32];
+/* Whether the FACCH1 decoder read the Type-D layout (dsd_state::nxdn_frame_type_d). */
+static int g_facch_type_d;
 
 static dsd_trunk_tune_result
 stub_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -190,7 +189,6 @@ reset_state(void) {
     g_stub_facch_ok = 1;
     g_stub_cac_resets_sync = 0;
     g_stub_scch_tune = -1;
-    g_stub_scch_names_type_d = 0;
     g_stub_scch_invalid = 0;
     g_stub_scch_places_register = 0ULL;
     g_positioned_part = -1;
@@ -203,7 +201,7 @@ reset_state(void) {
     g_stub_facch_delivers_iv = 0ULL;
     g_stub_facch_loads_key = 0ULL;
     g_stub_sacch2_resets_register = 0;
-    g_facch_category[0] = '\0';
+    g_facch_type_d = -1;
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -321,12 +319,32 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
     }
 }
 
+/* A decoded field or FACCH1 half whose CRC passed (@p ok) or failed. */
+static nxdn_field_decode
+stub_field(int ok) {
+    nxdn_field_decode out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.crc = ok ? 0U : 1U;
+    return out;
+}
+
+nxdn_field_decode
+nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]) {
+    g_last_sacch_bit = bits[0];
+    g_last_sacch_reliab = reliab[0];
+    return stub_field(g_stub_sacch_ok);
+}
+
 nxdn_channel_result
-nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
+                  uint8_t check) {
     (void)opts;
-    nxdn_channel_result result = {0U, 0U};
-    nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
-    if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
+    (void)trellis_buf;
+    (void)m_data;
+    nxdn_channel_result result = {0};
+    const int ok = crc == check;
+    nxdn_stub_note_crc(state, ok, NXDN_EVIDENCE_WEAK);
+    if (ok && g_stub_scch_places_register != 0ULL) {
         /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) gives its position to the frame, placing nothing
            itself: the first segment, or the fourth, which completes a VCALL selecting Scramble. */
         const int part = g_stub_sacch_selects_scramble ? 3 : 0;
@@ -337,26 +355,27 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     }
     g_sacch_calls++;
     g_sacch_frame_channel = state->nxdn_frame_channel;
-    g_last_sacch_bit = bits[0];
-    g_last_sacch_reliab = reliab[0];
     return result;
 }
 
-nxdn_channel_result
-nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
+nxdn_field_decode
+nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]) {
     (void)bits;
     (void)reliab;
-    nxdn_channel_result result = {0U, 0U};
-    /* Content TS 1-E does not define is no evidence (nxdn_deperm_scch_soft()). */
-    nxdn_stub_note_crc(state, g_stub_scch_ok && !g_stub_scch_invalid, NXDN_EVIDENCE_WEAK);
+    return stub_field(g_stub_scch_ok);
+}
+
+nxdn_channel_result
+nxdn_scch_commit(dsd_opts* opts, dsd_state* state, const nxdn_field_decode* scch, uint8_t direction) {
+    nxdn_channel_result result = {0};
+    const int ok = scch->crc == scch->check;
+    /* Content TS 1-E does not define is no evidence (nxdn_scch_commit()). */
+    nxdn_stub_note_crc(state, ok && !g_stub_scch_invalid, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
-    if (g_stub_scch_ok && g_stub_scch_names_type_d) {
-        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
-        if (g_stub_scch_invalid) {
-            result.scch_invalid = 1U;
-        }
+    if (ok && g_stub_scch_invalid) {
+        result.scch_invalid = 1U;
     }
-    if (g_stub_scch_ok && g_stub_scch_places_register != 0ULL) {
+    if (ok && g_stub_scch_places_register != 0ULL) {
         result.seed_part = g_stub_scch_part; /* a verified SCCH: the first frame unless a test names another */
     }
     if (g_stub_scch_tune >= 0) {
@@ -391,34 +410,52 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
     g_last_cac_reliab = reliab[0];
 }
 
+nxdn_facch1_decode
+nxdn_facch1_decode_soft(const uint8_t bits[144], const uint8_t reliab[144]) {
+    nxdn_facch1_decode out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.crc = g_stub_facch_ok ? 0U : 1U;
+    g_last_facch_bit = bits[0];
+    g_last_facch_reliab = reliab[0];
+    return out;
+}
+
+/* A FACCH1 the stub makes a CCH_INFO says Type-C (nxdn_facch1_says_type_c()). */
+int
+nxdn_facch1_says_type_c(const nxdn_facch1_decode* facch1) {
+    return facch1->crc == facch1->check && g_stub_facch_notes_type_c;
+}
+
 void
-nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t part) {
+nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint16_t crc,
+                   uint16_t check, uint8_t frame) {
     (void)opts;
-    nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
+    (void)trellis_buf;
+    (void)m_data;
+    const int ok = crc == check;
+    nxdn_stub_note_crc(state, ok, NXDN_EVIDENCE_STRONG);
     g_facch_calls++;
     g_facch_frame_channel = state->nxdn_frame_channel;
-    DSD_SNPRINTF(g_facch_category, sizeof(g_facch_category), "%s", state->nxdn_location_category);
-    g_facch_part_mask |= 1 << part;
-    if (g_stub_facch_ok && g_stub_facch_selects_scramble) {
+    g_facch_type_d = state->nxdn_frame_type_d;
+    g_facch_part_mask |= 1 << frame;
+    if (ok && g_stub_facch_selects_scramble) {
         state->nxdn_cipher_type = 1U;
     }
-    if (g_stub_facch_ok && g_stub_facch_delivers_iv != 0ULL) {
+    if (ok && g_stub_facch_delivers_iv != 0ULL) {
         state->nxdn_cipher_type = 2U;
         state->nxdn_payload_mi = g_stub_facch_delivers_iv;
         state->nxdn_iv_on_air = 1U;
     }
-    if (g_stub_facch_ok && g_stub_facch_loads_key != 0ULL) {
+    if (ok && g_stub_facch_loads_key != 0ULL) {
         state->R = g_stub_facch_loads_key;
     }
-    if (g_stub_facch_ok && g_stub_facch_notes_type_c) {
+    if (ok && g_stub_facch_notes_type_c) {
         /* dsd_nxdn_note_type_c(): the site is Type-C, and the SCCH's "Type-D" layout goes. */
         state->nxdn_site.type_c = 1U;
         if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
         }
     }
-    g_last_facch_bit = bits[0];
-    g_last_facch_reliab = reliab[0];
 }
 
 void
@@ -435,13 +472,27 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     }
 }
 
+struct nxdn_facch3_udch2_message
+nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]) {
+    (void)bits;
+    (void)reliab;
+    struct nxdn_facch3_udch2_message out;
+    DSD_MEMSET(&out, 0, sizeof(out));
+    out.crc[0] = out.crc[1] = 1U; /* failed: the routing cases classify by their SCCH stub */
+    return out;
+}
+
+int
+nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message) {
+    return message->crc[0] == message->check[0] && message->crc[1] == message->check[1];
+}
+
 void
-nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
                               uint8_t is_facch3) {
     (void)opts;
     (void)state;
-    (void)bits;
-    (void)reliab;
+    (void)message;
     if (is_facch3 != 0U) {
         g_facch3_calls++;
     } else {
@@ -474,6 +525,11 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
 void
 nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
     state->nxdn_cipher_type = cipher;
+}
+
+void
+dsd_rxid_forget_nxdn_type_d(dsd_state* state) {
+    (void)state;
 }
 
 void
@@ -1139,12 +1195,11 @@ test_type_d_category_outlives_only_a_confirmed_frame(void) {
         reset_state();
         DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
         g_stub_scch_ok = 1;
-        g_stub_scch_names_type_d = 1;
         g_stub_facch_ok = k_cases[i].facch_ok;
         char label[96];
         (void)route_frame(0x73U);
         DSD_SNPRINTF(label, sizeof label, "%s: FACCH1 read the Type-D layout", k_cases[i].label);
-        rc |= expect_string(label, g_facch_category, "Type-D");
+        rc |= expect_int(label, g_facch_type_d, 1);
         DSD_SNPRINTF(label, sizeof label, "%s: category after the frame", k_cases[i].label);
         rc |= expect_string(label, g_state.nxdn_location_category, k_cases[i].kept);
     }
@@ -1158,12 +1213,11 @@ test_undefined_scch_layout_stays_with_its_frame(void) {
     reset_state();
     DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", " ");
     g_stub_scch_ok = 1;
-    g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 1;
     (void)route_frame(0x73U);
     int rc = 0;
-    rc |= expect_string("undefined scch: FACCH1 read the Type-D layout", g_facch_category, "Type-D");
+    rc |= expect_int("undefined scch: FACCH1 read the Type-D layout", g_facch_type_d, 1);
     rc |= expect_string("undefined scch: category after the frame", g_state.nxdn_location_category, " ");
     return rc;
 }
@@ -1414,7 +1468,6 @@ test_diagnostic_only_frame_holds_no_scan(void) {
         g_state.nxdn_confirmed = 1;
         g_stub_facch_ok = 0;
         g_stub_scch_ok = 1;
-        g_stub_scch_names_type_d = 1;
         g_stub_scch_invalid = valid ? 0 : 1;
         g_state.last_cc_sync_time = 1000;
         (void)route_frame(0x70U); /* data only: SCCH and two FACCH1 halves */
@@ -1500,7 +1553,6 @@ spacing_confirmation_case(int y_scan) {
     rc |= expect_int("pending facch: no stamp yet", (int)g_state.last_cc_sync_time, 1000);
     rc |= expect_int("pending facch: no proven content yet", (int)g_state.scan_y_content_seq, 0);
     g_stub_scch_ok = 1;
-    g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 0;
     (void)route_nxdn48_frame_at(0x62U, 30192U);
@@ -1512,7 +1564,6 @@ spacing_confirmation_case(int y_scan) {
     (void)route_nxdn48_frame_at(0x62U, 30384U);
     rc |= expect_int("later diagnostic frame: the stamp not extended", (int)g_state.last_cc_sync_time, 1000);
     g_stub_scch_ok = 0;
-    g_stub_scch_names_type_d = 0;
     g_stub_scch_invalid = 0;
     (void)route_nxdn48_frame_at(0x62U, 30576U);
     rc |= expect_int(y_scan ? "later unchecked frame: the -Y hold not refreshed"
@@ -1536,7 +1587,6 @@ test_rollback_keeps_a_verified_type_c(void) {
     DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
     g_state.nxdn_site.type_c = 0U;
     g_stub_scch_ok = 1;
-    g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 1;
     g_stub_facch_notes_type_c = 1;
@@ -1659,6 +1709,41 @@ test_y_scan_hold_needs_a_checked_frame(void) {
     return rc;
 }
 
+/* A composite voice frame (RTCH_C, LICH 0x75, Type-C known) on the followed traffic channel F, which is not this
+   site's control channel when @p foreign: another channel's frame. The -4 scrambler with a key is set, the cipher
+   clear, and the scan hold unset. */
+static void
+limazulu_case(int foreign) {
+    reset_state();
+    g_state.nxdn_site.type_c = 1U;
+    g_opts.trunk_enable = 1;
+    g_opts.trunk_is_tuned = foreign ? 1 : 0;
+    g_state.trunk_vc_freq[0] = 451000000;
+    g_state.p25_cc_freq = 452000000;
+    g_state.trunk_cc_freq = 452000000;
+    g_state.M = 1;
+    g_state.R = 0x1234ULL;
+    g_state.nxdn_cipher_type = 0U;
+    g_state.last_cc_sync_time = 0;
+}
+
+/* Another channel's voice frame takes nothing of the LimaZulu tweak (-DLZ=ON, NXDN_FRAME_ROUTING_LZ): it forces no
+   scrambler on the followed call and holds no scan (issue #903). The followed channel's own frame still takes both. */
+static int
+test_foreign_voice_frame_skips_the_limazulu_tweak(void) {
+    limazulu_case(1);
+    int rc = expect_int("foreign voice frame routed", route_frame(0x75U), 1);
+    rc |= expect_int("foreign voice frame: no forced scrambler", (int)g_state.nxdn_cipher_type, 0);
+    rc |= expect_int("foreign voice frame: no scan hold", (int)g_state.last_cc_sync_time, 0);
+#ifdef LIMAZULUTWEAKS
+    limazulu_case(0);
+    rc |= expect_int("own voice frame routed", route_frame(0x75U), 1);
+    rc |= expect_int("own voice frame: forced scrambler", (int)g_state.nxdn_cipher_type, 1);
+    rc |= expect_int("own voice frame: scan hold", g_state.last_cc_sync_time != 0, 1);
+#endif
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1697,6 +1782,7 @@ main(void) {
     rc |= test_unconfirmed_frame_keeps_the_shared_register();
     rc |= test_frame_places_the_grid_on_the_next_fsw();
     rc |= test_y_scan_hold_needs_a_checked_frame();
+    rc |= test_foreign_voice_frame_skips_the_limazulu_tweak();
     dsd_decode_clock_use_system();
 
     if (rc == 0) {

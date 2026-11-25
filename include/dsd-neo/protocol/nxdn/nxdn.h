@@ -78,17 +78,20 @@ void nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state);
 
 /**
  * @brief Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's
- * (dsd_state::nxdn_frame_channel), or the route it followed (dsd_state::nxdn_follow) is a Type-D repeater's and the
- * receiver is still tuned there.
+ * (dsd_state::nxdn_frame_channel) read in the Type-D layout (dsd_state::nxdn_frame_type_d; an RTCH2 reading of a value
+ * a composite channel shares, with no Type-D evidence, keeps the Type-C layout and is not), or the route it followed
+ * (dsd_state::nxdn_follow) is a Type-D repeater's and the receiver is still tuned there.
  */
 int nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief The source a group call's admission is judged with, as NXDN's grant and held-call paths judge it
  * (dsd_tg_policy_evaluate_group_source_fallback()): @p source for a Type-C call, whose target with no row is judged by
- * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone, which is one the held call
- * (dsd_state::nxdn_call) names as Type-D (bound to @p transmission, dsd_call_snapshot_transmission()) or one heard while
- * the receiver is on a Type-D channel (nxdn_receiver_on_type_d()). 0 also for a source that is no 32-bit ID.
+ * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone. The held call (dsd_state::nxdn_call) bound
+ * to @p transmission (dsd_call_snapshot_transmission()) gives its own layout verdict, Type-D or not, whatever the
+ * receiver's route or live frame, and its own verified source in place of @p source, which an INFO3 may have renamed;
+ * a transmission with no such verdict is Type-D while the receiver is on a Type-D channel (nxdn_receiver_on_type_d()).
+ * 0 also for a source that is no 32-bit ID.
  */
 uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint64_t transmission,
                                       uint64_t source);
@@ -96,6 +99,11 @@ uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* sta
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
+
+/* nxdn_cipher_observe() for an observation naming the key ID @p key_id (0 for a DCR SACCH-2, which names none): the
+ * applied key (dsd_state::nxdn_key) takes @p key_id only when the observation's cipher is the one applied afterwards,
+ * so the applied cipher and key stay one pair, and a contradiction the hysteresis held back changes neither. */
+uint8_t nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong);
 void nxdn_cipher_force(dsd_state* state, uint8_t cipher);
 void nxdn_cipher_class_reset(dsd_state* state);
 
@@ -112,7 +120,10 @@ void nxdn_confirm_reset(dsd_state* state);
  *
  * Defined in src/protocol/nxdn/nxdn_confirm.c and declared here for the same reason as
  * nxdn_confirm_reset(): the grading stays inside that module, and nxdn_frame() reports the
- * answer outwards as its 2 (#445).
+ * answer outwards as its 2 (#445). Narrower than nxdn_confirm_is_confirmed(), which stays true
+ * across a confirmed transmission's empty frames: only a frame that checked out itself proves the
+ * profile it was read on, or the noise syncs that follow a transmission would go on holding a
+ * profile nothing is decoding on. Read it after nxdn_confirm_end_frame().
  */
 int nxdn_confirm_frame_proved(const dsd_state* state);
 int nxdn_cipher_established_enc(const dsd_state* state);

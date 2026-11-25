@@ -328,7 +328,11 @@ Windows console runs:
   `-y`, with `-o null`, muted, or under any preset (issue #653). The system, target and source in a file's name have
   the characters a file name cannot hold (`/`, as in an M17 or D-STAR callsign, `\`, `:`, `*`, `?`, `"`, `<`, `>`,
   `|`, control characters, a byte that is not part of valid UTF-8) and dots and spaces replaced with `_`; the call
-  history and rdio-scanner metadata keep them as received. A recording whose write falls short (a full disk) ends there and is published with what it holds;
+  history and rdio-scanner metadata keep them as received. An NXDN Type-D (IDAS) call names its group and radio
+  under their home repeater prefix, `TGT_03-0005_SRC_03-0100` for group 5 and radio 100 under prefix 3, as the call
+  history shows them. Each party is named by its text where it has one, by its number otherwise, and by nothing when
+  it has neither, so a Type-D call whose source never decoded is `TGT_03-0005_SRC_`.
+  A recording whose write falls short (a full disk) ends there and is published with what it holds;
   one that does not close cleanly keeps its `TEMP_` name. A slot file that fails to open opens again at the slot's
   next call end. Each kind of failure (open, write, close, rename) is logged the first time in a run and counted after.
   Conventional NFM calls are recorded too, at 48 kHz, by default each starting a moment before the call was picked up
@@ -769,9 +773,9 @@ not decode, so with `--rdio-mode` set dsd-neo gives such a call a number for the
   numbers.
 - M17 calls to the broadcast address, or to a callsign whose encoded address is above 4294967295 (32 bits). A
   callsign below that is the call's talkgroup, as before.
-- An NXDN call to group 0 (an unaddressed call, heard on its RAN alone), an EDACS system all-call, a TETRA call
-  admitted on its speech before any call setup names it, and a DMR, NXDN or P25 call whose talkgroup did not decode or
-  was protected.
+- An NXDN call to group 0 (an unaddressed call, heard on its RAN alone), an NXDN DCR call (shown as `JPN DCR`, it
+  names no group or radio), an EDACS system all-call, a TETRA call admitted on its speech before any call setup names
+  it, and a DMR, NXDN or P25 call whose talkgroup did not decode or was protected.
 
 Which calls get a number:
 
@@ -3094,7 +3098,10 @@ channel is delayed.
     target clear (or decryptable), when key material changes (each locked target then re-verifies with one silent
     probe on its next grant), or via the menu's "Clear lockouts" action, which purges every target's
     ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
-    writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
+    writing "ENC LO" rows into the group list. An encrypted NXDN interconnect or speed dial call locks its called
+    number out as a radio, as an individual call does, so for the rest of the session the lockout also skips other
+    private calls through that number. An encrypted NXDN call of generic voice (a Type-D session call) is dropped the
+    same way but locks nothing out. While `--enc-follow` is active the ledger is suspended rather than
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
   - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
     they do not readmit the supergroup's grants.

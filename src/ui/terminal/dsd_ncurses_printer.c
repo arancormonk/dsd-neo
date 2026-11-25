@@ -43,6 +43,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
@@ -2976,9 +2977,12 @@ ui_render_active_channel_list(const dsd_opts* opts, const dsd_state* state, unsi
     }
 }
 
+/* Whether the decoder reads this carrier as IDAS (Type-D): the "Type-D" category a checked SCCH of this carrier set
+   (dsd_nxdn_type_d_layout_fresh()), never one another carrier's left, which a carrier boundary or trunk-scan switch
+   makes stale (issue #903). */
 static int
 ui_nxdn_is_idas(const dsd_state* state) {
-    return strcmp(state->nxdn_location_category, "Type-D") == 0;
+    return dsd_nxdn_type_d_layout_fresh(state);
 }
 
 /* Which site line shows: the kind of site the received identity names (IDAS parts, or a Type-C location or RAN), as the
@@ -3101,6 +3105,17 @@ ui_nxdn_alias_text(const dsd_opts* opts, const dsd_state* state) {
                                                                                     : "";
 }
 
+/* A party of @p call: an NXDN IDAS (Type-D) one by its "pp-iiii" @p text, which tells two home repeater prefixes
+   apart (issue #903), any other by its number @p id. */
+static void
+ui_print_nxdn_party(const dsd_call_snapshot* call, const char* label, const char* text, unsigned long id) {
+    if (DSD_SYNC_IS_NXDN(call->protocol) && text[0] != '\0') {
+        printw("%s: [%s] ", label, text);
+    } else {
+        printw("%s: [%5lu] ", label, id);
+    }
+}
+
 static void
 ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     dsd_call_snapshot call;
@@ -3108,8 +3123,8 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
     const unsigned long source = call.ota_source_id <= ULONG_MAX ? (unsigned long)call.ota_source_id : 0UL;
     printw("| ");
-    printw("TGT: [%5lu] ", target);
-    printw("SRC: [%5lu] ", source);
+    ui_print_nxdn_party(&call, "TGT", call.target_text, target);
+    ui_print_nxdn_party(&call, "SRC", call.source_text, source);
     printw("Alias: [%s]", ui_nxdn_alias_text(opts, state));
     {
         char group_mode[8];

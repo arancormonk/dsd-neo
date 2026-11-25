@@ -30,4 +30,23 @@ dsd_test_dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t*
     dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
 }
 
+/* The PDU in @p bits / @p bytes as the block assembler hands over an MBC with @p continuations continuation blocks after
+   its header (LB 0), CRC checked. The first continuation's CSBKO stays what the test wrote at bits 98..103 (a block of
+   another message keeps its own); with one continuation it is the last block (LB 1), with more the first one is not. */
+static inline void
+dsd_test_dmr_cspdu_mbc_blocks(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint8_t continuations) {
+    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
+    uint8_t cont_csbko = 0U;
+    for (int i = 0; i < 6; i++) {
+        cont_csbko = (uint8_t)((cont_csbko << 1U) | (bits[98 + i] & 1U));
+    }
+    const uint8_t cont_lb = (uint8_t)(continuations == 1U ? 1U : 0U);
+    bytes[0] = csbko;
+    bytes[12] = (uint8_t)((cont_lb << 7U) | cont_csbko);
+    bits[0] = 0U;
+    bits[96] = cont_lb;
+    const dmr_cspdu_shape shape = {1U, continuations, csbko, cont_csbko, cont_lb, 0U};
+    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
+}
+
 #endif

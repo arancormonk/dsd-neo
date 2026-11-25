@@ -42,12 +42,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
+#include "dmr_address_layout.h"
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
 #include "dmr_mono_slot.h"
+#include "dmr_slot_reset.h"
 #include "dmr_t3_channels_internal.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
@@ -89,6 +90,10 @@ typedef struct {
     uint8_t reserved;
     uint8_t flco;
     uint8_t fid;
+    /* The FLCO and FID as received, before the Kenwood scrambler and Capacity Max talker alias/GPS forms are
+       normalised onto FID 0 (dmr_flco_detect_kenwood_sc(), dmr_flco_store_flco_and_normalize()). */
+    uint8_t raw_flco;
+    uint8_t raw_fid;
     uint8_t so;
     /* This LC's own service options, before the classification hysteresis filters the privacy bit into `so`: what the
        call record keeps as the call's checked encryption indication (dsd_call_crypto_update::enc_observed). */
@@ -117,7 +122,12 @@ typedef struct {
     uint8_t voice_slot;
     uint8_t voice_slot_known;
     uint8_t unk;
+    /* A Kenwood scrambler LC (dmr_flco_is_kenwood_sc_lc()), fixed at init: read as a standard FID 0 LC. */
     uint8_t is_kenwood_sc;
+    /* This LC is a voice channel user (dmr_flco_opens_voice_call()), fixed at init: only such an LC opens a call, holds
+       the scan, arms or releases the encryption lockout, moves the slot's encryption classification, ends a voice hold
+       and shows service options. */
+    uint8_t voice_user;
     int protected_lc;
 } dmr_flco_ctx;
 
@@ -245,6 +255,13 @@ dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A Kenwood scrambler LC: a checked FID 0x20 LC with PF and the SO privacy bit set, read as a standard FID 0 LC. */
+static int
+dmr_flco_is_kenwood_sc_lc(const dmr_flco_ctx* ctx) {
+    const int crc_ok = (*ctx->IrrecoverableErrors == 0U && ctx->CRCCorrect == 1U);
+    return crc_ok && ctx->pf == 1U && ctx->raw_fid == 0x20U && (ctx->so & 0x40U) == 0x40U;
+}
+
 static void
 dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect,
                   uint32_t* IrrecoverableErrors, uint8_t type) {
@@ -272,18 +289,21 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->reserved = lc_bits[1];
     ctx->flco = (uint8_t)convert_bits_into_output(&lc_bits[2], 6);
     ctx->fid = (uint8_t)convert_bits_into_output(&lc_bits[8], 8);
+    ctx->raw_flco = ctx->flco;
+    ctx->raw_fid = ctx->fid;
     ctx->so = (uint8_t)convert_bits_into_output(&lc_bits[16], 8);
     ctx->lc_so = ctx->so;
     ctx->target = (uint32_t)convert_bits_into_output(&lc_bits[24], 24);
     ctx->source = (uint32_t)convert_bits_into_output(&lc_bits[48], 24);
+    ctx->is_kenwood_sc = (uint8_t)(dmr_flco_is_kenwood_sc_lc(ctx) != 0);
+    ctx->voice_user = (uint8_t)(dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco, ctx->is_kenwood_sc) != 0);
 }
 
 static void
-dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx, int crc_ok) {
-    if (crc_ok && ctx->pf == 1 && ctx->fid == 0x20 && (ctx->so & 0x40) == 0x40) {
+dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx) {
+    if (ctx->is_kenwood_sc) {
         ctx->pf = 0;
         ctx->fid = 0;
-        ctx->is_kenwood_sc = 1;
         if (ctx->state->ken_sc == 1) {
             ctx->so ^= 0x40;
         }
@@ -299,15 +319,16 @@ dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
-// The XPT branding changes how later LCs, preamble CSBKs and data headers are read, so only a checked LC sets it.
+// The XPT branding is display text: the address layout later LCs, preamble CSBKs and data headers are read with comes
+// from the received identity's checked trunking system (dmr_address_layout_of()). Only an LC whose own check passed
+// sets the branding and notes the XPT brand there: one accepted under relaxed RAS handling (-F) never does, or a later
+// clean standard header could be read with 16-bit addresses and lose its target's high bits.
 static void
-dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx, int crc_ok) {
-    if (crc_ok && ctx->flco == 0x09 && ctx->fid == 0x68) {
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
+    if (ctx->flco == 0x09 && ctx->fid == 0x68 && dmr_flco_crc_checked(ctx)) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
-        if (dmr_flco_crc_checked(ctx)) {
-            dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
-        }
+        dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
     }
 }
 
@@ -321,11 +342,12 @@ dmr_flco_detect_invalid_hytera_enhanced(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
-    dmr_flco_detect_kenwood_sc(ctx, crc_ok);
+    dmr_flco_detect_kenwood_sc(ctx);
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
-    dmr_flco_detect_hytera_xpt(ctx, crc_ok);
+    dmr_flco_detect_hytera_xpt(ctx);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
-    if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    if (dmr_address_layout_of(ctx->state) == DMR_ADDRESS_LAYOUT_XPT) {
         ctx->is_xpt = 1;
     }
 }
@@ -513,7 +535,8 @@ static void
 dmr_flco_print_hytera_xpt_alert_kind(const dmr_flco_ctx* ctx) {
     if (ctx->reserved == 1) {
         DSD_FPRINTF(stderr, "Group ");
-        if (ctx->target > 248 && ctx->target < 255) {
+        // Hytera XPT reserves groups 250-254 for emergency calls and 255 for All Call.
+        if (ctx->target >= 250 && ctx->target <= 254) {
             DSD_FPRINTF(stderr, "Emergency ");
         }
         if (ctx->target == 255) {
@@ -713,60 +736,6 @@ dmr_flco_handle_no_error_paths(dmr_flco_ctx* ctx) {
     return 0;
 }
 
-// The per-slot live crypto fields the vocoder decrypts and gates with, mapped once so the
-// terminator reset below and the heal stash/restore further down all walk the same list. A
-// field added to the stash but missed by a reset (or vice versa) would be stashed and healed
-// but never cleared on terminator, leaking one call's crypto into the next.
-typedef struct {
-    unsigned int* fid;
-    unsigned int* so;
-    int* algid;
-    int* keyid;
-    unsigned long long int* mi;
-} dmr_flco_slot_crypto;
-
-static dmr_flco_slot_crypto
-dmr_flco_slot_crypto_fields(dsd_state* state, uint8_t idx) {
-    if (idx == 0U) {
-        return (dmr_flco_slot_crypto){&state->dmr_fid, &state->dmr_so, &state->payload_algid, &state->payload_keyid,
-                                      &state->payload_mi};
-    }
-    return (dmr_flco_slot_crypto){&state->dmr_fidR, &state->dmr_soR, &state->payload_algidR, &state->payload_keyidR,
-                                  &state->payload_miR};
-}
-
-// The terminator reset, split by what the heal can give back. The crypto half is stashed before
-// an unverified end and restored when the epoch heals, so it is safe to clear on every
-// terminator. The metadata half -- the partially assembled talker alias, the dmr_pdu_sf
-// superframe scratch, and the embedded/LRRP GPS -- has no stash: clearing it on a burst that was
-// really mid-call voice mis-typed as a terminator would permanently lose the transmission's
-// alias, so it is only cleared when the terminator's LC could actually be read.
-static void
-dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, idx);
-    *live.fid = 0;
-    *live.so = 0;
-    *live.algid = 0;
-    *live.keyid = 0;
-    *live.mi = 0;
-    dmr_enc_class_reset(ctx->state, idx);
-    dmr_le_vendor_reset(ctx->state, idx);
-    dmr_pi_precall_reset(ctx->state, idx);
-    // The call's superframe chain ends with it (issue #729).
-    dmr_vcrypt_forget(ctx->state, idx);
-}
-
-static void
-dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
-    ctx->state->dmr_alias_block_len[idx] = 0;
-    ctx->state->dmr_alias_char_size[idx] = 0;
-    ctx->state->dmr_alias_format[idx] = 0;
-    DSD_SNPRINTF(ctx->state->generic_talker_alias[idx], sizeof(ctx->state->generic_talker_alias[idx]), "%s", "");
-    DSD_MEMSET(ctx->state->dmr_pdu_sf[idx], 0, sizeof(ctx->state->dmr_pdu_sf[idx]));
-    ctx->state->dmr_embedded_gps[idx][0] = '\0';
-    ctx->state->dmr_lrrp_gps[idx][0] = '\0';
-}
-
 /* An LC that passed its check (CRCCorrect, a RAS acceptance under -F included) said how its slot's call is encrypted,
    as far as the decoder can read it: that slot's voice is held no more (dmr_enc_class_hold()). Released on the slot
    the voice is judged on and on the burst's own, which differ only where the LC is folded onto the single lane. A
@@ -802,7 +771,7 @@ dmr_flco_release_voice_hold(const dmr_flco_ctx* ctx) {
 static void
 dmr_flco_drop_forced_fallback(const dmr_flco_ctx* ctx) {
     const int forced = dsd_dmr_forced_algid(ctx->state);
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    const dmr_slot_crypto live = dmr_slot_crypto_fields(ctx->state, ctx->voice_slot);
     if (forced != 0 && *live.algid == forced && *live.keyid == 0xFF) {
         *live.algid = 0;
         *live.keyid = 0;
@@ -820,7 +789,7 @@ dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
         dmr_flco_drop_forced_fallback(ctx);
         return;
     }
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, ctx->voice_slot);
+    const dmr_slot_crypto live = dmr_slot_crypto_fields(ctx->state, ctx->voice_slot);
     *live.algid = 0;
     *live.keyid = 0;
     *live.mi = 0ULL;
@@ -901,7 +870,9 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // aggressive default the masked CRC never verifies, so those observations must repeat
     // before they can flip an established classification.
     ctx->lc_so = ctx->so;
-    if (ctx->voice_slot_known) {
+    // Only a voice channel user carries the call's service options: any other LC's byte there (an FID 0 FLCO other
+    // than 0x00 or 0x03) says nothing of the call's encryption, so it neither moves the classification nor ends a hold.
+    if (ctx->voice_slot_known && ctx->voice_user) {
         // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
@@ -936,6 +907,42 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
 static int
 dmr_flco_is_capmax_private(const dmr_flco_ctx* ctx) {
     return ctx->fid == 0x10 && ctx->flco == 0x13;
+}
+
+// Motorola (FID 0x10): every FLCO dmr_flco() reads as a call, all but its non-voice LCs (0x08, 0x28, 0x29) and the
+// Capacity Max talker alias and GPS LCs (0x14..0x18, FID 0's 0x04..0x08 with bit 0x10 set).
+static int
+dmr_flco_motorola_opens_voice_call(uint8_t flco) {
+    return flco != 0x08U && flco != 0x28U && flco != 0x29U && (flco < 0x14U || flco > 0x18U);
+}
+
+// Hytera (FID 0x68): every FLCO dmr_flco() reads as a call, all but Hytera Enhanced privacy (0x02), the talker alias
+// and GPS LCs it decodes under this FID as under FID 0 (0x04..0x08, in any LC type: their bits are no party), the XPT
+// call alert (0x09) and the other Hytera LCs it names without reading (0x13, 0x2E, 0x2F, 0x31).
+static int
+dmr_flco_hytera_opens_voice_call(uint8_t flco) {
+    const int metadata = flco >= 0x04U && flco <= 0x08U;
+    return !metadata && flco != 0x02U && flco != 0x09U && flco != 0x13U && flco != 0x2EU && flco != 0x2FU
+           && flco != 0x31U;
+}
+
+// TS 102 361-2 Table B.1: Grp_V_Ch_Usr and UU_V_Ch_Usr are the only FID 0 voice channel users.
+static int
+dmr_flco_standard_opens_voice_call(uint8_t flco) {
+    return flco == 0x00U || flco == 0x03U;
+}
+
+int
+dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco, int kenwood_sc) {
+    switch (raw_fid) {
+        case 0x00U: return dmr_flco_standard_opens_voice_call(flco);
+        case 0x20U: // only a recognised Kenwood scrambler LC is read as a standard LC; any other is an unknown LC
+            return kenwood_sc != 0 && dmr_flco_standard_opens_voice_call(flco);
+        case 0x10U: return dmr_flco_motorola_opens_voice_call(flco);
+        case 0x68U: return dmr_flco_hytera_opens_voice_call(flco);
+        case 0x08U: return 1;
+        default: return 0;
+    }
 }
 
 static dsd_call_kind
@@ -1243,7 +1250,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         }
         // The slot's live ALG ID, key id and MI are still the replaced call's. Decryption keeps them, exactly as it
         // always has; publication marks them as that call's, so the new call never shows them as its own.
-        const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, slot);
+        const dmr_slot_crypto live = dmr_slot_crypto_fields(ctx->state, slot);
         ctx->state->dmr_crypto_inherited[slot] = 1U;
         ctx->state->dmr_crypto_inherited_algid[slot] = *live.algid;
         ctx->state->dmr_crypto_inherited_keyid[slot] = *live.keyid;
@@ -1264,7 +1271,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
 // healed. The epoch tie plus the all-cleared gate mean a stale stash can never overwrite
 // fresher signaling or leak into a later call.
 static int
-dmr_flco_slot_crypto_is_clear(const dsd_state* state, uint8_t idx, const dmr_flco_slot_crypto* live) {
+dmr_flco_slot_crypto_is_clear(const dsd_state* state, uint8_t idx, const dmr_slot_crypto* live) {
     return *live->fid == 0U && *live->so == 0U && *live->algid == 0 && *live->keyid == 0 && *live->mi == 0ULL
            && state->dmr_le_vendor[idx] == DMR_LE_VENDOR_NONE;
 }
@@ -1279,7 +1286,7 @@ dmr_flco_slot_crypto_is_clear(const dsd_state* state, uint8_t idx, const dmr_flc
 static void
 dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
     const uint8_t idx = slot != 0U ? 1U : 0U;
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    const dmr_slot_crypto live = dmr_slot_crypto_fields(state, idx);
     state->dmr_heal_valid[idx] = 0U;
     if (dmr_flco_slot_crypto_is_clear(state, idx, &live)) {
         return;
@@ -1315,7 +1322,7 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     }
     // Only into a slot whose live fields are entirely cleared -- the post-reset shape -- so
     // fresher signaling (a header that decoded between the reset and the heal) never loses.
-    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    const dmr_slot_crypto live = dmr_slot_crypto_fields(state, idx);
     if (!dmr_flco_slot_crypto_is_clear(state, idx, &live)) {
         return;
     }
@@ -1421,11 +1428,16 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
         && !dsd_call_state_end_reason_is_recoverable(settled.end_reason)) {
         ctx->state->dmr_heal_valid[idx] = 0U;
     }
-    dmr_flco_reset_slot_crypto(ctx, idx);
+    /* The reset is split by what the heal can give back. The crypto half is stashed before an unverified end and
+       restored when the epoch heals, so it is safe to clear on every terminator. The metadata half (the partially
+       assembled talker alias, the dmr_pdu_sf superframe scratch, the embedded and LRRP GPS) has no stash: clearing it on
+       a burst that was really mid-call voice mis-typed as a terminator would lose the transmission's alias for good, so
+       it is cleared only when the terminator's LC could be read. */
+    dmr_slot_reset_crypto(ctx->state, idx);
     // The call ended: the slot's next call keys from no talkgroup of this one's (keyring_dmr_tg_autoload_apply()).
     keyring_dmr_tg_autoload_forget_slot(ctx->state, idx);
     if (lc_readable) {
-        dmr_flco_reset_slot_metadata(ctx, idx);
+        dmr_slot_reset_metadata(ctx->state, idx);
     }
 }
 
@@ -1435,11 +1447,11 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    if (ctx->fid != 0 && ctx->CRCCorrect == 1U) { // the vendor (shown as the branding) only from a checked LC
+    // The vendor (shown as the branding) and the identity's vendor only from an LC whose own check passed: one -F
+    // accepted as RAS would replace a checked trunk brand's vendor with whatever its FID bits say.
+    if (ctx->fid != 0 && dmr_flco_crc_checked(ctx)) {
         ctx->state->dmr_mfid = ctx->fid;
-        if (dmr_flco_crc_checked(ctx)) {
-            dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid); // and as identity only from a genuine check
-        }
+        dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid);
     }
 
     if (ctx->protected_lc) {
@@ -1499,6 +1511,8 @@ dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     }
 }
 
+// Only a voice channel user's LC reaches the service-option readers below (dmr_flco_handle_voice_user()): any other
+// LC carries no service options, and dmr_flco_print_non_voice_lc() shows its raw payload instead.
 static void
 dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
     if (ctx->so & 0x80) {
@@ -1863,6 +1877,45 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
     }
 }
 
+/* A voice channel user's LC: its call, scan hold, encryption lockout and the terminal line of its parties and service
+   options. */
+static void
+dmr_flco_handle_voice_user(dmr_flco_ctx* ctx) {
+    dmr_flco_print_regular_header(ctx);
+    dmr_flco_print_call_class(ctx);
+    const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
+    // The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a RAS-accepted LC under -F;
+    // that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater still holds.
+    if (ctx->CRCCorrect == 1U) {
+        dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
+                                                      (ctx->so & 0x40U) != 0U, 0);
+    }
+    dmr_flco_print_emergency_flag(ctx);
+    if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
+        dmr_flco_publish_voice(ctx);
+    }
+    dmr_flco_apply_enc_lockout(ctx);
+    dmr_flco_print_service_options(ctx);
+    dmr_flco_print_branding(ctx);
+    dmr_flco_print_tg_label(ctx);
+    dmr_flco_print_loaded_keys(ctx);
+    dmr_flco_print_extended_keys(ctx);
+}
+
+/* An LC that is no voice channel user (an FID 0 FLCO other than 0x00 or 0x03, dmr_flco_opens_voice_call()): it names
+   no call, so no party, call class or service option is read from it through the voice layout. Its FLCO and FID as
+   received and its raw payload are shown instead. */
+static void
+dmr_flco_print_non_voice_lc(const dmr_flco_ctx* ctx) {
+    dmr_flco_print_type_color(ctx->type, KYEL, KYEL, KYEL);
+    dmr_print_slot_tag(ctx->state);
+    DSD_FPRINTF(stderr, " Unknown LC FLCO=0x%02X FID=0x%02X LC:", ctx->raw_flco, ctx->raw_fid);
+    for (size_t i = 0; i < 9U; i++) {
+        DSD_FPRINTF(stderr, " %02X", (unsigned)convert_bits_into_output(&ctx->lc_bits[i * 8U], 8));
+    }
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+}
+
 static void
 dmr_flco_run(dmr_flco_ctx* ctx) {
     dmr_flco_ensure_heal_hook();
@@ -1904,25 +1957,11 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
 
     int regular_state = dmr_flco_prepare_regular_state(ctx);
     if (regular_state > 0) {
-        dmr_flco_print_regular_header(ctx);
-        dmr_flco_print_call_class(ctx);
-        const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
-        // The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a RAS-accepted LC
-        // under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater still holds.
-        if (ctx->CRCCorrect == 1U) {
-            dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
-                                                          (ctx->so & 0x40U) != 0U, 0);
+        if (ctx->voice_user) {
+            dmr_flco_handle_voice_user(ctx);
+        } else {
+            dmr_flco_print_non_voice_lc(ctx);
         }
-        dmr_flco_print_emergency_flag(ctx);
-        if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
-            dmr_flco_publish_voice(ctx);
-        }
-        dmr_flco_apply_enc_lockout(ctx);
-        dmr_flco_print_service_options(ctx);
-        dmr_flco_print_branding(ctx);
-        dmr_flco_print_tg_label(ctx);
-        dmr_flco_print_loaded_keys(ctx);
-        dmr_flco_print_extended_keys(ctx);
     }
 
     dmr_flco_finalize(ctx);

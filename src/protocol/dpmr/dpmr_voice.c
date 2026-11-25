@@ -277,13 +277,14 @@ dpmr_print_ids(const dsd_state* state) {
         DSD_MEMSET(&call, 0, sizeof(call));
     }
     DSD_FPRINTF(stderr, "\n");
+    /* The called ID may be a radio's or a group's: a dial string does not say which (issue #903). */
     if (call.target_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " TG=%s", call.target_text);
+        DSD_FPRINTF(stderr, " Called=%s", call.target_text);
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
-        DSD_FPRINTF(stderr, " TG=(CRC ERR)");
+        DSD_FPRINTF(stderr, " Called=(CRC ERR)");
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 

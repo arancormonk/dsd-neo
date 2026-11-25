@@ -77,6 +77,18 @@ nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
     return (uint8_t)(state->nxdn_cipher_class - 1U);
 }
 
+/* nxdn_cipher_observe() for an observation that names its key ID (a VCALL, an INFO1; a DCR SACCH-2 names none, 0): the
+ * applied key (dsd_state::nxdn_key) is the one that came with the applied cipher, so it takes @p key_id only when the
+ * observation's cipher is the one applied afterwards. A contradiction held back changes neither half of the pair. */
+uint8_t
+nxdn_cipher_observe_keyed(dsd_state* state, uint8_t cipher, uint8_t key_id, int strong) {
+    const uint8_t applied = nxdn_cipher_observe(state, cipher, strong);
+    if (applied == (uint8_t)(cipher & 0x03U)) {
+        state->nxdn_key = key_id;
+    }
+    return applied;
+}
+
 /* Authoritative out-of-band evidence (user-forced scrambler mode): apply to
  * both the live cipher and the classification, corroborated. The
  * over-the-air classification is left alone: nothing was received. */

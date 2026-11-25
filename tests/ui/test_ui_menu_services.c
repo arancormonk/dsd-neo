@@ -2827,9 +2827,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     g_next_start_why = NULL;
 
     // dmr_lcn_trust is provenance for the map, not a separate table: a stale
-    // "learned on the CC" byte would authorize an off-CC tune to a frequency
-    // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
-    state.dmr_lcn_trust[201] = 2;
+    // "learned off the CC, unconfirmed" byte would refuse an off-CC tune to a
+    // frequency the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
+    state.dmr_lcn_trust[201] = 1;
     state.lcn_freq_roll = 1;
     // Session avoids and the scan hold index the rows being replaced, so they go too, an entry hold's mark included.
     state.lcn_scan_hold = 1;

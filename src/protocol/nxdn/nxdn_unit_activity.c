@@ -15,7 +15,6 @@
 
 #include "nxdn_unit_activity.h"
 
-#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -63,11 +62,13 @@ nxdn_ua_octets(const uint8_t* e, size_t octet, size_t count) {
     return nxdn_ua_bits(e, octet * 8U, count * 8U);
 }
 
-/* The Type-C control channel path: a CAC, or a composite control channel's frames once they read as Type-C. */
+/* The Type-C control channel path: a CAC, or a frame the frame decoder classified a composite control channel's
+   (dsd_state::nxdn_frame_channel, committed before any of its messages acts): once Type-C is known, or by the frame's
+   own CCH_INFO, whichever half of it carries the message (issue #903). */
 static int
 nxdn_ua_type_c_path(const dsd_state* state) {
     return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL
-           || (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE && dsd_nxdn_type_c(state));
+           || state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
 }
 
 static int

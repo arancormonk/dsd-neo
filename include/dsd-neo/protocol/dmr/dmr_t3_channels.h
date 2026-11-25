@@ -57,8 +57,12 @@ typedef enum {
 /**
  * The only over-the-air writer of the channel map: record @p freq_hz for @p lpcn (1..4094) as @p origin (SITE,
  * UNVERIFIED, NEIGHBOUR or ESTIMATE; FILE, USER and NONE are refused) under the precedence above. A written row's trust
- * byte (dsd_state::dmr_lcn_trust) is 2 when learned on the control channel and 1 otherwise, NEIGHBOUR always 1 and
- * ESTIMATE 0. A new row or a SITE change posts a notice on the receiving burst's slot with that burst's CRC flags; with
+ * byte (dsd_state::dmr_lcn_trust) is 2 when learned on the control channel (dmr_sm_on_control_channel()) and 1
+ * otherwise, NEIGHBOUR always 1 and ESTIMATE 0; a SITE or UNVERIFIED row rewritten at the same frequency never loses
+ * trust it earned. A SITE write the precedence refuses still confirms a SITE or UNVERIFIED row at the same frequency
+ * learned off the control channel (trust 1 to 2) when it is heard on the control channel (issue #903); RAS-accepted
+ * (UNVERIFIED) and NEIGHBOUR writes never confirm. A new row or a SITE change posts a notice on the receiving burst's
+ * slot with that burst's CRC flags; with
  * the heuristic fill on, a changed anchor drops every estimate and fills again. Returns 1 when the row or its origin
  * changed.
  */

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1505,18 +1506,31 @@ test_sidecar_channel_label_fallback(void) {
     return rc;
 }
 
+// What export_sidecar_body_with() saw: each outcome its own value, so a refusal is never mistaken for an export that
+// wrote nothing, nor for a fixture that never reached the exporter.
+enum {
+    SIDECAR_EXPORTED = 0,      // the exporter succeeded, and its sidecar was read into the body
+    SIDECAR_REFUSED = -1,      // the exporter refused, and left no sidecar
+    SIDECAR_REFUSED_LEFT = -2, // the exporter refused, but left a sidecar behind
+    SIDECAR_MISSING = -3,      // the exporter reported success, but no sidecar could be read
+    SIDECAR_SETUP_FAILED = -4, // the fixture (directory, paths, recording) failed: the exporter never ran
+};
+
 // Export one row's sidecar into a fresh directory under @p with_opts (NULL: DirWatch, no system) and return the sidecar's
-// body in @p body, or -1 when the export was refused (-2 if it left a sidecar anyway). The recording is an 8 kHz WAV
-// @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at
-// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not). A negative
-// @p allow_fallback exports through dsd_rdio_export_call_ex(), else through dsd_rdio_export_call_fallback() with it.
+// body in @p body, with SIDECAR_EXPORTED, or another SIDECAR_* outcome. The recording is an 8 kHz WAV @p wav_seconds
+// long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at decode time
+// @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not). A negative @p allow_fallback
+// exports through dsd_rdio_export_call_ex(), else through dsd_rdio_export_call_fallback() with it.
 static int
 export_sidecar_body_full(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
                          time_t started, int allow_fallback, char* body, size_t body_size) {
+    if (body_size > 0U) {
+        body[0] = '\0'; // a failed export leaves an empty body, never an unread buffer
+    }
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     char wav_path[DSD_TEST_PATH_MAX] = {0};
     char json_path[DSD_TEST_PATH_MAX] = {0};
@@ -1524,11 +1538,11 @@ export_sidecar_body_full(const dsd_opts* with_opts, const Event_History_I* hist,
         || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "freq.json") != 0) {
         DSD_FPRINTF(stderr, "path join failed\n");
         remove_empty_dir(dir_template);
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     if ((wav_seconds > 0 ? write_pcm16_mono_wav(wav_path, 8000, wav_seconds) : write_dummy_wav(wav_path)) != 0) {
         remove_empty_dir(dir_template);
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1537,14 +1551,16 @@ export_sidecar_body_full(const dsd_opts* with_opts, const Event_History_I* hist,
     const int exported =
         allow_fallback < 0 ? dsd_rdio_export_call_ex(use, hist, wav_path, opened, started, NULL)
                            : dsd_rdio_export_call_fallback(use, hist, wav_path, opened, started, allow_fallback, NULL);
-    int rc = 0;
-    if (exported != 0 || read_file(json_path, body, body_size) != 0) {
-        rc = -1;
-    }
-    // A refused export leaves no sidecar behind.
-    if (rc != 0 && file_exists(json_path)) {
-        DSD_FPRINTF(stderr, "a refused export left a sidecar\n");
-        rc = -2;
+    int rc = SIDECAR_EXPORTED;
+    if (exported != 0) {
+        // A refused export leaves no sidecar behind.
+        rc = file_exists(json_path) ? SIDECAR_REFUSED_LEFT : SIDECAR_REFUSED;
+        if (rc == SIDECAR_REFUSED_LEFT) {
+            DSD_FPRINTF(stderr, "a refused export left a sidecar\n");
+        }
+    } else if (read_file(json_path, body, body_size) != 0) {
+        DSD_FPRINTF(stderr, "the export reported success but wrote no readable sidecar\n");
+        rc = SIDECAR_MISSING;
     }
     (void)remove(json_path);
     (void)remove(wav_path);
@@ -1588,6 +1604,102 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
         rc = 1;
     }
     free(hist);
+    return rc;
+}
+
+// Issue #903 under the issue #888 fallback: a confirmed NXDN DCR recording names no party (target and source 0, "JPN
+// DCR" its text identity), so it is exported as any digital call with no talkgroup is. With the fallback it is filed
+// under its channel frequency in kHz, labelled by its protocol and frequency (not by the "JPN DCR" text: every
+// unnumbered call on the frequency shares the talkgroup), its radio left unknown. With no known frequency and no
+// --rdio-unknown-talkgroup, or without the fallback, it has no talkgroup and is refused.
+static int
+test_sidecar_dcr_files_under_channel_khz(void) {
+    int rc = 0;
+    for (int has_freq = 1; has_freq >= 0; has_freq--) {
+        Event_History_I* hist = calloc(1, sizeof(*hist));
+        if (!hist) {
+            return 1;
+        }
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->category = DSD_EVENT_CATEGORY_VOICE;
+        item->gi = -1;
+        item->event_time = (time_t)1700000600;
+        item->freq_hz = has_freq ? 469012500 : 0;
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        char body[4096] = {0};
+        const int exported = export_sidecar_body_full(NULL, hist, 1, 0, 0, 1, body, sizeof body);
+        if (has_freq) {
+            if (exported != SIDECAR_EXPORTED) {
+                DSD_FPRINTF(stderr, "dcr sidecar: export failed (%d)\n", exported);
+                rc = 1;
+            } else if (!strstr(body, "\"talkgroup\": 469012")
+                       || !strstr(body, "\"talkgroup_tag\": \"NXDN 469.0125 MHz\"")
+                       || strstr(body, "\"src\":") != NULL) {
+                DSD_FPRINTF(stderr, "dcr sidecar: want talkgroup 469012 tagged NXDN 469.0125 MHz, source 0\n%s\n",
+                            body);
+                rc = 1;
+            }
+        } else if (exported != SIDECAR_REFUSED) {
+            /* Only the clean refusal: not an export, a refusal that left a sidecar, an export that wrote none, nor a
+               fixture that never reached the exporter. */
+            DSD_FPRINTF(stderr, "dcr sidecar with no frequency must be refused cleanly (got %d)\n", exported);
+            rc = 1;
+        }
+        const int no_fallback = export_sidecar_body_full(NULL, hist, 1, 0, 0, 0, body, sizeof body);
+        if (no_fallback != SIDECAR_REFUSED) {
+            DSD_FPRINTF(stderr, "dcr sidecar without the fallback must be refused cleanly (got %d)\n", no_fallback);
+            rc = 1;
+        }
+        free(hist);
+    }
+    return rc;
+}
+
+// Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so it tags the upload as a bare
+// number does: its list name, else the channel it was heard on, else the text. An M17 callsign keeps its own tag.
+static int
+test_sidecar_type_d_text_yields_to_names(void) {
+    static const struct {
+        int systype;
+        const char* tgt_str;
+        const char* t_name;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {DSD_SYNC_NXDN_POS, "03-0005", "", "Fire Dispatch", "Fire Dispatch"},
+        {DSD_SYNC_NXDN_POS, "03-0005", "Metro Fire", "Fire Dispatch", "Metro Fire"},
+        {DSD_SYNC_NXDN_POS, "03-0005", "", "", "03-0005"},
+        {DSD_SYNC_M17_LSF_POS, "N0CALL", "", "Fire Dispatch", "N0CALL"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof cases / sizeof cases[0]; i++) {
+        Event_History_I* hist = calloc(1, sizeof(*hist));
+        if (!hist) {
+            return 1;
+        }
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = cases[i].systype;
+        item->target_id = 5;
+        item->source_id = 100;
+        item->gi = 0;
+        item->event_time = (time_t)1700000600;
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        char body[4096] = {0};
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\"", cases[i].want);
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "case %zu: export failed\n", i);
+            rc = 1;
+        } else if (!strstr(body, want) || !strstr(body, "\"talkgroup\": 5")) {
+            DSD_FPRINTF(stderr, "case %zu: want %s\n%s\n", i, want, body);
+            rc = 1;
+        }
+        free(hist);
+    }
     return rc;
 }
 
@@ -1834,7 +1946,7 @@ test_analog_talkgroup_sources(void) {
         const int got = export_sidecar_body_with(&opts, &hist, 1, 0, 0, body, sizeof body);
         const uint32_t id = dsd_rdio_analog_talkgroup(&opts, &hist.Event_History_Items[0]);
         if (!cases[i].exported) {
-            if (got != -1 || id != 0U) {
+            if (got != SIDECAR_REFUSED || id != 0U) {
                 DSD_FPRINTF(stderr, "%s: exported (%d) under %u, want no export\n", cases[i].label, got, (unsigned)id);
                 rc = 1;
             }
@@ -2241,11 +2353,11 @@ test_unnumbered_digital_call_without_fallback_writes_nothing(void) {
     hist->Event_History_Items[0].source_id = 1234U;
     char body[4096];
     int rc = 0;
-    if (export_sidecar_body_full(opts, hist, 1, 0, 0, -1, body, sizeof body) != -1) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, -1, body, sizeof body) != SIDECAR_REFUSED) {
         DSD_FPRINTF(stderr, "dsd_rdio_export_call_ex() gave an unnumbered digital call a talkgroup\n");
         rc = 1;
     }
-    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 0, body, sizeof body) != -1) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 0, body, sizeof body) != SIDECAR_REFUSED) {
         DSD_FPRINTF(stderr, "the fallback entry with the fallback off exported an unnumbered digital call\n");
         rc = 1;
     }
@@ -2607,7 +2719,7 @@ test_fallback_call_sidecar(void) {
     }
 
     opts->rdio_unknown_talkgroup = 0;
-    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != -1) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != SIDECAR_REFUSED) {
         DSD_FPRINTF(stderr, "no frequency and no option: a fallback call was exported\n");
         rc = 1;
     }
@@ -4922,6 +5034,8 @@ main(void) {
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
+    rc |= test_sidecar_type_d_text_yields_to_names();
+    rc |= test_sidecar_dcr_files_under_channel_khz();
     rc |= test_sidecar_freq_comes_from_the_row_frequency();
     rc |= test_sidecar_start_time_sources();
     rc |= test_analog_sidecar_fields();

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -48,6 +49,12 @@ void nxdn_data_call_bind_header(const dsd_opts* opts, dsd_state* state);
 int nxdn_data_call_header_bound(const dsd_state* state);
 /* Drop the header and its binding (a failed channel CRC, a rejected header): no payload assembles under it. */
 void nxdn_data_call_drop_header(dsd_state* state);
+/* Keep a data call header's Type-D Home Repeater / Prefixes (@p type_d 0: a Type-C or conventional header, none) for the
+ * data call's row, in the NXDN module's own state extension; dropping the header forgets them. */
+void nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix);
+/* 1 when the bound data call header is a Type-D one, its prefixes in @p source_prefix and @p target_prefix (either may
+ * be NULL); 0 for a Type-C or conventional header, or none. */
+int nxdn_data_call_prefixes(const dsd_state* state, uint8_t* source_prefix, uint8_t* target_prefix);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
@@ -56,6 +63,27 @@ static inline int
 nxdn_live_call_is_nxdn(const dsd_state* state) {
     dsd_call_snapshot call;
     return dsd_call_state_get(state, 0U, &call) > 0 && DSD_SYNC_IS_NXDN(call.protocol);
+}
+
+/* Break the SACCH superframe being assembled: no segment held, and the part index back to the first. The segments
+   before and after a frame of another channel's control traffic (dsd_state::nxdn_frame_foreign), or one its own
+   FACCH1 reclassified, belong to no one superframe, so no message is ever spliced across it. The one rule the frame
+   decoder's classification (nxdn_frame()) and the SACCH decoder's foreign segment, the public entry point's included,
+   both apply. */
+static inline void
+nxdn_sacch_break_superframe(dsd_state* state) {
+    DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+    DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+    state->nxdn_part_of_frame = 0;
+}
+
+/* Whether the live call on slot 0 is an active NXDN DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()). */
+static inline int
+nxdn_live_call_is_dcr(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_NXDN(call.protocol)
+           && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text);
 }
 
 /* The MI an NXDN call publishes (call state, snapshots, events, history, the API feed): the IV a CRC-verified VCALL_IV
@@ -224,6 +252,43 @@ void nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 void nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint16_t crc, uint16_t check, uint8_t type);
 
+/* The frame decoder (nxdn_frame()) decodes each channel of a frame first and commits it once the frame is classified;
+   the public one-shot entry points (<dsd-neo/protocol/nxdn/nxdn_deperm.h>) do both in turn. */
+
+/* A frame's 60-bit SCCH or SACCH field (both take the same place and code), depermuted and Viterbi-decoded as one or
+   the other: its 32 trellis bits, the decoded bytes the payload log prints, and its CRC (an SCCH's CRC-7, a SACCH's
+   CRC-6) as computed and as received. Nothing has acted on it. */
+typedef struct nxdn_field_decode {
+    uint8_t trellis[32];
+    uint8_t m_data[5];
+    uint8_t crc;
+    uint8_t check;
+} nxdn_field_decode;
+
+/* A FACCH1 half, depermuted and Viterbi-decoded: its 96 trellis bits (80 element bits, the CRC-12 and the tail), the
+   decoded bytes the payload log prints, and its CRC-12 as computed and as received. Nothing has acted on it. */
+typedef struct nxdn_facch1_decode {
+    uint8_t trellis[96];
+    uint8_t m_data[12];
+    uint16_t crc;
+    uint16_t check;
+} nxdn_facch1_decode;
+
+/* Decode a FACCH1 half (FEC and CRC-12) without acting on it: nxdn_frame() reads both halves of a frame before either
+   is committed (nxdn_handle_facch1()). */
+nxdn_facch1_decode nxdn_facch1_decode_soft(const uint8_t bits[144], const uint8_t reliab[144]);
+/* Whether a decoded FACCH1 half says the system is Type-C: a CRC-verified CCH_INFO (0x1A), a Type-C message a Type-D
+   system does not send. A FACCH1's 80 elements always hold a whole CCH_INFO, and never a whole SITE_INFO. */
+int nxdn_facch1_says_type_c(const nxdn_facch1_decode* facch1);
+/* Decode a frame's field as a SACCH (FEC and CRC-6) without acting on it (nxdn_handle_sacch() commits it). */
+nxdn_field_decode nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+/* Decode a frame's field as an SCCH (FEC and CRC-7) without acting on it (nxdn_scch_commit() commits it). */
+nxdn_field_decode nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]);
+/* Act on a decoded SCCH: a CRC-passing one with defined content gives the frame its position and its weak and
+   SCCH-streak evidence, and its messages decode (NXDN_decode_scch()). */
+nxdn_channel_result nxdn_scch_commit(dsd_opts* opts, dsd_state* state, const nxdn_field_decode* scch,
+                                     uint8_t direction);
+
 struct nxdn_facch3_udch2_message {
     uint8_t bits[160];
     uint8_t bytes[24];
@@ -231,10 +296,49 @@ struct nxdn_facch3_udch2_message {
     uint16_t check[2];
 };
 
+/* Decode a frame's FACCH3 or UDCH2 field (two blocks, FEC and each block's CRC-12) without acting on it: the frame
+   classifies itself by it (nxdn_frame()) before nxdn_handle_facch3_udch2_soft() commits it. */
+struct nxdn_facch3_udch2_message nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]);
+/* Whether both blocks of a decoded FACCH3 or UDCH2 passed their CRCs. */
+int nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message);
 void nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, size_t block, const uint8_t* trellis_buf,
                                    const uint8_t* m_data);
 void nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
                                    uint8_t type);
+
+/* The call kind a Call Type (NXDN TS 1-A §6.5.12 Table 6.5-8; Type-D TS 1-E §6.6.21 Table 6.6-15) gives a call: 000
+   Broadcast and 001 Conference are group calls; 100 Individual, 110 Interconnect and 111 Speed Dial are private (their
+   destination is a radio or a PSTN ID, TS 1-A Table 6.4-6); 010 Unspecified, 011 (reserved on Type-C, a Session Call
+   with the trunk controller on Type-D) and 101 (reserved) are generic voice, of neither class. The result does not
+   depend on @p type_d (a Type-D call): the two tables classify alike, and only the label of 011 differs by variant.
+   VCALL, VCALL_ASSGN, TX_REL, the encryption lockout, the held-call reconcile, the conventional scan hold and the
+   data call headers all classify by it. */
+dsd_call_kind nxdn_call_type_kind(uint8_t call_type, int type_d);
+/* Whether a message of @p call_type may open a call: every type but 010, which only a TX_REL carries. */
+int nxdn_call_type_opens_call(uint8_t call_type);
+
+/* A Type-D unit or group ID is 11 bits, unique only under its 5-bit Home Repeater / Prefix (NXDN TS 1-E §6.6.6 Table
+ * 6.6-4, §6.6.7, §6.6.8 Table 6.6-6): the full address is (prefix << 11) | id, the 16 bits a VCALL, a data call header
+ * or an SCCH's bits 8-23 carry. The call state, talkgroup policy, lockouts, skips, holds and keys keep the 11-bit id
+ * (the policy namespace, issue #903 D7); the prefix travels as text, "pp-iiii" (nxdn_typed_id_text()). */
+static inline uint32_t
+nxdn_typed_full_id(uint8_t prefix, uint16_t id11) {
+    return ((uint32_t)(prefix & 0x1FU) << 11) | (uint32_t)(id11 & 0x7FFU);
+}
+
+static inline uint16_t
+nxdn_typed_low_id(uint32_t full) {
+    return (uint16_t)(full & 0x7FFU);
+}
+
+static inline uint8_t
+nxdn_typed_prefix(uint32_t full) {
+    return (uint8_t)((full >> 11) & 0x1FU);
+}
+
+/* The text identity of Type-D @p id11 under @p prefix, "pp-iiii" (prefix 3, ID 5: "03-0005"); empty for the Null ID 0,
+ * which names nobody. */
+void nxdn_typed_id_text(char* out, size_t out_size, uint8_t prefix, uint16_t id11);
 
 #ifdef __cplusplus
 }

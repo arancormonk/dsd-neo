@@ -18,6 +18,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -3868,6 +3869,25 @@ test_lock_and_protocol_helpers(void) {
     assert(ui_nxdn_is_idas(&state) == 1);
     DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "Type-C");
     assert(ui_nxdn_is_idas(&state) == 0);
+    /* The IDAS label is the carrier's, as the Type-D address evidence is (issue #903): a checked SCCH's "Type-D"
+       shows "Monitoring RTCH2 Channel" until a carrier boundary or trunk-scan switch starts the received identity over;
+       the category a trunk-scan snapshot restores after that is no evidence of the carrier reached. */
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    dsd_nxdn_note_type_d_layout(&state);
+    assert(ui_nxdn_is_idas(&state) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_monitor_line(&opts, &state, ui_nxdn_is_idas(&state));
+    assert_capture_contains("Monitoring RTCH2 Channel");
+    dsd_rxid_reset(&state);
+    assert(strcmp(state.nxdn_location_category, "Type-D") == 0);
+    assert(ui_nxdn_is_idas(&state) == 0);
+    reset_printw_capture();
+    ui_render_nxdn_monitor_line(&opts, &state, ui_nxdn_is_idas(&state));
+    assert_capture_contains("Monitoring RCCH Channel");
+    dsd_nxdn_note_type_d_layout(&state);
+    assert(ui_nxdn_is_idas(&state) == 1);
+    opts.trunk_enable = 0;
 }
 
 static void
@@ -5436,6 +5456,41 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
     free(opts);
 }
 
+/* Issue #903: the NXDN line names an IDAS (Type-D) party by its "pp-iiii" text, which tells two home repeater
+   prefixes apart; a party with no text still prints as its number. */
+static void
+test_nxdn_line_shows_type_d_text(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(state != NULL && opts != NULL);
+    dsd_call_observation nxdn = {.protocol = DSD_SYNC_NXDN_POS,
+                                 .slot = 0,
+                                 .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                 .ota_target_id = 5,
+                                 .policy_target_id = 5,
+                                 .ota_source_id = 100};
+    DSD_SNPRINTF(nxdn.target_text, sizeof(nxdn.target_text), "%s", "07-0005");
+    DSD_SNPRINTF(nxdn.source_text, sizeof(nxdn.source_text), "%s", "07-0100");
+    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(opts, state);
+    assert_capture_contains("TGT: [07-0005]");
+    assert_capture_contains("SRC: [07-0100]");
+    assert(dsd_call_state_end(state, 0U, 0.0) == 1);
+    nxdn.target_text[0] = '\0';
+    nxdn.source_text[0] = '\0';
+    nxdn.ota_target_id = 1201;
+    nxdn.policy_target_id = 1201;
+    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(opts, state);
+    assert_capture_contains("TGT: [ 1201]");
+    assert_capture_contains("SRC: [  100]");
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 /* Issue #637: the NXDN line shows the decoder's alias only for admitted reception and names the call by the service the
    receive policy gave it; the analog tone line names the NFM call the same way. */
 static void
@@ -5823,6 +5878,7 @@ main(void) {
     test_tetra_call_labels_clip_at_the_screen_width();
     test_slot_label_follows_ended_call_kind();
     test_nxdn_and_analog_live_service_names();
+    test_nxdn_line_shows_type_d_text();
     test_nxdn_encryption_line_redacts_the_seed();
     test_dmr_and_dcs_live_service_names();
     test_withheld_data_without_a_call();

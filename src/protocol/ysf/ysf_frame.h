@@ -25,6 +25,16 @@ void dsd_ysf_dewhiten_bits(uint8_t* bits, size_t bit_count);
 
 bool dsd_ysf_event_text_should_print(const dsd_state* state);
 
+/**
+ * @brief Format a FICH's SQL code text ("SQL CODE: nnn ") into @p out.
+ *
+ * The FICH decode verdict @p fich_err says whether the SQL fields were read: a failed FICH (nonzero) gives no text.
+ * Every 7-bit code is a real value, so none of them means "unset". The text is given while @p sql_type is set.
+ *
+ * @return The text length, or 0 when there is no text (or it does not fit); @p out is then empty when it has room.
+ */
+size_t dsd_ysf_format_fich_sql(int fich_err, uint8_t sql_type, uint8_t sql_code, char* out, size_t out_size);
+
 void dsd_ysf_unpack_full_rate_imbe(const uint8_t imbe_raw[144], uint8_t imbe_vch[144], char imbe_fr[8][23]);
 
 #ifdef __cplusplus

@@ -16,9 +16,11 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stddef.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -180,6 +182,33 @@ typedef struct {
     double start_wall;
     double observed_m;
 } dsd_call_observation;
+
+/** The text identity a confirmed NXDN DCR call publishes as its target: DCR names no party this decoder reads. */
+#define DSD_CALL_NXDN_DCR_TARGET_TEXT "JPN DCR"
+
+/** Whether a call of @p protocol with @p numeric_target and @p target_text is a confirmed NXDN DCR call. */
+static inline int
+dsd_call_is_nxdn_dcr(int protocol, uint64_t numeric_target, const char* target_text) {
+    return DSD_SYNC_IS_NXDN(protocol) && numeric_target == 0U && target_text != NULL
+           && strcmp(target_text, DSD_CALL_NXDN_DCR_TARGET_TEXT) == 0;
+}
+
+/**
+ * Whether a call's target text (dsd_call_snapshot::target_text, Event_History::tgt_str) is the call's own name, ranked
+ * above its group list name and the channel it was heard on. It is, for a target of text only (D-STAR, YSF, dPMR: no
+ * numeric target) and for a protocol that names a numeric target by text (an M17 callsign, its numeric target the
+ * encoded address; an EDACS AFS). An NXDN numeric target's text only spells that number, as an IDAS (Type-D) group
+ * "pp-iiii" under its prefix (issue #903): such a call is named, as a bare number is, by its list entry, else its
+ * channel, else the text. The Monitor headline and ended-call hold (call_view.c), the Qt history row
+ * (call_history_model.cpp) and the rdio-scanner tag (rdio_export.c) all rank by it.
+ */
+static inline int
+dsd_call_target_text_is_name(int protocol, uint64_t numeric_target, const char* target_text) {
+    if (target_text == NULL || target_text[0] == '\0') {
+        return 0;
+    }
+    return numeric_target == 0U || !DSD_SYNC_IS_NXDN(protocol);
+}
 
 static inline dsd_call_observation
 dsd_call_observation_data(int protocol, uint8_t slot, uint64_t source_id, uint64_t target_id) {
@@ -633,6 +662,13 @@ int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protoc
  * classification and audio permission stay until the new call's next crypto update. Returns 1 when the record
  * changed, 0 when the slot holds no active epoch of @p protocol (or nothing to forget), -1 on bad arguments. */
 int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol);
+/** The slot's active epoch, which messages naming no party described, is now named as a call none of them was (an NXDN
+ * DCR call taking over the epoch VCALLs naming no party opened, issue #903): forget all they published into it, so it
+ * is never shown as the new call's. Its group or private class goes back to generic voice; its service metadata
+ * (options, emergency, priority), crypto classification and audio permission are forgotten, and so are the crypto
+ * values dsd_call_state_forget_crypto_values() forgets, until the call's own messages describe it. Returns 1 when the
+ * record changed, 0 when the slot holds no active epoch of @p protocol (or nothing to forget), -1 on bad arguments. */
+int dsd_call_state_forget_call_description(dsd_state* state, uint8_t slot, int protocol);
 /** Update crypto metadata on an existing active or retained ended epoch, a call of @p protocol. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
                                           const dsd_call_crypto_update* update);

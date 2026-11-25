@@ -52,17 +52,22 @@ typedef enum {
     DMR_SM_EV_SYNC_LOST,  // Sync lost
 } dmr_sm_event_type_e;
 
-/* Where a GRANT event came from: a channel grant, or a channel status the CSBK layer selected (Hytera XPT). */
+/* Where a GRANT event came from: a channel grant, or a channel status the CSBK layer selected (Hytera XPT). A Tier III
+ * C_MOVE is no grant (TS 102 361-4 Table 7.17 names only a TSCC and an MS address): it never reaches the machine. The
+ * values are fixed: 1, the retired C_MOVE origin, stays unused, and the machine refuses an event of any origin not
+ * listed here (dmr_sm_submit_grant(), dmr_sm_note_grant_assignment()). */
 typedef enum {
     DMR_SM_ORIGIN_GRANT = 0,
-    DMR_SM_ORIGIN_STATUS = 1,
+    DMR_SM_ORIGIN_STATUS = 2,
 } dmr_sm_origin_e;
 
 /* What dmr_sm_submit_grant() did with a grant. */
 typedef enum {
     DMR_SM_GRANT_FOLLOWED = 0, // the receiver was tuned to it
     DMR_SM_GRANT_IN_PLACE = 1, // already on its carrier: nothing to tune
-    DMR_SM_GRANT_REFUSED = 2,  // policy, receive admission, channel map or trust refused it
+    /* Policy, receive admission, channel map or trust refused it; or it named another call on the followed slot, which
+       ends that slot's assignment (dmr_sm_note_grant_assignment()) and is not followed itself (its repeat is). */
+    DMR_SM_GRANT_REFUSED = 2,
     DMR_SM_GRANT_BUSY = 3,     // the receiver holds a call the grant may neither hold over nor preempt
     DMR_SM_GRANT_DEFERRED = 4, // the tune was not accepted: nothing changed
 } dmr_sm_grant_result_e;
@@ -184,6 +189,13 @@ typedef struct {
        the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
        call of unknown identity). Cleared with the slots' records (every follow, release and acquisition). */
     int vc_acquire_slots;
+    /* When a grant named a cleared followed slot's call anew (dmr_sm_slot_regranted()): that assignment's acquisition
+       window runs from here, not from the tune (0: none since the follow). Cleared with vc_cleared_slots. */
+    double vc_reacquire_m;
+    /* The accepted-voice time (dsd_state::dmr_confidence_voice_m) each slot's last voice sync saw: a grant is published
+       only on accepted voice newer than that (dmr_sm_publish_grant_identity()), never on voice an earlier sync already
+       handled. */
+    double vc_voice_seen_m[2];
     // DSD_CRC_* bits of the CSBK or MBC that granted this channel (a RAS grant under -F). The grant's identity is
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     int cc_hunt_index;
@@ -199,8 +211,20 @@ typedef struct {
     long receive_check_freq_hz;            // The voice channel that window belongs to (a new one starts its own)
     int receive_codes_fresh;               // Its codes were forgotten at its tune: what it holds now it proved
     int vc_data_call;                      // the grant was a data call (its policy was judged with data_call set)
-    double t_voice_m;                      // Time of last voice activity
-    double t_cc_sync_m;                    // Time of last CC sync
+    /* vc_data_call says what the followed call's media is: a grant, status or LC named it. 0 for a companion slot
+       adopted for a retired slot while nothing identified its call (dmr_sm_end_changed_assignment()): its media is
+       unknown, and no grant's media contradicts it, until a grant there names its call (in place). */
+    int vc_media_known;
+    double t_voice_m;   // Time of last voice activity
+    double t_cc_sync_m; // Time of last CC sync
+    /* The followed grant's own media (voice for a voice grant, data for a data grant) was heard on its slot since the
+       follow, or a P_CLEAR of that slot ended its acquisition: from then on its acquisition no longer holds that slot
+       in the busy view. */
+    int vc_media_heard;
+    /* Bit s: a P_CLEAR released slot s since the follow (dmr_sm_release_slot()): it holds no acquisition, carrier-wide
+       or the followed slot's, whatever the retention rule says of the carrier, until a grant names a call there anew.
+       Cleared with vc_acquire_slots. */
+    int vc_cleared_slots;
 
     /* CC probes do not replace the confirmed/configured return destination.
      * These fields live in each scan target's existing DMR context. */
@@ -232,10 +256,6 @@ typedef struct {
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
     int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
-    /* vc_tg/vc_dst/vc_src hold the addresses of the grant (or status) the machine followed, what a standard P_CLEAR is
-       matched to (dmr_sm_names_followed_call()). Unlike vc_identity_known it outlives a new transmission on the slot
-       (a private call's reverse leg), and it goes only when those addresses are replaced or cleared. */
-    int vc_addresses_known;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
@@ -341,7 +361,7 @@ int dmr_sm_receiver_on(const dsd_opts* opts, long freq_hz);
 long dmr_sm_receiver_frequency(const dsd_opts* opts);
 
 /** @brief After a DMR tune that is not the machine's follow or status follow (a Capacity Plus rest move, a
- *  Connect Plus data tune, a control channel probe or settle) took the receiver from @p receiver_hz (where it was
+ *  control channel probe or settle) took the receiver from @p receiver_hz (where it was
  *  before the tune, as dmr_sm_receiver_frequency() reads it; 0 unknown) to @p freq_hz: when it left that carrier, the left
  *  calls' privacy bit and talkgroup keys (dmr_forget_call_decryption()), ALG, key ID and MI and each slot's MI chain
  *  are forgotten, as a release forgets them, so the next carrier's frames before their own PI or LC never decrypt with
@@ -404,6 +424,14 @@ dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
+/** @brief Whether the receiver is on the control channel: one is known (dsd_state::trunk_cc_freq) and the receiver
+ *  follows one call on the control channel's own carrier (a composite control channel's payload), or follows no call on
+ *  a carrier that is the control channel's where the receiver's carrier is known (a hunt's probe or an operator's move
+ *  listens elsewhere while the control channel stays the anchor; unknown counts as on it). What
+ *  a checked CSBK teaches the Tier III channel map is confirmed (dsd_state::dmr_lcn_trust 2) only there, and only
+ *  there may a grant act on an unconfirmed mapping. */
+int dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state);
+
 /** @brief Whether the machine follows a call (TUNED to its carrier), whatever the tuner reads. */
 int dmr_sm_follows_call(const dmr_sm_ctx_t* ctx);
 
@@ -413,8 +441,10 @@ int dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot);
 
 /** @brief Whether an address received on @p slot of the followed carrier names the followed call (a P_CLEAR's, TS
  *  102 361-4 Table 7.30): dmr_sm_follows_slot(), and @p target the followed call's talkgroup when @p is_group, or
- *  either party of a followed private call when not, as the machine records the call (the followed grant's identity,
- *  or an in-place grant's on the followed slot since). A call a later LC names on the slot is not matched.
+ *  either party of a followed private call when not, as the followed grant's own identity names the call
+ *  (dmr_sm_grant_identity()). Fail closed: while that identity names no call (the call it named ended, a companion
+ *  adopted for a retired slot, a status follow), no address matches, nor does a call a later LC or in-place grant names
+ *  on the slot.
  */
 int dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target);
 
@@ -482,9 +512,26 @@ dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_
  *
  * A candidate on another carrier while the receiver is held (or @ref dmr_sm_event_t::caller_busy) is followed only by
  * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
- * (IN_PLACE) names the call of its slot.
+ * (IN_PLACE) names the call of its slot. One that names another call on the followed slot (another target, address
+ * class or media) ends that slot's assignment before any admission (dmr_sm_note_grant_assignment()) and is REFUSED:
+ * its repeat is followed anew. An event of an origin dmr_sm_origin_e does not list is REFUSED before anything else.
  */
 dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
+
+/**
+ * A checked channel grant names the assignment of its slot whether or not the receiver follows it: a caller that
+ * refuses a grant before submitting it (a call-type switch, data following off, the talkgroup policy) still hands it
+ * here. One for the followed slot of the followed carrier (its explicit frequency, or its LPCN's mapping only where
+ * that mapping is trusted) that names another call than the slot is followed for
+ * (another target, address class or media; a repeat of the followed grant or of the call the slot names is the same
+ * call: for a group call whatever its caller, for a private call the same two parties in either order, so a grant from
+ * a third radio to the same target is another call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
+ * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.
+ * An event of an origin dmr_sm_origin_e does not list changes nothing (0).
+ * Returns 1 when the grant ended the assignment: it is not followed itself (its repeat is). Called inside the grant's
+ * CRC scope. Decoder thread only.
+ */
+int dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 
 /**
  * @brief Record the followed call in the talkgroup policy ledger after an accepted follow.

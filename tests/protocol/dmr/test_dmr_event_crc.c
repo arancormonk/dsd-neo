@@ -441,6 +441,226 @@ test_t3_mbc_grant_channel_provenance(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A checked MBC header for an absolute TV_GRANT (TG 1001, source 2002, TS1) whose LB bit is @p last, through the burst
+   handler. */
+static void
+send_mbc_grant_header(dsd_opts* opts, dsd_state* state, int last) {
+    uint8_t hdr[12] = {0x31, 0x00, 0xFF, 0xF0, 0x00, 0x03, 0xE9, 0x00, 0x07, 0xD2, 0, 0};
+    if (last) {
+        hdr[0] |= 0x80U;
+    }
+    uint8_t bits[96];
+    unpack(hdr, bits, sizeof hdr);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xAAAAU);
+    hdr[10] = (uint8_t)(crc >> 8);
+    hdr[11] = (uint8_t)crc;
+    unpack(hdr, bits, sizeof hdr);
+    send_burst_bits(opts, state, bits, k_no_reserved, 0x04);
+}
+
+/* An MBC header that is its own last block carries no continuation, so nothing is decoded from the bytes an earlier,
+   unfinished MBC left in the assembly buffer: a checked grant header, a continuation naming LPCN 304 whose CRC16 checks
+   but whose LB bit is clear (the MBC is not finished), then a checked grant header with its LB bit set. The channel the
+   stale continuation names is never learned. */
+static int
+test_t3_mbc_header_only_reads_no_stale_block(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    send_mbc_grant_header(opts, state, 0);
+    uint8_t block[96] = {0};
+    put_bits(block, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT): only the assembler keeps the block out
+    put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
+    put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
+    put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    int rc = 0;
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an unfinished MBC teaches the channel map nothing\n");
+        rc = 1;
+    }
+    send_mbc_grant_header(opts, state, 1);
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a header-only MBC reads no stale continuation (LPCN 304 -> %ld)\n",
+                    state->trunk_chan_map[304]);
+        rc = 1;
+    }
+    return rc;
+}
+
+/* A header-only MBC's rejection disarms the assembly: orphan continuations that follow are no MBC. Under -F (relaxed
+   CRC handling, where a checked last continuation is accepted with any header the assembly holds), a checked grant
+   header with its LB bit set, then a continuation carrying an absolute grant header's bytes, then a checked last
+   continuation naming LPCN 304: the second is never taken as a header, so nothing is dispatched and LPCN 304 is never
+   learned. */
+static int
+test_t3_mbc_header_only_disarms_the_assembly(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    send_mbc_grant_header(opts, state, 1);
+    uint8_t orphan[12] = {0x31, 0x00, 0xFF, 0xF0, 0x00, 0x03, 0xE9, 0x00, 0x07, 0xD2, 0, 0};
+    uint8_t orphan_bits[96];
+    unpack(orphan, orphan_bits, sizeof orphan);
+    send_burst_bits(opts, state, orphan_bits, k_no_reserved, 0x05);
+    uint8_t block[96] = {0};
+    block[0] = 1U;                 // LB: the last block
+    put_bits(block, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT): only the assembler keeps the block out
+    put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
+    put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
+    put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: orphan continuations after a header-only MBC act as one (LPCN 304 -> %ld)\n",
+                    state->trunk_chan_map[304]);
+        return 1;
+    }
+    return 0;
+}
+
+/* An absolute TV_GRANT MBC with two checked continuations (the last block's CRC16 covers both, TS 102 361-1 §7.4.0),
+   the first an intermediate block whose bits 2..7 carry the header's CSBKO and whose CdefParms name LPCN 305: a
+   grant's absolute parameters are its MBC's one, last block (TS 102 361-4 Table 7.16), so LPCN 305 is never learned
+   and the grant is not read from either block. */
+static int
+test_t3_mbc_grant_reads_only_one_block(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    send_mbc_grant_header(opts, state, 0);
+    uint8_t blocks[192] = {0};
+    put_bits(blocks, 2, 6, 0x31U);  // CSBKO of the header (TV_GRANT)
+    put_bits(blocks, 22, 12, 305U); // CdefParms LPCN (MBC bits 118..129)
+    put_bits(blocks, 57, 10, 851U); // RX MHz (MBC bits 153..162)
+    put_bits(blocks, 67, 13, 100U); // RX 125 Hz steps (MBC bits 163..175)
+    blocks[96] = 1U;                // LB: the last block
+    put_bits(blocks, 98, 6, 0x31U);
+    put_bits(blocks, 176, 16, (uint32_t)dsd_crc_ccitt16_bits(blocks, 176));
+    send_burst_bits(opts, state, blocks, k_no_reserved, 0x05);
+    send_burst_bits(opts, state, blocks + 96, k_no_reserved, 0x05);
+    if (state->trunk_chan_map[305] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a grant reads no intermediate block as its parameters (LPCN 305 -> %ld)\n",
+                    state->trunk_chan_map[305]);
+        return 1;
+    }
+    return 0;
+}
+
+/* A checked MBC header of opcode @p csbko under FID @p fid (no other fields) then its last continuation, whose bits
+   2..7 are @p block_bits, through the burst handler; what it prints goes to @p out. */
+static int
+capture_mbc(dsd_opts* opts, dsd_state* state, uint8_t csbko, uint8_t fid, uint8_t block_bits, char* out,
+            size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_mbc_block") != 0) {
+        return 1;
+    }
+    uint8_t hdr[12] = {csbko, fid, 0x0F, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t bits[96];
+    unpack(hdr, bits, sizeof hdr);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xAAAAU);
+    hdr[10] = (uint8_t)(crc >> 8);
+    hdr[11] = (uint8_t)crc;
+    unpack(hdr, bits, sizeof hdr);
+    send_burst_bits(opts, state, bits, k_no_reserved, 0x04);
+    uint8_t block[96] = {0};
+    block[0] = 1U; // LB: the last block
+    put_bits(block, 2, 6, block_bits);
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, out, out_size) != 0;
+}
+
+/* Only an MBC whose block repeats its header's CSBKO (an absolute-parameters block, TS 102 361-4 Tables 7.16, 7.18 and
+   7.21) is checked for another message's block, which refuses it as malformed. A manufacturer's MBC (here C_MOVE's
+   opcode under FID 0x10) carries payload in those bits (TS 102 361-1 §7.4.0, Figures 7.12 and 7.13): its block is its
+   own whatever they hold. */
+static int
+test_t3_foreign_block_check_only_where_repeated(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    char out[4096];
+    int rc = capture_mbc(opts, state, 57U, 0x10U, 0x15U, out, sizeof out);
+    if (rc != 0 || strstr(out, "Manufacturer CSBK: FID 10; Opcode 39;") == NULL || strstr(out, "Malformed") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a manufacturer's MBC block is its own: '%s'\n", out);
+        rc = 1;
+    }
+    int standard = capture_mbc(opts, state, 57U, 0x00U, 0x15U, out, sizeof out);
+    if (standard != 0 || strstr(out, "Malformed Control Signalling Block (CSBKO 39); ignored") == NULL
+        || strstr(out, "Move TSCC") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a C_MOVE with another message's block is refused: '%s'\n", out);
+        standard = 1;
+    }
+    return rc | standard;
+}
+
+/* A checked C_MOVE header (TS 102 361-4 Table 7.17: Backoff 2, PCN 0xFFF, MS 0) through the burst handler, as data
+   type @p databurst with CRC mask @p mask. LB is clear: it claims an appended MV_AP block. */
+static void
+send_cmove_header(dsd_opts* opts, dsd_state* state, uint8_t databurst, uint16_t mask) {
+    uint8_t hdr[12] = {0x39, 0x00, 0x00, 0x00, 0x02, 0x0F, 0xFF, 0x00, 0x00, 0x00, 0, 0};
+    uint8_t bits[96];
+    unpack(hdr, bits, sizeof hdr);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ mask);
+    hdr[10] = (uint8_t)(crc >> 8);
+    hdr[11] = (uint8_t)crc;
+    unpack(hdr, bits, sizeof hdr);
+    send_burst_bits(opts, state, bits, k_no_reserved, databurst);
+}
+
+/* What the burst handler prints for a C_MOVE: when @p as_mbc, an MBC header (0x04) then its MV_AP continuation; else the same
+   header as a standalone CSBK, 0x03), in @p out. */
+static int
+capture_cmove(dsd_opts* opts, dsd_state* state, int as_mbc, char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_cmove_block") != 0) {
+        return 1;
+    }
+    if (as_mbc) {
+        send_cmove_header(opts, state, 0x04, 0xAAAAU);
+        uint8_t block[96] = {0};
+        put_bits(block, 0, 1, 1U);     // last block
+        put_bits(block, 2, 6, 57U);    // CSBKO of the header
+        put_bits(block, 22, 12, 303U); // CdefParms LPCN (MBC bits 118..129)
+        put_bits(block, 57, 10, 851U); // RX MHz (MBC bits 153..162)
+        put_bits(block, 67, 13, 100U); // RX 125 Hz steps (MBC bits 163..175)
+        put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+        send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    } else {
+        send_cmove_header(opts, state, 0x03, 0xA5A5U);
+    }
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, out, out_size) != 0;
+}
+
+/* A C_MOVE's absolute TSCC frequency comes only from an MV_AP block that was received: the assembled MBC prints it and
+   the channel map learns it (a checked Move TSCC, discussion #900); the same header heard as a standalone CSBK (one
+   decoded block) names 0xFFF with no MV_AP, so it is malformed and refused, reading no frequency from the bits past
+   it. */
+static int
+test_t3_cmove_appended_block(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    char out[4096];
+    int rc = capture_cmove(opts, state, 1, out, sizeof out);
+    if (rc != 0 || strstr(out, "Move TSCC: MS 0 to channel 303 (851.012500 MHz)") == NULL
+        || state->trunk_chan_map[303] != 851012500L) {
+        DSD_FPRINTF(stderr, "FAIL: assembled C_MOVE MBC prints its MV_AP block: '%s'\n", out);
+        rc = 1;
+    }
+    int lone = capture_cmove(opts, state, 0, out, sizeof out);
+    if (lone != 0 || strstr(out, "Malformed Control Signalling Block (CSBKO 39); ignored") == NULL
+        || strstr(out, "Move TSCC") != NULL || strstr(out, "MHz") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a standalone C_MOVE header reads no MV_AP block: '%s'\n", out);
+        lone = 1;
+    }
+    return rc | lone;
+}
+
 // A RAS-accepted voice LC header publishes the call marked [RAS] at the voice row's ordinary severity, which the
 // terminal colours by category; a checked header publishes it unmarked.
 static void
@@ -1319,6 +1539,11 @@ main(void) {
     rc |= test_lrrp_summary_motion(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
+    rc |= test_t3_cmove_appended_block(opts, state);
+    rc |= test_t3_mbc_header_only_reads_no_stale_block(opts, state);
+    rc |= test_t3_mbc_header_only_disarms_the_assembly(opts, state);
+    rc |= test_t3_mbc_grant_reads_only_one_block(opts, state);
+    rc |= test_t3_foreign_block_check_only_where_repeated(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);

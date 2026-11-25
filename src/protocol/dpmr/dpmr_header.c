@@ -233,7 +233,8 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     dpmr_publish_crypto(state, scrambled ? DPMR_HALF_SCRAMBLED : DPMR_HALF_CLEAR,
                         scrambled ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
     dsd_event_sync_slot(opts, state, 0U);
-    DSD_FPRINTF(stderr, "%s TG=%s Src=%s%s", KGRN, called, calling, KNRM);
+    /* The called ID may be a radio's or a group's: a dial string does not say which (issue #903). */
+    DSD_FPRINTF(stderr, "%s Called=%s Src=%s%s", KGRN, called, calling, KNRM);
     if (header->color_code >= 0) {
         DSD_FPRINTF(stderr, "%s Channel Code=%02d%s", KGRN, header->color_code, KNRM);
     }

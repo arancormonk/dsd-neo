@@ -6682,7 +6682,8 @@ write_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 }
 
 /* A DMR Tier III C_BCAST (opcode 40) announcing @p channel at an absolute frequency: @p rx_int MHz plus @p rx_step
- * steps of 125 Hz, the same receive and transmit. */
+ * steps of 125 Hz, the same receive and transmit. The frequencies are in the appended block: hand it over as a
+ * two-block MBC (dsd_test_dmr_cspdu_mbc()). */
 static void
 build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     DSD_MEMSET(bits, 0, 256);
@@ -6690,6 +6691,7 @@ build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_
     bytes[0] = 40U;
     write_csbk_bits(bits, 16U, 5U, 5U);
     write_csbk_bits(bits, 68U, channel & 0x0FFFU, 12U);
+    write_csbk_bits(bits, 98U, 40U, 6U); // the appended block's CSBKO: its header's (TS 102 361-4 Table 7.21)
     write_csbk_bits(bits, 112U, 0U, 4U);
     write_csbk_bits(bits, 118U, channel & 0x0FFFU, 12U);
     write_csbk_bits(bits, 130U, rx_int & 0x03FFU, 10U);
@@ -9406,12 +9408,14 @@ test_stream_off_recording_is_kept_but_not_exported(void) {
     return rc;
 }
 
-/* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
+/* The manufacturer and branding a Hytera XPT control channel leaves on the state, and the checked XPT brand its
+   received identity record notes (which selects the 16-bit address layout). */
 static void
 seed_xpt_identity(dsd_state* state) {
     state->dmr_mfid = 0x68;
     DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "  Hytera");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "XPT ");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
 }
 
 static int
@@ -9466,8 +9470,9 @@ preamble_csbk_address_bits(dsd_opts* opts, dsd_state* state) {
  * The DMR stale-follow clear is a decode decision: a control channel quiet for more than 10 s of decode time forgets
  * the manufacturer and branding it announced, so a replay forgets them at the same capture time however fast it is
  * read. Driven through the TEST decode clock with no real time passing, on a trunked setup that follows no voice
- * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s, after which a standard
- * Preamble CSBK reads 24-bit addresses instead of XPT's 16-bit ones.
+ * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s. The address layout is
+ * no branding: it follows the carrier's checked trunking system in the received identity record only while that is
+ * fresh, so after the no-carrier pass a Preamble CSBK reads the standard 24-bit addresses until fresh evidence.
  */
 static int
 test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
@@ -9506,7 +9511,8 @@ test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
 /*
  * The conventional control for the case above: without trunking, noCarrier() drops the branding at every pass
  * whatever the clock says, while the manufacturer id still waits out more than 10 s of decode time since the last
- * control-channel sync.
+ * control-channel sync. The input may be an external scanner's, which moves to another channel with no carrier
+ * boundary the decoder sees: the XPT record the pass leaves stale selects no 16-bit layout.
  */
 static int
 test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
@@ -9525,6 +9531,8 @@ test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
     noCarrier(opts, state);
     rc |= expect_true("conventional: branding cleared at every pass",
                       state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("conventional: the stale XPT record selects no 16-bit layout",
+                      preamble_csbk_address_bits(opts, state) == 24);
     rc |= expect_true("conventional: manufacturer kept at +0 s", state->dmr_mfid == 0x68);
     decode_clock_at_ms(10000U);
     noCarrier(opts, state);
@@ -10408,8 +10416,9 @@ test_dmr_t3_cc_evidence_ends_with_reception(void) {
 /*
  * NXDN's system type is the carrier's: an operator move (a tune, a source or input change, a scan step) may land on a
  * Type-D repeater, whose frames must not read as a composite control channel's, so the Type-C context and the foreign
- * control stamp go with trunking on as off. A stream gap stays on the carrier, and keeps them; this site stays with
- * trunking on (only the untrunked forget drops it).
+ * control stamp go with trunking on as off. So does the Type-D address evidence a checked SCCH left (issue #903): the
+ * next carrier may be a Type-C one, whose 16-bit IDs must not split. A stream gap stays on the carrier, and keeps them;
+ * this site stays with trunking on (only the untrunked forget drops it).
  */
 static int
 test_operator_boundary_forgets_the_nxdn_system_type(void) {
@@ -10423,9 +10432,11 @@ test_operator_boundary_forgets_the_nxdn_system_type(void) {
     dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
     dsd_nxdn_note_type_c(state);
     state->nxdn_site.foreign_control_m = 42.0;
+    dsd_nxdn_note_type_d_layout(state);
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
     rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-C context",
                       dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) > 0.0);
+    rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-D evidence", dsd_nxdn_type_d_layout_fresh(state));
     static const dsd_carrier_boundary_kind k_kinds[] = {
         DSD_CARRIER_BOUNDARY_TUNE,
         DSD_CARRIER_BOUNDARY_SOURCE,
@@ -10435,9 +10446,12 @@ test_operator_boundary_forgets_the_nxdn_system_type(void) {
     for (size_t i = 0; i < sizeof(k_kinds) / sizeof(k_kinds[0]); i++) {
         dsd_nxdn_note_type_c(state);
         state->nxdn_site.foreign_control_m = 42.0;
+        dsd_nxdn_note_type_d_layout(state);
         dsd_engine_carrier_boundary(opts, state, k_kinds[i], 0);
         rc |= expect_true("nxdn-system-type: an operator move forgets the Type-C context",
                           !dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) == 0.0);
+        rc |= expect_true("nxdn-system-type: an operator move forgets the Type-D evidence",
+                          !dsd_nxdn_type_d_layout_fresh(state));
         rc |= expect_true("nxdn-system-type: trunking keeps this site", dsd_nxdn_site_is(state, (2U << 12) | 0x21U));
     }
     free_test_runtime(opts, state);

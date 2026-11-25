@@ -486,7 +486,7 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_FPRINTF(stderr, "%s\n ", KYEL);
     p25_print_voice_svc_common(opts, state, svc_bits);
 
-    DSD_FPRINTF(stderr, " Group Voice Channel Grant Update - Extended");
+    DSD_FPRINTF(stderr, " Group Voice Channel Grant - Explicit");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN-T [%04X] CHAN-R [%04X] Group [%d][%04X]", svc_bits, channelt, channelr,
                 group, group);
 
@@ -502,8 +502,10 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     p25p1_pdu_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, (uint32_t)group);
 
+    // Opcode $00 is GRP_V_CH_GRANT in its explicit channel form (TIA-102.AABC-D 4.2.1.2): a new assignment. The
+    // grant updates are opcodes $02 and $03.
     p25p1_pdu_dispatch_group_grant(opts, state, channelt, svc_bits, group, (int)src, freq1,
-                                   P25_SM_GRANT_PROVENANCE_UPDATE);
+                                   P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
 }
 
 static void DSD_ATTR_USED

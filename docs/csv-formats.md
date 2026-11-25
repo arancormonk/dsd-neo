@@ -120,6 +120,10 @@ Notes:
   frequency a trunk channel is stored and tuned at, far above any trunking band. A row outside it (including `0`) is
   skipped with a warning, and its slot in the LCN list below is left at 0 so later rows keep their LCN numbers. This is
   what tells a channel map apart from a decimal key list, which has the same `number,number` shape.
+- DMR Tier III: a row resolves a logical channel grant wherever the grant is heard, on the control channel or on a
+  voice channel (a hold or preemption candidate, or a grant for the slot being followed). Only a frequency the decoder
+  learned itself away from the control channel, and has not yet confirmed there, is not acted on off the control
+  channel.
 - Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
   trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, `single_key_dec`, and `options` (`relevant_CLI_switches`). They may appear in
   any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
@@ -893,6 +897,11 @@ Important behavior:
   changes.
 - Rows, `-W` and the Hold match numeric talkgroup IDs. M17 addresses calls by callsign, so M17 traffic is not
   matched by them; use the M17 CAN filter to select M17 traffic.
+- NXDN Type-D (IDAS) names a group or radio by an 11-bit ID under a 5-bit home repeater (prefix). Rows, holds,
+  lockouts, skips and keys match the 11-bit ID, so a Type-D row applies to that ID under every prefix: row `5`
+  decides group 5 under prefix 3 and under prefix 7 alike. Write the plain ID (`5`), not the 16-bit packed value;
+  `03-0005` in this column is the range 3 to 5, as anywhere else. History, the call display and the frontends show the
+  prefix as `pp-iiii` (`03-0005`), so two prefixes are still two calls there.
 - A private (radio-to-radio) call is judged by the exact rows of its two radio IDs; ranges and patterns are
   talkgroup rows and never decide or name a private call. A radio ID of `0` is unknown and matches no row. The
   [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) can add restrictions by radio for

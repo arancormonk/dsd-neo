@@ -34,10 +34,12 @@
 #include <stdio.h>
 #include <string.h>
 #include "dmr_abs_params.h"
+#include "dmr_address_layout.h"
 #include "dmr_ars.h"
 #include "dmr_block_crypto.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_pdu_internal.h"
+#include "dmr_slot_reset.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -93,11 +95,6 @@ dmr_clear_superframe_slot(dsd_state* state, uint8_t slot) {
     for (int i = 0; i < 24 * 127; i++) {
         state->dmr_pdu_sf[slot][i] = 0;
     }
-}
-
-static uint8_t
-dmr_branding_is(const dsd_state* state, const char* value) {
-    return (uint8_t)(strcmp(state->dmr_branding_sub, value) == 0);
 }
 
 static const char*
@@ -178,7 +175,9 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
     f->poc = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4) + (mpoc << 4);
     f->target = (uint32_t)convert_bits_into_output(&dheader_bits[16], 24);
     f->source = (uint32_t)convert_bits_into_output(&dheader_bits[40], 24);
-    f->is_xpt = dmr_branding_is(state, "XPT ");
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    const dmr_address_layout layout = dmr_address_layout_of(state);
+    f->is_xpt = (uint8_t)(layout == DMR_ADDRESS_LAYOUT_XPT);
     if (f->is_xpt == 1) {
         f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
         f->source = (uint32_t)convert_bits_into_output(&dheader_bits[48], 16);
@@ -190,7 +189,7 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
             f->tg_hash = crc8(target_hash, 16);
         }
     }
-    if (dmr_branding_is(state, "Cap+ ")) {
+    if (layout == DMR_ADDRESS_LAYOUT_CAP_PLUS) {
         if (f->gi == 0) {
             f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
         }
@@ -2014,6 +2013,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
         dmr_block_assembler_handle_type1(&ctx);
     } else if (ctx.type == 2) {
         if (!dmr_block_assembler_handle_type2(&ctx)) {
+            dmr_block_assembler_reset_type2(&ctx); // a rejected MBC disarms the assembly
             return;
         }
     }
@@ -2025,41 +2025,13 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 void
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
-    DSD_MEMSET(state->data_p_head, 0, sizeof(state->data_p_head));
-    DSD_MEMSET(state->data_conf_data, 0, sizeof(state->data_conf_data));
-    DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
-    state->data_block_counter[0] = 1;
-    state->data_block_counter[1] = 1;
-    DSD_MEMSET(state->data_block_poc, 0, sizeof(state->data_block_poc));
-    DSD_MEMSET(state->data_header_dd_format, 0, sizeof(state->data_header_dd_format));
-    DSD_MEMSET(state->data_header_bit_padding, 0, sizeof(state->data_header_bit_padding));
-    DSD_MEMSET(state->data_byte_ctr, 0, sizeof(state->data_byte_ctr));
-    DSD_MEMSET(state->udt_uab_reserved, 0, sizeof(state->udt_uab_reserved));
-    DSD_MEMSET(state->dmr_mbc_armed, 0, sizeof(state->dmr_mbc_armed));
-    DSD_MEMSET(state->data_ks_start, 0, sizeof(state->data_ks_start));
-    state->data_header_blocks[0] = 1;
-    state->data_header_blocks[1] = 1;
-    DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
-    DSD_MEMSET(state->dmr_lrrp_source, 0, sizeof(state->dmr_lrrp_source));
-    DSD_MEMSET(state->dmr_lrrp_target, 0, sizeof(state->dmr_lrrp_target));
-    // Qualifies dmr_lrrp_target, so it clears with it -- same reason as dsd_init.c and
-    // no_carrier_reset_dmr_data_blocks(). A stale group flag left behind a cleared target would
-    // qualify whatever target is written next, including one a non-DMR protocol wrote.
-    DSD_MEMSET(state->dmr_data_target_is_group, 0, sizeof(state->dmr_data_target_is_group));
-    DSD_MEMSET(state->dmr_data_checked_group, 0, sizeof(state->dmr_data_checked_group));
+    dmr_slot_reset_blocks(state, 0U);
+    dmr_slot_reset_blocks(state, 1U);
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
     DSD_MEMSET(state->cap_plus_csbk_crc_invalid, 0, sizeof(state->cap_plus_csbk_crc_invalid));
-    DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
-    DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
-    DSD_MEMSET(state->data_header_format, 7, sizeof(state->data_header_format));
-    DSD_MEMSET(state->data_header_sap, 0, sizeof(state->data_header_sap));
-    DSD_MEMSET(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
-    DSD_MEMSET(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
-    //reset some strings -- resetting call string here causes random blink on ncurses terminal (cap+)
-    DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", "");
-    DSD_SNPRINTF(state->dmr_lrrp_gps[1], sizeof(state->dmr_lrrp_gps[1]), "%s", "");
+    //resetting the call string here causes random blink on ncurses terminal (cap+)
 }
 
 // Safe append helper for bounded concatenation

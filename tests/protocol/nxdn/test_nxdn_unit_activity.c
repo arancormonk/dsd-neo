@@ -418,10 +418,11 @@ test_channel_gates(dsd_opts* opts, dsd_state* state) {
     build_rem_con(e, 0x34U, 1U, 0U, 1001U, 2002U, 0U);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC);
     expect_no_row(state, "traffic channel remote control");
-    /* A composite control channel only once its frames read as Type-C. */
+    /* A frame the frame decoder classified composite (issue #903): its own CCH_INFO made it one before Type-C was
+       noted, or Type-C was known. The classification decides, not the site's Type-C note. */
     dsd_nxdn_forget_carrier_system(state);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE);
-    expect_no_row(state, "composite channel before Type-C");
+    (void)one_row(state, &r, "composite frame before Type-C is noted");
     dsd_nxdn_note_type_c(state);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE);
     (void)one_row(state, &r, "composite channel after Type-C");
@@ -536,6 +537,51 @@ test_rem_con_inter_system(dsd_opts* opts) {
     run_cac(opts, st, e);
     if (one_row(st, &r, "inter-system, reserved option")) {
         expect_true(r.subject_nonlocal && r.name_frozen[0] == '\0', "an unqualified inter-system subject is nonlocal");
+    }
+    dsd_state_ext_free_all(st);
+    free(st);
+}
+
+/* One FACCH1 whose CRC-12 check passed, on a composite control channel's frame (nxdn_handle_facch1(), the decoder's
+   entry for a decoded FACCH1): @p e is its 96 trellis bits, the 80-bit message, then its CRC-12 and tail bits (NXDN TS
+   1-A §4.5). */
+static void
+run_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* e) {
+    uint8_t trellis[96];
+    uint8_t m_data[12];
+    DSD_MEMCPY(trellis, e, sizeof trellis);
+    DSD_MEMSET(m_data, 0, sizeof m_data);
+    state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
+    nxdn_handle_facch1(opts, state, trellis, m_data, 0U, 0U, 0U);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
+}
+
+/* A FACCH1 carries 80 bits of message (issue #903): an inter-system REM_CON_REQ whose Location ID would lie in bits
+   77-95 has none there, only the CRC-12 and tail bits, so its destination unit gets no home and is not named from the
+   local lists. The same message on a CAC, which carries the Location ID, names the destination's home system. */
+static void
+test_facch1_crc_bits_are_no_location(dsd_opts* opts) {
+    dsd_state* st = calloc(1, sizeof(*st));
+    if (st == NULL) {
+        abort();
+    }
+    g_instance = 0;
+    g_rev = 0;
+    uint8_t e[CAC_ELEMENTS];
+    dsd_unit_activity r;
+    dsd_rxid_note_nxdn_location(st, 2U, 77U, 3U);
+    build_rem_con(e, 0x34U, 1U, 0U, 1001U, 2002U, 0x8000U);
+    set_inter_system(e, 1U, 78U);
+    run_facch1(opts, st, e);
+    if (one_row(st, &r, "inter-system request on a FACCH1")) {
+        expect_true(!r.subject.home_valid, "a FACCH1's CRC bits are no Location ID");
+        expect_true(r.subject_nonlocal, "the unqualified inter-system destination is nonlocal");
+    }
+    run_cac(opts, st, e);
+    if (one_row(st, &r, "inter-system request on a CAC")) {
+        expect_true(r.subject.home_valid && r.subject.home_b == 78U, "a CAC carries the destination's Location ID");
     }
     dsd_state_ext_free_all(st);
     free(st);
@@ -675,6 +721,7 @@ main(void) {
     test_channel_gates(opts, state);
     test_naming(opts);
     test_rem_con_inter_system(opts);
+    test_facch1_crc_bits_are_no_location(opts);
     test_visitor_home_group_not_labelled(opts);
     test_inter_system_group_subject_not_labelled(opts);
     dsd_state_ext_free_all(state);
