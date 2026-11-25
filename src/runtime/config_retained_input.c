@@ -95,11 +95,11 @@ typedef struct {
 #define INPUT_FLAGGED_KEY(field, flag)                                                                                 \
     {offsetof(dsdneoUserConfig, field), sizeof(((dsdneoUserConfig*)0)->field), offsetof(dsdneoUserConfig, flag)}
 
-/* Every [input] field but has_input, the flags (merged with their keys) and airspy (merged whole, below). */
+/* Every [input] field but has_input, the flags (merged with their keys), the RTL-SDR selector and airspy (each merged
+   whole, below). */
 static const input_key k_input_keys[] = {
     INPUT_KEY(input_source),
     INPUT_KEY(pulse_input),
-    INPUT_KEY(rtl_device),
     INPUT_KEY(rtl_freq),
     INPUT_FLAGGED_KEY(rtl_gain, rtl_gain_is_set),
     INPUT_FLAGGED_KEY(rtl_ppm, rtl_ppm_is_set),
@@ -167,6 +167,30 @@ airspy_keys_are_set(const dsdneoUserConfig* patch, const dsdneoUserConfig* defau
            && airspy_config_differs(&patch->airspy, &k_zero_airspy);
 }
 
+/* The RTL-SDR a patch names is one choice, rtl_serial over rtl_device, by the keys it names, never by their values
+   (index 0 and an empty serial are the defaults): a serial when it names rtl_serial (an empty one selects by index, a
+   refused one stays refused), else the index when it names rtl_device, which drops the serial the retained [input]
+   held. A patch naming neither (tuning alone) keeps the retained choice. The index a patch does not name is kept, for
+   a serial selection to fall back on once cleared. */
+static void
+merge_rtl_selector(dsdneoUserConfig* merged, const dsdneoUserConfig* patch) {
+    if (!patch->rtl_serial_is_set && !patch->rtl_device_is_set) {
+        return;
+    }
+    if (patch->rtl_device_is_set) {
+        merged->rtl_device = patch->rtl_device;
+        merged->rtl_device_is_set = 1;
+    }
+    if (patch->rtl_serial_is_set) {
+        DSD_MEMCPY(merged->rtl_serial, patch->rtl_serial, sizeof merged->rtl_serial);
+        merged->rtl_serial_invalid = patch->rtl_serial_invalid;
+    } else {
+        DSD_MEMSET(merged->rtl_serial, 0, sizeof merged->rtl_serial);
+        merged->rtl_serial_invalid = 0;
+    }
+    merged->rtl_serial_is_set = 1;
+}
+
 /* @p merged (holding the retained [input]) takes every key @p patch sets. */
 static void
 merge_input_keys(dsdneoUserConfig* merged, const dsdneoUserConfig* patch, const dsdneoUserConfig* defaults) {
@@ -182,6 +206,7 @@ merge_input_keys(dsdneoUserConfig* merged, const dsdneoUserConfig* patch, const 
             DSD_MEMCPY(to + key->flag_offset, from + key->flag_offset, sizeof(int));
         }
     }
+    merge_rtl_selector(merged, patch);
     if (airspy_keys_are_set(patch, defaults)) {
         merged->airspy = patch->airspy;
     }

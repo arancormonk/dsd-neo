@@ -10,12 +10,14 @@
  * Unit tests for config validation with diagnostics.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <errno.h>
 #include <initializer_list>
 #include <stdio.h>
 #include <string.h>
+#include <string>
 #include <sys/types.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
@@ -1670,6 +1672,28 @@ test_scan_skip_silent_ms_validation(void) {
     return rc;
 }
 
+/* [input] rtl_serial names the dongle exactly: a serial the RTL-SDR input refuses (':' or '"' in it, a space at either
+ * end, a control character or past DSD_RTL_SERIAL_MAX bytes) is an ERROR, since the loader marks it refused and the next
+ * start refuses the input. An empty one (select by rtl_device), and serials with spaces inside, '#', ';', '=' or digits
+ * only, are silent: the quoted value reads back whole. */
+static int
+test_rtl_serial_validation(void) {
+    static const char* const why = "Not a serial the RTL-SDR input can open";
+    int rc = 0;
+    for (const char* value : {"\"\"", "\"00000001\"", "\"A B#;=x\"", "1090", "\"SN 1\""}) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\nsource = rtl\nrtl_serial = %s\n", value);
+        rc |= run_scan_skip_silent_ms_case(ini, "input", "rtl_serial", -1, NULL);
+    }
+    std::string too_long(DSD_RTL_SERIAL_MAX + 1, 'A');
+    const std::string long_ini = "[input]\nrtl_serial = \"" + too_long + "\"\n";
+    for (const char* ini : {"[input]\nrtl_serial = \"A:B\"\n", "[input]\nrtl_serial = \" A\"\n",
+                            "[input]\nrtl_serial = \"A \"\n", "[input]\nrtl_serial = \"A\tB\"\n", long_ini.c_str()}) {
+        rc |= run_scan_skip_silent_ms_case(ini, "input", "rtl_serial", DSDCFG_DIAG_ERROR, why);
+    }
+    return rc;
+}
+
 /* Issue #756: [recording] analog_max_gap_ms. Outside 0..10000 is an ERROR, as an analog width is: the loader refuses
  * it and keeps the value it had, never clamping. A value that is not a whole number is an ERROR too. Both ends of the
  * range, and the 200 ms default, are silent. @p level is DSDCFG_DIAG_ERROR, or -1 for no diagnostic. */
@@ -2521,6 +2545,7 @@ main(void) {
     rc |= test_scan_voice_ms_out_of_range();
     rc |= test_scan_max_visit_ms_validation();
     rc |= test_scan_skip_silent_ms_validation();
+    rc |= test_rtl_serial_validation();
     rc |= test_analog_max_gap_validation();
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();

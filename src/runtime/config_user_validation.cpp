@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -293,6 +294,27 @@ validate_trunk_scan_lists_off_entry(const dsdcfg_schema_entry_t* entry, const ch
     return 1;
 }
 
+/* rtl_serial names the dongle exactly or not at all: a serial the rule refuses (dsd_rtl_serial_is_valid()) refuses the
+   RTL-SDR input at the next start, never cut or trimmed into another serial, so it is an error. Empty selects by
+   rtl_device. */
+static int
+validate_rtl_serial_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                          int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "input") != 0 || strcmp(entry->key, "rtl_serial") != 0) {
+        return 0;
+    }
+    if (val[0] != '\0' && !dsd_rtl_serial_is_valid(val)) {
+        char msg[192];
+        DSD_SNPRINTF(
+            msg, sizeof msg,
+            "Not a serial the RTL-SDR input can open: give it exactly as dsd-neo --rtl-list shows it, up to %d "
+            "printable characters with no ':' or '\"' and no space at either end",
+            DSD_RTL_SERIAL_MAX);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
 /* A path the loader cannot expand, or whose expansion does not fit its key (user_config_path_capacity()), is refused
    by the loader (it keeps the previous value), never cut short. */
 static int
@@ -323,6 +345,7 @@ validate_keyed_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
            || validate_refused_range_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_scan_skip_silent_ms_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_rtl_serial_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key);
 }
 

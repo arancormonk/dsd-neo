@@ -517,6 +517,32 @@ test_list_profiles_empty(void) {
     return result;
 }
 
+/* A profile names the dongle by serial as [input] does: input.rtl_serial reads whole (a space inside, '#' inside the
+   quotes) and wins over the base section's rtl_device. */
+static int
+test_profile_rtl_serial(void) {
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_device = 2\n"
+                             "\n"
+                             "[profile.yagi_north]\n"
+                             "input.rtl_serial = \"SN #1\"\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    const int rc = dsd_user_config_load_profile(path, "yagi_north", &cfg);
+    (void)remove(path);
+    if (rc != 0 || strcmp(cfg.rtl_serial, "SN #1") != 0 || cfg.rtl_serial_invalid || cfg.rtl_device != 2) {
+        DSD_FPRINTF(stderr, "FAIL: profile rtl_serial: rc %d serial '%s' invalid %d device %d\n", rc, cfg.rtl_serial,
+                    cfg.rtl_serial_invalid, cfg.rtl_device);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_profile_rtl_settings(void) {
     static const char* ini = "[input]\n"
@@ -1149,6 +1175,7 @@ main(void) {
     rc |= test_list_profiles();
     rc |= test_list_profiles_empty();
     rc |= test_profile_rtl_settings();
+    rc |= test_profile_rtl_serial();
     rc |= test_profile_invalid_int_preserves_inherited_value();
     rc |= test_profile_inherits_scan_voice_qualify_ms();
     rc |= test_profile_inherits_scan_max_visit_ms();

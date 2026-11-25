@@ -5563,6 +5563,16 @@ suite runs under this compiler.
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+    - RTL-SDR selector: `[input] rtl_serial` (the USB serial, `dsd_rtl_serial_is_valid()`) wins over `rtl_device` in
+      the spec the apply builds (`format_rtl_device_field()`: `rtl:serial=<sn>:...` through
+      `dsd_rtl_device_field_format()`, else `rtl:<index>:...`). A serial the rule refuses is never cut or trimmed: the
+      loader marks it (`rtl_serial_invalid`), the spec carries `serial=`, which `dsd_rtl_input_spec_apply()` refuses so
+      the start refuses the input (never index 0), the render writes `rtl_serial = ":"` (refused again on load),
+      `--validate-config` errors, and a runtime apply refuses the config before anything changes
+      (`cfg_rtl_selector_valid()`). The render quotes the serial, which holds no `"` by the rule, so the comment
+      stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
+      a serial or an index, the other cleared; a bare `rtl` or an empty field is the session's own selector. Tests:
+      `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_PROFILE`.
     - Raw I/Q stream source (issue #743): `[input] source = "iqtcp" | "iqudp"` (`DSDCFG_INPUT_IQTCP` / `_IQUDP`) with
       `iq_host`, `iq_port`, `iq_rate`, `iq_format`, `iq_freq` (rate and frequency kept as text, as `rtl_freq` is).
       `dsd_user_config_iq_stream_input_spec()` builds the canonical spec from them (the parser in
@@ -5592,7 +5602,10 @@ suite runs under this compiler.
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
       (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
-      a sourceless patch keeps the source and endpoint. A patch is checked first on the `[input]` its merge would leave
+      a sourceless patch keeps the source and endpoint. The RTL-SDR selector merges as one choice by the keys a patch
+      names (`rtl_device_is_set`, `rtl_serial_is_set`; `merge_rtl_selector()`): `rtl_serial` (empty: by the retained
+      index; refused: stays refused) wins, `rtl_device` alone drops the retained serial, neither keeps it. A patch is
+      checked first on the `[input]` its merge would leave
       (`dsd_user_config_retained_input_patched()`, `cfg_check_retained_stream_patch()`): one that leaves a raw I/Q
       stream whose keys build no spec, or whose RATE no plan takes, is refused before anything changes, as the next start
       would refuse the save. An `[input]` that is a file input of a non-file spec

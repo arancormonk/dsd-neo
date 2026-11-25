@@ -2026,6 +2026,260 @@ test_retained_input_merges_a_patch(void) {
     return rc;
 }
 
+/* Load @p ini into @p cfg; 1 on failure. The log the load wrote is in g_log_text. */
+static int
+load_rtl_ini_text(const char* ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    g_log_text[0] = '\0';
+    const int rc = dsd_user_config_load(path, cfg) != 0 ? 1 : 0;
+    (void)remove(path);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for:\n%s\n", ini);
+    }
+    return rc;
+}
+
+/* What a start would open for @p cfg: the spec it builds and the selector the spec parser reads from it (-1 refused). */
+static int
+rtl_start_selector(const dsdneoUserConfig* cfg, dsd_opts& opts, dsd_state& state) {
+    reset_opts_and_state(opts, state);
+    opts.rtl_dev_index = 7;
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "STALE");
+    dsd_apply_user_config_to_opts(cfg, &opts, &state);
+    return dsd_rtl_input_spec_apply(&opts);
+}
+
+/*
+ * [input] rtl_serial (RTL-SDR by USB serial): it wins over rtl_device in the spec it builds (`rtl:serial=<sn>:...`, the
+ * explicit form, so a serial of digits stays a serial), and reads back whole through a render and a reload: spaces
+ * inside, '#', ';' and '=' survive the comment stripper inside the quotes the render writes. rtl_device alone builds
+ * `rtl:<index>:...` and clears a serial the session held.
+ */
+static int
+test_rtl_serial_loads_renders_and_builds_the_spec(void) {
+    int rc = 0;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig again;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    static const struct {
+        const char* keys;
+        const char* serial;
+        int device;
+        const char* spec_prefix;
+    } k_cases[] = {
+        {"rtl_serial = \"A B#;=x\"\n", "A B#;=x", 0, "rtl:serial=A B#;=x:851.375M:"},
+        {"rtl_device = 2\nrtl_serial = \"00000001\"\n", "00000001", 2, "rtl:serial=00000001:851.375M:"},
+        {"rtl_serial = 1090\n", "1090", 0, "rtl:serial=1090:851.375M:"},
+        {"rtl_serial = \"\"\nrtl_device = 3\n", "", 3, "rtl:3:851.375M:"},
+        {"rtl_device = 0\n", "", 0, "rtl:0:851.375M:"},
+    };
+
+    for (const auto& k : k_cases) {
+        char ini[512];
+        DSD_SNPRINTF(ini, sizeof ini, "[input]\nsource = \"rtl\"\nrtl_freq = \"851.375M\"\n%s", k.keys);
+        if (load_rtl_ini_text(ini, &cfg) != 0) {
+            return 1;
+        }
+        if (strcmp(cfg.rtl_serial, k.serial) != 0 || cfg.rtl_device != k.device || cfg.rtl_serial_invalid) {
+            DSD_FPRINTF(stderr, "FAIL: %s loaded serial '%s' device %d invalid %d\n", k.keys, cfg.rtl_serial,
+                        cfg.rtl_device, cfg.rtl_serial_invalid);
+            rc |= 1;
+        }
+        if (rtl_start_selector(&cfg, opts, state) != 1
+            || strncmp(opts.audio_in_dev, k.spec_prefix, strlen(k.spec_prefix)) != 0
+            || strcmp(opts.rtl_dev_serial, k.serial) != 0 || (k.serial[0] == '\0' && opts.rtl_dev_index != k.device)) {
+            DSD_FPRINTF(stderr, "FAIL: %s built '%s' -> serial '%s' index %d\n", k.keys, opts.audio_in_dev,
+                        opts.rtl_dev_serial, opts.rtl_dev_index);
+            rc |= 1;
+        }
+        char rendered[16384];
+        if (render_config_to_buffer(&cfg, rendered, sizeof rendered) != 0 || load_rtl_ini_text(rendered, &again) != 0) {
+            return 1;
+        }
+        const int names_device = strstr(rendered, "rtl_device = ") != NULL;
+        if (strcmp(again.rtl_serial, k.serial) != 0 || again.rtl_serial_invalid
+            || (k.serial[0] == '\0' && again.rtl_device != k.device) || names_device != (k.serial[0] == '\0')) {
+            DSD_FPRINTF(stderr, "FAIL: %s rendered and reloaded as serial '%s' device %d:\n%s\n", k.keys,
+                        again.rtl_serial, again.rtl_device, rendered);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/*
+ * An rtl_serial the rule refuses (':' or '"' in it, a space at either end, longer than DSD_RTL_SERIAL_MAX) is never cut
+ * or trimmed into another serial, and never falls through to rtl_device's index: the loader warns and marks it, the
+ * spec it builds carries a device field the parser refuses (the start refuses the input), and a render writes a value
+ * the loader refuses again. A valid rtl_serial later in the file clears the mark.
+ */
+static int
+test_rtl_serial_invalid_refuses_the_input(void) {
+    int rc = 0;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig again;
+    static dsd_opts opts;
+    static dsd_state state;
+    const std::string too_long(DSD_RTL_SERIAL_MAX + 1, 'A');
+    const std::string values[] = {"\"A:B\"", "\" A\"", "\"A \"", "\"A\"B\"", "\"" + too_long + "\""};
+    for (const std::string& value : values) {
+        const std::string ini =
+            "[input]\nsource = \"rtl\"\nrtl_freq = \"851.375M\"\nrtl_device = 1\nrtl_serial = " + value + "\n";
+        if (load_rtl_ini_text(ini.c_str(), &cfg) != 0) {
+            return 1;
+        }
+        if (!cfg.rtl_serial_invalid || cfg.rtl_serial[0] != '\0' || !strstr(g_log_text, "invalid rtl_serial")) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_serial = %s loaded serial '%s' invalid %d (log '%s')\n", value.c_str(),
+                        cfg.rtl_serial, cfg.rtl_serial_invalid, g_log_text);
+            rc |= 1;
+        }
+        if (rtl_start_selector(&cfg, opts, state) != -1) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_serial = %s started '%s' (index %d serial '%s')\n", value.c_str(),
+                        opts.audio_in_dev, opts.rtl_dev_index, opts.rtl_dev_serial);
+            rc |= 1;
+        }
+        char rendered[16384];
+        if (render_config_to_buffer(&cfg, rendered, sizeof rendered) != 0 || load_rtl_ini_text(rendered, &again) != 0) {
+            return 1;
+        }
+        if (!again.rtl_serial_invalid) {
+            DSD_FPRINTF(stderr, "FAIL: rtl_serial = %s saved as a config that opens a dongle:\n%s\n", value.c_str(),
+                        rendered);
+            rc |= 1;
+        }
+    }
+    if (load_rtl_ini_text("[input]\nrtl_serial = \"A:B\"\nrtl_serial = \"00000002\"\n", &cfg) != 0) {
+        return 1;
+    }
+    if (cfg.rtl_serial_invalid || strcmp(cfg.rtl_serial, "00000002") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a valid rtl_serial after a refused one: '%s' invalid %d\n", cfg.rtl_serial,
+                    cfg.rtl_serial_invalid);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * A save names the dongle the running spec names (snapshot_rtl_device_field()): its serial or its index, the other
+ * cleared; a bare `rtl` or an empty device field the one the session opens (its serial when it has one); a device
+ * field the parser refuses stays refused. A serial of digits saves as a serial and builds `serial=1090` again.
+ */
+static int
+test_rtl_serial_snapshot_names_the_running_dongle(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig snap;
+
+    static const struct {
+        const char* spec;
+        int index;
+        const char* session_serial;
+        const char* want_serial;
+        int want_device;
+        int want_invalid;
+    } k_cases[] = {
+        {"rtl:serial=00000001:851.375M", 4, "", "00000001", 4, 0},
+        {"rtl:serial=1090:851.375M", 0, "", "1090", 0, 0},
+        {"rtl:A1B2:851.375M", 0, "", "A1B2", 0, 0},
+        {"rtl:2:851.375M", 0, "OLD", "", 2, 0},
+        {"rtl", 3, "SESSION", "SESSION", 3, 0},
+        {"rtl::851.375M", 5, "", "", 5, 0},
+        {"rtl::851.375M", 5, "SESSION SN", "SESSION SN", 5, 0},
+        {"rtl:serial=:851.375M", 1, "", "", 1, 1},
+    };
+
+    for (const auto& k : k_cases) {
+        reset_opts_and_state(opts, state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_dev_index = k.index;
+        DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", k.session_serial);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", k.spec);
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        if (snap.input_source != DSDCFG_INPUT_RTL || strcmp(snap.rtl_serial, k.want_serial) != 0
+            || snap.rtl_device != k.want_device || snap.rtl_serial_invalid != k.want_invalid) {
+            DSD_FPRINTF(stderr, "FAIL: snapshot of '%s' (index %d serial '%s'): serial '%s' device %d invalid %d\n",
+                        k.spec, k.index, k.session_serial, snap.rtl_serial, snap.rtl_device, snap.rtl_serial_invalid);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/*
+ * The RTL-SDR selector of a patch merges into a retained [input] (an I/Q replay session's) as one choice, by the keys
+ * the patch names: rtl_device alone selects that index and drops the retained serial (index 0 included, the default
+ * value); an explicit empty rtl_serial drops the serial and keeps the retained index; both keys take the serial; a
+ * tuning-only patch keeps the serial; a refused serial stays refused.
+ */
+static int
+test_retained_input_merges_the_rtl_selector(void) {
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
+    static dsdneoUserConfig loaded;
+    static dsdneoUserConfig patch;
+    int rc = 0;
+
+    struct step {
+        int names_device;
+        int device;
+        int names_serial;
+        const char* serial;
+        int invalid;
+        const char* want_serial;
+        int want_device;
+        int want_invalid;
+    };
+
+    static const step k_steps[] = {
+        {0, 0, 0, "", 0, "A", 2, 0},  /* tuning only: the serial stays */
+        {1, 0, 0, "", 0, "", 0, 0},   /* rtl_device = 0 drops it */
+        {0, 0, 1, "B", 0, "B", 0, 0}, /* a serial again */
+        {0, 0, 1, "", 0, "", 0, 0},   /* explicit empty serial: by the retained index */
+        {1, 6, 1, "C", 0, "C", 6, 0}, /* both: the serial */
+        {0, 0, 1, "", 1, "", 6, 1},   /* a refused serial stays refused */
+        {0, 0, 0, "", 0, "", 6, 1},   /* and a tuning patch keeps it refused */
+    };
+    dsd_user_config_init(&loaded);
+    loaded.has_input = 1;
+    loaded.input_source = DSDCFG_INPUT_RTL;
+    loaded.rtl_device = 2;
+    loaded.rtl_device_is_set = 1;
+    DSD_SNPRINTF(loaded.rtl_serial, sizeof loaded.rtl_serial, "%s", "A");
+    loaded.rtl_serial_is_set = 1;
+    DSD_SNPRINTF(loaded.rtl_freq, sizeof loaded.rtl_freq, "%s", "851.375M");
+    rc |= dsd_user_config_retain_input(&state, &loaded) == 0 ? 0 : 1;
+    int n = 0;
+    for (const step& k : k_steps) {
+        dsd_user_config_init(&patch);
+        patch.has_input = 1;
+        patch.rtl_gain = 20;
+        patch.rtl_gain_is_set = 1;
+        patch.rtl_device = k.device;
+        patch.rtl_device_is_set = k.names_device;
+        DSD_SNPRINTF(patch.rtl_serial, sizeof patch.rtl_serial, "%s", k.serial);
+        patch.rtl_serial_is_set = k.names_serial;
+        patch.rtl_serial_invalid = k.invalid;
+        rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+        const dsdneoUserConfig* kept = retained_of(&state);
+        if (strcmp(kept->rtl_serial, k.want_serial) != 0 || kept->rtl_device != k.want_device
+            || kept->rtl_serial_invalid != k.want_invalid || strcmp(kept->rtl_freq, "851.375M") != 0) {
+            DSD_FPRINTF(stderr, "FAIL: selector merge step %d: serial '%s' device %d invalid %d freq '%s'\n", n,
+                        kept->rtl_serial, kept->rtl_device, kept->rtl_serial_invalid, kept->rtl_freq);
+            rc |= 1;
+        }
+        n++;
+    }
+    dsd_user_config_forget_retained_input(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* Issue #743 (B1): --validate-config refuses a file_path that is an I/Q replay spec, which no config can start; a file
    input named like a network input (the "tcp" an older save wrote) still opens it, and validates. */
 static int
@@ -6895,6 +7149,10 @@ main(void) {
     rc |= test_replay_snapshot_turns_off_tuning_beside_a_stream_input();
     rc |= test_retained_input_merges_a_patch();
     rc |= test_retained_input_merge_clears_the_rounding_note();
+    rc |= test_rtl_serial_loads_renders_and_builds_the_spec();
+    rc |= test_rtl_serial_invalid_refuses_the_input();
+    rc |= test_rtl_serial_snapshot_names_the_running_dongle();
+    rc |= test_retained_input_merges_the_rtl_selector();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_iq_stream_input_load_apply_snapshot();
     rc |= test_validate_iq_stream_input();
