@@ -123,13 +123,42 @@ private fun aNewProcessKeepsOnlyWhatIsStillAttached() {
     check(UsbResetObligations().restore("garbage\n", mapOf(RTL_A to (VID to PID)))) { "an unreadable line is dropped" }
 }
 
-// A serial can never break the stored record.
+// A serial can never break the stored record, and comes back from it as it was: tab, line breaks and the escape's own
+// '%' included.
 private fun aSerialStaysOneField() {
     val owed = UsbResetObligations()
-    owed.record(a(serial = "A\tB\nC"), owes = true)
+    val serial = "A\tB\nC\rD%09E%"
+    owed.record(a(serial = serial), owes = true)
+    check(owed.encode().count { it == '\n' } == 1 && owed.encode().split('\t').size == 5) {
+        "one line of five fields: ${owed.encode()}"
+    }
     val again = UsbResetObligations()
-    again.restore(owed.encode(), mapOf(RTL_A to (VID to PID)))
-    check(again.entries.single().serial == "A B C") { "${again.entries}" }
+    check(!again.restore(owed.encode(), mapOf(RTL_A to (VID to PID)))) { "nothing to rewrite" }
+    check(again.entries.single().serial == serial) { "${again.entries}" }
+    check(again.owes(a(serial = serial))) { "it owes its reset as the serial it was recorded with" }
+}
+
+// Two whole serials that differ only in a tab, a line break or a space are two dongles, before and after storage. A
+// record in the older format, which kept a tab or line break as a space, still reads that way.
+private fun separatorsTellWholeSerialsApart() {
+    for ((recorded, other) in listOf("A B" to "A\tB", "A\tB" to "A B", "A\nB" to "A\rB", "A%09B" to "A\tB")) {
+        val owed = UsbResetObligations()
+        owed.record(a(serial = recorded), owes = true)
+        val stored = owed.encode()
+        check(!owed.owes(a(serial = other))) { "'$recorded' is not '$other'" }
+        val restored = UsbResetObligations()
+        restored.restore(stored, mapOf(RTL_A to (VID to PID)))
+        check(restored.owes(a(serial = recorded))) { "'$recorded' read back owes its reset: $stored" }
+        check(!restored.owes(a(serial = other))) { "'$recorded' read back is not '$other': $stored" }
+    }
+    val legacy = UsbResetObligations()
+    legacy.restore("$RTL_A\t$VID\t$PID\tA B\n", mapOf(RTL_A to (VID to PID)))
+    check(legacy.owes(a(serial = "A\tB"))) { "an older record's space stands for the tab it replaced" }
+    val broken = UsbResetObligations()
+    val dropped = broken.restore("$RTL_A\t$VID\t$PID\tA%2\twhole\n", mapOf(RTL_A to (VID to PID)))
+    check(dropped && broken.entries.isEmpty()) {
+        "a whole serial with an escape it never writes is dropped"
+    }
 }
 
 // An RTL-SDR's serial is matched exactly, as the engine opens it: a replacement under the same name and VID:PID whose
@@ -204,5 +233,6 @@ fun main() {
     aClearBeforeTheStoreIsReadWins()
     aNewProcessKeepsOnlyWhatIsStillAttached()
     aSerialStaysOneField()
+    separatorsTellWholeSerialsApart()
     println("UsbResetObligationsTest: OK")
 }

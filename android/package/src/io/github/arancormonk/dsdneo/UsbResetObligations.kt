@@ -69,7 +69,7 @@ internal class UsbResetObligations {
      */
     fun owes(name: String, vendorId: Int, productId: Int, serial: String): Boolean {
         val entry = owed[name] ?: return false
-        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !sameSerial(entry, clean(serial))
+        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !sameSerial(entry, serial)
         if (entry.vendorId != vendorId || entry.productId != productId || serialDiffers) {
             owed.remove(name)
             noteBeforeRestore(name, changed = true)
@@ -83,7 +83,7 @@ internal class UsbResetObligations {
         val changed = if (!owes) {
             owed.remove(attachment.name) != null
         } else {
-            val entry = attachment.copy(serial = clean(attachment.serial))
+            val entry = attachment.copy(wholeSerial = true)
             owed.put(attachment.name, entry) != entry
         }
         noteBeforeRestore(attachment.name, changed)
@@ -99,12 +99,14 @@ internal class UsbResetObligations {
 
     /**
      * The entries as app-private storage keeps them: one line each, `name, VID, PID, serial` and, for a whole serial,
-     * a fifth field [WHOLE_SERIAL]. An entry read back without it keeps the four fields it was read with.
+     * a fifth field [WHOLE_SERIAL]. A whole serial is stored losslessly ([escape]), so two serials that differ only in
+     * a tab, a line break or a '%' stay two. An entry read back without the fifth field keeps the four fields it was
+     * read with, its serial as that format kept it (a tab or line break as a space).
      */
     fun encode(): String =
         owed.values.joinToString("") {
-            val whole = if (it.wholeSerial) "\t$WHOLE_SERIAL" else ""
-            "${it.name}\t${it.vendorId}\t${it.productId}\t${it.serial}$whole\n"
+            val serial = if (it.wholeSerial) "${escape(it.serial)}\t$WHOLE_SERIAL" else it.serial
+            "${it.name}\t${it.vendorId}\t${it.productId}\t$serial\n"
         }
 
     /**
@@ -122,12 +124,13 @@ internal class UsbResetObligations {
             val productId = fields.getOrNull(2)?.toIntOrNull()
             val name = fields[0]
             val whole = fields.size == 5 && fields[4] == WHOLE_SERIAL
-            if ((fields.size != 4 && !whole) || vendorId == null || productId == null ||
+            val serial = if (whole) unescape(fields[3]) else fields.getOrNull(3)
+            if ((fields.size != 4 && !whole) || serial == null || vendorId == null || productId == null ||
                 attached[name] != (vendorId to productId) || name in decided) {
                 dropped = true
                 continue
             }
-            merged[name] = Attachment(name, vendorId, productId, fields[3], wholeSerial = whole)
+            merged[name] = Attachment(name, vendorId, productId, serial, wholeSerial = whole)
         }
         merged.putAll(owed)
         owed.clear()
@@ -139,8 +142,38 @@ internal class UsbResetObligations {
         return rewrite
     }
 
-    // One line per entry, tab-separated: a serial can never break the record.
+    // The older format's serial: a tab or line break was stored as a space, so a live serial is read that way too.
     private fun clean(text: String) = text.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
+
+    /** A whole serial as one field of a line: '%', tab, line feed and carriage return as %25, %09, %0A and %0D. */
+    private fun escape(text: String): String = buildString {
+        for (c in text) {
+            when (c) {
+                '%' -> append("%25")
+                '\t' -> append("%09")
+                '\n' -> append("%0A")
+                '\r' -> append("%0D")
+                else -> append(c)
+            }
+        }
+    }
+
+    /** [escape] undone, or null for a field it never writes (a '%' not followed by one of its four codes). */
+    private fun unescape(field: String): String? {
+        val out = StringBuilder(field.length)
+        var at = 0
+        while (at < field.length) {
+            val c = field[at]
+            if (c != '%') {
+                out.append(c)
+                at += 1
+                continue
+            }
+            out.append(ESCAPED[field.substring(at + 1, minOf(at + 3, field.length))] ?: return null)
+            at += 3
+        }
+        return out.toString()
+    }
 
     /**
      * Whether [entry]'s serial is the device's [live] one: exactly, for an entry this version recorded or stored. An
@@ -149,10 +182,13 @@ internal class UsbResetObligations {
      * 16-character one is also read as the end of a longer live serial (the attachment name and VID:PID already
      * match). A whole 16-character serial this version recorded never matches a longer one that merely ends with it.
      */
-    private fun sameSerial(entry: Attachment, live: String): Boolean =
-        UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, entry.serial, live) ||
-            (!entry.wholeSerial && entry.serial.length == LEGACY_SERIAL_LENGTH && live.length > LEGACY_SERIAL_LENGTH &&
-                live.endsWith(entry.serial))
+    private fun sameSerial(entry: Attachment, live: String): Boolean {
+        if (entry.wholeSerial) return UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, entry.serial, live)
+        val read = clean(live)
+        return UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, entry.serial, read) ||
+            (entry.serial.length == LEGACY_SERIAL_LENGTH && read.length > LEGACY_SERIAL_LENGTH &&
+                read.endsWith(entry.serial))
+    }
 
     private companion object {
         /** How many trailing characters of a serial the broker kept before it kept an RTL-SDR's whole serial. */
@@ -160,5 +196,8 @@ internal class UsbResetObligations {
 
         /** The fifth field of a stored entry whose serial is whole; the older format had four fields. */
         const val WHOLE_SERIAL = "whole"
+
+        /** What [escape] writes, by the two characters after its '%'. */
+        val ESCAPED = mapOf("25" to '%', "09" to '\t', "0A" to '\n', "0D" to '\r')
     }
 }
