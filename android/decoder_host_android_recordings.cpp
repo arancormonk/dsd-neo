@@ -18,6 +18,7 @@
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -34,7 +35,38 @@ std::atomic<qint64> g_next_transfer_id{0};
 /* How long a host going away waits for its transfer to stop. */
 constexpr int kTransferStopWaitMs = 2000;
 
+/* The token of each transfer RecordingExport runs now, by id (recordingSelectionCurrent()). */
+std::mutex g_transfer_tokens_lock;
+std::map<qint64, DecoderHostAndroid::RecordingSelectionToken> g_transfer_tokens;
+
+/* Answers for transfer @p id's token while it lives. */
+class TransferTokenEntry {
+  public:
+    TransferTokenEntry(qint64 id, const DecoderHostAndroid::RecordingSelectionToken& token) : m_id(id) {
+        const std::lock_guard<std::mutex> lock(g_transfer_tokens_lock);
+        g_transfer_tokens[id] = token;
+    }
+
+    ~TransferTokenEntry() {
+        const std::lock_guard<std::mutex> lock(g_transfer_tokens_lock);
+        g_transfer_tokens.erase(m_id);
+    }
+
+    TransferTokenEntry(const TransferTokenEntry&) = delete;
+    TransferTokenEntry& operator=(const TransferTokenEntry&) = delete;
+
+  private:
+    qint64 m_id;
+};
+
 } // namespace
+
+bool
+DecoderHostAndroid::recordingSelectionCurrent(qint64 id) {
+    const std::lock_guard<std::mutex> lock(g_transfer_tokens_lock);
+    const auto it = g_transfer_tokens.find(id);
+    return it != g_transfer_tokens.end() && it->second.current();
+}
 
 QStringList
 DecoderHostAndroid::recordingRoots() const {
@@ -149,23 +181,25 @@ DecoderHostAndroid::newTransferWorker() {
 }
 
 bool
-DecoderHostAndroid::beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                                           bool zip) {
+DecoderHostAndroid::beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                                           const QList<dsd_file_identity_t>& expected, const QString& reference,
+                                           bool zip, const RecordingSelectionToken& token) {
     if (documentTransfersAborted()) {
         return false;
     }
     const qint64 id = ++g_next_transfer_id;
     m_transfer_id = id;
     m_transfer_total = -1;
-    m_transfer_worker->start([link = m_transfer_link, id, paths, names, reference, zip]() {
-        runRecordingTransfer(link, id, paths, names, reference, zip);
+    m_transfer_worker->start([link = m_transfer_link, id, paths, names, expected, reference, zip, token]() {
+        runRecordingTransfer(link, id, paths, names, expected, reference, zip, token);
     });
     return true;
 }
 
 void
 DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
-                                         const QStringList& names, const QString& reference, bool zip) {
+                                         const QStringList& names, const QList<dsd_file_identity_t>& expected,
+                                         const QString& reference, bool zip, const RecordingSelectionToken& token) {
     // The worker thread: no QObject state is touched here, only queued back through the link.
     const auto post = [&link](const auto& call) {
         const std::lock_guard<std::mutex> lock(link->mutex);
@@ -176,30 +210,47 @@ DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& li
     };
     QStringList present;
     QStringList presentNames;
+    QList<dsd_file_identity_t> presentFiles;
     QStringList missing;
     qint64 total = 0;
-    for (qsizetype i = 0; i < paths.size(); ++i) {
-        const QFileInfo file(paths.at(i));
-        if (!file.isFile()) {
+    // The store read storage again since the selection (a transfer that waited behind another, a share's copy): no
+    // file is looked at, and nothing is written.
+    if (!token.current()) {
+        platformDiscardPendingDownload(reference);
+        post([id](DecoderHostAndroid* host) { host->endRecordingTransfer(id, TransferChanged, {}); });
+        return;
+    }
+    bool changed = expected.size() != paths.size();
+    for (qsizetype i = 0; i < paths.size() && !changed; ++i) {
+        // A file that is not the one selected (another size or time, a link, no file) abandons the whole transfer.
+        const RecordingInput input = recordingInputCheck(paths.at(i), expected.at(i));
+        if (input == RecordingInput::Missing) {
             missing.append(paths.at(i));
             continue;
         }
+        changed = input == RecordingInput::Changed;
         present.append(paths.at(i));
+        presentFiles.append(expected.at(i));
         if (zip && i < names.size()) {
             presentNames.append(names.at(i));
         }
-        total += file.size();
+        total += expected.at(i).size;
     }
     post([id, total](DecoderHostAndroid* host) { host->noteRecordingTransferTotal(id, total); });
 
     int result = TransferMissing;
-    if (present.isEmpty()) {
+    if (changed) {
+        platformDiscardPendingDownload(reference); // nothing written: a Download-folder row (#829) goes
+        missing.append(present.last());            // looked at again by the store, with the ones gone
+        result = TransferChanged;
+    } else if (present.isEmpty()) {
         platformDiscardPendingDownload(reference); // nothing to write: a Download-folder row (#829) goes
     } else if (isContentUri(reference)) {
-        result = transferToDocument(id, present, presentNames, reference, zip, missing);
+        result = transferToDocument(id, present, presentNames, presentFiles, reference, zip, token, missing);
     } else if (!zip) {
-        // The base host's copy, on the link's own abort flag: the host may be gone before it ends.
-        result = copyFileToLocalDocument(present.first(), reference, &link->aborted) ? TransferDone : TransferFailed;
+        // The base host's save, on the link's own abort flag: the host may be gone before it ends.
+        result = saveRecordingToLocalDocument(present.first(), presentFiles.first(), reference, token, &link->aborted,
+                                              missing);
     } else {
         platformDiscardPendingDownload(reference);
         result = TransferFailed; // a ZIP goes only into a platform document
@@ -209,12 +260,17 @@ DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& li
 
 int
 DecoderHostAndroid::transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
-                                       const QString& reference, bool zip, QStringList& missing) {
-    const QStringList answer = platformTransferRecordings(id, paths, names, reference, zip);
+                                       const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                                       const RecordingSelectionToken& token, QStringList& missing) {
+    QStringList answer;
+    {
+        const TransferTokenEntry entry(id, token);
+        answer = platformTransferRecordings(id, paths, names, expected, reference, zip);
+    }
     bool ok = false;
     const int code = answer.isEmpty() ? -1 : answer.first().toInt(&ok);
     missing += answer.mid(1);
-    if (ok && code >= TransferDone && code <= TransferMissing) {
+    if (ok && ((code >= TransferDone && code <= TransferMissing) || code == TransferChanged)) {
         return code;
     }
     /* No answer: the JNI call failed, maybe before RecordingExport settled the document. A row it settled is no longer

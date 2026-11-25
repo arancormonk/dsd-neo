@@ -638,6 +638,35 @@ test_scan_list_toggle_shared_targets() {
                                         && toggle_row(model, 1, M::OnAirRole).toBool());
 }
 
+/* The engine's acknowledgement set again with the text already shown: the text does not move, its count does, so a
+   screen tells the new answer from the old one (#901 B3). */
+static void
+test_ui_message_seq_moves_with_the_same_text() {
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    initOpts(opts.get());
+    initState(state.get());
+    dsd_qt::MetricsModel model;
+    int textSignals = 0;
+    int seqSignals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::uiMessageChanged, [&] { ++textSignals; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::uiMessageSeqChanged, [&] { ++seqSignals; });
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "2 selected talkgroups listened to");
+    dsd_state_toast_publish(state.get(), dsd_realtime_time() + 4);
+    model.refresh(opts.get(), state.get());
+    const quint32 first = model.uiMessageSeq();
+    expect("the answer and its count are read", model.uiMessage() == QStringLiteral("2 selected talkgroups listened to")
+                                                    && first == state->ui_msg_seq && textSignals == 1
+                                                    && seqSignals == 1);
+    model.refresh(opts.get(), state.get());
+    expect("the same publication again moves nothing", textSignals == 1 && seqSignals == 1);
+    dsd_state_toast_publish(state.get(), dsd_realtime_time() + 4);
+    model.refresh(opts.get(), state.get());
+    expect("the same text published again moves the count only",
+           model.uiMessageSeq() == first + 1U && textSignals == 1 && seqSignals == 2);
+    freeState(state.get());
+}
+
 /* The header's readings and the sheet's rows from a snapshot: the lists, the list on air, and the rotation's place
    among the targets of the lists that are on. */
 static void
@@ -3271,6 +3300,7 @@ main(int argc, char** argv) {
     test_scan_list_toggle_gap_while_results_keep_coming();
     test_scan_list_toggle_session_change();
     test_scan_list_toggle_shared_targets();
+    test_ui_message_seq_moves_with_the_same_text();
     test_scan_list_readings();
     test_scan_avoids();
     test_scan_avoids_large_list();

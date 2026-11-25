@@ -749,6 +749,8 @@ typedef struct {
     char src_home[24];   //display only: a roaming P25 radio's home identity, unit@system (never a source)
     uint64_t
         src_home_key; //the talker's full P25 home SUID (WACN, System ID, unit) when named, 0 otherwise: which radio's home the row shows
+    // 1 when the call withdrew a home an earlier talker named (dsd_call_source_home::withdrawn)
+    uint8_t src_home_withdrawn;
     char tgt_str[200]; //target, expressed as a string for M17, YSF, DSTAR, dPMR
     char t_name[200];  //this is the string present from any csv groupName import
     char s_name[200];  //same as above, but if loaded from a src value and not tg value
@@ -774,6 +776,12 @@ typedef struct {
     // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
     // call has not been judged. Bookkeeping as stream_blocked is.
     uint32_t policy_target_id;
+    // Set when the recording of the row's call, if it has no talkgroup, must not be exported under rdio's fallback
+    // talkgroup (--rdio-unknown-talkgroup, a frequency in kHz; issue #888): its call named a party its decoder could
+    // not read as an ID (dsd_call_snapshot::identity_unread: a played SDRTrunk roaming or ISSI identity), or it is a
+    // YSF call that has not ended on a decoded terminator. Set by each render from the call; 0 for a row never
+    // rendered. Bookkeeping as stream_blocked is.
+    uint8_t fallback_blocked;
     // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
     // call a later release or resume ends keeps the identity it began with. operator_tuned: the
     // operator held the receiver (a paused scan, a tuner release, a manual tune). scan_member: a scan was running,
@@ -3089,6 +3097,10 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
+    /* The call mode (CM) the last verified header or communications FICH named: the call's, which only its own
+     * terminator repeats (issue #888). Kept through noCarrier(), so a terminator after a fade is still matched; 9 for
+     * none, and set to 9 when a verified DCH names a party other than an ended call's (ysf_enrich_identity()). */
+    uint8_t ysf_call_cm;
     /* Sticky for the transmission: set once a FICH passes its Golay+CRC-16, cleared with the
      * rest of the YSF strings on noCarrier(). A later FICH failure still lays the payload out
      * from the previous frame's dt/fi and still synthesizes voice from it, so once one FICH

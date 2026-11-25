@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.system.ErrnoException
+import android.system.Os
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -276,13 +278,36 @@ private fun backupSaveSettles() {
     check(DownloadsSave.pendingCount() == 0 && DocumentCopies.transfersInFlight() == 0)
 }
 
+/** [paths] as the store selects them: three numbers each, size and modification time (seconds, nanoseconds); zeros
+ * for one already gone. */
+private fun selected(paths: Array<String>): LongArray = paths.flatMap { path ->
+    try {
+        val stat = Os.lstat(path)
+        listOf(stat.st_size, stat.st_mtim.tv_sec, stat.st_mtim.tv_nsec)
+    } catch (_: ErrnoException) {
+        listOf(0L, 0L, 0L)
+    }
+}.toLongArray()
+
 private fun transfer(uri: String, paths: Array<String> = recording(100), id: Long = ++nextId) =
-    RecordingExport.transfer(rows, id, paths, arrayOf("a.wav"), uri, true)[0].toInt()
+    RecordingExport.transfer(rows, id, paths, Array(paths.size) { "a.wav" }, selected(paths), uri, true)[0].toInt()
 
 /** RecordingExport.transfer() publishes a row it wrote, and deletes it at every other exit. */
 private fun recordingTransferSettles() {
     val done = row("calls.zip")
     check(transfer(done) == RecordingExport.DONE && publishedOnly(done)) { "an export is saved" }
+
+    // #902: the selection goes stale after the last check of the write and before the row's publication (the fsync and
+    // the settle can wait): the row is deleted, not published, and the export is told as changed.
+    var asked = 0
+    RecordingExport.selectionCurrent = { ++asked < 5 }
+    val stale = row("stale.zip")
+    // Four checks in the write (the last once the document is synced), the fifth at the publication (stale), and the
+    // settled result asks once more.
+    check(transfer(stale) == RecordingExport.CHANGED && asked == 6) { "a stale export is changed: asked $asked times" }
+    drainWorker()
+    check(deleted(stale) && "update $stale" !in rows.callsFor(stale)) { "and its row is not published" }
+    RecordingExport.selectionCurrent = { true }
 
     val early = row()
     val earlyId = ++nextId
@@ -364,6 +389,8 @@ private fun recordingTransferSettles() {
     } else {
         val midway = row()
         val midwayId = ++nextId
+        // A FIFO is no recording, so the check before a read would refuse it: this case opens it as it is.
+        RecordingExport.inputOpener = { path, _ -> java.io.FileInputStream(path) }
         val copying = Thread { answer = transfer(midway, arrayOf(fifo.path), midwayId) }
         copying.start()
         FileOutputStream(fifo).use { feed ->
@@ -376,6 +403,7 @@ private fun recordingTransferSettles() {
             feed.write(ByteArray(10))
         }
         copying.join(5_000)
+        RecordingExport.inputOpener = RecordingExport::openSelected
         check(!copying.isAlive && answer == RecordingExport.CANCELLED) { "a cancel during the copy cancels" }
         // A cancelled export does not wait for its row's delete.
         drainWorker()

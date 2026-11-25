@@ -300,12 +300,12 @@ Item {
                 reason: "The trunking switch reads its title as its name and the rule under it as its description."},
             {file: "ScanListScreen.qml", name: "skipSilentHelp", readBy: function (text) { return findNear(text, "scanSkipSilent"); },
                 reason: "The Skip silent channels checkbox reads the help under it as its description."},
-            {file: "EncTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags."},
-            {file: "EmergencyTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags."},
-            {file: "PrivateTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags (PRIVATE even where the tag has no room)."},
+            {file: "EncTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
+            {file: "EmergencyTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
+            {file: "PrivateTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
             {file: "EncTag.qml", name: "tag", when: function (text) {
                     // The call row the tag is in, however deep (its text sits inside the row's node).
                     var row = text.parent;
@@ -342,10 +342,12 @@ Item {
                 reason: "\"+N\", how many saved names the line leaves out; the saved line's name reads every one of them."},
             {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
                 reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
-            {file: "MonitorScreen.qml", name: /^(liveLabelProbe|rowNameProbe|rowMetaProbe)$/,
+            {file: "MonitorScreen.qml", name: /^(liveLabelProbe|titleLineProbe|titleLatinProbe)$/,
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]
         property var used: ({})
+        // Set while test_3_every_branch_shown walks what reveal() forced visible (r7 K5).
+        property bool everyBranchShown: false
 
         function isSheet(item) {
             return item !== null && item.closesOnOutsideTap !== undefined && typeof item.requestDismiss === "function";
@@ -368,10 +370,20 @@ Item {
             }
             return null;
         }
-        // The other slot's identity line, for a tag in the other slot's panel only.
-        function otherSlotIdentity(text) {
-            var panel = text.parent ? text.parent.parent : null;
-            return panel !== null && panel.objectName === "otherSlotPanel" ? findChild(panel, "otherSlotIdentity") : null;
+        // Whether @p text is a tag's word on the second-slot strip while the strip is idle (MonitorScreen's
+        // stripIdle), in the every-branch pass, the only walk that shows a tag there (r7 K5: any other walk that
+        // finds one has found a tag the idle strip left on screen).
+        function idleStripTag(text) {
+            if (!everyBranchShown)
+                return false;
+            var node = text.parent ? text.parent.parent : null;
+            if (node === null || node.objectName !== "otherSlotNode")
+                return false;
+            for (var at = node; at; at = at.parent) {
+                if (at.stripIdle !== undefined)
+                    return at.stripIdle === true;
+            }
+            return false;
         }
         // The field after a caption in its column: a PlexTextField's input or a FrequencyField's.
         function fieldBelow(text) {
@@ -628,11 +640,16 @@ Item {
             // A group whose rows the reveal rebuilt names them once the rebuild is over (SpeechPacer).
             wait(40);
             Ui.Navigation.speechPeriodMs = 5000;
-            var problems = unexplained(item, nested, data.spec.file);
-            for (var i = 0; i < nested.length; ++i) {
-                Ui.Navigation.modals = [nested[i]];
-                problems = problems.concat(unexplained(nested[i], sheetsWithin(nested[i], []),
-                                                       data.spec.file + " > " + (nested[i].objectName || nested[i].accessibleName)));
+            everyBranchShown = true;
+            try {
+                var problems = unexplained(item, nested, data.spec.file);
+                for (var i = 0; i < nested.length; ++i) {
+                    Ui.Navigation.modals = [nested[i]];
+                    problems = problems.concat(unexplained(nested[i], sheetsWithin(nested[i], []),
+                                                           data.spec.file + " > " + (nested[i].objectName || nested[i].accessibleName)));
+                }
+            } finally {
+                everyBranchShown = false;
             }
             dispose(item);
             compare(problems.length, 0, report(problems));

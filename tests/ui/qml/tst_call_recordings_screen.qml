@@ -196,7 +196,8 @@ Item {
                 {tag: "cancelled", result: 2, missing: 0, text: "Export cancelled.", problem: false},
                 {tag: "missing", result: 3, missing: 12, text: "Those recordings are gone.", problem: true},
                 {tag: "busy", result: 4, missing: 0, text: "Another export is running. Try again when it finishes.", problem: true},
-                {tag: "unsupported", result: 5, missing: 0, text: "This device can't export call recordings.", problem: true}
+                {tag: "unsupported", result: 5, missing: 0, text: "This device can't export call recordings.", problem: true},
+                {tag: "changed", result: 6, missing: 1, text: "Those recordings changed. Export again.", problem: true}
             ];
         }
         function test_export_results(data) {
@@ -449,6 +450,69 @@ Item {
             compare(lastStoreCall().name, "deleteAll");
         }
 
+        // Issue #902: while storage that came back is read again, the store
+        // refuses an export and every delete. The screen says so, holds no
+        // selection and opens no picker, and keeps nothing of the request.
+        function test_refused_while_loading() {
+            fill();
+            recordings.unfinishedCount = 2;
+            recordings.setLoading(true);
+            recordings.setSelection(2, 2000, ["/r/a.wav"]);
+            var requests = testContext.lastDocumentRequest();
+            screen().beginExport(null, "all");
+            compare(item("callRecordingsNotice").text, "Recordings are still loading. Try again in a moment.");
+            compare(screen().exportSelection, 0, "nothing is held");
+            verify(!item("callRecordingsExportPicker").visible, "no picker asks");
+            compare(testContext.lastDocumentRequest(), requests, "the host is asked for nothing");
+            var confirm = item("callRecordingsDeleteConfirm");
+            for (var step of [["callRecordingsFolder0", "folderActionDelete", "deleteFolder"],
+                              ["callRecordingsUnfinished", "unfinishedActionDelete", "deleteUnfinished"],
+                              ["callRecordingsDeleteAll", "", "deleteAll"]]) {
+                screen().say("", false);
+                item(step[0]).activate();
+                if (step[1].length > 0)
+                    menuAction(step[1]);
+                verify(confirm.visible, step[2] + " asks first");
+                findChild(confirm, "confirmActionButton").activate();
+                compare(lastStoreCall().name, step[2]);
+                verify(!confirm.visible, step[2] + ": the confirmation is gone");
+                compare(confirm.kind, "", step[2] + ": nothing of the request stays");
+                compare(screen().subject, null, step[2] + ": no folder stays chosen");
+                compare(item("callRecordingsNotice").text, "Recordings are still loading. Try again in a moment.", step[2]);
+            }
+            recordings.setLoading(false);
+            item("callRecordingsDeleteAll").activate();
+            findChild(confirm, "confirmActionButton").activate();
+            compare(item("callRecordingsNotice").text, "", "accepted, nothing to say");
+        }
+
+        // Issue #902: a delete naming any recording on storage that is not
+        // connected is refused whole; the screen says so and keeps nothing of
+        // the request. Back, the same delete is asked.
+        function test_delete_refused_while_storage_away() {
+            fill();
+            recordings.unfinishedCount = 2;
+            recordings.setStorageAway(true);
+            var confirm = item("callRecordingsDeleteConfirm");
+            for (var step of [["callRecordingsFolder0", "folderActionDelete", "deleteFolder"],
+                              ["callRecordingsUnfinished", "unfinishedActionDelete", "deleteUnfinished"],
+                              ["callRecordingsDeleteAll", "", "deleteAll"]]) {
+                screen().say("", false);
+                item(step[0]).activate();
+                if (step[1].length > 0)
+                    menuAction(step[1]);
+                findChild(confirm, "confirmActionButton").activate();
+                compare(lastStoreCall().name, step[2]);
+                compare(confirm.kind, "", step[2] + ": nothing of the request stays");
+                compare(item("callRecordingsNotice").text, "That storage isn't connected. Delete again once it's back.", step[2]);
+            }
+            recordings.setStorageAway(false);
+            item("callRecordingsDeleteAll").activate();
+            findChild(confirm, "confirmActionButton").activate();
+            compare(lastStoreCall().name, "deleteAll");
+            compare(item("callRecordingsNotice").text, "", "back, the delete is asked");
+        }
+
         // The store's failed deletes and the limit's removals show here and are acknowledged as they show, so Settings
         // stops repeating them; each visit starts from what is new.
         function test_delete_failures_and_limit_notices() {
@@ -480,6 +544,40 @@ Item {
             verify(!item("callRecordingsDeleteFailures").visible);
         }
 
+        // Issue #902: accepted deletes the store cancelled because their
+        // storage changed are told here, not silently dropped from the
+        // waiting count, and acknowledged as they show.
+        function test_cancelled_deletes_notice() {
+            fill();
+            verify(!item("callRecordingsDeletesCancelled").visible);
+            recordings.deletesWaiting = 2;
+            recordings.deletesWaiting = 0;
+            recordings.deletesCancelled = 2;
+            tryCompare(recordings, "deletesCancelled", 0);
+            compare(lastStoreCall().name, "acknowledgeNotices");
+            verify(item("callRecordingsDeletesCancelled").visible);
+            compare(item("callRecordingsDeletesCancelled").text, "Some recordings weren't deleted because their storage changed. Delete them again.");
+            screen().visible = false;
+            screen().visible = true;
+            verify(!item("callRecordingsDeletesCancelled").visible, "the next visit shows only what came since");
+        }
+
+        // Issue #902: deletes not done because the file was not the one
+        // recorded are told apart: left as they are, nothing to ask again.
+        function test_skipped_deletes_notice() {
+            fill();
+            verify(!item("callRecordingsDeletesSkipped").visible);
+            recordings.deletesSkipped = 1;
+            tryCompare(recordings, "deletesSkipped", 0);
+            compare(lastStoreCall().name, "acknowledgeNotices");
+            verify(item("callRecordingsDeletesSkipped").visible);
+            verify(!item("callRecordingsDeletesCancelled").visible, "not the storage-changed notice");
+            compare(item("callRecordingsDeletesSkipped").text, "Some files weren't deleted because they changed after they were recorded. They were left as they are.");
+            screen().visible = false;
+            screen().visible = true;
+            verify(!item("callRecordingsDeletesSkipped").visible, "the next visit shows only what came since");
+        }
+
         function test_deletes_waiting() {
             fill();
             verify(!item("callRecordingsDeletesWaiting").visible);
@@ -497,6 +595,20 @@ Item {
             var name = findChild(screen(), "callRecordingsExportPicker").suggestedName;
             verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
             compare(testContext.lastDocumentRequest().name, name, "the host is asked with that name");
+            testContext.answerDocumentCancelled(exportRequest());
+        }
+
+        // Issue #902 B6: the zip is named for the day the store selected by
+        // (the selection's `day`), never a second reading of the clock, which
+        // a press across midnight would put on the next day.
+        function test_export_name_uses_the_selection_day() {
+            fill();
+            recordings.setSelection(2, 2000, ["/r/a.wav"]);
+            screen().beginExport(null, "today");
+            compare(findChild(screen(), "callRecordingsExportPicker").suggestedName, "Call recordings 2001-02-03.zip");
+            testContext.answerDocumentCancelled(exportRequest());
+            screen().beginExport(recordings.folders[0], "yesterday");
+            compare(findChild(screen(), "callRecordingsExportPicker").suggestedName, "Call recordings County P25 2001-02-03.zip");
             testContext.answerDocumentCancelled(exportRequest());
         }
 

@@ -21,6 +21,22 @@ Item {
     QtObject {
         id: fakePrefs
         property bool monitorDetailsExpanded: false
+        property bool compactView: false
+    }
+
+    // A Latin line alone in the call row's two fonts: what the base face
+    // draws, without the taller fallback faces the row's line boxes hold.
+    Text {
+        id: latinName
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowNameFont
+    }
+    Text {
+        id: latinMeta
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowMetaFont
     }
 
     Loader {
@@ -96,6 +112,15 @@ Item {
         function viewportY(target) {
             return target.mapToItem(tc.list, 0, 0).y;
         }
+        // Issue #901 r3 S2: how much taller than the base face's own lines the
+        // fallback faces (the boxes' CJK and emoji probe) make a call row's two
+        // line boxes. 0 to 2 px with the app's fonts on most hosts; with Noto
+        // CJK as the fallback 6 (68 px default rows), which the fixed boxes
+        // keep (decided), so a guarantee sized for the base face can be
+        // impossible there.
+        function fallbackExcess() {
+            return Ui.LineBoxes.callRowNameBox() + Ui.LineBoxes.callRowMetaBox() - latinName.implicitHeight - latinMeta.implicitHeight;
+        }
 
         function initTestCase() {
             tc.monitor = loader.item;
@@ -121,6 +146,7 @@ Item {
             callHistory.clearAll();
             callHistory.pushMany(12, "TODAY");
             fakePrefs.monitorDetailsExpanded = false;
+            fakePrefs.compactView = false;
             root.width = 360;
             root.height = 690;
             Ui.Theme.fontScale = 1;
@@ -287,6 +313,252 @@ Item {
                         "callSpace", measured, "rows", fullRowsVisible());
         }
 
+        // ---- Compact view (issue #901, D4) ----
+
+        // The compact budget worked out here from the drawn parts, by the rule
+        // as written: no RECENT CALLS label in any tier (its 1-px spacer keeps
+        // the calls card a gap below the disclosure), the live strip in the list
+        // header from tier 3.
+        function compactSpaceFor(t) {
+            var stop = item("stopListeningButton");
+            var strip = tc.monitor.stripHeight;
+            var gap = Ui.Theme.gap;
+            var fixedTop = Ui.Theme.screenPadding + tc.monitor.headerBarHeight(t) + 12 + tc.monitor.heroHeight(t);
+            var fixedStrip = t < 3 && strip > 0 ? gap + strip : 0;
+            var fixedBottom = 14 + item("monitorLiveActions").height + 8 + stop.height + stop.anchors.bottomMargin;
+            var viewport = tc.monitor.height - fixedTop - fixedStrip - gap - fixedBottom;
+            var header = (t >= 3 && strip > 0 ? strip + gap : 0) + item("monitorDetailsCard").height + gap + 1;
+            return viewport - header;
+        }
+        // The compact row's height, from the shared measure.
+        function compactRowHeight() {
+            return Ui.LineBoxes.callRowHeight(true);
+        }
+        function test_compact_tier_budget_data() {
+            var rows = [];
+            // The outcomes each stand for, by a wide margin at these sizes: two
+            // rows in tier 2 on a 360 dp phone; at large text there, only tier 4's
+            // one whole row; a landscape phone in tier 5.
+            var outcomes = {"360x690@1": 2, "360x690@1.6": 4, "640x360@1": 5};
+            for (var size of [[360, 690], [411, 780], [411, 914], [640, 360]]) {
+                for (var scale of [1, 1.6]) {
+                    for (var combo of [[false, false], [true, false], [false, true], [true, true]]) {
+                        var tag = size[0] + "x" + size[1] + "@" + scale + (combo[0] ? "+slot" : "") + (combo[1] ? "+scan" : "");
+                        rows.push({tag: tag, width: size[0], height: size[1], scale: scale, slot: combo[0], scan: combo[1], expect: outcomes[tag]});
+                    }
+                }
+            }
+            return rows;
+        }
+        // Compact view: the tier is the first from 2 whose call space holds two
+        // compact rows, else 4 where tier 4 holds one whole row, else 5; the
+        // screen as drawn agrees with the budget, and the rows are the budget's.
+        function test_compact_tier_budget(data) {
+            fakePrefs.compactView = true;
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, 2);
+            setStrip(data.slot, data.scan);
+            settle();
+            tc.list.positionViewAtBeginning();
+            settle();
+            verify(tc.monitor.compactView);
+            var tier = tc.monitor.tier;
+            var row = compactRowHeight();
+            compare(tc.monitor.callRowHeight, row, "the budget's row is the compact row");
+            verify(row < Ui.LineBoxes.callRowHeight(false),
+                   "a compact row is shorter");
+            var expected = 5;
+            for (var t = 2; t <= 4; ++t) {
+                compare(tc.monitor.callSpaceFor(t), compactSpaceFor(t), "the budget of tier " + t);
+                if (expected === 5 && compactSpaceFor(t) >= 2 * row)
+                    expected = t;
+            }
+            if (expected === 5 && compactSpaceFor(4) >= row)
+                expected = 4;
+            compare(tier, expected, "the compact tier");
+            verify(tier >= 2, "compact starts at tier 2");
+            for (t = 2; t < Math.min(tier, 5); ++t)
+                verify(tc.monitor.callSpaceFor(t) < 2 * row, "tier " + t + " already fit");
+            // Every row built is a compact row of the budget's height.
+            verify(tc.list.itemAtIndex(0) !== null);
+            for (var i = 0; i < tc.list.count; ++i) {
+                var built = tc.list.itemAtIndex(i);
+                if (!built)
+                    continue;
+                verify(built.compact, "row " + i + " is not compact");
+                compare(built.height, row, "row " + i + " is the budget's height");
+            }
+            compare(item("recentCallsFollow").rowHeight, row);
+            // No label in any tier; the calls card starts where the header ends.
+            verify(!tc.monitor.labelShown);
+            verify(!item("recentCallsLabel").visible, "the label is drawn");
+            compare(tc.list.Accessible.name, "Recent calls");
+            var panel = item("recentCallsPanel");
+            compare(panel.y, tc.list.headerItem.y + tc.list.headerItem.height);
+            // The live strip is fixed above the list below tier 3, in it from 3.
+            compare(tc.monitor.stripInList, tier >= 3);
+            if (tier < 3 && tc.monitor.stripHeight > 0) {
+                var strip = item("monitorLiveStrip");
+                verify(strip.mapToItem(null, 0, strip.height).y <= tc.list.mapToItem(null, 0, 0).y + 0.5, "the strip is fixed above the list");
+            }
+            verify(atStart());
+            var measured = tc.list.height - tc.list.headerItem.height;
+            if (tier < 5) {
+                verify(Math.abs(measured - tc.monitor.callSpaceFor(tier)) < 1,
+                       "measured " + measured + " vs budget " + tc.monitor.callSpaceFor(tier));
+                if (tier === 4)
+                    compare(fullRowsVisible(), 1, "tier 4 holds exactly one whole row");
+                else
+                    verify(fullRowsVisible() >= 2, "two whole rows under the header");
+            } else {
+                verify(compactSpaceFor(4) < row, "tier 5 only when tier 4 leaves less than a row");
+            }
+            if (data.expect !== undefined)
+                compare(tier, data.expect, "the outcome this row stands for");
+            // The table for the record.
+            console.log("COMPACT", data.tag, "tier", tier, "row", row, "space", compactSpaceFor(Math.min(tier, 4)),
+                        "rows", fullRowsVisible());
+        }
+
+        // Brokered (Android) with Sites and Spectrum in play: compact starts past
+        // tier 0, so nothing is stacked, the header drawn is the one measured, the
+        // actions stay in the row, and Sites and Spectrum are left to the session
+        // menu on a phone.
+        function test_compact_brokered_header_data() {
+            var rows = [];
+            for (var size of [[360, 690], [411, 914]])
+                for (var scale of [1, 1.6])
+                    rows.push({tag: size[0] + "x" + size[1] + "@" + scale, width: size[0], height: size[1], scale: scale});
+            return rows;
+        }
+        function test_compact_brokered_header(data) {
+            fakePrefs.compactView = true;
+            useBrokered(true);
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, 2);
+            settle();
+            verify(tc.monitor.tier >= 2);
+            verify(!tc.monitor.headerStacked, "nothing is stacked past tier 0");
+            verify(!tc.monitor.wideHeaderActions, "a phone leaves Sites and Spectrum to the session menu");
+            verify(!item("runningSiteChooserButton").visible && !item("openSpectrumButton").visible);
+            var header = item("monitorHeader");
+            var heading = item("monitorHeaderTitle").parent;
+            var pill = item("monitorLiveStatus");
+            verify(waitForPolish(pill.parent));
+            var drawn = Math.max(heading.mapToItem(header, 0, heading.height).y, pill.mapToItem(header, 0, pill.height).y);
+            verify(Math.abs(drawn - header.height) < 0.5, "header " + header.height + " vs drawn " + drawn);
+            compare(header.height, tc.monitor.headerBarHeight(tc.monitor.tier));
+            for (var name of ["sessionOptionsButton", "monitorLiveStatus"]) {
+                var action = item(name);
+                var x = action.mapToItem(tc.monitor, 0, 0).x;
+                verify(action.visible, name);
+                verify(x >= Ui.Theme.screenPadding - 0.5 && x + action.width <= tc.monitor.width - Ui.Theme.screenPadding + 0.5, name + " leaves the row");
+            }
+        }
+
+        // A landscape phone in compact view is tier 5 too: only Stop stays put
+        // while the header, hero and actions scroll away with the calls.
+        function test_compact_landscape_keeps_stop_fixed_data() {
+            return [{tag: "640x360@1", scale: 1}, {tag: "640x360@1.6", scale: 1.6}];
+        }
+        function test_compact_landscape_keeps_stop_fixed(data) {
+            fakePrefs.compactView = true;
+            root.width = 640;
+            root.height = 360;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, 2);
+            setStrip(true, true);
+            settle();
+            tc.list.positionViewAtBeginning();
+            settle();
+            compare(tc.monitor.tier, 5);
+            verify(tc.monitor.scrollAll);
+            var stop = item("stopListeningButton");
+            var stopY = stop.mapToItem(null, 0, 0).y;
+            var hero = item("monitorHero");
+            var heroY = hero.mapToItem(null, 0, 0).y;
+            tryVerify(function () {
+                tc.list.contentY = tc.list.originY + tc.list.contentHeight - tc.list.height;
+                var last = tc.list.itemAtIndex(tc.list.count - 1);
+                return last !== null && viewportY(last) + last.height <= tc.list.height + 1;
+            }, 2000, "the last row is reachable");
+            settle();
+            verify(hero.mapToItem(null, 0, 0).y < heroY, "the hero scrolls with the calls");
+            compare(stop.mapToItem(null, 0, 0).y, stopY, "Stop stays put");
+            verify(tc.list.mapToItem(null, 0, tc.list.height).y <= stopY + 0.5, "the list ends above Stop");
+        }
+
+        // The Monitor reads Compact view from the store it is handed, never the
+        // app's prefs beside it: the budget, the rows and the follower all take
+        // the injected value, either way round.
+        function test_injected_density_wins_data() {
+            return [{tag: "injected-on", injected: true, global: false},
+                    {tag: "injected-off", injected: false, global: true}];
+        }
+        function test_injected_density_wins(data) {
+            testContext.setPrefs("compactView", data.global);
+            try {
+                fakePrefs.compactView = data.injected;
+                settle();
+                tc.list.positionViewAtBeginning();
+                settle();
+                compare(prefs.compactView, data.global);
+                compare(tc.monitor.compactView, data.injected);
+                var row = Ui.LineBoxes.callRowHeight(data.injected);
+                compare(tc.monitor.callRowHeight, row, "the budget's row");
+                compare(item("recentCallsFollow").rowHeight, row, "the follower's row");
+                for (var i = 0; i < 3; ++i) {
+                    var built = tc.list.itemAtIndex(i);
+                    verify(built !== null);
+                    compare(built.compact, data.injected, "row " + i);
+                    compare(built.height, row, "row " + i);
+                }
+                compare(tc.monitor.labelShown, !data.injected && tc.monitor.tier < 4, "the label");
+                // The tier from the rows as measured: the first, from where the
+                // density starts its search, whose call space holds two of them.
+                var expected = data.injected ? 2 : 0;
+                while (expected < 4 && tc.monitor.callSpaceFor(expected) < 2 * tc.list.itemAtIndex(0).height)
+                    ++expected;
+                compare(tc.monitor.tier, expected, "the tier for " + tc.list.itemAtIndex(0).height + " px rows");
+                if (data.injected)
+                    verify(tc.monitor.tier >= 2, "the compact search");
+                else if (fallbackExcess() <= 2)
+                    compare(tc.monitor.tier, 0, "a 360 dp phone at normal text is tier 0 by default");
+            } finally {
+                testContext.setPrefs("compactView", false);
+            }
+        }
+
+        // Issue #901 (D11): a change of density, either way, puts the calls back
+        // at their start with the list header in view; the focus stays where it
+        // was.
+        function test_density_change_returns_to_the_start_data() {
+            return [{tag: "to-compact", from: false}, {tag: "to-default", from: true}];
+        }
+        function test_density_change_returns_to_the_start(data) {
+            fakePrefs.compactView = data.from;
+            settle();
+            tc.list.positionViewAtIndex(8, ListView.Beginning);
+            settle();
+            verify(!atStart(), "scrolled deep");
+            verify(viewportY(item("monitorDetailsRow")) + item("monitorDetailsRow").height < 0, "the header is scrolled away");
+            var stop = item("stopListeningButton");
+            stop.forceActiveFocus(Qt.TabFocusReason);
+            verify(stop.activeFocus);
+            fakePrefs.compactView = !data.from;
+            tryVerify(function () { return atStart(); }, 1000, "the list stayed deep");
+            settle();
+            verify(atStart());
+            verify(Math.abs(tc.list.headerItem.y - tc.list.originY) < 0.5, "the list header starts the content");
+            verify(viewportY(item("monitorDetailsRow")) >= -0.5, "the list header is in view");
+            compare(tc.list.itemAtIndex(0).compact, !data.from);
+            verify(stop.activeFocus, "the change moved the focus");
+        }
+
         // On a 360 dp phone at normal text, every live-strip combination keeps two
         // whole call rows on screen; on the tester's 411x914 phone the roomiest
         // layout holds in every combination.
@@ -312,16 +584,32 @@ Item {
             verify(tc.monitor.tier <= 4);
             if (data.tier >= 0)
                 compare(tc.monitor.tier, data.tier);
-            verify(fullRowsVisible() >= 2, fullRowsVisible() + " rows visible in tier " + tc.monitor.tier);
+            // Two whole rows wherever the fonts allow it: with the base face's
+            // lines always, and with a taller fallback face wherever even the
+            // tightest tier's call space holds two. Where it does not (Noto CJK,
+            // 360x690 with the slot strip and the scan controls: 131 px for two
+            // 68 px rows) the tier still holds one whole call (S2, decided).
+            var rows = fullRowsVisible();
+            if (fallbackExcess() <= 2 || tc.monitor.callSpaceFor(4) >= 2 * tc.monitor.callRowHeight) {
+                verify(rows >= 2, rows + " rows visible in tier " + tc.monitor.tier);
+            } else {
+                compare(tc.monitor.tier, 4, "the tightest tier before scrolling everything");
+                verify(rows >= 1, rows + " rows visible in tier " + tc.monitor.tier);
+                console.log(data.tag + ": a fallback face " + fallbackExcess() + " px taller leaves " + tc.monitor.callSpaceFor(4)
+                    + " px for " + tc.monitor.callRowHeight + " px rows: one whole call");
+            }
         }
 
         // Call traffic never changes the tier, and the hero's box is reserved:
         // active, ended and idle leave the list exactly where it was.
         function test_call_traffic_never_moves_the_list_data() {
             return [{tag: "phone", width: 360, height: 690, scale: 1},
-                    {tag: "phone-large", width: 411, height: 914, scale: 1.6}];
+                    {tag: "phone-large", width: 411, height: 914, scale: 1.6},
+                    {tag: "phone+compact", width: 360, height: 690, scale: 1, compact: true},
+                    {tag: "phone-large+compact", width: 411, height: 914, scale: 1.6, compact: true}];
         }
         function test_call_traffic_never_moves_the_list(data) {
+            fakePrefs.compactView = data.compact === true;
             root.width = data.width;
             root.height = data.height;
             Ui.Theme.fontScale = data.scale;
@@ -349,9 +637,12 @@ Item {
         function test_scan_timing_never_moves_the_list_data() {
             return [{tag: "phone", width: 360, height: 690, scale: 1},
                     {tag: "tester", width: 411, height: 914, scale: 1},
-                    {tag: "large", width: 411, height: 780, scale: 1.6}];
+                    {tag: "large", width: 411, height: 780, scale: 1.6},
+                    {tag: "phone+compact", width: 360, height: 690, scale: 1, compact: true},
+                    {tag: "large+compact", width: 411, height: 780, scale: 1.6, compact: true}];
         }
         function test_scan_timing_never_moves_the_list(data) {
+            fakePrefs.compactView = data.compact === true;
             root.width = data.width;
             root.height = data.height;
             Ui.Theme.fontScale = data.scale;
@@ -396,9 +687,13 @@ Item {
             return [{tag: "phone", width: 360, height: 690, scale: 1},
                     {tag: "tester", width: 411, height: 914, scale: 1},
                     {tag: "large", width: 411, height: 780, scale: 1.6},
-                    {tag: "landscape", width: 640, height: 360, scale: 1}];
+                    {tag: "landscape", width: 640, height: 360, scale: 1},
+                    {tag: "phone+compact", width: 360, height: 690, scale: 1, compact: true},
+                    {tag: "large+compact", width: 411, height: 780, scale: 1.6, compact: true},
+                    {tag: "landscape+compact", width: 640, height: 360, scale: 1, compact: true}];
         }
         function test_two_slot_hops_never_move_the_screen(data) {
+            fakePrefs.compactView = data.compact === true;
             root.width = data.width;
             root.height = data.height;
             Ui.Theme.fontScale = data.scale;
@@ -459,7 +754,12 @@ Item {
         }
         // The reservation lasts for the rotation: once it ends, or before a
         // rotation has seen a two-slot carrier, the strip follows the carrier.
-        function test_two_slot_reservation_ends_with_the_rotation() {
+        // Compact view (issue #901) reserves and resets the same way.
+        function test_two_slot_reservation_ends_with_the_rotation_data() {
+            return [{tag: "default", compact: false}, {tag: "compact", compact: true}];
+        }
+        function test_two_slot_reservation_ends_with_the_rotation(data) {
+            fakePrefs.compactView = data.compact;
             setStrip(false, true);
             settle();
             hopTo(1);
@@ -551,7 +851,8 @@ Item {
             Ui.Theme.fontScale = data.scale;
             setCall(1, 2);
             m("slot1CallEnc", true);
-            m("slot1EncText", "AES-256 K:65535");
+            // The shape the metrics model gives it (slot_enc_text()).
+            m("slot1EncText", "ALG 84 · KID 0001");
             setStrip(data.compact, data.compact);
             try {
                 settle();
@@ -857,7 +1158,7 @@ Item {
         }
 
         // Far down a long history the first row is no longer instantiated. A
-        // header resize there (the engine's message line appearing under the
+        // header resize there (the readings opening and closing under the
         // disclosure) happens off screen and must not move what the reader sees.
         function test_header_resize_with_the_first_row_virtualized() {
             callHistory.clearAll();
@@ -871,14 +1172,135 @@ Item {
             verify(row !== null);
             var y = viewportY(row);
             var contentY = tc.list.contentY;
-            m("uiMessage", "Muted");
+            var closed = tc.list.headerItem.height;
+            tc.monitor.setDetailsExpanded(true);
             settle();
+            verify(tc.list.headerItem.height > closed + 0.5, "the header grew");
             compare(tc.list.contentY, contentY);
             compare(viewportY(row), y);
-            m("uiMessage", "");
+            tc.monitor.setDetailsExpanded(false);
             settle();
+            compare(tc.list.headerItem.height, closed, "the header shrank back");
             compare(tc.list.contentY, contentY);
             compare(viewportY(row), y);
+        }
+
+        // ---- The engine's answer (issue #901, D9, B2) ----
+
+        // The engine's answer to a command takes the "Signal & site" row's
+        // summary line while it lasts, as plain text in cyan, then the summary
+        // returns. The line is a fixed box, so neither the answer nor a summary
+        // in a script with a taller line moves the header, the tier, the list
+        // or the controls, and the rows the tier promised stay on screen.
+        // The row's description is the answer while it shows and the summary
+        // after; a covered screen says neither.
+        function summaryLine() {
+            var row = item("monitorDetailsRow");
+            for (var text of findChildrenOf(row)) {
+                if (text instanceof Text && text.text === row.subtitle && text.text !== row.title)
+                    return text;
+            }
+            return null;
+        }
+        function layoutNow() {
+            return {tier: tc.monitor.tier, header: tc.list.headerItem.height, card: item("monitorDetailsCard").height,
+                    listY: tc.list.mapToItem(null, 0, 0).y, listHeight: tc.list.height, contentY: tc.list.contentY,
+                    actionsY: item("monitorLiveActions").mapToItem(null, 0, 0).y,
+                    stopY: item("stopListeningButton").mapToItem(null, 0, 0).y};
+        }
+        function compareLayout(now, then, at) {
+            for (var key in then)
+                compare(now[key], then[key], at + ": " + key);
+        }
+        // What the tier promised is what is drawn: the viewport less the list
+        // header is the budget's call space, holding two whole rows where the
+        // budget said it would.
+        function verifyPromise(at) {
+            var tier = tc.monitor.tier;
+            if (tier >= 5)
+                return;
+            var measured = tc.list.height - tc.list.headerItem.height;
+            verify(Math.abs(measured - tc.monitor.callSpaceFor(tier)) < 1,
+                   at + ": measured " + measured + " vs budget " + tc.monitor.callSpaceFor(tier));
+            if (tc.monitor.callSpaceFor(tier) >= 2 * tc.monitor.callRowHeight)
+                verify(fullRowsVisible() >= 2, at + ": " + fullRowsVisible() + " whole rows under the header");
+        }
+        function test_engine_answer_moves_nothing_data() {
+            var rows = [];
+            for (var compact of [false, true]) {
+                var suffix = compact ? "+compact" : "";
+                rows.push({tag: "360x690@1" + suffix, width: 360, height: 690, scale: 1, slot: false, scan: false, compact: compact});
+                rows.push({tag: "411x780@1+slot+scan" + suffix, width: 411, height: 780, scale: 1, slot: true, scan: true, compact: compact});
+                rows.push({tag: "411x914@1.6" + suffix, width: 411, height: 914, scale: 1.6, slot: false, scan: false, compact: compact});
+                rows.push({tag: "640x360@1" + suffix, width: 640, height: 360, scale: 1, slot: false, scan: false, compact: compact});
+            }
+            return rows;
+        }
+        function test_engine_answer_moves_nothing(data) {
+            fakePrefs.compactView = data.compact;
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            var period = Ui.Navigation.speechPeriodMs;
+            Ui.Navigation.speechPeriodMs = 20;
+            var blocker = null;
+            try {
+                setCall(1, 2);
+                setStrip(data.slot, data.scan);
+                settle();
+                tc.list.positionViewAtBeginning();
+                settle();
+                var row = item("monitorDetailsRow");
+                var summary = row.accessibleDescription;
+                verify(summary.length > 0);
+                tryVerify(function () { return row.Accessible.description === summary; }, 1000, "the summary is the description");
+                var before = layoutNow();
+                verifyPromise("before");
+                // Latin, then Burmese, whose line stands taller than Latin's.
+                for (var answer of ["Output: Muted", "မြန်မာ " + "Output: open failed"]) {
+                    m("uiMessage", answer);
+                    settle();
+                    compareLayout(layoutNow(), before, answer);
+                    verifyPromise(answer);
+                    compare(row.subtitle, answer, "the answer is the row's line");
+                    var line = summaryLine();
+                    verify(line !== null, "the answer's line is drawn");
+                    compare(line.textFormat, Text.PlainText);
+                    compare(String(line.color), String(Ui.Theme.cyan));
+                    compare(line.lineCount, 1);
+                    compare(row.Accessible.description, answer, "the description is the answer");
+                }
+                // Covered, the row says nothing, the answer included.
+                blocker = Qt.createQmlObject("import QtQuick; Item {}", root);
+                Ui.Navigation.addModal(blocker);
+                tryVerify(function () { return row.Accessible.description === ""; }, 1000, "covered, the answer is still said");
+                Ui.Navigation.removeModal(blocker);
+                tryVerify(function () { return row.Accessible.description === answer; }, 1000, "uncovered, the answer is said again");
+                // Expired: the summary returns, styled, and is the description again.
+                m("uiMessage", "");
+                settle();
+                compareLayout(layoutNow(), before, "after");
+                verifyPromise("after");
+                compare(row.subtitle, tc.monitor.detailsSummary.markup);
+                compare(summaryLine().textFormat, Text.StyledText);
+                tryVerify(function () { return row.Accessible.description === summary; }, 1000, "the summary is the description again");
+                // A summary in Burmese keeps the same line.
+                m("tetraVisible", true);
+                m("tetraCodecFault", true);
+                m("tetraCodecText", "မြန်မာ");
+                settle();
+                verify(row.accessibleDescription.indexOf("မြန်မာ") >= 0, row.accessibleDescription);
+                compareLayout(layoutNow(), before, "Burmese summary");
+                m("uiMessage", "Output: Muted");
+                settle();
+                compareLayout(layoutNow(), before, "an answer over a Burmese summary");
+            } finally {
+                if (blocker !== null) {
+                    Ui.Navigation.removeModal(blocker);
+                    blocker.destroy();
+                }
+                Ui.Navigation.speechPeriodMs = period;
+            }
         }
     }
 }

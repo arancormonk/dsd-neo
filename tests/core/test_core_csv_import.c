@@ -2953,6 +2953,13 @@ test_nfm_channel_map_rows(void) {
         {"1,154430000,nfm,-G groups.csv\n", "row 2: -G: not supported for this mode/target"},
         {"1,154430000,nfm,--strict-crc\n", "row 2: --strict-crc: not supported for this mode/target"},
         {"1,154430000,nfm,--scan-voice-only\n", "row 2: --scan-voice-only: not supported for this mode/target"},
+        /* Skip-silent and its reading length (#834) are session-wide: an options cell refuses both, on every class. */
+        {"1,154430000,nfm,--scan-skip-silent\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,154430000,nfm,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent-ms=120\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
         {"1,154430000,nfm,-b 1\n", "row 2: -b: not supported for this mode/target"},
         {"1,154430000,nfm,--nfm-bandwidth-hz 30000\n",
          "row 2: --nfm-bandwidth-hz: expects whole Hz from 8000 to 25000"},

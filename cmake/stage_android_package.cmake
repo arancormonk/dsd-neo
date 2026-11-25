@@ -131,8 +131,19 @@ if(DEFINED _DSD_FRESH_DIR)
         DESTINATION "${_fresh_dir}/licenses"
         ${_folder_modes}
     )
+    # mbelib's notice folder by its top-level entries, without the other FFT's
+    # notice tree (MbelibNotices.cmake, in the parent, names it).
+    file(GLOB _mbe_entries LIST_DIRECTORIES true "${MBELIB_NOTICE_DIR}/*")
+    set(_mbe_copy)
+    foreach(_entry IN LISTS _mbe_entries)
+        get_filename_component(_entry_name "${_entry}" NAME)
+        if(NOT _entry_name STREQUAL "${MBELIB_UNSELECTED_FFT}")
+            list(APPEND _mbe_copy "${_entry}")
+        endif()
+    endforeach()
+    file(MAKE_DIRECTORY "${_fresh_dir}/licenses/mbelib-neo")
     file(
-        COPY "${MBELIB_NOTICE_DIR}/"
+        COPY ${_mbe_copy}
         DESTINATION "${_fresh_dir}/licenses/mbelib-neo"
         ${_folder_modes}
     )
@@ -311,6 +322,7 @@ set(_child_args
     -DSTAGE_DIR=${STAGE_DIR}
     -DBUILD_DIR=${BUILD_DIR}
     -DMBELIB_NOTICE_DIR=${MBELIB_NOTICE_DIR}
+    -DMBELIB_UNSELECTED_FFT=${DSD_MBELIB_UNSELECTED_FFT}
     -DVCPKG_SHARE_DIR=${VCPKG_SHARE_DIR}
     -D_DSD_FRESH_DIR=${_fresh_dir}
 )

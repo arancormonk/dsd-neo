@@ -384,7 +384,8 @@ MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slotCallsEqual(other)
            && controlEquals(other) && scanReadingsEqual(other) && rxToneEquals(other)
            && rx_tone_configured_text == other.rx_tone_configured_text && toneFilterEquals(other)
-           && toneFilterSettingEquals(other) && tetraEquals(other) && ui_message == other.ui_message;
+           && toneFilterSettingEquals(other) && tetraEquals(other) && ui_message == other.ui_message
+           && ui_message_seq == other.ui_message_seq;
 }
 
 void
@@ -409,6 +410,7 @@ MetricsModel::publish(const View& next) {
     const bool toneFilterSettingMoved = !next.toneFilterSettingEquals(m_view);
     const bool tetraMoved = !next.tetraEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
+    const bool messageSeqMoved = next.ui_message_seq != m_view.ui_message_seq;
     m_view = next;
     if (siteMoved) {
         Q_EMIT siteChanged();
@@ -442,8 +444,17 @@ MetricsModel::publish(const View& next) {
     if (tetraMoved) {
         Q_EMIT tetraChanged();
     }
-    if (messageMoved) {
+    emitMessageSignals(messageMoved, messageSeqMoved);
+}
+
+/* The text first, so a screen that reads it when the count moves reads the new one. */
+void
+MetricsModel::emitMessageSignals(bool text, bool seq) {
+    if (text) {
         Q_EMIT uiMessageChanged();
+    }
+    if (seq) {
+        Q_EMIT uiMessageSeqChanged();
     }
 }
 
@@ -1266,6 +1277,7 @@ MetricsModel::fillUiMessage(View& next, const dsd_state* snapshot) {
      * timer takes an expired message down without waiting for another publish —
      * an idle engine may not raise the redraw flag again for minutes. */
     const qint64 message_remaining_s = static_cast<qint64>(snapshot->ui_msg_expire) - realtimeSecsSinceEpoch();
+    next.ui_message_seq = snapshot->ui_msg_seq;
     if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
         next.ui_message = QString::fromUtf8(snapshot->ui_msg);
         m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);

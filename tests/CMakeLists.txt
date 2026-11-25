@@ -7327,6 +7327,82 @@ target_link_libraries(
     dsd-neo_test_runtime_rdio_export
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# The cases that need a simulated failure at one call (a hard link, a private open, the worker's join) replace those
+# calls with test doubles through GNU ld --wrap, so they exist only where it links, like the other wrap tests (on POSIX
+# dsd_thread_join() is pthread_join()). --wrap reaches only calls the linker resolves into this executable: the
+# callers in dsd-neo_runtime and dsd-neo_platform must be static libraries (a shared one, as BUILD_SHARED_LIBS makes,
+# has bound them already), and their objects not LTO ones, which can inline or resolve the wrapped calls before the
+# linker sees them. LTO is left out however it is asked: DSD_ENABLE_LTO, -flto in CMAKE_C_FLAGS or CMAKE_CXX_FLAGS (as
+# CFLAGS/CXXFLAGS set them), and, per configuration, -flto in CMAKE_<LANG>_FLAGS_<CONFIG> or the target's
+# INTERPROCEDURAL_OPTIMIZATION or INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (set from
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target alike), through generator expressions, so a
+# multi-config build decides per configuration. The cases are skipped there. The definition and the link options
+# follow the same answer, as --wrap without the __wrap_ definitions would not link.
+get_target_property(_dsd_rdio_runtime_type dsd-neo_runtime TYPE)
+get_target_property(_dsd_rdio_platform_type dsd-neo_platform TYPE)
+set(_dsd_rdio_lto_configs "")
+set(_dsd_rdio_cfgs
+    ${CMAKE_CONFIGURATION_TYPES}
+    ${CMAKE_BUILD_TYPE}
+    Debug
+    Release
+    RelWithDebInfo
+    MinSizeRel
+)
+list(REMOVE_DUPLICATES _dsd_rdio_cfgs)
+foreach(_dsd_rdio_cfg IN LISTS _dsd_rdio_cfgs)
+    string(TOUPPER "${_dsd_rdio_cfg}" _dsd_rdio_cfg_upper)
+    if(
+        "${CMAKE_C_FLAGS_${_dsd_rdio_cfg_upper}} ${CMAKE_CXX_FLAGS_${_dsd_rdio_cfg_upper}}"
+            MATCHES
+            "-flto"
+    )
+        list(APPEND _dsd_rdio_lto_configs "${_dsd_rdio_cfg}")
+    endif()
+endforeach()
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    AND NOT DSD_ENABLE_LTO
+    AND _dsd_rdio_runtime_type STREQUAL "STATIC_LIBRARY"
+    AND _dsd_rdio_platform_type STREQUAL "STATIC_LIBRARY"
+    AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
+)
+    set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
+    set(_dsd_rdio_ipo
+        "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    )
+    set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
+    if(_dsd_rdio_lto_configs)
+        string(REPLACE ";" "," _dsd_rdio_lto_list "${_dsd_rdio_lto_configs}")
+        set(_dsd_rdio_wrap
+            "$<AND:${_dsd_rdio_wrap},$<NOT:$<CONFIG:${_dsd_rdio_lto_list}>>>"
+        )
+        unset(_dsd_rdio_lto_list)
+    endif()
+    target_compile_definitions(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
+    )
+    target_link_options(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_hard_link>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private_ex>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=pthread_join>"
+    )
+    unset(_dsd_rdio_wrap)
+    unset(_dsd_rdio_ipo)
+    unset(_dsd_rdio_tgt)
+endif()
+unset(_dsd_rdio_cfg_upper)
+unset(_dsd_rdio_cfg)
+unset(_dsd_rdio_cfgs)
+unset(_dsd_rdio_lto_configs)
+unset(_dsd_rdio_platform_type)
+unset(_dsd_rdio_runtime_type)
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as
@@ -9512,6 +9588,42 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
+# Issue #888: the per-call WAV size probe measures a recording past 2 GiB (a sparse file) as its real 64-bit size. It
+# exists for Windows, where long is 32 bits; the sparse case exits 77 (skipped) where the filesystem cannot make one.
+add_executable(dsd-neo_test_core_wav_size_probe core/test_core_wav_size_probe.c)
+target_include_directories(
+    dsd-neo_test_core_wav_size_probe
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+endif()
+add_test(NAME CORE_WAV_SIZE_PROBE COMMAND dsd-neo_test_core_wav_size_probe)
+set_tests_properties(CORE_WAV_SIZE_PROBE PROPERTIES SKIP_RETURN_CODE 77)
+
 # Speech level parity (issue #518): one deterministic talker (test_support/speech_synth.h) played as digital voice and
 # as analog FM and AM comes out at the speech AGC's -20 dBFS active speech level (P.56), digital and analog alike. The
 # tool writes the talker, encodes it with mbelib-neo's IMBE 4400, AMBE+2 2450 and AMBE 2400 encoders into the .imb,
@@ -9798,6 +9910,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_capture_get_seq"
+            "-Wl,--wrap=rtl_signal_capture_seq"
             "-Wl,--wrap=rtl_signal_quiet_request"
             "-Wl,--wrap=rtl_signal_quiet_status"
             "-Wl,--wrap=rtl_signal_quiet_take"
@@ -11109,17 +11223,23 @@ target_link_libraries(
 
 # The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
 # landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
-# radio pipeline, and the host's link wraps a GNU-style linker.
+# radio pipeline, and the host's link wraps a GNU-style linker. The radio code is the test-hook build, whose signal tap
+# counts the scan quiet check's requests (none under I/Q replay).
 if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
     target_include_directories(
         dsd-neo_test_y_call_hold_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_y_call_hold_replay
         PRIVATE
+            "-Wl,--start-group"
             dsd-neo_engine
+            dsd-neo_io_radio_private_test_support
+            "-Wl,--end-group"
             ${LIBS}
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_channel_scan_step"
@@ -11372,6 +11492,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/core/file
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
 )
 target_compile_definitions(
     dsd-neo_test_core_wav_journal
@@ -11435,8 +11556,14 @@ add_test(
 set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
 
 # The received identity across the P25 watchdog's retunes and the decoder's passes, run on two threads at once (a
-# ThreadSanitizer build checks them). The rigctl peer is replaced through the linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# ThreadSanitizer build checks them). Both tests here replace the rigctl peer through the linker, so GNU ld and lld
+# only, and only with static libraries: --wrap rewrites the calls dsd-neo_engine's archive members make, never those
+# already bound inside a shared libdsd-neo_engine.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_rxid_watchdog_race
         engine/test_engine_rxid_watchdog_race.c
@@ -11496,8 +11623,13 @@ endif()
 
 # The P25 watchdog thread is a beat and the decoder thread runs its ticks: a release the beat paces tunes from the decoder
 # thread, beside the hunt's writes and reads (run it under tsan-debug too). The rigctl peer is replaced through the
-# linker, so GNU ld and lld only.
-if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+# linker, so GNU ld and lld only, and only with static libraries: --wrap never reaches the calls inside a shared
+# libdsd-neo_engine, which would reach the real rigctl client instead.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+)
     add_executable(
         dsd-neo_test_engine_p25_watchdog_decoder_tick
         engine/test_engine_p25_watchdog_decoder_tick.c
@@ -24247,6 +24379,49 @@ if(DSD_HAS_RADIO)
         MIN_FILES 1
         MIN_FRAMES 160
     )
+    # rdio-scanner DirWatch export of a digital call with no talkgroup (issue #888), through
+    # tests/rdio_dirwatch_check.cmake, which reads the finalized WAV/JSON pairs and the journal. The synthetic M17 call
+    # is named by callsigns alone (target BROADCAST). Replayed, it is exported under its frequency in kHz, labelled by
+    # its protocol and MHz; decoded from the replay's discriminator audio (an audio input, no frequency) under
+    # --rdio-unknown-talkgroup, labelled by its protocol alone, with freq 0 and no freqList; without the option it is
+    # recorded but not exported, said once. Only a Codec2 build decodes its voice.
+    if(DSD_HAS_CODEC2)
+        add_test(
+            NAME DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fz"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17.iq.json"
+                "-DEXPECTED=SRC: N0CALL"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG"
+                "-DTARGET=BROADCAST"
+                "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=M17 CAN 7 851.3750 MHz,freq=851375000,system=48,short_name=M17_CAN_7,emergency=false,encrypted=false"
+                "-DAUDIO_TALKGROUP=4242"
+                "-DAUDIO_SIDECAR=talkgroup_tag=M17 CAN 7,freq=0,system=48,short_name=M17_CAN_7"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            PROPERTIES LABELS "iq-decode" TIMEOUT 360
+        )
+    endif()
+    # The synthetic YSF call names no target or source and ends with the capture, on no terminator: a YSF call takes
+    # the fallback only once it has ended on a decoded terminator, so in every leg it is recorded but not exported,
+    # said once.
+    add_test(
+        NAME DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fy"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_synth.iq.json"
+            "-DEXPECTED=FN: [1-8]/8 "
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG"
+            "-DNO_FALLBACK=ON" "-DRF_SIDECAR=" "-DAUDIO_TALKGROUP=4242"
+            "-DAUDIO_SIDECAR=" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        PROPERTIES LABELS "iq-decode" TIMEOUT 360
+    )
     # The digital voice chain (issue #653): tests/iq_voice_chain_check.cmake replays a fixture with per-call WAVs (-P)
     # under integer output to stdout, float output (-y) to stdout and the null output, and requires byte-identical
     # per-call WAVs from all three, as many float samples as integer ones, a float output the digital high-pass changes,
@@ -27876,7 +28051,8 @@ if(Python3_Interpreter_FOUND)
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
     # tools/bench_scan_skip_silent.py reports per mode only what the run decoded: an
-    # untyped -Y map runs -ft on every row (issue #834). numpy, as above.
+    # untyped -Y map runs -ft on every row (issue #834). numpy, as above. Its DMR
+    # cases score the call the DMR test generator builds.
     add_test(
         NAME TOOLS_BENCH_SCAN_SKIP_SILENT
         COMMAND
@@ -27886,7 +28062,11 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(
         TOOLS_BENCH_SCAN_SKIP_SILENT
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            ENVIRONMENT
+                "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
@@ -28874,7 +29054,7 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
-    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    # The scan quiet-threshold calibration (docs/signal-search.md), run by hand: minutes on every core.
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
@@ -28893,6 +29073,22 @@ if(DSD_HAS_RADIO)
             Threads::Threads
             ${LIBS}
     )
+    # The calibration driver checks the sources of the conditions --filter selects for the phase, and only those
+    # (issue #834): one condition at a time on a tiny source set it makes in its temp directory, in seconds.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_choose_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            PROPERTIES TIMEOUT 120
+        )
+    endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(

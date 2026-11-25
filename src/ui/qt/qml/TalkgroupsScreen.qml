@@ -13,6 +13,31 @@ Item {
     property int bulkGeneration: 0
     property bool bulkListen: true
     property string bulkMessage: ""
+    // The engine's answer and this screen's own bulk status share one line,
+    // the newer of the two on it. A bulk status is newer until the engine
+    // next answers, the same text answered again included (its count moves);
+    // an answer that expires leaves the line empty rather than bringing back
+    // the status it replaced.
+    readonly property string engineMessage: metrics.uiMessage
+    readonly property var engineMessageSeq: metrics.uiMessageSeq
+    property bool bulkNewer: false
+    onEngineMessageChanged: {
+        if (engineMessage.length > 0)
+            bulkNewer = false;
+    }
+    onEngineMessageSeqChanged: {
+        if (metrics.uiMessage.length > 0)
+            bulkNewer = false;
+    }
+    readonly property string commandMessage: bulkNewer ? bulkMessage : engineMessage
+    // An accepted request the engine never answers (decoding stopped) leaves
+    // after the life of an engine answer. It stays the newer message, so the
+    // line goes empty rather than back to an older answer.
+    Timer {
+        id: bulkRequestedExpiry
+        interval: 4000
+        onTriggered: screen.bulkMessage = ""
+    }
     function requestBulk(listen) {
         bulkRows = talkgroupView.snapshotSelection();
         bulkContext = talkgroups.policyContext;
@@ -39,6 +64,11 @@ Item {
             onClicked: {
                 var accepted = commands.setTalkgroupSelection(screen.bulkListen, screen.bulkContext, screen.bulkGeneration, screen.bulkRows);
                 screen.bulkMessage = accepted ? qsTr("Update requested") : qsTr("The update could not be queued. Try again.");
+                screen.bulkNewer = true;
+                if (accepted)
+                    bulkRequestedExpiry.restart();
+                else
+                    bulkRequestedExpiry.stop();
                 bulkConfirm.visible = false;
             }
         }
@@ -342,27 +372,22 @@ Item {
         }
         ReadableText {
             width: parent.width
-            text: metrics.uiMessage || screen.bulkMessage
-            visible: text.length > 0
-            wrapMode: Text.Wrap
-            color: Theme.textPrimary
-            font.pixelSize: Theme.fontSize(13)
-        }
-
-        ReadableText {
-            width: parent.width
             text: screen.saveMessage
             visible: text.length > 0
             color: Theme.textSecondary
             wrapMode: Text.Wrap
         }
 
+        // The one command line (issue #901 B3) keeps the look of the line it
+        // replaced, the app's 13 px text in the primary colour, so it grows
+        // with the text size like the rest of the screen.
         ReadableText {
             objectName: "talkgroupCommandToast"
             width: parent.width
-            text: metrics.uiMessage
+            text: screen.commandMessage
             visible: text.length > 0
-            color: Theme.textSecondary
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(13)
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
         }

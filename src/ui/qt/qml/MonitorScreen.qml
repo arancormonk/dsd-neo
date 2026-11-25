@@ -31,6 +31,11 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     property string scanTargetName: ""
+    // Issue #901 r3 M1: set by Main while a start is under way, until it has
+    // told monitorView which session to show. The list takes its calls only
+    // after, so a start never builds (and then destroys) rows of the session
+    // before it.
+    property bool callsPending: false
     // Issue #697: the name the session gives the list of the target on air;
     // Main sets it only while the scan has more than one list.
     property string scanListName: ""
@@ -87,6 +92,9 @@ Item {
         return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : Util.fill(qsTr("%1 + %2 lists"), [name, screen.otherListCount]);
     }
     property string systemName: withOtherLists(sessionName)
+    // The title's line is a fixed box (issue #901 B9): a line break in an
+    // imported or typed name is drawn as a space (r2 B1), and read as one.
+    readonly property string sessionLine: Util.oneLine(sessionName)
 
     // Which slot the hero shows: the earliest active call keeps the headline, then a
     // recently ended one; exact start ties and ended calls prefer the lower slot.
@@ -116,6 +124,18 @@ Item {
     readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc : heroSlot === 2 ? metrics.slot2CallEnc : false
     readonly property string heroEncText: heroSlot === 1 ? metrics.slot1EncText : heroSlot === 2 ? metrics.slot2EncText : ""
     readonly property int heroSeconds: heroSlot === 1 ? metrics.slot1CallSeconds : heroSlot === 2 ? metrics.slot2CallSeconds : 0
+    // The hero's subline as heard (issue #901 B10): every part the call has,
+    // or the line draws, in the order the line draws them, whether or not the
+    // line had room for it.
+    function heroSublineSpeech() {
+        return [heroPrivate || heroPrivateTag.visible ? heroPrivateTag.label : "", heroIdsText.text,
+            heroIdentityNote.shown || heroIdentityNote.visible ? heroIdentityNote.text : "",
+            heroEmergency || heroEmergencyTag.visible ? heroEmergencyTag.label : "", heroEnc || heroEncTag.visible ? heroEncTag.label : "",
+            heroAlgorithm.shown || heroAlgorithm.visible ? heroAlgorithm.text : "",
+            heroChannelText.shown || heroChannelText.visible ? heroChannelText.text : ""].filter(function (part) {
+            return part.length > 0;
+        }).join(", ");
+    }
 
     // The hero shows one slot, but TDMA carries two: when the other slot is also
     // live it gets a slim strip of its own, or that call is invisible and cannot
@@ -166,14 +186,43 @@ Item {
     readonly property bool otherPrivate: otherSlot !== 0 && Util.callIsPrivate(otherKind)
     // The strip's one line: a talkgroup call names its talkgroup beside its name, as
     // before; a private call and a call no party named read as the hero would.
-    readonly property string otherIdentity: {
-        if (otherPrivate || Util.callIsAnonymous(otherTg, otherTgId, otherSrc, otherProtocol))
-            return Util.callHeadline(otherKind, otherName, otherTg, otherTgId, otherTgLabel, otherSrc, otherProtocol);
-        if (otherTgId > 0 && otherName === otherTg)
-            return Util.talkgroupHeadline(otherName, otherTg, otherTgId);
-        if (otherTg.length === 0)
-            return otherName;
-        return otherName.length > 0 ? otherName + " · TG " + otherTg : "TG " + otherTg;
+    readonly property string otherIdentity: slotIdentity(otherSlot)
+    // Slot @p slot's identity line, from that slot's own readings.
+    function slotIdentity(slot) {
+        if (!metrics || (slot !== 1 && slot !== 2))
+            return "";
+        var p = "slot" + slot;
+        var kind = metrics[p + "CallKind"];
+        var name = metrics[p + "CallName"];
+        var tg = metrics[p + "TgText"];
+        var tgId = metrics[p + "TgId"];
+        var tgLabel = metrics[p + "TgLabel"];
+        var src = metrics[p + "SrcText"];
+        var protocol = metrics[p + "ProtocolLabel"];
+        if (Util.callIsPrivate(kind) || Util.callIsAnonymous(tg, tgId, src, protocol))
+            return Util.callHeadline(kind, name, tg, tgId, tgLabel, src, protocol);
+        if (tgId > 0 && name === tg)
+            return Util.talkgroupHeadline(name, tg, tgId);
+        if (tg.length === 0)
+            return name;
+        return name.length > 0 ? name + " · TG " + tg : "TG " + tg;
+    }
+    // What the strip's node says, from one reading of the lead slot and the
+    // other slot's call (r7 K2): stripSlot, stripIdle and the other slot's
+    // properties are separate bindings that settle one after another, so a
+    // name built from them said "SLOT 2 · idle", the slot still on air, when
+    // the leading slot 1 ended and slot 2 took the hero in one publication.
+    // Idle, the slot alone (r5 H1); with a call, the slot, its identity and
+    // each flag it has, drawn or not (issue #782).
+    function stripSpeech() {
+        var lead = metrics ? metrics.leadSlot : 0;
+        var other = lead === 1 ? 2 : lead === 2 ? 1 : 0;
+        if (other === 0 || metrics["slot" + other + "CallState"] !== 2)
+            return qsTr("SLOT %1 · idle").arg(lead === 2 ? 1 : 2);
+        var p = "slot" + other;
+        return [qsTr("SLOT %1").arg(other), Util.oneLine(slotIdentity(other)), Util.callIsPrivate(metrics[p + "CallKind"]) ? otherPrivateTag.label : "", metrics[p + "CallEmergency"] ? otherEmergencyTag.label : "", metrics[p + "CallEnc"] ? otherEncTag.label : ""].filter(function (part) {
+            return part.length > 0;
+        }).join(", ");
     }
 
     component AvoidAction: OutlineButton {
@@ -299,35 +348,66 @@ Item {
     //   4  no RECENT CALLS label;
     //   5  even 4 leaves less than one row: only Stop stays put and everything
     //      else scrolls with the calls, so every control stays reachable.
-    // Only the size, the fonts and which live-strip parts the session shows feed
-    // it, never call content, so traffic never moves the screen. A scan's hops
-    // between two-slot and single-slot carriers do not move it either: the
-    // rotation keeps the slot strip's place (rotationReservesStrip).
+    // Compact view (issue #901, D4) starts the search at 2, so it always has
+    // the compact hero, draws no label in any tier (labelCandidate) and has
+    // compact rows; the strip, actions and Stop keep their size.
+    // Only the size, the fonts, the user's density and which live-strip parts
+    // the session shows feed it, never call content, so traffic never moves the
+    // screen. A scan's hops between two-slot and single-slot carriers do not
+    // move it either: the rotation keeps the slot strip's place
+    // (rotationReservesStrip).
     readonly property int tier: {
         var two = 2 * callRowHeight;
-        for (var t = 0; t <= 4; ++t) {
+        for (var t = compactView ? 2 : 0; t <= 4; ++t) {
             if (callSpaceFor(t) >= two)
                 return t;
         }
         return callSpaceFor(4) < callRowHeight ? 5 : 4;
     }
+    // Whether tier t draws the RECENT CALLS label: the budget's label part, the
+    // label itself, the spacer that stands in for it and where the calls card
+    // starts all follow this one rule. The list keeps its accessible name.
+    function labelCandidate(t) {
+        return t < 4 && !compactView;
+    }
     // Wide screens fit every header action beside the title in any tier. Where
     // the host brokers a USB receiver (#647 B16), the actions must also fit the
     // row, measured with the pill at its widest label; else Sites and Spectrum
     // are left to the session menu, as past tier 0, and nothing is stacked.
-    readonly property bool headerStacked: tier === 0 && width < 500 && headerActionsFit
-    readonly property bool wideHeaderActions: (tier === 0 || width >= 500) && headerActionsFit
+    readonly property bool headerStacked: headerStackedFor(tier)
+    readonly property bool wideHeaderActions: wideHeaderActionsFor(tier)
+    function headerStackedFor(t) {
+        return t === 0 && width < 500 && headerActionsFit;
+    }
+    function wideHeaderActionsFor(t) {
+        return (t === 0 || width >= 500) && headerActionsFit;
+    }
     readonly property bool heroCompact: tier >= 2
     readonly property bool stripInList: tier >= 3
-    readonly property bool labelShown: tier < 4
+    readonly property bool labelShown: labelCandidate(tier)
     readonly property bool scrollAll: tier >= 5
 
     // The measured parts of the budget. Each is the height the layout below
     // gives that part, so the budget and the screen cannot disagree.
     readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
-    readonly property real callRowHeight: Math.max(Theme.rowHeight, Math.ceil(rowNameProbe.implicitHeight + 3 + rowMetaProbe.implicitHeight) + 24)
+    // The rows' own height (LineBoxes, issue #901): their fonts' line boxes,
+    // at the user's density, whatever their width.
+    readonly property real callRowHeight: LineBoxes.callRowHeight(compactView)
+    // The widest of each form of age a row shows (Util.shortAge: "now", up
+    // to "59m", "23h", "999d", then years up to "99y"), one per line: the
+    // rows' time slot, so a ticking age never changes what a row draws.
+    readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d", "99y"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
-    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
+    // The hero's subline: its tags, and the line boxes (LineBoxes: Latin, CJK
+    // and emoji) of the fonts that draw received or imported text, the ids'
+    // and channel's mono 13 and the algorithm's mono 11, so only a script that
+    // stands taller than the box is drawn smaller in it (r6 J4: from the base
+    // mono face alone, a CJK channel was drawn at 24 px of its 26 under Noto
+    // CJK at 2.0). The identity note is app text (no translator is installed),
+    // whose sans 13 Latin line the mono box holds; its own box, a CJK line
+    // taller than the Latin one, would grow the hero on a desktop host by 1 px
+    // at 2.0 for text it never draws.
+    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, LineBoxes.lineHeight(Theme.mono, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal), heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
@@ -348,8 +428,68 @@ Item {
         return parts.length > 0 ? total + (parts.length - 1) * Theme.gap : 0;
     }
     function headerBarHeight(t) {
-        var stacked = t === 0 && width < 500 && headerActionsFit;
-        return stacked ? heading.implicitHeight + 8 + pillHeight : Math.max(heading.implicitHeight, pillHeight);
+        var lines = headingHeight(t);
+        return headerStackedFor(t) ? lines + 8 + pillHeight : Math.max(lines, pillHeight);
+    }
+    // The header's lines (issue #901 B9/B12) are fixed line boxes, so a scan
+    // target, a timing phrase or a roaming state in a script with a taller
+    // line (Burmese) never changes the header's height or the tier. The lines
+    // that change with traffic take the shared measure (LineBoxes). The
+    // title changes only with the session, so its box is the session name's
+    // own line in the title font, at least the Latin line it always had
+    // (r4 F1: in tier 5, flush with the list's clipped top, a Burmese name
+    // lost the top 5 px of its glyphs in the Latin box); a Latin name keeps
+    // the header and the tiers as they were. The count's line ("+ N lists")
+    // keeps the Latin box. headingHeight(t) works the column out for tier t
+    // from fonts and widths, never reading it back, since its make-up follows
+    // the tier in force.
+    readonly property real titleLineBox: Math.max(titleCountBox, Math.ceil(titleLineProbe.height))
+    readonly property real titleCountBox: Math.ceil(titleLatinProbe.height)
+    readonly property real headerMetaBox: LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal)
+    // The second-slot strip's identity line (B6); its slot label is in the
+    // header lines' face and size.
+    readonly property real otherIdentityBox: LineBoxes.lineHeight(Theme.sans, Theme.fontSize(14), Font.DemiBold)
+    // The heading's optional lines, kept for the whole of what they stand for
+    // (a rotation, a roaming session) so traffic never adds or removes one.
+    readonly property bool scanTimingLineShown: metrics.scanTimingVisible || metrics.scanRotationActive
+    readonly property bool roamingLineShown: siteRoaming.available && siteRoaming.enabled && sessionSystemUid.length > 0
+    function headingHeight(t) {
+        var lines = [titleLineBox];
+        if (titleTwoLine(t))
+            lines.push(titleCountPad(t) + titleCountBox);
+        // The scan target line is always there, blank off a scan.
+        lines.push(headerMetaBox);
+        if (scanTimingLineShown)
+            lines.push(headerMetaBox);
+        if (roamingLineShown)
+            lines.push(headerMetaBox);
+        var total = 0;
+        for (var h of lines)
+            total += h;
+        return total + (lines.length - 1) * 3;
+    }
+    // B12: a scan of several lists is titled "<name> + N lists". Where the
+    // title's room in tier t cannot hold the count and a readable part of the
+    // name (max(96, 35% of the room), but never more than the whole name, so
+    // a short title that fits keeps one line: r2 E1), the count takes a
+    // second line of the header's whole width, below the header actions, and
+    // the name has the first line to itself, elided. The room is measured
+    // with the actions the tier shows and the pill at its widest label, so
+    // LIVE turning STOPPING… never changes the form.
+    readonly property string titleCountText: withOtherLists("").trim()
+    function titleTwoLine(t) {
+        if (otherListCount <= 0)
+            return false;
+        var row = width - 2 * Theme.screenPadding;
+        // The heading's own width: its 12 px right margin, stacked or beside
+        // the actions.
+        var room = row - 12 - (headerStackedFor(t) ? 0 : headerActionsWidthFor(wideHeaderActionsFor(t)));
+        var name = Math.min(Math.ceil(titleNameProbe.advanceWidth), Math.max(96, 0.35 * room));
+        return room < titleSuffixMetrics.advanceWidth + name;
+    }
+    // Beside the actions the count line starts below them.
+    function titleCountPad(t) {
+        return headerStackedFor(t) ? 0 : Math.max(0, pillHeight - titleLineBox);
     }
     function heroHeight(t) {
         return t >= 2 ? heroCompactHeight : heroFullHeight;
@@ -364,7 +504,7 @@ Item {
         if (t >= 3 && stripHeight > 0)
             header.push(stripHeight);
         header.push(detailsCard.height);
-        header.push(t < 4 ? labelBlock.height : labelSpacer.height);
+        header.push(labelCandidate(t) ? labelBlock.height : labelSpacer.height);
         return viewport - columnHeight(header);
     }
 
@@ -373,12 +513,15 @@ Item {
     // (LIVE, LOST, STARTING…, STOPPING…, or what it says now), so the row never
     // changes make-up as the label changes. Beside the title the row keeps the
     // title's 12 px.
-    readonly property real headerActionsWidth: {
+    readonly property real headerActionsWidth: headerActionsWidthFor(true)
+    // The same with Sites and Spectrum (@p wide) or without them, as past
+    // tier 0 on a phone.
+    function headerActionsWidthFor(wide) {
         var widths = [];
-        if (sitesAvailable)
+        if (wide && sitesAvailable)
             widths.push(siteChooserButton.width);
         widths.push(sessionOptionsButton.width);
-        if (metrics.radioInput)
+        if (wide && metrics.radioInput)
             widths.push(spectrumPill.width);
         // The pill's padding, dot and gap are constants: its Row only resizes on
         // polish, after the label has already changed.
@@ -401,19 +544,28 @@ Item {
         font: liveLabel.font
     }
     Text {
-        id: rowNameProbe
+        id: titleLatinProbe
         visible: false
         text: "Ag"
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(16)
-        font.weight: Font.DemiBold
+        textFormat: Text.PlainText
+        font: monitorTitle.font
     }
+    // The session name's line in the title font (r4 F1), drawn as the title
+    // draws it, one line.
     Text {
-        id: rowMetaProbe
+        id: titleLineProbe
         visible: false
-        text: "Ag"
-        font.family: Theme.mono
-        font.pixelSize: Theme.fontSize(12)
+        text: screen.sessionLine
+        maximumLineCount: 1
+        textFormat: Text.PlainText
+        font: monitorTitle.font
+    }
+    // The session name's whole width in the title font, for the title's form
+    // (titleTwoLine()); never elided, so it follows the name and the font only.
+    TextMetrics {
+        id: titleNameProbe
+        font: monitorTitle.font
+        text: screen.sessionLine
     }
     FontMetrics {
         id: heroMicroMetrics
@@ -440,6 +592,42 @@ Item {
     property var prefsStore: typeof prefs !== "undefined" ? prefs : null
     property bool localDetailsExpanded: false
     property bool detailsExpanded: prefsStore && prefsStore.monitorDetailsExpanded !== undefined ? prefsStore.monitorDetailsExpanded === true : localDetailsExpanded
+    // Issue #901: Compact view (AppPrefs ui/compactView), read from the same
+    // store, else the app's prefs.
+    readonly property bool compactViewSetting: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
+    // The density the Monitor lays out in: the one value the budget, the
+    // rows' form and height and the follower's row height all read. It
+    // follows the setting while the Monitor is in reach, or hidden (its list
+    // then holds no rows). Under a screen or sheet that covers it without
+    // hiding it (the session's Settings, where the setting changes) it keeps
+    // the density it shows and takes the new one once uncovered (r2 D1): a
+    // re-layout of the rows under the cover raised a hide for each row it
+    // dropped, each a blocking query of Android's bridge ("Hidden lists").
+    readonly property bool densityInReach: Navigation.allows(screen) || !visible
+    property bool compactView: false
+    Binding {
+        target: screen
+        property: "compactView"
+        value: screen.compactViewSetting
+        when: screen.densityInReach
+        restoreMode: Binding.RestoreNone
+    }
+    // Issue #901 (D11): a change of density puts the calls back at their
+    // start, the list header in view; the focus stays where it is (a change
+    // made under a cover, once it is applied). Deferred so
+    // the rows and the tier take their new heights first, by a timer the
+    // screen owns, so nothing runs after it closes; the rows are laid out at
+    // their new height before the view is placed, or the start it found was
+    // the old layout's and the view was left short of the header.
+    onCompactViewChanged: listToStart.restart()
+    Timer {
+        id: listToStart
+        interval: 0
+        onTriggered: {
+            recentList.forceLayout();
+            recentList.positionViewAtBeginning();
+        }
+    }
     function setDetailsExpanded(on) {
         if (prefsStore && prefsStore.monitorDetailsExpanded !== undefined)
             prefsStore.monitorDetailsExpanded = on;
@@ -557,7 +745,7 @@ Item {
                 TextMetrics {
                     id: titleNameMetrics
                     font: monitorTitle.font
-                    text: screen.sessionName
+                    text: screen.sessionLine
                     elide: Text.ElideRight
                     elideWidth: Math.max(0, monitorTitle.width - titleSuffixMetrics.advanceWidth)
                 }
@@ -566,17 +754,61 @@ Item {
                     font: monitorTitle.font
                     text: screen.withOtherLists("")
                 }
+                // B12: the two-line form's name, on a line of its own.
+                TextMetrics {
+                    id: titleLineMetrics
+                    font: monitorTitle.font
+                    text: screen.sessionLine
+                    elide: Text.ElideRight
+                    elideWidth: monitorTitle.width
+                }
                 ReadableText {
                     id: monitorTitle
                     heading: true
+                    readonly property bool twoLine: screen.titleTwoLine(screen.tier)
                     width: parent.width
+                    height: screen.titleLineBox
+                    verticalAlignment: Text.AlignVCenter
                     objectName: "monitorHeaderTitle"
-                    text: screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.systemName
+                    text: twoLine ? titleLineMetrics.elidedText : screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.sessionLine
+                    maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                    // The heading is read as one, and whole: the name, then
+                    // the count (on the line below it in the two-line form).
+                    // Speech has no width, so the name is never the elided
+                    // one drawn (r2 C1).
+                    Accessible.name: navigationAllowed && visible ? screen.withOtherLists(screen.sessionLine) : ""
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                     elide: Text.ElideRight
+                }
+                // The count's line in the two-line form: the header's whole
+                // width, below the actions when they share the title's line.
+                // Read with the heading, so it is no node of its own.
+                Item {
+                    objectName: "monitorHeaderTitleCountLine"
+                    visible: monitorTitle.twoLine
+                    width: header.width
+                    height: screen.titleCountPad(screen.tier) + screen.titleCountBox
+
+                    Text {
+                        objectName: "monitorHeaderTitleCount"
+                        fontSizeMode: Text.VerticalFit
+                        minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                        y: screen.titleCountPad(screen.tier)
+                        width: parent.width
+                        height: screen.titleCountBox
+                        verticalAlignment: Text.AlignVCenter
+                        text: screen.titleCountText
+                        textFormat: Text.PlainText
+                        font: monitorTitle.font
+                        color: Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
                 }
 
                 // Paced (issue #782): a scan can hop every 300 ms, and a header named
@@ -584,10 +816,30 @@ Item {
                 // scan starts or stops or is held or released; otherwise the target
                 // it is on is read at most every 5 s.
                 LiveText {
-                    width: parent.width
+                    id: scanTargetLine
+                    // Below the header actions (under a two-line title, or at
+                    // large text) the header's whole width, as the roaming
+                    // line's; beside them the column's (r3 M2: at 320 dp and
+                    // 2.0 it kept 119 of 284 px, "SCANNIN…").
+                    readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
+                    width: clearOfActions ? header.width : parent.width
+                    height: screen.headerMetaBox
+                    verticalAlignment: Text.AlignVCenter
                     objectName: "scanTargetHeader"
                     step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
-                    text: screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : "")
+                    // A paused scan's line drops its noun, then its count, to
+                    // fit; speech has no width, so it hears the whole line
+                    // (issue #901 r2 C1).
+                    speech: function () {
+                        return screen.scanPaused ? Util.oneLine(screen.pausedScanText(Number.POSITIVE_INFINITY)) : scanTargetLine.text;
+                    }
+                    // One line in its box (r2 B1): a break in a target's or
+                    // system's name is a space.
+                    text: Util.oneLine(screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : ""))
+                    maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -603,7 +855,11 @@ Item {
                 // app-control; a zero here means "the view withheld it".
                 LiveText {
                     id: scanTimingRow
-                    width: parent.width
+                    // As the scan target line (r3 M2: "Followi…").
+                    readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
+                    width: clearOfActions ? header.width : parent.width
+                    height: screen.headerMetaBox
+                    verticalAlignment: Text.AlignVCenter
                     objectName: "scanTimingRow"
                     // The countdowns tick; why the scan stays, and its state, are heard at once.
                     // Keyed on the stay itself, not its phrase: the silent-channel skip's
@@ -639,7 +895,7 @@ Item {
                     // Kept for the whole rotation, blank between stays (#718): the view
                     // publishes and withdraws it with each followed call, and a line
                     // coming and going would move everything below the header.
-                    visible: metrics.scanTimingVisible || metrics.scanRotationActive
+                    visible: screen.scanTimingLineShown
                     text: {
                         if (!metrics.scanTimingVisible)
                             return "";
@@ -672,8 +928,13 @@ Item {
                                 ? Util.fill(qsTr("Visit: %1s/%2s"), [(metrics.scanVisitRemainingDs / 10).toFixed(1), (metrics.scanVisitMs / 1000).toFixed(1)])
                                 : qsTr("Visit: paused"));
                         }
-                        return out;
+                        // One line in its box (r2 B1).
+                        return Util.oneLine(out);
                     }
+                    maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -705,8 +966,15 @@ Item {
                     // column's.
                     readonly property bool clearOfActions: header.stacked || y >= headerActions.y + headerActions.height
                     width: clearOfActions ? header.width : parent.width
-                    visible: siteRoaming.available && siteRoaming.enabled && screen.sessionSystemUid.length > 0
-                    text: fullFits ? siteRoaming.headerText : siteRoaming.headerShortText
+                    height: screen.headerMetaBox
+                    verticalAlignment: Text.AlignVCenter
+                    visible: screen.roamingLineShown
+                    // One line in its box (r2 B1); the sentence is read whole.
+                    text: Util.oneLine(fullFits ? siteRoaming.headerText : siteRoaming.headerShortText)
+                    maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                     Accessible.focusable: navigationAllowed && visible && text.length > 0
                     Accessible.name: navigationAllowed && visible && text.length > 0 ? siteRoaming.statusText : ""
@@ -718,7 +986,7 @@ Item {
                     TextMetrics {
                         id: roamingHeaderMetrics
                         font: roamingHeader.font
-                        text: siteRoaming.headerText
+                        text: Util.oneLine(siteRoaming.headerText)
                     }
                     readonly property string step: [siteRoaming.state, siteRoaming.reason, siteRoaming.candidateUid, siteRoaming.destinationUid].join("|")
                     // Once the bindings have settled, and only while it is shown.
@@ -946,7 +1214,7 @@ Item {
                 step: screen.speechStep
                 read: function () {
                     return [screen.heroSlot === 0 ? heroWaitingText.text : screen.heroHeadline,
-                        heroSubline.visible ? Util.shownText(heroSubline) : ""].filter(function (part) {
+                        heroSubline.visible ? screen.heroSublineSpeech() : ""].filter(function (part) {
                         return part.length > 0;
                     }).join(", ");
                 }
@@ -1007,7 +1275,8 @@ Item {
                         onPaint: {
                             var ctx = getContext("2d");
                             ctx.reset();
-                            var label = screen.heroHeadline;
+                            // One line (r2 B1): a break in a name is a space.
+                            var label = Util.oneLine(screen.heroHeadline);
                             ctx.font = "bold " + Theme.fontSize(screen.heroCompact ? 25 : 31) + "px \"" + Theme.sans + "\"";
                             ctx.textBaseline = "middle";
                             var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
@@ -1062,12 +1331,120 @@ Item {
 
                     Row {
                         id: heroSubline
+                        // As tall as its reservation, never its children's
+                        // natural heights (r5 H3).
+                        height: parent.height
 
-                        // Give encryption indicators priority, then fit the identity
-                        // and trailing channel into the remaining space.
+                        // One line of the height reserved for it (issue #901
+                        // B10). The ids come first, at min(their width, 96);
+                        // then, each only while it still fits, EMERGENCY,
+                        // PRIVATE, ENC and the algorithm text, which may be cut
+                        // to no less than its "ALG nn" part. The first that does
+                        // not fit ends the run, so a lower one is never drawn in
+                        // place of a higher one. Then the channel, after every
+                        // status drawn, and last the ids grow into what is
+                        // left, up to their width. Left to right: PRIVATE, ids, EMERGENCY, ENC,
+                        // algorithm, channel. Every word is still in the hero's
+                        // accessible text (heroSublineSpeech).
                         width: parent.width
                         visible: screen.heroSlot !== 0
                         spacing: 8
+
+                        readonly property var plan: {
+                            var room = width;
+                            var gap = spacing;
+                            var leads = [];
+                            if (heroIdsText.text.length > 0)
+                                leads.push({key: "ids", natural: Math.ceil(heroIdsMetrics.advanceWidth)});
+                            if (heroIdentityNote.shown)
+                                leads.push({key: "note", natural: Math.ceil(heroNoteMetrics.advanceWidth)});
+                            var shown = {ids: 0, note: 0, emergency: false, privateCall: false, enc: false, algorithm: 0, channel: 0};
+                            var used = 0;
+                            var count = 0;
+                            for (var lead of leads) {
+                                lead.width = Math.min(lead.natural, 96, Math.max(0, room - used - (count > 0 ? gap : 0)));
+                                used += (count > 0 ? gap : 0) + lead.width;
+                                ++count;
+                            }
+                            var tags = [{key: "emergency", on: screen.heroEmergency, width: heroEmergencyTag.implicitWidth},
+                                        {key: "privateCall", on: screen.heroPrivate, width: heroPrivateTag.implicitWidth},
+                                        {key: "enc", on: screen.heroEnc, width: heroEncTag.implicitWidth}];
+                            var stopped = false;
+                            for (var tag of tags) {
+                                if (!tag.on)
+                                    continue;
+                                if (used + (count > 0 ? gap : 0) + tag.width > room) {
+                                    stopped = true;
+                                    break;
+                                }
+                                used += (count > 0 ? gap : 0) + tag.width;
+                                ++count;
+                                shown[tag.key] = true;
+                            }
+                            if (!stopped && heroAlgorithm.shown) {
+                                var left = room - used - (count > 0 ? gap : 0);
+                                var whole = Math.ceil(heroAlgorithmMetrics.advanceWidth);
+                                // Cut, it draws its part and the ellipsis.
+                                var part = Math.min(whole, Math.ceil(heroAlgorithmPartMetrics.advanceWidth));
+                                if (left >= part) {
+                                    shown.algorithm = Math.min(whole, left);
+                                    used += (count > 0 ? gap : 0) + shown.algorithm;
+                                    ++count;
+                                } else {
+                                    stopped = true;
+                                }
+                            }
+                            // The channel after every status, never in place of
+                            // one left out, and before the ids grow: a long name
+                            // does not push a short channel off the line.
+                            if (!stopped && heroChannelText.shown) {
+                                var channelRoom = room - used - (count > 0 ? gap : 0);
+                                var channelNatural = Math.ceil(heroChannelMetrics.advanceWidth);
+                                if (channelRoom >= Math.min(channelNatural, 48)) {
+                                    shown.channel = Math.min(channelNatural, channelRoom);
+                                    used += (count > 0 ? gap : 0) + shown.channel;
+                                    ++count;
+                                }
+                            }
+                            // Last, what is left: the ids grow to their width.
+                            var spare = room - used;
+                            for (var grown of leads) {
+                                var more = Math.min(grown.natural - grown.width, Math.max(0, spare));
+                                grown.width += more;
+                                spare -= more;
+                                shown[grown.key] = grown.width;
+                            }
+                            return shown;
+                        }
+                        TextMetrics {
+                            id: heroIdsMetrics
+                            font: heroIdsText.font
+                            text: heroIdsText.text
+                        }
+                        TextMetrics {
+                            id: heroNoteMetrics
+                            font: heroIdentityNote.font
+                            text: heroIdentityNote.text
+                        }
+                        TextMetrics {
+                            id: heroAlgorithmMetrics
+                            font: heroAlgorithm.font
+                            text: heroAlgorithm.text
+                        }
+                        // "ALG 84" of "ALG 84 · KID 0001", what tells AES from RC4,
+                        // with the "…" a cut text ends in: right-eliding fits the
+                        // ellipsis inside the width, so "ALG 84" alone came out
+                        // "ALG 8…".
+                        TextMetrics {
+                            id: heroAlgorithmPartMetrics
+                            font: heroAlgorithm.font
+                            text: heroAlgorithm.text.split(" · ")[0] + "…"
+                        }
+                        TextMetrics {
+                            id: heroChannelMetrics
+                            font: heroChannelText.font
+                            text: heroChannelText.text
+                        }
 
                         // A private call (#773): the tag leads, then the talker. The
                         // headline already names the other party, so no TG follows.
@@ -1075,7 +1452,7 @@ Item {
                             id: heroPrivateTag
                             objectName: "heroPrivateTag"
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroPrivate
+                            visible: heroSubline.plan.privateCall
                         }
 
                         // An id that did not decode has no text (the call view leaves it
@@ -1083,18 +1460,31 @@ Item {
                         // on a conventional channel reports no talkgroup, and the headline
                         // already names the channel.
                         Text {
+                            id: heroIdsText
                             objectName: "heroIds"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: text.length > 0
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroPrivateTag.visible ? heroPrivateTag.width + heroSubline.spacing : 0) - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                            visible: text.length > 0 && heroSubline.plan.ids > 0
+                            width: heroSubline.plan.ids
                             elide: Text.ElideRight
+                            maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                            // One line, measured and drawn as the same text
+                            // (r2 B1): a break in an imported alias is a space,
+                            // the words kept for speech.
                             text: {
                                 var parts = [];
                                 if (!screen.heroPrivate && !screen.heroDuplicate && screen.heroTg.length > 0)
                                     parts.push("TG " + screen.heroTg);
                                 if (screen.heroSrc.length > 0)
                                     parts.push("SRC " + screen.heroSrc);
-                                return parts.join(" · ");
+                                return Util.oneLine(parts.join(" · "));
                             }
                             // Target and source text come off the air or from
                             // an imported alias: drawn as written.
@@ -1109,10 +1499,19 @@ Item {
                         // "TETRA call" from reading as all there is. X2-TDMA and ProVoice
                         // never carry one and get no note. Prose, so the sans face.
                         Text {
+                            id: heroIdentityNote
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                             objectName: "heroIdentityNote"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
+                            readonly property bool shown: screen.heroAnonymous && screen.heroProtocol === "TETRA"
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroAnonymous && screen.heroProtocol === "TETRA"
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                            visible: shown && heroSubline.plan.note > 0
+                            width: heroSubline.plan.note
                             elide: Text.ElideRight
                             text: qsTr("identity not decoded")
                             font.family: Theme.sans
@@ -1127,14 +1526,14 @@ Item {
                             id: heroEmergencyTag
                             objectName: "heroEmergencyTag"
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroEmergency
+                            visible: heroSubline.plan.emergency
                         }
 
                         EncTag {
                             id: heroEncTag
                             objectName: "heroEncTag"
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroEnc
+                            visible: heroSubline.plan.enc
                         }
 
                         // The decoded algorithm and key id, when the header said:
@@ -1142,11 +1541,21 @@ Item {
                         Text {
                             id: heroAlgorithm
                             objectName: "heroAlgorithm"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
+                            readonly property bool shown: screen.heroEnc && screen.heroEncText.length > 0
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroEnc && screen.heroEncText.length > 0
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroPrivateTag.visible ? heroPrivateTag.width + heroSubline.spacing : 0) - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
+                            visible: shown && heroSubline.plan.algorithm > 0
+                            width: heroSubline.plan.algorithm
                             elide: Text.ElideRight
-                            text: screen.heroEncText
+                            maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                            text: Util.oneLine(screen.heroEncText)
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
                             color: Theme.textSubdued
@@ -1155,17 +1564,30 @@ Item {
                         // Where the call was heard, when that is not already the
                         // headline above: a listed talkgroup still says which scan
                         // channel it came from, and so does a call headlined by its
-                        // other party or its protocol. Last in the row and elided to what is left of it,
-                        // so an operator-length name never pushes the ENC tag off the
-                        // panel; x is laid out from the siblings before it, so the
-                        // width binding cannot loop.
+                        // other party or its protocol. Last in the row and elided to
+                        // what is left of it, so an operator-length name never pushes
+                        // the tags off the panel.
                         Text {
+                            id: heroChannelText
                             objectName: "heroChannel"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
+                            readonly property bool shown: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroHeadline
                             anchors.verticalCenter: parent.verticalCenter
-                            visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroHeadline
-                            width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
+                            visible: shown && heroSubline.plan.channel > 0
+                            width: heroSubline.plan.channel
                             elide: Text.ElideRight
-                            text: "· " + screen.heroChannel
+                            maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                            // An imported channel name can hold line separators
+                            // (dsd_channel_label_sanitize() keeps them): drawn
+                            // and measured on one line (r2 B1).
+                            text: "· " + Util.oneLine(screen.heroChannel)
                             // A scan row's typed or imported name.
                             textFormat: Text.PlainText
                             font.family: Theme.mono
@@ -1225,7 +1647,10 @@ Item {
             id: otherSlotHost
             objectName: "otherSlotHost"
             width: parent.width
-            height: 56
+            // One line (issue #901 B6), as high as its tallest line box, tag
+            // or button plus a 4-px inset, never under the 56 px it always
+            // was. The budget reads this height (stripHeight).
+            height: Math.max(56, Math.ceil(Math.max(Theme.minimumTouchSize, screen.otherIdentityBox, screen.headerMetaBox, otherEmergencyTag.implicitHeight, otherPrivateTag.implicitHeight, otherEncTag.implicitHeight)) + 8)
             visible: screen.stripPlaceHeld
 
             UiPanel {
@@ -1234,66 +1659,147 @@ Item {
                 objectName: "otherSlotPanel"
                 visible: screen.stripVisible
 
-                MicroLabel {
-                    id: otherSlotLabel
-                    objectName: "otherSlotLabel"
-                    anchors.left: parent.left
-                    anchors.leftMargin: Theme.cardPadding
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                // What the line draws (issue #901 B6), from the room between
+                // the content's left edge and Skip and the items' own widths:
+                // the identity first, min(its width, 96); then, each only while
+                // it still fits, EMERGENCY, the slot label, PRIVATE and ENC.
+                // The first that does not fit ends the run, so a lower one is
+                // never drawn in place of a higher one. The identity takes what
+                // is left and elides. Left to right the line reads label,
+                // identity, PRIVATE, EMERGENCY, ENC; what is left out is still
+                // in the identity's accessible name. Widths only, never the
+                // items' positions, so no binding loops.
+                readonly property var plan: {
+                    var room = Math.max(0, otherSkip.x - 10 - Theme.cardPadding);
+                    var used = Math.min(Math.ceil(otherIdentityMetrics.advanceWidth), 96);
+                    var shown = {label: false, emergency: false, privateCall: false, enc: false};
+                    var parts = [{key: "emergency", on: screen.otherEmergency, width: otherEmergencyTag.implicitWidth},
+                                 {key: "label", on: true, width: otherSlotLabel.implicitWidth},
+                                 {key: "privateCall", on: screen.otherPrivate, width: otherPrivateTag.implicitWidth},
+                                 {key: "enc", on: screen.otherEnc, width: otherEncTag.implicitWidth}];
+                    for (var part of parts) {
+                        if (!part.on)
+                            continue;
+                        if (used + 10 + part.width > room)
+                            break;
+                        used += 10 + part.width;
+                        shown[part.key] = true;
+                    }
+                    return shown;
+                }
+                TextMetrics {
+                    id: otherIdentityMetrics
+                    font: otherIdentityText.font
+                    text: otherIdentityText.text
                 }
 
-                ReadableText {
-                    id: otherIdentityText
-                    objectName: "otherSlotIdentity"
-                    visible: !screen.stripIdle
-                    // With its tags, which sit beside it (issue #782); PRIVATE even where the line has no room
-                    // to draw it, since the kind of call is not something to drop for a screen reader.
-                    Accessible.name: !navigationAllowed || !visible ? "" : [text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", otherEmergencyTag.visible ? Util.shownText(otherEmergencyTag) : "", otherEncTag.visible ? Util.shownText(otherEncTag) : ""].filter(function (part) {
-                        return part.length > 0;
-                    }).join(", ")
-                    anchors.left: otherSlotLabel.right
-                    anchors.leftMargin: 10
-                    anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: screen.otherIdentity
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                    elide: Text.ElideRight
-                }
+                // The line: the strip's one node (r4 F3), shown with the panel
+                // whatever it draws, and as wide as the label, the identity and
+                // the tags it reads (r5 H2: a touch on the drawn label found no
+                // node). With a call it stops at Skip; idle, Skip and More are
+                // hidden and the line is the panel's width, so the idle label
+                // has all of it (r6 J2: stopped at Skip's hidden place, "SLOT 2 ·
+                // idle" was cut to 102 of its 223 px at 320 dp and 2.0). Idle it
+                // reads only the idle state the label draws (r5 H1: an ended
+                // call's flags, kept through its hold, are not read); with a
+                // call, the slot, the call and its tags, each even where the
+                // line has no room to draw it, since the kind of call is not
+                // something to drop for a screen reader (issue #782). Built from
+                // the readings in one go (stripSpeech()), never from what the
+                // children show, so a call ending renames it once (r6 J3: the
+                // label changed before the identity hid, and the node was
+                // renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle").
+                // Unnamed while covered.
+                Item {
+                    id: otherSlotLine
+                    objectName: "otherSlotNode"
+                    readonly property bool navigationAllowed: Navigation.allows(otherSlotLine)
+                    x: 0
+                    width: screen.stripIdle ? parent.width : otherSkip.x
+                    height: parent.height
+                    Accessible.role: Accessible.StaticText
+                    Accessible.focusable: navigationAllowed && visible
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.name: !navigationAllowed || !visible ? "" : screen.stripSpeech()
 
-                // The call's name outranks its tag on this narrow line: the tag shows only
-                // where the whole identity still fits beside it and the ENC and EMERGENCY
-                // tags, which keep their places. Measured from the identity's natural
-                // width and the siblings' fixed edges, so no width binding loops.
-                PrivateTag {
-                    id: otherPrivateTag
-                    objectName: "otherPrivateTag"
-                    readonly property real room: otherSkip.x - 10 - (otherEncTag.visible ? otherEncTag.width + 10 : 0) - (otherEmergencyTag.visible ? otherEmergencyTag.width + 10 : 0) - (otherSlotLabel.x + otherSlotLabel.width + 10)
-                    visible: !screen.stripIdle && screen.otherPrivate && otherIdentityText.implicitWidth + 10 + implicitWidth <= room
-                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+                    // Drawn text only, in MicroLabel's look: no node of its own
+                    // (r4 F3). It comes and goes with the room the line has, and a
+                    // node that did raised a hide or show at each fit change and,
+                    // hidden, still renamed with each lead-slot change; the
+                    // line's node (otherSlotNode) reads it.
+                    Text {
+                        id: otherSlotLabel
+                        objectName: "otherSlotLabel"
+                        // Idle, the label is all the line holds.
+                        visible: screen.stripIdle || otherSlotPanel.plan.label
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.cardPadding
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, Math.max(0, parent.width - 2 * Theme.cardPadding))
+                        elide: Text.ElideRight
+                        text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                        textFormat: Text.PlainText
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: Theme.fontSize(11) * 0.18
+                        font.capitalization: Font.AllUppercase
+                        color: Theme.textSubdued
+                    }
 
-                EmergencyTag {
-                    id: otherEmergencyTag
-                    objectName: "otherEmergencyTag"
-                    visible: !screen.stripIdle && screen.otherEmergency
-                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+                    // Drawn text: the line's node reads it (r5 H2).
+                    Text {
+                        id: otherIdentityText
+                        objectName: "otherSlotIdentity"
+                        visible: !screen.stripIdle
+                        anchors.left: otherSlotPanel.plan.label ? otherSlotLabel.right : parent.left
+                        anchors.leftMargin: otherSlotPanel.plan.label ? 10 : Theme.cardPadding
+                        anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        // A fixed line box (issue #901, D10): a name in a taller
+                        // script is drawn smaller to fit it (r5 H3).
+                        height: screen.otherIdentityBox
+                        verticalAlignment: Text.AlignVCenter
+                        // One line in its box (r2 B1): a break in a name is a space.
+                        text: Util.oneLine(screen.otherIdentity)
+                        textFormat: Text.PlainText
+                        maximumLineCount: 1
+                        // Fits its box (r5 H3): a taller script is drawn smaller.
+                        fontSizeMode: Text.VerticalFit
+                        minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
 
-                EncTag {
-                    id: otherEncTag
-                    visible: !screen.stripIdle && screen.otherEnc
-                    anchors.right: otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
+                    PrivateTag {
+                        id: otherPrivateTag
+                        objectName: "otherPrivateTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.privateCall
+                        anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    EmergencyTag {
+                        id: otherEmergencyTag
+                        objectName: "otherEmergencyTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.emergency
+                        anchors.right: otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    EncTag {
+                        id: otherEncTag
+                        objectName: "otherEncTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.enc
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
 
                 TextMetrics {
@@ -1316,7 +1822,9 @@ Item {
                     implicitHeight: 48
                     height: 48
                     text: qsTr("Skip")
-                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Unnamed while covered or hidden (r4 F3: a lead-slot change
+                    // under the session's Settings renamed it).
+                    accessibleName: navigationAllowed && visible ? qsTr("Skip this call on slot %1").arg(screen.otherSlot) : ""
                     // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
                     visible: !screen.stripIdle
                     enabled: decoderHost.running
@@ -1332,7 +1840,8 @@ Item {
                     width: 48
                     height: 48
                     icon: "more"
-                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    // Unnamed while covered or hidden, as Skip.
+                    accessibleName: navigationAllowed && visible ? qsTr("More actions for slot %1").arg(screen.otherSlot) : ""
                     visible: !screen.stripIdle
                     enabled: decoderHost.running
                     onClicked: otherSlotMenu.openForOtherSlot()
@@ -1345,9 +1854,10 @@ Item {
         // tuner gate: plain trunking owns the tuner too and has nothing to hold
         // or avoid at channel scope. Hold reads the engine back like Hold TG
         // does, and the engine's refusals ("Cannot avoid the last usable scan
-        // channel") arrive through uiMessage below. While the operator has the
-        // scan paused (issue #671) there is nothing on air to hold, avoid or
-        // step past, and the one thing to do is resume it.
+        // channel") arrive through uiMessage, on the "Signal & site" row's
+        // line. While the operator has the scan paused (issue #671) there is
+        // nothing on air to hold, avoid or step past, and the one thing to do
+        // is resume it.
         Item {
             id: scanControls
             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
@@ -1586,11 +2096,26 @@ Item {
         anchors.bottomMargin: 14
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        model: monitorView
+        // Its model is monitorView, given by recentPlace below only while the
+        // screen shows (issue #901, B8).
+        //
+        // The calls there are, which the empty state reads: the model's count
+        // while hidden, when the list has no model and counts none, and the
+        // list's own while shown. The view's count moves in step with its rows;
+        // the model's runs ahead of it on a clear, and the footer resized by it
+        // then had the view cancel a row it was still building
+        // (DelegateModel::cancel).
+        readonly property int callCount: model ? count : monitorView.count
         // No current row. A ListView is a focus scope that hands focus to its
         // current item as rows land, which would pull keyboard focus off the
         // disclosure in its header; Tab moves between rows instead.
         currentIndex: -1
+        // Handed a model that holds rows (recentPlace's attach, a session
+        // starting with calls kept from earlier ones), the view makes row 0
+        // current, and once the session's filter took that row away the
+        // next call to land became current and took the keyboard (issue
+        // #901 r2 D2). Every attach puts it back to none.
+        onModelChanged: currentIndex = -1
         keyNavigationEnabled: false
 
         // Scrollable by assistive technology, as the body it replaced was.
@@ -1619,7 +2144,7 @@ Item {
         // Closes the calls card, or says why it is empty.
         footer: Item {
             width: recentList.width
-            height: recentList.count === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
+            height: recentList.callCount === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
 
             ReadableText {
                 id: emptyText
@@ -1627,7 +2152,7 @@ Item {
                 width: parent.width - 2 * Theme.cardPadding
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
-                visible: recentList.count === 0
+                visible: recentList.callCount === 0
                 text: qsTr("Calls will appear here as they land.")
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
@@ -1653,6 +2178,8 @@ Item {
             // Inset by the card's border, so a row's divider never paints over it.
             x: 1
             width: ListView.view.width - 2
+            compact: screen.compactView
+            timeWidthProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
                 // A notice keeps its payload first, the pane being too
@@ -1696,6 +2223,9 @@ Item {
             // forces the minute-by-minute refresh while the decoder is quiet.
             rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
             enc: model.enc
+            // A call's meta line says "encrypted" (a notice's does not); the
+            // tag and the age are said by the row (r2 C2).
+            metaSaysEnc: model.kind !== 1
             emergency: model.emergency
             hasRecording: model.hasRecording
         }
@@ -1709,6 +2239,21 @@ Item {
         objectName: "recentCallsFollow"
         list: recentList
         headerAnchor: detailsCard
+        rowHeight: screen.callRowHeight
+    }
+
+    // Issue #901 (B8): hidden, the list holds no rows ("Hidden lists" in
+    // docs/code_map.md, issue #782). Main keeps the Monitor hidden under Home
+    // whenever no session runs, with the kept calls in its model, and each row
+    // built there was announced to accessibility clients. A screen pushed over
+    // the session (its Settings, the map) covers the Monitor without hiding it,
+    // so the rows stay. It is hidden only between sessions, and a session shows
+    // its calls from the newest, so no place is kept (no keyOf).
+    KeepPlace {
+        id: recentPlace
+        list: recentList
+        model: monitorView
+        ready: !screen.callsPending
     }
 
     // Keyboard focus moving onto a row, or into the header, scrolls it into view.
@@ -1770,13 +2315,21 @@ Item {
                 objectName: "monitorDetailsRow"
                 width: parent.width
                 title: qsTr("Signal & site")
-                subtitle: screen.detailsSummary.markup
+                // Issue #901 (D9): the engine's answer to the last command
+                // ("Output: Muted", "Output: open failed") takes the summary's
+                // line while it lasts, as plain text in cyan; without it a tap
+                // that failed inside the engine reads as a button that did
+                // nothing. Then the summary returns. The line is a fixed box
+                // (DisclosureRow, D10), so neither moves the list header.
+                readonly property bool answering: metrics.uiMessage.length > 0
+                subtitle: answering ? metrics.uiMessage : screen.detailsSummary.markup
                 subtitleReading: true
-                subtitleTextFormat: Text.StyledText
-                subtitleColor: Theme.textSecondary
+                subtitleTextFormat: answering ? Text.PlainText : Text.StyledText
+                subtitleColor: answering ? Theme.cyan : Theme.textSecondary
                 accessibleDescription: screen.detailsSummary.plain
-                // The summary's SNR moves every tick: read at the readings' pace (issue #782).
-                Accessible.description: detailsSpeech.spoken
+                // The answer is said as it is while it shows. The summary's SNR
+                // moves every tick: read at the readings' pace (issue #782).
+                Accessible.description: !answering ? detailsSpeech.spoken : detailsRow.Accessible.ignored ? "" : metrics.uiMessage
                 SpeechPacer {
                     id: detailsSpeech
                     shown: !detailsRow.Accessible.ignored
@@ -1790,19 +2343,6 @@ Item {
                 expanded: screen.detailsExpanded
                 onTapped: screen.setDetailsExpanded(!screen.detailsExpanded)
             }
-        }
-
-        // The engine's answer to the last command ("Output: Muted", "Output:
-        // open failed") — without it a tap that failed inside the engine reads
-        // as a button that did nothing.
-        ReadableText {
-            width: parent.width
-            visible: metrics.uiMessage.length > 0
-            text: metrics.uiMessage
-            font.family: Theme.mono
-            font.pixelSize: Theme.fontSize(12)
-            color: Theme.cyan
-            elide: Text.ElideRight
         }
 
         // Each group of readings below (a label and its value, a strip of

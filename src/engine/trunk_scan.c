@@ -5256,6 +5256,8 @@ trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
+    /* Whether the target can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
+    e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the target no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, 0);
 }

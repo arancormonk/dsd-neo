@@ -37,6 +37,13 @@ Item {
         id: partWidth
     }
 
+    // A line as drawn: its text cut to its width the way the Text cuts it.
+    TextMetrics {
+        id: drawnLine
+
+        elide: Text.ElideRight
+    }
+
     TestCase {
         id: tc
 
@@ -55,6 +62,14 @@ Item {
             // what "reading further back" means to the list.
             tc.list.contentY = tc.list.originY + 400
             tc.waitForRendering(tc.list)
+        }
+
+        function rectIn(item, under) {
+            var at = item.mapToItem(under, 0, 0)
+            return {x: at.x, y: at.y, width: item.width, height: item.height}
+        }
+        function overlaps(a, b) {
+            return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
         }
 
         function rowAtViewportTop() {
@@ -470,6 +485,30 @@ Item {
             verify(tc.startsWith(row.node.Accessible.description, "851.0125 MHz · "), row.node.Accessible.description)
         }
 
+        // Issue #901 r2 C2: History's rows say each field once from what the screen puts in its own text (the meta
+        // line's EMERGENCY and "encrypted", the time in the name), never from searching the call's words: an
+        // encrypted emergency call named "EMERGENCY Unencrypted" still says ENC's word once and the tag once.
+        function test_06p_fields_said_once_by_the_callers_flags() {
+            callHistory.pushEncrypted("TODAY")
+            verify(callHistory.nameNewest("EMERGENCY Unencrypted now", "County", true, true))
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "EMERGENCY Unencrypted now" })
+            var time = row.rightText
+            verify(time.length > 0)
+            compare(row.node.Accessible.name, "EMERGENCY Unencrypted now, " + time, "the name says the time")
+            var description = row.node.Accessible.description
+            compare(description, row.metaText, "the meta line already says EMERGENCY and encrypted: " + description)
+            verify(row.metaText.indexOf("EMERGENCY") === 0 && row.metaText.indexOf("encrypted") > 0, row.metaText)
+            // A notice's meta line is its payload, which says nothing of the row's flags even where its words do: an
+            // emergency notice whose text reads "EMERGENCY drill" still says the tag.
+            callHistory.pushTunedNotice(4001, 7001, "EMERGENCY drill", "", 0, "", "")
+            var notice = callHistory.nameNewest("Text message", "County", false, true)
+            verify(notice)
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "Text message" })
+            verify(row.metaText.indexOf("EMERGENCY drill") >= 0, row.metaText)
+            compare(row.node.Accessible.description, row.metaText + ", EMERGENCY")
+        }
+
         // Review focus: a long DMR line on a 360 px phone wraps between its
         // parts, never inside one ("Net | 3", "Conn|ect"), nothing is clipped,
         // and a screen reader reads the line whole.
@@ -609,9 +648,15 @@ Item {
 
         // On an emergency call the frequency leads ahead of EMERGENCY, which the
         // badge also shows, and it fits on a phone at the larger text sizes: the
-        // meta line is only as wide as the badge and the time leave it.
+        // meta line is only as wide as the badge and the time leave it. At
+        // larger text still (issue #901, B7) the row keeps its two lines: the
+        // name keeps min(its width, 96), EMERGENCY and the time are drawn only
+        // while they fit beside that, beside the lines and clear of them, and
+        // the time leaves before EMERGENCY does. The frequency still leads what
+        // the meta line draws there, cut (decided limit: whole up to 1.3).
         function test_06i_an_emergency_row_keeps_the_frequency_in_view_data() {
-            return [{tag: "1.0", scale: 1.0}, {tag: "1.3", scale: 1.3}]
+            return [{tag: "1.0", scale: 1.0, frequency: true}, {tag: "1.3", scale: 1.3, frequency: true},
+                {tag: "1.6", scale: 1.6, frequency: false}, {tag: "2.0", scale: 2.0, frequency: false}]
         }
         function test_06i_an_emergency_row_keeps_the_frequency_in_view(data) {
             var width = root.width
@@ -627,8 +672,45 @@ Item {
                 var meta = findChild(row, "callRowMeta")
                 verify(meta !== null, "the meta line is missing")
                 frequencyWidth.font = meta.font
-                verify(frequencyWidth.advanceWidth <= meta.width,
-                       "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+                // What the meta line draws, as cut to its width: the frequency leads it at every size, whole up
+                // to 1.3.
+                drawnLine.font = meta.font
+                drawnLine.text = meta.text
+                drawnLine.elideWidth = meta.width
+                verify(tc.startsWith(drawnLine.elidedText, "851."), "the frequency does not lead: " + drawnLine.elidedText)
+                if (data.frequency) {
+                    verify(frequencyWidth.advanceWidth <= meta.width,
+                           "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+                    verify(tc.startsWith(drawnLine.elidedText, "851.0125 MHz"), "the frequency is cut: " + drawnLine.elidedText)
+                }
+                compare(row.height, Ui.LineBoxes.callRowHeight(false), "the row's height")
+                var name = findChild(row, "callRowName")
+                partWidth.font = name.font
+                partWidth.text = name.text
+                verify(name.width >= Math.min(Math.ceil(partWidth.advanceWidth), 96) - 0.5, "the name is " + name.width + " px")
+                var tag = findChild(row, "rowEmergencyTag")
+                var time = findChild(row, "callRowTime")
+                verify(tag.visible, "EMERGENCY gave way")
+                // Up to 1.6 the time is drawn too.
+                if (data.scale <= 1.6)
+                    verify(time.visible, "the time gave way")
+                var lines = [name, meta].map(function (line) { return tc.rectIn(line, row) })
+                for (var part of [tag, time]) {
+                    if (!part.visible)
+                        continue
+                    var r = tc.rectIn(part, row)
+                    verify(r.x >= 0 && r.y >= 0 && r.x + r.width <= row.width && r.y + r.height <= row.height,
+                           part.objectName + " leaves the row")
+                    for (var line of lines)
+                        verify(!tc.overlaps(r, line), part.objectName + " covers a line: " + JSON.stringify(r) + " " + JSON.stringify(line))
+                    verify(r.x >= lines[1].x + lines[1].width, part.objectName + " is not beside the meta line")
+                }
+                if (tag.visible && time.visible)
+                    verify(tc.rectIn(tag, row).x + tag.width <= tc.rectIn(time, row).x, "EMERGENCY runs into the time")
+                // Drawn or not, the row says the time and EMERGENCY.
+                var spoken = row.node.Accessible.name + " | " + row.node.Accessible.description
+                verify(row.rightText.length > 0 && spoken.indexOf(row.rightText) >= 0, spoken)
+                verify(spoken.indexOf("EMERGENCY") >= 0, spoken)
             } finally {
                 Ui.Theme.fontScale = scale
                 root.width = width
@@ -909,6 +991,101 @@ Item {
             screen.visible = true
             tc.waitForRendering(tc.list)
             verify(tc.atTop(), "a new search starts at the top")
+        }
+
+        // Issue #901 (D6): Compact view reaches the log's rows, which keep the
+        // one height the shared measure gives, and the pin's "at the latest"
+        // slack follows that height.
+        function test_13_compact_rows() {
+            var screen = screenLoader.item
+            var follow = findChild(screen, "callLogFollow")
+            verify(follow !== null, "the log's follower is missing")
+            testContext.useAppPrefs(true)
+            try {
+                prefs.compactView = false
+                tc.waitForRendering(tc.list)
+                var normal = Ui.LineBoxes.callRowHeight(false)
+                compare(tc.list.itemAtIndex(0).height, normal)
+                compare(follow.rowHeight, normal)
+                prefs.compactView = true
+                tc.waitForRendering(tc.list)
+                for (var i = 0; i < 3; i++) {
+                    var row = tc.list.itemAtIndex(i)
+                    verify(row.compact, "row " + i + " is not compact")
+                    compare(row.height, Ui.LineBoxes.callRowHeight(true))
+                }
+                verify(tc.list.itemAtIndex(0).height < normal, "a compact row is no smaller")
+                compare(follow.rowHeight, tc.list.itemAtIndex(0).height, "the pin's slack is the row's height")
+            } finally {
+                prefs.compactView = false
+                testContext.useAppPrefs(false)
+            }
+        }
+
+        // The day's label over the first row, as the view lays it out.
+        function firstSectionLabel() {
+            for (var child of tc.list.contentItem.children) {
+                if (child.section !== undefined && child.text === "TODAY" && child.visible)
+                    return child
+            }
+            return null
+        }
+        // The log at its start as drawn, not only as its contentY says: the
+        // first day's label at the top of the viewport and the newest row
+        // right under it. A view placed before its rows took their new height
+        // stops at the old layout's start, which is not where row 0 now is.
+        function verifyDrawnAtStart(at) {
+            var first = tc.list.itemAtIndex(0)
+            verify(first !== null, at + ": row 0 is not built")
+            var label = tc.firstSectionLabel()
+            verify(label !== null, at + ": the day's label is not built")
+            var labelY = label.mapToItem(tc.list, 0, 0).y
+            var rowY = first.mapToItem(tc.list, 0, 0).y
+            verify(Math.abs(labelY) < 1, at + ": the day's label starts at " + labelY)
+            verify(Math.abs(rowY - label.height) < 1, at + ": row 0 starts at " + rowY + ", under a " + label.height + " px label")
+        }
+        // Issue #901 (D11): a change of density puts the log back at the newest
+        // call, shown or hidden, from deep in a long log; the focus stays where
+        // it was.
+        function test_14_a_density_change_returns_to_the_newest_call() {
+            var screen = screenLoader.item
+            testContext.useAppPrefs(true)
+            try {
+                callHistory.pushMany(60, "TODAY")
+                prefs.compactView = false
+                tc.waitForRendering(tc.list)
+                for (var deep of [true, false]) {
+                    // Deep: the first rows are no longer built.
+                    if (deep)
+                        tc.list.positionViewAtIndex(60, ListView.Beginning)
+                    else
+                        tc.scrollBack()
+                    tc.waitForRendering(tc.list)
+                    verify(!tc.atTop())
+                    var field = findChild(screen, "historySearch")
+                    field.input.forceActiveFocus()
+                    var focused = screen.Window.window.activeFocusItem
+                    prefs.compactView = !prefs.compactView
+                    tryVerify(function () { return tc.atTop() }, 1000, "the log stayed back")
+                    tc.waitForRendering(tc.list)
+                    tc.verifyDrawnAtStart(deep ? "from deep" : "from near")
+                    compare(screen.Window.window.activeFocusItem, focused, "the change moved the focus")
+                }
+
+                tc.list.positionViewAtIndex(60, ListView.Beginning)
+                tc.waitForRendering(tc.list)
+                verify(!tc.atTop())
+                screen.visible = false
+                prefs.compactView = !prefs.compactView
+                tc.waitForRendering(screen.parent)
+                screen.visible = true
+                tc.waitForRendering(tc.list)
+                tryVerify(function () { return tc.atTop() }, 1000, "a log hidden through the change came back where it was")
+                tc.verifyDrawnAtStart("hidden")
+            } finally {
+                prefs.compactView = false
+                testContext.useAppPrefs(false)
+            }
         }
     }
 }

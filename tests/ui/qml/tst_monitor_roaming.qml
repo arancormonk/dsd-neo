@@ -183,9 +183,17 @@ Item {
             var pill = item("monitorLiveLabel");
             verify(line.visible && line.width > 0);
             compare(pill.text, "LIVE", "a running session's pill");
-            compare(line.clearOfActions, data.below);
+            // Beside the actions where its line box is (wide, at normal text),
+            // below them where the boxes above it reach past them: a taller
+            // fallback face (Noto CJK) makes the header's line boxes taller,
+            // which the fixed boxes keep (issue #901 r3 S2).
+            var actions = item("sessionOptionsButton").parent; // the header's actions row
+            var lineTop = line.mapToItem(item("monitorHeader"), 0, 0).y;
+            var actionsBottom = actions.mapToItem(item("monitorHeader"), 0, actions.height).y;
+            compare(line.clearOfActions, data.below || lineTop >= actionsBottom - 0.5,
+                    "the line at " + lineTop + " against actions ending at " + actionsBottom);
             var header = item("monitorHeader");
-            compare(line.width, data.below ? header.width : line.parent.width);
+            compare(line.width, line.clearOfActions ? header.width : line.parent.width);
             checkRendered(line, data.full ? "WAITING FOR CALL END · GPS ROAMING" : "WAITING");
             compare(line.Accessible.name, "Waiting for this call to end before switching to Lake (up to 90 seconds)");
 
