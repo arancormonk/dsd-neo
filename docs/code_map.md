@@ -22068,7 +22068,9 @@ Qt Quick frontend (`src/ui/qt`):
   `SessionArgsError::RtlSerial`, start-check category "rtl-serial", whose text Main.qml shows), since an imported or
   restored map never passed the editors' check (`Util.rtlSerialValid()`, the same rule). The card's receiver label is
   `USB <serial>`; on Android, Main.qml asks for the dongle by that serial and starts only once the connected one
-  carries it exactly; a serial that rule refuses asks for no device, and the start is refused with that text. The
+  carries it exactly; a serial that rule refuses asks for no device, and the start is refused with that text. A Signal
+  search detection recorded on an `rtl:` spec that names its dongle by serial (`dsd_rtl_device_field_parse()`) hands
+  `SignalSearchModel::systemForHit()`'s system that `rtlSerial`, so Save as system and Explore here keep the dongle. The
   extra options' I/Q stream check (`extra_names_iq_stream()`) reads each `-i` value with its scheme normalized
   (`dsd_input_spec_normalize_scheme()`), as the decoder's `-i` does.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,

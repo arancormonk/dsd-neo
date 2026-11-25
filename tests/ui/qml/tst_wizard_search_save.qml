@@ -88,6 +88,23 @@ Item {
             compare(Object.keys(saved.airspy).length, 0, "an RTL detection must not gain Airspy settings")
         }
 
+        // A detection made on a dongle chosen by serial saves as a system for
+        // that dongle (systemForHit() reads it off the recorded spec); one on
+        // the first device, or another source, saves none.
+        function test_detection_keeps_its_rtl_serial_data() {
+            return [
+                {tag: "usb-serial", source: "usb", receiver: {"rtlSerial": "AbC 1"}, serial: "AbC 1"},
+                {tag: "usb-first-device", source: "usb", receiver: {}, serial: ""},
+                {tag: "rtltcp", source: "rtltcp", receiver: {"rtlSerial": "AbC 1"}, serial: ""}
+            ]
+        }
+
+        function test_detection_keeps_its_rtl_serial(data) {
+            var found = detection(data.source, data.receiver)
+            var saved = save(found, found.freqMhz, true)
+            compare(saved.rtlSerial, data.serial)
+        }
+
         function test_airspy_detection_keeps_its_native_settings() {
             var native = {
                 "serial": "A1B2C3D4E5F60718", "sample_rate": 3000000, "gain_mode": "manual",

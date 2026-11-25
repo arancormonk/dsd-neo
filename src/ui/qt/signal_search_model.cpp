@@ -25,6 +25,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <iterator>
 #include <map>
@@ -872,6 +873,19 @@ savedGainDb(const QVariantMap& hit) {
     return (int)std::lround(std::clamp(db, 1.0, 49.0));
 }
 
+/* The USB serial a recorded `rtl:` spec opens its dongle by, read with the decoder's own device field grammar
+   (dsd_rtl_device_field_parse()); empty for an index, no device field or a field the grammar refuses. */
+static QString
+recordedRtlSerial(const QString& spec) {
+    const QStringList fields = spec.split(QLatin1Char(':'));
+    const QByteArray field = fields.value(1).toUtf8();
+    char serial[DSD_RTL_SERIAL_MAX + 1] = {0};
+    if (dsd_rtl_device_field_parse(field.constData(), nullptr, serial, sizeof serial) != DSD_RTL_DEV_SERIAL) {
+        return {};
+    }
+    return QString::fromUtf8(serial);
+}
+
 QVariantMap
 SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& source) const {
     QString spec = hit.value(QStringLiteral("inputSpec")).toString();
@@ -892,6 +906,12 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
             const auto parts = spec.split(QLatin1Char(':'));
             result[QStringLiteral("host")] = parts.value(1);
             result[QStringLiteral("port")] = parts.value(2).toInt();
+        }
+        /* The dongle the detection was made on, when its spec chose one by serial: a system for "the first device" could
+           open another dongle. An index is no lasting name for one, so it leaves the field unset, as before. */
+        const QString rtlSerial = kind == QLatin1String("usb") ? recordedRtlSerial(spec) : QString();
+        if (!rtlSerial.isEmpty()) {
+            result[QStringLiteral("rtlSerial")] = rtlSerial;
         }
         /* The receiver settings the detection was made with, in the saved-system shape the wizard copies: an Airspy's
            native map (its own bias tee lives there; it takes no PPM), or an RTL's PPM text and bias tee. The tee is
