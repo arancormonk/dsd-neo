@@ -2754,7 +2754,9 @@ suite runs under this compiler.
   X2-TDMA row (B8). Every string is written as valid UTF-8 (`dsd_rdio_json_write_escaped()`, B11): well-formed UTF-8 as
   it is, ASCII escaped where JSON needs it, each maximal ill-formed run (a name cut mid-character) as one U+FFFD. A
   numbered digital call's `talkgroup_tag` (`dsd_rdio_numbered_tag()`) is the row's first usable name (service,
-  talkgroup name, target string, channel label), else `PRIVATE` for a private call (`gi` 1), `GROUP` for a group
+  talkgroup name, target string when it names the call, channel label, then target string that only spells the numeric
+  ID: an NXDN Type-D group's `03-0005` yields to a usable channel label, `dsd_call_target_text_is_name()`, while a
+  callsign such as an M17 one is a name of its own), else `PRIVATE` for a private call (`gi` 1), `GROUP` for a group
   call (`gi` 0), and empty for a call of no known kind (`gi` -1; issue #668 B3, which rdio-scanner ignores as a
   label). A name of `"-"` is unusable in every chain (`dsd_rdio_tag_usable()`, B10): both servers drop it as a label,
   so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
@@ -13073,9 +13075,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`nxdn_live_call_key_id()`): a release leaves the released call's key ID applied (a TX_REL resets only the cipher, as
   on main, a TX_REL_EX neither, and a forced scrambler re-applies one), so a VCALL_IV opening the next call before its
   VCALL publishes its IV with no key ID.
-  A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
-  files a DCR recording under its channel frequency in kHz as for a conventional analog call
-  (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
+  A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a
+  talkgroup, numbers a DCR recording as any digital call with no talkgroup (`dsd_rdio_call_talkgroup()`, where the
+  fallback is allowed): its channel frequency in kHz when one is known, else `--rdio-unknown-talkgroup` when that is
+  set, else no talkgroup, and then it is recorded but not exported. Its label is the fallback tag (service name,
+  channel label, else protocol and frequency), never the `JPN DCR` text, and its parties stay anonymous.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
