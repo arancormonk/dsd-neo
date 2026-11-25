@@ -304,7 +304,8 @@ int dsd_engine_trunk_scan_entry_pending(const dsd_state* state);
 
 /** The radio stream is about to stop (issue #644). The stop fails the park it queued; a park of the target on air that
  * can still land is noted, with the frequency it asked for and the source of the stream that stops, for the reopen that
- * follows (dsd_engine_trunk_scan_stream_reopened()). Nothing else changes. Decoder thread, under the P25 SM tick
+ * follows (dsd_engine_trunk_scan_stream_reopened()), and so is a conventional target landed on its frequency with no
+ * park in flight (issue #890). Nothing else changes. Decoder thread, under the P25 SM tick
  * guard, before the stream stops. */
 void dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state);
 
@@ -312,8 +313,11 @@ void dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state
  * (issue #644). The park the stop noted, still the coordinator's, lands when the new stream opened on the same source,
  * not an I/Q replay, with the centre the frequency it asked for: its request is completed as landed whatever the stop
  * published (dsd_trunk_tuning_request_land_at_reopen()), so the next tick takes it as any landing, an entry waiting on
- * it held. Otherwise the note goes, and the stop's failure stands. Decoder thread, under the P25 SM tick guard. */
-void dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
+ * it held. Otherwise the note goes, and the stop's failure stands. A conventional target that had landed, with no park
+ * in flight, when the stream stopped (a gain, bandwidth or device restart) lands again on the same terms, at once and
+ * under a new visit (issue #890): its traffic after the restart holds it, and what was read before stays the old
+ * visit's. Decoder thread, under the P25 SM tick guard. */
+void dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, int opened);
 
 /** @brief Whether a trunk-scan coordinator exists and is paused (issue #671). */
 int dsd_engine_trunk_scan_paused(const dsd_state* state);
@@ -414,7 +418,11 @@ const char* dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state);
  * protocol layer cannot tell them apart and must not have to. The call identity is run through the global
  * talkgroup policy, and only an allowed call refreshes the target's
  * activity hold, so allow/block lists, private-call, data-call and
- * encrypted-call tuning controls all apply to the park decision.
+ * encrypted-call tuning controls all apply to the park decision. Only an
+ * observation of the active target's own landed visit counts (issue #890): the
+ * frame being dispatched must have begun its read on that landing and carrier,
+ * uncut (dsd_state_scan_observation_origin()); a park in flight, failed or
+ * superseded has no landing, so nothing decoded then holds the incoming target.
  *
  * Callers must pass identity that has already cleared the protocol's own
  * FEC/CRC gate: an unverified header would park the coordinator on noise.

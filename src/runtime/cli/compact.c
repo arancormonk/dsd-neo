@@ -106,9 +106,6 @@ static const char* const k_skip_exact_next_any[] = {
     "--dmr-baofeng-pc5",
     "--dmr-csi-ee72",
     "--dmr-vertex-ks-csv",
-    "--dmr-tg-key-csv",
-    "--p25-bandplan",
-    "--src-csv",
     "--p25-bandplan-export",
     "--dmr-force-algid",
     "--m17-signature-public-key",
@@ -221,6 +218,7 @@ static const char* const k_skip_prefix[] = {
     "--dmr-csi-ee72=",
     "--dmr-vertex-ks-csv=",
     "--dmr-tg-key-csv=",
+    "--dmr-chan-overrides=",
     "--p25-bandplan=",
     "--src-csv=",
     "--p25-bandplan-export=",
@@ -265,7 +263,10 @@ static const char* const k_skip_prefix[] = {
 
 int
 dsd_cli_option_takes_free_value(const char* arg) {
-    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file", "--trunk-scan-hold"};
+    static const char* const k_free_value_options[] = {
+        "--api-token",      "--api-token-file", "--trunk-scan-hold", "--dmr-chan-overrides",
+        "--dmr-tg-key-csv", "--p25-bandplan",   "--src-csv",
+    };
     return arg != NULL
            && compact_matches_exact(arg, k_free_value_options,
                                     sizeof(k_free_value_options) / sizeof(k_free_value_options[0]));

@@ -15,6 +15,7 @@ Item {
             keySheet.visible = false;
             siteSheet.visible = false;
             networkSheet.visible = false;
+            channelsSheet.visible = false;
             toneFilterSheet.visible = false;
             receiveFiltersSheet.visible = false;
             serviceNamesSheet.visible = false;
@@ -683,7 +684,8 @@ Item {
 
     // The disclosure's one-line summary, most important first: the radio's SNR,
     // decode quality (a codec fault in the alert colour ahead of it), the
-    // decryption state, an ENC LOCKOUT count in magenta, then the site. Only
+    // decryption state, an ENC LOCKOUT count in magenta, a NO FREQ count in the
+    // alert colour (Tier III channels with no frequency), then the site. Only
     // readings the rows below already show; a fault is said here, never by
     // opening the rows.
     readonly property var detailsSummary: {
@@ -707,6 +709,8 @@ Item {
             tokens.push({text: keySheet.effectiveState, color: ""});
         if (metrics.encLockoutCount > 0)
             tokens.push({text: qsTr("ENC LOCKOUT %1").arg(metrics.encLockoutCount), color: String(Theme.magenta)});
+        if (metrics.noFreqCount > 0)
+            tokens.push({text: qsTr("NO FREQ %1").arg(metrics.noFreqCount), color: String(Theme.alert)});
         var site = Util.siteShortForm(metrics.siteLine);
         if (site.length > 0)
             tokens.push({text: site, color: ""});
@@ -2371,14 +2375,25 @@ Item {
                 height: Math.max(48, siteLabel.implicitHeight + 20)
                 visible: metrics.siteLine.length > 0
                 opacity: metrics.siteConfirmed ? 1 : 0.55
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(siteRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: metrics.siteLine
                 readonly property bool navigationAllowed: Navigation.allows(siteRow)
                 Accessible.ignored: !navigationAllowed
-                Accessible.onPressAction: {
-                    if (Navigation.allows(siteRow))
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(siteRow))
                         siteSheet.visible = true;
                 }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
                 Text {
                     id: siteLabel
                     anchors.centerIn: parent
@@ -2391,7 +2406,57 @@ Item {
                     color: Theme.textPrimary
                 }
                 GatedTapHandler {
-                    onAllowedTap: siteSheet.visible = true
+                    onAllowedTap: siteRow.activate()
+                }
+            }
+
+            // Discussion #900 F3: the Tier III Channels sheet, while the live
+            // channel list holds channels of the user's (set or hidden), or a
+            // save is owed for the session's system whatever the live lists
+            // hold (its Try saving again is in the sheet), and the NO FREQ
+            // reading, which opens the same sheet, is hidden: one entry at a
+            // time. Before the site names itself there is no Site row, and
+            // with every grant given a frequency no NO FREQ reading: this stays
+            // the way to correct a saved frequency, by tap, key or screen reader.
+            UiPanel {
+                id: channelsRow
+                objectName: "monitorChannelsRow"
+                width: parent.width
+                height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
+                visible: (metrics.dmrUserChannels === true || channelsSheet.saveOwedHere) && metrics.noFreqCount === 0
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Tier III channels")
+                readonly property bool navigationAllowed: Navigation.allows(channelsRow)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (visible && Navigation.allows(channelsRow))
+                        channelsSheet.open();
+                }
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
+                Text {
+                    id: channelsLabel
+                    objectName: "monitorChannelsText"
+                    anchors.centerIn: parent
+                    width: parent.width - 24
+                    text: qsTr("Tier III channels ›")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textPrimary
+                }
+                GatedTapHandler {
+                    onAllowedTap: channelsRow.activate()
                 }
             }
 
@@ -2866,6 +2931,83 @@ Item {
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: Theme.magenta
+                }
+            }
+
+            // Discussion #900 F3: the DMR Tier III channels the site granted calls
+            // on that have no frequency here, so those calls are not followed. The
+            // alert colour: calls are being missed, and a frequency fixes it.
+            // Hidden at zero. Unlike the readings around it, it goes somewhere:
+            // a tap, a key or a screen reader's press opens the Channels sheet.
+            // Its count is read at the readings' pace (issue #782, SpeechPacer).
+            // The tap reaches past its line, up to a full touch target.
+            Item {
+                id: noFreqRow
+                objectName: "noFreqRow"
+                readonly property int count: metrics.noFreqCount
+                width: noFreqLine.implicitWidth
+                height: noFreqLine.implicitHeight
+                visible: count > 0
+                function activate() {
+                    if (visible && Navigation.allows(noFreqRow))
+                        channelsSheet.open();
+                }
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(noFreqRow) && visible) || activeFocus
+                Accessible.role: Accessible.Button
+                Accessible.name: noFreqSpeech.spoken
+                readonly property bool navigationAllowed: Navigation.allows(noFreqRow)
+                Accessible.ignored: !navigationAllowed || !visible
+                Accessible.onPressAction: activate()
+                Keys.onPressed: function (event) {
+                    if (Navigation.activationPress(event, Window.activeFocusItem))
+                        activate();
+                }
+                Keys.onReleased: function (event) {
+                    Navigation.activationRelease(event);
+                }
+                FocusFrame {}
+                SpeechPacer {
+                    id: noFreqSpeech
+                    shown: !noFreqRow.Accessible.ignored
+                    step: screen.speechStep
+                    read: function () {
+                        return noFreqRow.count === 1 ? qsTr("1 channel without a frequency")
+                            : qsTr("%1 channels without a frequency").arg(noFreqRow.count);
+                    }
+                }
+
+                Row {
+                    id: noFreqLine
+                    spacing: 5
+
+                    // Read as the row's name, the count in words.
+                    Text {
+                        objectName: "noFreqLabel"
+                        text: qsTr("NO FREQ")
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        color: Theme.textSubdued
+                    }
+
+                    Text {
+                        objectName: "noFreqValue"
+
+                        text: noFreqRow.count.toString()
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        color: Theme.alert
+                    }
+
+                    Caret {
+                        anchors.verticalCenter: parent.verticalCenter
+                        rotation: -90
+                    }
+                }
+
+                GatedTapHandler {
+                    margin: Math.max(0, (Theme.minimumTouchSize - noFreqRow.height) / 2)
+                    onAllowedTap: noFreqRow.activate()
                 }
             }
 
@@ -3596,11 +3738,19 @@ Item {
         id: siteSheet
         z: 10
         onNetworkRequested: networkSheet.open()
+        onChannelsRequested: channelsSheet.open()
     }
 
     // WP-F2: read-only network sheet, opened from SiteSheet.
     NetworkSheet {
         id: networkSheet
+        z: 100
+    }
+
+    // Discussion #900 F3: the DMR Tier III channels, opened from SiteSheet and
+    // the NO FREQ reading.
+    ChannelsSheet {
+        id: channelsSheet
         z: 100
     }
 }

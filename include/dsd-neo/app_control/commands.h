@@ -354,6 +354,11 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET = 596, // payload: int32_t 0=session-only, 1=save (default)
     DSD_APP_CMD_TG_SESSION_AVOID_CLEAR = 597, // payload: uint64_t captured policy context; current list only
 
+    // DMR Tier III: one of the user's channel entries over the channel map (discussion #900 F3), applied on the
+    // decoder thread by dmr_t3_overlay_apply() against the row as the frontend read it. Every request the queue took
+    // gets a retained result (dsd_app_dmr_channel_set_results_since()). Frontend-only: not in the control API.
+    DSD_APP_CMD_DMR_CHANNEL_SET = 598, // payload: dsd_app_dmr_channel_set_payload
+
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
     DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE = 621,
@@ -765,6 +770,61 @@ typedef struct {
     uint32_t pad2;      /* explicit, so a copy carries no indeterminate padding */
 } dsd_app_scan_list_result;
 
+/** DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900 F3): set, hide or restore Tier III channel @c lpcn (1..4094). @c op is
+ * a dmr_t3_overlay_op (<dsd-neo/protocol/dmr/dmr_t3_channels.h>: 1 SET, 2 HIDE, 3 RESTORE) and @c hz SET's frequency
+ * (100000..2147483647 Hz; ignored, not checked, for HIDE and RESTORE). At most 256 channels have an entry
+ * (DMR_T3_OVERLAY_MAX_ROWS): a SET or HIDE of one more is refused FULL; an edit of a channel that has one never is. The
+ * rest is the row as the editor read it, so an edit made against a row that changed since is refused (STALE), changing
+ * nothing: @c session_seq is dsd_app_command_session_generation(), @c generation dmr_t3_chan_generation(),
+ * @c expected_hz the row's live frequency (0 for none or hidden) and @c expected_origin its dmr_chan_origin_e (USER for
+ * a hidden row). @c request is the caller's id from dsd_app_dmr_channel_request_next(), which the retained result
+ * carries back. */
+typedef struct {
+    uint64_t session_seq;
+    int64_t hz;
+    int64_t expected_hz;
+    uint32_t request;
+    uint32_t generation;
+    uint16_t lpcn;
+    uint8_t op;
+    uint8_t expected_origin;
+    uint32_t pad; /* explicit, so the payload carries no indeterminate padding */
+} dsd_app_dmr_channel_set_payload;
+
+/** What one DSD_APP_CMD_DMR_CHANNEL_SET did. 0 to 4 are dmr_t3_overlay_apply()'s answers (dmr_t3_set_result); the
+ * rest are app-control's, for a request that never reached it. OTHER_SYSTEM and NO_DMR are judged on the decoder
+ * thread as the edit is applied, so an edit queued before the carrier named another system, or before a mode change
+ * stopped DMR decoding, is refused too. */
+typedef enum {
+    DSD_APP_DMR_CHANNEL_SET_OK = 0,         /**< Applied, or the row already was so */
+    DSD_APP_DMR_CHANNEL_SET_STALE = 1,      /**< The session, the network or the row is not the one the editor read */
+    DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN = 2, /**< A trunk scan runs: its targets' channels are read-only */
+    DSD_APP_DMR_CHANNEL_SET_INVALID = 3,    /**< No such channel, operation or frequency, or a short payload */
+    DSD_APP_DMR_CHANNEL_SET_FULL = 4,       /**< A new channel past the 256 the user's list holds: remove one first */
+    DSD_APP_DMR_CHANNEL_SET_SEARCH = 5,     /**< Signal search runs: refused with every receiver command */
+    DSD_APP_DMR_CHANNEL_SET_DROPPED = 6,    /**< Never applied: the session stopped or the queue overflowed first */
+    /** The carrier names another system now (the view's other_system_here): its channel map is that system's, so no
+        Tier III edit applies */
+    DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM = 7,
+    /** The session no longer decodes DMR (dsd_opts::frame_dmr off after a mode change; the view's dmr_decoding 0): no
+        Tier III lookup reads the user's channels, so no edit applies */
+    DSD_APP_DMR_CHANNEL_SET_NO_DMR = 8,
+} dsd_app_dmr_channel_set_code;
+
+/** The retained outcome of one DSD_APP_CMD_DMR_CHANNEL_SET: the request as submitted and what it did. @c sequence is
+ * nonzero, process-wide, and advances per result. @c revision is dmr_t3_chan_revision() once the request was handled
+ * (0 for one the decoder never saw): a snapshot whose channel revision is behind it does not show this answer yet. */
+typedef struct {
+    uint64_t sequence;
+    uint64_t session_seq;
+    uint32_t request;
+    int32_t code; /**< dsd_app_dmr_channel_set_code */
+    uint32_t revision;
+    uint16_t lpcn;
+    uint8_t op;
+    uint8_t pad; /* explicit, so a copy carries no indeterminate padding */
+} dsd_app_dmr_channel_set_result;
+
 typedef enum {
     DSD_APP_COMMAND_SUBMIT_REJECTED = -1,
     DSD_APP_COMMAND_SUBMIT_QUEUED = 1,
@@ -854,6 +914,16 @@ int dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_r
  * command session last opened, so a reader that outlives the decoder, such as the control API, never serves a previous
  * run's answer as this one's. The DROPPED results of requests a stop discarded stay readable until the next open. */
 int dsd_app_scan_list_session_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap);
+/** Submit DSD_APP_CMD_DMR_CHANNEL_SET. A NULL payload is rejected here; the decoder checks the rest. */
+int dsd_app_command_dmr_channel_set(const dsd_app_dmr_channel_set_payload* payload);
+/** A fresh request id for dsd_app_dmr_channel_set_payload::request: process-wide, never 0. Any thread. */
+uint32_t dsd_app_dmr_channel_request_next(void);
+/** Copy the newest retained channel-set result. Returns 1 if one exists, 0 otherwise (out is zeroed) or for NULL
+ * out. */
+int dsd_app_dmr_channel_set_result_get(dsd_app_dmr_channel_set_result* out);
+/** dsd_app_tg_export_results_since() for channel-set results: every DSD_APP_CMD_DMR_CHANNEL_SET the queue took gets
+ * one, a refusal, an invalid payload and a request dropped unapplied included. */
+int dsd_app_dmr_channel_set_results_since(uint64_t after_sequence, dsd_app_dmr_channel_set_result* out, int cap);
 int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
 int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 

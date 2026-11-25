@@ -77,6 +77,16 @@ void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol pr
  */
 void dsd_mbe_p25p1_skip_voice_frame(dsd_state* state);
 
+/**
+ * Step past an AMBE frame the NXDN decoder would have decoded (NXDN, or a scrambled dPMR half) that is not decoded:
+ * under the rule a decoded frame follows (the Scramble, cipher 0x01, or a forced key, with a key loaded) the Scramble
+ * LFSR in nxdn_payload_mi steps past the frame's 49 bits exactly as decoding it would, loading the key first when the
+ * register is empty, so the frames after it descramble in phase (dPMR places its scrambler at a half's frame in the
+ * superframe with it). Nothing is synthesized or output. The DES and AES keystreams (cipher 0x02, 0x03) are not
+ * stepped.
+ */
+void dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state);
+
 /** Decode and log one soft IMBE frame without synthesizing or emitting media. */
 void dsd_mbe_log_imbe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23]);
 

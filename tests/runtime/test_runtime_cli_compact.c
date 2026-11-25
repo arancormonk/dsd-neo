@@ -157,6 +157,23 @@ test_src_csv_long_opts_are_removed(void) {
     return 0;
 }
 
+static int
+test_dmr_chan_overrides_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-chan-overrides";
+    char arg2[] = "mine.csv";
+    char arg3[] = "--dmr-chan-overrides=mine.csv";
+    char arg4[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int new_argc = dsd_cli_compact_args(5, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected only \"-fi\" left, got %d (%s)\n", new_argc, argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
 /* Issue #697: both list options, in both spellings, leave getopt nothing; "-fi" after them stays. */
 static int
 test_trunk_scan_list_long_opts_are_removed(void) {
@@ -929,6 +946,7 @@ main(void) {
     rc |= test_iq_capture_format_and_replay_rate_paired_forms_are_removed();
     rc |= test_iq_missing_value_forms_are_removed_safely();
     rc |= test_src_csv_long_opts_are_removed();
+    rc |= test_dmr_chan_overrides_long_opts_are_removed();
     rc |= test_p25_bandplan_long_opts_are_removed();
     rc |= test_trunk_scan_list_long_opts_are_removed();
     rc |= test_trunk_scan_hold_long_opt_is_removed();

@@ -380,9 +380,11 @@ jobs:
             dsd-neo_test_ui_qt_display_scale \
             dsd-neo_test_ui_qt_session_state \
             dsd-neo_test_ui_qt_screen_reader_state \
+            dsd-neo_test_ui_qt_local_day_watch \
             dsd-neo_test_ui_qt_diagnostics_log \
             dsd-neo_test_runtime_log_tap \
             dsd-neo_test_ui_qt_p25_network_model \
+            dsd-neo_test_ui_qt_dmr_channels_model \
             dsd-neo_test_ui_qt_unit_activity_model \
             dsd-neo_test_ui_qt_position_model \
             dsd-neo_test_ui_qt_controller \

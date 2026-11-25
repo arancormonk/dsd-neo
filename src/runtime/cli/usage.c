@@ -513,6 +513,11 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("Trunking Options:\n");
     printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)\n");
     printf("                 Optional name, mode and key columns; see examples/conventional_scan_modes.csv.\n");
+    printf("      --dmr-chan-overrides <file>  Your DMR Tier III channels over the channel map: lpcn,frequency_hz\n");
+    printf("                 rows (decimal; 0 hides the channel), up to 256. For DMR Tier III only; the channel\n");
+    printf("                 map other trunking protocols use is not changed. Ignored, with a notice and the\n");
+    printf("                 file unread, when the session does not decode DMR frames (-r, -fU too) or runs\n");
+    printf("                 a trunk scan.\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
     printf("      --src-csv <file>   Source ID (radio ID) alias list CSV: id,name[,tags]; labels only, no policy.\n");

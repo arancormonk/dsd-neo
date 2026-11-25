@@ -110,6 +110,25 @@ dmr_csbk_learn_channel(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long fre
     return dmr_t3_chan_learn(opts, state, lpcn, freq, neighbour ? DMR_CHAN_ORIGIN_NEIGHBOUR : origin);
 }
 
+/* A standard CSBK the site sent (a grant or a C_BCAST) names it Tier III (dmr_t3_note_tier3()): checked when its CRC
+   passed, unchecked when -F accepted it as RAS. A grant (@p grant) never allocates the record for it
+   (dmr_t3_note_tier3_if_recorded()): the grant path stays allocation-free. */
+static void
+dmr_csbk_note_tier3(const dsd_opts* opts, dsd_state* state, int csbk_fid, int grant) {
+    if (csbk_fid != 0 || DSD_SYNC_IS_DMR_MS(state->synctype)) {
+        return;
+    }
+    const int checked = dmr_csbk_crc_checked(state);
+    if (!checked && !dmr_csbk_ras_accepted(opts, state)) {
+        return;
+    }
+    if (grant) {
+        dmr_t3_note_tier3_if_recorded(state, checked);
+    } else {
+        dmr_t3_note_tier3(state, checked);
+    }
+}
+
 /* The label of a grant's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
 dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
@@ -119,9 +138,20 @@ dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t
     }
 }
 
+/* The channel a recent-activity row names: its number, how the system numbers it (dsd_call_channel_kind: a Tier III
+   LPCN, a Capacity Plus LSN, a Connect Plus LCN), and its frequency (0 when none is known). The call view reads the
+   user's Tier III channels only for an LPCN. */
+typedef struct {
+    uint16_t number;
+    uint8_t kind;
+    long int frequency;
+} dmr_csbk_activity_channel;
+
+/* A recent-activity row; @p channel is NULL for a row that names none. */
 static void
 dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_call_kind kind, uint64_t target,
-                          uint64_t source, uint16_t channel, long int frequency, int emergency, const char* notice) {
+                          uint64_t source, const dmr_csbk_activity_channel* channel, int emergency,
+                          const char* notice) {
     const dsd_call_observation observation = {
         .protocol = state->lastsynctype,
         .slot = slot & 1U,
@@ -129,8 +159,9 @@ dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_cal
         .ota_target_id = target,
         .policy_target_id = target,
         .ota_source_id = source,
-        .channel = channel,
-        .frequency_hz = frequency,
+        .channel = channel != NULL ? channel->number : 0U,
+        .channel_kind = channel != NULL && channel->number != 0U ? channel->kind : (uint8_t)DSD_CALL_CHANNEL_NONE,
+        .frequency_hz = channel != NULL ? channel->frequency : 0,
         .emergency = emergency != 0,
     };
     (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
@@ -243,7 +274,8 @@ dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
 
 /* An absolute grant (LPCN 0xFFF): its frequency in @p freq and the LPCN its CdefParms define in @p chan (0 or 4095
    name no channel). 0 when its parameters are unusable: then it names no frequency and is neither shown nor
-   followed. */
+   followed. The user's entry for that LPCN decides over the advertised frequency (dmr_t3_overlay_resolve()): a set
+   channel is followed on theirs, a hidden one not at all. */
 static int
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq,
                                    uint16_t* chan) {
@@ -257,6 +289,7 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     *freq = ap.rx_hz;
     *chan = ap.chan;
     (void)dmr_csbk_learn_channel(opts, state, ap.chan, ap.rx_hz, 0);
+    (void)dmr_t3_overlay_resolve(state, ap.chan, freq);
     return 1;
 }
 
@@ -272,10 +305,11 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     } else if (call_kind == DSD_CALL_KIND_GROUP_VOICE) {
         kind = "Active Group Ch";
     }
+    /* Tier III channel numbers read as decimal, as everywhere dsd-neo shows them (discussion #900 B11). */
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)grant->recipient);
-    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, channel, frequency,
-                              emergency, notice);
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %u%s TG: %u; ", kind, (unsigned)channel, suf, (unsigned)grant->recipient);
+    const dmr_csbk_activity_channel lpcn = {channel, (uint8_t)DSD_CALL_CHANNEL_LPCN, frequency};
+    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, &lpcn, emergency, notice);
 }
 
 static void
@@ -290,14 +324,15 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
 }
 
 /* The grant's frequency in @p freq, and for the absolute escape the LPCN its CdefParms define in @p mbc_lpchannum.
-   0 for an absolute grant whose parameters are unusable. */
+   0 for an absolute grant whose parameters are unusable. A logical grant's channel is the user's entry first
+   (dmr_t3_overlay_resolve(): theirs, or none for a hidden one), then the channel map. */
 static int
 dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
                                 long int* freq, uint16_t* mbc_lpchannum) {
     if (lpchannum == 0xFFF) {
         return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq, mbc_lpchannum);
     }
-    if (lpchannum != 0) {
+    if (lpchannum != 0 && !dmr_t3_overlay_resolve(state, lpchannum, freq)) {
         *freq = state->trunk_chan_map[lpchannum];
     }
     return 1;
@@ -312,10 +347,13 @@ dmr_cspdu_pf0_call_channel(uint16_t lpchannum, uint16_t mbc_lpchannum) {
     return dmr_t3_lpcn_is_channel(channel) ? channel : 0U;
 }
 
+/* @p channel is the grant's call channel (dmr_cspdu_pf0_call_channel()). */
 static void
-dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
+dmr_cspdu_pf0_print_frequency(const dsd_state* state, uint16_t lpchannum, uint16_t channel, long int freq) {
     if (freq != 0) {
         DSD_FPRINTF(stderr, "\n  Frequency: %.6lf MHz", (double)freq / 1000000.0);
+    } else if (dmr_t3_overlay_get(state, channel, NULL) == DMR_T3_OVERLAY_HIDE) {
+        DSD_FPRINTF(stderr, "\n  Channel Hidden in Your Channel List;");
     } else if (lpchannum != 0 && lpchannum != 0xFFF) {
         DSD_FPRINTF(stderr, "\n  Frequency Not Found in Channel Map;");
     }
@@ -376,11 +414,28 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     dmr_csbk_handle(&res, opts, state);
 }
 
+/* A grant for channel @p channel whose row has no frequency goes to the missing-channel ledger
+   (dmr_t3_missing_note_grant()) when it is a standard grant the site sent that passed its CRC, or that -F accepted as
+   RAS (then unchecked); never one an MS sent, a manufacturer's, a failed one or the decoder's own. */
+static void
+dmr_cspdu_pf0_note_missing_channel(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t channel,
+                                   const dmr_t3_grant_class* grant, uint8_t slot) {
+    if (csbk_fid != 0 || DSD_SYNC_IS_DMR_MS(state->synctype)) {
+        return;
+    }
+    const int checked = dmr_csbk_crc_checked(state);
+    if (!checked && !dmr_csbk_ras_accepted(opts, state)) {
+        return;
+    }
+    dmr_t3_missing_note_grant(opts, state, channel, grant, slot, !checked);
+}
+
 /* A channel grant (TS 102 361-4 §7.1.1.1.1). Opcode 56 on MS-sourced data is BS_Dwn_Act, never a grant. The console
    line, the activity row, the policy and the trunk state machine all take the grant's classes and its called and
    calling parties from dmr_t3_grant_classify(). */
 static void
-dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o) {
+dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
+                            int csbk_fid) {
     dmr_t3_grant_class grant;
     if (!dmr_t3_grant_classify(csbk_o, cs_pdu_bits, state->synctype != DSD_SYNC_DMR_MS_DATA, &grant)) {
         return;
@@ -409,7 +464,12 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum)) {
         return;
     }
-    dmr_cspdu_pf0_print_frequency(lpchannum, freq);
+    const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
+    dmr_cspdu_pf0_print_frequency(state, lpchannum, call_channel, freq);
+    if (freq == 0 && dmr_t3_lpcn_is_channel(lpchannum)) {
+        dmr_cspdu_pf0_note_missing_channel(opts, state, csbk_fid, lpchannum, &grant, lcn);
+    }
+    dmr_csbk_note_tier3(opts, state, csbk_fid, 1);
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, &grant, st2);
 
@@ -417,8 +477,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant,
-                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant, call_channel, freq);
 }
 
 /* The TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names (CHAN @p chan, which may name no
@@ -464,7 +523,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
             freq = ap.rx_hz;
         }
     } else if (dmr_t3_lpcn_is_channel(pcn)) {
-        freq = state->trunk_chan_map[pcn];
+        freq = dmr_t3_chan_effective_hz(state, pcn);
     }
 
     DSD_FPRINTF(stderr, "\n");
@@ -1054,8 +1113,9 @@ dmr_cspdu_pf0_p_clear_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_p_clear_field
     f->source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 }
 
-/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel the map knows, or the appended
-   block's (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt
+/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel at the frequency DMR uses for it
+   (dmr_t3_chan_effective_hz(): the user's entry over the shared map row), or the appended block's
+   (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt
    candidate when the clear was checked or RAS-accepted; where the release returns stays the machine's. */
 static void
 dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], uint16_t lpcn) {
@@ -1071,7 +1131,7 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
         dmr_cspdu_pf0_note_absolute_tscc(opts, state, ap.chan, ap.rx_hz);
         return;
     }
-    const long freq = dmr_t3_lpcn_is_channel(lpcn) ? state->trunk_chan_map[lpcn] : 0L;
+    const long freq = dmr_t3_chan_effective_hz(state, lpcn);
     DSD_FPRINTF(stderr, " TSCC: %u", (unsigned)lpcn);
     if (freq <= 0) {
         DSD_FPRINTF(stderr, ";");
@@ -1313,11 +1373,11 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 }
 
-/* The frequency the channel map holds for a logical Ann_WD_TSCC channel: 0 for CHNULL, the escape or an unmapped
-   one. */
+/* The frequency DMR uses for a logical Ann_WD_TSCC channel (dmr_t3_chan_effective_hz(): the user's entry over the
+   shared map row): 0 for CHNULL, the escape, an unmapped or a hidden one. */
 static long
 dmr_cspdu_pf0_c_bcast_ann_wd_freq(const dsd_state* state, uint16_t bcast_ch) {
-    return dmr_t3_lpcn_is_channel(bcast_ch) ? state->trunk_chan_map[bcast_ch] : 0L;
+    return dmr_t3_chan_effective_hz(state, bcast_ch);
 }
 
 /* The MBC form of Ann_WD_TSCC (TS 102 361-4 §7.2.19.1): a header and a BC_AP announcing or withdrawing one TSCC,
@@ -1614,6 +1674,7 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Announcements (C_BCAST)");
 
+    dmr_csbk_note_tier3(opts, state, csbk_fid, 0);
     dmr_cspdu_pf0_c_bcast_fields f;
     dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, &f);
     dmr_cspdu_pf0_c_bcast_print_type(f.a_type);
@@ -1687,7 +1748,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         DSD_FPRINTF(stderr, "%s", KYEL);
 
-        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o);
+        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
 
         dmr_cspdu_pf0_handle_move(opts, state, cs_pdu_bits, csbk_o);
         dmr_cspdu_pf0_handle_aloha(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
@@ -2059,7 +2120,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     DSD_FPRINTF(stderr, "\n  ");
     (void)dsd_recent_activity_clear_all(state);
     DSD_SNPRINTF(notices[0], sizeof notices[0], "Cap+ ");
-    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notices[0]);
+    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, NULL, 0, notices[0]);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
@@ -2071,8 +2132,13 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
         if (notices[i][0] != '\0') {
             const dsd_call_kind kind = ctx->pch[i - 1] == 1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
             const uint8_t slot = (uint8_t)((i - 1) & 1);
-            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, (uint16_t)i,
-                                      state->trunk_chan_map[i], 0, notices[i]);
+            const dmr_csbk_activity_channel lsn = {
+                .number = (uint16_t)i,
+                .kind = (uint8_t)DSD_CALL_CHANNEL_LSN,
+                .frequency = state->trunk_chan_map[i],
+            };
+            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, &lsn, 0,
+                                      notices[i]);
         }
     }
 }
@@ -2542,8 +2608,13 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", g.lcn, suf, g.grp_addr);
     const dsd_call_kind kind = g.opt == 3 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
-    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr,
-                              (uint16_t)g.lcn, state->trunk_chan_map[g.lcn], 0, notice);
+    const dmr_csbk_activity_channel channel = {
+        .number = (uint16_t)g.lcn,
+        .kind = (uint8_t)DSD_CALL_CHANNEL_LCN,
+        .frequency = state->trunk_chan_map[g.lcn],
+    };
+    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr, &channel, 0,
+                              notice);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
@@ -2608,8 +2679,12 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     now = dsd_decode_time();
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
-    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
-                              notice);
+    const dmr_csbk_activity_channel channel = {
+        .number = (uint16_t)lcn,
+        .kind = (uint8_t)DSD_CALL_CHANNEL_LCN,
+        .frequency = state->trunk_chan_map[lcn],
+    };
+    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, &channel, 0, notice);
     if (opts->trunk_tune_data_calls == 0) {
         return;
     }
@@ -2757,7 +2832,7 @@ dmr_cspdu_xpt_print_and_collect(dsd_state* state, uint8_t cs_pdu_bits[], uint8_t
 
         DSD_FPRINTF(stderr, "%s", dmr_cspdu_xpt_status_label(xpt_ch[i]));
     }
-    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
+    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, NULL, 0, notice);
 }
 
 /* An XPT private status names no radio: its 8-bit value is a hash or a placeholder (the 16-bit target only comes with
@@ -3493,6 +3568,10 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
             dmr_tiii_note_search_site(state, syscode, dmrla);
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
+            dmr_t3_cc_note_evidence(opts, state);
+        } else if (dmr_csbk_ras_accepted(opts, state)) {
+            /* RAS-accepted: names nothing of the site, but tells how its channel numbers show. */
+            dmr_t3_note_tier3(state, 0);
         }
     } else if (type == 1) {
         dmr_syscode_print_type1(code.model_name, net, site_label, syscode);

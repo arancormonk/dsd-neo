@@ -7,6 +7,7 @@
 #include <utility>
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
+#include "json_store.h"
 #include "radio_settings.h"
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
@@ -18,17 +19,20 @@
 #include <cmath>
 #include <cstddef>
 #include <iterator>
+#include <mutex>
 
 #include <QByteArray>
 #include <QChar>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
 #include <QRegularExpression>
 #include <QVariant>
+#include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
 
@@ -39,6 +43,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 
 #include "app_prefs.h"
@@ -354,6 +359,29 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
     const QString src = system.value(QStringLiteral("srcCsvPath")).toString();
     if (!src.isEmpty()) {
         args << QStringLiteral("--src-csv") << src;
+    }
+}
+
+/* Where the decoder's long-option scan of @p args stops: the index of the first "--" that is no long option's value
+   (long_option_tokens() hands it on with everything after it), or the size. */
+qsizetype
+long_options_end(const QStringList& args) {
+    QStringList options;
+    const QStringList rest = long_option_tokens(args, &options);
+    const qsizetype terminator = rest.indexOf(QStringLiteral("--"));
+    return terminator < 0 ? args.size() : args.size() - (rest.size() - terminator);
+}
+
+/* Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels, after every option the
+   user typed: the decoder keeps the last --dmr-chan-overrides, so the saved channels win over one in the extra options.
+   Before a "--" among them, which ends the options the decoder reads. */
+void
+append_dmr_channels_args(QStringList& args, const QVariantMap& system) {
+    const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
+    if (!overrides.isEmpty()) {
+        const qsizetype at = long_options_end(args);
+        args.insert(at, overrides);
+        args.insert(at, QStringLiteral("--dmr-chan-overrides"));
     }
 }
 
@@ -1306,6 +1334,21 @@ session_args_extra_error(const QVariantMap& system, const QString& tokens, const
     return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
 }
 
+QByteArray
+session_args_dmr_channels_csv(const QVariantMap& system) {
+    const QVariantList rows = SavedSystemsModel::validDmrChannels(system.value(QStringLiteral("dmrChannels")));
+    if (rows.isEmpty()) {
+        return {};
+    }
+    QByteArray csv("lpcn,frequency_hz\n");
+    for (const QVariant& row : rows) {
+        const QVariantMap entry = row.toMap();
+        csv += QByteArray::number(entry.value(QStringLiteral("lpcn")).toInt()) + ','
+               + QByteArray::number(entry.value(QStringLiteral("hz")).toLongLong()) + '\n';
+    }
+    return csv;
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -1394,6 +1437,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     }
     append_flag_args(args, system, prefs, hangtime);
     radio_settings_append(args, radioSettings);
+    append_dmr_channels_args(args, system);
     return args;
 }
 
@@ -1521,10 +1565,106 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     return validationResult(error);
 }
 
+namespace {
+
+/* Saved system @p uid's failure episode for its channels file. @p failed: this start could not
+   pass them (the episode stays, so a dismissed notice stays dismissed while they keep failing); otherwise a start handed
+   the host an argv that passes them, or that has none to pass, and a failure before it is over, so the next one is a
+   new episode. For the whole process, as the notice list is. */
+quint64
+dmr_channels_episode(const QString& uid, bool failed) {
+    struct Episode {
+        quint64 number = 0;
+        bool failed = false;
+    };
+
+    static std::mutex lock;
+    static QHash<QString, Episode> episodes;
+    const std::lock_guard<std::mutex> locker(lock);
+    Episode& episode = episodes[uid];
+    if (!failed && episode.failed) {
+        ++episode.number;
+    }
+    episode.failed = failed;
+    return episode.number;
+}
+
+/* The notice list's name for saved system @p uid's channels file. */
+QString
+dmr_channels_notice_name(const QString& uid) {
+    return QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv");
+}
+
+/* Discussion #900 F3: saved system @p uid's channels file could not be written (@p reason), so its start goes on without
+   them. Logged, and posted on the notice list Home's card shows, one per system's file and failure episode. */
+void
+note_dmr_channels_unwritten(const QString& uid, const QString& reason) {
+    const QString name = dmr_channels_notice_name(uid);
+    LOG_WARN("%s could not be written (%s): the saved system starts without its DMR Tier III channels.\n",
+             qUtf8Printable(name), qUtf8Printable(reason));
+    json_store_post_notice({name, reason, QString(), dmr_channels_episode(uid, true)});
+}
+
+/* Whether the decoder can take @p path as --dmr-chan-overrides (its field, NUL included). */
+bool
+dmr_channels_path_fits(const QString& path) {
+    return static_cast<size_t>(path.toUtf8().size()) < sizeof(dsd_opts::dmr_chan_overrides_file);
+}
+
+/* A start handed the host an argv with saved system @p uid's channels, or with none to pass: a failure before it is over.
+   Its notice is withdrawn, so the next failure is a new notice whether or not this one was dismissed. Nothing for an
+   empty @p uid: no saved system's start, or one whose channels could not be passed. */
+void
+note_dmr_channels_passed(const QString& uid) {
+    if (uid.isEmpty()) {
+        return;
+    }
+    (void)dmr_channels_episode(uid, false);
+    json_store_withdraw_notice(dmr_channels_notice_name(uid));
+}
+
+} // namespace
+
+QString
+SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
+    QString uid = SavedSystemsModel::canonicalUid(input->value(QStringLiteral("uid")).toString());
+    if (uid.isEmpty()) {
+        return {};
+    }
+    // The saved system's own entries, not whatever copy of them the map the start was handed carries.
+    if (m_systems != nullptr && m_systems->rowForUid(uid) >= 0) {
+        input->insert(QStringLiteral("dmrChannels"), m_systems->dmrChannels(uid));
+    }
+    const QByteArray csv = session_args_dmr_channels_csv(*input);
+    if (csv.isEmpty()) {
+        SavedSystemsModel::removeDmrChannelsFile(uid);
+        return uid;
+    }
+    const QString path = SavedSystemsModel::dmrChannelsFilePath(uid);
+    QString reason;
+    if (!dmr_channels_path_fits(path)) {
+        note_dmr_channels_unwritten(uid, QStringLiteral("its path is too long for the decoder"));
+        return {};
+    }
+    if (!SavedSystemsModel::writeDmrChannelsFile(uid, csv, &reason)) {
+        note_dmr_channels_unwritten(uid, reason);
+        return {};
+    }
+    input->insert(QStringLiteral("dmrChanOverridesPath"), path);
+    return uid;
+}
+
 QStringList
 SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
-                                  SessionArgsError* error, bool* recording) const {
+                                  SessionArgsError* error, bool* recording, QString* channelsUid) const {
     QStringList args = buildArgs(system, error);
+    // Discussion #900 F3: a saved system starts with its own Tier III channels; Explore and a search with none.
+    QVariantMap input = system;
+    channelsUid->clear();
+    if (*error == SessionArgsError::None && kind == QLatin1String("saved")) {
+        *channelsUid = prepareDmrChannels(&input);
+        args = buildArgs(input, error);
+    }
     *recording = *error == SessionArgsError::None && host != nullptr && m_recordingSessions != nullptr;
     if (*recording) {
         // A saved system records into its own folder; Explore and Signal search share one, whatever uid the map
@@ -1535,7 +1675,7 @@ SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* 
             m_recordingSessions->beginSession(saved ? QStringLiteral("saved") : QStringLiteral("explore"), uid,
                                               system.value(QStringLiteral("name")).toString());
         // Built again either way: with no folder, an extra -P would record outside the app's storage and is refused.
-        args = buildArgs(system, error, folder, folder.isEmpty());
+        args = buildArgs(input, error, folder, folder.isEmpty());
     }
     return args;
 }
@@ -1572,13 +1712,16 @@ SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, c
     }
     SessionArgsError error = SessionArgsError::None;
     bool recording = false;
-    const QStringList args = buildForStart(system, host, kind, &error, &recording);
+    QString channelsUid;
+    const QStringList args = buildForStart(system, host, kind, &error, &recording, &channelsUid);
     auto result = validationResult(error);
     // Noted only for a start that goes to the host: the build with the folder can still refuse it, as a scan list's can.
-    if (error == SessionArgsError::None && host) {
+    const bool asked = error == SessionArgsError::None && host != nullptr;
+    if (asked) {
         host->noteStartAttempt(system.value(QStringLiteral("sourceType")).toString());
+        // The argv that goes to the host passes the saved channels (or has none to pass): a failure before is over.
+        note_dmr_channels_passed(channelsUid);
     }
-    const bool asked = error == SessionArgsError::None && host;
     const bool started =
         asked
         && (expects ? host->startWithStopExpectation(args, expectedStopGeneration, expectedForegroundEpoch)

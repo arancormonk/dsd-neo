@@ -71,6 +71,14 @@ recent_activity_matches(const dsd_state* state, uint8_t index, dsd_call_kind kin
            && (!notice_fragment || strstr(entry->notice, notice_fragment) != NULL);
 }
 
+/* The channel kind (dsd_call_channel_kind) recent-activity row @p index gives its channel; -1 with no rows. The call view reads the user's Tier III channels only for an LPCN. */
+static int
+recent_activity_channel_kind(const dsd_state* state, uint8_t index) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) > 0 ? (int)recent.entries[index].observation.channel_kind
+                                                                 : -1;
+}
+
 static int
 recent_activity_is_empty(const dsd_state* state, uint8_t index) {
     dsd_recent_activity_snapshot recent;
@@ -151,6 +159,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)observation->ota_target_id;
     (void)notice;
     (void)slot;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
     return 0;
 }
 
@@ -1983,6 +2000,8 @@ test_conplus_grant_lcn_kind(dsd_opts* opts, dsd_state* st) {
     status_window_closed(st);
     con_plus_voice(opts, st, 1, 100, 6, 1, 2);
     int rc = expect_true("con+ follows LCN 6", st->trunk_vc_freq[0] == CP_FB && dmr_sm_get_ctx()->vc_slot == 1);
+    rc |=
+        expect_true("con+ the activity row names an LCN", recent_activity_channel_kind(st, 1U) == DSD_CALL_CHANNEL_LCN);
     status_clock_at(1.0);
     accepted_voice_now(opts, st, 1);
     rc |= expect_true("con+ the followed call is on LCN 6", call_channel_is(st, 1U, 6U, DSD_CALL_CHANNEL_LCN));
@@ -2176,6 +2195,8 @@ test_duplex_grant_direction(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long f
         rc |=
             expect_true("duplex grant activity row names called and calling",
                         recent_activity_matches(st, 0U, cases[i].kind, cases[i].called, cases[i].calling, lpcn, NULL));
+        rc |= expect_true("duplex grant activity row names an LPCN",
+                          recent_activity_channel_kind(st, 0U) == DSD_CALL_CHANNEL_LPCN);
     }
     reset_to_cc(opts, st);
     return rc;
@@ -2246,7 +2267,7 @@ main(void) {
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
     rc |= expect_true("absolute grant publishes mbc lpcn activity",
                       recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3300U, 4400U, 88U,
-                                              "Active Group Ch: 0058 (TDMA S1) TG: 3300;"));
+                                              "Active Group Ch: 88 (TDMA S1) TG: 3300;"));
     rc |= expect_true("absolute grant dispatches learned frequency",
                       opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == 452012500L);
 
@@ -2268,7 +2289,14 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("unmapped logical grant publishes activity",
                       recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3325U, 4425U, unmapped_lpcn,
-                                              "Active Group Ch: 0123 (TDMA S1) TG: 3325;"));
+                                              "Active Group Ch: 291 (TDMA S1) TG: 3325;"));
+    /* Tier III channel numbers read as decimal (discussion #900 B11): LPCN 12 is "12", never hex 000C. */
+    (void)dsd_recent_activity_clear(st, 0U);
+    build_grant(bits, bytes, 49U, 12U, 3326U, 4426U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("tier III activity notice is decimal",
+                      recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3326U, 4426U, 12U,
+                                              "Active Group Ch: 12 (TDMA S1) TG: 3326;"));
     rc |= expect_true("unmapped logical grant does not tune", opts->trunk_is_tuned == 0 && st->trunk_vc_freq[0] == 0);
 
     st->trunk_chan_map[lpcn] = freq;
@@ -2326,6 +2354,8 @@ main(void) {
     rc |= expect_true("cap+ disabled group preserves decoded target",
                       recent_activity_matches(&cap_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 42U, 0U, 1U, "LSN:1 TG:42;"));
     rc |= expect_true("cap+ LSN 1 publishes slot zero", recent_activity_has_slot(&cap_st, 1U, 0U));
+    rc |= expect_true("cap+ the activity row names an LSN",
+                      recent_activity_channel_kind(&cap_st, 1U) == DSD_CALL_CHANNEL_LSN);
     rc |= expect_true("cap+ disabled group does not tune", g_result_tune_to_freq_calls == 0);
 
     init_env(&cap_opts, &cap_st);

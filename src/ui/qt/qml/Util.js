@@ -642,8 +642,10 @@ function listenCardRows(a, s) {
     return out
 }
 
-// "Last listened 2 minutes ago" / "Last listened yesterday" / "Not yet listened".
+// "Last listened 2 minutes ago" / "Last listened a day ago" / "Not yet listened".
 // nowMs is the real clock lastHeard is stamped from (savedSystems.realtimeNowMs()).
+// An age, never a calendar day: 24 to 48 hours ago is "a day ago", which a
+// listen late the evening before the day before yesterday can be.
 function heardText(lastHeardSecs, nowMs) {
     if (!lastHeardSecs || lastHeardSecs <= 0)
         return qsTr("Not yet listened")
@@ -659,8 +661,23 @@ function heardText(lastHeardSecs, nowMs) {
         return hours === 1 ? qsTr("Last listened an hour ago") : qsTr("Last listened %1 hours ago").arg(hours)
     }
     if (delta < 172800)
-        return qsTr("Last listened yesterday")
+        return qsTr("Last listened a day ago")
     return qsTr("Last listened %1 days ago").arg(Math.floor(delta / 86400))
+}
+
+// Issue #902: a moment the app saw (Unix ms) as a clock time: "14:32:05" on
+// the local day @p day names, "2026-11-20 14:32:05" on any other date (older,
+// or later after a clock correction). @p day is savedSystems.localDay
+// ({startMs, revision}); reading it keeps a binding current across midnight.
+// With no day every time carries its date; with no time (missing, 0 or less,
+// not finite) the text is empty.
+function clockText(ms, day) {
+    if (typeof ms !== "number" || !isFinite(ms) || ms <= 0)
+        return ""
+    var at = new Date(ms)
+    var start = day && typeof day.startMs === "number" && isFinite(day.startMs) ? new Date(day.startMs) : null
+    var today = start !== null && at.getFullYear() === start.getFullYear() && at.getMonth() === start.getMonth() && at.getDate() === start.getDate()
+    return Qt.formatDateTime(at, today ? "hh:mm:ss" : "yyyy-MM-dd hh:mm:ss")
 }
 
 // Compact age for a call row's right edge: "1m", "2h", "3d", and from 1000 days whole
@@ -892,6 +909,8 @@ function storeLabel(fileName) {
         return qsTr("Signal search permanent avoids")
     case "dsd-neo-app.ini":
         return qsTr("Settings")
+    case "dmr-channels":
+        return qsTr("A saved system's DMR channels")
     }
     return String(fileName || "")
 }

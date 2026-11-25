@@ -472,6 +472,14 @@ cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, i
     return 1;
 }
 
+/* --profile: bootstrap reads its name (bootstrap_cli_try_profile_option()) before this parser runs, as the next
+   argument whatever it starts with, and dsd_cli_compact_args() steps over it the same way. A pre-scan here steps over it
+   too, so a profile named "--" or "--print-config" is the name it is, never the end of the options or a one-shot. */
+static int
+cli_option_value_read_by_bootstrap(const char* arg) {
+    return strcmp(arg, "--profile") == 0;
+}
+
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
@@ -486,8 +494,8 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
-        if (dsd_cli_option_takes_free_value(arg)) {
-            advance = 2; /* a token is any text, a one-shot option's name included */
+        if (dsd_cli_option_takes_free_value(arg) || cli_option_value_read_by_bootstrap(arg)) {
+            advance = 2; /* a token or a profile name is any text, a one-shot option's name included */
             continue;
         }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
@@ -1309,6 +1317,25 @@ cli_resolve_existing_local_file_option(const char* option_name, const char* requ
     return 0;
 }
 
+/* --dmr-chan-overrides (discussion #900 F3): only kept here. The engine decides at start whether the session takes it
+   (one that decodes DMR and runs no trunk scan) and only then opens it, so a session that ignores the option never
+   needs the file; one that takes it refuses a file it cannot open (dmr_t3_overlay_load_csv()). */
+static int
+cli_set_dmr_chan_overrides(dsd_opts* opts, const char* path, int* out_exit_rc) {
+    if (path == NULL || path[0] == '\0') {
+        LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (strlen(path) >= sizeof opts->dmr_chan_overrides_file) {
+        LOG_ERROR("--dmr-chan-overrides path is too long\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    DSD_SNPRINTF(opts->dmr_chan_overrides_file, sizeof opts->dmr_chan_overrides_file, "%s", path);
+    return 1;
+}
+
 // Parse long-style options and environment mapping; also supports the
 // one-shot LCN calculator. Short-option parsing has been migrated here
 // to centralize all CLI handling in runtime.
@@ -1432,6 +1459,12 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--profile") == 0) { /* cli_option_value_read_by_bootstrap(): bootstrap reads the name */  \
+            if (i + 1 < argc) {                                                                                        \
+                arg_advance = 2;                                                                                       \
+            }                                                                                                          \
+            continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--airspy-", 9) == 0) {                                                                   \
             arg_advance = cli_parse_airspy_option(argc, argv, i, opts);                                                \
@@ -2405,6 +2438,23 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-tg-key-csv=", 17) == 0) {                                                          \
             dmr_tg_key_csv_cli = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-chan-overrides") == 0) {                                                            \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-chan-overrides requires a CSV path\n");                                               \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_set_dmr_chan_overrides(opts, DSD_PARSE_ARGS_NEXT_ARG(), out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-chan-overrides=", 21) == 0) {                                                      \
+            if (!cli_set_dmr_chan_overrides(opts, argv[i] + 21, out_exit_rc)) {                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--p25-bandplan") == 0) {                                                                  \

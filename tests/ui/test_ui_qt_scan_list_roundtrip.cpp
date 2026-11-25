@@ -315,6 +315,41 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     }
     csvList["bandwidthKhz"] = 24;
     check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
+
+    // Issue #890: a saved analog system whose Extra arguments are exactly its kind's width option (a Signal search
+    // save) is held at that width: a 12.5 kHz NFM and a 20 kHz AM channel do not fit the 12 kHz DSP rate, where the
+    // unset NFM default and the 6 kHz AM default would.
+    SavedSystemsModel systems;
+    check(systems.add({{"name", "Found NFM"},
+                       {"decodeFlag", "-fA"},
+                       {"freqMhz", "154.43"},
+                       {"extraArgs", "--nfm-bandwidth-hz 12500"}}));
+    const QString foundNfm = systems.get(systems.count() - 1).value("uid").toString();
+    check(systems.add(
+        {{"name", "Found AM"}, {"decodeFlag", "-fM"}, {"freqMhz", "121.5"}, {"extraArgs", "--am-bandwidth-hz=20000"}}));
+    const QString foundAm = systems.get(systems.count() - 1).value("uid").toString();
+    QVariantMap savedList{
+        {"uid", "analog-rate-saved"},
+        {"name", "Saved"},
+        {"sourceType", "usb"},
+        {"bandwidthKhz", 12},
+        {"entries",
+         QVariantList{
+             QVariantMap{{"uid", "nfm-found"}, {"kind", "system"}, {"systemUid", foundNfm}, {"enabled", true}},
+             QVariantMap{{"uid", "am-found"}, {"kind", "system"}, {"systemUid", foundAm}, {"enabled", true}}}}};
+    ScanListStarter savedStarter(nullptr, &systems);
+    const auto savedNarrow = savedStarter.validate(savedList);
+    const QString savedWarning = savedNarrow.value("warnings").toStringList().join("\n");
+    check(savedNarrow.value("ok").toBool() && savedNarrow.value("targetCount").toInt() == 2);
+    check(savedWarning.contains("Skipped at every visit at this bandwidth: Found NFM: NFM bandwidth 12.5 kHz does not "
+                                "fit the 12 kHz DSP rate")
+          && savedWarning.contains("(and 1 more)"));
+    if (!savedWarning.contains("Found NFM")) {
+        std::fprintf(stderr, "saved-system rate diagnostic: '%s' (%s)\n", qPrintable(savedWarning),
+                     qPrintable(savedNarrow.value("error").toString()));
+    }
+    savedList["bandwidthKhz"] = 24;
+    check(savedStarter.validate(savedList).value("warnings").toStringList().isEmpty());
 }
 
 /* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, names

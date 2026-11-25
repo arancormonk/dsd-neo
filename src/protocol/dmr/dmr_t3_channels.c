@@ -5,14 +5,22 @@
 
 /*
  * DMR Tier III channel provenance (<dsd-neo/protocol/dmr/dmr_t3_channels.h>): the origin record of each channel map
- * row, the map import and clear notes, the network change, and the per-target save and restore. Also owns the DMR
- * state extension (dmr_t3_channels_internal.h) that the RC notice dedupe shares. The over-the-air writer is
- * dmr_t3_chan_learn.c; nothing here posts an event, so the engine and app-control links stay free of the emitter.
+ * row, the map import and clear notes, the network change, the missing-channel ledger and its log lines, and the
+ * per-target save and restore. Also owns the DMR state extension (dmr_t3_channels_internal.h) that the RC notice dedupe
+ * shares. The over-the-air writer is dmr_t3_chan_learn.c; nothing here posts an event, so the engine and app-control
+ * links stay free of the emitter.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dmr_call_channel.h"
@@ -23,6 +31,10 @@
 #include "dsd-neo/core/state_fwd.h"
 
 enum { DMR_T3_ROWS = 0x1000 };
+
+/* The record ids dmr_ext_get_or_create() draws (dmr_t3_chan_record_id()): only ever counted up, so one never repeats in
+   a process. */
+static dsd_atomic_u64 g_dmr_record_ids;
 
 dmr_ext_t*
 dmr_ext_get(const dsd_state* state) {
@@ -42,6 +54,7 @@ dmr_ext_get_or_create(dsd_state* state) {
     if (ext == NULL) {
         return NULL;
     }
+    ext->instance = dsd_atomic_u64_fetch_add_relaxed(&g_dmr_record_ids, 1U) + 1U;
     if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_DMR_RC, ext, free) != 0) {
         free(ext);
         return NULL;
@@ -68,12 +81,22 @@ dmr_t3_chan_origin_of_byte(uint8_t origin) {
     }
 }
 
-dmr_chan_origin_e
-dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
-    if (state == NULL || lpcn >= DMR_T3_ROWS || state->trunk_chan_map[lpcn] == 0) {
+int
+dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn) {
+    return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] != 0U;
+}
+
+/* dmr_t3_chan_origin() with the extension @p ext (NULL for none) already looked up; @p lpcn is below DMR_T3_ROWS. */
+static dmr_chan_origin_e
+dmr_t3_chan_row_origin(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
+    /* A channel with the user's entry is theirs, whatever the shared row under it holds: nothing over the air writes
+       it. */
+    if (dmr_t3_overlay_has_entry(ext, lpcn)) {
+        return DMR_CHAN_ORIGIN_USER;
+    }
+    if (state->trunk_chan_map[lpcn] == 0) {
         return DMR_CHAN_ORIGIN_NONE;
     }
-    const dmr_ext_t* ext = dmr_ext_get(state);
     const uint8_t origin = ext != NULL ? ext->origin[lpcn] : (uint8_t)DMR_CHAN_ORIGIN_NONE;
     /* A row another writer set after the air is that writer's, as a file's is. */
     if (origin == (uint8_t)DMR_CHAN_ORIGIN_NONE
@@ -81,6 +104,32 @@ dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
         return DMR_CHAN_ORIGIN_FILE;
     }
     return dmr_t3_chan_origin_of_byte(origin);
+}
+
+dmr_chan_origin_e
+dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
+    if (state == NULL || lpcn >= DMR_T3_ROWS) {
+        return DMR_CHAN_ORIGIN_NONE;
+    }
+    return dmr_t3_chan_row_origin(state, dmr_ext_get(state), lpcn);
+}
+
+void
+dmr_t3_chan_origins_copy(const dsd_state* state, uint8_t* out, size_t count) {
+    if (out == NULL) {
+        return;
+    }
+    if (count > DMR_T3_ROWS) {
+        count = DMR_T3_ROWS;
+    }
+    DSD_MEMSET(out, 0, count);
+    if (state == NULL) {
+        return;
+    }
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    for (size_t l = 1U; l < count && l <= DMR_T3_MAX_LCN; l++) {
+        out[l] = (uint8_t)dmr_t3_chan_row_origin(state, ext, (uint16_t)l);
+    }
 }
 
 int
@@ -116,6 +165,7 @@ dmr_t3_chan_note_map_loaded(dsd_state* state) {
     }
     DSD_MEMSET(state->dmr_lcn_ota, 0, sizeof(state->dmr_lcn_ota));
     ext->revision++;
+    dmr_t3_missing_reconcile(state);
 }
 
 void
@@ -127,6 +177,347 @@ dmr_t3_chan_note_map_cleared(dsd_state* state) {
     DSD_MEMSET(ext->origin, 0, sizeof(ext->origin));
     DSD_MEMSET(state->dmr_lcn_ota, 0, sizeof(state->dmr_lcn_ota));
     ext->revision++;
+    dmr_t3_missing_reconcile(state);
+}
+
+/* ---- The user's channels (the overlay; its edits are dmr_t3_overlay.c's) ---- */
+
+int
+dmr_t3_overlay_get(const dsd_state* state, uint16_t lpcn, long* hz) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    int op = 0;
+    long user_hz = 0;
+    if (ext != NULL && dmr_t3_lpcn_is_channel(lpcn) && ext->overlay.op[lpcn] != 0U) {
+        op = (int)ext->overlay.op[lpcn];
+        user_hz = ext->overlay.hz[lpcn];
+    }
+    if (hz != NULL) {
+        *hz = user_hz;
+    }
+    return op;
+}
+
+size_t
+dmr_t3_overlay_count(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? (size_t)ext->overlay.count : 0U;
+}
+
+int
+dmr_t3_overlay_resolve(const dsd_state* state, uint16_t lpcn, long* hz) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || lpcn >= DMR_T3_ROWS || hz == NULL) {
+        return 0;
+    }
+    const uint8_t op = ext->overlay.op[lpcn];
+    if (op == 0U) {
+        return 0;
+    }
+    *hz = op == (uint8_t)DMR_T3_OVERLAY_SET ? ext->overlay.hz[lpcn] : 0;
+    return 1;
+}
+
+/* dmr_t3_chan_effective_hz() with the extension @p ext (NULL for none) already looked up; @p lpcn is below
+   DMR_T3_ROWS. */
+static long
+dmr_t3_chan_row_effective_hz(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
+    if (!dmr_t3_lpcn_is_channel(lpcn)) {
+        return 0;
+    }
+    if (ext != NULL && ext->overlay.op[lpcn] != 0U) {
+        return ext->overlay.op[lpcn] == (uint8_t)DMR_T3_OVERLAY_SET ? ext->overlay.hz[lpcn] : 0;
+    }
+    return state->trunk_chan_map[lpcn];
+}
+
+long
+dmr_t3_chan_effective_hz(const dsd_state* state, uint16_t lpcn) {
+    if (state == NULL || lpcn >= DMR_T3_ROWS) {
+        return 0;
+    }
+    return dmr_t3_chan_row_effective_hz(state, dmr_ext_get(state), lpcn);
+}
+
+void
+dmr_t3_chan_effective_copy(const dsd_state* state, long* out, size_t count) {
+    if (out == NULL) {
+        return;
+    }
+    if (count > DMR_T3_ROWS) {
+        count = DMR_T3_ROWS;
+    }
+    DSD_MEMSET(out, 0, count * sizeof(*out));
+    if (state == NULL) {
+        return;
+    }
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    for (size_t l = 1U; l < count; l++) {
+        out[l] = dmr_t3_chan_row_effective_hz(state, ext, (uint16_t)l);
+    }
+}
+
+void
+dmr_t3_overlay_discard(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && ext->overlay.count != 0U) {
+        DSD_MEMSET(&ext->overlay, 0, sizeof(ext->overlay));
+        ext->revision++;
+    }
+}
+
+/* ---- Missing-channel ledger ---- */
+
+#define DMR_T3_MISSING_DETAIL_CAP(l) (sizeof((l)->details) / sizeof((l)->details[0]))
+
+static int
+dmr_t3_missing_bit(const uint8_t* set, uint16_t lpcn) {
+    return (set[lpcn >> 3] >> (lpcn & 7U)) & 1U;
+}
+
+static void
+dmr_t3_missing_bit_set(uint8_t* set, uint16_t lpcn) {
+    set[lpcn >> 3] = (uint8_t)(set[lpcn >> 3] | (1U << (lpcn & 7U)));
+}
+
+static void
+dmr_t3_missing_bit_clear(uint8_t* set, uint16_t lpcn) {
+    set[lpcn >> 3] = (uint8_t)(set[lpcn >> 3] & ~(1U << (lpcn & 7U)));
+}
+
+static size_t
+dmr_t3_missing_popcount(const dmr_t3_missing_ledger* l) {
+    size_t n = 0;
+    for (size_t i = 0; i < sizeof(l->missing); i++) {
+        for (unsigned b = l->missing[i]; b != 0U; b &= b - 1U) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* The detail slot for @p lpcn, moved to the front: its own entry, else a new one, the oldest giving way when all are
+   taken. */
+static dmr_t3_missing_detail*
+dmr_t3_missing_front(dmr_t3_missing_ledger* l, uint16_t lpcn) {
+    size_t i = 0;
+    while (i < l->detail_count && l->details[i].lpcn != lpcn) {
+        i++;
+    }
+    if (i == l->detail_count) {
+        if (l->detail_count < DMR_T3_MISSING_DETAIL_CAP(l)) {
+            l->detail_count++;
+        }
+        i = (size_t)l->detail_count - 1U;
+    }
+    if (i > 0U) {
+        DSD_MEMMOVE(&l->details[1], &l->details[0], i * sizeof(l->details[0]));
+    }
+    return &l->details[0];
+}
+
+/* Drop the details whose channel left the missing set, keeping the order of the rest. */
+static void
+dmr_t3_missing_prune_details(dmr_t3_missing_ledger* l) {
+    size_t kept = 0;
+    for (size_t i = 0; i < l->detail_count; i++) {
+        if (dmr_t3_missing_bit(l->missing, l->details[i].lpcn)) {
+            l->details[kept++] = l->details[i];
+        }
+    }
+    l->detail_count = (uint8_t)kept;
+}
+
+/* A network change: nothing it recorded, reported included, says anything about the new network. */
+static void
+dmr_t3_missing_reset(dmr_t3_missing_ledger* l) {
+    const uint32_t revision = l->revision;
+    DSD_MEMSET(l, 0, sizeof(*l));
+    l->revision = revision + 1U;
+}
+
+void
+dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const dmr_t3_grant_class* cls, uint8_t slot,
+                          int unverified) {
+    (void)opts;
+    if (state == NULL || cls == NULL || !dmr_t3_lpcn_is_channel(lpcn) || state->trunk_chan_map[lpcn] != 0) {
+        return;
+    }
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL || dmr_t3_overlay_has_entry(ext, lpcn)) {
+        return; /* the user hid it (no frequency is wanted) or set it (the grant follows theirs) */
+    }
+    dmr_t3_missing_ledger* l = &ext->missing;
+    dmr_t3_missing_bit_set(l->missing, lpcn);
+    if (!unverified) {
+        dmr_t3_missing_bit_set(l->checked, lpcn);
+    }
+    dmr_t3_missing_detail* d = dmr_t3_missing_front(l, lpcn);
+    d->lpcn = lpcn;
+    d->slot = (uint8_t)(slot & 1U);
+    d->group = (uint8_t)(cls->group != 0U);
+    d->data = (uint8_t)(cls->data != 0U);
+    /* The details are this grant's, so is their provenance; the checked set keeps whether any grant confirmed the
+       channel. */
+    d->unverified = (uint8_t)(unverified != 0);
+    d->caller = cls->caller;
+    d->recipient = cls->recipient;
+    d->last_heard_ms = dsd_decode_now_mono_ms();
+    l->revision++;
+    if (!dmr_t3_missing_bit(l->reported, lpcn)) {
+        dmr_t3_missing_bit_set(l->reported, lpcn);
+        LOG_INFO("NOTICE: DMR Tier III: channel %u has no frequency; dsd-neo cannot retune to its calls%s\n",
+                 (unsigned)lpcn, unverified ? " (unchecked)" : "");
+    }
+}
+
+/* Row @p lpcn gained a frequency: it leaves the ledger (the one-row dmr_t3_missing_reconcile()). */
+static void
+dmr_t3_missing_forget(dmr_ext_t* ext, uint16_t lpcn) {
+    dmr_t3_missing_ledger* l = &ext->missing;
+    if (!dmr_t3_lpcn_is_channel(lpcn) || !dmr_t3_missing_bit(l->missing, lpcn)) {
+        return;
+    }
+    dmr_t3_missing_bit_clear(l->missing, lpcn);
+    dmr_t3_missing_bit_clear(l->checked, lpcn);
+    dmr_t3_missing_prune_details(l);
+    l->revision++;
+}
+
+void
+dmr_t3_missing_reconcile(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL) {
+        return;
+    }
+    dmr_t3_missing_ledger* l = &ext->missing;
+    ext->missing_map_seq = state->trunk_chan_map_seq;
+    int changed = 0;
+    for (uint16_t c = 1U; c <= (uint16_t)DMR_T3_MAX_LCN; c++) {
+        if (dmr_t3_missing_bit(l->missing, c) && (state->trunk_chan_map[c] != 0 || dmr_t3_overlay_has_entry(ext, c))) {
+            dmr_t3_missing_bit_clear(l->missing, c);
+            dmr_t3_missing_bit_clear(l->checked, c);
+            changed = 1;
+        }
+    }
+    if (changed) {
+        dmr_t3_missing_prune_details(l);
+        l->revision++;
+    }
+}
+
+void
+dmr_t3_missing_sync(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && ext->missing_map_seq != state->trunk_chan_map_seq) {
+        dmr_t3_missing_reconcile(state);
+    }
+}
+
+void
+dmr_t3_missing_note_written(const dsd_state* state, dmr_ext_t* ext, uint16_t lpcn, uint64_t seq_before) {
+    if (ext->missing_map_seq != seq_before) {
+        dmr_t3_missing_reconcile(state); /* another writer moved the map first: every channel is checked */
+        return;
+    }
+    if (state->trunk_chan_map[lpcn] != 0) {
+        dmr_t3_missing_forget(ext, lpcn);
+    }
+    ext->missing_map_seq = state->trunk_chan_map_seq;
+}
+
+size_t
+dmr_t3_missing_count(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? dmr_t3_missing_popcount(&ext->missing) : 0U;
+}
+
+uint32_t
+dmr_t3_missing_revision(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? ext->missing.revision : 0U;
+}
+
+void
+dmr_t3_missing_copy(const dsd_state* state, dmr_t3_missing_ledger* out) {
+    if (out == NULL) {
+        return;
+    }
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return;
+    }
+    DSD_MEMCPY(out, &ext->missing, sizeof(*out));
+}
+
+/* Append channel @p lpcn after @p sep to the summary in @p msg, its length @p used; past the buffer it is cut. */
+static void
+dmr_t3_missing_append(char* msg, size_t cap, size_t* used, const char* sep, uint16_t lpcn, int unchecked) {
+    if (*used >= cap) {
+        return;
+    }
+    const int w =
+        DSD_SNPRINTF(msg + *used, cap - *used, "%s%u%s", sep, (unsigned)lpcn, unchecked ? " (unchecked)" : "");
+    if (w > 0) {
+        *used += (size_t)w;
+    }
+}
+
+/* The first channels of @p l in ascending order, at most as many as it has details, then how many more. */
+static void
+dmr_t3_missing_append_channels(char* msg, size_t cap, size_t* used, const dmr_t3_missing_ledger* l, size_t total) {
+    const size_t shown_max = DMR_T3_MISSING_DETAIL_CAP(l);
+    size_t shown = 0;
+    for (uint16_t c = 1U; c <= DMR_T3_MAX_LCN && shown < shown_max; c++) {
+        if (dmr_t3_missing_bit(l->missing, c)) {
+            dmr_t3_missing_append(msg, cap, used, shown == 0U ? " " : ", ", c, !dmr_t3_missing_bit(l->checked, c));
+            shown++;
+        }
+    }
+    if (total > shown && *used < cap) {
+        const int w = DSD_SNPRINTF(msg + *used, cap - *used, " (+%zu more)", total - shown);
+        if (w > 0) {
+            *used += (size_t)w;
+        }
+    }
+}
+
+void
+dmr_t3_missing_log_summary_for(const dmr_t3_missing_ledger* ledger, const char* target) {
+    if (ledger == NULL) {
+        return;
+    }
+    const size_t total = dmr_t3_missing_popcount(ledger);
+    if (total == 0U) {
+        return;
+    }
+    const int named = target != NULL && target[0] != '\0';
+    char msg[512];
+    const int n = DSD_SNPRINTF(msg, sizeof msg,
+                               "DMR Tier III%s%s%s: %zu channel%s granted with no frequency, so dsd-neo could not "
+                               "follow %s calls:",
+                               named ? " (" : "", named ? target : "", named ? ")" : "", total,
+                               total == 1U ? " was" : "s were", total == 1U ? "its" : "their");
+    if (n < 0) {
+        return;
+    }
+    size_t used = (size_t)n;
+    dmr_t3_missing_append_channels(msg, sizeof msg, &used, ledger, total);
+    if (used >= sizeof msg) {
+        /* Cut (a target named at great length): say so rather than end on a partial channel number. */
+        static const char k_cut[] = "...";
+        DSD_MEMCPY(msg + sizeof msg - sizeof k_cut, k_cut, sizeof k_cut);
+    }
+    LOG_INFO("NOTICE: %s\n", msg);
+}
+
+void
+dmr_t3_missing_log_summary(const dsd_state* state) {
+    dmr_t3_missing_sync(state);
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL) {
+        dmr_t3_missing_log_summary_for(&ext->missing, NULL);
+    }
 }
 
 /* What the air taught goes with the network it came from; the next checked system code starts a new baseline. The
@@ -134,9 +525,11 @@ dmr_t3_chan_note_map_cleared(dsd_state* state) {
 static void
 dmr_t3_chan_drop_network(dsd_state* state, dmr_ext_t* ext) {
     (void)dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_ota);
+    dmr_t3_missing_reset(&ext->missing);
     ext->generation++;
     ext->revision++;
     ext->syscode_valid = 0U;
+    ext->cc_evidence = 0U;
 }
 
 void
@@ -172,6 +565,107 @@ dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode) {
     ext->syscode_valid = 1U;
 }
 
+static void
+dmr_t3_set_tier3(dmr_ext_t* ext, int checked) {
+    if (ext == NULL) {
+        return;
+    }
+    if (checked) {
+        ext->tier3 = 1U;
+    } else {
+        ext->tier3_unchecked = 1U;
+    }
+}
+
+void
+dmr_t3_note_tier3(dsd_state* state, int checked) {
+    dmr_t3_set_tier3(dmr_ext_get_or_create(state), checked);
+}
+
+void
+dmr_t3_note_tier3_if_recorded(const dsd_state* state, int checked) {
+    dmr_t3_set_tier3(dmr_ext_get(state), checked);
+}
+
+int
+dmr_t3_tier3_seen(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->tier3 != 0U;
+}
+
+int
+dmr_t3_tier3_unchecked_seen(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->tier3_unchecked != 0U;
+}
+
+void
+dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return;
+    }
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return;
+    }
+    ext->tier3 = 1U;
+    const long hz = (long)dsd_opts_tuned_freq_hz(opts);
+    if (opts->trunk_is_tuned != 0 || hz <= 0) {
+        return; /* a followed call's carrier, or no frequency to name */
+    }
+    ext->cc_evidence = 1U;
+    ext->cc_evidence_carrier = state->carrier_seq;
+    ext->cc_evidence_rx_epoch = state->rx_id.epoch;
+    ext->cc_evidence_tune_gen = dsd_trunk_tuning_generation();
+    ext->cc_evidence_hz = hz;
+}
+
+void
+dmr_t3_cc_note_payload_channel(const dsd_state* state, int composite) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && !composite) {
+        ext->cc_evidence = 0U;
+    }
+}
+
+void
+dmr_t3_cc_note_reception_lost(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL) {
+        ext->cc_evidence = 0U;
+    }
+}
+
+long
+dmr_t3_cc_confirmed_hz(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || ext->cc_evidence == 0U || ext->cc_evidence_carrier != state->carrier_seq) {
+        return 0;
+    }
+    /* Another identity on the same carrier (a colour-code change: two systems can share a frequency; a DMR reset)
+       moves the epoch: what the old one's control channel said names no TSCC for the new one. */
+    if (ext->cc_evidence_rx_epoch != state->rx_id.epoch) {
+        return 0;
+    }
+    /* A trunk retune (to a voice channel, back, or a hunt's next candidate) moves the tuning generation, not always the
+       carrier count; a tune in flight leaves the receiver nowhere known. */
+    if (!dsd_trunk_tuning_frame_is_current(ext->cc_evidence_tune_gen)) {
+        return 0;
+    }
+    return ext->cc_evidence_hz;
+}
+
+int
+dmr_t3_chan_recorded(const dsd_state* state) {
+    return dmr_ext_get(state) != NULL;
+}
+
+int
+dmr_t3_overrides_applied(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->overrides_applied != 0U;
+}
+
 uint32_t
 dmr_t3_chan_generation(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
@@ -189,6 +683,12 @@ dmr_t3_chan_revision(const dsd_state* state) {
     return (ext != NULL ? ext->revision : 0U) + state->dmr_lcn_ota_seq;
 }
 
+uint64_t
+dmr_t3_chan_record_id(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? ext->instance : 0U;
+}
+
 void
 dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     if (out == NULL) {
@@ -198,6 +698,8 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     if (state == NULL) {
         return;
     }
+    /* The ledger is saved against the map it is saved with: a row another writer filled leaves it first. */
+    dmr_t3_missing_sync(state);
     DSD_MEMCPY(out->trust, state->dmr_lcn_trust, sizeof(out->trust));
     DSD_MEMCPY(out->ota, state->dmr_lcn_ota, sizeof(out->ota));
     out->revision = dmr_t3_chan_revision(state); // the one a reader sees, the takeovers included
@@ -209,6 +711,9 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     out->generation = ext->generation;
     out->syscode = ext->syscode;
     out->syscode_valid = ext->syscode_valid;
+    out->tier3 = ext->tier3;
+    out->tier3_unchecked = ext->tier3_unchecked;
+    DSD_MEMCPY(&out->missing, &ext->missing, sizeof(out->missing));
 }
 
 void
@@ -220,7 +725,8 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     DSD_MEMCPY(state->dmr_lcn_ota, in->ota, sizeof(state->dmr_lcn_ota));
     dmr_ext_t* ext = dmr_ext_get(state);
     /* A snapshot with no revision recorded nothing (every change bumps it): with no record here either, none is due. */
-    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U) {
+    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U && in->tier3 == 0U
+        && in->tier3_unchecked == 0U && in->missing.revision == 0U) {
         return;
     }
     ext = dmr_ext_get_or_create(state);
@@ -235,4 +741,12 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     ext->revision = (current > in->revision ? current : in->revision) + 1U - state->dmr_lcn_ota_seq;
     ext->syscode = in->syscode;
     ext->syscode_valid = in->syscode_valid;
+    ext->tier3 = in->tier3;
+    ext->tier3_unchecked = in->tier3_unchecked;
+    /* The target's carrier is another: what was heard on the one left names no TSCC here. */
+    ext->cc_evidence = 0U;
+    const uint32_t missing_revision =
+        (ext->missing.revision > in->missing.revision ? ext->missing.revision : in->missing.revision) + 1U;
+    DSD_MEMCPY(&ext->missing, &in->missing, sizeof(ext->missing));
+    ext->missing.revision = missing_revision;
 }

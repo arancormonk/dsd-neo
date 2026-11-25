@@ -133,6 +133,8 @@ dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int
             state->scan_y_partial_hold_ms = hold_ms;
         }
     }
+    /* A transmission its sync words alone confirmed (SYNC_ONLY, issue #890) is no -Y content and no open verdict: it
+       stores nothing here, and only a quiet check below waits on it. */
     /* The setting off: this one load is the rest of the frame's cost, before any owner is looked up. */
     if (!opts || !opts->scan_skip_silent) {
         return;

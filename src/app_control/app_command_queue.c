@@ -119,6 +119,7 @@
 #include <string.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
+#include "dmr_channel_commands.h"
 #include "key_commands.h"
 #include "next_start_check.h"
 #include "recording_view_internal.h"
@@ -301,6 +302,14 @@ recording_command_id(const struct dsd_app_command* c) {
    clears it before every dispatch, so it never outlives one apply. Decoder thread only. */
 static int g_config_recording_applied;
 
+/* What a command with a retained result did, handed back along apply_cmd() for the drain to publish: scan_list for a
+   DSD_APP_CMD_SCAN_LIST_SET (dsd_app_scan_list_set_code), dmr_channel for a DSD_APP_CMD_DMR_CHANNEL_SET
+   (dsd_app_dmr_channel_set_code). Other commands leave both as apply_cmd() set them. */
+typedef struct {
+    int32_t scan_list;
+    int32_t dmr_channel;
+} ui_cmd_result_codes;
+
 void
 dsd_app_command_session_set_open(int open) {
     ensure_mu_init();
@@ -312,6 +321,7 @@ dsd_app_command_session_set_open(int open) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
+        dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
@@ -5238,6 +5248,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
+        dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
         dsd_app_recording_command_resolved(recording_command_id(&g_q[g_head]), DSD_APP_RECORDING_COMMAND_DROPPED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
@@ -5594,6 +5605,14 @@ dsd_app_command_scan_avoid_remove(const dsd_app_scan_avoid_remove_payload* paylo
 }
 
 int
+dsd_app_command_dmr_channel_set(const dsd_app_dmr_channel_set_payload* payload) {
+    if (!payload) {
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
+    return dsd_app_command_submit(DSD_APP_CMD_DMR_CHANNEL_SET, payload, sizeof(*payload));
+}
+
+int
 dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
     if (!payload) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
@@ -5647,6 +5666,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_SCAN_ROW_EDIT, sizeof(dsd_app_scan_row_edit_payload)},
     {DSD_APP_CMD_SCAN_AVOID_REMOVE, sizeof(dsd_app_scan_avoid_remove_payload)},
     {DSD_APP_CMD_SCAN_LIST_SET, sizeof(dsd_app_scan_list_set_payload)},
+    {DSD_APP_CMD_DMR_CHANNEL_SET, sizeof(dsd_app_dmr_channel_set_payload)},
     {DSD_APP_CMD_RECEIVE_SET, sizeof(dsd_app_receive_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
@@ -10919,9 +10939,23 @@ ui_cmd_dispatch_available(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return ui_cmd_dispatch(opts, state, c);
 }
 
-/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did (its retained result); other commands leave it. */
+/* The commands whose code the drain retains as their result: a scan list toggle and a Tier III channel edit. */
 static int
-apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
+apply_cmd_with_retained_result(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c,
+                               ui_cmd_result_codes* codes) {
+    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
+        return apply_cmd_scan_list_set(opts, state, c, &codes->scan_list);
+    }
+    if (c->id == DSD_APP_CMD_DMR_CHANNEL_SET) {
+        codes->dmr_channel = dsd_app_apply_dmr_channel_set(opts, state, c);
+        return codes->dmr_channel == DSD_APP_DMR_CHANNEL_SET_OK ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+    }
+    return UI_CMD_APPLY_UNHANDLED;
+}
+
+/* @p codes receives what a command with a retained result did; other commands leave it. */
+static int
+apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_cmd_result_codes* codes) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
         apply_cmd_eye_spectrum,     apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_skip_slot,
@@ -10967,8 +11001,9 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #endif
-    if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
-        return apply_cmd_scan_list_set(opts, state, c, scan_list_code);
+    r = apply_cmd_with_retained_result(opts, state, c, codes);
+    if (r) {
+        return r;
     }
     for (size_t i = 0; i < (sizeof k_command_groups / sizeof k_command_groups[0]); ++i) {
         r = k_command_groups[i](opts, state, c);
@@ -11434,7 +11469,7 @@ ui_group_list_release_calls(dsd_opts* opts, dsd_state* state, const ui_group_lis
 
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
-                 int32_t* scan_list_code) {
+                 ui_cmd_result_codes* codes) {
     /* Before the suspend, so it is the request the row in force made. */
     const svc_rigctl_session rigctl_before = svc_rigctl_session_now(opts, state);
     const int mode_update = command_updates_scan_mode(c);
@@ -11450,7 +11485,7 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
        command that leaves the scope in force starts opens on the row's settings with the CQPSK state an open picks,
        and is asked for the row's profile at once (ui_publish_row_to_started_stream()). */
     const unsigned int starts_before = svc_rtl_start_count();
-    const int result = apply_cmd_unscoped(opts, state, c, scan_list_code);
+    const int result = apply_cmd_unscoped(opts, state, c, codes);
     const ui_scope_stream stream = ui_scope_stream_of(starts_before);
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
@@ -11615,14 +11650,16 @@ cmd_chain_of(const dsd_opts* opts, const dsd_state* state) {
     return chain;
 }
 
-/* @p scan_list_code receives what a DSD_APP_CMD_SCAN_LIST_SET did, for its retained result (issue #697): SEARCH when
-   Signal search refuses it, the coordinator's answer once the handler asked it, INVALID for anything that stops it
-   before then. */
+/* @p codes receives what a DSD_APP_CMD_SCAN_LIST_SET (issue #697) or DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900) did,
+   for its retained result: SEARCH when Signal search refuses it, the handler's answer once it ran, INVALID for anything
+   that stops it before then. */
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int32_t* scan_list_code) {
-    *scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_cmd_result_codes* codes) {
+    codes->scan_list = DSD_APP_SCAN_LIST_SET_INVALID;
+    codes->dmr_channel = DSD_APP_DMR_CHANNEL_SET_INVALID;
     if (!command_allowed_during_search(state, c)) {
-        *scan_list_code = DSD_APP_SCAN_LIST_SET_SEARCH;
+        codes->scan_list = DSD_APP_SCAN_LIST_SET_SEARCH;
+        codes->dmr_channel = DSD_APP_DMR_CHANNEL_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         ui_cmd_answer_refused_squelch_request(state, c);
         return UI_CMD_APPLY_FAILED;
@@ -11649,7 +11686,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
        compared across the whole command, so one that restates the chain in force, or a scoped one whose row puts the
        same chain back, keeps the P25 proof. */
     const dsd_frame_sync_chain chain_before = cmd_chain_of(opts, state);
-    const int result = apply_cmd_scoped(opts, state, c, guarded, scan_list_code);
+    const int result = apply_cmd_scoped(opts, state, c, guarded, codes);
     dsd_frame_sync_note_chain_change(chain_before, cmd_chain_of(opts, state));
     g_apply_cmd_guard_held = 0;
     if (guarded) {
@@ -11886,6 +11923,9 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
     /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
+    /* A Tier III channel edit (discussion #900 F3) changes only the map: it takes effect from the next grant, and a
+       call already followed keeps its carrier, so it waits for the carrier to end rather than finalize that call. */
+    DSD_APP_CMD_DMR_CHANNEL_SET,
     /* Put back and clear (issue #672) are judged by their payload: command_scan_flag_edit_needs_frame_loop(). Avoid
        stays out: it steps the scan off the channel on air. */
 };
@@ -12254,6 +12294,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
+            dsd_app_dmr_channel_publish_result(&cmd, DSD_APP_DMR_CHANNEL_SET_INVALID, state);
             dsd_app_recording_command_resolved(recording_command_id(&cmd), DSD_APP_RECORDING_COMMAND_FAILED);
             if (dsd_app_recording_command_tracked(recording_command_id(&cmd))) {
                 /* Its failure shows in the next view, as an applied command's outcome does. */
@@ -12263,10 +12304,10 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             n_applied++;
             continue;
         }
-        int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
+        ui_cmd_result_codes codes = {DSD_APP_SCAN_LIST_SET_INVALID, DSD_APP_DMR_CHANNEL_SET_INVALID};
         /* The receiver hears the gate the command leaves once it has run, whole (issue #899). */
         dsd_engine_receiver_gate_hold(1);
-        const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        const int result = apply_cmd(opts, state, &cmd, &codes);
         dsd_engine_receiver_gate_hold(0);
         ui_sync_analog_default_squelch(opts, state);
         ui_forget_saved_input_off_replay(opts, state);
@@ -12275,7 +12316,8 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #endif
         tg_export_publish_result(&cmd, result);
         dsd_app_publish_decryption_result(&cmd, result);
-        dsd_app_scan_list_publish_result(&cmd, scan_list_code, state);
+        dsd_app_scan_list_publish_result(&cmd, codes.scan_list, state);
+        dsd_app_dmr_channel_publish_result(&cmd, codes.dmr_channel, state);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.

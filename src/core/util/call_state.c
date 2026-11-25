@@ -594,6 +594,9 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->priority = previous->priority;
     snapshot->media_started_m = previous->media_started_m;
     snapshot->media_updated_m = previous->media_updated_m;
+    snapshot->checked_media_started_m = previous->checked_media_started_m;
+    snapshot->checked_media_updated_m = previous->checked_media_updated_m;
+    snapshot->checked_media_origin = previous->checked_media_origin;
     // The reopened epoch continues the ending one's transmission, so state bound to that call stays bound to it.
     snapshot->transmission_epoch = dsd_call_snapshot_transmission(previous);
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
@@ -1091,6 +1094,45 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
     }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+/* The protocol a frame's media counts for: P25 Phase 1 and Phase 2 are one protocol, as for crypto updates. */
+static int
+call_state_media_family(int protocol) {
+    return DSD_SYNC_IS_P25P2(protocol) ? dsd_call_state_protocol_family(DSD_SYNC_P25P1_POS)
+                                       : dsd_call_state_protocol_family(protocol);
+}
+
+int
+dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_scan_observation_origin origin;
+    if (!dsd_state_scan_observation_origin(state, &origin)) {
+        return 0; /* the frame was cut: none of it is any visit's */
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return -1;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || call_state_media_family(snapshot->protocol) != call_state_media_family(protocol)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    const double now_m = call_state_observed_m(observed_m);
+    if (snapshot->checked_media_started_m <= 0.0 || snapshot->checked_media_origin.visit != origin.visit
+        || snapshot->checked_media_origin.carrier_seq != origin.carrier_seq) {
+        /* Checked media of another visit or carrier is no part of this span. */
+        snapshot->checked_media_started_m = now_m;
+        snapshot->checked_media_origin = origin;
+    }
+    snapshot->checked_media_updated_m = now_m;
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

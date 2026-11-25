@@ -1314,6 +1314,70 @@ test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The FICH-failure fallback is each carrier's own (issue #890): two decoder states interleaved, A confirmed on V/D1
+ * voice and B on full-rate data. A loses a FICH and lays its frame out as voice, not as the data layout B last
+ * verified. */
+static void
+test_process_ysf_fich_fallback_is_per_decoder_state(void) {
+    static dsd_opts opts;
+    static dsd_state state_a;
+    static dsd_state state_b;
+    uint8_t fich_vd1[48];
+    uint8_t fich_data[48];
+    uint8_t fich_input[100];
+    uint8_t dch_vd1[180];
+    uint8_t dch_data0[180];
+    uint8_t dch_data1[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state_a, 0, sizeof(state_a));
+    DSD_MEMSET(&state_b, 0, sizeof(state_b));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state_a.synctype = DSD_SYNC_YSF_NEG;
+    state_b.synctype = DSD_SYNC_YSF_NEG;
+
+    make_fich_bits_for_vd_type1(fich_vd1);
+    make_fich_bits_for_full_rate_data(fich_data);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch_vd1, 176U, 9U, 0);
+    encode_dch_payload_to_input("PYSFDST001PYSFSRC002", 20U, dch_data0, 176U, 9U, 0);
+    encode_dch_payload_to_input("PYSFUPL003PYSFDNL004", 20U, dch_data1, 176U, 9U, 0);
+
+    /* A verifies a V/D1 FICH. */
+    encode_fich_input(fich_vd1, 0, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch_vd1, 1U);
+    assert(processYSF(&opts, &state_a) == 1);
+    assert(state_a.ysf_dt == 0U);
+
+    /* B verifies a full-rate data FICH. */
+    encode_fich_input(fich_data, 0, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch_data0, dch_data1);
+    assert(processYSF(&opts, &state_b) == 1);
+    assert(state_b.ysf_dt == 1U);
+
+    /* A's next FICH fails: its own V/D1 layout plays, not B's data layout. */
+    encode_fich_input(fich_vd1, 1, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch_vd1, 1U);
+    assert(processYSF(&opts, &state_a) == 1);
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_process_mbe_call_count == 5);
+    assert(state_a.ysf_dt == 0U);
+    assert(state_b.ysf_dt == 1U);
+
+    dsd_state_ext_free_all(&state_a);
+    dsd_state_ext_free_all(&state_b);
+}
+
 /* The output buffers the gain stage (dsd_voice_chain_run()) and short staging write, for a zeroed state: V/D2 frames
    run it in either output format (issue #652). */
 static void
@@ -1369,6 +1433,8 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.ysf_dt == 2U);
     const dsd_call_snapshot call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "VD2SRC4444") == 0);
+    /* Issue #890: with no scan running nobody reads checked media, so the voice path keeps none. */
+    assert(call.checked_media_updated_m <= 0.0);
     assert(strcmp(state.err_str, "========") == 0);
     // The fifth stubbed frame (5.0), scaled to the int16 scale of the voice buffers and gained once (x3) into the short
     // frame the mixers play, in float output as in 16-bit output.
@@ -1438,6 +1504,8 @@ run_vd_type2_frame_info(int refused) {
 
     g_ysf_info_count = 0;
     g_ysf_info_bad_calls = 0;
+    opts.trunk_scan_enabled = 1; /* a scan that reads checked media (issue #890) */
+    begin_test_ysf_call(&state);
     dsd_voice_chain_set_observer_for_test(ysf_info_observe, NULL);
     processYSF(&opts, &state);
     dsd_voice_chain_set_observer_for_test(NULL, NULL);
@@ -1453,6 +1521,16 @@ run_vd_type2_frame_info(int refused) {
         assert(g_ysf_info_seen[i].decodable == 1U);
         assert(g_ysf_info_seen[i].admitted == (refused ? 0U : 1U));
         assert(g_ysf_info_seen[i].talkspurt == 0U);
+    }
+    /* Issue #890: only the speech mbelib-neo returned is the call's checked media, the scan's voice credit, and only
+       for admitted traffic; the tone, the repeat, the mute and the failed frame are none, though they marked media. */
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.media_updated_m > 0.0);
+    if (refused) {
+        assert(call.checked_media_updated_m <= 0.0);
+    } else {
+        assert(call.checked_media_started_m > 0.0);
+        assert(fabs(call.checked_media_updated_m - call.checked_media_started_m) < 1e-9);
     }
     dsd_state_ext_free_all(&state);
 }
@@ -2343,6 +2421,7 @@ main(void) {
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_ysf_checked_fich_and_dch_are_proven_content();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
+    test_process_ysf_fich_fallback_is_per_decoder_state();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_vd_type2_tells_the_chain_each_frame();
     test_process_ysf_terminator_enriches_identity_before_call_end();

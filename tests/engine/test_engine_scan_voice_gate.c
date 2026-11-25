@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "checked_media_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -366,8 +367,8 @@ open_voice_epoch_slot(gate_fixture* fix, uint8_t slot, double t, double span, ds
         update.observed_m = t;
         (void)dsd_call_state_update_crypto(fix->state, slot, DSD_SYNC_P25P1_NEG, &update);
     }
-    (void)dsd_call_state_update_media(fix->state, slot, 1, t);
-    (void)dsd_call_state_update_media(fix->state, slot, 1, t + span);
+    (void)decoded_media(fix->state, slot, 1, t);
+    (void)decoded_media(fix->state, slot, 1, t + span);
 }
 
 static void
@@ -489,11 +490,151 @@ test_span_debounce(void) {
     dsd_scan_voice_probe_result media = probe_voice(&fix);
     CHECK("short active span ignored", media.active_media_m < 0.0);
     CHECK("short retained span ignored", media.retained_media_m < 0.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 100.2);
+    (void)decoded_media(fix.state, 0, 1, 100.2);
     media = probe_voice(&fix);
     CHECK("long active span counts", media.active_media_m > 0.0);
     CHECK("long retained span counts", media.retained_media_m > 0.0);
     fixture_free(&fix);
+}
+
+/* Issue #890: a call's media marks, made before each frame is decoded, are no voice to the gate: frames the vocoder
+ * failed or concealed mark media past the qualify window yet never qualify the row, which steps at its qualify window
+ * as a silent one does. Checked media of the same call qualifies from its first frame. */
+static void
+test_unchecked_media_never_qualifies(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_VOICE;
+    obs.observed_m = 100.1;
+    CHECK("unchecked: a call opens", dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    for (int f = 0; f <= 60; f++) {
+        /* 1.2 s of failed or concealed frames: the media mark each one gets before its decode, and nothing after. */
+        (void)dsd_call_state_update_media(fix.state, 0U, 1, 100.1 + (0.02 * f));
+        dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.1 + (0.02 * f));
+    }
+    dsd_scan_voice_probe_result media = probe_voice(&fix);
+    CHECK("unchecked: no active media", media.active_media_m < 0.0);
+    CHECK("unchecked: no retained media", media.retained_media_m < 0.0);
+    CHECK("unchecked: no voice anchor", fix.state->scan_voice_gate_voice_m < 0.0);
+    CHECK("unchecked: the row steps at its qualify window",
+          dsd_scan_voice_gate_should_step(fix.opts, fix.state, 101.3) != 0);
+    /* Good frames of the same call: checked media, which qualifies once it spans 100 ms. */
+    CHECK("checked: first frame",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_DSTAR_VOICE_NEG, 101.32) == 1);
+    CHECK("checked: next frame",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_DSTAR_VOICE_POS, 101.44) == 1);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 101.44);
+    media = probe_voice(&fix);
+    CHECK("checked: active media", fabs(media.active_media_m - 101.44) < 1e-6);
+    CHECK("checked: voice anchor", fabs(fix.state->scan_voice_gate_voice_m - 101.44) < 1e-6);
+    CHECK("checked: another protocol's frame is not this call's",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_YSF_POS, 101.46) == 0);
+    fixture_free(&fix);
+}
+
+/* Issue #890: checked media counts only for the scan visit and carrier it was read on. A call heard before the landing
+ * in force -- ended, with its last frame at the very decode time the row landed -- is no voice of the row; nor is media
+ * of a frame whose read began on the visit before (a frame dispatched before the landing), nor media from before a
+ * carrier boundary. Media read on the visit holds it, through a sync loss too. */
+static void
+test_probe_binds_media_to_its_visit(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.state->scan_landing_visit = 4U; /* row A landed */
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    open_voice_epoch(&fix, 100.1, 0.4, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    (void)dsd_call_state_end_ex(fix.state, 0U, 100.5, DSD_CALL_END_TERMINATOR);
+    dsd_scan_voice_probe_result media = probe_voice(&fix);
+    CHECK("visit A: its call is its voice", fabs(media.retained_media_m - 100.5) < 1e-6);
+
+    /* Row B lands at the decode time A's last frame carried. */
+    fix.state->scan_landing_visit = 5U;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.5);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.5);
+    media = probe_voice(&fix);
+    CHECK("visit B: A's ended call is no voice", media.retained_media_m < 0.0 && media.active_media_m < 0.0);
+    CHECK("visit B: no voice anchor", fix.state->scan_voice_gate_voice_m < 0.0);
+
+    /* A frame whose read began on A's visit, decoded after B landed. */
+    open_voice_epoch(&fix, 100.6, 0.0, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    fix.state->frame_dispatch_active = 1;
+    fix.state->frame_dispatch_carrier_seq = fix.state->carrier_seq;
+    fix.state->frame_dispatch_scan_visit = 4U;
+    (void)dsd_call_state_note_checked_media(fix.state, 0U, 1, 100.6);
+    (void)dsd_call_state_note_checked_media(fix.state, 0U, 1, 100.8);
+    fix.state->frame_dispatch_active = 0;
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.8);
+    media = probe_voice(&fix);
+    CHECK("visit B: a frame read on A's visit is no voice", media.retained_media_m < 0.0);
+
+    /* B's own frames: voice, kept through a sync loss. */
+    open_voice_epoch(&fix, 101.0, 0.2, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    (void)dsd_call_state_end_ex(fix.state, 0U, 101.3, DSD_CALL_END_SYNC_LOSS);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 0, 101.3);
+    media = probe_voice(&fix);
+    CHECK("visit B: its media past a sync loss", fabs(media.retained_media_m - 101.2) < 1e-6);
+    CHECK("visit B: tail", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_TAIL);
+
+    /* A carrier boundary: what was read before it is no longer the carrier's. The tail earned stays the gate's. */
+    fix.state->carrier_seq++;
+    media = probe_voice(&fix);
+    CHECK("another carrier: no media", media.retained_media_m < 0.0);
+    CHECK("another carrier: the earned tail stays", fabs(fix.state->scan_voice_gate_voice_m - 101.2) < 1e-6);
+    fixture_free(&fix);
+}
+
+/* Issue #890: the encrypted-call tuning rule needs no talkgroup. A call known encrypted, its target not decoded yet (or
+ * an M17 call, outside talkgroup policy), holds nothing under --enc-lockout; with encrypted calls allowed it holds. */
+static void
+test_encrypted_lockout_needs_no_target(void) {
+    for (int m17 = 0; m17 <= 1; m17++) {
+        for (int allowed = 0; allowed <= 1; allowed++) {
+            gate_fixture fix;
+            if (fixture_init(&fix) != 0) {
+                DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+                g_failures++;
+                return;
+            }
+            fix.opts->trunk_tune_enc_calls = allowed;
+            dsd_call_observation obs;
+            DSD_MEMSET(&obs, 0, sizeof(obs));
+            obs.protocol = m17 ? DSD_SYNC_M17_STR_POS : DSD_SYNC_P25P1_POS;
+            obs.slot = 0U;
+            obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+            obs.observed_m = 100.0;
+            (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+            dsd_call_crypto_update update;
+            DSD_MEMSET(&update, 0, sizeof(update));
+            update.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+            update.observed_m = 100.0;
+            (void)dsd_call_state_update_crypto(fix.state, 0U, obs.protocol, &update);
+            (void)decoded_media(fix.state, 0U, 1, 100.0);
+            (void)decoded_media(fix.state, 0U, 1, 100.2);
+            const dsd_scan_voice_probe_result media = probe_voice(&fix);
+            if (allowed) {
+                CHECK(m17 ? "M17 encrypted, allowed: holds" : "no target, encrypted allowed: holds",
+                      media.retained_media_m > 0.0);
+            } else {
+                CHECK(m17 ? "M17 encrypted under the lockout: nothing"
+                          : "no target, encrypted under the lockout: nothing",
+                      media.retained_media_m < 0.0);
+            }
+            fixture_free(&fix);
+        }
+    }
 }
 
 static void
@@ -522,7 +663,7 @@ test_reacquired_segment_reearns_span(void) {
         observation.kind = DSD_CALL_KIND_VOICE;
         observation.observed_m = 100.45;
         CHECK("recoverable end reopens", dsd_call_state_observe(fix.state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-        CHECK("first reacquired media marks", dsd_call_state_update_media(fix.state, 0U, 1, 100.45) == 1);
+        CHECK("first reacquired media marks", decoded_media(fix.state, 0U, 1, 100.45) == 1);
         dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.45);
         dsd_scan_voice_probe_result media = probe_voice(&fix);
         CHECK("single reacquired frame is not voice", media.active_media_m < 0.0 && media.retained_media_m < 0.0);
@@ -530,7 +671,7 @@ test_reacquired_segment_reearns_span(void) {
         CHECK("single reacquired frame stays qualify",
               fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY);
 
-        CHECK("reacquired media continues", dsd_call_state_update_media(fix.state, 0U, 1, 100.56) == 1);
+        CHECK("reacquired media continues", decoded_media(fix.state, 0U, 1, 100.56) == 1);
         dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.56);
         media = probe_voice(&fix);
         CHECK("reacquired span counts", fabs(media.active_media_m - 100.56) < 1e-6);
@@ -645,8 +786,8 @@ test_policy_gating(void) {
     dsd_call_observation obs = dsd_call_observation_data(1, 0, 11, 22);
     obs.observed_m = 100.0;
     (void)dsd_call_state_observe(data.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(data.state, 0, 1, 100.0);
-    (void)dsd_call_state_update_media(data.state, 0, 1, 100.2);
+    (void)decoded_media(data.state, 0, 1, 100.0);
+    (void)decoded_media(data.state, 0, 1, 100.2);
     CHECK("data ignored", probe_voice(&data).retained_media_m < 0.0);
     fixture_free(&data);
 }
@@ -664,8 +805,8 @@ open_voice_epoch_proto(gate_fixture* fix, int protocol, double t, double span, d
     obs.policy_target_id = dst;
     obs.observed_m = t;
     (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(fix->state, 0U, 1, t);
-    (void)dsd_call_state_update_media(fix->state, 0U, 1, t + span);
+    (void)decoded_media(fix->state, 0U, 1, t);
+    (void)decoded_media(fix->state, 0U, 1, t + span);
 }
 
 /* M17 addresses calls by callsign, so talkgroup policy never applies: a 48-bit callsign value must not be
@@ -1980,8 +2121,8 @@ test_receive_admission_bounds_acquisition(void) {
     (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
     (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.25);
+    (void)decoded_media(fix.state, 0, 1, 101.0);
+    (void)decoded_media(fix.state, 0, 1, 101.25);
     fix.state->currentslot = 1;
     CHECK("rejected second slot cannot interrupt accepted first slot",
           !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.3));
@@ -1992,7 +2133,7 @@ test_receive_admission_bounds_acquisition(void) {
     fix.state->currentslot = 0;
     CHECK("an idle admitted lane cannot hold rejected traffic",
           dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 103.9);
+    (void)decoded_media(fix.state, 0, 1, 103.9);
     CHECK("admitted media on either lane holds", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
     /* Issue #637: an admitted call that ended still holds through its voice hold, for the reply, and no longer. */
     (void)dsd_call_state_end(fix.state, 0, 104.0);
@@ -2027,8 +2168,8 @@ test_receive_admission_bounds_acquisition(void) {
     voice2.observed_m = 120.0;
     (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
     (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
+    (void)decoded_media(fix.state, 0, 1, 120.0);
+    (void)decoded_media(fix.state, 0, 1, 120.5);
     fix.state->dmr_color_code = 16;
     fix.opts->scan_voice_only = 1;
     CHECK("an admitted call keeps its hold while the live code is unknown",
@@ -2047,6 +2188,9 @@ main(void) {
     test_voice_holds_through_tail();
     test_terminator_before_first_tick_holds();
     test_span_debounce();
+    test_unchecked_media_never_qualifies();
+    test_encrypted_lockout_needs_no_target();
+    test_probe_binds_media_to_its_visit();
     test_reacquired_segment_reearns_span();
     test_non_media_updates_do_not_extend_hold();
     test_probe_tracks_active_and_retained_slots_independently();

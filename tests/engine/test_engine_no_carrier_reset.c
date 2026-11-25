@@ -42,6 +42,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -53,11 +54,13 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
@@ -105,11 +108,13 @@
 #include "test_env.h"
 #include "test_support.h"
 #include "tetra_state.h"
+#include "tetra_test_burst.h"
 #include "tetra_voice_state.h"
 
 #ifdef DSD_NEO_TEST_RTL_WRAP
 #include <dsd-neo/core/channel_label.h>
 #include "engine_test_support.h"
+#include "tetra_test_pdu.h"
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 #include <dsd-neo/app_control/commands.h>
@@ -124,6 +129,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
+#include "checked_media_test_support.h"
 #include "engine_hooks_install.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -999,7 +1005,7 @@ static uint32_t g_frame_evidence_hold_ms = 0U;
 /* The fixed TEST decode clock of a case whose decode-clock deadlines (a hangtime, a PARTIAL verdict's hold, a dwell)
    must not run out while the host pauses between its steps; ahead of any stamp a system read leaves. */
 #define FROZEN_DECODE_T0_NS 1800000000000000000ULL
-/* Whether each scripted frame is of a protocol with no content check (X2-TDMA, ProVoice, TETRA): processFrame()'s
+/* Whether each scripted frame is of a protocol with no content check (X2-TDMA, ProVoice): processFrame()'s
    dispatch notes one for the -Y step (issue #834), as ENGINE_PROTOCOL_DISPATCH pins. */
 static int g_frame_unchecked = 0;
 static int g_frame_roll[FAKE_FRAMES_MAX];
@@ -1009,6 +1015,151 @@ int __real_getFrameSync(dsd_opts* opts, dsd_state* state);
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 void __real_processFrame(dsd_opts* opts, dsd_state* state);
 void __wrap_processFrame(dsd_opts* opts, dsd_state* state);
+int __real_getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
+int __wrap_getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol);
+int __real_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
+int __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal);
+void __real_skipDibit(dsd_opts* opts, dsd_state* state, int count);
+void __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count);
+
+/* Issue #890: a scripted frame may be a real TETRA synchronisation burst, decoded by the real dispatch and decoder
+ * (__real_processFrame()): YT_* says which. Its block before the training sequence goes where the frame sync captures
+ * it, and the symbols the decoder reads after the training sequence come from g_yt_tail through the three symbol
+ * readers, which reach the real ones otherwise. */
+enum {
+    YT_NONE = 0,
+    YT_TMO,      /* a trunked SB: BSCH and SYSINFO that pass their CRCs (MCC 460, MNC 4242, colour code 17) */
+    YT_FAILED,   /* a synchronisation burst whose BSCH fails */
+    YT_SOFT_DSB, /* a DSB that only the soft decision decodes: SCH/S, its SCH/H going by unread */
+    YT_RESERVED, /* a DSB whose SCH/S and SCH/H pass, carrying DM-RESERVED */
+};
+
+enum { YT_TAIL_DIBITS = 123, YT_BLOCK1_DIBITS = 60 };
+
+static int g_frame_tetra = YT_NONE;
+static uint8_t g_yt_tail[YT_TAIL_DIBITS];
+static int g_yt_tail_pos = -1; /* -1: the real readers */
+/* The tail symbol whose read the cut runs at (-1: none): with g_yt_cut_interrupt an input interruption, else the
+   carrier boundary a replay retune runs there (dsd_engine_carrier_boundary(): the carrier forgotten, the count moved). */
+static int g_yt_cut_at = -1;
+static int g_yt_cut_interrupt = 0;
+
+static int
+yt_next_dibit(dsd_state* state) {
+    if (g_yt_tail_pos == g_yt_cut_at) {
+        if (g_yt_cut_interrupt) {
+            state->input_interrupted = 1;
+        } else {
+            tetra_forget_carrier(state);
+            state->carrier_seq++;
+        }
+    }
+    return g_yt_tail_pos < YT_TAIL_DIBITS ? (g_yt_tail[g_yt_tail_pos++] & 3) : 0;
+}
+
+static float
+yt_level(int d) {
+    static const float k_levels[4] = {1.0F, 3.0F, -1.0F, -3.0F};
+    return k_levels[d & 3];
+}
+
+int
+__wrap_getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) {
+    if (g_yt_tail_pos < 0) {
+        return __real_getDibitAndSoftSymbol(opts, state, out_soft_symbol);
+    }
+    const int d = yt_next_dibit(state);
+    if (out_soft_symbol) {
+        *out_soft_symbol = yt_level(d);
+    }
+    return d;
+}
+
+int
+__wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_signal) {
+    if (g_yt_tail_pos < 0) {
+        return __real_get_dibit_and_analog_signal(opts, state, out_analog_signal);
+    }
+    const int d = yt_next_dibit(state);
+    if (out_analog_signal) {
+        *out_analog_signal = (int)yt_level(d);
+    }
+    return d;
+}
+
+void
+__wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count) {
+    if (g_yt_tail_pos < 0) {
+        __real_skipDibit(opts, state, count);
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        (void)yt_next_dibit(state);
+    }
+}
+
+static void
+yt_bits(const char* text, uint8_t* bits) {
+    for (size_t i = 0; text[i] != '\0'; i++) {
+        bits[i] = (uint8_t)(text[i] - '0');
+    }
+}
+
+static void
+yt_dibits(const char* text, uint8_t* dibits, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        dibits[i] = (uint8_t)(((text[2U * i] - '0') << 1) | (text[(2U * i) + 1U] - '0'));
+    }
+}
+
+/* The YT_* burst g_frame_tetra names, through the real dispatch and TETRA decoder. */
+static void
+yt_process_burst(dsd_opts* opts, dsd_state* state) {
+    /* The vectors of TETRA_BURST_VERDICT: the BSCH and SYSINFO of test_air_chain_vector.c, and the direct mode SCH/S and
+       SCH/H (DM-OCCUPIED) of TETRA_DMO. */
+    static const char k_bsch[] = "1011100110110010011101011001001111111010111101101001000011110011"
+                                 "01111001010100010110000000111011010011110110110000010100";
+    static const char k_sysinfo[] = "1000000110100010000111000011011000101011101001011000000111010101"
+                                    "1100110110011011101100010111101101011101001010011000011011011110"
+                                    "1011000100000101100001110001100101101101010100101001100100100100"
+                                    "100001101111000101011111";
+    static const char k_sch_s[] = "110100000000000001100000000000000000000000000000000000000000";
+    static const char k_sch_h[] =
+        "00000000001000001000000000000000000000010000000000000000000110010010111100010010010011100"
+        "10110101110000000000000000"
+        "001000100";
+    uint8_t block1[YT_BLOCK1_DIBITS] = {0};
+    DSD_MEMSET(g_yt_tail, 0, sizeof g_yt_tail);
+    int soft_only = 0;
+    if (g_frame_tetra == YT_TMO) {
+        yt_dibits(k_bsch, block1, YT_BLOCK1_DIBITS);
+        yt_dibits(k_sysinfo, g_yt_tail + 15, 108);
+    } else if (g_frame_tetra == YT_SOFT_DSB || g_frame_tetra == YT_RESERVED) {
+        uint8_t sch_s[TTB_BSCH_BITS] = {0};
+        yt_bits(k_sch_s, sch_s);
+        ttb_encode_bsch(sch_s, block1);
+        soft_only = g_frame_tetra == YT_SOFT_DSB;
+        uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+        yt_bits(k_sch_h, sch_h);
+        /* DM-RESERVED (EN 300 396-3 table 27) in place of DM-OCCUPIED: after a call transaction, 30 frames left. */
+        static const uint8_t k_reserved[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+        DSD_MEMCPY(sch_h + 90, k_reserved, sizeof k_reserved);
+        ttb_encode_sch_hd(sch_h, TTB_BSCH_SEED, g_yt_tail);
+    }
+    for (int i = 0; i < YT_BLOCK1_DIBITS; i++) {
+        state->tetra_sync.sb1_dibuf[i] = soft_only ? 0U : block1[i];
+        state->tetra_sync.sb1_soft[i] = yt_level(block1[i]);
+    }
+    state->tetra_sync.sb1_valid = 1;
+    state->tetra_sync.sb1_soft_valid = (uint8_t)soft_only;
+    state->tetra_sync.phase_rot = 0;
+    state->tetra_sync.sb_polarity = 0;
+    state->synctype = DSD_SYNC_TETRA_SB_POS;
+    state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
+    g_yt_tail_pos = 0;
+    __real_processFrame(opts, state);
+    g_yt_tail_pos = -1;
+}
 
 /* The real hunt's symbols, watched while armed (issue #834 follow-up: the scan quiet check's early hand-back): how many
    symbols the hunt in progress has read, and for the one call in which the fake tap first answered, how many it had read
@@ -1086,6 +1237,11 @@ __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
     }
     if (!g_frame_script) {
         __real_processFrame(opts, state);
+        return;
+    }
+    if (g_frame_tetra != YT_NONE) {
+        yt_process_burst(opts, state);
+        g_frame_count++;
         return;
     }
     if (state->p25_p1_sync_candidate.valid || state->p25_p2_sync_candidate.valid) {
@@ -6364,8 +6520,8 @@ test_visit_cap_scanner_hops(void) {
     live_call.observed_m = now_m - 0.4;
     rc |= expect_true("visit-cap-gate-seeds-call",
                       dsd_call_state_observe(state, &live_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    rc |= expect_true("visit-cap-gate-seeds-media", dsd_call_state_update_media(state, 0U, 1, now_m - 0.4) == 1
-                                                        && dsd_call_state_update_media(state, 0U, 1, now_m) == 1);
+    rc |= expect_true("visit-cap-gate-seeds-media",
+                      decoded_media(state, 0U, 1, now_m - 0.4) == 1 && decoded_media(state, 0U, 1, now_m) == 1);
     dsd_scan_voice_gate_tick(opts, state, 1, now_m);
     rc |=
         expect_true("visit-cap-gate-holds", dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
@@ -10178,6 +10334,38 @@ test_dmr_ras_carrier_lifetime(void) {
             dmr_ras_reset(state);
         }
     }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The Tier III control-channel evidence (a checked C_ALOHA or C_SYS_Parms on the tuned carrier,
+   dmr_t3_cc_note_evidence()) ends with reception: the no-carrier pass leaves the carrier, the received identity's epoch
+   and the tuning generation as they were, yet the carrier is offered as the control channel again only once a new
+   checked message names it. */
+static int
+test_dmr_t3_cc_evidence_ends_with_reception(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const int input = opts->audio_in_type;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 451000000U;
+    opts->trunk_is_tuned = 0;
+    dmr_t3_cc_note_evidence(opts, state);
+    opts->audio_in_type = input;
+    int rc = expect_true("t3 cc: the checked message names the carrier", dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    const uint32_t carrier = state->carrier_seq;
+    const uint32_t epoch = state->rx_id.epoch;
+    noCarrier(opts, state);
+    rc |= expect_true("t3 cc: the no-carrier pass stays on the carrier",
+                      state->carrier_seq == carrier && state->rx_id.epoch == epoch);
+    rc |= expect_true("t3 cc: the evidence ends with reception", dmr_t3_cc_confirmed_hz(state) == 0);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dmr_t3_cc_note_evidence(opts, state);
+    opts->audio_in_type = input;
+    rc |= expect_true("t3 cc: a new checked message names it again", dmr_t3_cc_confirmed_hz(state) == 451000000L);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -16763,9 +16951,9 @@ test_y_continuing_call_explains_a_new_stay(void) {
     /* Its voice may come with no further observation: the vocoder's media update of the call explains a stay too, and
        an update that says no media does not. */
     dsd_engine_scan_y_stay_begin(state);
-    (void)dsd_call_state_update_media(state, 0U, 0, 0.0);
+    (void)decoded_media(state, 0U, 0, 0.0);
     rc |= expect_true("no media explains nothing", state->scan_y_call_seq == state->scan_y_stay_call_seq);
-    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    (void)decoded_media(state, 0U, 1, 0.0);
     rc |=
         expect_true("the call's media is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
     free_test_runtime(opts, state);
@@ -18267,6 +18455,109 @@ test_y_frames_with_no_checked_content_leave(void) {
     return rc;
 }
 
+/* Issue #890: TETRA bursts on an untyped -Y row, decoded for real, with -fT in the decoder set and skip-silent on or
+   off. A TETRA frame is no longer one the -Y step credits unchecked: a row holds on what its bursts' CRCs checked.
+   Checked TMO content (a BSCH and SYSINFO) keeps the row past -t while it comes, and lets it go -t after it stops; a
+   failed burst, a DSB only the soft decision decoded and a DSB carrying DM-RESERVED give no fresh hangtime, so the row
+   leaves at the first frame boundary once its -t has run out. */
+static int
+yt_case(int burst, int on) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    const long int base_hz = 1871012500L + (long int)burst * 10000000L + (on ? 100000000L : 0L);
+    int rc = expect_true("TETRA -Y: the first step lands row 0", yq_list(opts, state, 3, 0, on, base_hz) == 0);
+    opts->frame_tetra = 1;
+    if (on) {
+        (void)dsd_engine_scan_quiet_service(opts, state);
+    }
+    yc_age(state, 1);
+    g_frame_sync_type = DSD_SYNC_TETRA_SB_POS;
+    g_frame_tetra = burst;
+    run_synced_frames(opts, state, 5, -1);
+    char label[200];
+    if (burst == YT_TMO) {
+        DSD_SNPRINTF(label, sizeof label,
+                     "TETRA -Y, skip-silent %d: checked TMO content holds the row (frames %d, "
+                     "content %u, unchecked %u, tunes %d)",
+                     on, g_frame_count, (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_unchecked_seq,
+                     g_rtl_tune_calls);
+        rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == 0 && state->scan_y_content_seq == 6U
+                                     && state->scan_y_unchecked_seq == 0U);
+        /* The content stops: the failed bursts after it hold nothing. */
+        yc_age(state, 1);
+        g_frame_tetra = YT_FAILED;
+        run_synced_frames(opts, state, 5, -1);
+    }
+    DSD_SNPRINTF(label, sizeof label,
+                 "TETRA -Y burst %d, skip-silent %d: nothing checked, yields at the first boundary "
+                 "past -t (frames %d, content %u, unchecked %u)",
+                 burst, on, g_frame_count, (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_unchecked_seq);
+    rc |= expect_true(label, g_frame_count == 1 && state->scan_y_unchecked_seq == 0U
+                                 && state->scan_y_content_seq == (burst == YT_TMO ? 6U : 0U));
+    noCarrier(opts, state);
+    DSD_SNPRINTF(label, sizeof label, "TETRA -Y burst %d, skip-silent %d: and noCarrier() steps", burst, on);
+    rc |= expect_true(label, g_rtl_tune_calls == 1);
+    g_frame_tetra = YT_NONE;
+    g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    opts->frame_tetra = 0;
+    yq_finish(opts, state);
+    return rc;
+}
+
+static int
+test_y_tetra_holds_only_on_checked_content(void) {
+    int rc = 0;
+    for (int burst = YT_TMO; burst <= YT_RESERVED; burst++) {
+        rc |= yt_case(burst, 0);
+        rc |= yt_case(burst, 1);
+    }
+    return rc;
+}
+
+/* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier
+   boundary (a replay retune) or an input interruption inside its block 2 read. The decoder drops it (TETRA_BURST_CUT
+   pins what it leaves), and the frame settles as any frame cut so (process_frame_settle_verdict()): UNPRODUCTIVE across
+   the boundary, WITHHELD for the interruption, never PROFILE_PROVEN, with no proof and no checked content noted. Uncut,
+   the same burst is PROFILE_PROVEN and checked TMO content. */
+static int
+test_tetra_cut_burst_settles_unproven(void) {
+    int rc = 0;
+    for (int cut = 0; cut <= 2; cut++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->frame_tetra = 1;
+        g_frame_tetra = YT_TMO;
+        g_yt_cut_at = cut == 0 ? -1 : 15 + 40;
+        g_yt_cut_interrupt = cut == 2;
+        yt_process_burst(opts, state);
+        g_yt_cut_at = -1;
+        g_yt_cut_interrupt = 0;
+        g_frame_tetra = YT_NONE;
+        const int want = cut == 0   ? DSD_FRAME_VERDICT_PROFILE_PROVEN
+                         : cut == 1 ? DSD_FRAME_VERDICT_UNPRODUCTIVE
+                                    : DSD_FRAME_VERDICT_WITHHELD;
+        const int proven = cut == 0;
+        char label[200];
+        DSD_SNPRINTF(label, sizeof label,
+                     "TETRA burst cut %d settles: verdict %d (want %d), proof %d, content %u, unchecked %u", cut,
+                     state->sps_hunt_last_frame_verdict, want, (int)tetra_burst_proof(state),
+                     (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_unchecked_seq);
+        rc |= expect_true(
+            label, state->sps_hunt_last_frame_verdict == want
+                       && tetra_burst_proof(state) == (proven ? DSD_TETRA_BURST_PROOF_TMO : DSD_TETRA_BURST_PROOF_NONE)
+                       && state->scan_y_content_seq == (proven ? 1U : 0U) && state->scan_y_unchecked_seq == 0U);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -18310,6 +18601,8 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_suspended_row_republished(1);
     rc |= test_y_quiet_released_hold_republished();
     rc |= test_y_frames_with_no_checked_content_leave();
+    rc |= test_y_tetra_holds_only_on_checked_content();
+    rc |= test_tetra_cut_burst_settles_unproven();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);
@@ -18994,9 +19287,8 @@ main(void) {
     gate_voice_call.observed_m = gate_now_m - 2.8;
     rc |= expect_true("voice-gate-voice-seeds-call",
                       dsd_call_state_observe(state, &gate_voice_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    rc |= expect_true("voice-gate-voice-seeds-media",
-                      dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.8) == 1
-                          && dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.6) == 1);
+    rc |= expect_true("voice-gate-voice-seeds-media", decoded_media(state, 0U, 1, gate_now_m - 2.8) == 1
+                                                          && decoded_media(state, 0U, 1, gate_now_m - 2.6) == 1);
     rc |= expect_true("voice-gate-voice-terminates-before-tick",
                       dsd_call_state_end_ex(state, 0U, gate_now_m - 2.5, DSD_CALL_END_TERMINATOR) == 1);
     dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);
@@ -20163,6 +20455,7 @@ main(void) {
     rc |= test_operator_boundary_forgets_the_nxdn_system_type();
     rc |= test_received_identity_lifetime();
     rc |= test_dmr_ras_carrier_lifetime();
+    rc |= test_dmr_t3_cc_evidence_ends_with_reception();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_receive_boundary_closes_only_rejected_capture();

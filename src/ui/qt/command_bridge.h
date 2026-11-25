@@ -16,10 +16,12 @@
 
 // Complete types are needed by inline Qt container and metatype instantiations.
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QSharedPointer> // IWYU pragma: keep
 #include <QString>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -31,6 +33,7 @@ class QTemporaryFile;
 namespace dsd_qt {
 class DecryptionProfileProvider;
 class RecordingStatus;
+class SavedSystemsModel;
 class ScanAvoidListModel;
 
 class CommandBridge : public QObject {
@@ -52,6 +55,10 @@ class CommandBridge : public QObject {
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
+    /* Discussion #900 F3: the answer to this bridge's newest answered setDmrChannel() (dmrChannelResultReceived()'s
+       map; empty before one), and the request id of the newest one it queued (0 before one). */
+    Q_PROPERTY(QVariantMap dmrChannelResult READ dmrChannelResult NOTIFY dmrChannelResultChanged)
+    Q_PROPERTY(quint32 lastDmrChannelRequest READ lastDmrChannelRequest NOTIFY lastDmrChannelRequestChanged)
 
   public:
     static int scanRowFieldSquelch();
@@ -127,6 +134,59 @@ class CommandBridge : public QObject {
                                      unsigned int generation, int tableIndex = -1,
                                      const QString& pattern = QString()) const;
     Q_INVOKABLE bool saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const;
+
+    /**
+     * @brief Set (@p op 1, to @p hz), hide (2) or restore (3) DMR Tier III channel @p lpcn (1..4094) in the running
+     * session, against the row as the Channels sheet read it (discussion #900 F3): @p expectedHz its live frequency (0
+     * for none or hidden), @p expectedOrigin its origin (DmrChannelsModel::channel()'s originCode), @p generation the
+     * model's network generation and @p session its command session (empty: the one open now). The decoder refuses an
+     * edit whose row, network or session moved on (stale), or one under a trunk scan.
+     *
+     * @p systemUid is the saved system the session runs as the edit is sent (empty: a session that keeps nothing, an
+     * edit for this run only). It is captured here: once the decoder applied the edit, this bridge keeps it on that
+     * system (SavedSystemsModel::applyDmrChannelEdit()), whatever the session runs by then.
+     *
+     * @return Whether it was queued; then lastDmrChannelRequest() names it, and dmrChannelResultReceived() carries its
+     *         answer. False, sending nothing, for a channel, operation, SET frequency (100000..2147483647 Hz), origin
+     *         (0..255) or session that cannot be one, or a queue that refused it.
+     */
+    Q_INVOKABLE bool setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin,
+                                   quint32 generation, const QString& systemUid = QString(),
+                                   const QString& session = QString());
+
+    /**
+     * @brief Keep a channel edit the decoder applied on saved system @p systemUid again (the Channels sheet's "Try
+     * saving again" after a save that failed): @p op, @p lpcn and @p hz as setDmrChannel() sent them, kept as
+     * dmrChannelResultReceived() keeps an "ok" answer (SavedSystemsModel::applyDmrChannelEdit()).
+     *
+     * @return {saved, saveError}, with the answer's meanings: "no-system" also for an empty @p systemUid.
+     */
+    Q_INVOKABLE QVariantMap saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz);
+
+    /** @brief Where an applied channel edit is kept (the saved systems); nullptr: nowhere, saved is false. */
+    void setSavedSystems(SavedSystemsModel* systems);
+
+    QVariantMap
+    dmrChannelResult() const {
+        return m_dmrChannelResult;
+    }
+
+    quint32
+    lastDmrChannelRequest() const {
+        return m_lastDmrChannelRequest;
+    }
+
+    /**
+     * @brief Take the channel-set answers published since the last call (UiController's tick and its session edges,
+     * and the application's aboutToQuit, so an edit applied just before a teardown is still kept) and report each of
+     * this bridge's requests once, in order. Another caller's answers are passed over.
+     */
+    void pollDmrChannelResults();
+
+    /** @brief The key of a dsd_app_dmr_channel_set_code: "ok", "stale", "trunk-scan", "invalid", "full", "search",
+     *  "dropped", "other-system" (the carrier names another system), "no-dmr" (the session no longer decodes DMR), or
+     *  "unknown". */
+    static QString dmrChannelResultKey(int code);
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */
     Q_INVOKABLE bool toggleMute() const;
@@ -456,6 +516,18 @@ class CommandBridge : public QObject {
      * roaming waits until the decoder's snapshot shows it before it judges the session again.
      */
     void operatorIntentSubmitted(const QString& kind);
+    /**
+     * @brief The decoder answered one of this bridge's setDmrChannel() requests: {request, lpcn, op, hz (what a SET
+     * asked for, else 0), code (dsd_app_dmr_channel_set_code), result (dmrChannelResultKey()), revision (the channel
+     * revision after it; a model whose revision is behind does not show it yet), session (decimal), sequence
+     * (decimal), systemUid (the one setDmrChannel() captured), saved (an "ok" edit was kept on that system),
+     * saveError ("" when saved or nothing was to be kept: not "ok", or no system; else applyDmrChannelEdit()'s error,
+     * "not-saved" for a failed write, "session-only" for a restore no saved entry made, or "no-store" with no saved
+     * systems set)}.
+     */
+    void dmrChannelResultReceived(const QVariantMap& result);
+    void dmrChannelResultChanged();
+    void lastDmrChannelRequestChanged();
 
   private:
     QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);
@@ -473,6 +545,25 @@ class CommandBridge : public QObject {
     quint64 m_pendingKeyRequest = 0;
     quint64 m_pendingKeySession = 0;
     QList<QSharedPointer<QTemporaryFile>> m_selectionFiles;
+
+    /* A queued channel set's request id with what it asked, until its answer comes (the oldest dropped past a bound,
+       so requests never answered cannot grow it). */
+    struct DmrChannelRequest {
+        quint32 request = 0;
+        int lpcn = 0;
+        int op = 0;
+        qint64 hz = 0;
+        QString systemUid;
+    };
+
+    /* The answer map for @p r, the request @p q it answers; an "ok" one kept on its system first. */
+    QVariantMap dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const DmrChannelRequest& q);
+    QPointer<SavedSystemsModel> m_savedSystems;
+
+    QList<DmrChannelRequest> m_dmrChannelRequests;
+    quint64 m_dmrChannelCursor = 0;
+    quint32 m_lastDmrChannelRequest = 0;
+    QVariantMap m_dmrChannelResult;
 };
 
 } // namespace dsd_qt

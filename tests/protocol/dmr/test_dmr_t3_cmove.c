@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dmr_mbc_test_support.h"
+#include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -72,6 +73,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)observation->ota_target_id;
     (void)notice;
     (void)slot;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
     return 0;
 }
 
@@ -521,10 +531,39 @@ test_t3_absolute_grant_invalid_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
+static void
+user_entry(dsd_state* state, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
+    ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
+    ext->overlay.hz[lpcn] = hz;
+    ext->overlay.count++;
+}
+
+/* A logical Move TSCC prints the frequency DMR uses for its channel (the user's entry over the
+   shared row): a set channel whose row another protocol emptied shows the user's frequency, a hidden one whose row
+   another protocol filled shows none. */
+static void
+test_logical_move_tscc_uses_the_users_channels(dsd_opts* opts, dsd_state* state) {
+    move_env(opts, state);
+    user_entry(state, 0x0124U, 453612500L);
+    user_entry(state, 0x0125U, 0L);
+    dsd_state_set_trunk_chan_freq(state, 0x0124U, 0L);
+    dsd_state_set_trunk_chan_freq(state, 0x0125U, 453637500L);
+    const move_tscc set = {.pcn = 0x0124U, .ms = 78U};
+    csbk_move_tscc_captured(opts, state, &set);
+    assert(strstr(g_out, " Move TSCC: MS 78 to channel 292 (453.612500 MHz)") != NULL);
+    const move_tscc hidden = {.pcn = 0x0125U, .ms = 79U};
+    csbk_move_tscc_captured(opts, state, &hidden);
+    assert(strstr(g_out, " Move TSCC: MS 79 to channel 293") != NULL && strstr(g_out, "MHz") == NULL);
+}
+
 static void
 test_move_tscc_and_grant_channels(dsd_opts* opts, dsd_state* state) {
     dsd_decode_clock_use_test(k_t0_ns);
     test_logical_move_tscc_is_informational(opts, state);
+    test_logical_move_tscc_uses_the_users_channels(opts, state);
     test_absolute_move_tscc_learns_the_tscc(opts, state);
     test_grant_layout_move_follows_nothing(opts, state);
     test_t3_grant_lpcn_kind(opts, state);

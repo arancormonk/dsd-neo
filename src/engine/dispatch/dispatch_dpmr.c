@@ -19,11 +19,11 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
 
-// `reason` distinguishes what the sync that ends the call actually said: the FS3 end-frame sync
+// `reason` distinguishes what the frame that ends the call actually said: a checked end frame
 // is positive over-the-air evidence the transmission ended (DSD_CALL_END_TERMINATOR), so the
-// event layer can keep an audible epoch whose header never decoded, while a new header sync
+// event layer can keep an audible epoch whose header never decoded, while a new header
 // preempting a still-open call says nothing about the previous transmission and stays EXPLICIT.
-// The end is offered even when the slot's call has already ended: an FS3 decoding inside the
+// The end is offered even when the slot's call has already ended: an end frame decoding inside the
 // reacquisition window after a sync-loss end must reach dsd_call_state_end_ex()'s retract path
 // so the recoverable end tightens to its final reason -- otherwise the audible epoch's row is
 // dropped despite positive end evidence, and a second PTT inside the window folds into the
@@ -71,17 +71,8 @@ dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
 
     state->nac = 0;
 
-    /* Only once something has decoded: a sync word on its own is not a call (#407). */
-    if (dpmr_confirm_is_confirmed(state)) {
-        dsd_call_observation observation = {
-            .protocol = state->synctype,
-            .slot = 0U,
-            .kind = DSD_CALL_KIND_VOICE,
-        };
-        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
-            dsd_event_sync_slot(opts, state, 0U);
-        }
-    }
+    /* Nothing is published before the frame's CCH is read (issue #890, B19): the frame publishes what its checked half
+       says, a data CCH as a data call (dpmr_publish_call()). */
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
 
@@ -101,41 +92,81 @@ dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
     return DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }
 
-/*
- * FS1/FS3/FS4 consume nothing beyond the sync itself and run no check, so they stay productive:
- * protocol_dispatch.h reserves UNPRODUCTIVE for a check that actually ran and actually failed.
- */
+/* The frame sync accepts FS1 and FS3 only behind a header or end frame that passed its check, and the hunt read it
+ * (src/dsp/frame_sync_dpmr.c), so the handler reads nothing, and what proves the profile is that check. */
+static dsd_frame_verdict
+dpmr_checked_frame_verdict(dsd_state* state) {
+    state->dpmr_cch_evidence = 1;
+    state->dpmr_cch_evidence_symbolcnt = state->symbolcnt;
+    dsd_frame_sync_note_profile_proof(state);
+    return DSD_FRAME_VERDICT_PROFILE_PROVEN;
+}
+
+/* A frame sync whose frame checked nothing (FS4, whose packet data header this decoder does not read, or an FS1/FS3
+ * synctype no checked frame stands behind) changes nothing: protocol_dispatch.h reserves UNPRODUCTIVE for a check that
+ * ran and failed, and to a scan quiet check it is a frame waiting for its first verdict (issue #834). */
+static dsd_frame_verdict
+dpmr_unchecked_frame(const dsd_opts* opts, dsd_state* state, const char* label) {
+    DSD_FPRINTF(stderr, "%s\n", label);
+    dpmr_confirm_note_unchecked_frame(opts, state);
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
+}
+
+/* FS1: a header (ETSI TS 102 658 V2.6.1 5.2). Its CRC and its message type come before every side effect (issue #890,
+ * A6): only a Communications_Start header for voice or data begins a transmission, so only it ends the call before it,
+ * forgets that call's scrambling and closes its capture; and not when it repeats the header that opened the open call
+ * in the same key-up (the powersave headers before the normal one, dpmr_header_continues_call()). */
+static dsd_frame_verdict
+dpmr_handle_header_frame(dsd_opts* opts, dsd_state* state) {
+    dpmr_header header;
+    if (!dpmr_take_checked_header(state, &header)) {
+        return dpmr_unchecked_frame(opts, state, "dPMR Frame Sync 1 (unchecked)");
+    }
+    DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " HEADER       ");
+    const int continues = dpmr_header_continues_call(state, &header);
+    if (dpmr_header_opens_call(&header) && !continues) {
+        dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
+        dpmr_scrambling_reset(state);
+        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
+    }
+    dpmr_process_header(opts, state, &header, continues);
+    return dpmr_checked_frame_verdict(state);
+}
+
+/* FS3: an end frame (5.3). Only one whose END passed its CRC-7 ends the call, as a terminator; an unchecked FS3 leaves
+ * the call as it is. A checked end frame is a proven end of the transmission, so its confirmation goes with it
+ * (dpmr_confirm_reset(), which forgets the scrambling too): a false FS2 on the carrier's tail must prove itself again
+ * before it can open a row. */
+static dsd_frame_verdict
+dpmr_handle_end_frame(dsd_opts* opts, dsd_state* state) {
+    dpmr_end_frame end;
+    if (!dpmr_take_checked_end(state, &end)) {
+        return dpmr_unchecked_frame(opts, state, "dPMR Frame Sync 3 (unchecked)");
+    }
+    DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " END          ");
+    dpmr_process_end(opts, state, &end);
+    dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
+    dpmr_confirm_reset(state);
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
+    return dpmr_checked_frame_verdict(state);
+}
+
 dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
      * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
     state->currentslot = 0;
 
-    //dPMR
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {
-        /* dPMR Frame Sync 1 */
-        dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
-        dpmr_scrambling_reset(state);
-        DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
-    } else if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
-        /* dPMR Frame Sync 2 */
-        return dpmr_handle_voice_frame(opts, state);
-    } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
-        /* dPMR Frame Sync 3 */
-        dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
-        dpmr_scrambling_reset(state);
-        DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
-    } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
-        /* dPMR Frame Sync 4 */
-        dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
-        dpmr_scrambling_reset(state);
-        DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
-        dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
+        return dpmr_handle_header_frame(opts, state);
     }
-    /* FS1, FS3 and FS4 check nothing: to a scan quiet check the frame waits for a verdict (issue #834). */
-    dpmr_confirm_note_unchecked_frame(opts, state);
-    //dPMR
-    return DSD_FRAME_VERDICT_PRODUCTIVE;
+    if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
+        return dpmr_handle_voice_frame(opts, state);
+    }
+    if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
+        return dpmr_handle_end_frame(opts, state);
+    }
+    return dpmr_unchecked_frame(opts, state, "dPMR Frame Sync 4 ");
 }

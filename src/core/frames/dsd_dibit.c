@@ -1265,6 +1265,11 @@ cqpsk_soft_symbol_to_viterbi_cost(float symbol, int bit_position) {
  *
  * For GMSK modulation where each symbol represents a single bit.
  * Uses the same max-log MAP proxy from distances to the two class means.
+ *
+ * The cost is that of the bit the hard slicer reads under state->synctype's polarity (store_two_level_dibit()): a
+ * positive two-level sync reads a high symbol as 0, so its costs are complemented; a negative one, or none, reads it
+ * as 1. Otherwise a header read under its positive sync (D-STAR's +header) is decoded from inverted soft bits, and its
+ * CRC fails, while the same header under the negative sync decodes.
  */
 uint16_t
 gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
@@ -1296,7 +1301,8 @@ gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
     float d0 = symbol - mu0;
     float d1 = symbol - mu1;
     float llr = ((d1 * d1) - (d0 * d0)) * inv_2sigma2;
-    return llr_to_viterbi_cost(llr);
+    const uint16_t high_is_one = llr_to_viterbi_cost(llr);
+    return is_two_level_pos_synctype(state->synctype) ? (uint16_t)(65535U - high_is_one) : high_is_one;
 }
 
 void

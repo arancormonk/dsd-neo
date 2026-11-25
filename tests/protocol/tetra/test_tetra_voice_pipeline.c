@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -250,6 +251,40 @@ test_integrity_starts_conceals_and_ends_speech(void) {
     fixture_close(&f);
 }
 
+/* Issue #890: a speech frame whose CRC passed and that the codec decoded is the call's checked media, the scan's voice
+   credit; a bad frame the codec concealed plays, but is none. */
+static void
+test_checked_media_is_the_good_decoded_frames(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "checked media: fixture");
+    uint8_t bits[TETRA_SPEECH_FULL_BITS];
+    burst_bits(bits, TETRA_SPEECH_FULL_BITS, 3U);
+    dsd_decode_clock_use_test(69900000000ULL);
+    tetra_confirm_note_signalling(f.state); /* a CRC-16 block proved the carrier: anonymous speech opens a call */
+    dsd_call_snapshot call;
+    /* No scan running: nobody reads checked media, so the voice path keeps none. */
+    tetra_voice_full_slot(f.opts, f.state, bits, 1);
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m <= 0.0,
+           "checked media: none with no scan running");
+    f.opts->trunk_scan_enabled = 1;
+    dsd_decode_clock_test_set_ns(70000000000ULL);
+    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good: decodes 3, 4 */
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && fabs(call.checked_media_updated_m - 70.0) < 1e-6,
+           "checked media: good frames are checked media");
+    dsd_decode_clock_test_set_ns(70060000000ULL);
+    tetra_voice_full_slot(f.opts, f.state, bits, 0); /* bad: 5, 6 concealed */
+    expect(voice_of(&f)->concealed == 2 && dsd_call_state_get(f.state, 0U, &call) > 0
+               && fabs(call.checked_media_updated_m - 70.0) < 1e-6,
+           "checked media: concealed frames play but are no checked media");
+    dsd_decode_clock_test_set_ns(70120000000ULL);
+    tetra_voice_full_slot(f.opts, f.state, bits, 1); /* good again: 7, 8 */
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && fabs(call.checked_media_updated_m - 70.12) < 1e-6
+               && fabs(call.checked_media_started_m - 70.0) < 1e-6,
+           "checked media: the next good frames extend it");
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+}
+
 static void
 test_half_slot_and_carry(void) {
     fixture f;
@@ -433,6 +468,30 @@ test_encryption_gate(void) {
     expect(played_by_burst(&f) == 0, "crypto: direct-mode speech whose security class is unknown is muted");
     ts->dmo_crypt = TETRA_DMO_CRYPT_CLEAR;
     expect(played_by_burst(&f) == 2 * FRAME, "crypto: clear direct-mode speech plays");
+    fixture_close(&f);
+}
+
+/* Issue #890: air-encrypted speech no loaded key decrypts plays with the encrypted-audio mute off, but it is no
+   decoded speech: no checked media, so --scan-voice-only never holds on it. The same call with its key is. */
+static void
+test_undecryptable_speech_is_no_checked_media(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "crypto credit: fixture");
+    f.opts->trunk_scan_enabled = 1;
+    dsd_decode_clock_use_test(80000000000ULL);
+    air_encrypted_call(&f, 0);
+    tetra_confirm_note_signalling(f.state); /* a CRC-16 block proved the carrier: anonymous speech opens a call */
+    f.opts->dmr_mute_encL = 0;
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto credit: undecrypted speech plays unmuted");
+    dsd_call_snapshot call;
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m <= 0.0,
+           "crypto credit: undecrypted speech is no checked media");
+    air_encrypted_call(&f, 1);
+    dsd_decode_clock_test_set_ns(80100000000ULL);
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto credit: decrypted speech plays");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m > 0.0,
+           "crypto credit: decrypted speech is checked media");
+    dsd_decode_clock_use_system();
     fixture_close(&f);
 }
 
@@ -1684,9 +1743,11 @@ int
 main(void) {
     test_clean_stream_plays_every_frame();
     test_integrity_starts_conceals_and_ends_speech();
+    test_checked_media_is_the_good_decoded_frames();
     test_half_slot_and_carry();
     test_follow_gate();
     test_encryption_gate();
+    test_undecryptable_speech_is_no_checked_media();
     test_air_key_stream_positions();
     test_reduced_key_speech();
     test_talkgroup_gate();

@@ -58,6 +58,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
 #include <sndfile.h>
@@ -69,13 +70,15 @@
 #include "m17_confirm.h"
 #include "m17_internal.h"
 #include "m17_rrc_taps.h"
+#include "m17_state_ext.h"
 
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
 #include <dsd-neo/core/voice_chain.h>
 #endif
 
-static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
+static void decodeM17PKT(const dsd_opts* opts, const dsd_state* state, struct m17_meta_text_assembler* text,
+                         const uint8_t* input, int len);
 
 /* The transmission an LSF belongs to, for the GNSS META repeat rule: RF (the call it publishes), or a network
    stream. */
@@ -83,13 +86,28 @@ typedef struct {
     uint8_t network; /* 1 for an IP stream or MPKT frame */
     uint16_t stream_id;
     uint8_t call_observed;    /* set by M17decodeLSF(): this LSF observed the slot's call (m17_publish_lsf()) */
-    uint8_t has_frame_number; /* 1 for an IP stream frame: its frame number (CRC-covered, EOT bit cleared) follows */
-    uint16_t frame_number;
+    uint32_t stream_gen;      /* an IP stream frame: the admitted stream (m17_state_ext::ip_stream_gen); 0 otherwise */
     uint32_t datagram_len;    /* a network frame: its length, CRC included (m17_datagram_digest()); 0 on RF */
     uint64_t datagram_digest; /* and the digest of all of it */
+    /* The text META assembler of the transmission the LSF belongs to: an MPKT's own; NULL for the RF transmission's or
+       the admitted network stream's (m17_state_ext::text_meta). */
+    struct m17_meta_text_assembler* text;
+    /* An MPKT's call (m17_mpkt_call): M17_MPKT_CALL_DATA, a data call whatever its LSF's Packet/Stream bit says (an
+       MPKT is a packet; a stream-mode LSF in one is taken for its META only, never as a live voice stream);
+       M17_MPKT_CALL_NONE, an MPKT heard while a network stream is open: its LSF is applied for its own payload and
+       META, but it publishes no call and notes no received identity, so the open stream's call and the carrier's
+       identity stay the stream's. 0 for anything else. */
+    uint8_t mpkt_call;
+    /* ext_given 1: ext is the M17 extension this LSF frame obtained, once (m17_finalize_lsf_crc(); NULL when it could
+       not be made or the LSF failed its CRC), and its META text and GNSS repeat state use that one result: no second
+       request is made for that LSF (issue #890). 0: they request it as they need it. */
+    uint8_t ext_given;
+    m17_state_ext* ext;
 } m17_lsf_carrier;
 
-static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, 0U};
+enum { M17_MPKT_CALL_DATA = 1, M17_MPKT_CALL_NONE = 2 };
+
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, NULL, 0U, 0U, NULL};
 
 /* 64-bit FNV-1a over a network frame's @p len bytes (its CRC included): what tells a byte-identical copy of a datagram
  * from another frame for the GNSS META repeat rule. Not a check (the frame's own CRC is that), and nothing secret. */
@@ -103,14 +121,21 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
     return hash;
 }
 
-static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
+static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
+static void m17_retire_if_ended(dsd_state* state);
+static void m17_pkt_arm(dsd_state* state, m17_state_ext* g);
+static void m17_pkt_disarm(dsd_state* state);
+static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
 static void M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
-                             const m17_lsf_carrier* carrier);
+                             const m17_lsf_carrier* carrier, struct m17_meta_text_assembler* text);
 static void m17_decode_pkt_print_extended_csd(const uint8_t* input, int len);
-static void m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len, uint32_t protocol);
+/* @p text: the transmission's text META assembler a block joins; NULL shows the block and commits it nowhere. */
+static void m17_decode_pkt_print_meta_or_arb(struct m17_meta_text_assembler* text, const uint8_t* input, int len,
+                                             uint32_t protocol);
+static struct m17_meta_text_assembler* m17_transmission_text(dsd_state* state);
 
 /* What admission made of a GNSS META report: the console shows its coordinates only when admitted. */
 typedef enum {
@@ -120,7 +145,7 @@ typedef enum {
 } m17_gnss_verdict;
 
 static void m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict);
-static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
+static void M17logLSFTrailer(const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
 static int m17_load_aes_key(const dsd_state* state, uint8_t subtype, uint8_t key[32]);
 
@@ -144,6 +169,11 @@ enum {
     M17_SIGNATURE_VERIFY_INVALID = 2,
     M17_SIGNATURE_VERIFY_ERROR = 3,
     M17_SIGNATURE_VERIFY_NO_PUBLIC_KEY = 4,
+    /* The stream ended without every voice frame (once, in order) and every signature chunk before or with its end:
+       the digest is not the whole stream's, so the signature is not judged (never "invalid" for a frame lost). */
+    M17_SIGNATURE_VERIFY_INCOMPLETE = 5,
+    /* A network (IP) stream's signature is not verified (issue #890: the network path does not collect or judge it). */
+    M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK = 6,
 };
 
 short
@@ -339,8 +369,15 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint16_t crc_ext = (uint16_t)convert_bits_into_output(&state->m17_lsf[M17_LSF_LSD_BITS], M17_LSF_CRC_BITS);
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
+    int checked = 0;
     if (crc_err == 0U || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0U && whole, &k_m17_rf_carrier);
+        checked = M17decodeLSF(opts, state, crc_err == 0U && whole, &k_m17_rf_carrier);
+    }
+    if (checked) {
+        /* A rebuilt LSF whose CRC passed, all six chunks heard under one binding, is checked content as the LSF frame's
+           own CRC is: it proves the transmission (issue #890). Noted once its call is published, as there. One -F
+           decoded despite a failed CRC proves nothing. */
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
     if (opts->payload == 1) {
@@ -398,16 +435,6 @@ m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
 }
 
 static void
-m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && call.kind == DSD_CALL_KIND_DATA && DSD_SYNC_IS_M17(call.protocol)
-        && dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    }
-}
-
-static void
 m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0, &call) > 0) {
@@ -429,19 +456,40 @@ m17_received_protocol(const dsd_state* state) {
     return protocol;
 }
 
+/* The kind of call a checked LSF describes: voice for a stream of voice, data for a packet or a stream of data, none
+   (DSD_CALL_KIND_UNKNOWN) for a stream of data type 0. @p as_data: an MPKT's, always a data call (M17 spec 2.0.11,
+   Packet Mode). */
+static dsd_call_kind
+m17_lsf_call_kind(const struct m17_lsf_result* res, int as_data) {
+    if (as_data || res->packet_stream == 0U || res->dt == 1U) {
+        return DSD_CALL_KIND_DATA;
+    }
+    return (res->dt == 2U || res->dt == 3U) ? DSD_CALL_KIND_VOICE : DSD_CALL_KIND_UNKNOWN;
+}
+
+/* An M17 call a fade ended (a sync loss, or a no-carrier, recoverable) is made final, its end time kept: what comes
+   next is never healed into its transmission. An active call, or any other, is left as it is. */
+static void
+m17_finalize_faded_call(const dsd_opts* opts, dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED
+        && dsd_call_state_end_reason_is_recoverable(call.end_reason)) {
+        m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 0);
+    }
+}
+
 /* Publish the call a checked LSF describes; 1 when it observed the slot's call, 0 when it observed none (a stream of
-   data type 0 is neither voice nor data). */
+   data type 0 is neither voice nor data). @p as_data: an MPKT's, always a data call. */
 static int
-m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
-    const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
-    const int is_data = res->packet_stream == 0U || res->dt == 1U;
-    if (!is_voice && !is_data) {
+m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res, int as_data) {
+    const dsd_call_kind kind = m17_lsf_call_kind(res, as_data);
+    if (kind == DSD_CALL_KIND_UNKNOWN) {
         return 0;
     }
     dsd_call_observation observation = {
         .protocol = m17_received_protocol(state),
         .slot = 0U,
-        .kind = is_voice ? DSD_CALL_KIND_VOICE : DSD_CALL_KIND_DATA,
+        .kind = kind,
         .ota_target_id = res->dst,
         .ota_source_id = res->src,
         .service_options = res->cn,
@@ -449,7 +497,13 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     };
     m17_format_address(res->src, 1, observation.source_text);
     m17_format_address(res->dst, 0, observation.target_text);
-    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) < 0) {
+    /* A standalone MPKT (as_data) is a whole transmission and always starts its own call, even when the slot still holds
+       an idle stream's call of the same source, destination and CAN (issue #890), or one a fade ended. */
+    if (as_data) {
+        m17_finalize_faded_call(opts, state);
+    }
+    if (dsd_call_state_observe(state, &observation, as_data ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE)
+        < 0) {
         return 0;
     }
 
@@ -482,33 +536,55 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
    identity received on the carrier. Decoder thread only. */
 static int s_m17_monitoring_local_tx;
 
-static void
+/* Decode the LSF in state->m17_lsf. @p publish_canonical: its CRC passed (and, rebuilt from LICH chunks, it is whole),
+   so it is checked: its values bind to the transmission (dsd_state::m17_lsf_checked) and it names the call. One that
+   failed (decoded under -F) applies only while no checked LSF bound the transmission; after that it is shown and
+   nothing more (issue #890). Returns 1 when a checked LSF was applied. */
+static int
 M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier) {
     struct m17_lsf_result res;
     if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
         LOG_WARN("M17: failed to parse LSF\n");
-        return;
+        return 0;
     }
 
-    if (m17_apply_lsf_result(state, &res) == 1) {
-        if (publish_canonical != 0) {
-            /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
-               is noted before the call is published, so a CAN that moves the received identity to another epoch
-               opens the call on that reception, the one the same LSF's META position is admitted against. */
-            if (!s_m17_monitoring_local_tx) {
-                dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
-            }
-            m17_lsf_carrier bound = *carrier;
-            bound.call_observed = (uint8_t)m17_publish_lsf(opts, state, &res);
-            /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
-               2.2): a META position is the received station's, and the call it describes is the one just published,
-               when this LSF published one. */
-            if (!s_m17_monitoring_local_tx) {
-                M17decodeLSFMeta(opts, state, &res, &bound);
-            }
+    if (publish_canonical == 0 && state->m17_lsf_checked != 0U) {
+        if (m17_lsf_result_usable(&res)) {
+            M17logLSFSummary(&res);
+            M17logLSFTrailer(&res);
         }
-        M17logLSFTrailer(state, &res);
+        return 0;
     }
+
+    if (m17_apply_lsf_result(state, &res) != 1) {
+        return 0;
+    }
+    if (publish_canonical != 0) {
+        state->m17_lsf_checked = 1U;
+        /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
+           is noted before the call is published, so a CAN that moves the received identity to another epoch
+           opens the call on that reception, the one the same LSF's META position is admitted against. */
+        const int publishes = carrier->mpkt_call != (uint8_t)M17_MPKT_CALL_NONE;
+        if (!s_m17_monitoring_local_tx && publishes) {
+            dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+        }
+        m17_lsf_carrier bound = *carrier;
+        bound.call_observed =
+            (uint8_t)(publishes ? m17_publish_lsf(opts, state, &res, carrier->mpkt_call == (uint8_t)M17_MPKT_CALL_DATA)
+                                : 0);
+        /* The META is read only from a checked LSF too, and never from what this station transmits (issue #800
+           2.2): a META position is the received station's, and the call it describes is the one just published,
+           when this LSF published one. */
+        if (!s_m17_monitoring_local_tx) {
+            struct m17_meta_text_assembler* text = carrier->text;
+            if (text == NULL && carrier->ext_given == 0U) {
+                text = m17_transmission_text(state);
+            }
+            M17decodeLSFMeta(opts, state, &res, &bound, text);
+        }
+    }
+    M17logLSFTrailer(&res);
+    return publish_canonical != 0;
 }
 
 static void
@@ -519,13 +595,9 @@ M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res) {
     state->m17_enc = res->et;
     state->m17_enc_st = res->es;
     state->m17_payload_decrypted = 0U;
+    /* The digest and the signature collected so far are the transmission's, not this LSF's: an LSF applied mid-stream
+       (rebuilt from the LICH, or an IP frame's) leaves them (m17_confirm_reset_signature() runs at a boundary). */
     state->m17_signature_advertised = res->signature;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0U;
-    state->m17_signature_complete = 0U;
-    state->m17_signature_bad_sequence = 0U;
-    state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
 }
 
 static void
@@ -656,56 +728,18 @@ m17_active_call(const dsd_state* state, dsd_call_snapshot* call) {
  * that observed none (a stream of data type 0) is bound to no call, whatever M17 call is still ACTIVE on the slot: that
  * call may be another station's. Nothing else in M17 carries a position (D13).
  */
-/* What tells one GNSS META report's transmission from another's (m17_gnss_state::last): the carrier and its call, the
- * whole checked LSF (sender, destination, type word; the META is compared apart), the reception, and on an IP stream
- * the frame number. kind 0: none (no report admitted yet, or its transmission ended). */
-typedef struct {
-    uint8_t kind; /* 1 = RF, the slot 0 call epoch; 2 = network, the stream ID */
-    uint64_t id;
-    uint64_t epoch;
-    uint64_t src;
-    uint64_t dst;
-    uint16_t type_word;
-    uint64_t gen;
-    uint8_t has_fn;
-    uint16_t fn;
-} m17_gnss_tx_key;
-
-/* Network frames remembered for the duplicate rule (m17_gnss_is_duplicate()): a few frames' worth, so a copy that
- * arrives a few frames late (two network paths of different delay) is still known. */
-enum { M17_GNSS_DGRAM_RING = 16 };
-
-/* One network frame (IP stream frame or MPKT, CRC included) whose GNSS META was admitted or repeated: its length and
- * 64-bit FNV-1a digest, the reception generation and the decode-clock time it was last heard at. len 0: none. */
-typedef struct {
-    uint64_t digest;
-    uint64_t gen;
-    uint64_t ms;
-    uint32_t len;
-} m17_gnss_dgram;
-
-/* The M17 GNSS META repeat state (issue #800), in the M17 protocol's state extension (DSD_STATE_EXT_PROTO_M17_GNSS):
- * decoder-thread private, created at the first GNSS META heard, freed with the run's extensions. A transmission
- * repeats its LSF META (RF: every LICH superframe; IP: every stream frame), and the repeats are one report: the last
- * admitted report's transmission key and META bytes, and the network frames that carried it. */
-typedef struct {
-    m17_gnss_tx_key last;
-    uint8_t meta_admitted[M17_META_BYTES];
-    m17_gnss_dgram dgram[M17_GNSS_DGRAM_RING];
-    uint8_t dgram_next;
-} m17_gnss_state;
-
 _Static_assert((int)DSD_STATE_EXT_PROTO_M17_GNSS < (int)DSD_STATE_EXT_MAX,
-               "the M17 GNSS extension slot must fit the state's extension table");
+               "the M17 extension slot must fit the state's extension table");
 
-/* The state's GNSS META repeat state, created empty on first use; NULL when it could not be created. */
-static m17_gnss_state*
-m17_gnss_st(dsd_state* state) {
-    m17_gnss_state* g = DSD_STATE_EXT_GET_AS(m17_gnss_state, state, DSD_STATE_EXT_PROTO_M17_GNSS);
+/* The state's M17 extension (m17_state_ext.h: the GNSS META repeat rule, the network streams, the 1600 bit/s arbitrary
+   data being assembled), created empty on first use; NULL when it could not be created. */
+static m17_state_ext*
+m17_ext_st(dsd_state* state) {
+    m17_state_ext* g = m17_state_ext_find(state);
     if (g) {
         return g;
     }
-    g = (m17_gnss_state*)calloc(1, sizeof(*g));
+    g = (m17_state_ext*)calloc(1, sizeof(*g));
     if (!g) {
         return NULL;
     }
@@ -716,39 +750,131 @@ m17_gnss_st(dsd_state* state) {
     return g;
 }
 
-/* The transmission ended (stream EOT, EOTX, DISC, an MPKT's end): a later one that reuses its stream ID is another.
+/* The text META assembler of the transmission now received: the RF transmission's, or the admitted network stream's
+   (m17_state_ext::text_meta, emptied at every boundary by m17_confirm_reset()). An MPKT has its own (m17_lsf_carrier).
+   NULL when the extension cannot be created: the blocks are then shown and not assembled. */
+static struct m17_meta_text_assembler*
+m17_transmission_text(dsd_state* state) {
+    m17_state_ext* g = m17_ext_st(state);
+    return g != NULL ? &g->text_meta : NULL;
+}
+
+/* The network stream ended (its EOT, EOTX, DISC, another stream replacing it): a later one that reuses its stream ID is another.
  * The frames remembered stay: a copy of one is still no new transmission. Never creates the state. */
 static void
 m17_gnss_tx_end(const dsd_state* state) {
-    m17_gnss_state* g = (m17_gnss_state*)dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_M17_GNSS);
+    m17_state_ext* g = m17_state_ext_find(state);
     if (g) {
-        g->last.kind = 0U;
+        g->gnss_last.kind = 0U;
     }
 }
 
-/* 1 when the META now held repeats the last admitted one within the same transmission, LSF and reception. A stream's
- * frame numbers only rise within it: a frame number at or below the last one heard is another stream (one whose EOT
- * was missed), never a repeat -- unless the frame is a copy of one already heard (m17_gnss_is_duplicate()). */
+/* A network stream's key: the station its LSF names and its stream ID. */
+static uint64_t
+m17_ip_stream_key(uint16_t sid, uint64_t src) {
+    return ((src & 0xFFFFFFFFFFFFULL) << 16U) | sid;
+}
+
+/* The index of the ended stream @p key in @p g's table, or -1. */
 static int
-m17_gnss_is_repeat(const m17_gnss_state* g, const dsd_state* state, const m17_gnss_tx_key* key) {
-    const m17_gnss_tx_key* last = &g->last;
-    if (key->has_fn != last->has_fn || (key->has_fn != 0U && key->fn <= last->fn)) {
-        return 0;
+m17_ip_ended_index(const m17_state_ext* g, uint64_t key) {
+    for (int i = 0; i < (int)M17_IP_ENDED_CAPACITY; i++) {
+        if (g->ip_ended[i].used != 0U && g->ip_ended[i].key == key) {
+            return i;
+        }
     }
+    return -1;
+}
+
+/* 1 when the network stream @p sid of station @p src ended and has not started again (m17_ip_note_ended()). With no
+   state it ended nowhere. */
+static int
+m17_ip_stream_ended(const dsd_state* state, uint16_t sid, uint64_t src) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return g != NULL && m17_ip_ended_index(g, m17_ip_stream_key(sid, src)) >= 0;
+}
+
+/* The slot a new ended key takes: a free one, else the one whose end is longest ago (ages taken modulo the counter, so
+   its wrap changes nothing), which is forgotten (dsd_state::m17_ip_ended_lost). */
+static m17_ip_ended_key*
+m17_ip_ended_take_slot(dsd_state* state, m17_state_ext* g) {
+    for (size_t i = 0U; i < (size_t)M17_IP_ENDED_CAPACITY; i++) {
+        if (g->ip_ended[i].used == 0U) {
+            return &g->ip_ended[i];
+        }
+    }
+    m17_ip_ended_key* oldest = &g->ip_ended[0];
+    for (size_t i = 1U; i < (size_t)M17_IP_ENDED_CAPACITY; i++) {
+        if ((uint32_t)(g->ip_ended_seq - g->ip_ended[i].seq) > (uint32_t)(g->ip_ended_seq - oldest->seq)) {
+            oldest = &g->ip_ended[i];
+        }
+    }
+    state->m17_ip_ended_lost = 1U;
+    return oldest;
+}
+
+/* 1 once an end may have gone unrecorded: an ended stream was forgotten to make room (m17_ip_ended_take_slot()), or no
+   table could be made to record an end (m17_ip_note_ended(), m17_ip_admit_frame() refusing a final frame). A stream
+   neither open nor remembered may then be one whose end was lost, so it is started only by its frame 0. The flag lives
+   in dsd_state, outside the allocation it stands in for, with the extension's lifetime: the decoder session
+   (m17_end_session(), initState()), never a transmission. */
+static int
+m17_ip_ended_forgot(const dsd_state* state) {
+    return state->m17_ip_ended_lost != 0U;
+}
+
+/* Remember that the network stream @p sid of station @p src ended, or (@p ended 0) forget it: frame 0 started it
+   again. The table is fixed (M17_IP_ENDED_CAPACITY, m17_ip_ended_take_slot()). Never allocates: admission created the
+   state before it opened the stream (m17_ip_admit_frame()); an end with no table to take it is a lost end
+   (dsd_state::m17_ip_ended_lost), never a silently forgotten one. */
+static void
+m17_ip_note_ended(dsd_state* state, uint16_t sid, uint64_t src, int ended) {
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (!g) {
+        if (ended) {
+            state->m17_ip_ended_lost = 1U;
+        }
+        return;
+    }
+    const uint64_t key = m17_ip_stream_key(sid, src);
+    const int at = m17_ip_ended_index(g, key);
+    if (!ended) {
+        if (at >= 0) {
+            g->ip_ended[at].used = 0U;
+        }
+        return;
+    }
+    if (at >= 0) {
+        return;
+    }
+    m17_ip_ended_key* slot = m17_ip_ended_take_slot(state, g);
+    slot->key = key;
+    slot->seq = g->ip_ended_seq++;
+    slot->used = 1U;
+}
+
+/* 1 when the META now held repeats the last admitted one within the same transmission, LSF and reception. A network
+ * stream is the one admission opened (m17_ip_admit_frame(): each frame number of it used once and in order), so its
+ * frames are one transmission whatever their numbers, an unsigned stream's wrap included; a copy of a frame already
+ * heard is a repeat too (m17_gnss_is_duplicate()). */
+static int
+m17_gnss_is_repeat(const m17_state_ext* g, const dsd_state* state, const m17_gnss_tx_key* key) {
+    const m17_gnss_tx_key* last = &g->gnss_last;
     return last->kind == key->kind && last->id == key->id && last->epoch == key->epoch && last->src == key->src
            && last->dst == key->dst && last->type_word == key->type_word && last->gen == key->gen
-           && memcmp(g->meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
+           && last->stream_gen == key->stream_gen
+           && memcmp(g->gnss_meta_admitted, state->m17_meta, M17_META_BYTES) == 0;
 }
 
 /* The remembered network frame @p carrier is a byte-identical copy of, heard on reception @p gen less than
  * DSD_POSITION_REPEAT_MS ago; NULL when none. */
 static m17_gnss_dgram*
-m17_gnss_find_dgram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+m17_gnss_find_dgram(m17_state_ext* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
     if (carrier->datagram_len == 0U) {
         return NULL;
     }
     for (size_t i = 0U; i < (size_t)M17_GNSS_DGRAM_RING; i++) {
-        m17_gnss_dgram* d = &g->dgram[i];
+        m17_gnss_dgram* d = &g->gnss_dgram[i];
         if (d->len == carrier->datagram_len && d->digest == carrier->datagram_digest && d->gen == gen && now_ms >= d->ms
             && (now_ms - d->ms) < DSD_POSITION_REPEAT_MS) {
             return d;
@@ -762,7 +888,7 @@ m17_gnss_find_dgram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t 
  * few frames older, as two network paths deliver it). A copy proves no new transmission, so its META is a repeat
  * whatever happened between the two: an EOT or MPKT's end, the call it opens, a frame number that did not rise. */
 static int
-m17_gnss_is_duplicate(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+m17_gnss_is_duplicate(m17_state_ext* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
     m17_gnss_dgram* d = m17_gnss_find_dgram(g, carrier, gen, now_ms);
     if (d == NULL) {
         return 0;
@@ -774,12 +900,12 @@ m17_gnss_is_duplicate(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_
 /* The network frame (@p carrier) whose GNSS META was just admitted or repeated, for m17_gnss_is_duplicate(): it takes
  * the oldest place in the ring. RF frames are not remembered (they cannot be copied). */
 static void
-m17_gnss_note_datagram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
+m17_gnss_note_datagram(m17_state_ext* g, const m17_lsf_carrier* carrier, uint64_t gen, uint64_t now_ms) {
     if (carrier->datagram_len == 0U) {
         return;
     }
-    m17_gnss_dgram* d = &g->dgram[g->dgram_next % (uint8_t)M17_GNSS_DGRAM_RING];
-    g->dgram_next = (uint8_t)((g->dgram_next + 1U) % (unsigned)M17_GNSS_DGRAM_RING);
+    m17_gnss_dgram* d = &g->gnss_dgram[g->gnss_dgram_next % (uint8_t)M17_GNSS_DGRAM_RING];
+    g->gnss_dgram_next = (uint8_t)((g->gnss_dgram_next + 1U) % (unsigned)M17_GNSS_DGRAM_RING);
     d->len = carrier->datagram_len;
     d->digest = carrier->datagram_digest;
     d->gen = gen;
@@ -787,9 +913,41 @@ m17_gnss_note_datagram(m17_gnss_state* g, const m17_lsf_carrier* carrier, uint64
 }
 
 static void
-m17_gnss_note_admitted(m17_gnss_state* g, const dsd_state* state, const m17_gnss_tx_key* key) {
-    g->last = *key;
-    DSD_MEMCPY(g->meta_admitted, state->m17_meta, M17_META_BYTES);
+m17_gnss_note_admitted(m17_state_ext* g, const dsd_state* state, const m17_gnss_tx_key* key) {
+    g->gnss_last = *key;
+    DSD_MEMCPY(g->gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
+}
+
+/* The repeat key of a report from @p res on @p carrier, in the call of epoch @p epoch (0 none), heard on reception
+   generation @p gen (m17_gnss_tx_key). */
+static void
+m17_gnss_build_key(m17_gnss_tx_key* key, const struct m17_lsf_result* res, const m17_lsf_carrier* carrier,
+                   uint64_t epoch, uint64_t gen) {
+    DSD_MEMSET(key, 0, sizeof(*key));
+    key->kind = carrier->network ? 2U : 1U;
+    key->epoch = epoch;
+    key->id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
+    key->src = res->src;
+    key->dst = res->dst;
+    key->type_word = res->type_word;
+    key->stream_gen = carrier->stream_gen;
+    key->gen = gen;
+}
+
+/* Remember the report just admitted as the one its transmission repeats. An MPKT is a whole transmission of its own,
+   with its own repeat scope (as its own text assembler): its only repeats are byte copies of it
+   (m17_gnss_is_duplicate()), so it neither reads (m17_publish_gnss_position()) nor replaces the repeat key, which stays
+   the RF transmission's or the network stream's, an open one it interleaves with included (issue #890). An RF report
+   with no active call has no transmission to repeat within: the next one is admitted again. */
+static void
+m17_gnss_remember(m17_state_ext* g, const dsd_state* state, const m17_lsf_carrier* carrier, m17_gnss_tx_key* key) {
+    if (carrier->mpkt_call != 0U) {
+        return;
+    }
+    if (!carrier->network && key->id == 0U) {
+        key->kind = 0U;
+    }
+    m17_gnss_note_admitted(g, state, key);
 }
 
 static m17_gnss_verdict
@@ -814,23 +972,14 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
        this LSF), or a network stream's ID within its call. The call epoch is part of both, so however a call ended
        (stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync) the next one is another transmission. An LSF that
        observed no call has no epoch, so the whole checked LSF is part of the key too (two stations, or one station
-       sending to another destination, reusing one stream ID are two transmissions), as is a stream's frame number
-       (one restarted with its EOT missed is another stream), and the reception generation: a repeat is only ever one
-       heard on the same reception. */
-    m17_gnss_tx_key key;
-    DSD_MEMSET(&key, 0, sizeof(key));
-    key.kind = carrier->network ? 2U : 1U;
-    key.epoch = active ? call.epoch : 0U;
-    key.id = carrier->network ? (uint64_t)carrier->stream_id : key.epoch;
-    key.src = res->src;
-    key.dst = res->dst;
-    key.type_word = res->type_word;
-    key.has_fn = carrier->has_frame_number;
-    key.fn = carrier->frame_number;
+       sending to another destination, reusing one stream ID are two transmissions), as is the network stream admission
+       opened (m17_ip_admit_frame(); never a frame number that falls: a long stream numbers on through its counter's
+       wrap), and the reception generation: a repeat is only ever one heard on the same reception. */
     dsd_position_origin heard;
     dsd_position_origin_capture(opts, state, &heard);
-    key.gen = heard.gen;
-    m17_gnss_state* g = m17_gnss_st(state);
+    m17_gnss_tx_key key;
+    m17_gnss_build_key(&key, res, carrier, active ? call.epoch : 0U, heard.gen);
+    m17_state_ext* g = carrier->ext_given != 0U ? carrier->ext : m17_ext_st(state);
     if (g == NULL) {
         return M17_GNSS_REFUSED; /* no repeat rule to tell one report from its repeats: none is admitted */
     }
@@ -838,8 +987,8 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     if (m17_gnss_is_duplicate(g, carrier, key.gen, now_ms)) {
         return M17_GNSS_ADMITTED; /* a copy of a frame it came in, admitted or repeated already */
     }
-    if (m17_gnss_is_repeat(g, state, &key)) {
-        g->last.fn = key.fn; /* the stream goes on: its next frame comes after this one */
+    /* An MPKT has its own repeat scope (m17_gnss_remember()): it never reads the repeat key. */
+    if (carrier->mpkt_call == 0U && m17_gnss_is_repeat(g, state, &key)) {
         m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
         return M17_GNSS_ADMITTED; /* admitted already, on this reception, within this transmission */
     }
@@ -847,11 +996,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
         return M17_GNSS_REFUSED;
     }
     m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
-    /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
-    if (!carrier->network && key.id == 0U) {
-        key.kind = 0U;
-    }
-    m17_gnss_note_admitted(g, state, &key);
+    m17_gnss_remember(g, state, carrier, &key);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
@@ -878,7 +1023,7 @@ M17decodeMetaGnss(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_r
  * no packet protocol specifier stands in front of them). */
 static void
 M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
-                 const m17_lsf_carrier* carrier) {
+                 const m17_lsf_carrier* carrier, struct m17_meta_text_assembler* text) {
     //Decode Meta Data when not ENC (if meta field is populated with something)
     if (res->et != 0U || res->has_meta == 0U) {
         return;
@@ -899,17 +1044,18 @@ M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_re
     } else if (identifier == 0x82U) {
         m17_decode_pkt_print_extended_csd(state->m17_meta, (int)M17_META_BYTES);
     } else {
-        m17_decode_pkt_print_meta_or_arb(state, state->m17_meta, (int)M17_META_BYTES, identifier);
+        m17_decode_pkt_print_meta_or_arb(text, state->m17_meta, (int)M17_META_BYTES, identifier);
     }
 }
 
 static void
-M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res) {
-    // If no Meta (debug)
+M17logLSFTrailer(const struct m17_lsf_result* res) {
+    /* The nonce this LSF carries, as received: one -F only shows (m17_lsf_checked) leaves the bound IV in m17_meta, which
+       is the checked LSF's, not this one's. */
     if (res->et == 2) {
         LOG_INFO(" IV: ");
-        for (int i = 0; i < 16; i++) {
-            LOG_INFO("%02X", state->m17_meta[i]);
+        for (size_t i = 0; i < sizeof(res->meta); i++) {
+            LOG_INFO("%02X", res->meta[i]);
         }
     }
 
@@ -924,6 +1070,7 @@ m17_process_lich(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bit
     }
     uint8_t lich_decoded[M17_LICH_CONTENT_BITS];
     DSD_MEMSET(lich_decoded, 0, sizeof(lich_decoded));
+    m17_retire_if_ended(state);
 
     int err = m17_lich_decode_bits(lich_bits, lich_decoded);
     uint8_t lich_counter = 0U;
@@ -1064,7 +1211,30 @@ m17_can_matches_state(const dsd_state* state) {
     return state == NULL || m17_can_filter_allows(state->m17_can_en, state->m17_can);
 }
 
+/* Set while a network (IP) stream frame is dispatched (m17_ip_take_stream_frame()). Decoder thread only. */
+static int s_m17_network_frame;
+
 #ifdef USE_CODEC2
+/*
+ * Speech Codec2 decoded from what this station received, about to play (issue #890). A network frame's media is its
+ * decoded speech, never the datagram alone, so the canonical call's media is marked here for it (an RF frame's was
+ * marked with the frame, m17_mark_stream_media()). Speech counts as the transmission's checked speech only once a
+ * checked LSF bound its type, encryption and CAN (m17_lsf_checked): under -F a relaxed LSF, or the LICH alone, may
+ * name an encrypted stream clear voice and play its ciphertext, which is no speech to credit. Returns 1 for checked
+ * speech: any checked-speech credit belongs behind it.
+ */
+static int
+m17_note_received_speech(const dsd_opts* opts, dsd_state* state) {
+    if (s_m17_network_frame != 0) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_update_media(state, 0U, 1, 0.0) > 0) {
+            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        }
+    }
+    return state->m17_lsf_checked != 0U;
+}
+
 /* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the adapter runs the
    shared high-pass and gain, then the mixers apply the slot 1 switch, mute, channel count and sample format. The WAVs
    consume the same chained samples.
@@ -1080,6 +1250,15 @@ m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* sampl
     }
     static const dsd_voice_frame_info k_received = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
     static const dsd_voice_frame_info k_tx_monitor = {(uint8_t)DSD_VOICE_MEDIA_TX_MONITOR, 1U, 1U, 0U};
+    if (!s_m17_monitoring_local_tx) {
+        /* Received speech Codec2 decoded marks a network call's media (m17_note_received_speech()), and is the scan's
+           voice credit (issue #890) only as checked speech: a checked LSF bound its type, encryption and CAN. The media
+           mark before the payload is decoded, which a build without Codec2 makes too, is no credit. */
+        const int checked_speech = m17_note_received_speech(opts, state);
+        if (checked_speech && dsd_scan_uses_checked_media(opts, state)) {
+            (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_M17_STR_POS, 0.0);
+        }
+    }
     dsd_audio_play_decoded_pcm16(opts, state, samples, nsam, s_m17_monitoring_local_tx ? &k_tx_monitor : &k_received);
 }
 #endif
@@ -1118,17 +1297,23 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     }
 
     if (m17_any_nonzero_octets(adata + 1, 8)) {
-        DSD_FPRINTF(stderr, "\n");           //linebreak
-        decodeM17PKT(opts, state, adata, 9); //decode Arbitrary Data as UTF-8
+        DSD_FPRINTF(stderr, "\n");                 //linebreak
+        decodeM17PKT(opts, state, NULL, adata, 9); //decode Arbitrary Data as UTF-8
     }
 
+    /* The group being assembled is decoder scratch: it lives in the M17 extension, never in what frontends copy. With
+       no extension (out of memory) the group is not assembled. */
+    m17_state_ext* ext = m17_ext_st(state);
+    if (ext == NULL) {
+        return;
+    }
     uint8_t aggregate[49];
     DSD_MEMSET(aggregate, 0, sizeof(aggregate));
-    const int assembled =
-        m17_stream_1600_arbitrary_assemble(state->dmr_pdu_sf[0], frame_number, (const uint8_t*)voice2, aggregate);
+    const int assembled = m17_stream_1600_arbitrary_assemble(ext->adata.data, &ext->adata.mask, &ext->adata.group,
+                                                             frame_number, (const uint8_t*)voice2, aggregate);
     if (assembled > 0 && m17_any_nonzero_octets(aggregate + 1, 48)) {
         DSD_FPRINTF(stderr, "\n");
-        decodeM17PKT(opts, state, aggregate, 49);
+        decodeM17PKT(opts, state, NULL, aggregate, 49);
     }
 }
 
@@ -1207,11 +1392,91 @@ M17verifyCollectedSignature(dsd_state* state) {
     }
 }
 
+/* Whether @p frame_number is one of the four signature frames of a voice stream that advertises a signature (M17 spec
+   2.0.11, Signature Generation and Transmission): its payload is a signature chunk, never voice. */
+static int
+m17_is_signature_frame(const dsd_state* state, uint16_t frame_number) {
+    return state->m17_signature_advertised != 0U && m17_stream_signature_frame_index(frame_number) >= 0
+           && (state->m17_str_dt == 2U || state->m17_str_dt == 3U);
+}
+
+/* Whether @p frame_number (its end bit either way) is in the signature range of a voice stream that advertises a
+   signature: 0x7FFC to 0x7FFF. Signature use takes those four numbers from the voice (M17 spec 2.0.11, Digital
+   Signatures: it shortens the stream by four frames, and the signature frames are numbered 0x7FFC, 0x7FFD, 0x7FFE and
+   0xFFFF), so no frame there is voice: one that is no signature chunk (m17_is_signature_frame()) is malformed. */
+static int
+m17_in_signature_range(const dsd_state* state, uint16_t frame_number) {
+    return state->m17_signature_advertised != 0U && (state->m17_str_dt == 2U || state->m17_str_dt == 3U)
+           && (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX) >= M17_STREAM_SIGNATURE_FN0;
+}
+
+/* Whether every voice frame of the stream entered the digest once and in order, from frame 0. A voice frame lost at the
+   very end, just before the signature frames, cannot be told from the stream's end (the signature frames carry their
+   own numbers): such a stream is judged, and fails. */
+static int
+m17_signature_voice_complete(const dsd_state* state) {
+    return state->m17_signature_voice_next != 0U && state->m17_signature_voice_gap == 0U;
+}
+
+static void
+m17_signature_note_incomplete(dsd_state* state) {
+    if (state->m17_signature_advertised != 0U
+        && state->m17_signature_verification_status == M17_SIGNATURE_VERIFY_NOT_RUN) {
+        state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_INCOMPLETE;
+        DSD_FPRINTF(stderr, " SIG INCOMPLETE;");
+    }
+}
+
+/* A network stream that advertises a signature (issue #890: M17 signatures are not verified on network streams): its
+   verdict is set as soon as its link setup is, so however the stream ends no over-the-air verdict is given. */
+static void
+m17_signature_note_not_over_network(dsd_state* state) {
+    if (state->m17_signature_verification_status == M17_SIGNATURE_VERIFY_NOT_RUN) {
+        state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK;
+        DSD_FPRINTF(stderr, " SIG NOT VERIFIED OVER NETWORK;");
+    }
+}
+
+/* The transmission ended (a stream frame's EOS bit, an IP EOT): a signature not judged by now is incomplete, and the
+   next transmission starts with nothing of this one (m17_retire_if_ended()). */
+static void
+m17_signature_end_transmission(dsd_state* state) {
+    m17_signature_note_incomplete(state);
+    state->m17_tx_ended = 1U;
+}
+
+/* At an RF stream, LSF, packet or BERT frame: the transmission before it ended (its EOS, or its packet's end), and no
+   EOT marker came between, so all of it is dropped before this frame counts toward its own (m17_confirm_reset(), the
+   one boundary): nothing of it, its link setup, the raw LSF bits and LICH chunks, its packet, signature or text, is
+   ever combined with this transmission's. One acquired from its LICH alone then plays nothing, earns no media and
+   publishes nothing until its own LSF applies. Until this frame the ended transmission's evidence stands, so the EOT
+   marker that follows an EOS or a packet is still recognized (issue #890). */
+static void
+m17_retire_if_ended(dsd_state* state) {
+    if (state->m17_tx_ended != 0U) {
+        m17_confirm_reset(state);
+    }
+}
+
+void
+m17_end_session(dsd_state* state) {
+    if (state != NULL) {
+        /* The lost-end fallback goes with the ended-stream table it stands in for (dsd_state_ext_free_all() follows). */
+        state->m17_ip_ended_lost = 0U;
+    }
+}
+
+void
+m17_note_transmission_end(dsd_state* state) {
+    if (state != NULL) {
+        m17_signature_end_transmission(state);
+    }
+}
+
 static int
 M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
                            uint16_t frame_number) {
-    if (state->m17_signature_advertised == 0U || m17_stream_signature_frame_index(frame_number) < 0
-        || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
+    if (!m17_is_signature_frame(state, frame_number)) {
         return 0;
     }
 
@@ -1228,20 +1493,44 @@ M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const
     state->m17_signature_bad_sequence = collector.bad_sequence;
 
     M17printSignatureBits(trellis_buf);
-    if (collected > 0) {
+    if (collected < 0) {
+        DSD_FPRINTF(stderr, " SEQUENCE ERR;");
+    }
+    if (collected > 0 && m17_signature_voice_complete(state)) {
         DSD_FPRINTF(stderr, " COMPLETE;");
         M17verifyCollectedSignature(state);
-    } else if (collected < 0) {
-        DSD_FPRINTF(stderr, " SEQUENCE ERR;");
+    } else if (m17_stream_signature_frame_index(frame_number) == 3) {
+        /* The last chunk is the end: a set or a voice run still missing something is never judged. */
+        m17_signature_note_incomplete(state);
     }
     return 1;
 }
 
+/* Count an RF stream frame's payload into the digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR
+   the payload in, rotate left one byte, frame by frame from frame 0): every voice frame before the signature frames, in
+   order. Any other frame number (frames lost, or one played again) makes the signature incomplete
+   (m17_signature_voice_complete()). A network stream has no digest (its signature is not verified). The digest is kept whether or not the signature is advertised yet: a transmission
+   whose LSF frame was lost learns it from a LICH rebuild later, and the digest covers the stream from its start. */
 static void
-M17updateSignatureDigestIfNeeded(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number) {
-    if (state->m17_signature_advertised != 0U && payload_frame_number < M17_STREAM_SIGNATURE_FN0) {
+M17updateSignatureDigest(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number) {
+    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0) {
+        /* A frame numbered in the signature range that was not taken as a signature chunk (the stream was not known to
+           be signed yet): no signed stream's voice has that number, and the digest never covers it, so a signature
+           learned later is incomplete. */
+        state->m17_signature_voice_gap = 1U;
+        return;
+    }
+    if (payload_frame_number != state->m17_signature_voice_next) {
+        /* A frame lost, or one played again (a repeated frame number: the digest takes it once, yet it plays): either
+           way the verdict would not cover all the audio played, so the signature is incomplete. */
+        state->m17_signature_voice_gap = 1U;
+        if (payload_frame_number < state->m17_signature_voice_next) {
+            return;
+        }
+    } else {
         m17_signature_digest_update(state->m17_signature_digest, payload_bytes);
     }
+    state->m17_signature_voice_next = (uint16_t)(payload_frame_number + 1U);
 }
 
 static void
@@ -1287,20 +1576,49 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
  *
  * Over the air, held behind the same evidence as the call record: an unconfirmed stream is an
  * alternating run that reached the LICH, and playing it is the audible half of the false
- * detection (#399). The UDP/IP path does not arrive by sync search and is not gated, and data
- * and reserved stream types still print.
+ * detection (#399). A network frame reaches here only when its own CRC passed and its link setup applied
+ * (m17_ip_take_stream_frame()), which is its check. Data and reserved stream types still print.
  */
 static int
-m17_stream_payload_may_play(const dsd_state* state, int update_media) {
-    if (update_media == 0 || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
+m17_stream_payload_may_play(const dsd_state* state, int network) {
+    if (network != 0 || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
         return 1;
     }
     return m17_confirm_is_confirmed(state);
 }
 
+/* A stream frame's part in the signature: 1 when it is consumed, never voice. Every frame that may reach playback in a
+   signed RF stream is either counted into the digest or leaves the signature incomplete. Over the air a signature
+   chunk is collected, and a frame in the signature range that is no chunk (0x7FFF without the end bit, 0xFFFC to
+   0xFFFE) is consumed and leaves the signature incomplete; every other frame enters the digest. M17 signatures are not
+   verified on network streams (issue #890): no digest and no collection; a frame in the signature range is still no
+   voice, so it is consumed. */
+static int
+m17_stream_signature_step(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
+                          uint16_t frame_number, int network) {
+    if (network == 0) {
+        if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+            return 1;
+        }
+        if (m17_in_signature_range(state, frame_number)) {
+            state->m17_signature_voice_gap = 1U;
+            DSD_FPRINTF(stderr, " SIG FRAME ERR;");
+            return 1;
+        }
+        M17updateSignatureDigest(state, payload_bytes, (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX));
+        return 0;
+    }
+    if (!m17_in_signature_range(state, frame_number)) {
+        return 0;
+    }
+    m17_signature_note_not_over_network(state);
+    return 1;
+}
+
+/* @p network: an IP stream frame (whose CRC passed); 0 for RF. */
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
-                                     uint16_t frame_number, uint8_t* processed_payload, int update_media) {
+                                     uint16_t frame_number, uint8_t* processed_payload, int network) {
     if (opts == NULL || state == NULL || payload == NULL || processed_payload == NULL) {
         return M17_STREAM_INVALID;
     }
@@ -1315,12 +1633,10 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
                            sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
-    if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+    const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
+    if (m17_stream_signature_step(state, payload_bytes, trellis_buf, frame_number, network)) {
         return M17_STREAM_SIGNATURE_CONSUMED;
     }
-
-    const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
-    M17updateSignatureDigestIfNeeded(state, payload_bytes, payload_frame_number);
 
     if (!m17_can_matches_state(state)) {
         DSD_FPRINTF(stderr, " CAN Filtered;");
@@ -1335,10 +1651,12 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
 
     const uint8_t old_payload_decrypted = state->m17_payload_decrypted;
     state->m17_payload_decrypted = (state->m17_enc != 0U) ? 1U : 0U;
-    if (update_media != 0) {
+    /* Over the air the media mark is the call's; a network frame's media comes from the speech decoded, never from the
+       datagram alone. */
+    if (network == 0) {
         m17_mark_stream_media(opts, state);
     }
-    if (m17_stream_payload_may_play(state, update_media)) {
+    if (m17_stream_payload_may_play(state, network)) {
         M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
     }
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
@@ -1353,14 +1671,12 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
 int
 m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                             uint8_t* processed_payload) {
-    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 1);
+    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 0);
 }
 
-int
-m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
-    if (state == NULL || res == NULL) {
-        return -1;
-    }
+/* Whether a parsed LSF's fields can be used at all (the reasons it cannot are logged). */
+static int
+m17_lsf_result_usable(const struct m17_lsf_result* res) {
     if (res->rs != 0U) {
         LOG_INFO(" Unknown LSF TYPE;");
         return 0;
@@ -1375,6 +1691,17 @@ m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
     }
     if (res->src_is_valid == 0U) {
         LOG_INFO(" Invalid SRC address for transmitting station;");
+        return 0;
+    }
+    return 1;
+}
+
+int
+m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
+    if (state == NULL || res == NULL) {
+        return -1;
+    }
+    if (!m17_lsf_result_usable(res)) {
         return 0;
     }
 
@@ -1462,9 +1789,17 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
     (void)m17_dispatch_stream_payload((const dsd_opts*)opts, state, payload, stream_frame_number, processed_payload);
     // The stream frame's end-of-stream flag is an over-the-air terminator: it lets the event
     // layer keep an audible epoch whose LSF never decoded, where EXPLICIT would read as a retune.
-    if (end != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    if (end != 0U) {
+        m17_stream_end_of_stream(opts, state);
     }
+}
+
+void
+m17_stream_end_of_stream(const dsd_opts* opts, dsd_state* state) {
+    m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
+    /* The EOS is the transmission's end: the next one starts its own signature even when no EOT marker or LSF frame
+       comes between (a missed marker, a stream joined late). */
+    m17_signature_end_transmission(state);
 }
 
 int
@@ -1529,7 +1864,7 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     lich_err = m17_process_lich(state, opts, lich_bits);
 
     if (lich_err == 0) {
-        /* Six Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
+        /* Four Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
          * Golay accepts enough random words that a clean LICH still turns up on noise, so it
          * has to repeat before the decoder acts on the stream (#399). */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_WEAK);
@@ -1709,6 +2044,8 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
 
+    /* A test transmission that follows a decoded EOS is the next transmission (issue #890). */
+    m17_retire_if_ended(state);
     m17_confirm_begin_frame(state);
     m17_payload_decode_bits(m17_rnd_bits, m17_bits);
     m17_decode_bert_payload_bits(m17_bits, bert_bits);
@@ -1731,11 +2068,42 @@ int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
+    /* After a decoded EOS or a packet's end the ended transmission goes first, all of it (m17_confirm_reset()): a
+       repeat LSF keeps a checked binding only within one transmission. An LSF frame whose CRC passed opens a
+       transmission, so it is the same boundary; one that failed is no evidence of a new transmission, and under -F is
+       only shown while a checked binding stands (issue #890). Either way no stream frame has been sent yet, so the
+       digest starts empty (M17 spec 2.0.11, Digital Signatures; a repeated LSF comes before any stream frame too). */
+    m17_retire_if_ended(state);
+    if (crc_err == 0) {
+        m17_confirm_reset(state);
+    } else {
+        m17_confirm_reset_signature(state);
+    }
+    /* Any LSF frame drops whatever was being assembled, as an LSF frame never stands between one packet's chunks; only
+       a checked packet-mode LSF frame that M17decodeLSF() applied starts a packet (below). */
+    m17_pkt_disarm(state);
+    /* The M17 extension is requested once for this LSF frame, and only when its CRC passed (a failed LSF assembles no
+       META and arms no packet, so it makes nothing): its META text, its GNSS repeat state and the packet it may start
+       all use that one result. An allocation that failed for one is not retried for another, so a packet is never
+       armed, nor a position admitted, behind an LSF whose own state could not be made. */
+    m17_state_ext* const ext = crc_err == 0 ? m17_ext_st(state) : NULL;
+    m17_lsf_carrier rf_carrier = k_m17_rf_carrier;
+    rf_carrier.text = ext != NULL ? &ext->text_meta : NULL;
+    rf_carrier.ext_given = 1U;
+    rf_carrier.ext = ext;
+    /* The boundary emptied the raw LSF bits: this frame's own go back in for its decode. */
+    (void)dsd_unpack_bytes_to_bits(lsf_packed, M17_LSF_BYTES, state->m17_lsf, sizeof(state->m17_lsf), M17_LSF_BYTES);
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
     state->m17_lsf_stream_mode = (uint8_t)((crc_err == 0) ? (lsf_packed[13] & 1U) : 0U);
 
+    int applied = 0;
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        M17decodeLSF(opts, state, crc_err == 0, &k_m17_rf_carrier);
+        applied = M17decodeLSF(opts, state, crc_err == 0, &rf_carrier);
+    }
+    if (applied && (lsf_packed[13] & 1U) == 0U) {
+        /* The strict RF packet rule (m17_pkt_arm()): its own checked packet-mode link setup, applied (an invalid
+           address or reserved TYPE bits leave it unapplied, and nothing armed). */
+        m17_pkt_arm(state, ext);
     }
 
     if (crc_err == 0) {
@@ -1805,7 +2173,12 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
        that is not this transmission's. It is dropped, as on a sync loss. */
     const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
+    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
+       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
+        m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
@@ -2602,12 +2975,7 @@ m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst,
     state->m17_enc_st = 0;
     state->m17_payload_decrypted = 0;
     state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
-    state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
+    m17_confirm_reset_signature(state);
     for (int i = 0; i < 16; i++) {
         state->m17_meta[i] = 0;
     }
@@ -3520,7 +3888,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     m17_pkt_print_full_payload(&ctx);
     m17_pkt_send_mpkt_if_enabled(&ctx);
     m17_pkt_run_loop(&ctx);
-    m17_end_packet_call(opts, state);
+    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
     return 0;
 }
 
@@ -3613,7 +3981,8 @@ m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict) {
 }
 
 static void
-m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len, uint32_t protocol) {
+m17_decode_pkt_print_meta_or_arb(struct m17_meta_text_assembler* text, const uint8_t* input, int len,
+                                 uint32_t protocol) {
     DSD_FPRINTF(stderr, " ");
     if (protocol == 0x80U) {
         if (len < (int)M17_META_BYTES) {
@@ -3635,23 +4004,14 @@ m17_decode_pkt_print_meta_or_arb(dsd_state* state, const uint8_t* input, int len
             DSD_FPRINTF(stderr, "%c", block.text[i]);
         }
 
-        if (state != NULL) {
-            struct m17_meta_text_assembler assembler;
-            assembler.control_or = state->m17_text_meta_control_or;
-            assembler.expected_bitmap = state->m17_text_meta_expected_bitmap;
-            assembler.received_bitmap = state->m17_text_meta_received_bitmap;
-            DSD_MEMCPY(assembler.text, state->m17_text_meta, M17_TEXT_MAX_BYTES);
-
-            char text[M17_TEXT_MAX_BYTES + 1U];
-            uint8_t text_len = 0U;
-            DSD_MEMSET(text, 0, sizeof(text));
-            const int complete = m17_meta_text_assembler_push(&assembler, &block, text, &text_len);
-            state->m17_text_meta_control_or = assembler.control_or;
-            state->m17_text_meta_expected_bitmap = assembler.expected_bitmap;
-            state->m17_text_meta_received_bitmap = assembler.received_bitmap;
-            DSD_MEMCPY(state->m17_text_meta, assembler.text, M17_TEXT_MAX_BYTES);
-            if (complete > 0) {
-                DSD_FPRINTF(stderr, " Complete: %s", text);
+        /* A block joins only the assembler of the transmission it arrived in, and only from content whose check
+           passed (a checked LSF's META, a packet whose CRC passed); otherwise it is shown and nothing more. */
+        if (text != NULL) {
+            char assembled[M17_TEXT_MAX_BYTES + 1U];
+            uint8_t assembled_len = 0U;
+            DSD_MEMSET(assembled, 0, sizeof(assembled));
+            if (m17_meta_text_assembler_push(text, &block, assembled, &assembled_len) > 0) {
+                DSD_FPRINTF(stderr, " Complete: %s", assembled);
             }
         }
         return;
@@ -3693,7 +4053,8 @@ m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol
 }
 
 static void
-m17_decode_pkt_dispatch_payload(dsd_state* state, const uint8_t* payload, int payload_len, uint32_t protocol) {
+m17_decode_pkt_dispatch_payload(struct m17_meta_text_assembler* text, const uint8_t* payload, int payload_len,
+                                uint32_t protocol) {
     switch (protocol) {
         case 0x05: m17_decode_pkt_print_text("\n SMS: ", payload, payload_len); break;
         case 0x07: m17_decode_pkt_print_text(" TLE:\n", payload, payload_len); break;
@@ -3704,13 +4065,16 @@ m17_decode_pkt_dispatch_payload(dsd_state* state, const uint8_t* payload, int pa
         case 0x80:
         case 0x83:
         case 0x89:
-        case 0x99: m17_decode_pkt_print_meta_or_arb(state, payload, payload_len, protocol); break;
+        case 0x99: m17_decode_pkt_print_meta_or_arb(text, payload, payload_len, protocol); break;
         default: m17_decode_pkt_print_hex(payload, payload_len); break;
     }
 }
 
+/* Decode a whole packet (or the 1600 bit/s arbitrary data, shown the same way). @p text: the assembler of the
+   transmission whose checked content this is; NULL to show the packet only. */
 static void
-decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len) {
+decodeM17PKT(const dsd_opts* opts, const dsd_state* state, struct m17_meta_text_assembler* text, const uint8_t* input,
+             int len) {
     //Decode the completed packet
     UNUSED(opts);
     if (input == NULL || len <= 0) {
@@ -3745,7 +4109,7 @@ decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int l
         return;
     }
 
-    m17_decode_pkt_dispatch_payload(state, payload, payload_len, protocol);
+    m17_decode_pkt_dispatch_payload(text, payload, payload_len, protocol);
 }
 
 static void
@@ -3809,13 +4173,82 @@ m17_pkt_log_final_if_enabled(const dsd_opts* opts, const dsd_state* state, int e
     DSD_FPRINTF(stderr, "\n      CRC - C: %04X; E: %04X", crc_cmp, crc_ext);
 }
 
-void
+/* How far one M17 frame ends after the one before it (M17 spec 2.0.11: 8 sync and 184 payload symbols), and the slack
+   either way a packet frame's end may stand from that and still be the next frame: a few symbols of timing slip, far
+   less than the frame a wholly lost one would add. */
+enum { M17_PACKET_FRAME_SYMBOLS = 192, M17_PACKET_SPACING_SLACK = 32 };
+
+/* The strict RF packet rule (decided, issue #890): an RF packet is decoded and credited only when its own CRC-checked
+   packet-mode LSF frame is followed by its chunks 0, 1, 2, ... in order, each ending exactly one frame (within
+   M17_PACKET_SPACING_SLACK) after the frame before, up to its EOF. The chunk counters and the EOF's byte count are not
+   covered by the packet's CRC (M17 spec 2.0.11, Packet Frames), so anything else (a counter out of order, a frame lost
+   or cut, a CRC-failed LSF frame, no extension to hold the assembly) drops the whole packet, and nothing more is
+   assembled until the next checked LSF frame arms the assembler again (m17_state_ext::pkt_armed). */
+
+/* Drop the packet being assembled and stop assembling until the next checked LSF frame. Never allocates. */
+static void
+m17_pkt_disarm(dsd_state* state) {
+    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
+    state->m17_pbc_ct = 0;
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        g->pkt_armed = 0U;
+    }
+}
+
+/* A checked packet-mode LSF frame ends here: a packet starts, its chunk 0 due one frame on. @p g: the extension that LSF
+   frame obtained (m17_finalize_lsf_crc()); with none (out of memory) nothing is armed, and its packet is not decoded,
+   even if a later request made one. */
+static void
+m17_pkt_arm(dsd_state* state, m17_state_ext* g) {
+    m17_pkt_disarm(state);
+    if (g != NULL) {
+        g->pkt_armed = 1U;
+        g->pkt_ref_symbol = state->symbolcnt;
+        g->pkt_ref_epoch = state->symbol_clock_epoch;
+    }
+}
+
+/* Whether the packet frame now ending (dsd_state::symbolcnt) is the next frame of an armed assembly: one frame after
+   the frame before it. */
+static int
+m17_pkt_in_step(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    if (g == NULL || g->pkt_armed == 0U || g->pkt_ref_epoch != state->symbol_clock_epoch) {
+        /* Not armed, or the symbol clock was restarted since the frame before (a rewound file, another input): the
+           count since then measures nothing of this reception. */
+        return 0;
+    }
+    const uint32_t since = state->symbolcnt - g->pkt_ref_symbol;
+    return since >= (uint32_t)(M17_PACKET_FRAME_SYMBOLS - M17_PACKET_SPACING_SLACK)
+           && since <= (uint32_t)(M17_PACKET_FRAME_SYMBOLS + M17_PACKET_SPACING_SLACK);
+}
+
+/* A packet's last frame (a valid EOF): the packet transmission ends, whether its packet was whole and its CRC passed
+   or not. A packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its call ends and all of
+   it goes at the next transmission's first frame (m17_retire_if_ended()); until then its evidence stands for its EOT
+   marker. */
+static void
+m17_pkt_end_transmission(const dsd_opts* opts, dsd_state* state) {
+    m17_pkt_disarm(state);
+    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
+    state->m17_tx_ended = 1U;
+}
+
+int
 m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end) {
     if (opts == NULL || state == NULL) {
-        return;
+        return 0;
     }
     if (app_len > M17_PACKET_MAX_APPLICATION_BYTES) {
         app_len = M17_PACKET_MAX_APPLICATION_BYTES;
+    }
+    if (app_len == 0U) {
+        /* No application byte (M17 Packet Data begins with its protocol byte): two bytes FF FF are the CRC of nothing,
+           which is no proof of anything. Nothing is decoded or credited; the packet transmission ends. */
+        DSD_FPRINTF(stderr, " PKT empty;");
+        m17_pkt_end_transmission(opts, state);
+        return 0;
     }
     const uint16_t crc_cmp = m17_crc16(state->m17_pkt, app_len);
     const uint16_t crc_ext = (uint16_t)(((uint16_t)state->m17_pkt[app_len] << 8U) | state->m17_pkt[app_len + 1U]);
@@ -3825,21 +4258,22 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
     }
 
-    if ((crc_cmp == crc_ext || opts->aggressive_framesync == 0) && app_len > 0U) {
-        decodeM17PKT(opts, state, state->m17_pkt, app_len);
+    if (crc_cmp == crc_ext || opts->aggressive_framesync == 0) {
+        /* Only a packet whose CRC passed is the transmission's text; one -F shows despite a failed CRC commits nothing
+           and clears nothing. */
+        decodeM17PKT(opts, state, crc_cmp == crc_ext ? m17_transmission_text(state) : NULL, state->m17_pkt, app_len);
     }
     if (crc_cmp != crc_ext) {
         DSD_FPRINTF(stderr, " (CRC ERR) ");
     }
 
     m17_pkt_log_final_if_enabled(opts, state, end, crc_cmp, crc_ext);
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    m17_end_packet_call(opts, state);
+    m17_pkt_end_transmission(opts, state);
+    return crc_cmp == crc_ext ? 1 : 0;
 }
 
-/* Decodes the frame's @p soft_symbols. Returns non-zero when the frame carried a packet chunk
- * the decoder could use; the four rejections below are checks this frame ran and failed, which
+/* Decodes the frame's @p soft_symbols. Returns the frame's own verdict (m17_packet_take_chunk()): non-zero for a chunk
+ * taken in order or an EOF whose packet's CRC passed; every rejection there is a check this frame ran and failed, which
  * is what the SPS hunt wants to hear about (#419). */
 static int
 m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* soft_symbols) {
@@ -3860,64 +4294,63 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
     m17_soft_depuncture_p3(m17_soft_bits, m17_depunc);
     (void)viterbi_decode(pkt_bytes, m17_depunc, M17_PACKET_TYPE2_BITS);
     DSD_MEMCPY(pkt_packed, pkt_bytes + 1, 26);
+    return m17_packet_take_chunk(opts, state, pkt_packed);
+}
 
+int
+m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed) {
+    if (opts == NULL || state == NULL || pkt_packed == NULL) {
+        return 0;
+    }
+    const int in_step = m17_pkt_in_step(state);
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        g->pkt_ref_symbol = state->symbolcnt;
+        g->pkt_ref_epoch = state->symbol_clock_epoch;
+    }
     uint8_t counter = 0U;
     uint8_t eot = 0U;
-    const int metadata_ok = m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter);
-    if (metadata_ok != 0) {
-        DSD_FPRINTF(stderr, " PKT metadata invalid;");
-        DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-        state->m17_pbc_ct = 0;
-        DSD_FPRINTF(stderr, "\n");
+    if (m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter) != 0) {
+        DSD_FPRINTF(stderr, " PKT metadata invalid;\n");
+        m17_pkt_disarm(state);
+        return 0;
+    }
+    uint16_t app_len = 0U;
+    const int in_order = eot != 0U || counter == (uint8_t)state->m17_pbc_ct;
+    const int whole_eof =
+        eot == 0U || m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) == 0;
+    if (!in_step || !in_order || !whole_eof) {
+        /* Not the next frame of a packet its checked LSF frame started (the strict RF packet rule): the whole packet is
+           dropped. A valid last frame (EOF) still ends the packet transmission (issue #890). */
+        DSD_FPRINTF(stderr, " PKT not whole: dropped;\n");
+        if (eot != 0U) {
+            m17_pkt_end_transmission(opts, state);
+        } else {
+            m17_pkt_disarm(state);
+        }
         return 0;
     }
 
     const int ptr = m17_pkt_ptr_clamped(state->m17_pbc_ct);
-    if (eot == 0U && counter != (uint8_t)state->m17_pbc_ct) {
-        DSD_FPRINTF(stderr, " PKT counter mismatch: expected %02d got %02u;", state->m17_pbc_ct, counter);
-        DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-        state->m17_pbc_ct = 0;
-        DSD_FPRINTF(stderr, "\n");
-        return 0;
-    }
-
-    uint16_t app_len = 0U;
-    int total_with_crc = ptr + M17_PACKET_CHUNK_BYTES;
-    if (eot != 0U) {
-        if (m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) != 0) {
-            DSD_FPRINTF(stderr, " PKT EOF byte count invalid;");
-            DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-            state->m17_pbc_ct = 0;
-            DSD_FPRINTF(stderr, "\n");
-            return 0;
-        }
-        total_with_crc = ptr + counter;
-    }
-
     m17_pkt_log_counter(state->m17_pbc_ct, counter, eot);
     DSD_MEMCPY(state->m17_pkt + ptr, pkt_packed, M17_PACKET_CHUNK_BYTES);
     m17_pkt_log_frame_if_enabled(opts, pkt_packed);
-
     if (eot != 0U) {
-        m17_pkt_finalize_eot(opts, state, app_len, total_with_crc);
+        /* The EOF's verdict is its packet's CRC: an empty packet, or one whose CRC failed, earns no consumption credit
+           (it still ends the transmission, and -F still shows a failed one). */
+        const int taken = m17_pkt_finalize_eot(opts, state, app_len, ptr + counter);
+        DSD_FPRINTF(stderr, "\n");
+        return taken;
     }
-
-    if (eot == 0U) {
-        if (state->m17_pbc_ct >= (M17_PACKET_MAX_FRAMES - 1)) {
-            DSD_FPRINTF(stderr, " PKT frame count overflow;");
-            DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-            state->m17_pbc_ct = 0;
-            DSD_FPRINTF(stderr, "\n");
-            return 0;
-        }
-        state->m17_pbc_ct++;
-        /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
-        m17_confirm_note_unchecked_frame(opts, state);
+    if (state->m17_pbc_ct >= (M17_PACKET_MAX_FRAMES - 1)) {
+        DSD_FPRINTF(stderr, " PKT frame count overflow;\n");
+        m17_pkt_disarm(state);
+        return 0;
     }
-
-    //ending linebreak
+    state->m17_pbc_ct++;
+    /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
+    m17_confirm_note_unchecked_frame(opts, state);
     DSD_FPRINTF(stderr, "\n");
-
     return 1;
 }
 
@@ -3933,15 +4366,27 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
        dropped, as on a sync loss. */
     const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
+    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
+       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* The lost frame was one of the packet's: the whole packet goes (the strict RF packet rule), whatever the
+           symbol count since the frame before says (a cut read counts no stood-in symbols). */
+        m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
 
+    /* A packet frame that follows a decoded EOS is the next transmission's: its packet is never decoded under the ended
+       stream's CAN or encryption (issue #890). */
+    m17_retire_if_ended(state);
     m17_confirm_begin_frame(state);
     const int decoded = m17_process_packet_frame(opts, state, soft_symbols);
     m17_confirm_end_frame(state);
-    return (decoded != 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
+    /* Every packet frame answers for itself (m17_packet_take_chunk()): a chunk taken in order, or an EOF whose packet's
+       CRC passed. Anything the strict RF packet rule rejects earns no consumption credit, though the transmission's
+       confirmation stands for its EOT marker. */
+    return decoded != 0 ? 1 : 0;
 } //end processM17PKT
 
 static const uint8_t m17_ip_ackn[4] = {0x41, 0x43, 0x4B, 0x4E};
@@ -3998,6 +4443,189 @@ m17_ip_copy_lsf_from_bits(dsd_state* state, const uint8_t* ip_bits) {
     }
 }
 
+/* The link setup in an IP stream frame's bits, parsed: 1 when its fields can be used (m17_lsf_result_usable()) and it
+   is a stream-mode LSF (M17 spec 2.0.11, Stream Mode: the Packet/Stream bit 1). Packet traffic has its own datagram
+   (MPKT); a packet-mode LSF in a stream datagram is nothing. */
+static int
+m17_ip_frame_lsf(const uint8_t* ip_bits, struct m17_lsf_result* res) {
+    uint8_t lsf[M17_LSF_BYTES * 8];
+    DSD_MEMSET(lsf, 0, sizeof(lsf));
+    for (int i = 0; i < M17_LSF_LSD_BITS; i++) {
+        lsf[i] = ip_bits[i + 48];
+    }
+    if (m17_parse_lsf(lsf, sizeof(lsf), res) != 0 || res->packet_stream == 0U) {
+        return 0;
+    }
+    return m17_lsf_result_usable(res);
+}
+
+/* The open network stream ended: by its EOT or a matching EOTX or DISC (@p in_band_end 1: the carrier goes with it), or
+   by another stream replacing it (0: the next stream's frame follows at once). Its call ends, its stream (ID and
+   station) is ignored from now until frame 0 starts it again, and everything held from it is dropped
+   (m17_confirm_reset(), the one boundary): the next stream starts with nothing of this one. */
+static void
+m17_ip_end_stream(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int in_band_end) {
+    m17_end_call(opts, state, reason, 0);
+    /* A later stream that reuses its ID is another transmission. */
+    m17_gnss_tx_end(state);
+    m17_signature_end_transmission(state);
+    m17_ip_note_ended(state, state->m17_ip_stream_sid, state->m17_ip_stream_src, 1);
+    m17_confirm_reset(state);
+    if (in_band_end) {
+        state->carrier = 0;
+        state->synctype = DSD_SYNC_NONE;
+    }
+}
+
+/* Whether frame number @p fn comes after @p last in a stream. An unsigned stream numbers on through the 15-bit
+   counter's wrap (0x7FFF to 0): a frame half the counter or more behind is a late one. A signed stream (@p is_signed)
+   never wraps (M17 spec 2.0.11, Digital Signatures: signature use takes the counter's last four numbers, 0x7FFC to
+   0x7FFF, for the signature frames after the voice), so its numbers only rise: a voice frame delayed past a signature
+   frame is late, never a few frames ahead. */
+static int
+m17_ip_fn_after(uint16_t fn, uint16_t last, int is_signed) {
+    if (is_signed) {
+        return fn > last;
+    }
+    const uint16_t ahead = (uint16_t)((fn - last) & M17_STREAM_FRAME_COUNTER_MAX);
+    return ahead != 0U && ahead < 0x4000U;
+}
+
+/* The open stream's next frame (@p fn, @p is_signed its LSF's signature bit): 1 when taken, 0 when it is a copy or a
+   late datagram. Signed once, signed for the rest of the stream: a datagram whose LSF says otherwise does not reopen
+   the counter's wrap. A signed datagram's order is checked as signed, but the stream becomes signed only when one is
+   taken: a rejected copy (another stream's of the same ID and station, its end received) changes nothing. */
+static int
+m17_ip_continue_stream(dsd_state* state, uint16_t fn, int is_signed) {
+    const int signed_stream = state->m17_ip_stream_signed != 0U || is_signed;
+    if (!m17_ip_fn_after(fn, state->m17_ip_stream_last_fn, signed_stream)) {
+        return 0;
+    }
+    state->m17_ip_stream_last_fn = fn;
+    state->m17_ip_stream_signed = (uint8_t)(signed_stream ? 1U : 0U);
+    return 1;
+}
+
+/* Whether frame @p fn of a stream that is not the open one (@p sid of station @p src) may open it. An ended stream
+   opens again only at frame 0, which forgets its end. Once the ended-stream table had to forget one (fail closed), an
+   ended stream it forgot cannot be told from one never heard, so a stream neither open nor remembered opens only at
+   frame 0 too. */
+static int
+m17_ip_may_open(dsd_state* state, uint16_t sid, uint64_t src, uint16_t fn) {
+    if (m17_ip_stream_ended(state, sid, src)) {
+        if (fn != 0U) {
+            return 0; /* the ended stream's datagram, delivered late */
+        }
+        m17_ip_note_ended(state, sid, src, 0);
+        return 1;
+    }
+    return fn == 0U || !m17_ip_ended_forgot(state);
+}
+
+/* Whether a frame of network stream @p sid whose LSF is @p res (the station it names), frame number @p fn (@p eot its
+   EOT bit), opens a stream or continues the open one (1), or is dropped (0). */
+static int
+m17_ip_admit_frame(const dsd_opts* opts, dsd_state* state, uint16_t sid, const struct m17_lsf_result* res, uint16_t fn,
+                   uint8_t eot) {
+    const uint64_t src = res->src;
+    const int open = state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN;
+    if (open && sid == state->m17_ip_stream_sid && src == state->m17_ip_stream_src) {
+        return m17_ip_continue_stream(state, fn, res->signature != 0U);
+    }
+    /* A final frame that is not the open stream's does not replace it (it would end at once, taking the open stream
+       with it); frame 0 (a one-frame stream) is a stream start like any frame 0. It is that stream's end all the same:
+       the stream is remembered as ended, so an earlier frame of it arriving late opens nothing either. With no stream
+       open, a final frame is a stream joined at its end. */
+    if (open && eot != 0U && fn != 0U) {
+        m17_ip_note_ended(state, sid, src, 1);
+        return 0;
+    }
+    if (!m17_ip_may_open(state, sid, src, fn)) {
+        return 0;
+    }
+    /* The ended-stream table must take this stream's end: no stream opens without it. The frame is refused; when it
+       is a final frame (its EOT bit, CRC-checked) the end it carries could not be recorded, which is a lost end (fail
+       closed). Any other frame lost nothing: a later frame of the stream may open it once the table can be made. */
+    m17_state_ext* g = m17_ext_st(state);
+    if (g == NULL) {
+        if (eot != 0U) {
+            state->m17_ip_ended_lost = 1U;
+        }
+        return 0;
+    }
+    if (open) {
+        /* Another stream (ID or station) replaces the open one, whose end was lost: that one is over, its call ends
+           before the next is published (so the two transmissions are two calls), and its late datagrams are ignored
+           too. */
+        m17_ip_end_stream(opts, state, DSD_CALL_END_EXPLICIT, 0);
+    }
+    m17_confirm_reset(state);
+    state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
+    state->m17_ip_stream_sid = sid;
+    state->m17_ip_stream_src = src;
+    state->m17_ip_stream_last_fn = fn;
+    state->m17_ip_stream_signed = (uint8_t)(res->signature != 0U ? 1U : 0U);
+    g->ip_stream_gen++;
+    return 1;
+}
+
+/*
+ * A network stream frame whose CRC passed (M17 IP stream frame: stream ID, LSF, frame number with the EOT bit,
+ * payload), by one rule set that fails closed (issue #890):
+ * - a frame whose own link setup cannot be used (reserved TYPE fields, an invalid address, a packet-mode LSF) is
+ *   nothing: the previous stream's type, encryption and CAN never stand in for it;
+ * - each frame number of a stream (its stream ID and the station its LSF names) is used once and in order (an unsigned
+ *   stream through the 15-bit counter's wrap; a signed one never wraps): a copy, or a datagram arriving after a later
+ *   one, is dropped before playback and everything else;
+ * - another stream ID or station opens a stream, ending the open one; a final frame (EOT) other than frame 0 is taken
+ *   only for the open stream, and ends the stream it names all the same;
+ * - after a stream ended (its EOT, a matching EOTX or DISC, or another stream replacing it) every datagram of it (its
+ *   stream ID and station) is ignored until frame 0 starts it again; once the ended-stream table had to forget one, a
+ *   stream neither open nor remembered starts only at frame 0. Accepted limit: a copy of a one-frame stream's frame 0
+ *   arriving after its EOT starts it again and may open a second call row.
+ * M17 signatures are not verified on network streams: a signed stream is reported so from its link setup.
+ */
+static void
+m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, const uint8_t* ip_bits,
+                         const uint8_t* payload) {
+    const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
+    const uint16_t fn = (uint16_t)convert_bits_into_output(&ip_bits[273], 15);
+    const uint8_t eot = ip_bits[272];
+    const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
+    struct m17_lsf_result res;
+    if (!m17_ip_frame_lsf(ip_bits, &res) || !m17_ip_admit_frame(opts, state, sid, &res, fn, eot)) {
+        return;
+    }
+    m17_state_ext* live = m17_state_ext_find(state);
+    if (live != NULL) {
+        live->ip_stream_last_ms = dsd_realtime_mono_ms(); /* the stream is live (m17_ip_stream_live()) */
+    }
+    state->carrier = 1;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    m17_ip_copy_lsf_from_bits(state, ip_bits);
+    m17_store_current_aes_counter(state, stream_frame_number);
+    const m17_state_ext* g = m17_state_ext_find(state);
+    const m17_lsf_carrier carrier = {
+        1U, sid, 0U, g != NULL ? g->ip_stream_gen : 0U, 54U, m17_datagram_digest(ip_frame, 54U), NULL, 0U, 0U, NULL};
+    (void)M17decodeLSF(opts, state, 1, &carrier);
+    if (state->m17_ip_stream_signed != 0U) {
+        /* Signed once, signed for the rest of the stream (m17_ip_continue_stream()): its signature range stays no
+           voice even under a datagram whose LSF says otherwise. Whatever becomes of the signature datagrams (all lost,
+           or the stream ended by EOTX, DISC or another stream), a network stream's verdict is the network's, never the
+           over-the-air "incomplete". */
+        state->m17_signature_advertised = 1U;
+        m17_signature_note_not_over_network(state);
+    }
+    uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
+    s_m17_network_frame = 1;
+    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, 1);
+    s_m17_network_frame = 0;
+    // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
+    if (eot != 0U) {
+        m17_ip_end_stream(opts, state, DSD_CALL_END_TERMINATOR, 1);
+    }
+}
+
 static void
 m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame) {
     uint8_t ip_bits[462];
@@ -4006,16 +4634,9 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_MEMSET(payload, 0, sizeof(payload));
     m17_ip_bits_from_bytes(ip_frame, 54U, ip_bits);
 
-    state->carrier = 1;
-    state->synctype = DSD_SYNC_M17_STR_POS;
-
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
-    m17_ip_copy_lsf_from_bits(state, ip_bits);
-
     const uint16_t fn = (uint16_t)convert_bits_into_output(&ip_bits[273], 15);
     const uint8_t eot = ip_bits[272];
-    const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
-    m17_store_current_aes_counter(state, stream_frame_number);
     DSD_FPRINTF(stderr, "\n M17 IP Stream: %04X; FN: %05d;", sid, fn);
     if (eot) {
         DSD_FPRINTF(stderr, " EOT;");
@@ -4027,21 +4648,11 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
-    const int crc_valid = crc_ext == crc_cmp;
-    if (crc_valid) {
-        const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
-        M17decodeLSF(opts, state, 1, &carrier);
+    if (crc_ext == crc_cmp) {
+        m17_ip_take_stream_frame(opts, state, ip_frame, ip_bits, payload);
     }
-    uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
-    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid);
-    // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
-    if (crc_valid && eot != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
-        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-    }
-    if (crc_valid && eot != 0U) {
-        /* The stream ended: a later stream that reuses its ID is another transmission. */
-        m17_gnss_tx_end(state);
-    }
+    /* An IP frame whose CRC failed is nothing of the stream's: no stream state, no LSF, no media, no audio, no
+       signature chunk (issue #890). */
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n IP:");
@@ -4073,18 +4684,83 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, desc->dump_len, desc->dump_len, "");
     }
-    if (desc->drop_carrier) {
-        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
-        }
-        /* The transmission ended (EOTX, DISC): a later stream that reuses its ID is another one, call or not. */
-        m17_gnss_tx_end(state);
-        state->carrier = 0;
-        state->synctype = DSD_SYNC_NONE;
+    /* EOTX and DISC end the open stream only when they name its station (the source its LSF names): a delayed one from
+       another station is not its end (issue #890). */
+    if (desc->drop_carrier && state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN
+        && m17_read_ip_source(ip_frame) == state->m17_ip_stream_src) {
+        m17_ip_end_stream(opts, state, DSD_CALL_END_EXPLICIT, 1);
     }
     return 1;
 }
 
+/* How long an open network stream may go with no frame taken and still hold an MPKT's call back
+   (m17_ip_stream_live()): 2 s, fifty 40 ms frame periods. A live stream sends a frame every 40 ms with no pauses (M17
+   spec 2.0.11, Stream Mode), and network jitter or a reflector's buffering delays frames by a few hundred ms at most,
+   so a stream silent this long has ended with its final frame, EOTX and DISC lost. */
+enum { M17_IP_STREAM_IDLE_MS = 2000 };
+
+/* Whether a network stream is open and live: a frame of it was taken within M17_IP_STREAM_IDLE_MS (both sides on the
+   real-time clock, dsd_realtime_mono_ms()). Only a live stream holds an MPKT's call back. An idle one stays open
+   otherwise: its ended-stream and admission rules are unchanged, and its next frame continues it. */
+static int
+m17_ip_stream_live(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN && g != NULL
+           && (dsd_realtime_mono_ms() - g->ip_stream_last_ms) < (uint64_t)M17_IP_STREAM_IDLE_MS;
+}
+
+/* The decoded link setup an MPKT applies for itself (its LSF) and gives back at its end: the raw LSF bits and every
+   field M17decodeLSF() sets. */
+typedef struct {
+    uint8_t lsf[360];
+    uint8_t meta[16];
+    uint8_t checked;
+    uint8_t str_dt;
+    uint8_t can;
+    uint8_t enc;
+    uint8_t enc_st;
+    uint8_t decrypted;
+    uint8_t advertised;
+} m17_link_setup_held;
+
+_Static_assert(sizeof(((m17_link_setup_held*)0)->lsf) == sizeof(((dsd_state*)0)->m17_lsf), "the LSF bits fit");
+_Static_assert(sizeof(((m17_link_setup_held*)0)->meta) == sizeof(((dsd_state*)0)->m17_meta), "the META fits");
+
+static void
+m17_link_setup_hold(const dsd_state* state, m17_link_setup_held* held) {
+    DSD_MEMCPY(held->lsf, state->m17_lsf, sizeof(held->lsf));
+    DSD_MEMCPY(held->meta, state->m17_meta, sizeof(held->meta));
+    held->checked = state->m17_lsf_checked;
+    held->str_dt = state->m17_str_dt;
+    held->can = state->m17_can;
+    held->enc = state->m17_enc;
+    held->enc_st = state->m17_enc_st;
+    held->decrypted = state->m17_payload_decrypted;
+    held->advertised = state->m17_signature_advertised;
+}
+
+static void
+m17_link_setup_give_back(dsd_state* state, const m17_link_setup_held* held) {
+    DSD_MEMCPY(state->m17_lsf, held->lsf, sizeof(held->lsf));
+    DSD_MEMCPY(state->m17_meta, held->meta, sizeof(held->meta));
+    state->m17_lsf_checked = held->checked;
+    state->m17_str_dt = held->str_dt;
+    state->m17_can = held->can;
+    state->m17_enc = held->enc;
+    state->m17_enc_st = held->enc_st;
+    state->m17_payload_decrypted = held->decrypted;
+    state->m17_signature_advertised = held->advertised;
+}
+
+/* One MPKT is one whole transmission (M17 spec 2.0.11, Packet Mode: a packet with its own LSF): its payload is decoded
+   against its own LSF, applied for it alone, and with its own text META assembler. At its end its settings are retired
+   by giving back the decoded link setup it found, so a network stream it interleaves with keeps its own, and nothing of
+   the MPKT stays for what follows. An MPKT whose LSF is not applied (a reserved TYPE, an invalid address) has no setup to
+   decode its payload against: the payload is not decoded, and inherits nothing. Its call is a data call whatever its
+   LSF's Packet/Stream bit says (M17 spec 2.0.11, Packet Mode; a stream-mode LSF, which can carry GNSS META, is taken for
+   its META and never opens a live voice stream), and it ends with the MPKT. Heard while a network stream is open, an
+   MPKT neither ends, splits nor replaces the stream's call and notes no received identity: it publishes no call
+   (m17_lsf_carrier::mpkt_call). */
 static void
 m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int err) {
     if (err < 37) {
@@ -4097,31 +4773,48 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
        stream frame does, and no packet payload belongs in this header conversion. */
     m17_ip_bits_from_bytes(ip_frame, 34U, ip_bits);
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
-    m17_ip_copy_lsf_from_bits(state, ip_bits);
 
     const uint16_t crc_ext = (uint16_t)((ip_frame[err - 2] << 8) + ip_frame[err - 1]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, (uint16_t)(err - 2));
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
+    const int interleaved = m17_ip_stream_live(state);
+    m17_link_setup_held held;
+    m17_link_setup_hold(state, &held);
+    struct m17_meta_text_assembler text;
+    DSD_MEMSET(&text, 0, sizeof(text));
+    int applied = 0;
     if (crc_ext == crc_cmp) {
-        const m17_lsf_carrier carrier = {
-            1U, sid, 0U, 0U, 0U, (uint32_t)err, m17_datagram_digest(ip_frame, (size_t)err)};
-        M17decodeLSF(opts, state, 1, &carrier);
+        m17_ip_copy_lsf_from_bits(state, ip_bits);
+        const m17_lsf_carrier carrier = {1U,
+                                         sid,
+                                         0U,
+                                         0U,
+                                         (uint32_t)err,
+                                         m17_datagram_digest(ip_frame, (size_t)err),
+                                         &text,
+                                         (uint8_t)(interleaved ? M17_MPKT_CALL_NONE : M17_MPKT_CALL_DATA),
+                                         0U,
+                                         NULL};
+        applied = M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");
         DSD_FPRINTF(stderr, " (CRC CHK) E: %04X; C: %04X;", crc_ext, crc_cmp);
         DSD_FPRINTF(stderr, "\n M17 IP   RECD: %d", err);
     }
-    if (crc_ext == crc_cmp) {
-        /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
-        decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
-        m17_end_packet_call(opts, state);
-        /* One MPKT is one whole transmission. */
-        m17_gnss_tx_end(state);
-    } else {
+    if (crc_ext != crc_cmp) {
         DSD_FPRINTF(stderr, " IP CRC ERR");
+    } else if (applied) {
+        /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
+        decodeM17PKT(opts, state, &text, ip_frame + 34, err - 34 - 2);
+        if (!interleaved) {
+            m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
+        }
+    } else {
+        DSD_FPRINTF(stderr, " MPKT link setup not usable: packet not decoded;");
     }
+    m17_link_setup_give_back(state, &held);
 }
 
 void

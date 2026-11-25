@@ -32,6 +32,7 @@
 #include "m17_algorithms.h"
 #include "m17_confirm.h"
 #include "m17_internal.h"
+#include "m17_state_ext.h"
 #include "test_support.h"
 
 #ifdef USE_CODEC2
@@ -368,8 +369,15 @@ test_ip_repeated_meta_is_one_report(void) {
  * its call's row takes the position. */
 static void
 test_ip_stream_end_admits_next_stream(void) {
-    static const uint8_t eotx[10] = {'E', 'O', 'T', 'X', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    static const uint8_t disc[10] = {'D', 'I', 'S', 'C', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
+    /* EOTX and DISC name the stream's station, the source its LSF names (issue #890: one from another station is no
+       end of it). */
+    uint8_t eotx[10] = {'E', 'O', 'T', 'X'};
+    uint8_t disc[10] = {'D', 'I', 'S', 'C'};
+    const unsigned long long station = m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN);
+    for (int i = 0; i < 6; i++) {
+        eotx[4 + i] = (uint8_t)(station >> (40U - (8U * (unsigned)i)));
+        disc[4 + i] = eotx[4 + i];
+    }
     static const char* const ends[] = {"EOTX", "DISC", "call end"};
     for (int end = 0; end < 3; end++) {
         rig r;
@@ -383,8 +391,13 @@ test_ip_stream_end_admits_next_stream(void) {
         write_bits(bits + 96, m17_compose_frame_info(1U, 1U, 0U, 1U, 5U, 0U, 0U), 16U);
         for (int stream = 0; stream < 2; stream++) {
             const uint64_t rev = dsd_position_last_rev();
-            for (uint16_t fn = 1U; fn <= 3U; fn++) {
-                build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+            /* A stream starts at frame 0: after EOTX or DISC that is what starts the stream ID again (issue #890). */
+            /* With no network end (a call end alone, a timeout) the same stream ID would go on numbering one stream
+               (issue #890: each frame number once and in order): the next transmission there has a stream ID of its
+               own. */
+            const uint16_t sid = (end == 2 && stream == 1) ? 0xBEF0U : 0xBEEFU;
+            for (uint16_t fn = 0U; fn <= 2U; fn++) {
+                build_ip_stream_frame_fn(frame, bits, sid, fn, 0);
                 /* Each stream's own voice: a byte-identical frame would be a copy of the last stream's, no new one. */
                 DSD_MEMSET(frame + 36, 0x40 + stream, 16U);
                 const uint16_t crc = m17_crc16(frame, 52U);
@@ -480,6 +493,74 @@ test_reused_state_admits_meta_again(void) {
 }
 
 /* Under -F an LSF whose CRC failed still sets the decoder up, but its META is no position, no text and no callsign. */
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+/* While g_ext_alloc_watch is set, the requests for an allocation the size of the M17 extension are counted, and the
+   first fails while g_ext_alloc_fail_next is set. */
+static int g_ext_alloc_watch;
+static int g_ext_alloc_fail_next;
+static int g_ext_alloc_requests;
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __wrap_calloc(size_t count, size_t size);
+
+void*
+__wrap_calloc(size_t count, size_t size) {
+    if (g_ext_alloc_watch != 0 && count == 1U && size == sizeof(m17_state_ext)) {
+        g_ext_alloc_requests++;
+        if (g_ext_alloc_fail_next != 0) {
+            g_ext_alloc_fail_next = 0;
+            return NULL;
+        }
+    }
+    return __real_calloc(count, size);
+}
+
+/* Issue #890: a checked RF stream LSF carrying GNSS META requests the M17 extension once, for its text, its GNSS repeat
+   state and any packet it starts. That one request failing, no second one is made for the same LSF, and with no
+   repeat rule to tell a report from its repeats no position is admitted. The next checked LSF, memory back, admits
+   it. */
+static void
+test_rf_lsf_meta_uses_one_extension_request(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    g_ext_alloc_requests = 0;
+    g_ext_alloc_watch = 1;
+    g_ext_alloc_fail_next = 1;
+    expect_int("checked LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    g_ext_alloc_watch = 0;
+    expect_int("one extension request for the LSF", g_ext_alloc_requests, 1);
+    dsd_position_fix f[4];
+    expect_int("no position without the repeat state", feed_records(&r, f, 4U), 0);
+    expect_int("the next checked LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("memory back, the next LSF admits its position", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+}
+
+/* Issue #890: an LSF whose CRC failed, in strict and relaxed mode, assembles no META and arms no packet, so it makes
+   no M17 extension: a fresh decoder still has none after it, and none was requested. */
+static void
+test_bad_lsf_requests_no_extension(void) {
+    for (int relaxed = 0; relaxed <= 1; relaxed++) {
+        rig r;
+        rig_open(&r);
+        r.opts->aggressive_framesync = relaxed ? 0 : 1;
+        uint8_t meta[M17_META_BYTES];
+        gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+        g_ext_alloc_requests = 0;
+        g_ext_alloc_watch = 1;
+        expect_int("bad LSF reports its CRC error", rf_lsf(&r, 0, 1U, meta, 1), 1);
+        g_ext_alloc_watch = 0;
+        expect_int("a bad LSF requests no extension", g_ext_alloc_requests, 0);
+        expect_true("a bad LSF leaves no extension", dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_M17_GNSS) == NULL);
+        rig_close(&r);
+    }
+}
+#endif
+
 static void
 test_relaxed_bad_lsf_gives_nothing(void) {
     rig r;
@@ -1016,7 +1097,9 @@ test_ip_unbound_stream_repeat_includes_destination_and_frame_number(void) {
                            m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN));
     expect_int("same sender, another destination, admitted once", send_ip_stream(&r, bits, 4U, 6U), 1);
     expect_int("its stream's later frames are repeats", send_ip_stream(&r, bits, 7U, 9U), 0);
-    expect_int("the stream started again admitted once", send_ip_stream(&r, bits, 1U, 3U), 1);
+    /* Each frame number of a stream is used once and in order (issue #890): the same stream ID and station starting its
+       numbers again with no end between is not taken. */
+    expect_int("the stream started again without its end is dropped", send_ip_stream(&r, bits, 1U, 3U), 0);
     rig_close(&r);
 }
 
@@ -1039,9 +1122,10 @@ send_ip_stream_frame(rig* r, const uint8_t bits[LSF_BITS], uint16_t fn, uint8_t 
 }
 
 /* Issue #800 (g62-r9): a byte-identical copy of the latest IP stream frame (a duplicated datagram) is no evidence of a
- * new stream: its unchanged GNSS META is a repeat, however long the stream has run, and the stream goes on after it. A
- * frame at the same number with another payload is another stream (its EOT missed) and is admitted again, as is one
- * whose number goes back. A copy of the stream's EOT frame, heard after the EOT ended the stream, is a repeat too. */
+ * new stream: its unchanged GNSS META is a repeat, however long the stream has run, and the stream goes on after it.
+ * Issue #890: each frame number of a stream is used once and in order, so a frame at a number already used is dropped
+ * whatever its payload, as is one whose number goes back; a copy of the stream's EOT frame, and any frame of the ended
+ * stream but frame 0, is ignored after the EOT ended it; frame 0 starts the stream ID again. */
 static void
 test_ip_duplicate_frame_is_a_repeat(void) {
     rig r;
@@ -1059,13 +1143,13 @@ test_ip_duplicate_frame_is_a_repeat(void) {
     expect_int("the stream admitted once", admitted, 1);
     expect_int("a duplicate of the latest frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x13U, 0), 0);
     expect_int("the stream goes on after the duplicate", send_ip_stream_frame(&r, bits, 4U, 0x14U, 0), 0);
-    expect_int("the same number with another payload is another stream", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0),
-               1);
-    expect_int("its own duplicate is a repeat", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0), 0);
-    expect_int("a number going back is another stream", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 1);
-    expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
-    expect_int("a copy of the EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
-    expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 1);
+    expect_int("the same number with another payload is dropped", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0), 0);
+    expect_int("a number going back is dropped", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 0);
+    expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 5U, 0x56U, 1), 0);
+    expect_int("a copy of the EOT frame is ignored", send_ip_stream_frame(&r, bits, 5U, 0x56U, 1), 0);
+    /* After the EOT the stream ID starts again only at frame 0 (issue #890): any other frame of it is a late copy. */
+    expect_int("a late frame after the EOT is no new stream", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 0);
+    expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 0U, 0x57U, 0), 1);
     rig_close(&r);
 }
 
@@ -1096,6 +1180,78 @@ test_ip_late_copy_is_a_repeat(void) {
     expect_int("the stream goes on after it", send_ip_stream_frame(&r, bits, 804U, (uint8_t)(804U & 0xFFU), 0), 0);
     dsd_position_fix f[4];
     expect_int("one feed record", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
+/* Issue #890: an unsigned network stream numbers on through the 15-bit counter's wrap (0x7FFF to 0) as one stream, and
+ * its unchanged GNSS META stays one report across the wrap, however long ago the report was admitted: the stream's
+ * boundary is where admission opened it, not where its frame number fell. */
+static void
+test_ip_counter_wrap_is_one_report(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    uint64_t now_ns = 3000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    rig r;
+    rig_open(&r);
+    long long admitted = send_ip_stream_frame(&r, bits, 0x7FFDU, 0x21U, 0);
+    /* Past the feed's 30 s repeat window. */
+    now_ns += 31ULL * 1000000000ULL;
+    dsd_decode_clock_test_set_ns(now_ns);
+    static const uint16_t k_after[4] = {0x7FFEU, 0x7FFFU, 0U, 1U};
+    for (size_t i = 0U; i < 4U; i++) {
+        admitted += send_ip_stream_frame(&r, bits, k_after[i], (uint8_t)(0x22U + i), 0);
+        now_ns += 40000000ULL;
+        dsd_decode_clock_test_set_ns(now_ns);
+    }
+    expect_int("a stream across the counter's wrap is one report", admitted, 1);
+    dsd_position_fix f[4];
+    expect_int("one feed record across the wrap", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
+/* Issue #890: an MPKT heard while a network stream is open is its own transmission, with its own repeat scope: its
+ * GNSS META is a report of its own, and it leaves the stream's repeat key alone, so the stream's next unchanged META
+ * is still a repeat, however long after the stream's report it comes. */
+static void
+test_ip_interleaved_mpkt_keeps_the_streams_repeat_key(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t other_meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t mpkt_bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t sms[8];
+    uint8_t frame[128];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    gnss_meta(other_meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER / 2, RAW_QUARTER / 2);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    (void)build_lsf(mpkt_bits, packed, 0, 1U, other_meta);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    uint64_t now_ns = 4000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    rig r;
+    rig_open(&r);
+    long long admitted = 0;
+    for (uint16_t fn = 0U; fn < 3U; fn++) {
+        admitted += send_ip_stream_frame(&r, bits, fn, (uint8_t)(0x30U + fn), 0);
+    }
+    expect_int("the stream's report admitted once", admitted, 1);
+    const size_t len = build_mpkt(frame, sizeof(frame), mpkt_bits, sms, sizeof(sms));
+    uint64_t rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, frame, (int)len);
+    expect_int("the interleaved MPKT's own report admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    /* Past the feed's 30 s repeat window: only the M17 repeat key can tell the stream's next frame is a repeat. */
+    now_ns += 31ULL * 1000000000ULL;
+    dsd_decode_clock_test_set_ns(now_ns);
+    expect_int("the stream's next unchanged META is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x33U, 0), 0);
     rig_close(&r);
     dsd_decode_clock_use_system();
 }
@@ -1224,6 +1380,8 @@ main(void) {
     test_ip_duplicate_frame_is_a_repeat();
     test_mpkt_duplicate_is_a_repeat();
     test_ip_late_copy_is_a_repeat();
+    test_ip_counter_wrap_is_one_report();
+    test_ip_interleaved_mpkt_keeps_the_streams_repeat_key();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();
@@ -1234,6 +1392,10 @@ main(void) {
     test_unbound_lsf_is_not_the_active_calls();
     test_refused_meta_prints_no_coordinates();
     test_radius_code_7_prints_a_lower_bound();
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+    test_rf_lsf_meta_uses_one_extension_request();
+    test_bad_lsf_requests_no_extension();
+#endif
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

@@ -85,8 +85,10 @@ void dstar_confirm_begin_frame(dsd_state* state);
  *
  * Strong evidence confirms immediately. Weak evidence counts once per frame however many
  * times it is reported, and confirms on the DSTAR_CONFIRM_WEAK_OBSERVES'th frame in a row. Where a
- * signal search hears the confirmation, a scan quiet check hears PROVEN too, through @p opts
- * (dsd_frame_sync_hook_content_evidence(), issue #834). @p opts may be NULL (no quiet check).
+ * signal search hears the confirmation, the scan hears it too, through @p opts
+ * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for strong evidence, the CRC-checked content;
+ * SYNC_ONLY (DSTAR_CONFIRM_PARTIAL_HOLD_MS) for each frame of a weak streak that confirmed (issue #890), which plays the
+ * audio but is no content or activity to any scan. @p opts may be NULL (no quiet check).
  */
 void dstar_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, dstar_evidence evidence);
 
