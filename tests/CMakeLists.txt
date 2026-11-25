@@ -28893,6 +28893,7 @@ if(DSD_ENABLE_QT_UI AND DSD_HAS_RADIO AND NOT WIN32)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
