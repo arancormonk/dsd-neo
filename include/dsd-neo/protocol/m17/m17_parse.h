@@ -212,6 +212,11 @@ int m17_packet_protocol_decode(const uint8_t* input, size_t len, struct m17_pack
 int m17_stream_signature_frame_index(uint16_t frame_number);
 void m17_signature_digest_update(uint8_t digest[M17_SIGNATURE_DIGEST_BYTES],
                                  const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]);
+/**
+ * Store a signature chunk (frame numbers 0x7FFC, 0x7FFD, 0x7FFE, 0xFFFF). Returns 1 when the last chunk (0xFFFF, the
+ * end of the transmission) completes the set, 0 when stored, -3 when stored out of sequence, -2 for a frame number
+ * that is no signature chunk, -1 for NULL. A set is complete only when every chunk arrived before or with the last.
+ */
 int m17_signature_collector_push(struct m17_signature_collector* collector, uint16_t frame_number,
                                  const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]);
 
@@ -219,14 +224,18 @@ int m17_signature_collector_push(struct m17_signature_collector* collector, uint
  * Assemble M17 1600 bps stream arbitrary-data chunks into a 0x99 payload.
  *
  * Each stream frame carries 8 arbitrary-data bytes. The frame number modulo 6
- * selects the chunk slot. When slot 5 is received, out_packet is filled with a
- * protocol byte followed by 48 assembled payload bytes.
+ * selects the chunk slot and the frame number divided by 6 the group: the
+ * accumulator holds one group's chunks (@p received_mask, bit per slot, and
+ * @p group), and a chunk of another group empties it first. When slot 5 is
+ * received with all six chunks of its group in, out_packet is filled with a
+ * protocol byte followed by 48 assembled payload bytes; the accumulator is
+ * emptied at slot 5 either way. A caller empties it (mask 0) at a stream change.
  *
  * @return 1 when out_packet was completed, 0 when only a chunk was stored,
  *         negative on invalid arguments.
  */
-int m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint16_t frame_number, const uint8_t chunk[8],
-                                       uint8_t out_packet[49]);
+int m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint8_t* received_mask, uint16_t* group,
+                                       uint16_t frame_number, const uint8_t chunk[8], uint8_t out_packet[49]);
 
 /**
  * Decode M17 meta text segment control.

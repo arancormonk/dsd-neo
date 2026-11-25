@@ -88,6 +88,7 @@
 #include <unistd.h>
 #endif
 #include "analog_tone_policy.h"
+#include "checked_media_test_support.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -5226,8 +5227,7 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
         update.observed_m = begin_m;
         (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &update);
     }
-    if (dsd_call_state_update_media(state, 0U, 1, begin_m) != 1
-        || dsd_call_state_update_media(state, 0U, 1, media_m) != 1) {
+    if (decoded_media(state, 0U, 1, begin_m) != 1 || decoded_media(state, 0U, 1, media_m) != 1) {
         DSD_FPRINTF(stderr, "voice-gate seed: media update failed\n");
         return -1;
     }
@@ -5317,6 +5317,433 @@ test_conventional_voice_gate_voice_header_no_hold(void) {
     return rc;
 }
 
+static int expect_active_target(const dsd_state* state, const char* stage, size_t want);
+
+/* Issue #890: a scan observation counts only for the visit its read began on. A frame whose read began while the
+ * coordinator was on target a and that reports after b landed (the same decode time), a frame cut by an input
+ * interruption or a carrier boundary, and a report decoded while b's park is in flight (the frame is a's, its index
+ * already b's) hold nothing; a report from b's own frame does. @p body names two conventional targets of @p report's
+ * family (on two frequencies, or two types of one family on one frequency). */
+typedef void (*conventional_report_fn)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int);
+
+static int
+run_conventional_activity_origin_case(const char* tag, const char* body, conventional_report_fn report) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    /* A frame whose read begins on a. */
+    const uint64_t visit_a = state.scan_landing_visit;
+    const uint32_t carrier_a = state.carrier_seq;
+    if (visit_a == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's landing set no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "origin: rotation to b", 1U);
+    if (state.scan_landing_visit == visit_a || state.scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's landing set no visit of its own\n", tag);
+        test_rc = 1;
+    }
+    /* That frame reports now, at b's landing time. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_a;
+    state.frame_dispatch_scan_visit = visit_a;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    /* b's own frames, cut by an input interruption and by a carrier boundary. */
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    state.input_interrupted = 1;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.input_interrupted = 0;
+    state.frame_dispatch_carrier_seq = state.carrier_seq - 1U;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a delayed, interrupted or cut report held b\n", tag);
+        test_rc = 1;
+    }
+    /* Back on a: a report from its own frame holds it past the dwell. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report of the visit's own frame did not hold it\n", tag);
+        test_rc = 1;
+    }
+
+    /* A park in flight: the index is b's, the receiver still a's. What is decoded then holds nothing. a's hold ends
+       at 2.52 and its dwell at 2.77. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(2.85);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(&state, "origin: rotation to b in flight", 1U);
+    if (g_scan_tune_pending_request == 0U || state.scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park is not in flight (request %llu, visit %llu)\n", tag,
+                    (unsigned long long)g_scan_tune_pending_request, (unsigned long long)state.scan_landing_visit);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(2.86);
+    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(2.87);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "origin: b landed", 1U);
+    if (state.scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park landed no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(3.15);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report decoded while b's park was in flight held b\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a restart of the radio stream (a gain, bandwidth or device change) while a conventional target is landed
+ * forgets every landing at the stream's start; when the new stream opens on the same source and the target's frequency
+ * the target lands again under a new visit: a frame read before the restart holds nothing, and its own traffic after
+ * the restart holds it. With @p elsewhere the stream opens on another centre: no landing, nothing holds the target. */
+static int
+run_conventional_activity_after_restart_case(int elsewhere) {
+    const char* tag = elsewhere ? "restart elsewhere" : "restart on the target";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_before = state.scan_landing_visit;
+    const uint32_t carrier_before = state.carrier_seq;
+    state.carrier_source_key = 1U;
+    trunk_scan_test_set_now(0.05);
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    /* The stream start (dsd_engine_note_stream_source()): the same source's reopen is a stream gap, and every landing
+       is forgotten. */
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    opts.rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (elsewhere ? state.scan_landing_visit != 0U
+                  : (state.scan_landing_visit == 0U || state.scan_landing_visit == visit_before
+                     || !dsd_engine_trunk_scan_target_confirmed(&state, 0))) {
+        DSD_FPRINTF(stderr, "%s: visit %llu after the reopen (before %llu)\n", tag,
+                    (unsigned long long)state.scan_landing_visit, (unsigned long long)visit_before);
+        test_rc = 1;
+    }
+    /* A frame read before the restart reports now: nothing. Then the target's own traffic after it. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_before;
+    state.frame_dispatch_scan_visit = visit_before;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, tag, elsewhere ? 1U : 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a stream that reopens on the landed target's frequency lands nothing again when the scan was paused
+ * meanwhile (@p mode 0), when the target on air had a park in flight at the stop rather than a landing (1: the park's
+ * own reopen rule decides it at the next tick, not this one), or when the stream reopened on another radio source (2).
+ */
+static int
+run_restart_relands_nothing_case(int mode) {
+    static const char* const tags[] = {"restart while paused", "restart with a park in flight",
+                                       "restart on another source"};
+    const char* tag = tags[mode];
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    uint32_t reopen_hz = 461000000U;
+    if (mode == 1) {
+        /* The rotation to b goes in flight. */
+        g_scan_tune_to_freq_pending = 1;
+        g_scan_tune_pending_request = 0U;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        g_scan_tune_to_freq_pending = 0;
+        test_rc |= expect_active_target(&state, tag, 1U);
+        reopen_hz = 462000000U;
+    }
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    p25_sm_tick_guard_leave();
+    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
+        DSD_FPRINTF(stderr, "%s: the pause failed\n", tag);
+        test_rc = 1;
+    }
+    p25_sm_tick_guard_enter();
+    state.carrier_seq++;
+    dsd_engine_scan_landing_forget(&state);
+    if (mode == 2) {
+        state.carrier_source_key = 2U;
+    }
+    opts.rtlsdr_center_freq = reopen_hz;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    if (state.scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state.scan_landing_visit);
+        test_rc = 1;
+    }
+    g_scan_tune_pending_request = 0U;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a visit that is stale while the carrier count is unchanged (a trunk-scan rotation between two targets
+ * moves no carrier boundary): a frame dispatched under the visit before, its carrier the current one, holds nothing. */
+static int
+test_conventional_activity_stale_visit_same_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "stale visit: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: on b", 1U);
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq; /* the carrier count is the current one */
+    state.frame_dispatch_scan_visit = visit_a;
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "stale visit: a's report held nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_activity_after_a_stream_restart(void) {
+    int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
+    for (int mode = 0; mode < 3; mode++) {
+        rc |= run_restart_relands_nothing_case(mode);
+    }
+    return rc;
+}
+
+static int
+test_conventional_activity_binds_its_visit(void) {
+    int rc = run_conventional_activity_origin_case("two frequencies",
+                                                   "a,dmr-conventional,461000000,,250,2000,\n"
+                                                   "b,dmr-conventional,462000000,,250,2000,\n",
+                                                   dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_conventional_activity_origin_case("one frequency",
+                                                "a,nxdn-conventional,461000000,,250,2000,\n"
+                                                "b,nxdn48-conventional,461000000,,250,2000,\n",
+                                                dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* Issue #890: under --scan-voice-only a target holds only on checked media of its own landed visit. A call whose frames
+ * were read on target a, decoded and ended after b landed (its last frame at b's landing time), holds b nothing; nor do
+ * media marks without checked media (frames the vocoder failed or concealed) past the dwell, nor checked media decoded
+ * while a park is in flight. b's own checked media holds b, through a sync loss. @p body names two conventional
+ * targets. */
+static int
+run_voice_gate_media_origin_case(const char* tag, const char* body) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: voice origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    const uint32_t carrier_a = state.carrier_seq;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: rotation to b", 1U);
+    /* Frames read on a, decoded now: checked media up to b's landing time, then the call ends. */
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_a;
+    state.frame_dispatch_scan_visit = visit_a;
+    if (seed_voice_gate_media_epoch(&state, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    state.frame_dispatch_active = 0;
+    (void)dsd_call_state_end_ex(&state, 0U, 0.26, DSD_CALL_END_TERMINATOR);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a's ended call held b\n", tag);
+        test_rc = 1;
+    }
+
+    /* On a (landed 0.52): marks without checked media, past a's 250 ms dwell. */
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1001U;
+    obs.policy_target_id = 1001U;
+    obs.observed_m = 0.53;
+    (void)dsd_call_state_observe(&state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    for (int f = 0; f < 13; f++) {
+        (void)dsd_call_state_update_media(&state, 0U, 1, 0.53 + (0.02 * f));
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media marks with no checked media held a\n", tag);
+        test_rc = 1;
+    }
+
+    /* On b (landed 0.78): its own checked media holds it past its dwell, a sync loss after it too. */
+    if (seed_voice_gate_media_epoch(&state, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    (void)dsd_call_state_end_ex(&state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
+    trunk_scan_test_set_now(1.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: b held by its own media past a sync loss", 1U);
+
+    /* b's hold ends at 1.20 and its dwell at 1.45: the park to a goes in flight, and media decoded meanwhile is no
+       media of a's. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(1.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(&state, "voice origin: rotation to a in flight", 0U);
+    if (g_scan_tune_pending_request == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's park is not in flight\n", tag);
+        test_rc = 1;
+    }
+    if (seed_voice_gate_media_epoch(&state, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(1.71);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "voice origin: a landed", 0U);
+    trunk_scan_test_set_now(1.97);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media decoded while a's park was in flight held a\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_voice_gate_media_binds_its_visit(void) {
+    int rc = run_voice_gate_media_origin_case("two frequencies", "a,dmr-conventional,461000000,,250,250,\n"
+                                                                 "b,dmr-conventional,462000000,,250,250,\n");
+    rc |= run_voice_gate_media_origin_case("one frequency", "a,nxdn-conventional,461000000,,250,250,\n"
+                                                            "b,nxdn48-conventional,461000000,,250,250,\n");
+    return rc;
+}
+
 /* With the gate on, decoded voice media holds a conventional target with no header ever
  * reported: the 250 ms dwell would otherwise rotate at 0.25. Fresh media refreshes the
  * hold, and the target rotates only after the hold lapses and the dwell re-elapses. */
@@ -5364,7 +5791,7 @@ test_conventional_voice_gate_media_hold(void) {
     }
 
     // Fresh media refreshes the hold: without it the 0.25 media would lapse at 0.50.
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -5470,8 +5897,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
             obs.ota_source_id = 2002U;
             obs.observed_m = 0.10;
             if (dsd_call_state_ensure(state) <= 0 || dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.10) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.25) != 1) {
+                || decoded_media(state, 0U, 1, 0.10) != 1 || decoded_media(state, 0U, 1, 0.25) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional voice-gate media seed failed\n");
                 test_rc = 1;
                 goto cleanup;
@@ -5488,7 +5914,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
                 DSD_FPRINTF(stderr, "P25 conventional fresh media did not publish VOICE\n");
                 test_rc = 1;
             }
-            if (dsd_call_state_update_media(state, 0U, 1, 0.49) != 1
+            if (decoded_media(state, 0U, 1, 0.49) != 1
                 || dsd_call_state_end_ex(state, 0U, 0.50, DSD_CALL_END_TERMINATOR) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional media refresh/end failed\n");
                 test_rc = 1;
@@ -12324,7 +12750,7 @@ test_scan_timing_voice_gate_phases(void) {
     test_rc |= expect_scan_timing(&state, "voice", DSD_SCAN_STAY_VOICE, 0.50, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "voice", 0.25, 250U);
 
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "scan timing voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -23874,6 +24300,69 @@ test_scan_quiet_evidence_hook_off_is_one_load(void) {
     return rc;
 }
 
+/* Issue #890: a transmission only its sync words confirmed (D-STAR's two exact resync words, SYNC_ONLY) is no heard
+   content. Through the runtime wrapper it stores nothing for the -Y step, with the setting off or on. To a quiet check
+   it is a verdict still open: a READY quiet result is held while such frames keep coming, never ended as activity, and
+   handed back once their hold runs out. A CRC-proven frame still ends the check. */
+static int
+test_scan_quiet_sync_only_is_no_content(void) {
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        opts.scan_skip_silent = on;
+        const uint32_t content = state_p->scan_y_content_seq;
+        const uint32_t partial = state_p->scan_y_partial_seq;
+        dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+        rc |= qt_expect(on ? "on: SYNC_ONLY stores no -Y content or open verdict"
+                           : "off: SYNC_ONLY stores no -Y content or open verdict",
+                        state_p->scan_y_content_seq == content && state_p->scan_y_partial_seq == partial);
+    }
+    dsd_state_ext_free_all(state_p);
+
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    const uint64_t activity = owner ? owner->activity_seq : 0U;
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    rc |= qt_expect_held(&opts, state_p, "a resync-confirmed frame: held");
+    rc |= qt_expect("a resync-confirmed frame is no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(10U + 420U + 839U);
+    rc |= qt_expect_held(&opts, state_p, "the next one renews the wait: held");
+    rc |= qt_expect("still no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U + 841U);
+    rc |= qt_expect("the frames stopped: the hunt hands back",
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the frames stopped: the tick skips", 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+
+    /* A CRC after the resync-confirmed frames still ends the check: nothing skips. */
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(430U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= qt_expect("a header CRC: no hand-back", dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "a header CRC: the target stays", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
 /* The notes feed the quiet check alone: with a coordinator on a conventional target, PROVEN and PARTIAL content moves
    neither the trunk scan's allowed activity nor the hangtime anchor nor the scan timing, and the target stays. */
 static int
@@ -27955,6 +28444,7 @@ test_scan_quiet_all(void) {
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
     rc |= test_scan_quiet_evidence_hook_off_is_one_load();
+    rc |= run_with_default_tune_hook(test_scan_quiet_sync_only_is_no_content);
     rc |= run_with_default_tune_hook(test_scan_quiet_rejected_sync_keeps_the_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_noise_frames_still_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_pending_verdict_holds_every_skip_point);
@@ -28091,6 +28581,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_p25_scan_retune_restarts_pending_cc_acquisition);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
+    rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
+    rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
@@ -28109,6 +28602,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_binds_its_visit);
     rc |= run_with_default_tune_hook(test_p25_conventional_voice_gate_media_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_terminator_before_first_tick);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);

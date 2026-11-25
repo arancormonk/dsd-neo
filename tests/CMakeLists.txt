@@ -2064,6 +2064,23 @@ target_link_libraries(
 )
 add_test(NAME DSTAR_HEADER_UTILS COMMAND dsd-neo_test_dstar_header_utils)
 
+# Issue #890 (B18): one CRC-bearing RF header through both waveforms, the real slicer and soft cost.
+add_executable(
+    dsd-neo_test_dstar_header_polarity
+    protocol/dstar/test_dstar_header_polarity.c
+)
+target_include_directories(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+# The real slicer (dsd_dibit.c, core) reads symbols through dsd_symbol.c (dsp), which writes audio through core:
+# list core on both sides of dsp so a single-pass static link (GNU ld, as in the scan-build job) resolves the cycle.
+target_link_libraries(
+    dsd-neo_test_dstar_header_polarity
+    PRIVATE dsd-neo_proto_dstar dsd-neo_core dsd-neo_dsp dsd-neo_core
+)
+add_test(NAME DSTAR_HEADER_POLARITY COMMAND dsd-neo_test_dstar_header_polarity)
+
 add_executable(
     dsd-neo_test_dstar_process
     protocol/dstar/test_dstar_process.c
@@ -2232,6 +2249,11 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
@@ -2253,6 +2275,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
@@ -2283,6 +2306,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
@@ -9790,6 +9814,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+        ${PROJECT_SOURCE_DIR}/tests/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -9831,6 +9856,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_last_applied_freq"
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=processFrame"
+            # Real TETRA bursts a scripted frame decodes read their symbols here (issue #890).
+            "-Wl,--wrap=getDibitAndSoftSymbol"
+            "-Wl,--wrap=get_dibit_and_analog_signal"
+            "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
@@ -14304,6 +14333,8 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_m17_eot.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_call_end.c
 )
 target_include_directories(
     dsd-neo_test_m17_sync_dispatch
@@ -14346,8 +14377,13 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
 # Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
-# wraps record the order of writes and drains where the linker can wrap them.
-if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+# wraps record the order of writes and drains where the linker can wrap them. GNU ld --wrap reaches only calls linked
+# into the executable, so the wraps need a static build.
+if(
+    NOT APPLE
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
         PRIVATE DSD_NEO_TEST_AUDIO_WRAP
@@ -14358,6 +14394,23 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_drain"
             "-Wl,--wrap=dsd_audio_output_health_get"
+    )
+endif()
+# Issue #890: calloc is wrapped to fail the M17 extension's allocation, and the real-time clock to age a network
+# stream. The M17 decoder must be linked into the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    target_compile_definitions(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE "-Wl,--wrap=calloc" "-Wl,--wrap=dsd_realtime_mono_ms"
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
@@ -14393,6 +14446,7 @@ add_executable(
     protocol/m17/test_m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
     ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
     ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
@@ -14418,6 +14472,23 @@ target_link_libraries(
     dsd-neo_test_m17_gnss_position
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
+# Issue #890: calloc is wrapped to count and fail the M17 extension's allocation. The M17 decoder must be linked into
+# the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    target_compile_definitions(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE "-Wl,--wrap=calloc"
+    )
+endif()
 add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
@@ -18095,6 +18166,44 @@ target_link_libraries(
 add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
 set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
 
+# Synchronisation bursts whose read a carrier boundary crossed or an input interruption cut (issue #890), served through
+# GNU ld --wrap seams around the symbol readers and decoded by the real decoder.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_tetra_burst_cut
+        protocol/tetra/test_tetra_burst_cut.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_tetra.c
+    )
+    target_include_directories(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+            ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+    )
+    target_link_libraries(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_tetra
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            "-Wl,--end-group"
+            dsd-neo_fec
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    target_link_options(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=getDibitAndSoftSymbol
+            -Wl,--wrap=skipDibit
+    )
+    add_test(NAME TETRA_BURST_CUT COMMAND dsd-neo_test_tetra_burst_cut)
+    set_tests_properties(TETRA_BURST_CUT PROPERTIES LABELS "protocol;tetra")
+endif()
+
 unset(_dsd_tetra_target)
 unset(_dsd_tetra_test_name)
 unset(_dsd_tetra_voice_test)
@@ -18495,6 +18604,43 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_history_carry
 )
 set_tests_properties(FRAME_SYNC_HISTORY_CARRY PROPERTIES LABELS "tetra")
+
+# dPMR headers and end frames read inside the hunt (issue #890): checked before they are accepted, in both polarities,
+# with no frame of another protocol lost to a rejected candidate.
+add_executable(
+    dsd-neo_test_frame_sync_dpmr
+    dsp/test_frame_sync_dpmr.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(dsd-neo_test_frame_sync_dpmr PRIVATE USE_RADIO)
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_dpmr
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(NAME FRAME_SYNC_DPMR COMMAND dsd-neo_test_frame_sync_dpmr)
+# A dPMR header or end frame is accepted on its frame's last symbol, so the symbol-timing diagnostic does not measure it.
+add_test(
+    NAME FRAME_SYNC_DPMR_SYMBOL_TIMING
+    COMMAND dsd-neo_test_frame_sync_dpmr symbol-timing
+)
+set_tests_properties(
+    FRAME_SYNC_DPMR_SYMBOL_TIMING
+    PROPERTIES ENVIRONMENT "DSD_NEO_DEBUG_SYMBOL_TIMING=1"
+)
 
 # The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
 # on the stream that frame was read on.
@@ -23614,11 +23760,11 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY
         PROPERTIES LABELS "iq-decode" TIMEOUT 240
     )
-    # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
-    # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
-    # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
-    # noise-equivalent bits, not a decode (#407). It still syncs, so it still exercises
-    # the matcher and the frame reader; what it pins now is that a frame which proves
+    # The off-air dpmr capture read in the default polarity, which it is not received at
+    # (DECODE_IQ_DPMR_OFF_AIR reads it with -xd): its bits are the wrong way up, so the
+    # Src=1601621 this case used to assert was dpmr_ids_are_strong()'s Hamming fallback
+    # firing on them, not a decode (#407). It still syncs, so it still exercises the
+    # matcher and the frame reader; what it pins now is that a frame which proves
     # nothing publishes nothing.
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_DPMR_MARGINAL
@@ -23626,6 +23772,29 @@ if(DSD_HAS_RADIO)
         -fm
         "dPMR Frame Sync 2"
         "Src=[0-9]"
+    )
+    # The same capture at its own polarity (-xd, issue #890): one key-up's nine Communications_Start headers back to
+    # back, eight powersave headers (WU 8 down to 1) and the normal one, each with both MI copies passing the CRC-8,
+    # called and calling 3939*5* (0x57FFFF), channel code 2; then its superframes, whose CCH halves pass the CRC-7
+    # (-Z prints each frame's two verdicts: 56 of 57 pass both). The headers open one call, not nine: one event row. The
+    # end frame lies past the capture's 10 s.
+    add_test(
+        NAME DECODE_IQ_DPMR_OFF_AIR
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+            "-DMODE=-fm -xd -Z"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/dpmr.iq.json"
+            "-DEXPECTED=Comms Start[^\n]* TG=3939[*]5[*] Src=3939[*]5[*][^\n]* Channel Code=02"
+            -DMIN_MATCHES=9 "-DEXPECTED2=CCH OK/OK" -DMIN_MATCHES2=50
+            "-DEXPECTED3=Powersave WU=1[^0-9]"
+            "-DEVENT_EXPECTED=dPMR CC: 02; TGT: 3939[*]5[*]; SRC: 3939[*]5[*];"
+            "-DEVENT_COUNT_REGEX=dPMR CC:" -DEVENT_COUNT=1
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_DPMR_OFF_AIR"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_DPMR_OFF_AIR
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
 
@@ -23659,8 +23828,9 @@ if(DSD_HAS_RADIO)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_AM_MONITOR MONITOR am_tone_synth -fM 96000)
         dsd_neo_add_audio_stdout_test(DECODE_IQ_STDOUT_SOURCE_MONITOR MONITOR_8 dstar -fd)
     endif()
-    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first frame of the
-    # transmission's first voice superframe, which decodes with nothing to correct.
+    # D-STAR voice decodes through the soft AMBE 3600x2400 path (issue #599). The payload is the first voice frame
+    # behind the first resynchronization word the hunt matches in the second call, which decodes with nothing to
+    # correct.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DSTAR_AMBE
         dstar
@@ -24228,17 +24398,17 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
         FILES 0
     )
-    # Voice plays and is captured only from a confirmed transmission. The capture's two RF headers fail their CRC, so
-    # the superframes behind them confirm nothing and are withheld; the third superframe runs on from the second and
-    # opens the one capture, with the 84 frames of the four superframes from there.
+    # Voice plays and is captured only from a confirmed transmission. The capture holds two, each behind an RF header
+    # whose CRC passes (both are +headers, read on the slicer's polarity): the repeater's 7-frame reply, which its end
+    # pattern closes, and the call after it, voice frame 0 behind its header included: one capture each, 113 frames.
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_DSTAR
         dstar
         -fd
         "SRC: KB7WUK"
         EXT .dmb
-        FILES 1
-        MIN_FRAMES 84
+        FILES 2
+        MIN_FRAMES 113
     )
     dsd_neo_add_iq_mbe_capture_test(
         DECODE_IQ_MBE_CAPTURE_NXDN48

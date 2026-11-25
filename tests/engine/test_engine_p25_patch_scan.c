@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "checked_media_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -104,8 +105,8 @@ open_voice(dsd_state* st, uint64_t ota, uint64_t policy, double t) {
     obs.policy_target_id = policy;
     obs.observed_m = t;
     (void)dsd_call_state_observe(st, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(st, 0U, 1, t);
-    (void)dsd_call_state_update_media(st, 0U, 1, t + 0.5);
+    (void)decoded_media(st, 0U, 1, t);
+    (void)decoded_media(st, 0U, 1, t + 0.5);
 }
 
 static int

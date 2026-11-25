@@ -1814,8 +1814,8 @@ no_carrier_hangtime_ran_out(const dsd_opts* opts, const dsd_state* state, time_t
    decides, before its time. Heard voice is the voice gate's alone. */
 /* Whether what the -Y row's frames said still holds it (issue #834; docs/trunk-scan.md), one rule for the frame
    boundary and noCarrier(), beside the hangtime anchor each checks itself: -t has not passed since the last checked
-   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA, whose frames hold the row
-   while they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
+   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, whose frames hold the row while
+   they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
    (SCAN_QUIET_PENDING_MAX_MS at most) that adds no -t. */
 static int
 live_scanner_y_frames_hold_row(const dsd_opts* opts, const dsd_state* state, double now_m) {
@@ -3731,17 +3731,8 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     /* dPMR: the superframe part the next frame's identity half is read against. */
     opts->dPMR_next_part_of_superframe = 0;
-    /* M17: the LSF from LICH chunks, the packet and the signature. */
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
+    /* M17: the LSF from LICH chunks, the packet, the signature and the texts went in carrier_boundary_forget_evidence()
+       (m17_confirm_reset(), the one M17 boundary, issue #890). */
     /* YSF: the text assembled frame by frame. */
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     /* P25 Phase 2: the slots' ESS_B, which a 2V burst ahead of any 4V burst would decode as the new carrier's
@@ -4061,30 +4052,9 @@ dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
 
 static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_str_dt = 9;
-    state->m17_bert_locked = 0;
-    state->m17_bert_lfsr = 1;
-    state->m17_bert_lock_count = 0;
-    state->m17_bert_window_bits = 0;
-    state->m17_bert_window_errors = 0;
-    state->m17_bert_bits = 0;
-    state->m17_bert_errors = 0;
-    state->m17_bert_resyncs = 0;
-    state->m17_can = 0;
-    state->m17_enc = 0;
-    state->m17_enc_st = 0;
-    state->m17_payload_decrypted = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
-    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    /* Everything the M17 transmission held (link setup, LSF bits and LICH chunks, packet, BERT receiver, signature,
+       texts) went with its evidence in no_carrier_reset_decode_state() (m17_confirm_reset(), the one M17 boundary,
+       issue #890). */
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));
@@ -5197,6 +5167,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     /* A stopped decoder hears nothing: the next session starts with no received tone. */
     dsd_analog_rx_reset(state);
+    /* M17's session state goes with the extensions it belongs to. */
+    m17_end_session(state);
     dsd_state_ext_free_all(state);
     dsd_socket_cleanup();
 }

@@ -19,7 +19,6 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
 
-#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -29,7 +28,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
-#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
@@ -200,10 +198,15 @@ dpmr_extract_superframe_part(const dpmr_voice_ctx_t* ctx, dpmr_superframe_part* 
     part->hamming_ok[1][1] = ctx->HammingCorrectable[1][1];
 }
 
+/* Whether the frame's two halves carry one identity together (issue #890, B9b): both passed their CRC-7 and are
+ * numbered 0/1 (ID0, ID1: the called station) or 2/3 (ID2, ID3: the calling station), TS 102 658 Tables 5.5 to 5.8. A
+ * half whose Hamming words merely correct is no check (the CRC covers the bits they produced), and a pair numbered
+ * otherwise joins the halves of two identities. */
 static int
 dpmr_ids_are_strong(const dpmr_superframe_part* part) {
-    return (part->crc_ok[0] || (part->hamming_ok[0][0] && part->hamming_ok[0][1]))
-           && (part->crc_ok[1] || (part->hamming_ok[1][0] && part->hamming_ok[1][1]));
+    return part->crc_ok[0] && part->crc_ok[1]
+           && ((part->frame_number[0] == 0U && part->frame_number[1] == 1U)
+               || (part->frame_number[0] == 2U && part->frame_number[1] == 3U));
 }
 
 /*
@@ -222,56 +225,6 @@ dpmr_note_cch_evidence(dsd_state* state, const dpmr_voice_ctx_t* ctx) {
 }
 
 static void
-dpmr_publish_identity_fragment(dsd_state* state, uint32_t id_value, int target) {
-    char identity[8];
-    if (!dpmr_confirm_is_confirmed(state)) {
-        /* Nothing has decoded on this transmission yet, so there is no identity here to
-         * publish -- only whatever the Hamming fallback made of the bits (#407). */
-        return;
-    }
-    dpmr_convert_air_interface_id(id_value, identity);
-    int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
-    if (!DSD_SYNC_IS_DPMR(protocol)) {
-        protocol = DSD_SYNC_DPMR_FS2_POS;
-    }
-    dsd_call_observation observation = {
-        .protocol = protocol,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_VOICE,
-    };
-    if (target) {
-        dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), identity,
-                      sizeof(observation.target_text) - 1U);
-    } else {
-        dsd_call_snapshot call;
-        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-            && DSD_SYNC_IS_DPMR(call.protocol)) {
-            dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), call.target_text,
-                          sizeof(observation.target_text) - 1U);
-        }
-        dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), identity,
-                      sizeof(observation.source_text) - 1U);
-    }
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-}
-
-static void
-dpmr_update_called_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
-    if (id_is_strong) {
-        dpmr_publish_identity_fragment(state, id_value, 1);
-    }
-    opts->dPMR_next_part_of_superframe = 2;
-}
-
-static void
-dpmr_update_calling_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
-    if (id_is_strong) {
-        dpmr_publish_identity_fragment(state, id_value, 0);
-    }
-    opts->dPMR_next_part_of_superframe = 1;
-}
-
-static void
 dpmr_mark_unknown_superframe_part(dsd_opts* opts) {
     if (opts->dPMR_next_part_of_superframe == 1) {
         opts->dPMR_next_part_of_superframe = 2;
@@ -282,17 +235,24 @@ dpmr_mark_unknown_superframe_part(dsd_opts* opts) {
     }
 }
 
+/* Which identity the frame carries (dPMRVoiceFS2Frame_t::BoundIdKind), for dpmr_publish_call() to publish with the
+ * frame's checked service; and which superframe part comes next, by the halves' frame numbers. */
 void
 dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part) {
-    int id_is_strong = dpmr_ids_are_strong(part);
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    f->BoundIdKind = DPMR_FRAME_ID_NONE;
+    f->BoundIdValue = part->id_value;
+    if (dpmr_ids_are_strong(part)) {
+        f->BoundIdKind = part->frame_number[0] == 0U ? DPMR_FRAME_ID_CALLED : DPMR_FRAME_ID_CALLING;
+    }
     if (((part->crc_ok[0] || part->hamming_ok[0][0]) && (part->frame_number[0] == 0))
         || ((part->crc_ok[1] || part->hamming_ok[1][0]) && (part->frame_number[1] == 1))) {
-        dpmr_update_called_id(opts, state, part->id_value, id_is_strong);
+        opts->dPMR_next_part_of_superframe = 2;
         return;
     }
     if (((part->crc_ok[0] || part->hamming_ok[0][0]) && (part->frame_number[0] == 2))
         || ((part->crc_ok[1] || part->hamming_ok[1][0]) && (part->frame_number[1] == 3))) {
-        dpmr_update_calling_id(opts, state, part->id_value, id_is_strong);
+        opts->dPMR_next_part_of_superframe = 1;
         return;
     }
     dpmr_mark_unknown_superframe_part(opts);
@@ -347,6 +307,27 @@ dpmr_print_ids(const dsd_state* state) {
  * and plays nothing (a transmission boundary leaves confirmation standing, so a scrambled call after a clear one must
  * not play its first undecodable halves as clear). Unverified bits never decide it: a failed half reading Version 3
  * does not scramble a clear call, and one reading 0 does not unscramble a scrambled one. */
+/* Which Communications Mode each half plays by (issue #890), by the same rule as its scrambling: a half whose CRC-7
+ * passed by its own (and the transmission learns it), a failed half by the transmission's last checked half or header,
+ * or, with none yet, by this frame's other checked half; with neither, by none, and it plays nothing. A failed half's
+ * own mode bits never decide it: a damaged data half reading voice must not reach the vocoder. */
+static void
+dpmr_resolve_half_modes(dsd_state* state) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        if (f->CCHDataCrcOk[o] != 0U) {
+            state->dpmr_mode = (uint8_t)(f->CommunicationMode[o] + 1U);
+        }
+        unsigned int mode = state->dpmr_mode != 0U ? state->dpmr_mode - 1U : DPMR_HALF_MODE_UNVERIFIED;
+        for (int other = 0; mode == DPMR_HALF_MODE_UNVERIFIED && other < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; other++) {
+            if (other != o && f->CCHDataCrcOk[other] != 0U) {
+                mode = f->CommunicationMode[other];
+            }
+        }
+        f->ServiceMode[o] = mode;
+    }
+}
+
 void
 dpmr_resolve_half_scrambling(dsd_state* state) {
     dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
@@ -365,6 +346,7 @@ dpmr_resolve_half_scrambling(dsd_state* state) {
         }
         f->Scrambled[o] = known == 2U ? DPMR_HALF_SCRAMBLED : known == 1U ? DPMR_HALF_CLEAR : DPMR_HALF_UNVERIFIED;
     }
+    dpmr_resolve_half_modes(state);
 }
 
 static void DSD_ATTR_USED
@@ -397,6 +379,67 @@ dpmr_frame_enc_observed(const dPMRVoiceFS2Frame_t* f) {
     return DSD_CALL_ENC_OBSERVED_NONE;
 }
 
+/* The frame's first half whose CCH CRC-7 passed, or -1: the only half whose service a frame may publish (issue #890,
+ * B9b). */
+static int
+dpmr_checked_half(const dPMRVoiceFS2Frame_t* f) {
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        if (f->CCHDataCrcOk[o] != 0U) {
+            return o;
+        }
+    }
+    return -1;
+}
+
+/* What a confirmed frame publishes, once (issue #890, F13): the identity its halves carry together
+ * (dpmr_update_superframe_part()) with the service and call kind of its checked half, so a checked data CCH is a data
+ * call and never voice. A frame with no checked half names nothing: it only keeps an open dPMR call going, never opens
+ * one. */
+static int
+dpmr_publish_frame_observation(dsd_state* state) {
+    const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_DPMR(protocol)) {
+        protocol = DSD_SYNC_DPMR_FS2_POS;
+    }
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_UNKNOWN,
+    };
+    const int c = dpmr_checked_half(f);
+    if (c < 0) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_DPMR(call.protocol)) {
+            observation.kind = call.kind; /* the call's own: nothing here says otherwise */
+            (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        }
+        return 0;
+    }
+    /* No channel: dPMR names no trunk channel, and the colour code is the row's access code. */
+    observation.kind = dpmr_call_kind_for_mode(f->CommunicationMode[c]);
+    observation.service_options =
+        (uint16_t)((f->Version[c] << 8U) | (f->CommunicationMode[c] << 4U) | f->CommsFormat[c]);
+    observation.emergency = (uint8_t)(f->EmergencyPriority[c] != 0U);
+    observation.has_service_metadata = 1U;
+    if (f->BoundIdKind != DPMR_FRAME_ID_NONE) {
+        char identity[8];
+        dpmr_convert_air_interface_id(f->BoundIdValue, identity);
+        char* text = f->BoundIdKind == DPMR_FRAME_ID_CALLED ? observation.target_text : observation.source_text;
+        dsd_strncpy_s(text, DSD_CALL_IDENTITY_TEXT_SIZE, identity, DSD_CALL_IDENTITY_TEXT_SIZE - 1U);
+    }
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0;
+}
+
+/* Whether a dPMR call is open on the slot. */
+static int
+dpmr_call_open(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_DPMR(call.protocol);
+}
+
 void
 dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     if (!dpmr_confirm_is_confirmed(state)) {
@@ -404,97 +447,159 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
          * proved itself; publishing them would put a call row on the air alone (#407). */
         return;
     }
-    /* This carrier's colour code, read with the call it belongs to (issue #575): published here, on the confirmed
-     * path, whether or not a caller identity decoded with it. The engine puts it back to -1 between carriers. */
-    if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
-        state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
-        dsd_rxid_note_access(state, DSD_RXID_FAMILY_DPMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE,
-                             (uint16_t)state->dPMRVoiceFS2Frame.ColorCode[0]);
+    /* The colour code is published on the confirmed path whether or not a caller identity decoded with it. A frame
+       whose channel code did not decode keeps an open call's code, but a call it opens has none of its own: the code
+       an earlier call left is not this one's access code (issue #890). */
+    const int known = state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1);
+    if (known) {
+        dpmr_publish_color_code(state, (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
+    } else if (!dpmr_call_open(state) && dpmr_checked_half(&state->dPMRVoiceFS2Frame) >= 0) {
+        state->dpmr_color_code = -1;
     }
-    dsd_call_observation observation = {
-        .protocol = state->synctype,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_VOICE,
-        /* No channel: dPMR names no trunk channel, and the colour code is the row's access code. */
-        .service_options = (uint16_t)((state->dPMRVoiceFS2Frame.Version[0] << 8U)
-                                      | (state->dPMRVoiceFS2Frame.CommunicationMode[0] << 4U)
-                                      | state->dPMRVoiceFS2Frame.CommsFormat[0]),
-        .emergency = (uint8_t)(state->dPMRVoiceFS2Frame.EmergencyPriority[0] != 0U),
-        .has_service_metadata = 1U,
-    };
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (dpmr_publish_frame_observation(state) && !known) {
+        state->dpmr_color_code = -1; /* the observation began another call (another identity) */
+    }
 
     /* A frame no verified half speaks for since the transmission's boundary leaves the call's classification alone. */
-    if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_UNVERIFIED) {
-        dsd_event_sync_slot(opts, state, 0U);
-        return;
-    }
-    dsd_call_crypto_update crypto = {
-        .classification = DSD_CALL_CRYPTO_CLEAR,
-        .audio_permitted = 1U,
-        .enc_observed = dpmr_frame_enc_observed(&state->dPMRVoiceFS2Frame),
-    };
-    if (state->dPMRVoiceFS2Frame.Scrambled[0] == DPMR_HALF_SCRAMBLED) {
-        crypto.classification =
-            dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
-        crypto.audio_permitted = dsd_key_scalar_present(state, 0);
-    }
-    (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DPMR_FS2_POS, &crypto);
-    {
-        dsd_call_snapshot call;
-        if (dsd_call_state_get(state, 0, &call) > 0) {
-            const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
-                                  : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
-                                                                                       : -1;
-            (void)dsd_call_state_note_key_selection(state, 0, DSD_SYNC_DPMR_FS2_POS, call.epoch, DSD_CALL_KEY_DIRECT,
-                                                    call.kid, -1, available, 0);
-        }
+    if (state->dPMRVoiceFS2Frame.Scrambled[0] != DPMR_HALF_UNVERIFIED) {
+        dpmr_publish_crypto(state, state->dPMRVoiceFS2Frame.Scrambled[0],
+                            dpmr_frame_enc_observed(&state->dPMRVoiceFS2Frame));
     }
     dsd_event_sync_slot(opts, state, 0U);
 }
 
-void
-dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
-    uint32_t start = 0;
-    uint32_t end = 4;
+/* Whether half @p o's payload frame carries speech in a Voice and attached data call (M = 101, TS 102 658 §5.5.7 Table
+   5.55): its TCH is AMBE only while the SLD of its CRC-checked CCH says the frame holds no data (DP = 00, §5.5.29.2
+   Table 5.95; §11.1.1 Figure 11.3: after PTT release the remaining frames carry the attached data with DP = 11). A
+   half whose CRC-7 failed, or with a reserved DP, is not known to be speech (issue #890). The SLD's 18 bits are read
+   first bit first: 5 reserved bits, then DP. */
+static int
+dpmr_attached_data_half_is_voice(const dsd_state* state, short o) {
+    return state->dPMRVoiceFS2Frame.CCHDataCrcOk[o] != 0U && ((state->dPMRVoiceFS2Frame.SlowData[o] >> 11U) & 3U) == 0U;
+}
+
+/* Whether half @p o's CRC-7 passed with a number the half can carry: one FS2 frame carries payload frames 0 and 1, or
+ * 2 and 3 (TS 102 658 Figure 4.8), so half 0 is even and half 1 odd. A checked half numbered otherwise passed its
+ * CRC-7 by chance (one in 128 on noise) and says nothing of its place. */
+static int
+dpmr_half_number_fits(const dPMRVoiceFS2Frame_t* f, int o) {
+    return f->CCHDataCrcOk[o] != 0U && (f->FrameNumbering[o] & 1U) == (unsigned)o;
+}
+
+/* The frame number half @p o carries, by checked content only (issue #890): its own when its CRC-7 passed with a
+ * number it can carry, else the one next to the frame's other half when that one did; -1 when neither says, or when
+ * both halves passed their CRC-7 with numbers that are no FS2 pair (0/1 or 2/3, TS 102 658 Figure 4.8), one of them a
+ * chance pass whichever parity each has. A failed half's own frame number bits, and a checked half's number of the
+ * wrong parity, never decide it: the place the transmission tracked goes on. */
+static int
+dpmr_half_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
+    if (f->CCHDataCrcOk[0] != 0U && f->CCHDataCrcOk[1] != 0U
+        && ((f->FrameNumbering[0] & 3U) % 2U != 0U
+            || (f->FrameNumbering[1] & 3U) != (f->FrameNumbering[0] & 3U) + 1U)) {
+        return -1;
+    }
+    const int own = dpmr_half_number_fits(f, o);
+    const int other = dpmr_half_number_fits(f, 1 - o);
+    if (own) {
+        return (int)(f->FrameNumbering[o] & 3U);
+    }
+    if (other) {
+        /* The other half's parity holds, so its neighbour is 0 to 3. */
+        return (int)(f->FrameNumbering[1 - o] & 3U) + (o == 0 ? -1 : 1);
+    }
+    return -1;
+}
+
+/* Whether half @p o is played: its scrambling is verified (issue #655), it is not attached data (issue #890: attached
+ * data is never AMBE, so it is neither played nor the scan's voice credit), and its checked mode
+ * (dpmr_resolve_half_modes(), never its own unchecked bits) is a voice mode. */
+static int
+dpmr_half_plays(const dsd_state* state, short o) {
+    const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    if (f->Scrambled[o] == DPMR_HALF_UNVERIFIED) {
+        return 0;
+    }
+    if (f->ServiceMode[o] == 5U && !dpmr_attached_data_half_is_voice(state, o)) {
+        return 0;
+    }
+    return dpmr_call_kind_for_mode(f->ServiceMode[o]) == DSD_CALL_KIND_VOICE;
+}
+
+/* Where a confirmed scrambled half descrambles from (issue #890): the scrambler reloads from the key at frame 0 of
+ * each superframe and runs on through its four payload frames of four AMBE frames each, 49 bits an AMBE frame
+ * (dsd_mbe_nxdn_scramble_skip_voice_frame(), the vocoder's own step), so a half whose place in the superframe is known
+ * descrambles from that place whatever came before it: a muted half (a keyed Voice and attached data call's frame 0
+ * whose CCH failed before a checked frame 1 of speech, TS 102 658 5.5.7, 11.1.1 Figure 11.3; an unverified half; a
+ * data half) or a frame played before the transmission was confirmed. A half whose place is not known runs on from the
+ * register as the last half played left it. The register is NXDN's too, so only a confirmed transmission writes it. */
+static void
+dpmr_place_scrambler(dsd_state* state) {
+    if (state->dpmr_scramble_place == 0U) {
+        return;
+    }
+    state->nxdn_payload_mi = 0; /* the scrambler reloads from the key (shared with NXDN) */
+    state->nxdn_iv_on_air = 0U;
+    for (unsigned i = 1U; i < state->dpmr_scramble_place; i++) {
+        dsd_mbe_nxdn_scramble_skip_voice_frame(state);
+    }
+}
+
+static void
+dpmr_play_half(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24], short o) {
+    const int realsynctype = state->synctype;
+    /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN scrambler, and
+     * the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
+    const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
+    state->nxdn_cipher_type = scrambled ? 0x01 : 0x00;
+    if (scrambled) {
+        state->synctype = DSD_SYNC_NXDN_POS;
+        dpmr_place_scrambler(state);
+    }
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
+    }
+
+    /* A scrambled half plays through NXDN's decoder under its synctype; the receive policy judges dPMR's. */
+    const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_DPMR_FS2_POS);
+    const uint32_t start = o == 0 ? 0U : 4U;
+    for (uint32_t i = start; i < start + 4U; i++) {
+        processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
+        playSynthesizedVoiceMS(opts, state);
+    }
+    dsd_receive_context_end(state, receive);
+    state->synctype = realsynctype;
+    state->nxdn_cipher_type = 0;
+}
+
+/* The frame's halves in order: each half's place in the superframe's scrambler (dsd_state::dpmr_scramble_place) is
+ * learned from its checked frame number, or follows the half before it; a confirmed transmission (@p confirmed)
+ * plays the halves that play. A frame not confirmed plays nothing and writes nothing but dPMR's own place: it may be
+ * noise where an NXDN call works, whose cipher, register and IV it must leave alone. */
+static void
+dpmr_route_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24],
+                        int confirmed) {
     for (short o = 0; o < 2; o++) {
-        if (state->dPMRVoiceFS2Frame.FrameNumbering[o] == 0) {
-            state->nxdn_payload_mi = 0; /* the scrambler reloads from the key (shared with NXDN) */
-            state->nxdn_iv_on_air = 0U;
+        const int fn = dpmr_half_frame_number(&state->dPMRVoiceFS2Frame, o);
+        if (fn >= 0) {
+            state->dpmr_scramble_place = (uint8_t)((4 * fn) + 1); /* the half's first AMBE frame, plus one */
         }
-        if (o == 1) {
-            start = 4;
-            end = 8;
+        if (confirmed && dpmr_half_plays(state, o)) {
+            dpmr_play_half(opts, state, ambe_fr, o);
         }
-
-        if (state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_UNVERIFIED) {
-            continue;
-        }
-        int realsynctype = state->synctype;
-        if ((state->dPMRVoiceFS2Frame.CommunicationMode[o] == 0) || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 1)
-            || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 5)) {
-            /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN
-             * scrambler, and the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
-            const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
-            state->nxdn_cipher_type = scrambled ? 0x01 : 0x00;
-            if (scrambled) {
-                state->synctype = DSD_SYNC_NXDN_POS;
-            }
-            if (opts->payload == 1) {
-                DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
-            }
-
-            /* A scrambled half plays through NXDN's decoder under its synctype; the receive policy judges dPMR's. */
-            const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_DPMR_FS2_POS);
-            for (uint32_t i = start; i < end; i++) {
-                processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
-                playSynthesizedVoiceMS(opts, state);
-            }
-            dsd_receive_context_end(state, receive);
-            state->synctype = realsynctype;
-            state->nxdn_cipher_type = 0;
+        if (state->dpmr_scramble_place != 0U) {
+            state->dpmr_scramble_place = (uint8_t)(((state->dpmr_scramble_place - 1U + 4U) % 16U) + 1U);
         }
     }
+}
+
+void
+dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
+    dpmr_route_voice_frames(opts, state, ambe_fr, 1);
+}
+
+void
+dpmr_track_voice_frames(dsd_state* state) {
+    dpmr_route_voice_frames(NULL, state, NULL, 0);
 }
 
 int
@@ -540,11 +645,19 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
 
     dpmr_extract_superframe_part(&ctx, &part);
     dpmr_update_superframe_part(opts, state, &part);
-    dpmr_print_ids(state);
-    dpmr_print_scrambler_state(opts, state);
+    /* Published before it is printed: the line shows the identity this frame bound, not the one before it. */
     dpmr_publish_call(opts, state);
+    dpmr_print_ids(state);
+    if (opts->payload == 1) {
+        /* Each CCH half's CRC-7 verdict (-Z). */
+        DSD_FPRINTF(stderr, " CCH %s/%s", ctx.CrcOk[0] != 0U ? "OK" : "ERR", ctx.CrcOk[1] != 0U ? "OK" : "ERR");
+    }
+    dpmr_print_scrambler_state(opts, state);
     if (dpmr_confirm_is_confirmed(state)) {
         dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    } else {
+        /* Nothing plays before the transmission is confirmed, but the frame keeps its place in the scrambler. */
+        dpmr_track_voice_frames(state);
     }
     DSD_FPRINTF(stderr, "\n");
 
@@ -597,29 +710,6 @@ dpmr_crc7(const uint8_t* input, uint32_t bit_length) {
     }
 
     return shift_register;
-}
-
-/* Convert an air interface identifier (AI ID) into
- * a 7 ASCII digit string.
- *
- * See dPMR standard chapter A.1.2.1.1.6
- * "Mapping of dialled strings to the AI address space" */
-void
-dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
-    /* Place values from the standard's mapping table: the leading digits are
-     * decimal-spaced and the trailing ones base-11, which is what lets a dialled
-     * '*' ride in the same address space as the digits. */
-    static const uint32_t k_place_value[7] = {1464100U, 146410U, 14641U, 1331U, 121U, 11U, 1U};
-    uint32_t remaining = ai_id;
-
-    for (size_t i = 0U; i < 7U; i++) {
-        const uint32_t digit = remaining / k_place_value[i];
-        remaining = remaining % k_place_value[i];
-        id[i] = (digit == 10U) ? '*' : (char)(digit + '0');
-    }
-
-    /* Add the "end of string" */
-    id[7] = '\0';
 }
 
 /* End of file */

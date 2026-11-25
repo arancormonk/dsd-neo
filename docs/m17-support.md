@@ -6,23 +6,83 @@ DSD-neo transport for M17 frames; it is separate from RF air-interface channel-a
 
 Implemented decode coverage:
 
-- LSF, stream, packet, BERT, and EOT sync handling.
+- LSF, stream, packet, BERT, and EOT sync handling. The end-of-transmission marker ends a call only once three of its
+  words have been heard in a row, so a fade that leaves a flat run of symbols does not end the call; the rest of the
+  marker is skipped up to the first symbols that are not part of it, so the next transmission is not cut.
 - Current LSF TYPE field semantics, including stream/packet mode, data type, encryption type/subtype, CAN, and signed
   stream advertisement.
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
-- Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD,
-  or an IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an
-  LSF that failed its CRC still sets up the stream, but its META is not read. A stream's LSD counts only when all six
-  of its LICH pieces were heard in one transmission, on one tuning, and on the same side of the moment the stream was
-  confirmed; one put together across a retune or another change is dropped, and the next whole set is read.
+- Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD, or an
+  IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. A text is put together
+  only from the blocks of one transmission whose check passed: each packet (over the air or MPKT) is a transmission of
+  its own, an MPKT heard during a network stream does not touch the stream's text, and a packet whose CRC failed (shown
+  under `-F`) neither adds to a text nor clears one. Under `-F` an LSF that
+  failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has set up the
+  transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. If the end of
+  one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and encryption stay
+  in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six stream frames, 240
+  ms) when those frames are received cleanly. When a transmission's end is decoded (its last frame's end bit, a
+  packet's end, the end-of-transmission marker, a lost signal or a retune, a network stream's end) everything received
+  from it is dropped, and the next one starts with nothing of it: until its own LSF is read (its LSF frame, or its LSF
+  rebuilt from its own LICH pieces; under `-F` also one that failed its CRC), it plays nothing and opens no call, and it
+  never runs on the previous transmission's CAN, encryption or stream type nor reuses its LSF pieces. A stream's LSD counts only when all six of
+  its LICH pieces were heard in
+  one transmission, on one tuning, and on the same side of the moment the stream was confirmed; one put together across
+  a retune or another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
-  topic, once per transmission, sender and META content. The console prints its coordinates only once the position
-  was accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23 (never used by the specification) is no position,
-  a bearing above 359 degrees reads `Bearing: Invalid;` with the speed kept, and radius code 7 counts as "more than 64
-  m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a
-  position: M17 defines no GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
+  topic, once per transmission, sender and META content. The console prints its coordinates only once the position was
+  accepted; a refused one (such as exactly 0, 0) prints `GPS: (refused);` with its other fields. A coordinate of -2^23
+  (never used by the specification) is no position, a bearing above 359 degrees reads `Bearing: Invalid;` with the speed
+  kept, and radius code 7 counts as "more than 64 m" (printed `Radius: >64 m;`, never 128 m). M17 positions are not
+  written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a position: M17 defines no
+  GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
-- Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided.
+- M17 over UDP/IP: a network frame whose CRC failed, whose own link setup cannot be used, or that carries a packet-mode
+  link setup in a stream frame, is dropped (not played, no call). Each frame of a stream (its stream ID and station) is
+  used once and in order: a frame received again, or after a later one, is dropped. An unsigned stream numbers on
+  through the frame counter's wrap; a signed stream never wraps, so a voice frame arriving after a signature frame is
+  late. A new stream ID or station ends the stream before it and starts its own call; a final frame of another stream
+  does not end the open one, but that other stream counts as ended. A stream's own end, or EOTX and DISC from its
+  station, end it and drop the carrier. After a network stream ends, its stream ID (from that station) is ignored until
+  a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not taken. The
+  last 64 ended streams are remembered. Once more than 64 have ended in a session (or a stream's end could not be
+  recorded for lack of memory), the oldest are forgotten, and from then on, until the decoder stops, a stream that is
+  not open and not remembered starts only at its frame 0: a stream whose first frames were lost is not joined
+  part-way through. A network packet (MPKT) is decoded with its own link setup only, and leaves a stream it arrives
+  during untouched: the stream's call goes on as one call, and the packet opens no call of its own then. A stream
+  that has sent nothing for 2 seconds (its end lost) no longer counts for this. Otherwise an
+  MPKT shows as a data call that ends with it, never as a voice call. One whose link setup cannot be used is not
+  decoded. An over-the-air packet is decoded only when its own link setup frame passed its CRC and was usable (a
+  valid source address, no reserved type bits), and every one of its frames followed in order, one frame apart, up to
+  its last frame. A packet with a lost or cut frame (also one cut by the end of a file or of the input), a frame whose
+  frame number or byte count cannot be right, one whose link setup frame failed its CRC, could not be used or was
+  missed, or one with no data at all, is not decoded (a decided limit). Its last frame still ends it when that frame
+  was received whole and is valid, even if earlier frames were lost; a last frame that was cut, or whose byte count
+  cannot be right, does not end it. A packet that
+  arrived whole but whose own checksum (CRC) failed is not decoded either; under `-F` it is still shown, marked
+  `CRC ERR`. Known limit: an M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples
+  after a failed device or file read, or by a low-rate WAV's resampler padding at end of file, is not detected. An
+  LSF frame is then guarded by its own CRC. A packet's other frames have no CRC of their own: the packet's data is
+  checked by the packet CRC at its last frame, and the last frame's end flag ends the transmission whatever that CRC
+  says. One case has no CRC guard at all: when a rewind falls inside the last frame of a
+  packet being received, that packet's data is thrown away, but if the last frame still reads as a valid end, it ends
+  the transmission (the end marker is not covered by the CRC). A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
+  idle or ended) always shows as a call of its own, never joined to the stream before it. A stream is treated as
+  signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
+  frame counter's wrap.
+- Signed voice streams: over the air, the signature is collected and checked (secp256r1) when
+  `--m17-signature-public-key <hex>` is provided (M17 2.0.11 signatures). The digest runs over the whole stream from its
+  first frame: the LSF repeated in the LICH does not restart it. The signature is checked at the end of the
+  transmission, and only when every voice frame arrived once and in order and every signature piece arrived; otherwise
+  it is reported as incomplete (`SIG INCOMPLETE`), also when only the end-of-transmission marker ends it, never as a
+  failed signature. A voice frame lost just before the signature frames cannot be detected, and then the check fails.
+  In a signed stream no voice uses the frame numbers kept for the signature (0x7FFC to 0x7FFF, M17 2.0.11): a frame
+  numbered there that is not a signature piece is never played, and the signature is then reported incomplete, as it
+  is when a frame numbered there was played before the stream was known to be signed.
+  M17 signatures are not verified on network (UDP/IP) streams: their signature frames are not played, and the stream
+  shows `SIG NOT VERIFIED OVER NETWORK` as soon as its signed link setup is received, however the stream ends (also
+  when every signature frame was lost). The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are
+  not implemented.
 - Packet assembly with the current 823-byte application-payload ceiling and packet CRC validation.
 - BERT PRBS9 payload checking without requiring a preceding LSF.
 

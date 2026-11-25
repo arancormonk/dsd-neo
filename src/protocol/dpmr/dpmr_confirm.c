@@ -33,6 +33,8 @@ void
 dpmr_scrambling_reset(dsd_state* state) {
     if (state != NULL) {
         state->dpmr_scrambled = 0U;
+        state->dpmr_mode = 0U;
+        state->dpmr_scramble_place = 0U;
     }
 }
 

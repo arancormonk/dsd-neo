@@ -533,7 +533,9 @@ Windows console runs:
   that call (DMR embedded GPS, P25 L3Harris or Motorola link control, M17, D-STAR); a separate data report (LRRP, LOCN,
   LIP, UDT NMEA, ASCII NMEA, NXDN GPS, TETRA LIP) gets its own data line with its `GPS:` line, never the call of the
   radio talking at the time, and a DMR USBD LIP reply is an anonymous `USBD LIP Poll Response; SRC(Hash): NNN;` line
-  (the hash is not a radio ID). A D-STAR position or text message joins a call only when a header of the same
+  (the hash is not a radio ID). A D-STAR call ends on the end pattern that closes its transmission, not only when its
+  signal is lost, and the header a radio repeats in slow data is read whether or not code squelch data comes before it.
+  A D-STAR position or text message joins a call only when a header of the same
   transmission whose check passed named the caller (a callsign suffix alone names no one, a header marked as data
   names no one and takes back what an earlier header named), a position only when its own APRS source is that caller
   too, and a text message only when all of it, its first block included, was heard after the transmission proved
@@ -1092,7 +1094,11 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
-- dPMR: `-fm`
+- dPMR: `-fm`. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
+  24 symbols before the second copy happen to look like a header sync word can be missed, or shown 30 ms late with a
+  wrong colour code, and an end frame right after it is then missed; a false header sync word exactly 72 symbols
+  before a real header whose own sync word is badly faded can be shown in its place, 30 ms early with a wrong colour
+  code.
 - TETRA: `-fT`. Like every `-f` selector it is replaced by a later one (`-fT -fp` decodes ProVoice alone). TETRA's
   pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, 2 to 8, so
   it decodes only at a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz. `-fT` therefore sets the DSP
@@ -1223,6 +1229,18 @@ Android session whose saved extra arguments carry one refuses to start the same 
   permission, only while the followed cell's own checked blocks were heard on the channel in the last 4 seconds (a live
   cell sends its SYNC about once a second); three saying the channel is no longer the call's can still end a call early,
   as noise can, and the decoder then returns to the control channel.
+  Direct mode follows one call per carrier. Known limits there: an end message (DM-TX CEASED, DM-RELEASE,
+  DM-DISCONNECT, DM-GRELEASE) ends the call whoever sends it, another co-channel call's or another network's included;
+  a direct mode reservation from the same pseudo SSI is not told apart from a gateway's or repeater's call, and a group
+  reservation from another network that uses the same pseudo source and group can end the call's transmission; a
+  DM-CONNECT ACK to the called party's new pseudo SSI shows the call as a new row; through a gateway, the gateway's own
+  reservation is not recognised, so such a call ends after 3 seconds without signalling or speech; a stolen-channel
+  message that leaves its source out loses the call's caller, so its later reservation is missed; a stolen-channel
+  message of the call also makes the decoder forget the repeater the call came through, so a later reservation of the
+  same source through another repeater ends the call shown while its traffic still decodes; stolen-channel
+  signalling is read with the route of the last sync burst on the carrier, even another call's; a co-channel caller's
+  presence check, a short data message sent in pieces, or a second call's set-up or occupation can take the call's row
+  or stop its traffic decoding until its next sync burst.
   `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
   uplink bursts (random access) and its normal uplink bursts. The uplink does not run the downlink's receive chain,
   which lost bursts the generic CQPSK path decodes: it runs that path with the TETRA channel filter (at the same DSP
@@ -2592,7 +2610,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   - DMR encryption lockout acts only on a voice LC whose check passed, or one `-F` accepted as RAS: a RAS system
     needs `-F` for it.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
-  raw `X||Y` hex.
+  raw `X||Y` hex. Signatures are verified over the air only; a network (UDP/IP) stream shows `SIG NOT VERIFIED OVER
+  NETWORK`.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
   the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
   another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it. Unless `-X`
@@ -2667,11 +2686,14 @@ channel is delayed.
   later of `-T`/`-Y` wins. Only frames whose content passed their protocol's checks keep a row past `-t`: noise that
   keeps matching a sync word (NXDN48 noise in particular) no longer holds a row on an empty channel, and the row
   leaves once `-t` has passed since it landed or since its last checked frame (on an RTL-SDR-family receiver, also
-  not before `-t` has passed since the radio started listening again after the retune's short mute). A frame whose verdict is still open (one
-  waiting on part of its checks, or a dPMR frame type with no check of its own) holds the row up to 1 s after each such
-  frame; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they come; DMR, P25, ProVoice and
-  EDACS syncs restart `-t` as before ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is
-  refreshed only by a frame whose own content passed its CRC (a lone short CRC that a noise frame passes by chance does
+  not before `-t` has passed since the radio started listening again after the retune's short mute). A frame whose
+  verdict is still open (one waiting on part of its checks, or a dPMR frame type with no check of its own) holds the row
+  up to 1 s after each such frame; ProVoice and X2-TDMA frames, which have no such check, hold it while they come; TETRA
+  bursts hold it only when their checks passed on trunked signalling or speech, a direct mode call or short data
+  message, an encrypted DM-2-C burst, or direct mode speech (not on a failed burst, a half-decoded direct mode burst or
+  a channel reservation); DMR, P25, ProVoice and EDACS syncs restart `-t` as before
+  ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is refreshed only by a frame whose own content
+  passed its CRC (a lone short CRC that a noise frame passes by chance does
   not count), so an open squelch on an empty channel no longer parks the scan. The one exception: when an NXDN48
   call's first frame passed a strong CRC on its own, the next frame arriving one frame later confirms it and starts the
   hold, even with no passing CRC of its own; later frames without one do not refresh it. `-Y` scans only a channel map you
@@ -2700,10 +2722,16 @@ channel is delayed.
   interval (`-t`, at least a second) while nothing takes it, and a hold then holds the channel it lands on. The avoids
   outlive `-Y`: with it stopped the DMR and NXDN control-channel hunts under `-T` still skip those rows, and Trunking >
   Avoids still lists them, puts them back and clears them.
-  Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
+  Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row: frames the vocoder decoded
+  with nothing concealed (a failed or concealed frame plays but holds nothing; M17 needs a build with Codec2), heard
+  since the row landed (a call from the row before, even one whose last frame came at the very moment, holds nothing).
+  `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
-  `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
-  voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
+  `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Only
+  speech the decoder could play counts, clear or decrypted: encrypted voice without a key never holds the row, in any
+  protocol, played muted or under an unmute override, however cleanly its frames decode; outside `--scan-voice-only`
+  such a call still holds the row on its checked call signalling. Under `--enc-lockout` an encrypted call holds
+  nothing, its talkgroup known or not. Unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
   scanner's next tick. The voice gate never applies to an analog row, where there is no decoded voice to wait for:
   an `nfm` or `am` row, and every row of an untyped list scanned under `-fA` or `-fM`, holds on its carrier under `-t`

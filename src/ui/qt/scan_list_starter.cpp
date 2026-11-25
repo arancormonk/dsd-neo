@@ -17,7 +17,6 @@
 #include <QTemporaryFile>
 #include <QVariant>
 #include <QVariantList>
-#include <Qt>
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
@@ -83,23 +82,8 @@ collectCsvAnalogTarget(const dsd_app_scan_csv_target* target, void* context) {
  */
 int
 configuredAnalogWidthHz(const QString& extraArgs, int kind) {
-    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
-    const QString option =
-        kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
-    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    int widthHz = 0;
-    for (qsizetype i = 0; i < tokens.size(); ++i) {
-        QString value;
-        if (tokens.at(i) == option) {
-            value = i + 1 < tokens.size() ? tokens.at(i + 1) : QString();
-        } else if (tokens.at(i).startsWith(option + QLatin1Char('='))) {
-            value = tokens.at(i).mid(option.size() + 1);
-        } else {
-            continue;
-        }
-        widthHz = wholeHz.match(value).hasMatch() ? value.toInt() : 0;
-    }
-    return widthHz;
+    const QList<ScanListWidthOption> found = scan_list_width_options(extraArgs, kind, nullptr);
+    return found.isEmpty() ? 0 : found.back().hz;
 }
 
 /*
@@ -155,7 +139,8 @@ entryAnalogKind(const QVariantMap& entry, const SavedSystemsModel* systems) {
 }
 
 /* The enabled analog entries of a manual list, each named as the editor shows it: a saved system by its name, a
-   frequency entry by its name, else its frequency. None sets a width of its own. */
+   frequency entry by its name, else its frequency. A saved system's own width is the one its Extra arguments carry
+   into the list (scan_list_saved_system_width_hz(), issue #890); a frequency entry sets none. */
 QList<AnalogTarget>
 manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
     QList<AnalogTarget> analog;
@@ -165,10 +150,11 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
         if (kind < 0) {
             continue;
         }
-        const QString name = entry.value("kind").toString() == QStringLiteral("system") && systems
-                                 ? systems->getByUid(entry.value("systemUid").toString()).value("name").toString()
-                                 : entry.value("name").toString();
-        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind, 0});
+        const bool system = entry.value("kind").toString() == QStringLiteral("system") && systems;
+        const QVariantMap saved = system ? systems->getByUid(entry.value("systemUid").toString()) : QVariantMap();
+        const QString name = system ? saved.value("name").toString() : entry.value("name").toString();
+        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind,
+                       scan_list_saved_system_width_hz(saved.value("extraArgs").toString(), kind)});
     }
     return analog;
 }

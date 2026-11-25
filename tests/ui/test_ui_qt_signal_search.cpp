@@ -78,6 +78,7 @@
 #include "known_frequency_index.h"
 #include "pending_export.h"
 #include "saved_systems_model.h"
+#include "scan_list_targets.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_export.h"
@@ -2684,6 +2685,16 @@ main(int argc, char** argv) {
         assert(index.lookup(n.hz + 2000, 12500).size() == 1);
         assert(index.lookup(n.hz + 5000, 12500).isEmpty());
     }
+    // A saved TETRA (-fT) system runs a 25 kHz carrier (EN 300 392-2 4.5.1, EN 300 396-2 4.5 and 6.2): a 25 kHz
+    // channel tuned 10 kHz off its frequency is that system, one 13 kHz off is not. -ft (P25, the case is significant)
+    // keeps its 12.5 kHz channel.
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("TETRA site")},
+                        {QStringLiteral("decodeFlag"), QStringLiteral("-fT")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("468.000000")}}));
+    assert(index.tunedNames(468010000, 25000) == QStringList{QStringLiteral("TETRA site")});
+    assert(index.lookup(467990000, 25000).size() == 1);
+    assert(index.lookup(468013000, 25000).isEmpty());
+    assert(index.lookup(457510000, 25000).isEmpty());
     const QString narrowModes = temp.filePath(QStringLiteral("narrow-modes.csv"));
     f = dsd_fopen_private(narrowModes.toUtf8().constData(), "wb");
     assert(f);
@@ -2774,6 +2785,40 @@ main(int argc, char** argv) {
     assert(saved.value(QStringLiteral("port")).toInt() == 1235);
     assert(saved.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fA"));
     assert(saved.value(QStringLiteral("searchUnresolved")).toBool());
+    // Issue #890: an unconfirmed (RF-only) detection's saved map, as Save as system stores it, joins a manual scan list
+    // at its measured width, NFM and AM alike: the list's row carries the width the save keeps.
+    auto rfOnlyAm = frozen;
+    rfOnlyAm[QStringLiteral("am")] = true;
+    rfOnlyAm[QStringLiteral("width")] = 8333;
+
+    const struct {
+        QVariantMap system;
+        QByteArray type;
+        QByteArray options;
+    } rfOnly[] = {
+        {saved, "nfm-conventional,463552100,",
+         "\"Found\",--nfm-bandwidth-hz " + QByteArray::number(frozen.value(QStringLiteral("width")).toInt()) + "\n"},
+        {model.systemForHit(rfOnlyAm, {}), "am-conventional,463552100,", "\"Found\",--am-bandwidth-hz 8333\n"}};
+
+    for (const auto& found : rfOnly) {
+        QVariantMap system = found.system;
+        system[QStringLiteral("uid")] = QStringLiteral("found");
+        system[QStringLiteral("name")] = QStringLiteral("Found");
+        const QVariantMap foundEntry{{QStringLiteral("uid"), QStringLiteral("found-entry")},
+                                     {QStringLiteral("kind"), QStringLiteral("system")},
+                                     {QStringLiteral("systemUid"), QStringLiteral("found")},
+                                     {QStringLiteral("enabled"), true}};
+        const auto listed = dsd_qt::scan_list_targets({{QStringLiteral("uid"), QStringLiteral("found-list")},
+                                                       {QStringLiteral("sourceType"), QStringLiteral("usb")},
+                                                       {QStringLiteral("entries"), QVariantList{foundEntry}}},
+                                                      QVariantList{system});
+        const bool carried = listed.ok && listed.csv.contains(found.type) && listed.csv.endsWith(found.options);
+        if (!carried) {
+            std::fprintf(stderr, "Signal search save in a scan list: %s / %s\n", qPrintable(listed.error),
+                         listed.csv.constData());
+        }
+        assert(carried);
+    }
     // The checked site, slot and encryption, the access code and the received tone reach the screens as they were
     // published, live and from history too (issue #802: a Recent detections row shows the access code and tone).
     const auto shown = model.history().front().toMap();

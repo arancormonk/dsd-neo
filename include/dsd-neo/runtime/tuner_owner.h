@@ -55,6 +55,18 @@ dsd_channel_scan_owns_tuner(const dsd_opts* opts, const dsd_state* state) {
     return opts && state && (opts->scanner_mode == 1 || state->lcn_scan_resume_pending);
 }
 
+/**
+ * @brief Whether a scan that can use a call's checked media runs now (issue #890): the -Y scan or the trunk scan owns
+ * the tuner (dsd_channel_scan_owns_tuner(), dsd_trunk_scan_owns_tuner()); their voice gates and receive-policy leave
+ * read it through dsd_scan_voice_probe(). A paused scan's manual session has no reader. With none, the decoders keep no
+ * checked-media clocks at all: no call-state lock and no clock read on the voice path. A scan started or resumed
+ * mid-call starts its span from the next checked frame.
+ */
+static inline int
+dsd_scan_uses_checked_media(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_channel_scan_owns_tuner(opts, state) || dsd_trunk_scan_owns_tuner(opts, state);
+}
+
 #ifdef __cplusplus
 }
 #endif

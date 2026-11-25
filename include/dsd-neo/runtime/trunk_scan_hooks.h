@@ -177,7 +177,11 @@ int dsd_trunk_scan_hook_dwell_due(const dsd_opts* opts, const dsd_state* state);
  * That exception is the scan hold's alone: a signal search hears the protocol's
  * confirmation from every report, but takes its target and source only while
  * the reporting slot's dsd_state::event_crc_invalid is clear, so a RAS-accepted
- * or failed-CRC identity never names a detection.
+ * or failed-CRC identity never names a detection. A report holds only the
+ * target whose landed visit the frame's read began on (issue #890,
+ * dsd_state_scan_observation_origin()): make it from the frame's own decode, so
+ * a frame read on the target before, or while a park is in flight, holds
+ * nothing.
  */
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);

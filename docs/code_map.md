@@ -400,7 +400,46 @@ Generated (do not edit/commit):
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
-    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). The same file owns the scan-timing publication
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). Issue #890: the clocks it reads are a call's checked media
+    (`dsd_call_snapshot::checked_media_started_m`, `checked_media_updated_m`, raised by
+    `dsd_call_state_note_checked_media()` after the decode: decoded speech only, clear or decrypted, in every protocol.
+    `mbe_note_checked_media()` in `dsd_mbe.c`, from `mbe_post_audio_and_recording()`, takes a SPEECH frame with nothing
+    concealed that the voice chain could play: admitted (the frame judgement) and decodable (`mbe_frame_decodable()`:
+    DMR, NXDN, dPMR and X2-TDMA by their crypto class, P25 by `p25_crypto_audio_permitted(NULL, ...)`), so ciphertext
+    whose FEC decodes as speech, muted or played under an unmute override, is none; YSF V/D2 after mbelib-neo returns
+    (YSF has no encryption); M17 in `m17_play_codec2_voice()`, past its CAN and decryption gates, so a build without
+    Codec2 never has any; TETRA in `voice_frame_play()` for a good, decodable frame the codec decoded. Encrypted voice
+    without a key never earns any: such a call holds a target only in normal scanning, from its checked call signalling.
+    Every producer keeps checked media only while a scan that reads it runs (`dsd_scan_uses_checked_media()` in
+    `tuner_owner.h`: the -Y scan or the trunk scan owns the tuner, so not while a trunk scan is paused); otherwise the
+    voice path takes no lock and reads no clock for it. The probe's policy applies the encrypted-call tuning rule before
+    anything needs a target (`dsd_tg_policy_encrypted_tune_denied()`): an encrypted call with no talkgroup yet, or an
+    M17 call, holds nothing under it. Never the media mark `dsd_call_state_update_media()` makes before the decode,
+    which playback, the -Y call count and the history keep. Each checked frame carries its scan observation origin
+    (below); the probe counts only media whose origin is the reception in force now, so a call another visit heard,
+    ended or not, holds nothing whatever its decode times say, and a frame of another origin starts the span again.
+  - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
+    epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
+    none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`
+    beside `frame_dispatch_carrier_seq` before the handler reads the frame. `dsd_state_scan_observation_origin()` gives
+    an observation's origin (the dispatch's, or, outside a dispatch, the receiver's now; none for a frame
+    `dsd_state_frame_read_lost()` says was cut), and `dsd_state_scan_observation_is_current()` whether it is still in
+    force. The trunk scan's conventional activity (`trunk_scan_conventional_activity()`, the DMR, NXDN and P25
+    wrappers) and its voice-only refresh (`trunk_scan_refresh_voice_media_hold()`) credit a target only through
+    `trunk_scan_observation_on_target()`: the active target's own landing in this session, and an observation obtained
+    on it. A report of a frame read on the visit before, one decoded while the park is in flight (the coordinator
+    publishes the incoming index before the tune lands), and one an interruption or a carrier boundary cut hold
+    nothing, also between two rows of one family on one frequency; an ordinary sync loss moves neither the visit nor the
+    carrier count, so the tail a visit earned stays. A radio stream start forgets every landing
+    (`dsd_engine_note_stream_source()`): a conventional target that had landed, with no park in flight, when a restart
+    stopped the stream (a gain, bandwidth or device change) lands again under a new visit when the stream reopens on
+    the same source and its frequency (`dsd_engine_trunk_scan_stream_reopened()`), so traffic after the restart holds
+    it and reads from before it do not. A rigctl connect forgets the landing for good: nothing was sent on the new
+    connection, so the peer's frequency is unconfirmed until the next park. Tests: `ENGINE_TRUNK_SCAN`
+    (`test_conventional_activity_binds_its_visit`, `test_conventional_voice_gate_media_binds_its_visit`),
+    `ENGINE_SCAN_VOICE_GATE` (`test_unchecked_media_never_qualifies`, `test_probe_binds_media_to_its_visit`),
+    `CORE_MBE_TRANSFORM_CONTEXT` (`test_process_mbe_frame_dstar_checked_media_follows_the_decode`),
+    `M17_STATE_DISPATCH`. The same file owns the scan-timing publication
     (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick `dsd_engine_scan_y_timing_tick()`,
     which stamps `dsd_state::scan_timing` with the stay reason and the absolute deadline, on the decode clock's
     monotonic reading, of the window that is running (issue #508); the deadline it publishes is the same instant
@@ -729,10 +768,14 @@ Generated (do not edit/commit):
       the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; checked
       content resolves the open verdict, so its hold ends at the proof and a PARTIAL note of the proving frame starts
       none (`live_scanner_y_note_frame_content()`, as `dsd_engine_scan_quiet_note_evidence()`; cases
-      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
-      (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
+      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA or ProVoice frame, which `processFrame()` notes
+      as it dispatches one (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and
+      which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
-      one), nothing keeps the row
+      one; a TETRA burst is no unchecked frame since issue #890: its decoder notes PROVEN content for checked content
+      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a soft-only DSB, a DSB whose
+      SCH/H failed and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
+      `test_y_tetra_holds_only_on_checked_content()`, real bursts through the real decoder), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
       and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
       `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. The stay is the
@@ -778,7 +821,7 @@ Generated (do not edit/commit):
       `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), `DECODE_IQ_Y_CALL_HOLD`
       (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
       its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and typed at -t 2), and
-      `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA, ProVoice and TETRA only).
+      `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA and ProVoice only).
     - Reason model and publication (issue #834 R6, `scan_quiet_timing_fill()`): both timing writers
       (`trunk_scan_publish_timing()` through `trunk_scan_timing_fill_quiet()`, the -Y `dsd_engine_scan_y_timing_tick()`
       through `scan_y_timing_fill_quiet()`) fill `dsd_scan_timing_publication::quiet_status` (NONE, CHECKING, NO_CHECK)
@@ -860,17 +903,24 @@ Generated (do not edit/commit):
       evidence (`dmr_confidence_note_evidence()`: a lock, a burst matching it, a voice slot opening) and every data
       burst whose own 16- or 24-bit check proves it or whose RAS signature `-F` accepts (`dmr_dburst_proves_content()`
       in `dmr_data_burst_handler()`, beside the TDMA-carrier proof); NXDN and dPMR at their confirm-end points where a
-      Signal search hears the frame (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`); M17 and D-STAR inside
-      `m17_confirm_note_evidence()` and `dstar_confirm_note_evidence()` (strong evidence and completed weak streaks);
-      a YSF FICH and each DCH whose CRC passed. A P25 word accepted within a tolerance is pending like any sync; its
+      Signal search hears the frame (`nxdn_confirm_end_frame()`, `dpmr_confirm_end_frame()`); M17 inside
+      `m17_confirm_note_evidence()` (strong evidence and completed weak streaks: a LICH is Golay-checked) and D-STAR
+      inside `dstar_confirm_note_evidence()` (strong evidence only, a header or D-PRS CRC); a YSF FICH and each DCH
+      whose CRC passed. SYNC_ONLY (issue #890): D-STAR's weak streak once it confirms, two exact resync words with no
+      CRC behind any content (840 ms each superframe). It still plays the audio, but it is no activity and no -Y
+      content. The quiet check takes it as PARTIAL, a wait: no quiet result is handed back while such superframes keep
+      coming, so a real carrier is never skipped sooner than when they counted as activity, and the check can finish
+      once they stop. The runtime wrapper stores nothing for it. A P25 word accepted within a tolerance is pending like
+      any sync; its
       frame's PROVEN note comes only from behind the strict NID or the window verdict, so a noise near-miss whose
       verdict fails ends no check. PARTIAL (a frame whose verdict a later frame completes, with the
       protocol's hold): NXDN's lone weak frame (two frames: 160 ms NXDN48/IDAS/DCR, 80 ms when NXDN96 runs alone),
       dPMR's one CCH half (320 ms), M17's lone clean LICH (80 ms), D-STAR's superframe ending on its sync alone
       (`dstar_confirm_end_frame()`, 840 ms) and DMR's gate left PENDING on an unlocked candidate (120 ms); and frames
       whose sync the decoder accepts but that carry no check of their own, so a key-up just after a quiet reading
-      waits for its first verdict: dPMR FS1, FS3 and FS4 (`dpmr_confirm_note_unchecked_frame()` from
-      `dsd_dispatch_handle_dpmr()`, 320 ms) and an M17 packet frame before the end-of-transmission frame whose CRC
+      waits for its first verdict: dPMR FS4, and an FS1 or FS3 synctype no checked frame stands behind, which the hunt
+      never produces (`dpmr_confirm_note_unchecked_frame()` from `dsd_dispatch_handle_dpmr()`, 320 ms; a checked dPMR
+      header or end frame is PROVEN, issue #890) and an M17 packet frame before the end-of-transmission frame whose CRC
       covers the packet (`m17_confirm_note_unchecked_frame()`, 80 ms). Whatever the setting, the runtime wrapper
       first stores the note for the -Y frame-boundary step (up to three plain stores: `scan_y_content_seq` for PROVEN,
       `scan_y_partial_seq` and `scan_y_partial_hold_ms` for PARTIAL); with the setting off it then returns on one load,
@@ -1719,8 +1769,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote its word's dibits there and the NID read its NID's; a
   no-sync exit's carry brings none, since the no-carrier reset after the exit clears them), counted no further back than
   the buffers hold dibits written since their last clear or wrap (`dsd_state_rolling_dibits()` at the next call's
-  start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an
-  NXDN reset) and every wrap puts a buffer's pointer at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
+  start); a broken first read drops it with the history. A frame decoder that read into the hunt's symbols hands them
+  back the same way (`dsd_frame_sync_hand_back_symbols()`, no pass position, `own_symbols` 0): D-STAR reads the start of
+  each resynchronization word to tell it from the end pattern, and the hunt matches the word where it ends. Every clear
+  of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer at
+  `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
   clear's zeros or a wrap's stale dibits, which pass Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts
   what was written since. A DMR or X2-TDMA sync is still accepted, and each accept notes how many of the oldest
   read-back dibits are not the stream's (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a
@@ -2053,8 +2106,9 @@ suite runs under this compiler.
   attached handle): DMR data and finalize (MS data only when trunking does not withhold it), dPMR FS1/3/4, NXDN
   non-voice, X2-TDMA data, P25 Phase 1 header, terminators and control (both slots), the P25 state machine and Phase 2
   XCCH per slot (naming P25 themselves, since the watchdog runs outside any dispatch), EDACS after a control frame
-  checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header; the engine closes
-  both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary, trunk-scan switch).
+  checked out on an unchanged carrier, a verified YSF header or terminator, a verified D-STAR header or its end pattern;
+  the engine closes both at no-carrier, shutdown and in `dsd_engine_forget_carrier_decoding()` (carrier boundary,
+  trunk-scan switch).
   `dsd_mbe_out_enabled()` (folder set or handle attached) gates every capture path before any record gate runs.
 - Invariant (voice crypto ownership, issue #656; `<dsd-neo/core/vocoder.h>`): every caller of `processMbeFrame()` /
   `processMbeFrameSoft()` passes the `dsd_voice_protocol` that owns the frame. The codec path and the output stage still
@@ -2086,7 +2140,10 @@ suite runs under this compiler.
   stops after its 32 EHR words (1568 bits) until a fresh IV starts the next encryption session, per NXDN TS 1-D section
   5.4.4.2; it never repeats the final word or uses the unused cipher-block padding. A P25 Phase 1 frame the decoder
   drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
-  `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
+  `dsd_mbe_p25p1_skip_voice_frame()`; `dsd_mbe_nxdn_scramble_skip_voice_frame()` steps the Scramble register past one
+  NXDN-decoder AMBE frame that is not decoded (dPMR places its scrambler with it) under the same rule a decoded frame
+  follows (cipher 0x01 or a forced key, with a key), and steps no DES/AES keystream. Raw `.dmb` (D-STAR AMBE
+  2400) playback never applies `-b`.
   Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
 - Invariant (keyring presence and width, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): a keyring cell
   is present by its import flag (`rkey_array_loaded`), whatever its value, or by a non-zero value for material stored
@@ -3256,8 +3313,10 @@ suite runs under this compiler.
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
-  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
-  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine. Slot 25,
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17
+  decoder state no frontend reads (`src/protocol/m17/m17_state_ext.h` `m17_state_ext`: the GNSS META repeat state;
+  since issue #890 also the ended network streams, the streams admission opened, and the 1600 bit/s arbitrary data and
+  the text META being assembled), both slots issue #800's. `CORE_STATE_EXT` pins these nine. Slot 25,
   `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
   RC notice dedupe and the Tier III channel provenance (discussion #900).
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
@@ -3518,13 +3577,18 @@ suite runs under this compiler.
     packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
     monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
     so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
-    transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
-    number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
-    transmission) and the reception generation, except that a byte-identical copy of any of the last 16 network frames
+    transmission; by the whole checked LSF (sender, destination and type word), the network stream admission opened
+    (`m17_state_ext::ip_stream_gen`, issue #890: admission takes each frame number of a stream once and in order, an
+    unsigned one through the counter's wrap, so a frame number that falls within one admitted stream is no new
+    transmission and its unchanged META is no new report) and the reception generation, except that a byte-identical
+    copy of any of the last 16 network frames
     (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
     from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
     `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
-    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_gnss_state`, freed
+    (`m17_gnss_is_duplicate()`); an MPKT, a whole transmission of its own, has its own repeat scope (issue #890, as its
+    own text assembler): its only repeats are such copies, and it neither reads nor replaces the repeat key, so a
+    network stream it interleaves with keeps its key and the stream's next unchanged META is still a repeat
+    (`M17_GNSS_POSITION` `test_ip_interleaved_mpkt_keeps_the_streams_repeat_key`); this repeat state lives in the M17 state extension, slot 31, `m17_state_ext`, freed
     with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
     reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
     the published target stays unknown). The epoch is the call
@@ -9527,9 +9591,63 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   s noise_floor fixture under -fm). Each one reads a 372-dibit dPMR frame, about 155 ms, and stands the NXDN48 matcher
   down for it (`dsd_frame_sync_suppress_nxdn48_sync()`, #374); nothing is published, since the CCH CRC gate (#407) holds
   every call. A four-level read of FS2 (all twelve symbols outer, within two bit errors) would drop those, but is not
-  used: the closed-eye off-air `dpmr` fixture reads 5-8 bit errors on its FS2s, the same as noise (5-7), so no threshold
-  keeps its syncs (`DECODE_IQ_DPMR_MARGINAL`) and drops noise, and on the scan captures the shorter 2400/4 dwells it
-  leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does.
+  used. The off-air `dpmr` fixture's 5-8 bit errors per FS2 (the same as noise, 5-7), once the reason, were measured at
+  the wrong polarity: the recording is received inverted (`-xd`, issue #890). At `-xd` 57 of the 59 FS2s in its 10 s
+  read within one bit error and two read 5 and 7 (measured on the #890 research discriminator, not dsd-neo's slicer),
+  so that fixture no longer argues against the read. What stands is the scan cost: on the scan captures the shorter
+  2400/4 dwells it leaves move DMR and NXDN48 by as much as a 300-symbol dwell change does. Not revisited here.
+- dPMR FS1 and FS3 (`frame_sync_try_dpmr()`, `src/dsp/frame_sync_dpmr.c`, issue #890). FS1 (24 symbols, its own
+  window, readiness and settling check) marks a header candidate (`dsd_dpmr_frame_sync::pending`) under the
+  configured polarity alone: FS4 is FS1's symbol-wise complement (TS 102 658 6.1.4 NOTE), so the other polarity's FS1
+  is an FS4, which is not read. FS3 (12 symbols) marks an end frame candidate only where an end frame can be
+  (`fs3_at`, within a symbol): one FS2 frame (384 symbols) after an accepted FS2, and twelve symbols after every
+  checked header (Table 5.3 and note 2 name several an END follows, and the procedures send others as header and END
+  pairs: 4.2.3.2 to 4.2.3.5, status polls in Tables 10.7, 10.8, 10.15, 10.16, a BS_Access poll in 10.2.7.1.0 a; only
+  an END that passes its own check is taken). Nothing is accepted at the word: the hunt goes on over the candidate's
+  frame (132 dibits for a header, 36 for an end frame), every matcher with it, so a rejected candidate costs no
+  protocol a frame (an NXDN48 frame sync inside it is matched where it is). An FS1 found while candidates are read is
+  kept beside them (`pending[]`, `DSD_DPMR_PENDING_MAX` of them), not instead: a real header's payload can hold FS1's
+  sign pattern and false FS1 words can come just before a real one, so each is checked on its own last symbol, the one
+  that passes is accepted and the rest, begun inside it, dropped. FS1 overlaps itself at no shift, so its words end 24
+  symbols apart at least and six can be read at once; the slots are sized for that (a `_Static_assert` holds the
+  bound), and an FS3 is marked only while no candidate is read. A frame that passes on MI1 alone where another FS1
+  being read ends 72 symbols after its own word (where its MI1 begins) is not taken when that later word's levels can
+  read a frame (`dpmr_word_levels()`, the check it will face): those bits are the later word's MI0, the frame a false
+  FS1's misplaced 72 symbols early with the end of the header's FS1 read as its channel code, and the later candidate
+  is checked on both its copies, MI1 included, at its own frame's end; no reading of its MI0 alone rules it out (a
+  faded MI0 can pass on the earlier word's levels and fail on its own). A pending word is a sign pattern only, so one
+  that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. Should the later candidate then
+  fail, neither frame is published.
+  Known limits of the overlap rule (decided for issue #890; each needs FS1's exact 24-symbol sign pattern 72 symbols
+  from another FS1):
+  - A header whose MI0 fails and whose last 24 symbols before MI1 (MI0's tail and the channel code) carry FS1's signs
+    at a level that can read a frame is lost, or is reported 72 symbols late on its MI1 alone with a wrong colour code.
+  - An END right after such a header (a status poll's, say) is lost: the FS3 window follows the frame reported, or none.
+  - A false FS1 exactly 72 symbols before a real header whose own FS1 is too faded to read a frame takes the header's
+    place: it is reported 72 symbols early, on the real MI0, with a wrong colour code, and the real header is dropped.
+  Only FS2 and FS3 stand down inside a candidate. Once the
+  frame's last symbol is in, it is
+  read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
+  specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
+  10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy through three
+  Hamming(12,8) words and the CRC-7. The specification contradicts itself on the END scrambling: 7.7 scrambles "the
+  total 72 bits" as one run, 11.6 re-initializes the scrambler for each copy. The first copy is the same either way;
+  the second is read both as the run's bits 36 to 71 (what the off-air recording behind `tests/fixtures/iq/dpmr.iq`
+  sends) and from a fresh scrambler, each CRC-checked, the reading that agrees with a passing first copy taken. A
+  copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with different
+  contents are no frame. A copy naming what no transmitter sends is no copy whatever its CRC: message type 1101
+  (Table 5.3), Communications Mode 111 in the headers whose M describes the payload (Table 5.55; MT 0000, 0101, 0110),
+  End_Type or ARQ 10/11 (Tables 5.61, 5.48), or nonzero END reserved bits (11.6). Both CRCs run MSB
+  first from a zero register with no final inversion, which the spec does not
+  say but the same recording (sigidwiki DPMR.zip, `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI
+  copies of its 9 headers pass the CRC-8 so and none with a preset of all ones; its end frame's first copy and its CCH
+  halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
+  (lock and `lastsynctype`, no warm start), with its bits in `checked_*`; the stream must be the one the word was read
+  on (clock epoch, input, carrier count, SPS profile, polarity) and an input interruption forgets the candidate
+  (`frame_sync_dpmr_forget()`). The symbol-timing diagnostic does not measure these accepts: their trailing dibits
+  are payload, not the word. On non-dPMR input the matcher's added cost is one 24-symbol compare per window while
+  dPMR runs on 2400/4; no symbol is taken from the hunt that was not before. A decided limit: a real FS2 inside a
+  false FS1's 132 symbols (an exact 24-symbol word, one window in 2^24) is not taken. Test: `FRAME_SYNC_DPMR`.
 - M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
   words and the alternating preamble are cheap for receiver noise to reproduce. A preamble candidate needs
   `DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS` (32) consecutive windows within one error, then the LSF or BERT word within one
@@ -14526,11 +14644,211 @@ Private per-protocol modules worth knowing about:
   (`NXDN_CONFIRM`, `NXDN_DEPERM_PRIMITIVES`), which also stamps `dsd_state::nxdn_confirm_lock_m` for the NXDN
   control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
-  alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
-  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. The EOT also puts the
-  slicer levels back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker
-  is seven outer symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its
-  preamble against the skewed centre it left (issue #834).
+  alternating symbol run. The stream, LSF and BERT frame handlers report `(own check || confirmed)`; `processM17PKT()`
+  reports the packet frame's own verdict only (1 for a chunk accepted in order or an EOF whose packet's CRC passed,
+  only the latter verifying the packet), so a frame the strict RF packet rule rejects returns 0 while the
+  transmission stays confirmed (`m17_confirm_is_confirmed()`, which a caller asks to tell the two apart); any frame
+  dropped as cut returns 0. `dispatch_m17.c` reports the confirmation on an EOT, and
+  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. Strong evidence is a
+  CRC-16 that passed: the LSF frame's, an LSF rebuilt from LICH chunks when all six were heard under one binding
+  (`M17finalizeLICH()`, issue #890), a packet's, and a PRBS9 BERT lock; a LICH whose four Golay(24,12) words cleared is
+  weak and confirms on the second frame running; an LSF `-F` decodes despite a failed CRC is no evidence.
+  `dsd_state::m17_lsf_checked` marks that an LSF whose CRC passed set the live CAN (0 included), encryption, stream
+  type and IV for this transmission, and while it stands a relaxed (`-F`) LSF is shown and replaces none of them.
+  `m17_confirm_reset()` is the one M17 transmission boundary (decided, issue #890: nothing of transmission A is ever
+  combined with anything of B). It drops everything held from the transmission: its confirmation; the decoded link
+  setup (the stream type, `M17_STREAM_TYPE_UNKNOWN`, the 9 `noCarrier()` always left, so nothing plays, marks media or
+  names a signature; CAN, encryption type and subtype, whether the payload decrypted, the META/IV, the signature
+  advertisement, `m17_lsf_checked`, the stream mode an LSF declared); the raw LSF bits (`dsd_state::m17_lsf`) and the
+  LICH chunks held in them with their binding (`m17_lich`); the packet being assembled; the BERT receiver; the 1600
+  bit/s arbitrary data and the text META being assembled (`m17_state_ext::adata`, `::text_meta`); the network stream;
+  and the signature (`m17_confirm_reset_signature()`). Every end runs it: the EOT marker (`dsd_dispatch_handle_m17()`),
+  `noCarrier()` and a carrier boundary (none of them sets the M17 fields itself any more), a network stream's end or
+  replacement (`m17_ip_end_stream()`), and a decoded EOS or a packet's end at the next transmission's first frame
+  (below). Every start runs it too: an LSF frame whose CRC passed (its own LSF bits go back in for its decode), an
+  admitted network stream. The digest and the signature chunks are the
+  transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten only
+  at a boundary: an LSF frame, an EOT, `noCarrier()`, a carrier boundary, or another IP stream. The signature
+  advertisement is the checked link setup's: a repeat LSF frame whose CRC failed resets the digest but keeps it. The RF
+  digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR each payload in, rotate left a byte, frame by
+  frame from frame 0) takes the voice frames in order (`M17updateSignatureDigest()`,
+  `dsd_state::m17_signature_voice_next`): any other frame number, a lost frame or one played again (its audio is not all
+  covered), marks a gap (`m17_signature_voice_gap`), advertised or not yet (a rebuild can advertise it late). A
+  signature is judged only at the transmission's end, its last chunk (0xFFFF), and only when every voice frame arrived
+  once and in order from frame 0 and every chunk arrived before or with the end (`m17_signature_collector_push()`);
+  otherwise it is incomplete (`M17_SIGNATURE_VERIFY_INCOMPLETE`, " SIG INCOMPLETE;"), never invalid (Signature
+  Verification needs the whole stream), also when only the EOT marker ends the transmission
+  (`m17_note_transmission_end()` before the marker's `m17_confirm_reset()`). A voice frame lost just before the
+  signature frames cannot be told from the end of voice, so such a stream is judged, and fails. A decoded EOS
+  (`m17_stream_end_of_stream()`) and a packet's end (`m17_pkt_end_transmission()` at a valid last frame, its CRC passed
+  or not, and also when the packet cannot be whole because its earlier frames were lost, decoding and checking nothing,
+  `m17_packet_take_chunk()`: a packet is a whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode; its data
+  call ends there too) end the transmission (`dsd_state::m17_tx_ended`). A packet is decoded and credited at its last
+  frame only by the strict RF packet rule (decided, issue #890; `m17_pkt_arm()`, `m17_pkt_in_step()`,
+  `m17_pkt_disarm()`, `m17_state_ext::pkt_armed`, M17's private state): its own CRC-checked packet-mode LSF frame
+  arms the assembler once `M17decodeLSF()` applied it (an invalid source address or reserved TYPE bits leave it
+  unapplied and nothing armed, `m17_finalize_lsf_crc()`), and it must be followed by chunks 0, 1, 2, ... in order,
+  each ending exactly one M17 frame (192 symbols, within 32, `dsd_state::symbolcnt`) after the frame before in the
+  same symbol clock epoch (`m17_state_ext::pkt_ref_symbol`, `pkt_ref_epoch` against
+  `dsd_state::symbol_clock_epoch`: a rewound or switched input restarts the clock, whatever the count says), up to its
+  EOF. The chunk counters and the EOF's
+  byte count are outside the packet's CRC (M17 spec 2.0.11, Packet Frames), so anything else drops the whole packet
+  until the next checked LSF frame: a counter out of order, a frame lost (the spacing, which alone shows a frame lost
+  just before an EOF), a frame cut by an input interruption or a carrier boundary (disarmed on the interrupted read
+  itself, `processM17PKT()`, whatever the symbol count says: an interrupted read counts no stood-in symbols; the
+  input's end inside the frame counts as a cut, `dsd_state_note_input_end()` in `processM17PKT()` and
+  `processM17LSF()`: shutdown or a fallback to another input, past which the reader stood in silence or erasures), a
+  CRC-failed LSF
+  frame (it drops any buffered bytes and arms nothing, as an LSF frame never stands between one packet's chunks), a
+  stream-mode LSF frame, or no extension to hold the assembly (out of memory: nothing is armed, and nothing resumes
+  later; a checked LSF frame requests the extension once, `m17_finalize_lsf_crc()`, and its META text, its GNSS
+  repeat state (`m17_publish_gnss_position()`) and arming all use that one result (`m17_lsf_carrier::ext_given`,
+  `ext`, NULL when it failed), so a second request in the same frame never arms or admits a position; a CRC-failed
+  LSF frame disarms and requests nothing). A
+  one-frame packet needs its checked LSF frame too. Limit (decided, issue #890): continuity is checked between frames
+  (the spacing and the symbol clock epoch from the frame before) and against the cuts above, not inside a frame's own
+  read. An M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples after a failed device
+  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected. An LSF frame is then
+  guarded by its own CRC; a packet's other frames have no CRC of their own, so its data is guarded only by the packet
+  CRC that `m17_pkt_finalize_eot()` checks, and the EOF flag ends the transmission whatever that CRC says. A rewind inside an armed packet's last frame moves the epoch, so `m17_pkt_in_step()` rejects it and the
+  payload is dropped with its CRC never checked, but a syntactically valid EOF still ends the transmission
+  (`m17_pkt_end_transmission()`): that end is not CRC-protected. Limit (decided): a packet with any lost, cut or
+  structurally rejected frame is dropped, under -F too; one that is structurally complete but whose payload CRC fails
+  is not decoded either, and -F still shows it (`decodeM17PKT()` with no assembler), marked `CRC ERR`. A packet with
+  no application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins with its protocol byte) is
+  decoded and credited nothing. Every packet frame answers for itself, apart from the transmission's confirmation,
+  which its EOT marker needs and no verdict clears: `m17_packet_take_chunk()`'s return is the frame's verdict and
+  `processM17PKT()` returns it (1 for a chunk taken in order or an EOF whose packet's CRC passed,
+  `m17_pkt_finalize_eot()`; 0, no consumption credit, for malformed metadata such as an EOF byte count no frame can
+  carry, a chunk out of order or out of step, an empty packet, or a failed payload CRC in either mode). A malformed
+  EOF is not trusted to end the transmission (it disarms); a valid EOF ends it, its packet whole or not, the teardown
+  apart from its verdict:
+  its evidence stands until the next RF frame, so its EOT marker is still recognized, and that frame drops all of it
+  (`m17_retire_if_ended()` at the next stream, LSF, packet or BERT frame, the full `m17_confirm_reset()`), so the next
+  transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
+  bits or chunks, even with no EOT marker between: one acquired from its LICH alone plays nothing, earns no media and
+  opens no call until its own LSF applies (its rebuilt LSF, checked or under -F the relaxed one, made of its own chunks
+  only; the scan side marks the binding disputed at the EOS, PR B). In a signed RF voice stream every frame that may reach playback is either counted into
+  the digest or leaves the signature incomplete: the signature range 0x7FFC-0x7FFF (either end bit) holds no voice
+  (M17 spec 2.0.11, Digital Signatures: signature use shortens the stream by four frames, numbered 0x7FFC, 0x7FFD,
+  0x7FFE, 0xFFFF), so a frame there that is no signature chunk (0x7FFF without the end bit, 0xFFFC-0xFFFE) is consumed
+  (" SIG FRAME ERR;") and marks a gap (`m17_in_signature_range()`, `m17_stream_signature_step()`), and a frame numbered
+  there that played before the stream was known signed marks one too (`M17updateSignatureDigest()`). M17 signatures
+  are not verified on network (IP) streams (decided, issue #890): no digest, no collection; a frame in the signature
+  range of a signed stream is consumed, never played, and the stream is reported " SIG NOT VERIFIED OVER NETWORK;"
+  (`M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK`) as soon as a checked signed LSF of it is admitted
+  (`m17_signature_note_not_over_network()`), so an end with every signature datagram lost (EOT, EOTX, DISC, another
+  stream) never reads as the over-the-air " SIG INCOMPLETE;". The network path keeps one rule set that fails
+  closed (`m17_ip_take_stream_frame()`, `m17_ip_admit_frame()`): an IP stream frame whose CRC failed is nothing; one
+  whose own LSF cannot be used, or is packet mode (Stream Mode needs the Packet/Stream bit set; packets are MPKT), is
+  nothing; each frame number of a stream (stream ID and the station its LSF names, `m17_ip_stream_*`) is used once and
+  in order (`m17_ip_fn_after()`): an unsigned stream through the 15-bit counter's wrap, a signed one (any of its LSFs
+  signed, `m17_ip_stream_signed`) only rising, as it never wraps, so a voice frame delayed past a signature frame is
+  late; a copy or a late datagram is dropped before playback and everything else; another stream ID or station opens a
+  stream, ending the open one and its call first (two transmissions, two calls), but a final frame other than frame 0
+  never replaces the open stream, and still ends the stream it names (remembered as ended, so only its frame 0 starts
+  it); a stream's EOT, or EOTX and DISC naming its station, end it, drop the carrier and sync type and retire its link
+  setup with everything else held from it (`m17_ip_end_stream()`, `m17_confirm_reset()`; its verdict too); the signed
+  flag is taken only from an accepted frame (`m17_ip_continue_stream()`: a refused signed copy checks its order as signed
+  and signs nothing); after a stream ends every datagram of it (stream ID and station) is ignored until frame
+  0 starts it again (`m17_ip_note_ended()`). The ended keys are a fixed table of `M17_IP_ENDED_CAPACITY` (64) in the
+  M17 state extension (`m17_state_ext`, `src/protocol/m17/m17_state_ext.h`): no allocation and no moves on the
+  decoder thread; when it is full the oldest end is forgotten, and from then on for the session (fail closed,
+  `dsd_state::m17_ip_ended_lost`) a stream neither open nor in the table opens only on a CRC-valid frame 0, never joined
+  at a later frame. No allocation can lose an end: the extension is created before a stream opens, and a stream it
+  cannot be created for does not open. When the refused frame is a final frame (its CRC-checked EOT bit), its end
+  could not be recorded and sets the same flag, as does any end with no table to take it; any other refused frame loses
+  no end and sets nothing, so the stream's next frame opens it once the table can be made. The flag lives in
+  `dsd_state`, outside the allocation, with the extension's lifetime: the decoder session (cleared by `initState()`,
+  `freeState()` and `m17_end_session()` in `dsd_engine_cleanup()` before the extensions are freed), never a
+  transmission (`M17_STATE_DISPATCH` `test_ip_unrecordable_end_fails_closed`,
+  `test_ip_failed_allocation_on_an_ordinary_frame`, with the extension's allocation failed through a `calloc` wrap;
+  `ENGINE_CLEANUP_AUDIO` `test_session_boundary_clears_the_m17_lost_end_fallback`). Accepted limits: a copy of a one-frame stream's frame 0 after its EOT starts it again;
+  a stream ID reused by the same station with no end received between is not taken; after the table first filled, a
+  network stream whose first frames were lost is not joined until its station starts another. A checked IP frame plays on its own check; its decoded speech marks the call's media
+  (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
+  encryption and CAN, `m17_lsf_checked`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice), and
+  only checked speech earns the scan's checked media (`dsd_call_state_note_checked_media()` behind it and
+  `dsd_scan_uses_checked_media()` in `m17_play_codec2_voice()`; `M17_STATE_DISPATCH` "unchecked-LSF M17 speech earns no
+  checked media"). The 1600 bit/s arbitrary data is assembled per six-frame group and emptied at a stream change
+  (`m17_stream_1600_arbitrary_assemble()`, `m17_state_ext::adata`: decoder scratch, in the M17 state extension and so
+  never in a frontend's snapshot). Text META has one assembler per transmission, and a block joins only its own
+  transmission's, and only from content whose check passed (decided, issue #890): the RF transmission's or the admitted
+  network stream's is `m17_state_ext::text_meta` (`m17_transmission_text()`), emptied at every boundary by
+  `m17_confirm_reset()`; an MPKT has its own on the stack for its LSF's META and its packet (`m17_lsf_carrier::text`),
+  so an MPKT heard while a stream is open neither adds to nor clears the stream's text. An MPKT's link setup is its own
+  too (`m17_ip_handle_mpkt_frame()`): its payload is decoded against its own LSF, applied for it alone, and at its end
+  the decoded link setup it found (the raw LSF bits, `m17_lsf_checked`, type, CAN, encryption, IV, advertisement) is
+  given back (`m17_link_setup_hold()`, `m17_link_setup_give_back()`), so an interleaved stream keeps its own and
+  nothing of the MPKT stays; an MPKT whose LSF is not applied (a reserved TYPE, an invalid address) inherits nothing
+  and its payload is not decoded. An MPKT's call is a data call whatever its LSF's Packet/Stream bit says (a
+  stream-mode LSF in an MPKT is taken for its META, which only a stream-mode TYPE can name, never as a live voice
+  stream). A standalone MPKT (no network stream live, also after a stream went idle or ended) is always a call and a
+  transmission of its own (`DSD_CALL_BOUNDARY_BEGIN`, even when the slot still holds an idle stream's call of the same
+  source, destination and CAN, the idle stream's admission state untouched; a stream call a fade or `sim_nocar` ended,
+  still reacquirable, is made final first, `m17_finalize_faded_call()`, so the packet never heals into that stream's
+  transmission), and ends with it; heard while a network stream is live, an MPKT publishes no call and notes no received
+  identity (`m17_lsf_carrier::mpkt_call`), so the stream's call is neither ended, split nor replaced and the carrier's
+  CAN stays the stream's. A stream is live while a frame of it was taken within `M17_IP_STREAM_IDLE_MS` (2 s: fifty
+  40 ms frame periods, far beyond network jitter or reflector buffering; `m17_ip_stream_live()`,
+  `m17_state_ext::ip_stream_last_ms`, both sides on `dsd_realtime_mono_ms()`): a stream whose final frame, EOTX and
+  DISC were all lost stays open for the admission and ended-stream rules, but no longer holds MPKTs' calls back; a checked LSF's META and a packet
+  whose CRC passed commit their block (`decodeM17PKT()`, `m17_decode_pkt_print_meta_or_arb()` take the assembler), and
+  a packet whose CRC failed, shown only under -F, commits to and clears no assembler (NULL). Tests:
+  `M17_STATE_DISPATCH`
+  (`test_signed_ip_stream_is_not_verified`, `test_signed_rf_stream_needs_every_frame_once`,
+  `test_rf_marker_end_reports_an_incomplete_signature`, `test_rf_eos_retires_the_link_setup`,
+  `test_ip_foreign_eot_does_not_end_the_open_stream`, `test_ip_frame_counter_rollover`,
+  `test_ip_in_band_end_drops_the_carrier`, `test_ip_replaced_stream_ends_its_call`,
+  `test_ip_ended_streams_by_station`, `test_ip_packet_mode_lsf_in_a_stream_datagram`,
+  `test_ip_decoded_speech_marks_media`, `test_relaxed_lsf_logs_its_own_iv`, `test_rf_eos_retires_the_decoded_link_setup`,
+  `test_link_setup_boundaries_clear_the_same_set`, `test_signed_rf_signature_range_frames`,
+  `test_ip_signed_stream_frame_order_never_wraps`, `test_ip_foreign_eot_is_remembered`,
+  `test_ip_signed_stream_end_without_chunks`, `test_ip_ended_streams_are_bounded_and_fail_closed`,
+  `test_ip_1600_arbitrary_data_is_one_streams`, `test_text_meta_is_one_transmissions`,
+  `test_packet_text_meta_is_one_packets`, `test_rf_eos_drops_the_raw_lsf_bits`,
+  `test_rf_packet_text_is_its_transmissions`, `test_ip_mpkt_leaves_the_open_streams_text`,
+  `test_ip_refused_signed_copy_signs_nothing`, `test_ip_unrecordable_end_fails_closed`,
+  `test_ip_failed_allocation_on_an_ordinary_frame`, `test_ip_mpkt_link_setup_is_its_own`,
+  `test_rf_packet_eof_without_its_prefix_ends_it`, `test_ip_mpkt_keeps_the_open_streams_call`,
+  `test_ip_mpkt_with_a_stream_mode_lsf_leaves_no_voice_call`, `test_rf_packet_not_whole_is_not_decoded`,
+  `test_ip_idle_stream_does_not_hold_back_packets` (the real-time clock wrapped), `test_rf_packet_unarmed_without_memory`,
+  `test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call`,
+  `test_ip_mpkt_after_a_faded_stream_is_its_own_transmission`; `M17_FRAME_CUT` `test_packet_cut_early_is_lost`,
+  `test_packet_eof_verdict_is_its_own`, `test_packet_malformed_eof_earns_no_credit`,
+  `test_packet_out_of_order_first_chunk_earns_no_credit`, `test_packet_crc_failure_earns_no_credit`,
+  `test_packet_behind_an_unapplied_lsf_is_not_decoded`, `test_packet_frame_at_the_input_end_decodes_nothing` (an
+  input cut short: a failed read asking for shutdown, its stand-ins uncounted, or an ended input with the fallback
+  asked for, its stand-ins counted so the symbol count says the frame was whole),
+  `test_packet_after_a_symbol_clock_restart_is_not_decoded`, the newer cases sharing one heap-allocated decoder state
+  and options, its symbol reader counting symbols as production does (an ended input's stand-ins, but no erasure an
+  interruption stood in nor a failed read's stand-in); each
+  lifecycle case builds and runs without Codec2 too, its playback
+  counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`; `test_rf_lsf_meta_uses_one_extension_request`,
+  `test_bad_lsf_requests_no_extension` where the linker wraps calloc). A stream frame's EOS bit,
+  an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
+  call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in
+  `<dsd-neo/protocol/m17/m17.h>`). The EOT also puts the slicer levels back where a lost carrier leaves them
+  (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer symbols of one sign to one of the
+  other, and the next transmission's hunt sliced and timed its preamble against the skewed centre it left (issue #834).
+- M17 end-of-transmission marker (M17 spec 2.0.11: 192 symbols of 0x555D, +3 six times, -3, +3). The hunt takes it
+  (`frame_sync_try_m17_eot()`) only behind an M17 frame of a transmission with evidence and only on
+  `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within one
+  symbol of the marker with its one other-sign symbol right (`dsd_frame_sync_m17_eot_word()`, `frame_sync_m17_eot.c`,
+  both polarities): every flat run is within one symbol of a single word, and a fade after real traffic used to end the
+  call there. The words after the first are read with the hunt still running (`dsd_state::m17_eot_pending`): any sync
+  taken meanwhile drops them (`frame_sync_try_protocol_matches()`), and a window that is not the next word drops them
+  and may start one afresh. `dsd_dispatch_handle_m17()` then drains the rest of the marker a word at a time (at most the
+  21 words left) up to the first word that is not the marker and hands that word back to the hunt as its window's
+  history (`dsd_frame_sync_hand_back_word()`, the carry a no-sync exit keeps), scored once at its own end
+  before the next symbol is read (`score_on_resume`), so a sync word that began in it, or is all of it, is still found;
+  the blind 184-symbol skip it replaces ran into the next frame when the marker's first words were lost. The hunt then
+  starts from what the marker's reset leaves (no sync before, polarity, evidence or join hits), so the stream that
+  follows joins on three exact stream words a frame apart, the handed-back word able to be the first of them and never
+  enough alone. Like the symbol hand-back, the word hand-back does nothing for a null state or no symbols
+  (`FRAME_SYNC_HISTORY_CARRY`). Outside M17 the
+  hunt pays one state check a window while M17 is enabled, and nothing when it is not (`M17_FRAME_SYNC`,
+  `M17_SYNC_DISPATCH`).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
   answering the SPS hunt (issue #421); D-STAR's also gates voice: a superframe's AMBE frames reach the vocoder, the
   speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its
@@ -14579,9 +14897,33 @@ Private per-protocol modules worth knowing about:
   `mbe_process_provoice()` hands the decode's `mbe_process_result` to `mbe_processImbe4400Dataf()` unchanged: its
   `MBE_PROCESS_FLAG_PROVOICE` is what gives a muted frame ProVoice comfort noise rather than the P25 level, and
   `CORE_MBE_TRANSFORM_CONTEXT` pins the live path to mbelib's own ProVoice frame API through repeats into muting.
-- `src/protocol/dstar/dstar.c` — `processDSTAR()` reads one superframe: 21 AMBE 3600x2400 voice frames and the slow
-  data between them. `processDSTAR_HD()` decodes the RF header and then calls it without changing `state->synctype`,
-  so the voice frames behind a header reach the vocoder as `DSD_SYNC_DSTAR_HD_*`. `processMbeFrameInternal()` sends
+- `src/protocol/dstar/dstar.c` — `processDSTAR()` reads one superframe behind the resynchronization word the hunt
+  matched: voice frames 1-20, each with its data frame (the slow data), then voice frame 0 of the next superframe.
+  `processDSTAR_HD()` decodes the RF header, then reads voice frame 0 and the word in its data frame (JARL STD 6.0
+  4.1.2 (c)), then the same superframe, so the first superframe's slow data is aligned (a header rebroadcast in it is
+  read whole) and no 20 ms is dropped (issue #890, B11); the superframe behind a header counts as weak evidence only
+  when that word was there, and `processDSTAR_HD()` reports the read productive when the header's CRC passed or a CRC
+  in that superframe's slow data did (a header rebroadcast or a D-PRS record; never the word or a weak streak). A cut
+  in any frame, a data frame included, drops the read at that frame's end. Neither changes `state->synctype`, so the voice frames behind a header reach the vocoder as
+  `DSD_SYNC_DSTAR_HD_*`. The end pattern (4.1.2 (g)-(h), `0xAAAAAAAA135E`) is matched exactly on the 48 bits ending on
+  any step of the frames' 24-symbol grid (JARL, and the capture behind `DECODE_IQ_DSTAR`, start it on a data frame,
+  MMDVM on a voice frame, MMDVMHost's end frame ends it with a data frame), from voice frame 0 behind a header on: it
+  ends the D-STAR call
+  (`DSD_CALL_END_TERMINATOR`), closes the capture, clears the transmission's confirmation (`dstar_confirm_reset()`,
+  which begins a new transmission; the ending superframe's verdict is reported first) and reads nothing
+  after it; no CRC covers it, so it is no evidence. An end that begins in the next superframe's voice frame 0, after all
+  20 data frames (MMDVM's placement), decodes the whole slow data first; one that holds a data frame drops it. A limit: in MMDVMHost's placement the voice frame holding the
+  pattern's first half plays before the data frame after it completes the match (20 ms of bit sync decoded as voice).
+  The whole read behind a header runs on the header's carrier count (issue #575): a carrier boundary or an input
+  interruption in voice frame 0, the word's data frame or the superframe drops what follows. The data frame after a
+  superframe's last voice frame, which the hunt matches the next word in, is read one symbol at a time while an end can
+  still be there (it or the 24 symbols after
+  it) and the symbols read go back to the hunt (`dsd_frame_sync_hand_back_symbols()`): a word after its 12th symbol, so
+  the hunt matches it where it ends, as before (`DSTAR_PROCESS`, `FRAME_SYNC_HISTORY_CARRY`). The header's soft costs
+  follow the slicer's polarity (`gmsk_soft_symbol_to_viterbi_cost()`: a +header reads a high symbol as 0), so a
+  +header decodes as a -header does; before, every +header failed its CRC (issue #890, B18; `DSTAR_HEADER_POLARITY`).
+  `dstar_slow_data.c` reads a header rebroadcast from block 0, or from block 1 behind a code squelch block (type 0xC,
+  JARL 6.4-6.5; B17). `processMbeFrameInternal()` sends
   every `DSD_SYNC_IS_DSTAR()` synctype to `mbe_process_dstar()`; before issue #599 only the voice synctypes went
   there, and a header's superframe was synthesized as DMR AMBE 3600x2450, whose model then carried into the next
   superframe. The two codecs share the ECC, so only the audio shows the difference: `CORE_MBE_TRANSFORM_CONTEXT`
@@ -14621,10 +14963,65 @@ Private per-protocol modules worth knowing about:
   `dsd_state::dpmr_scrambled`, and gives a failed half that value (or, with none yet, this frame's verified half);
   `dPMRVoiceFS2Frame.Scrambled[]` holds the result, which the bridge (per half: NXDN scrambler and `nxdn_cipher_type`
   1, or clear), the call's crypto classification and the terminal read; `Version[]` stays the raw field.
-  `dpmr_confirm_reset()`, initState() and the FS1/FS3/FS4 boundaries (`dpmr_scrambling_reset()`) forget it. A boundary
+  `dpmr_confirm_reset()`, initState() and the transmission boundaries (`dpmr_scrambling_reset()`: a checked header that
+  opens a call, which then sets its own from its Version, and a checked end frame) forget it. A boundary
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
   clear.
+- dPMR headers, end frames and publication (issue #890; `src/protocol/dpmr/dpmr_header.c`,
+  `src/engine/dispatch/dispatch_dpmr.c`). The frame sync accepts FS1 and FS3 only behind a header or end frame that
+  passed its check, with what it decoded in `dsd_state::dpmr_sync` (`src/dsp/frame_sync_dpmr.c`, DSP section), and
+  the dispatcher takes it for that sync once (`dpmr_take_checked_header()`, `dpmr_take_checked_end()`; an FS1 or FS3
+  synctype with none behind it, and FS4, change nothing). The CRC and the message type come before every side effect:
+  only a Communications_Start header (MT 0000) whose Communications Mode is voice or data (Table 5.55, 000 to 101)
+  ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
+  its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
+  010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
+  status messages) reports PROVEN content without a call and confirms nothing: confirmation is what lets the frames
+  after it publish and play, and a message that opens no call has none that may (a Communications_Start in the
+  reserved mode 111 reports nothing at all). A call a header opens has the header's colour code, or none when its
+  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. A header that
+  repeats the
+  open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not
+  read yet being missing, since the channel code is sent outside the MI's CRC) k message frames (k x 192 symbols,
+  within one) after the last call header on the same stream, k from 1 to that header's WU (1 when it is 0), goes on
+  with that call (`dpmr_header_continues_call()`, CONTINUE, no end or capture close), so a header lost in the run does
+  not split it: a radio waking powersaving receivers sends its header several times back to back (TS 102 658
+  5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
+  IDs print as dialled strings (`dpmr_convert_air_interface_id()`): the B2 place values, "n******" and "*******" for
+  the All Talkgroup IDs F8339C..F833A6 (A.1.2.3.3, Tables A.3, A.4), and '#' with six hex digits for an ID no dialled
+  string maps to. An FS2 frame publishes before it prints, so its line shows the identity it bound.
+  `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
+  PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
+  (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing
+  else ends a call as a terminator. Both return `DSD_FRAME_VERDICT_PROFILE_PROVEN`. On FS2 frames the dispatcher
+  publishes nothing before the CCH is read; `dpmr_publish_call()` publishes the frame once, from its first
+  CRC-valid half: that half's service and call kind (a data CCH is a data call), with the identity
+  `dpmr_update_superframe_part()` bound (`dPMRVoiceFS2Frame_t::BoundIdKind`: both halves CRC-valid and numbered 0/1,
+  the called ID, or 2/3, the calling ID). A frame with no CRC-valid half only keeps an open dPMR call going and opens
+  none. A half plays by its checked Communications Mode: its own when its CRC-7 passed, else the transmission's last
+  checked half's or header's (`dsd_state::dpmr_mode`, learned and forgotten with `dpmr_scrambled`), else this frame's
+  other checked half's, else none and it plays nothing (`dPMRVoiceFS2Frame_t::ServiceMode`); its own failed mode bits
+  never decide it. A half whose checked mode is Voice and attached data (101) plays only while its own CRC-checked
+  SLD says the frame holds no data (DP = 00, 5.5.29.2 Table 5.95; 11.1.1 Figure 11.3: after PTT release the remaining
+  frames carry the attached data with DP = 11), so attached data is never played or credited as speech
+  (`dpmr_attached_data_half_is_voice()`). Powersave bits are read only from the traffic headers whose PARMS end in
+  MI_TYPE and MI_DET
+  (message types 0000 to 1010; 5.5.19.1). The scrambler reloads from the key at frame 0 of each superframe and runs on
+  through its four payload frames of four AMBE frames each, so each half's place in it is its frame number times
+  four: learned only from checked content (a half that passed with a number it can carry, even for the first half
+  and odd for the second, as an FS2 frame carries frames 0/1 or 2/3; or the half next to such a frame's other half; a
+  failed half's own number bits, a checked half of the wrong parity and two halves that both passed with numbers
+  that are no pair, whatever parity either has, never decide it) and kept in dPMR's own `dsd_state::dpmr_scramble_place`, or
+  carried on from the half before (`dpmr_play_voice_frames()`, `dpmr_track_voice_frames()`). A confirmed scrambled
+  half that plays reloads the shared register and steps it to its place (`dsd_mbe_nxdn_scramble_skip_voice_frame()`
+  in `<dsd-neo/core/vocoder.h>`, the vocoder's own step), so a muted half before it (a keyed mode-101 call's failed
+  frame 0 before a checked frame 1 of speech, an unverified half, a data half) or a frame played before confirmation
+  leaves it in phase; a half whose place is not known runs on from the register. A frame before its transmission is
+  confirmed writes only that place: it may be noise where an NXDN call works, whose cipher type, register and IV it
+  leaves alone. The transmission boundaries forget the place with the scrambling. Tests: `DPMR_SYNC_DISPATCH`,
+  `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`,
+  `CORE_MBE_CRYPTO_SCOPE`.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
   passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
   no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,
@@ -14680,7 +15077,20 @@ Private per-protocol modules worth knowing about:
   `processTetraSBFrame()` return it and `dsd_dispatch_handle_tetra()` maps it to `PROFILE_PROVEN` or `UNPRODUCTIVE`.
   The carrier's evidence (CRC-passed BSCH and MAC blocks, and the followed call's signalling) gates trunking and
   speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
-  `<dsd-neo/protocol/tetra/tetra.h>`.
+  `<dsd-neo/protocol/tetra/tetra.h>`. Burst proof (issue #890): each burst closes with what it proved of the channel,
+  `tetra_burst_proof()` (`dsd_tetra_burst_proof` in `<dsd-neo/protocol/tetra/tetra.h>`): NONE, PROFILE (a CRC passed on
+  nothing below: a DSB of which only SCH/S decoded, soft-only or with its SCH/H failed, a presence signal, a direct
+  mode PDU that sets up no call, DM-RESERVED included), TMO (any trunked CRC-16 block, a foreign cell's BSCH and
+  trunked speech included), DMO_OPAQUE (a DM-2-C DMAC-SYNC: transmission or reservation, no one can tell), DMO_SERVICE
+  (a clear DMO call PDU or short data whose FCS did not fail, from `tetra_calls_dmo_pdu()`) or DMO_SPEECH (direct
+  mode speech with its CRC and re-encode check). The notes raise the open burst's level
+  (`tetra_confirm_note_proof()`); a burst whose read was lost closes NONE, and a carrier reset forgets the last one.
+  `tetra_frame_leave()` reports checked content (`tetra_burst_proof_is_content()`: TMO and every DMO level) as one
+  PROVEN content note, so `-Y` rows under `-fT` hold on checked TETRA content and TETRA is off the unchecked list in
+  `processFrame()`. The accessor is what a typed row or a trunk-scan DMO target can read (PR B of issue #890).
+  `tetra_confirm_burst_current()` is 0 once the open burst's read is lost: the carrier was reset since it began, or
+  `dsd_state_frame_read_lost()` against the carrier count captured at `tetra_confirm_burst_begin()` (a carrier
+  boundary or an input interruption inside the read).
 
 ### TETRA
 
@@ -15160,8 +15570,19 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
-  burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
-  pointer across these calls, so every reset clears fields.
+  burst's verdict still does. A synchronisation burst reads its tail before it acts (the DSB's SCH/H and the 15 dibits
+  after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
+  `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
+  inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
+  off the carrier the receiver is on now. The DSB takes direct mode on (`tetra_enter_dmo()`, which ends what the
+  trunked carrier left: its calls, fragments and uplink protection) only after that check, so an interrupted DSB on
+  the same trunked carrier leaves its calls as they were. `tetra_frame_leave()` publishes nothing of a lost burst, an
+  interrupted one on the same carrier included, so the publication stays as it was until the next burst that is not lost
+  (`TETRA_BURST_CUT`, through `--wrap` seams around the symbol readers). A lost burst closes with proof NONE whatever
+  its blocks proved before the loss, a first block whose grant retuned the receiver included; through `processFrame()`
+  it settles UNPRODUCTIVE across a boundary and WITHHELD for an interruption (`process_frame_settle_verdict()`;
+  `ENGINE_NO_CARRIER_RESET` `test_tetra_cut_burst_settles_unproven()`). Nothing here frees or replaces the state
+  extension: the MAC holds its `tetra_state_t` pointer across these calls, so every reset clears fields.
 - Leaving a call (`sm_unfollow()`) ends its canonical call as a teardown and clears its talkgroup-policy route
   (`tetra_calls_unfollowed()`; with NULL options after the engine ended the canonical calls itself). Its call record
   stays until its release or its ageing; the follow gate reads only the state machine, so no stale record gates a
@@ -15528,7 +15949,48 @@ single "current call".
   even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
   DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
-  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own (`dmo_call_of_transmission()`
+  with `tetra_dmo_party_continues()`: a co-channel network's DM-OCCUPIED of the same SSIs opens a row of its own).
+  DM-RESERVED
+  (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
+  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (from its master's party, one
+  rule for the call record and the transmission, `tetra_dmo_party_reserves()`: the source address of the same type,
+  clause 9.3.27, its MNI for a true SSI only, clause 8.5.2.1.1, and the same repeater or gateway, whose pseudo
+  addresses carry no MNI, table 22) one after a call transaction
+  ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
+  protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
+  or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
+  set-up's reservation (type 1) keeps the set-up.
+  Known limits of direct mode call tracking (decided for issue #890; one direct mode call per carrier is followed):
+  - An end message (DM-TX CEASED, DM-RELEASE, DM-DISCONNECT, DM-GRELEASE), in a DSB or on the STCH, ends the call and
+    its transmission whoever sends it (`dmo_apply_call()`, `dmo_log_data()`, `tetra_calls_dmo_pdu()`): another
+    co-channel call's or another network's too.
+  - A direct mode DM-RESERVED from the same pseudo SSI is not told apart from a gateway's or repeater's call
+    (or the other way round): `tetra_dmo_party` matches the repeater or gateway address only when both PDUs carry
+    one, so it can retire the transmission (colour code and protection) and end the call.
+  - A group reservation from another network that uses the same pseudo source SSI and group SSI can retire the call
+    (`tetra_dmo_party_reserves()` counts the MNI for a true source SSI only and compares no destination).
+  - A DM-CONNECT ACK addressed to the called party's new pseudo SSI starts a new call row (`dmo_call_from()` compares
+    the destination as sent); under a different dummy MNI it starts a new transmission as well.
+  - Through a gateway, the gateway's own DM-RESERVED, sent from the gateway's pseudo SSI (EN 300 396-5 clauses 8.4.6.1,
+    13.5.2.1.2), is not taken as the call's: it neither retires the transmission nor keeps a gateway set-up open, so
+    such a call ends by its idle timeout; a reservation from the DM-MS's own pseudo SSI through a gateway is taken as
+    the call's.
+  - A DMAC-DATA call PDU that leaves its source address out (EN 300 396-3 clause 8.5.2.1.2) replaces the call's master
+    with no source, so the master's later DM-RESERVED no longer reaches the call record.
+  - A DMAC-DATA call PDU (a stolen-channel DM-OCCUPIED, say) carries no repeater or gateway address (table 23), and
+    `dmo_call_from()` takes the call record's party from it (`tetra_dmo_party_of()`), so the record forgets the relay
+    its DSB named: a later DM-RESERVED of the same source SSI and MNI through another repeater then ends the published
+    call, while the transmission, whose party (`dmo_tx_party`) comes from DSBs alone, stays in progress.
+  - A DMAC-DATA is read with the communication type of the last DSB on the carrier (`tetra_state_t::dmo_comm_type`),
+    even one of another call, so after another party's direct mode DSB a gateway call's STCH can be misread and its end
+    missed.
+  - A co-channel caller's DM-SETUP PRES during a call takes the call's row while the first call's traffic goes on.
+  - A co-channel short data DSB sent in pieces replaces the colour code of the transmission in progress
+    (`dmo_learn_dcc()`), so the call's normal bursts stop decoding until its next DSB.
+  - A second direct mode call on the carrier (its set-up or occupation, or a DM-2-C DSB after a call of another class)
+    ends the call on the channel and takes over.
+  The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
@@ -15541,7 +16003,10 @@ single "current call".
   class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
   DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
   8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
-  closed of the two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C
+  closed of the two (`dmo_apply_setup()`), and a set-up from another party (`tetra_dmo_party` /
+  `tetra_dmo_party_continues()`: source address type and address, MNI wherever both carry one, repeater or gateway,
+  EN 300 396-3 clause 8.5.2.1.1; the colour code seed holds only six MNI bits, so two co-channel networks' masters of
+  one SSI share it) or of another class, like a DM-2-C
   DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
   (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
   unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave
@@ -15919,8 +16384,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row
   that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
   6.25 kHz channels (`UI_QT_SIGNAL_SEARCH`). NXDN48, dPMR and D-STAR are the 6.25 kHz modes,
-  as the receiver's channel filter has them; decode flags compare exactly (`-fm` is dPMR,
-  `-fM` AM) and mode or type names without case. Only the width option of the channel's own
+  as the receiver's channel filter has them, and a saved TETRA (`-fT`) system is a 25 kHz
+  carrier; decode flags compare exactly (`-fm` is dPMR, `-fM` AM, `-fT` TETRA, `-ft` P25)
+  and mode or type names without case. Only the width option of the channel's own
   analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
   `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
   NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
@@ -23234,6 +23700,18 @@ checks imported paths, atomically writes the private CSV, validates through
 named by display name; issue #697), and delegates argv assembly to
 `session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
 the single `sessionInitialized` recency handler.
+
+A manual list refuses a saved system with Extra arguments, with one exception (issue #890): an analog system whose
+Extra arguments are exactly its own kind's width option (`--nfm-bandwidth-hz N` for `-fA`, `--am-bandwidth-hz N` for
+`-fM`, or the `=N` form), which is how a Signal search save keeps its measured width.
+`scan_list_saved_system_width_hz()` reads that width, checked by the target options parser
+(`dsd_scan_options_parse()`) so its bounds are the row's own. It shares its token matching
+(`scan_list_width_options()`) with the starter's configured width (`configuredAnalogWidthHz()`): the saved width must be
+the only option and fill every token, while the configured width is the last option, as on the command line. The
+generator writes it to the row's `options` column, and the starter's DSP-rate warning (`analogRateWarning()`) holds the
+entry to it. Any other text, the other kind's
+option, or a digital system with any Extra arguments stays refused (`UI_QT_SCAN_LIST_TARGETS`,
+`UI_QT_SCAN_LIST_ROUNDTRIP`). A standalone start passes the same text through unchanged.
 
 A list's session switches sit in the editor's Advanced section (`ScanListScreen.qml`): Voice only (`voiceOnly`,
 `--scan-voice-only`) and, under it, Skip silent channels (`skipSilent`, `--scan-skip-silent`, issue #834), a

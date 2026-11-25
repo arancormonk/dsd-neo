@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -1440,8 +1441,138 @@ test_every_burst_ends_with_its_publication(void) {
     session_close(&s);
 }
 
+/* What the scan quiet check heard (dsd_frame_sync_hook_content_evidence() with skip-silent on): PROVEN notes. */
+static int g_proven_notes;
+
+static void
+count_content_evidence(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_proven_notes++;
+    }
+}
+
+/* One burst's proof and what it reported: @p proof, and checked content (one PROVEN note, which a -Y row holds on, and
+   which only a scan quiet check hears with skip-silent @p on) when @p content. */
+static void
+expect_burst_proof(const session* s, uint32_t* content_seq, int* notes, int on, dsd_tetra_burst_proof proof,
+                   int content, const char* what) {
+    const uint32_t want_seq = *content_seq + (content ? 1U : 0U);
+    const int want_notes = *notes + ((content && on) ? 1 : 0);
+    const int ok = tetra_burst_proof(s->state) == proof && s->state->scan_y_content_seq == want_seq
+                   && g_proven_notes == want_notes && s->state->scan_y_partial_seq == 0U;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL %s (skip-silent %d): proof %d (want %d), content %u (want %u), notes %d (want %d)\n",
+                    what, on, (int)tetra_burst_proof(s->state), (int)proof, (unsigned)s->state->scan_y_content_seq,
+                    (unsigned)want_seq, g_proven_notes, want_notes);
+    }
+    assert(ok);
+    *content_seq = want_seq;
+    *notes = want_notes;
+}
+
+/* Bits @p at.. of @p bits set to the @p n low bits of @p value, first bit highest. */
+static void
+put_bits(uint8_t* bits, int at, int n, uint32_t value) {
+    for (int i = 0; i < n; i++) {
+        bits[at + i] = (uint8_t)((value >> (n - 1 - i)) & 1u);
+    }
+}
+
+/* k_dmo_sch_h with message type DM-RESERVED (EN 300 396-3 table 27) in place of DM-OCCUPIED, after its addresses and
+   MNI: a reservation after a call transaction, 30 frames left. */
+static void
+dmo_reserved_sch_h(uint8_t* bits) {
+    bits_of(k_dmo_sch_h, bits);
+    put_bits(bits, 90, 5, TETRA_DMO_MSG_RESERVED);
+    put_bits(bits, 95, 1, 0u);  /* channel reservation type: after a call transaction */
+    put_bits(bits, 96, 6, 5u);  /* reservation time remaining: 30 frames */
+    put_bits(bits, 102, 3, 0u); /* timing, requests and changeover requests flags */
+    put_bits(bits, 105, 3, 4u); /* power class 4 */
+    put_bits(bits, 108, 3, 0u); /* power control, priority normal */
+}
+
+/* What a burst proved of the channel (tetra_burst_proof(), issue #890), and the checked content it reported for a -Y
+ * row (dsd_state::scan_y_content_seq) and, with skip-silent on, a scan quiet check: trunked signalling, a direct mode
+ * call PDU, an encrypted DM-2-C DMAC-SYNC and direct mode speech are checked content; a failed burst, a DSB that only
+ * the soft decision decoded (its SCH/H unread), one whose SCH/H failed, and one carrying DM-RESERVED proved the TETRA
+ * profile at most, and report nothing, with the setting on or off. No burst leaves a verdict open. */
+static void
+test_burst_proof_reports_checked_content(int on) {
+    dsd_frame_sync_hooks saved;
+    dsd_frame_sync_hooks_get(&saved);
+    dsd_frame_sync_hooks hooks = saved;
+    hooks.content_evidence = count_content_evidence;
+    dsd_frame_sync_hooks_set(&hooks);
+    g_proven_notes = 0;
+    uint32_t content = 0U;
+    int notes = 0;
+
+    session s = session_open();
+    s.opts->scan_skip_silent = on;
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_TMO, 1, "a BSCH and SYSINFO");
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_NONE, 0, "a failed synchronisation burst");
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_TMO, 1, "a normal burst's SYSINFO");
+    assert(nts2_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_NONE, 0, "a failed normal burst");
+    session_close(&s);
+
+    s = session_open();
+    s.opts->scan_skip_silent = on;
+    content = 0U; /* the new session's state counts from 0 */
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    assert(dmo_sync_burst_as(&s, sch_s, NULL, 0, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a soft-only DSB");
+    assert(dmo_sync_burst(&s, sch_s, NULL) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a DSB whose SCH/H failed");
+    dmo_reserved_sch_h(sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a DSB carrying DM-RESERVED");
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->dmo && !ts->calls.dmo.active && ts->calls.published == TETRA_PUB_NONE);
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_SERVICE, 1, "a DSB carrying DM-OCCUPIED");
+    /* The call's full-slot speech in a DNB, scrambled with its DM colour code. */
+    const uint8_t speech[TTB_TCH_FS_BITS] = {0};
+    uint8_t slot[2 * BLOCK_DIBITS];
+    ttb_encode_tch_fs(speech, ts->dmo_dcc_seed, slot);
+    feed(&s, slot + BLOCK_DIBITS, BLOCK_DIBITS);
+    DSD_MEMCPY(s.state->tetra_sync.b1_dibuf, slot, BLOCK_DIBITS);
+    s.state->tetra_sync.b1_valid = 1;
+    s.state->tetra_sync.b1_soft_valid = 0;
+    s.state->tetra_sync.nts2 = 0;
+    s.state->tetra_sync.cb = 0;
+    s.state->tetra_sync.b2_lead_count = 0;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_SPEECH, 1, "direct mode speech");
+    dmo_sch_s(TETRA_DMO_AIE_DM2C, sch_s);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_OPAQUE, 1, "a DM-2-C DSB");
+    /* A carrier boundary forgets what the last burst proved. */
+    tetra_forget_carrier(s.state);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_NONE);
+    session_close(&s);
+    dsd_frame_sync_hooks_set(&saved);
+}
+
 int
 main(void) {
+    test_burst_proof_reports_checked_content(0);
+    test_burst_proof_reports_checked_content(1);
     test_every_burst_ends_with_its_publication();
     test_uplink_registration_proposes_its_algorithm();
     test_noise_is_unproductive();

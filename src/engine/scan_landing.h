@@ -98,6 +98,8 @@ dsd_engine_scan_landing_forget(dsd_state* state) {
     if (owner) {
         owner->landing = (dsd_engine_scan_landing){0};
         owner->landing_epoch++;
+        /* No visit is in force (issue #890): what is observed from here is no landed visit's. */
+        state->scan_landing_visit = 0U;
         dsd_engine_scan_owner_pending_clear(owner);
     }
 }
@@ -125,8 +127,10 @@ dsd_engine_scan_landing_note_tune(dsd_state* state) {
 /* @p landing, with the visit facts of issue #834 (a new epoch, the generation, the activity baseline and the tune
    sequence carried from its tune request, the time it was noted), is the landing in force. */
 static inline void
-dsd_engine_scan_landing_install(dsd_engine_scan_owner* owner, dsd_engine_scan_landing landing) {
+dsd_engine_scan_landing_install(dsd_state* state, dsd_engine_scan_owner* owner, dsd_engine_scan_landing landing) {
     landing.epoch = ++owner->landing_epoch;
+    /* The visit in force (issue #890), the origin every scan observation from here is bound to. */
+    state->scan_landing_visit = landing.epoch;
     landing.generation_before_tune = owner->tune_generation_before;
     landing.landed_realtime_ms = dsd_realtime_mono_ms();
     landing.activity_seq = owner->tune_activity_seq;
@@ -166,7 +170,7 @@ dsd_engine_scan_landing_note_row(dsd_state* state, int row, long freq_hz, uint64
                                                  .index = row,
                                                  .tune_request = request,
                                                  .y_call_seq = state->scan_y_call_seq};
-        dsd_engine_scan_landing_install(owner, landing);
+        dsd_engine_scan_landing_install(state, owner, landing);
     }
 }
 
@@ -186,7 +190,7 @@ dsd_engine_scan_landing_note_target(dsd_state* state, int index, uint32_t sessio
                                                  .session = session,
                                                  .index = index,
                                                  .tune_request = request};
-        dsd_engine_scan_landing_install(owner, landing);
+        dsd_engine_scan_landing_install(state, owner, landing);
     }
 }
 

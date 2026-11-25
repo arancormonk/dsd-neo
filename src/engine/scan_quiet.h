@@ -345,7 +345,7 @@ int dsd_engine_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 /** A protocol's gate verdict on the frame being decoded (dsd_frame_sync_hook_content_evidence()): PROVEN moves the
  * activity sequence once a frame and drops any wait (it dominates PARTIAL, in the frame or before it); PARTIAL makes
  * the frame wait up to @p hold_ms (at most SCAN_QUIET_PENDING_MAX_MS) for its verdict, from the frame's end, or from
- * now when no frame is pending. */
+ * now when no frame is pending. SYNC_ONLY (issue #890) is taken as PARTIAL: a wait, never activity. */
 void dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_ms);
 /** The frame sync returned a sync: its frame's verdict is pending until dsd_engine_scan_quiet_frame_end(). Moves no
  * activity. */

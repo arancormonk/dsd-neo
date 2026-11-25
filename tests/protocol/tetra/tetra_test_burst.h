@@ -74,7 +74,7 @@ ttb_scrambling_sequence(uint32_t seed, int count, uint8_t* pn) {
 /* @p count bits, scrambled with @p seed, as @p count / 2 dibits. */
 static inline void
 ttb_scramble_to_dibits(const uint8_t* bits, int count, uint32_t seed, uint8_t* dibits) {
-    uint8_t pn[TTB_CODED_MAX];
+    uint8_t pn[TTB_CODED_MAX] = {0};
     assert(count % 2 == 0);
     ttb_scrambling_sequence(seed, count, pn);
     for (int i = 0; i < count / 2; i++) {
