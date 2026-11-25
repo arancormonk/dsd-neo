@@ -16818,7 +16818,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   from `FontMetrics`, and its action grid takes three equal columns when the widest label
   any cell can show fits, else two when every word of every label fits half a row, else
   one, with as many label lines as the longest label wraps to at the cell width
-  (`wrappedLines()`), for any cell count. The status line keeps `statusLines` lines (two,
+  (`wrappedLines()`), for any cell count. `wrappedLines()` counts lines as Qt lays them out: a hidden plain
+  `Text.Wrap` `Text` (`lineMeasure`) given the metrics' font, the width and the text, its lines tallied from
+  `lineLaidOut` into a plain object (a `lineCount` read would be tracked by the calling binding, and the next
+  measurement would change it under it, a binding loop). An arithmetic model counted a word exactly as wide as the line
+  as two lines and missed Qt's own breaks (issue #902 B10). The status line and the detail keep their last fit by the inputs that change it
+  (`fitCache`: the pass, range name, bounds, channel, width, line budget and font; the values, width, lines and font),
+  so a status update that changes none of them (a live level every 250 ms) runs no layout, with a detail of many values
+  shown, while a changed detail value or channel does (`test_live_level_updates_run_no_layout`, `measureTally`). No
+  fit is kept before `lineMeasure` is made (`ready`, read by both, so a screen built with a search already running fits
+  both lines again once it is; before it every text reads as one line, and the kept fit clipped the channel count and cut
+  the detail mid-value until a resize; `test_fits_a_screen_built_mid_search` at 360 and 410 px, neither line elided); `fitValues()` keeps a first value that fits alone but not
+  with "· …" before leaving the line to the Text's elision (`test_fit_keeps_a_first_value_that_fits_alone`). The status line keeps `statusLines` lines (two,
   or three where the widest pass, bounds and channel count would not fit two at this width
   and scale) and shortens only the range name, so the pass and channel count always show
   whole. Its sixth cell, More, opens the
@@ -16885,11 +16896,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   the sheet (its playback stops) and has the screen open its own `HistoryDetailSheet`
   (`searchCallDetails`, `showHold: false`). Both sheets join `menuOpen` (`tst_signal_search.qml`,
   `tst_a11y_text_reach.qml`). `keepValues()` (the screen's, and the sheet's for its identity
-  line) makes every space but the one after a `·` non-breaking, so wrapped details break only
-  between values; a value that does not fit the width with the separator it carries keeps its
-  spaces and wraps at its words, since kept whole the line would break inside it, before its
-  separator (issue #809; `test_history_detail_never_starts_a_line_with_a_separator`,
-  `test_sheet_large_text_360` read each drawn line through a `TextEdit` mirror across widths).
+  line) makes every space but the one after a `·` non-breaking, so wrapped details break at
+  spaces only between values; a value that does not fit the width with the separator it carries
+  keeps its spaces and wraps at its words, since kept whole the line would break inside it,
+  before its separator. Qt may still break a line after a hyphen inside a value ("North-" /
+  "West"; a decided limit, issue #902 B10: a word joiner there took the break a value too wide
+  for its separator needed, and the line then started with the separator). Accessible names and
+  a row's `fullText` stay plain (issue #809; `test_history_detail_never_starts_a_line_with_a_separator`,
+  `test_sheet_large_text_360` read each drawn line through a `TextEdit` mirror across widths;
+  `test_now_fitting_counts_lines_as_drawn`).
   Its liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
@@ -18005,7 +18020,10 @@ Qt Quick frontend (`src/ui/qt`):
   down; the pill never took that key's first press, so its repeats (`Navigation.activationPress()`) and release
   leave the sheet closed. A sort chosen with TalkBack's Alt+Enter is TalkBack's click; the same Alt+Enter that Android
   passes on late reaches the pill and is taken without acting (screen reader on), so the sheet stays closed. A card that leaves under a sheet leaves the sheet no opener, so Home hands the
-  keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`). A card whose title another shown
+  keyboard on after the sheet's own deferred hand-back (`settleSystemsFocusLater()`); that hand-back lands on the
+  app's Back owner (`Navigation.backTarget`, issue #902), which `focusLost()` counts as no place of its own, so the
+  hand-on to the search field or Add still runs (`tst_home_systems_search_sort.qml`
+  `test_focus_fallback_waits_for_a_sheet`, with a registered Back owner as in Main). A card whose title another shown
   card has names its receiver on a line of its own under the source line, which wraps, so the address is never cut at
   phone width or large text. In Nearest order the place line reads the distance first ("6.9 mi · Johnson,
   Iowa"), so a long place elides and the distance stays. `revealSystemsTop()` scrolls up to the search row after a sort or a
@@ -24323,7 +24341,226 @@ the tree with the empty name it had then, and kept it once the sheet closed: its
 already was, which changes nothing. Diagnostics lines that arrived while the log streamed were nameless on Pause.
 `ReadableText` and every other gated name follow the rule (Diagnostics' rows keep no name while the log streams,
 from their own gate); the speech pacers' `shown: !….Accessible.ignored` read it only on items no view lays out.
-Test: `tst_readable_text_gate.qml`. A list view's write reaches only the root of each delegate (issue #800, device finding F1; a `Repeater` writes
+The shared controls do too (issue #902): `IconButton`, `OutlineButton`, `GradientButton`, `DisclosureRow`,
+`PlayCircle`, `MapControlButton`, `DecodeChip`, `DashedActionButton`, `PinButton`, `SegmentedControl` (its root while
+it has a name, and each segment), `ToggleRow`, `PlexSwitch` (`accessibleDescription`), `PlexInput` (its placeholder, which Qt makes the description:
+`test_native_placeholder_follows_the_gate`), `PlexTextField`,
+`FrequencyField`, `PlexComboBox` (`accessibleName`; unnamed, its value names it), `MicroLabel`, `ListenTabs`' and
+`BottomNav`'s tabs and `PlexFlickable` take `Accessible.name` and any description from `!navigationAllowed ||
+!visible` (with each one's own further term: a `PinButton`'s `live`, a `PlexSwitch`'s `interactive`), and
+`Accessible.focusable` from the same gate, so a covered "Export detections…" is nameless and a covered `IconButton` is
+no stop. Qt 6.11.3 makes a Button, RadioButton, CheckBox, Switch, StaticText and EditableText focusable by default,
+ignored or not, so every such gated node sets it. A scroll pane (`PlexFlickable`, the Monitor's Recent calls) is never
+a stop: only its name follows the gate, and its page and scroll actions scroll nothing while it is hidden or covered
+(`tst_control_accessibility.qml` `test_hidden_pane_scrolls_nothing`, `tst_monitor_recent_calls.qml`
+`test_hidden_list_scrolls_nothing`). A screen's own named parts follow the same rule (the Monitor's pills and rows,
+the Spectrum's tune buttons, the key sheet's lines, Onboarding's text, the wizard's and scan list's Advanced headers);
+a name a `SpeechPacer` gives is gated already, since the pacer's `shown` carries the gate and it empties `spoken`
+when that turns false. What a screen reader holds is Qt's accessible interface, not the attached flags: Qt 6.11.3
+keeps an editable or static text focusable, with a SetFocus action, whatever `Accessible.focusable` says, any item
+with a Tab stop (`activeFocusOnTab`) focusable too, and a Qt Quick Controls item's native Tab focus keeps SetFocus.
+So every gated static text (`ReadableText` and each caller that sets its role, the key sheet's, Onboarding's, the
+player's and the other screens' lines) takes the `Pane` role while unreachable; every Tab stop and every `activate()`
+guard checks effective `visible` with `Navigation.allows()` (an invisible item keeps its focus and its
+actions; the Monitor's other-slot button stayed pressable after the slot went idle), and every row's Tab stop checks
+the navigation gate (RadioReference's site and picker rows). Every control that can hold the keyboard (each with
+a Tab stop, the text fields, `PlexCheckBox`, `PlexToggle`, `PlexComboBox`) gives it up, stored `focus` included, when
+it turns hidden or covered: Qt keeps an invisible item's focus and its own key handling, so
+a hidden check box toggled on Space, a hidden combo opened on Down, a hidden field took typing, and a window that came
+back handed the focus to a field hidden while it was away. A text field also commits its composing word, at once as it turns
+unreachable and before anything can publish the edit (another field taking the keyboard ends this one's edit,
+`editingFinished`, which a form such as the RadioReference account's saves on), into the field itself
+(`InputCommit::commitComposingOf()`, so a window that left before the release, or another field that took the keyboard
+meanwhile, still leaves the word in it: `test_hidden_field_publishes_its_whole_word`,
+`test_hidden_field_commits_when_the_window_leaves`, `test_hidden_field_commits_after_focus_moved_on`; only the hand-off
+waits, and is skipped once the focus has moved on) and hides the keyboard when it had the active focus. A field's
+own hide handler no longer clears its focus first (the gain editor's and a scan entry's gain field did, which left the
+keyboard on the window root, Escape reaching nothing: `tst_gain_editor.qml`); the gain editor still commits its word
+at once as it hides, so the wizard's Continue reads all of it (`tst_wizard_gain.qml`). The selectable read-only texts (a File browser command line, the Licenses texts) give it up too. All of it is one gate between the keyboard and the controls: `PressGate` (C++,
+`key_gate.h`, an application event filter registered as the `DsdNeo` singleton `PressGate` in `qt_ui.cpp`,
+`qml_test_context.h` and the two C++ tests that load production QML), with no object per control. A control takes part
+by declaring `readonly property bool inReach` on itself (its reachability for the keyboard: for a shared control its
+`Accessible.focusable`, which carries its gate and whatever its caller adds; a reading's `reachable`). The gate reads
+only the control with the focus: its `inReach` index is looked up from the control's own type as it takes the focus
+(never cached across controls: a QML type's metaobject goes with its engine, and a later type at the same address read
+another property; the combined `UI_QT_QML_A11Y_CHURN` and `UI_QT_QML_CALL_LISTS` runs load many files into one
+process), and its change signal is connected only while it has the focus, so a control at rest, a reading never
+focused or a hidden row, costs nothing per key and nothing to build beyond that one binding (measured on origin/main's
+QML in the same binary: 1,000 key clicks with up to 10,000 hidden readings, building 1,000 and 10,000 readings and
+1,000 buttons, and Main's load to its first frame, all within noise). From the moment the control with the focus
+turns unreachable it takes no key at all: the gate takes its key press, release and shortcut override events, ahead
+of its Keys handlers and its own handling, and every input method's event but one: if it was composing a word as it
+turned unreachable, the commit that finishes it when the app asks for one (`InputCommit::committing()`, true for the
+span of `commitComposing()` and `commitComposingOf()`, which Navigation calls), as whatever word the keyboard finishes
+it as (a converting keyboard's candidate is not the composing text it showed), with no new composing text, no
+replacement and no offset from the composing word (`replacementStart()` 0), once (`tst_wizard_gain.qml`;
+`test_hidden_field_commit_lands_at_its_word`, `test_hidden_field_takes_the_keyboards_final_word`). So a key or a word
+queued in the same turn as the hide (before the focus moves on) toggles, opens, edits or selects nothing, and a new
+word or a commit nobody asked for cannot replace the one composing (`tst_a11y_covered_native_controls.qml`
+`test_queued_key_does_nothing`, `test_hidden_field_finishes_only_its_word`,
+`test_selectable_text_gives_up_the_keyboard`). A field that loses the focus while composing, out of reach or disabled
+under it (Home's search field, whose panel a card's management menu disables before the menu covers it), commits its
+word as the focus leaves, seen before the field's own handling ends its edit, so `editingFinished` publishes the whole
+word (`tst_home_systems_search_sort.qml` `test_management_menu_commits_the_composing_word_first`); that commit goes
+through the closed gate even while the field is still in reach, so a disabled field takes only its own word, at the
+word (`test_disabled_field_commit_lands_at_its_word`). The window leaving finishes the word too, before the field's
+edit ends with it, and the field keeps the stored focus (`test_window_leaving_publishes_the_whole_word`,
+`PressGate.finishComposing`). A key release the gate takes lets go of the press it would have ended, unacted (a
+cancelled touch), so a check box or switch that hid under a held Space and shows again before the keyboard moves on is
+not left pressed (`test_release_taken_while_hidden_lets_the_press_go`), and ends the key's held activation for
+Navigation (`PressGate.releaseTaken`; `heldActivationItem`, so a repeat of a later hold presses nothing:
+`test_release_taken_ends_the_held_activation`). Limits of the gate and the hand-back (decided, issue #902; see
+"Keyboard gate limits" below). The gate tells
+Navigation when the control with the focus turns unreachable, or a control takes the focus while unreachable
+(`PressGate.strayed`; a deferred hand-off landing on it after it hid lets it go too,
+`test_focus_taken_while_hidden_is_given_up`); Navigation commits an editor's word at once and hands the focus on a turn
+later (`Navigation.letGo()`). A control's own gate counts:
+each shared button's `inReach` is its `Accessible.focusable`, which carries the control's gate and any its caller
+adds (a `PinButton` no longer `live`, a `PlexSwitch` not `interactive`, Home's held or not-shown rows;
+`test_pin_no_longer_live_gives_up_the_keyboard`). Readings take the keyboard too, from a screen reader's SetFocus: a
+`ReadableText` (by its `reachable`), a `MicroLabel` and every plain `Text` or row a screen reader reaches (the Now
+panel's readings, the key sheet's lines, Onboarding's, the player's time and status, the Monitor's hero and site
+row, the Spectrum's status and identity, the squelch and bandwidth values) hand it back when their gate closes
+(`inReach` on `<id>.Accessible.focusable`; `test_hidden_controls_offer_nothing` and
+`test_covered_controls_offer_nothing` give the text the keyboard by SetFocus, `tst_a11y_text_reach.qml`
+`test_3c_signal_search_now_panel` a Now reading). The release itself runs once the change that hid the control has settled
+(`Qt.callLater`: an edit's end can undo what hid it, as the RadioReference form that hides on a verdict reopens for a
+check, a binding loop). A control whose focus Qt itself drops to the window root, or to the focus scope enclosing it
+(the Spectrum's loader), as it turns unreachable (it or its panel disabled, so the stray hand-off never runs) hands it
+on too (`PressGate.focusLeft`, told once the change has settled; `Navigation.focusDropped()`), unless the focus moved
+to another control or the window is away (`tst_home_systems_search_sort.qml`
+`test_no_match_reading_hands_the_keyboard_back`: the no-match reading, held for a screen reader, then Clear search;
+`tst_main_map.qml` `test_disabled_resume_keeps_back_working_on_the_spectrum`: Resume scan disabled, then hidden). A control that still had the active focus hands it to an item that takes Escape and Back
+(`Navigation.keyOwner()`): the top modal's, else the top layer's, own handler when it declares one (`keyTarget`: a
+`ModalSheet` and the File browser are their own; a `NavigationLayer` may name one, none does), else the app's one
+Back owner, `Navigation.backTarget`, which Main binds to its safe area (its Keys run `requestBack()`). Never a
+surface by itself, nor the window root: a screen may pass Escape to nothing (the idle History tab, which the tab
+shell anchors to the safe area without parenting under it, so Escape from Clear filters, hidden by its own press, left
+History selected). The Spectrum's loader, anchored to the safe area the same way, takes Escape and Back itself
+(`requestBack()`), so a key a Spectrum control leaves goes back. `tst_a11y_covered_native_controls.qml`
+`test_layer_hands_the_keyboard_to_a_back_owner`, `tst_main_map.qml`
+`test_hidden_control_keeps_back_working_on_the_history_tab` and `..._on_the_spectrum`, and the Hold button with the
+keyboard when a Signal search detection ends (`tst_signal_search.qml` `test_escape_after_the_hold_button_hides`). A control that held only the stored focus of a
+window that is away (its root holds no active focus) and would get it back on the window's return hands that stored
+focus to the same key owner, each focus scope above it holding it, with nothing made active
+(`PressGate.passStoredFocus()`), so the window comes back with the keyboard on the Back owner
+(`test_escape_after_the_hold_button_hides_while_away`). The same goes for a control disabled while it holds that
+stored focus (the gate follows its `enabled` too while the window is away; Spectrum's Resume scan disabled with the
+scan still paused: `tst_main_map.qml` `test_resume_disabled_while_away_keeps_back_working`), also when the window
+comes back before that hand-off ran and Qt has put the focus on the Spectrum's loader
+(`test_resume_disabled_while_away_window_back_early`). So a covered control no longer keeps the keyboard under a sheet (`tst_keypad_enter.qml`), and
+its held Tab stop (`|| activeFocus`) lasts only that turn. Every step a slider or a rail takes (the coarse-tuning
+rail's and the seek bar's `nudge()`, from a screen reader's Increase or Decrease or an arrow key) checks effective
+visibility too, so nothing retunes or seeks unseen. A `PlexComboBox` list's options (`plexComboRow`) have their own
+gate (their navigation, their visibility and the list being open) for name, place in the tree, focusability,
+`choose()` and the keyboard (an option a screen reader's SetFocus gave it takes no key out of reach, where the
+delegate's own Space would choose, and gives it back). The open list is drawn over everything (Qt's overlay), a sheet
+opened after it included, and its options take taps by their own handling, so it fails closed: any real change of
+navigation while it is open (`Navigation.changes`: a modal over it or removed below it, a layer or a root surface
+coming or going; the same entries assigned again are none, so a binding re-evaluated keeps the list and its highlight)
+or the selector turning hidden or disabled closes it at once, its own registration as a modal exempt (`closeOpenList()`,
+from `Navigation.changesChanged` and the selector's own signals,
+never a binding on the navigation state: the close takes the list out of the modals, which inside that binding's
+update left `topModal` stale; `test_combo_options_follow_their_own_gate`, `test_combo_list_closes_out_of_reach`,
+`test_combo_list_closes_on_any_navigation_change`, `test_combo_list_follows_real_navigation_changes`,
+`test_open_list_stays_open_across_no_navigation_change`). An option still pressed as its list closes (Space down on the
+row a screen reader focused, a sheet coming up) is let go of, unacted (`PressGate.cancelPress()`: its grabs dropped and
+a cancelled touch), so the list opened again holds no pressed option and a lone release there chooses nothing
+(`test_combo_option_press_is_let_go_under_a_sheet`). Its own open list is no cover for the selector (`reachable`:
+its gate, or its list on top, and visible): it keeps its name, its stop and the keyboard, and Qt's own combo keys
+choose in the list as ever (Up, Down, Home, End, a letter, Return, Space, Escape, Back), an empty list closing on
+Return. Tab is Qt's own too: every stop beneath an open list is gated while the list is on top, so Tab and Shift+Tab
+move nowhere and leave the list and the keyboard as they were; Escape or Back closes it, and Tab moves on from there
+(`test_open_combo_keeps_its_native_keyboard`, `test_back_closes_only_the_list_in_a_sheet`,
+`test_sheet_over_the_open_list_returns_to_the_selector`; an
+option row names its selector as `focusReturnTarget`, which a sheet or the File browser closing with that row gone
+hands the keyboard to: `test_sheet_over_a_focused_option_returns_to_the_selector`. A sheet and the File browser hand
+the keyboard back once (`Navigation.restoreFocusFrom()`), with no retry. A control in reach that already holds the
+keyboard keeps it: a sheet above the closing one with its field focused (and a lower sheet closing clears input only
+when it holds it, `test_lower_sheet_closing_keeps_the_upper_field`), and in a window that is away the focus it returns
+to (`PressGate.focusItemOf()`, `test_lower_sheet_closing_away_keeps_the_upper_field`; a sheet's own `focusInside()`
+reads the same, as on origin/main it took the window's stored focus off its field whenever the window left). Else the
+opener, if in reach by its own gate (`inReach` where present, with visible, enabled and in the window: a pin let go of
+is none, `test_opener_no_longer_live_is_not_returned_to`); else its stand-in by the same test; else the item that
+takes Escape and Back (`keyOwner()`), so Escape always works. The opener and the stand-in are captured as the surface
+opens (`Navigation.openerIn()`), since a combo's model rebuilt while it is open destroys the option
+(`test_rebuilt_options_still_return_to_the_selector`): the item with the keyboard, or in a window that is away the one
+it returns to (`test_sheet_opened_away_returns_to_the_stored_focus`), and never a container. The focus on a Loader or a
+screen (the Spectrum's loader, its button's panel disabled before the confirmation showed) records the control that
+lost the keyboard inside it in that same turn (`PressGate.focusLostThisTurn()`; `tst_main_map.qml`
+`test_explore_confirmation_then_back_closes_the_spectrum`), never one the user left before (a History search finished
+with Enter, then Clear cancelled: `tst_back_modals.qml` `test_finished_search_is_no_opener`), else none. The hand-back
+is taken at the dismissal when the opener or its stand-in is in reach then; else once the dismissal's turn has
+settled, as a binding on the closing sheet can enable the opener only after the sheet's own handler ran (Home's body,
+disabled while a management sheet shows: `tst_back_modals.qml` `test_home_sort_back`, `test_remove_cancel`). A
+surface opening again cancels its pending hand-back (`Navigation.surfaceOpening()`), so only the latest visit's runs
+(`test_only_the_latest_visit_hands_back`), and it is skipped if a new sheet took the top. A control given only the
+stored focus of a window that is away is followed by the gate from then on (`PressGate.followStoredFocus()`), so
+disabling it before the window returns still hands the keyboard on (`test_background_hand_back_is_followed`). A
+control that had the keyboard and is then taken away (the row a confirmation's action clears, destroyed or out of its
+window) leaves the focus on its container or the window root, which goes on to the key owner
+(`PressGate.focusVanished`, `Navigation.focusVanished()`; `tst_back_modals.qml`
+`test_cleared_row_hands_the_keyboard_to_the_back_owner`). Either way it is the only one: an opener that turns reachable only later does not get the
+keyboard back, a decided behaviour (`test_opener_reachable_only_later_does_not_take_the_keyboard_back`). A newer
+choice made meanwhile stays (a sheet opened as the first closed, its field given the keyboard:
+`test_next_sheet_keeps_its_fields_keyboard`; a field the user focused: `test_dismissed_sheet_keeps_a_newer_focus_choice`,
+`tst_file_browser.qml` `test_closed_browser_keeps_a_newer_focus_choice`; a selector whose list opened:
+`test_dismissed_sheet_keeps_a_newly_opened_list`),
+`test_empty_list_closes_on_return`). These tests run on the Basic controls style the app pins
+(`QT_QUICK_CONTROLS_STYLE=Basic` on `UI_QT_QML_A11Y_CHURN`): a style whose popups animate their close keeps a closing
+list visible a while.
+
+Keyboard gate limits (decided, issue #902):
+
+- Presses in progress are not followed: a tap, drag or held key already in progress when a sheet opens or its control
+  changes may still complete on its release, as before issue #902. Covered and hidden controls refuse new presses (a
+  cover's barrier, and `GatedTapHandler`'s and `activate()`'s checks, as before), keys and accessible actions.
+- One hand-back per closing surface: an opener that turns reachable only after it does not get the keyboard back
+  (`test_opener_reachable_only_later_does_not_take_the_keyboard_back`).
+- A hand-back left for the end of the dismissal's turn (its opener not in reach at the dismissal) leaves the keyboard
+  on the closed surface until then: a key in that same turn is taken by the gate, not passed to the Back owner.
+- The offscreen test platform keeps every window active, so the stored-only path of a hand-back into a window that is
+  away is covered by its outcome (`test_background_hand_back_is_followed`), not by an inactive window.
+- A focused control that disappears while the window is inactive (a list delegate a background model refresh removes)
+  is not handed to the Back owner on return: the focus may land on its list, and Tab or the next focus recovers.
+- When a sheet opens over another and both close and reopen in the same turn, an earlier sheet's deferred hand-back can
+  still run on the newer visit.
+- If a combo's model is replaced while its list is open and a screen reader had focused an option, the keyboard moves
+  to the Back handler instead of staying in the list: the list stays open and Escape closes it; Tab then moves on,
+  and reopening the list brings the arrows back.
+- If a button hides while Space is held and the keyboard is handed on before Space is released, a later held Space
+  started on another control can repeat on the old button for as long as that Space is held.
+
+The
+Monitor's reading groups (`ReadingFlow`, `ReadingRow`) and the site sheet's `FieldGrid` are gated as a single
+reading is (`Pane` role, focusable and release from the gate; `tst_a11y_monitor_controls.qml`
+`test_grouped_readings_follow_their_gate`, `test_site_fields_follow_their_gate`), and a StableRows row let go of
+(no longer `live`) takes no key in its release predicate (the detection recordings' rows, the File browser's entries;
+`tst_signal_search.qml` `test_departed_recording_row_takes_no_key`). `ReadableText` has one overridable `reachable` (its gate and visibility by default) that its name, role,
+focusability and place in the tree follow; a caller adds its own shown or held state there (Home's lines kept at opacity
+0 for a screen reader, the network sheet's live rows), and a plain `Text` a screen reader reaches (the Now panel's
+readings, whose `Accessible.focusable` follows the same gate: Qt 6.11.3 makes a text focusable again each time its
+role turns `StaticText` and keeps that when the role turns `Pane`, so under a sheet opened a second time each reading was
+a stop with SetFocus, `tst_a11y_text_reach.qml` `test_3c_signal_search_now_panel`) gates its role the same way.
+Diagnostics' rows put the pause in their `reachable`, so a row is no stop while the log streams
+(`test_diagnostics_rows_streaming_are_no_stop`). Descriptions follow the same gate as names (the Map attribution in List view). So a covered or hidden text field (`PlexTextField`'s input,
+`PlexInput`, `FrequencyField`'s input, the Licenses texts, a File browser command line) takes the `Pane` role and no
+Tab stop, and a covered `PlexComboBox`, `PlexCheckBox` or `PlexToggle` no focus policy (each held while it has the
+active focus, see OutlineButton); `PlexCheckBox` and `PlexToggle` also name themselves from the gate and answer a
+screen reader's Press or Toggle only while in the tree (`click()`), where Qt's own would toggle them behind the sheet,
+and a covered seek bar's Increase/Decrease seeks nothing. A screen's row whose gate is `Navigation.allows()` alone
+(the Monitor's site row and live pill, RadioReference's picker rows, its back-to-results row and site rows, the
+wizard's CSV choices) checks effective `visible` too, in its name, description, focusable, ignored, Tab stop and
+press: `Navigation.allows()` reads ancestry, not visibility, so a closed picker's kept rows and the Monitor's collapsed
+details were named and pressable. The network sheet's "(none announced)" line stays in the tree while hidden, nameless,
+on purpose: it shows as its section empties, which refreshes TalkBack's cache (`tst_a11y_closed_sheets.qml`). Tests: `tst_a11y_covered_native_controls.qml` (the
+interface's focusable and actions, and SetFocus, Press and Toggle under a cover changing nothing),
+`tst_monitor_site.qml` `test_hidden_site_row_offers_nothing`, `tst_radioreference_screen.qml`
+`test_closed_picker_rows_offer_nothing`, `tst_call_recording_player.qml` `test_seek_bar_under_a_sheet_offers_nothing`. A caller with a further reachability condition puts it in `accessibleName`,
+`Accessible.ignored` and `Accessible.focusable` alike (the held Home card's manage and site buttons, `entry.held`; the
+held clear-search ×, `shown`; a Pinned sheet row past the end, `live`), and a description a caller sets carries the
+gate as well (Call details' reason, the key sheet's Apply note). Test: `tst_readable_text_gate.qml`,
+`tst_shared_control_gates.qml`. A list view's write reaches only the root of each delegate (issue #800, device finding F1; a `Repeater` writes
 nothing), and it also makes a root with no accessible properties a bare node (`Client`, nameless, no actions). So a
 delegate that is a control keeps its accessible node on a child that fills it, never on the root, and gates that
 child itself (`Accessible.ignored`, name, description and focusable from `Navigation.allows()` and `visible`), as

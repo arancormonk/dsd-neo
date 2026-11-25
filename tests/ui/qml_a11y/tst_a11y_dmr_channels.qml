@@ -173,6 +173,36 @@ Item {
             verify(findChild(sheet, "channelsMissingEmpty").visible);
         }
 
+        // Issue #902: a sheet over the Channels sheet leaves its rows out of reach, as any control: nameless, out of
+        // the tree, a plain pane (Qt keeps a static text, a read-only row's role, a stop whatever its flags), no stop,
+        // and a press a screen reader still holding a row sends opens no editor.
+        function test_covered_rows_are_out_of_reach() {
+            openSheet(view([30, 12, 9, 7]));
+            var cover = Qt.createQmlObject("import QtQuick; Item {}", root);
+            var all = rows("channelsMissingRow").concat(rows("channelsChannelRow"));
+            verify(all.length > 0);
+            for (var r of all) {
+                var node = testContext.accessibleNode(r);
+                verify(node.inTree && node.focusable && node.name === r.words, "shown: a named stop");
+                verify(node.role !== 0x10, "shown: not a plain pane");
+            }
+            Ui.Navigation.modals = [sheet, cover];
+            wait(20);
+            var editor = findChild(sheet, "channelEditSheet");
+            for (r of all) {
+                node = testContext.accessibleNode(r);
+                verify(!node.inTree, "covered: out of the tree");
+                compare(node.name, "", "covered: nameless");
+                compare(node.role, 0x10, "covered: a plain pane");
+                verify(!node.focusable && node.actions.indexOf("SetFocus") < 0, "covered: no stop, " + JSON.stringify(node.actions));
+                testContext.accessibleClick(r);
+                r.activate();
+                verify(editor === null || !editor.visible, "covered: a press opens no editor");
+            }
+            Ui.Navigation.modals = [sheet];
+            cover.destroy();
+        }
+
         // The Monitor's NO FREQ reading moves with every grant on a channel with no frequency: it is renamed at the
         // readings' pace, never once per grant, and catches up with the count on screen.
         function test_no_freq_row_is_paced() {

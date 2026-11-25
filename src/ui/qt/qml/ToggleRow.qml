@@ -9,6 +9,8 @@ import QtQuick
 // whether the row is the last one in its panel.
 Item {
     id: row
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: row.Accessible.focusable
 
     property string title: ""
     property string subtitle: ""
@@ -22,10 +24,11 @@ Item {
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(row) && enabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(row) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Switch
-    Accessible.name: title
-    Accessible.description: note.length > 0 ? subtitle + "\n" + note : subtitle
+    Accessible.name: !navigationAllowed || !visible ? "" : title
+    Accessible.focusable: navigationAllowed && visible
+    Accessible.description: !navigationAllowed || !visible ? "" : note.length > 0 ? subtitle + "\n" + note : subtitle
     Accessible.checkable: true
     Accessible.checked: checked
     readonly property bool navigationAllowed: Navigation.allows(row)
@@ -33,7 +36,7 @@ Item {
     Accessible.onPressAction: activate()
     Accessible.onToggleAction: activate()
     function activate() {
-        if (enabled && Navigation.allows(row)) {
+        if (enabled && Navigation.allows(row) && row.visible) {
             // Issue #718: a choice made mid-word keeps the word.
             Navigation.commitComposing(false);
             toggled(!checked);

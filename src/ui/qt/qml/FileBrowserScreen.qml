@@ -97,6 +97,8 @@ Item {
     visible: shown
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
+    // As a modal, it takes its own Escape and Back (Navigation.keyOwner()).
+    readonly property Item keyTarget: screen
 
     onRequestChanged: sync()
     Component.onCompleted: sync()
@@ -128,7 +130,11 @@ Item {
         if (d.token !== 0) {
             decoderHost.closeFileBrowserSession(d.session);
         } else {
-            d.opener = window ? window.activeFocusItem : null;
+            Navigation.surfaceOpening(screen);
+            d.opener = Navigation.openerIn(window);
+            // What stands for it (a combo option's selector), taken now: the
+            // option's delegate may be destroyed while the browser is open.
+            d.standIn = d.opener && d.opener.focusReturnTarget ? d.opener.focusReturnTarget : null;
             d.modalsUnder = Navigation.modals.slice();
             Navigation.clearInput(window);
             Navigation.addModal(screen);
@@ -148,12 +154,12 @@ Item {
         closeConfirm.visible = false;
         Navigation.removeModal(screen);
         var opener = d.opener;
+        var standIn = d.standIn;
         var under = d.modalsUnder;
         d.opener = null;
+        d.standIn = null;
         d.modalsUnder = [];
-        restoreFocus(opener, under);
-        // Bindings may settle, or the pick may open another sheet, after the request ends.
-        Qt.callLater(restoreFocus, opener, under);
+        restoreFocus(opener, standIn, under);
     }
     function reset() {
         readingDelay.stop();
@@ -188,10 +194,11 @@ Item {
         d.seenAccess = screen.accessReading();
     }
     // Focus goes back where it was before the browser opened, when that is
-    // still on screen and reachable, else to the surface on top. A sheet that
-    // took the top since the browser opened (the backup's unlock sheet, after a
-    // pick) keeps the focus it gave itself.
-    function restoreFocus(opener, under) {
+    // still on screen and reachable, else to its stand-in, else to the item
+    // that takes Escape and Back (Navigation.restoreFocusFrom()). A sheet that
+    // took the top since the browser opened (the backup's unlock sheet, after
+    // a pick) keeps the focus it gave itself. Once, as the request ends.
+    function restoreFocus(opener, standIn, under) {
         // Read from the token, not `shown`: this runs inside the request's
         // change, before that binding has caught up. A new browse keeps focus.
         if (d.token !== 0)
@@ -199,19 +206,7 @@ Item {
         var top = Navigation.topModal;
         if (top && under.indexOf(top) < 0)
             return;
-        var targets = [opener];
-        if (top)
-            targets.push(top.navigationSurface || top);
-        else if (Navigation.layers.length)
-            targets.push(Navigation.layers[Navigation.layers.length - 1].surface);
-        if (Navigation.rootSurfaces.length)
-            targets.push(Navigation.rootSurfaces[Navigation.rootSurfaces.length - 1]);
-        for (var target of targets) {
-            if (target && !Navigation.contains(screen, target) && Navigation.allows(target) && Navigation.presented(target) && target.enabled) {
-                target.forceActiveFocus();
-                return;
-            }
-        }
+        Navigation.restoreFocusFrom(screen, opener, standIn, under);
     }
     // One level up: a folder to its parent, a location to the list of
     // locations, which ends the request.
@@ -860,6 +855,7 @@ Item {
         property int token: 0
         property double session: 0
         property var opener: null
+        property var standIn: null
         property var modalsUnder: []
         // "roots" (the locations) or "folder".
         property string view: "roots"
@@ -1066,6 +1062,8 @@ Item {
                         }
                         Item {
                             id: crumb
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(crumb) && crumb.visible
                             objectName: "fileBrowserCrumb" + crumbStep.index
                             // No crumb is wider than the line: a longer name is cut
                             // in its middle on screen, and read whole.
@@ -1078,13 +1076,14 @@ Item {
                             width: Math.min(room, crumbLabel.implicitWidth + leading + trailing)
                             height: crumbList.height
                             readonly property bool navigationAllowed: Navigation.allows(crumb)
-                            activeFocusOnTab: (navigationAllowed && !crumbStep.current) || activeFocus
-                            Accessible.role: crumbStep.current ? Accessible.StaticText : Accessible.Button
-                            Accessible.name: !navigationAllowed ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
+                            activeFocusOnTab: (navigationAllowed && visible && !crumbStep.current) || activeFocus
+                            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : (crumbStep.current ? Accessible.StaticText : Accessible.Button)
+                            Accessible.name: !navigationAllowed || !visible ? "" : crumbStep.current ? crumbStep.modelData.title : qsTr("Go to %1").arg(crumbStep.modelData.title)
+                            Accessible.focusable: navigationAllowed && visible
                             Accessible.ignored: !navigationAllowed || !visible
                             Accessible.onPressAction: activate()
                             function activate() {
-                                if (!crumbStep.current && Navigation.allows(crumb))
+                                if (!crumbStep.current && Navigation.allows(crumb) && crumb.visible)
                                     screen.openFolder(d.root, crumbStep.modelData.path);
                             }
                             Keys.onPressed: function (event) {

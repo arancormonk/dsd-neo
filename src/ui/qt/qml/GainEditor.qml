@@ -116,17 +116,15 @@ Column {
             commitReported = true;
             editor.committed();
         }
-        // A hidden field keeps no focus: keys typed after Automatic, or after
-        // the caller hid the editor, would go to it unseen, and the keyboard
-        // would stay up over nothing. `visible` follows every ancestor. A word
-        // still composing is committed first (a collapsed pane, a source
-        // switch), so the field never ends holding less than was typed.
+        // A hidden field keeps no focus and takes no key: the field's own
+        // gate does that (PressGate, from the field's inReach), handing
+        // the keyboard to the app's Back owner once the hide has settled
+        // (issue #902). Its word still composing is committed here at once (a
+        // collapsed pane, a source switch), so what reads the value as the
+        // field hides (the wizard's Continue) has all of it.
         onVisibleChanged: {
-            if (!visible && input.activeFocus) {
+            if (!visible && input.activeFocus)
                 Navigation.commitComposing(false);
-                input.focus = false;
-                Qt.inputMethod.hide();
-            }
         }
     }
 }

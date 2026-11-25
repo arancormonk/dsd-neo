@@ -902,6 +902,15 @@ Window {
             mainRoot.requestBack();
         }
     }
+    // Issue #902: the safe area takes Escape and Back for the whole app (its
+    // Keys handlers run requestBack()), so it is where a control that turns
+    // unreachable hands the keyboard when nothing on top declares its own
+    // (Navigation.keyOwner()).
+    Binding {
+        target: Navigation
+        property: "backTarget"
+        value: safeArea
+    }
     Binding {
         target: Navigation
         property: "rootSurfaces"
@@ -2417,6 +2426,11 @@ Window {
     Loader {
         id: spectrumLoader
         objectName: "spectrumLoader"
+        // Issue #902: Escape and Back from a control on the Spectrum go back,
+        // as from the safe area: the loader anchors to it but is no child of
+        // it, so a key the screen leaves would otherwise reach nothing.
+        Keys.onEscapePressed: mainRoot.requestBack()
+        Keys.onBackPressed: mainRoot.requestBack()
 
         anchors.fill: safeArea
         active: false

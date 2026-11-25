@@ -15,6 +15,15 @@ Item {
         id: home
         anchors.fill: parent
     }
+    // Main's one Escape and Back owner, registered as Main registers its safe area (Navigation.backTarget): a sibling
+    // of Home, where a closing sheet whose opener left hands the keyboard (issue #902).
+    Item {
+        id: appBack
+        objectName: "safeArea"
+        anchors.fill: parent
+        property int escapes: 0
+        Keys.onEscapePressed: escapes++
+    }
     Component {
         id: secondHome
         Ui.HomeScreen {
@@ -55,6 +64,8 @@ Item {
         when: windowShown
 
         function init() {
+            Ui.Navigation.backTarget = appBack;
+            appBack.escapes = 0;
             testContext.setRadioReference("available", true);
             testContext.useAppPrefs(true);
             testContext.setLocationSupported(false);
@@ -80,6 +91,7 @@ Item {
             settle();
         }
         function cleanup() {
+            Ui.Navigation.backTarget = null;
             testContext.setRadioReference("available", false);
             for (var modal of Ui.Navigation.modals.slice())
                 modal.visible = false;
@@ -319,6 +331,8 @@ Item {
             var clear = item("systemsSearchClear");
             verify(clear.visible);
             compare(clear.accessibleName, "Clear search text");
+            compare(clear.Accessible.name, "Clear search text");
+            verify(clear.Accessible.focusable, "the shown × is a stop");
             tap(clear);
             compare(savedSystemCards.query, "");
             verify(!clear.visible);
@@ -732,6 +746,11 @@ Item {
                 verify(part !== null, label + ": " + name);
                 verify(part.Accessible.ignored, label + ": " + name + " out of the tree");
                 compare(part.Accessible.name, "", label + ": " + name + " unnamed");
+                if (name === "homeSiteChooserButton" || name === "savedSystemManageButton")
+                    verify(!part.Accessible.focusable, label + ": " + name + " no stop");
+                // A text kept but not shown is a plain pane, as hidden (issue #902 B9).
+                if (part.reachable !== undefined)
+                    compare(part.Accessible.role, Accessible.Pane, label + ": " + name + " a plain pane");
             }
         }
         function checkShown(entry, title, label) {
@@ -741,6 +760,7 @@ Item {
             compare(findChild(entry, "savedSystemTitle").Accessible.name, title, label + ": the title read");
             compare(findChild(entry, "savedSystemManageButton").Accessible.name, "More options for " + title,
                 label + ": its actions named for it");
+            verify(findChild(entry, "savedSystemManageButton").Accessible.focusable, label + ": its actions a stop");
         }
         function pad(n) {
             return String(n).padStart(3, "0");
@@ -1085,7 +1105,7 @@ Item {
             var count = item("systemsSearchCount");
             if (data.reader) {
                 verify(clear.visible && clear.opacity === 0 && clear.Accessible.ignored && clear.Accessible.name === ""
-                    && !clear.enabled && !clear.activeFocusOnTab, "the × is held");
+                    && !clear.Accessible.focusable && !clear.enabled && !clear.activeFocusOnTab, "the × is held");
                 verify(count.visible && count.opacity === 0 && count.height === 0 && !count.enabled, "the count line is held");
                 tap(clear);
                 verify(field().input.activeFocus, "a tap on the held × reaches the field");
@@ -1265,7 +1285,7 @@ Item {
         }
 
         // A card that leaves with the keyboard on it while a sheet opens over Home: the sheet hands the keyboard back as
-        // it closes (the card is gone), and then it goes to the search field.
+        // it closes (the card is gone: to the app's Back owner, as in Main), and then it goes to the search field.
         function test_focus_fallback_waits_for_a_sheet() {
             addThree();
             var play = findChild(entryTitled("Story Sheriff"), "savedSystemPlay");
@@ -1286,6 +1306,59 @@ Item {
             tryVerify(function () {
                 return field().input.activeFocus;
             }, 1000, "the search field has the keyboard once the sheet closed");
+        }
+
+        // Issue #902: with a screen reader the no-match panel is held, not hidden, and Clear search disables it; Qt
+        // then drops the keyboard of its reading (a screen reader's focus) to the window root. The reading hands it
+        // to the app's Back owner all the same, so Escape still goes back.
+        function test_no_match_reading_hands_the_keyboard_back() {
+            addThree();
+            savedSystemCards.screenReaderActive = true;
+            try {
+                search("nothing like it");
+                settle();
+                var reading = item("systemsNoMatchText");
+                verify(reading.visible && reading.reachable, "the panel says nothing matches");
+                reading.forceActiveFocus();
+                verify(reading.activeFocus);
+                var clear = item("systemsNoMatchClear");
+                mouseClick(clear, clear.width / 2, clear.height / 2);
+                settle();
+                verify(!item("systemsNoMatch").enabled, "the panel is held, disabled");
+                tryVerify(function () { return appBack.activeFocus; }, 1000, "the keyboard goes to the Back owner");
+                keyClick(Qt.Key_Escape);
+                compare(appBack.escapes, 1, "Escape goes back");
+            } finally {
+                savedSystemCards.screenReaderActive = false;
+            }
+        }
+
+        // Issue #902: a card's management menu opening while a word is composing in the search field (a long press
+        // on the card) disables the field's panel before the menu covers it, and Qt takes the keyboard off the field
+        // then. The word is committed before the field's edit ends (editingFinished), not after: the edit it
+        // finishes holds the whole word, and nothing stays composing under the menu.
+        function test_management_menu_commits_the_composing_word_first() {
+            addThree();
+            var input = field().input;
+            input.forceActiveFocus();
+            field().text = "te";
+            input.cursorPosition = 2;
+            verify(testContext.composeText("st"), "the field holds a composing word");
+            var finished = [];
+            var onFinished = function () {
+                finished.push(input.text);
+            };
+            input.editingFinished.connect(onFinished);
+            try {
+                var story = entryTitled("Story Sheriff");
+                home.manageCard(story.leadUid, "Story Sheriff", story.rrLinked);
+                verify(home.managementSheetOpen, "the menu is open");
+                verify(!input.activeFocus, "the covered field gave up the keyboard");
+                compare(finished, ["test"], "the edit that ended held the whole word");
+                compare(input.preeditText, "", "nothing stays composing under the menu");
+            } finally {
+                input.editingFinished.disconnect(onFinished);
+            }
         }
 
         // One saved system: its count reads in the singular.

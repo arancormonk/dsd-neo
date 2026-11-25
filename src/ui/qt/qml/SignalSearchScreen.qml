@@ -205,9 +205,27 @@ Item {
         if (name.length === 0)
             return [pass, channel].join(" · ");
         var bounds = Util.fill(qsTr("%1–%2 MHz"), [status.rangeStartMHz || "", status.rangeEndMHz || ""]);
-        var compose = function (n) { return [pass, n, bounds, channel].join(" · "); };
         var width = statusText.width - 1;
         var lines = statusLines;
+        // Before the measure is made every text reads as one line: that fit is
+        // never kept, and the measure's readiness (read here, so the line
+        // follows it) fits the line again once it is made (a screen built
+        // with a search already running).
+        if (!lineMeasure.ready)
+            return fitStatusLine(pass, name, bounds, channel, width, lines);
+        // A status update that changes none of these (a live level every
+        // 250 ms) reuses the fit: no layout runs again.
+        var key = [pass, name, bounds, channel, width, lines, font.family, font.pixelSize].join("\u0001");
+        if (fitCache.status.key !== key) {
+            fitCache.status.key = key;
+            fitCache.status.value = fitStatusLine(pass, name, bounds, channel, width, lines);
+        }
+        return fitCache.status.value;
+    }
+    /** The status line for @p width and @p lines: the range name whole, or
+     * shortened until the pass, bounds and channel count fit. */
+    function fitStatusLine(pass, name, bounds, channel, width, lines) {
+        var compose = function (n) { return [pass, n, bounds, channel].join(" · "); };
         if (width <= 0 || wrappedLines(compose(name), width) <= lines)
             return compose(name);
         var step = statusMetrics.advanceWidth("M");
@@ -221,25 +239,30 @@ Item {
         // Bounds wider than any a receiver tunes: the progress stays whole.
         return [pass, channel].join(" · ");
     }
+    // The last fit of each line that updates while a search runs, by the
+    // inputs that change it (never read by a binding: a cache, not state).
+    // How many layouts wrappedLines() has run (tests).
+    readonly property var measureTally: lineMeasure.tally
+    readonly property var fitCache: ({status: {key: "", value: ""}, values: {key: "", value: ""}})
     /** Lines @p text takes at @p width in the status line's font, or in
-     * @p metrics, wrapped at spaces as the line wraps it (a word wider than
-     * a line breaks anywhere). */
+     * @p metrics, as Qt lays out a plain Text.Wrap line of that width
+     * (lineMeasure): a word exactly as wide as the line takes one line, and
+     * a word wider than it breaks where Qt breaks it (issue #902 B10). */
     function wrappedLines(text, width, metrics) {
         var m = metrics || statusMetrics;
-        var space = m.advanceWidth(" ");
-        var lines = 1, x = 0;
-        for (var word of text.split(" ")) {
-            var w = m.advanceWidth(word);
-            if (x > 0 && x + space + w <= width) {
-                x += space + w;
-                continue;
-            }
-            if (x > 0)
-                ++lines;
-            lines += Math.floor(w / width);
-            x = w % width;
-        }
-        return lines;
+        // Read before the measure completes, a layout is not made yet; the
+        // flag's change counts again.
+        if (!lineMeasure.ready)
+            return 1;
+        // Layouts run, for the tests that check a live level runs none (a
+        // plain object's field: no binding tracks it).
+        lineMeasure.tally.layouts++;
+        lineMeasure.font = m.font;
+        lineMeasure.width = Math.max(0, width);
+        lineMeasure.tally.lines = 0;
+        lineMeasure.text = text;
+        lineMeasure.forceLayout();
+        return Math.max(1, lineMeasure.tally.lines);
     }
     // Bumped by every accepted live measurement, so a fresh reading of an
     // unchanged level still marks the cue.
@@ -510,10 +533,12 @@ Item {
     /** @p text to show wrapped: every space inside a value is made
      * non-breaking, so lines break only after a " · " and a value ("SYS
      * 1183", "KID 0001") never splits, nor does a line start with a
-     * separator. A value wider than @p width in @p metrics with the separator
-     * it carries keeps its spaces and wraps at its words (kept whole, the line
-     * would break inside it, before that separator); with no @p metrics every
-     * value is kept whole. Line breaks stay. Screen readers get the plain text. */
+     * separator. Qt may still break a line after a hyphen inside a value
+     * ("North-" / "West"). A value wider than @p width in @p metrics with the
+     * separator it carries keeps its spaces and wraps at its words (kept
+     * whole, the line would break inside it, before that separator); with no
+     * @p metrics every value is kept whole. Line breaks stay. Screen readers
+     * get the plain text. */
     function keepValues(text, width, metrics) {
         return text.split("\n").map(function (line) {
             var values = line.split(" · ");
@@ -523,13 +548,26 @@ Item {
             }).join("\u00a0· ");
         }).join("\n");
     }
-    /** @p values joined for @p lines lines of @p width (keepValues() text
-     * wraps only at its breakable spaces, which wrappedLines() counts): all
-     * of them, or as many leading ones as fit followed by "…", so a value
-     * is never cut.
-     * Only a first value that alone needs more lines is left to the Text's
-     * own elision. */
+    /** @p values joined for @p lines lines of @p width (keepValues() text,
+     * its lines counted as Qt lays them out, wrappedLines()): all of them, or
+     * as many leading ones as fit followed by "…", or the first value alone
+     * when it fits but not with "…", so a value is never cut. Only a first
+     * value that alone needs more lines is left to the Text's own elision.
+     * The last fit is reused while its inputs stay the same (fitCache). */
     function fitValues(values, width, lines, metrics) {
+        // Never kept before the measure is made (see statusLine); the
+        // readiness is read here, so a binding that calls this follows it.
+        if (!lineMeasure.ready)
+            return fitValuesUncached(values, width, lines, metrics);
+        var m = metrics || statusMetrics;
+        var key = [values.join("\u0002"), width, lines, m.font.family, m.font.pixelSize, m.font.weight].join("\u0001");
+        if (fitCache.values.key !== key) {
+            fitCache.values.key = key;
+            fitCache.values.value = fitValuesUncached(values, width, lines, metrics);
+        }
+        return fitCache.values.value;
+    }
+    function fitValuesUncached(values, width, lines, metrics) {
         var all = keepValues(values.join(" · "), width, metrics);
         if (width <= 0 || wrappedLines(all, width, metrics) <= lines)
             return all;
@@ -537,6 +575,11 @@ Item {
             var shown = keepValues(values.slice(0, k).concat(["…"]).join(" · "), width, metrics);
             if (wrappedLines(shown, width, metrics) <= lines)
                 return shown;
+        }
+        if (values.length > 1) {
+            var first = keepValues(values[0], width, metrics);
+            if (wrappedLines(first, width, metrics) <= lines)
+                return first;
         }
         return all;
     }
@@ -658,6 +701,22 @@ Item {
     FontMetrics { id: detailMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(14) }
     FontMetrics { id: historyMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(13) }
     FontMetrics { id: actionMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15); font.weight: Font.DemiBold }
+    // wrappedLines()'s layout: never drawn, and read through the lines it
+    // lays out (tally) rather than lineCount, which a binding would track
+    // and every other measurement would change under it, a binding loop.
+    Text {
+        id: lineMeasure
+        property bool ready: false
+        readonly property var tally: ({lines: 0, layouts: 0})
+        visible: false
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        Accessible.ignored: true
+        onLineLaidOut: function (line) {
+            tally.lines = line.number + 1;
+        }
+        Component.onCompleted: ready = true
+    }
     Rectangle { anchors.fill: parent; color: Theme.bg }
     Column {
         id: header
@@ -692,6 +751,8 @@ Item {
             height: screen.sessionActive ? screen.statusLines * Math.ceil(statusMetrics.lineSpacing) : statusText.height
             Text {
                 id: statusText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: statusText.Accessible.focusable
                 objectName: "searchStatusLine"
                 width: parent.width
                 text: screen.sessionActive ? screen.statusLine : qsTr("Find strong signals across your frequency ranges")
@@ -703,12 +764,13 @@ Item {
                 wrapMode: Text.Wrap
                 maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
-                Accessible.role: Accessible.StaticText
+                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
                 // Gated as every node a screen reader reaches is: behind an
                 // open sheet it leaves the tree (issue #828).
                 readonly property bool navigationAllowed: Navigation.allows(statusText)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.name: statusSpeech.spoken
+                Accessible.focusable: navigationAllowed && visible
                 SpeechPacer {
                     id: statusSpeech
                     shown: statusText.navigationAllowed && statusText.visible
@@ -795,6 +857,8 @@ Item {
                     spacing: 6
                     Text {
                         id: searchFrequencyText
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: searchFrequencyText.Accessible.focusable
                         objectName: "searchFrequency"
                         width: parent.width
                         height: Math.ceil(frequencyMetrics.lineSpacing)
@@ -809,13 +873,14 @@ Item {
                         fontSizeMode: Text.HorizontalFit
                         minimumPixelSize: Theme.fontSize(14)
                         verticalAlignment: Text.AlignVCenter
-                        Accessible.role: Accessible.StaticText
+                        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
                         // Each line of the panel is gated as every node a screen
                         // reader reaches is: behind an open sheet (a detection's
                         // menu) it leaves the tree and holds no name, rather than
                         // being lifted over the covered panel (issue #828).
                         readonly property bool navigationAllowed: Navigation.allows(searchFrequencyText)
                         Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.focusable: navigationAllowed && visible
                         Accessible.name: !navigationAllowed || !visible ? "" : text
                     }
                     Item {
@@ -859,6 +924,8 @@ Item {
                         }
                         Text {
                             id: strengthText
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: strengthText.Accessible.focusable
                             objectName: "searchStrength"
                             // The cue's slot is kept for the whole visit, so the
                             // text does not move as a live level comes and goes.
@@ -880,6 +947,10 @@ Item {
                             Accessible.description: spoken.length > 0 ? screen.hit.range || "" : ""
                             readonly property bool navigationAllowed: Navigation.allows(strengthText)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             // The live level moves every tick (issue #782).
                             SpeechPacer {
                                 id: strengthSpeech
@@ -893,6 +964,8 @@ Item {
                     }
                     Text {
                         id: identificationText
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: identificationText.Accessible.focusable
                         objectName: "searchIdentification"
                         width: parent.width
                         height: Math.ceil(identificationMetrics.lineSpacing)
@@ -908,6 +981,10 @@ Item {
                         // short form would read the line twice.
                         readonly property bool navigationAllowed: Navigation.allows(identificationText)
                         Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                        // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                        // flags; unreachable, a plain pane.
+                        Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                        Accessible.focusable: navigationAllowed && visible && text.length > 0
                         Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : screen.identificationFull
                     }
                     Item {
@@ -915,6 +992,8 @@ Item {
                         height: 2 * Math.ceil(detailMetrics.lineSpacing)
                         Text {
                             id: searchDetailText
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: searchDetailText.Accessible.focusable
                             objectName: "searchDetail"
                             width: parent.width
                             // The hint belongs to a search that is running or paused;
@@ -942,6 +1021,10 @@ Item {
                             Accessible.name: detailSpeech.spoken
                             readonly property bool navigationAllowed: Navigation.allows(searchDetailText)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             // A monitored call's talkgroup and source change with each call (issue #782).
                             SpeechPacer {
                                 id: detailSpeech
@@ -962,6 +1045,8 @@ Item {
                         readonly property int more: screen.receiving ? Math.max(0, screen.knownNames.length - 2) : 0
                         Text {
                             id: savedNames
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: savedNames.Accessible.focusable
                             objectName: "searchSaved"
                             width: Math.min(implicitWidth, parent.width - (savedMore.visible ? savedMore.implicitWidth + 4 : 0))
                             height: parent.height
@@ -976,6 +1061,10 @@ Item {
                             readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
                             readonly property bool navigationAllowed: Navigation.allows(savedNames)
                             Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            // Issue #902: Qt keeps a static text focusable, with SetFocus, whatever its
+                            // flags; unreachable, a plain pane.
+                            Accessible.role: !navigationAllowed || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                            Accessible.focusable: navigationAllowed && visible && text.length > 0
                             Accessible.name: !navigationAllowed || !visible || text.length === 0 ? "" : fullText
                         }
                         Text {
@@ -1030,7 +1119,7 @@ Item {
                                                      : (width - spacing) / 2 - 24 >= widestWord ? 2 : 1
                         readonly property real cellWidth: (width - (columns - 1) * spacing) / columns
                         // OutlineButton keeps 12 px either side of its label, which
-                        // wraps at spaces as wrappedLines() counts.
+                        // wraps as wrappedLines() lays it out.
                         readonly property int labelLines: {
                             var font = actionMetrics.font;
                             var lines = 1;
@@ -1084,6 +1173,8 @@ Item {
                 visible: screen.sessionActive && searchMessage.text.length > 0
                 Text {
                     id: searchMessage
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: searchMessage.Accessible.focusable
                     objectName: "searchMessage"
                     parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
                     width: parent.width
@@ -1149,9 +1240,10 @@ Item {
                     showCaret: !screen.editable
                     tapEnabled: !screen.editable
                     // Not a control while paused: the heading of the open ranges.
+                    // Either way TalkBack can move to it while it is in the tree
+                    // (DisclosureRow's focusable; a heading, see MicroLabel), and
+                    // as a heading it takes no Tab focus.
                     Accessible.role: screen.editable ? Accessible.Heading : Accessible.Button
-                    // A heading TalkBack can move to (see MicroLabel); it takes no Tab focus then.
-                    Accessible.focusable: screen.editable && rangesToggle.navigationAllowed && rangesToggle.visible
                     accessibleName: screen.editable ? qsTr("Search ranges, %1 enabled").arg(screen.enabledRanges) : screen.rangesExpanded ? qsTr("Hide search ranges") : qsTr("Show search ranges, %1 enabled").arg(screen.enabledRanges)
                     onTapped: screen.rangesExpanded = !screen.rangesExpanded
                 }
@@ -1314,6 +1406,8 @@ Item {
                             ReadableText { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
                                 id: historyDetail
+                                // Issue #902: its reach for the keyboard (PressGate).
+                                readonly property bool inReach: historyDetail.Accessible.focusable
                                 width: parent.width
                                 objectName: "searchHistoryDetail"
                                 // Under its verdict, the site, access code,
@@ -1341,9 +1435,10 @@ Item {
                                 // Gated as every node a screen reader reaches
                                 // is (ReadableText): behind an open sheet it
                                 // leaves the tree, and holds no name there.
-                                Accessible.role: Accessible.StaticText
+                                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
                                 readonly property bool navigationAllowed: Navigation.allows(historyDetail)
                                 Accessible.ignored: !navigationAllowed || !visible
+                                Accessible.focusable: navigationAllowed && visible
                                 Accessible.name: !navigationAllowed || !visible ? "" : fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans

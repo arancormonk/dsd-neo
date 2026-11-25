@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import DsdNeo
 import QtQuick.Window
 
 // A centred panel over a dimmed screen.
@@ -29,6 +30,14 @@ Rectangle {
     property alias panelObjectName: panelItem.objectName
     property string accessibleName: qsTr("Dialog")
     property var previousFocus: null
+    // Issue #902: what stands for the opener (a combo option's selector,
+    // `focusReturnTarget`), taken as the opener is captured: the option's
+    // delegate may be destroyed while the sheet is open (its model rebuilt).
+    property var previousStandIn: null
+    onPreviousFocusChanged: {
+        if (previousFocus)
+            previousStandIn = previousFocus.focusReturnTarget ? previousFocus.focusReturnTarget : null;
+    }
     property var dismissHandler: null
     /** Whether a tap outside the panel asks to dismiss; false for form sheets. */
     property bool closesOnOutsideTap: true
@@ -47,7 +56,7 @@ Rectangle {
         // A caller may disable its opener when the sheet becomes visible.
         // Capture focus before those bindings move it to the window root.
         var window = sheet.Window.window;
-        var opener = window ? window.activeFocusItem : null;
+        var opener = Navigation.openerIn(window);
         visible = true;
         previousFocus = opener;
     }
@@ -62,27 +71,24 @@ Rectangle {
         visible = false;
         dismissed();
     }
-    function restoreFocus(opener) {
+    // The opener while it is still shown and in reach, else its stand-in,
+    // else the item that takes Escape and Back (issue #902,
+    // Navigation.restoreFocusFrom()), once: never a surface by itself, which may
+    // pass Escape to nothing (a tab Main anchors but does not parent, a
+    // layer's loaded screen).
+    function restoreFocus(opener, standIn) {
         if (visible)
-            return false;
-        var targets = [opener];
-        for (var surface = sheet.parent; surface; surface = surface.parent)
-            targets.push(surface);
-        if (Navigation.rootSurfaces.length)
-            targets.push(Navigation.rootSurfaces[Navigation.rootSurfaces.length - 1]);
-        for (var target of targets) {
-            if (target && target !== sheet && Navigation.presented(target) && target.enabled && Navigation.allows(target)) {
-                target.forceActiveFocus();
-                return true;
-            }
-        }
-        return false;
+            return;
+        var standsIn = standIn !== undefined ? standIn : (opener && opener.focusReturnTarget ? opener.focusReturnTarget : null);
+        Navigation.restoreFocusFrom(sheet, opener, standsIn);
     }
     function focusInside() {
         if (!visible || !isTopModal || adjustingFocus)
             return;
+        // The focus a window that is away returns to counts (issue #902): its
+        // active focus item is null meanwhile, not outside the sheet.
         var window = sheet.Window.window;
-        if (window && !Navigation.contains(sheet, window.activeFocusItem)) {
+        if (window && !Navigation.contains(sheet, PressGate.focusItemOf(sheet))) {
             adjustingFocus = true;
             sheet.forceActiveFocus();
             adjustingFocus = false;
@@ -98,18 +104,22 @@ Rectangle {
                 // focus reveal that follows still scrolls to a focused field.
                 scroll.contentX = 0;
                 scroll.contentY = 0;
-                sheet.previousFocus = window ? window.activeFocusItem : null;
+                Navigation.surfaceOpening(sheet);
+                sheet.previousFocus = Navigation.openerIn(window);
                 Navigation.clearInput(window);
                 Navigation.addModal(sheet);
                 sheet.forceActiveFocus();
             } else {
                 Navigation.removeModal(sheet);
-                Navigation.clearInput(window);
+                // Only input this sheet holds: a sheet above it keeps its
+                // field, its word and its keyboard (issue #902).
+                if (window && Navigation.contains(sheet, window.activeFocusItem))
+                    Navigation.clearInput(window);
                 var opener = sheet.previousFocus;
+                var standIn = sheet.previousStandIn;
                 sheet.previousFocus = null;
-                sheet.restoreFocus(opener);
-                // Bindings may settle or the confirmed action may hide the opener after dismissal.
-                Qt.callLater(sheet.restoreFocus, opener);
+                sheet.previousStandIn = null;
+                sheet.restoreFocus(opener, standIn);
             }
         }
     }
@@ -124,6 +134,8 @@ Rectangle {
     }
     Keys.onEscapePressed: Navigation.back(sheet.Window.window)
     Keys.onBackPressed: Navigation.back(sheet.Window.window)
+    // It takes its own Escape and Back (Navigation.keyOwner()).
+    readonly property Item keyTarget: sheet
 
     // keyboardRectangle is in window coordinates. Mapping it avoids subtracting
     // the keyboard twice when Android has already resized the usable window.

@@ -222,7 +222,12 @@ Item {
             verify(tc.wizard.csvNoticeIsProblem)
             compare(tc.wizard.announcements, said + 1)
             compare(tc.wizard.announced, message)
+            // On its step it is an alert; on another, hidden, it is out of the tree as a plain pane (issue #902 B9).
+            compare(findChild(tc.wizard, "wizardCsvNotice").Accessible.role, Accessible.Pane)
+            var step = tc.wizard.step
+            tc.wizard.step = 1
             compare(findChild(tc.wizard, "wizardCsvNotice").Accessible.role, Accessible.AlertMessage)
+            tc.wizard.step = step
             testContext.answerDocumentUnavailable(importFor("chan"), "noPicker")
             compare(tc.wizard.announcements, said + 2)
             compare(tc.wizard.chanCsvPath, "")

@@ -290,7 +290,7 @@ Item {
         font.pixelSize: Theme.fontSize(13)
         color: screen.noticeIsProblem ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
-        Accessible.role: screen.noticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
+        Accessible.role: !reachable ? Accessible.Pane : (screen.noticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText)
     }
 
     ListView {
@@ -366,6 +366,8 @@ Item {
             }
             Item {
                 id: cardNode
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(cardNode) && cardNode.visible
                 objectName: "importedFileNode"
                 // Sized by binding, not anchors: a row the view builds is measured at once.
                 width: fileRow.width

@@ -5,12 +5,12 @@ Flickable {
     id: viewport
     property string accessibleName: qsTr("Scrollable content")
     Accessible.role: Accessible.Pane
-    Accessible.name: accessibleName
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
     Accessible.focusable: false
     readonly property bool navigationAllowed: Navigation.allows(viewport)
     Accessible.ignored: !navigationAllowed || !visible
     function scrollPage(direction) {
-        if (!enabled || !Navigation.allows(viewport))
+        if (!enabled || !visible || !Navigation.allows(viewport))
             return;
         contentY = Math.max(0, Math.min(contentHeight - height, contentY + direction * Math.max(48, height * 0.8)));
     }

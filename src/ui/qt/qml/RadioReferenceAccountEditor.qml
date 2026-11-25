@@ -334,7 +334,7 @@ Column {
         Accessible.ignored: !navigationAllowed || !visible
         Accessible.name: !navigationAllowed || !visible ? "" : appKeyRequestText.text.replace(/<[^>]*>/g, "")
         Accessible.onPressAction: {
-            if (Navigation.allows(appKeyRequest) && linkUrl.length > 0)
+            if (Navigation.allows(appKeyRequest) && appKeyRequest.visible && linkUrl.length > 0)
                 Qt.openUrlExternally(linkUrl);
         }
 

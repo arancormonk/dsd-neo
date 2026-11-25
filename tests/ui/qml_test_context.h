@@ -127,6 +127,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
+#include "key_gate.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
 #include "local_day_watch.h"
@@ -4496,6 +4497,54 @@ class AccessibilityCounter {
     }
 };
 
+/**
+ * @brief Issue #902: a converting input method (one that turns the composing word into a candidate as it finishes
+ * it), for the offscreen platform, which has none. It watches one item and answers the next commit of the item's
+ * composing word, which is what the app's commit asks for (InputCommit::committing() is true then), as such a
+ * keyboard answers QInputMethod::commit(): first with @p candidate, at @p replaceFrom from the cursor, then lets the
+ * plain commit go on after it. An application filter installed after the app's PressGate, so it sees the item's
+ * events before the gate does; once.
+ */
+class ConvertingInputMethod : public QObject {
+  public:
+    ConvertingInputMethod(QObject* item, QString candidate, int replaceFrom)
+        : QObject(item), m_item(item), m_candidate(std::move(candidate)), m_replace_from(replaceFrom) {
+        QCoreApplication::instance()->installEventFilter(this);
+    }
+
+    ~ConvertingInputMethod() override {
+        if (QCoreApplication::instance() != nullptr) {
+            QCoreApplication::instance()->removeEventFilter(this);
+        }
+    }
+
+    ConvertingInputMethod(const ConvertingInputMethod&) = delete;
+    ConvertingInputMethod& operator=(const ConvertingInputMethod&) = delete;
+
+    bool
+    eventFilter(QObject* watched, QEvent* event) override {
+        if (watched != m_item || event->type() != QEvent::InputMethod || m_answered) {
+            return QObject::eventFilter(watched, event);
+        }
+        const auto* input = dynamic_cast<const QInputMethodEvent*>(event);
+        const QString composing = watched->property("preeditText").toString();
+        if (input == nullptr || input->commitString().isEmpty() || input->commitString() != composing) {
+            return QObject::eventFilter(watched, event);
+        }
+        m_answered = true;
+        QInputMethodEvent answer;
+        answer.setCommitString(m_candidate, m_replace_from, 0);
+        QCoreApplication::sendEvent(watched, &answer);
+        return QObject::eventFilter(watched, event);
+    }
+
+  private:
+    QObject* m_item = nullptr;
+    QString m_candidate;
+    int m_replace_from = 0;
+    bool m_answered = false;
+};
+
 /** @brief Installs the context the screens expect before any QML is loaded. */
 class Setup : public QObject {
     Q_OBJECT
@@ -5553,7 +5602,8 @@ class Setup : public QObject {
      * @brief A key event, pressed (@p press) or released, for the active focus item of @p item's window, as the
      * platform sends one: @p autoRepeat marks a press the key repeats while held (QKeyEvent::isAutoRepeat()), which
      * QtTest's keyPress() cannot send. On Android it is also what reaches the app when the first press went elsewhere
-     * (TalkBack took Alt+Enter). Returns whether the window accepted it.
+     * (TalkBack took Alt+Enter). Sent at once, with no turn of the event loop: a key queued in the same turn as a change
+     * (issue #902: a control hidden with the keyboard on it). Returns whether the window accepted it.
      */
     Q_INVOKABLE bool
     sendKey(QObject* item, int key, int modifiers, bool press, bool autoRepeat) const {
@@ -5566,6 +5616,8 @@ class Setup : public QObject {
             text = QStringLiteral(" ");
         } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
             text = QStringLiteral("\r");
+        } else if (key >= Qt::Key_0 && key <= Qt::Key_9) {
+            text = QString(QChar(key));
         }
         QKeyEvent event(press ? QEvent::KeyPress : QEvent::KeyRelease, key, Qt::KeyboardModifiers(modifiers), text,
                         autoRepeat);
@@ -7211,6 +7263,34 @@ class Setup : public QObject {
         return focus->property("preeditText").toString() == preedit;
     }
 
+    /**
+     * @brief An input method's event for the focused item, at once: @p preedit as its composing text and @p commit as
+     * text it finishes (either may be empty), at @p replaceFrom from the cursor over @p replaceLength characters, as a
+     * keyboard sends them. Issue #902: a word queued for a field that has just hidden.
+     */
+    Q_INVOKABLE void
+    sendInputMethod(const QString& preedit, const QString& commit, int replaceFrom = 0, int replaceLength = 0) {
+        QObject* focus = QGuiApplication::focusObject();
+        if (focus == nullptr) {
+            return;
+        }
+        QInputMethodEvent event(preedit, {});
+        event.setCommitString(commit, replaceFrom, replaceLength);
+        QCoreApplication::sendEvent(focus, &event);
+    }
+
+    /**
+     * @brief Issue #902: from now on @p item's keyboard converts as it commits: the next commit of its composing
+     * word is answered with @p candidate first, at @p replaceFrom from the cursor (ConvertingInputMethod), as a
+     * keyboard that turns "nihao" into its characters does.
+     */
+    Q_INVOKABLE void
+    convertOnCommit(QObject* item, const QString& candidate, int replaceFrom = 0) {
+        if (item != nullptr) {
+            new ConvertingInputMethod(item, candidate, replaceFrom);
+        }
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         /* `backup`, `rrPlaces` and `savedSystemCards` are QObjects, whose properties answer an unknown name with
@@ -7360,6 +7440,8 @@ class Setup : public QObject {
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
+        // Issue #902: the one gate between input and controls that turn unreachable (key_gate.h).
+        qmlRegisterSingletonInstance("DsdNeo", 1, 0, "PressGate", dsd_qt::PressGate::instance());
         qmlRegisterUncreatableType<dsd_qt::SiteRoaming>(
             "DsdNeo", 1, 0, "SiteRoaming", QStringLiteral("siteRoaming is the app's one roaming executor"));
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");

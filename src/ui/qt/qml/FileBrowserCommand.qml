@@ -32,6 +32,8 @@ Column {
             border.color: Theme.controlBorder
             TextEdit {
                 id: lineText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: lineText.navigationAllowed && lineText.visible
                 objectName: block.objectName + "Text" + lineBlock.index
                 x: 10
                 y: 10
@@ -50,9 +52,14 @@ Column {
                 font.pixelSize: Theme.fontSize(12)
                 readonly property bool navigationAllowed: Navigation.allows(lineText)
                 activeFocusOnTab: false
-                Accessible.role: Accessible.StaticText
+                // Issue #902: Qt makes a text node focusable whatever its flags;
+                // covered or hidden, a plain pane (see PlexTextField).
+                Accessible.role: navigationAllowed && visible ? Accessible.StaticText : Accessible.Pane
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.name: !navigationAllowed || !visible ? "" : text
+                Accessible.focusable: navigationAllowed && visible
+                // Selectable, so it can hold the keyboard (a tap, a screen
+                // reader's focus): hidden or covered, it gives it up.
             }
         }
     }

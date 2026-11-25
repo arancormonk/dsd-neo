@@ -177,6 +177,8 @@ Item {
 
         delegate: Item {
             id: row
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: row.Accessible.focusable
 
             required property var model
 
@@ -204,7 +206,7 @@ Item {
 
             // One node per row, read whole: its words are the row's name and
             // description, so no line inside it is a node of its own.
-            Accessible.role: Accessible.StaticText
+            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
             Accessible.name: navigationAllowed && visible ? (gap ? gapTitle.text : (model.timeText.length > 0 ? who + ", " + model.timeText : who)) : ""
             Accessible.description: navigationAllowed && visible ? (gap ? gapDetail : [what, where, model.repeat > 1 ? qsTr("heard %1 times").arg(model.repeat) : ""].filter(function (part) {
                 return part.length > 0;

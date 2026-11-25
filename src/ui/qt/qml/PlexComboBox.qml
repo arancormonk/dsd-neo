@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
+import DsdNeo
 
 ComboBox {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    property alias inReach: control.reachable
     palette.window: Theme.bg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.panel
@@ -21,15 +24,28 @@ ComboBox {
     font.pixelSize: Theme.fontSize(15)
     implicitHeight: Math.max(Theme.minimumTouchSize, contentItem.implicitHeight + topPadding + bottomPadding)
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !navigationAllowed || !visible
-    // A choice given a name of its own ("Profile application scope") is read
-    // by that name alone; the description adds what it is set to. Unnamed, Qt
-    // names it by that value already, and the description stays empty. Which
-    // one it is is settled once: Qt renames an unnamed choice only after its
-    // value has changed, so comparing the two live would flicker.
-    property bool ownAccessibleName: false
-    Accessible.description: ownAccessibleName ? displayText : ""
-    Component.onCompleted: ownAccessibleName = Accessible.name.length > 0 && Accessible.name !== displayText
+    // Issue #902: its gate. Its own open list is the top modal but no cover:
+    // the selector keeps the keyboard, its name and its stop while that list
+    // is on top, and its own key handling chooses in the list (Up, Down,
+    // Home, End, a letter, Return, Space, Escape, Back, Tab), as Qt's combo
+    // does. Anything else over it closes the list (closeOpenList()) and
+    // gates it.
+    readonly property bool reachable: (navigationAllowed || Navigation.topModal === popupLayer) && visible
+    Accessible.ignored: !reachable
+    // A choice given a name of its own (`accessibleName`, "Profile application
+    // scope") is read by that name alone; the description adds what it is set
+    // to. Unnamed, it is named by that value, and the description stays empty.
+    // Both, and whether it is a stop, come from the gate itself
+    // (docs/code_map.md, issue #830): covered or hidden, the choice is nameless.
+    property string accessibleName: ""
+    readonly property bool ownAccessibleName: accessibleName.length > 0
+    Accessible.name: !reachable ? "" : ownAccessibleName ? accessibleName : displayText
+    Accessible.description: !reachable || !ownAccessibleName ? "" : displayText
+    Accessible.focusable: reachable
+    // Issue #902: the native Tab focus too, which keeps a SetFocus action on
+    // the accessible node of a covered choice. Held while it has the focus
+    // (see OutlineButton).
+    focusPolicy: reachable || activeFocus ? Qt.StrongFocus : Qt.NoFocus
     leftPadding: 14
     rightPadding: 38
     contentItem: Text {
@@ -71,9 +87,13 @@ ComboBox {
         // so it goes nameless: one named node per row, one swipe stop.
         Accessible.ignored: true
         Accessible.name: ""
+        onPressedChanged: {
+            if (pressed)
+                control.pressedOption = option;
+        }
         /** The row's choice, as a tap makes it, while its list shows. */
         function choose() {
-            if (option.visible && option.enabled && control.popup.visible)
+            if (option.visible && option.enabled && control.popup.visible && Navigation.allows(option))
                 option.click();
         }
         implicitHeight: Math.max(48, optionLabel.implicitHeight + 24)
@@ -94,13 +114,23 @@ ComboBox {
         // the list shows.
         Item {
             id: rowNode
+            // Issue #902: its reach for the keyboard (PressGate).
+            property alias inReach: rowNode.reachable
             objectName: "plexComboRow"
             anchors.fill: parent
+            // Its own gate (issue #902): a sheet over the open list, or the
+            // list closed, leaves the row nameless, out of the tree and no
+            // stop, and its press chooses nothing (choose()).
+            readonly property bool reachable: Navigation.allows(rowNode) && option.visible && control.popup.visible
+            // Where the keyboard returns once the row is gone (a sheet that
+            // closed the list, dismissed): the selector that owns it.
+            readonly property Item focusReturnTarget: control
             Accessible.role: Accessible.RadioButton
-            Accessible.name: option.text
+            Accessible.name: reachable ? option.text : ""
+            Accessible.ignored: !reachable
             Accessible.checkable: true
             Accessible.checked: control.currentIndex === option.index
-            Accessible.focusable: option.visible
+            Accessible.focusable: reachable
             Accessible.onPressAction: option.choose()
             // A radio button is toggled too: a desktop reader may send that.
             Accessible.onToggleAction: option.choose()
@@ -115,6 +145,48 @@ ComboBox {
     popup.modal: true
     popup.dim: false
     popup.closePolicy: Popup.CloseOnEscape | Popup.CloseOnReleaseOutside
+    // Issue #902: the list is drawn over everything (Qt's overlay), a sheet
+    // opened after it included, and its options take taps there by their own
+    // handling, never choose(). So it fails closed: any real change of
+    // navigation while it is open (Navigation.changes: a modal over it or
+    // removed below it, a layer or root surface coming or going; the same
+    // entries assigned again are none) or the selector turning hidden or
+    // disabled closes it, at once. Its own list going on as a modal is the
+    // one change that keeps it open. Asked from the change signal, not from a
+    // binding on the navigation state: the close takes the list out of the
+    // modals, which inside that binding's update would leave
+    // Navigation.topModal stale (a binding loop).
+    property bool registeringList: false
+    // Issue #902: an option still pressed as its list closes (Space down on
+    // the row a screen reader focused, a sheet coming up) is let go of,
+    // unacted, so the list opened again holds no pressed option and a lone
+    // release there chooses nothing. Only the option last pressed is kept.
+    property Item pressedOption: null
+    function letGoOfOption() {
+        var option = pressedOption;
+        pressedOption = null;
+        if (option && option.pressed)
+            PressGate.cancelPress(option);
+    }
+    function closeOpenList() {
+        if (Navigation.modals.indexOf(popupLayer) >= 0)
+            control.popup.close();
+    }
+    onVisibleChanged: {
+        if (!visible)
+            closeOpenList();
+    }
+    onEnabledChanged: {
+        if (!enabled)
+            closeOpenList();
+    }
+    Connections {
+        target: Navigation
+        function onChangesChanged() {
+            if (!control.registeringList)
+                control.closeOpenList();
+        }
+    }
     Item {
         id: popupLayer
         visible: false
@@ -143,10 +215,13 @@ ComboBox {
         target: control.popup
         function onAboutToShow() {
             Navigation.commitComposing(false);
+            control.registeringList = true;
             Navigation.addModal(popupLayer);
+            control.registeringList = false;
         }
         function onAboutToHide() {
             Navigation.removeModal(popupLayer);
+            control.letGoOfOption();
         }
     }
     FocusFrame {}

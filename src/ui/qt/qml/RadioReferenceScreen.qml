@@ -526,6 +526,8 @@ Item {
 
                     Item {
                         id: sheetRow
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: Navigation.allows(sheetRow) && sheetRow.visible
                         required property int index
                         objectName: "browseRow" + index
 
@@ -533,16 +535,17 @@ Item {
 
                         width: listColumn.width
                         height: Math.max(Theme.minimumTouchSize, placeLabel.implicitHeight + 24)
-                        activeFocusOnTab: browseSheet.rowsEnabled || activeFocus
+                        activeFocusOnTab: (navigationAllowed && visible && browseSheet.rowsEnabled) || activeFocus
                         Accessible.role: Accessible.RadioButton
-                        Accessible.name: modelData.name
+                        Accessible.name: !navigationAllowed || !visible ? "" : modelData.name
+                        Accessible.focusable: navigationAllowed && visible
                         readonly property bool navigationAllowed: Navigation.allows(sheetRow)
-                        Accessible.ignored: !navigationAllowed
+                        Accessible.ignored: !navigationAllowed || !visible
                         Accessible.checkable: true
                         Accessible.checked: modelData[browseSheet.idKey] === browseSheet.selectedId
                         Accessible.onPressAction: choose()
                         function choose() {
-                            if (browseSheet.rowsEnabled && Navigation.allows(sheetRow))
+                            if (browseSheet.rowsEnabled && Navigation.allows(sheetRow) && sheetRow.visible)
                                 browseSheet.chosen(modelData);
                         }
                         Keys.onPressed: function (event) {
@@ -970,14 +973,17 @@ Item {
             Item {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 id: backToResults
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(backToResults) && backToResults.visible
                 objectName: "radioReferenceBackToResults"
                 Accessible.role: Accessible.Button
-                Accessible.name: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
+                Accessible.name: !navigationAllowed || !visible ? "" : radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(backToResults)
-                Accessible.ignored: !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: goBack()
                 // Held while it has the focus (see OutlineButton).
-                activeFocusOnTab: (Navigation.allows(backToResults) && !radioReference.busy) || activeFocus
+                activeFocusOnTab: (Navigation.allows(backToResults) && visible && !radioReference.busy) || activeFocus
                 Keys.onPressed: function (event) {
                     if (Navigation.activationPress(event, Window.activeFocusItem))
                         goBack();
@@ -987,7 +993,7 @@ Item {
                 }
                 FocusFrame {}
                 function goBack() {
-                    if (radioReference.busy || !Navigation.allows(backToResults))
+                    if (radioReference.busy || !Navigation.allows(backToResults) || !backToResults.visible)
                         return;
                     Navigation.commitComposing(false);
                     screen.leaveSystem(function () {
@@ -1207,6 +1213,8 @@ Item {
 
                         Item {
                             id: siteRow
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: Navigation.allows(siteRow) && siteRow.visible
 
                             required property var modelData
 
@@ -1214,18 +1222,19 @@ Item {
 
                             width: sitesColumn.width
                             height: Math.max(Theme.minimumTouchSize, siteLabels.implicitHeight + 24)
-                            activeFocusOnTab: !radioReference.busy || activeFocus
+                            activeFocusOnTab: (navigationAllowed && visible && !radioReference.busy) || activeFocus
                             Accessible.role: radioReference.conventional || screen.eachSite ? Accessible.CheckBox : Accessible.RadioButton
-                            Accessible.name: modelData.site.descr
+                            Accessible.name: !navigationAllowed || !visible ? "" : modelData.site.descr
+                            Accessible.focusable: navigationAllowed && visible
                             // The site's lines as shown (issue #782): its number and its frequencies.
-                            Accessible.description: Util.shownText(siteLabels)
+                            Accessible.description: !navigationAllowed || !visible ? "" : Util.shownText(siteLabels)
                             readonly property bool navigationAllowed: Navigation.allows(siteRow)
-                            Accessible.ignored: !navigationAllowed
+                            Accessible.ignored: !navigationAllowed || !visible
                             Accessible.checkable: true
                             Accessible.checked: chosen
                             Accessible.onPressAction: choose()
                             function choose() {
-                                if (!radioReference.busy && Navigation.allows(siteRow))
+                                if (!radioReference.busy && Navigation.allows(siteRow) && siteRow.visible)
                                     screen.toggleSite(modelData.index);
                             }
                             Keys.onPressed: function (event) {

@@ -47,8 +47,12 @@ Item {
             LogoMark {}
 
             Text {
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                id: heroTitle
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: heroTitle.Accessible.focusable
+                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !navigationAllowed || !visible ? "" : text
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(screen)
                 Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
@@ -62,8 +66,12 @@ Item {
             }
 
             Text {
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                id: heroLead
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: heroLead.Accessible.focusable
+                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !navigationAllowed || !visible ? "" : text
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(screen)
                 Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
@@ -98,8 +106,12 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
 
                             Text {
-                                Accessible.role: Accessible.StaticText
-                                Accessible.name: text
+                                id: stepOneTitle
+                                // Issue #902: its reach for the keyboard (PressGate).
+                                readonly property bool inReach: stepOneTitle.Accessible.focusable
+                                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                                Accessible.name: !navigationAllowed || !visible ? "" : text
+                                Accessible.focusable: navigationAllowed && visible
                                 readonly property bool navigationAllowed: Navigation.allows(screen)
                                 Accessible.ignored: !navigationAllowed || !visible
                                 anchors.centerIn: parent
@@ -111,8 +123,12 @@ Item {
                         }
 
                         Text {
-                            Accessible.role: Accessible.StaticText
-                            Accessible.name: text
+                            id: stepOneBody
+                            // Issue #902: its reach for the keyboard (PressGate).
+                            readonly property bool inReach: stepOneBody.Accessible.focusable
+                            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                            Accessible.name: !navigationAllowed || !visible ? "" : text
+                            Accessible.focusable: navigationAllowed && visible
                             readonly property bool navigationAllowed: Navigation.allows(screen)
                             Accessible.ignored: !navigationAllowed || !visible
                             width: parent.width - 40
@@ -146,8 +162,12 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 12
                     Text {
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: text
+                        id: stepTwoTitle
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: stepTwoTitle.Accessible.focusable
+                        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                        Accessible.name: !navigationAllowed || !visible ? "" : text
+                        Accessible.focusable: navigationAllowed && visible
                         readonly property bool navigationAllowed: Navigation.allows(screen)
                         Accessible.ignored: !navigationAllowed || !visible
                         objectName: "dongleStatusTitle"
@@ -160,8 +180,12 @@ Item {
                         color: Theme.textPrimary
                     }
                     Text {
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: text
+                        id: stepTwoBody
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: stepTwoBody.Accessible.focusable
+                        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                        Accessible.name: !navigationAllowed || !visible ? "" : text
+                        Accessible.focusable: navigationAllowed && visible
                         readonly property bool navigationAllowed: Navigation.allows(screen)
                         Accessible.ignored: !navigationAllowed || !visible
                         objectName: "dongleStatusText"
@@ -186,8 +210,12 @@ Item {
             }
 
             Text {
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                id: closingNote
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: closingNote.Accessible.focusable
+                Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !navigationAllowed || !visible ? "" : text
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(screen)
                 Accessible.ignored: !navigationAllowed || !visible
                 width: parent.width
