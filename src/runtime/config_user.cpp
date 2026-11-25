@@ -581,9 +581,12 @@ snapshot_rtl_device_field(const dsd_opts* opts, const char* field, dsdneoUserCon
     } else if (kind == DSD_RTL_DEV_EMPTY && dsd_rtl_serial_is_valid(opts->rtl_dev_serial)) {
         DSD_SNPRINTF(serial, sizeof serial, "%s", opts->rtl_dev_serial);
     }
-    cfg->rtl_device = index;
+    /* A dongle named by serial names no index: the one it opened at is where the serial resolved this time, not an
+       index the config chose, so none is saved beside it. */
+    const int by_index = serial[0] == '\0' && !cfg->rtl_serial_invalid;
+    cfg->rtl_device = by_index ? index : 0;
     DSD_SNPRINTF(cfg->rtl_serial, sizeof cfg->rtl_serial, "%s", serial);
-    cfg->rtl_device_is_set = 1;
+    cfg->rtl_device_is_set = by_index;
     cfg->rtl_serial_is_set = 1;
 }
 
@@ -995,6 +998,12 @@ static const char kRtlSerialRefused[] = ":";
    character, spaces, '#', ';' and '=' included), or its index. */
 static void
 render_input_rtl_selector(FILE* out, const dsdneoUserConfig* cfg) {
+    /* The index beside a serial is kept when the config names one (a retained [input] that had both): a patch clearing
+       the serial after a reload falls back on it, as before the save. A serial-only config gets none. */
+    const int names_device = cfg->rtl_device_is_set || cfg->rtl_device != 0;
+    if ((cfg->rtl_serial_invalid || cfg->rtl_serial[0]) && names_device) {
+        DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    }
     if (cfg->rtl_serial_invalid) {
         LOG_WARN(
             "WARNING: rtl_serial was refused when the config was loaded; it is saved as rtl_serial = \"%s\", which "

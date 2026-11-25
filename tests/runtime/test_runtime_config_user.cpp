@@ -2105,8 +2105,8 @@ test_rtl_serial_loads_renders_and_builds_the_spec(void) {
             return 1;
         }
         const int names_device = strstr(rendered, "rtl_device = ") != NULL;
-        if (strcmp(again.rtl_serial, k.serial) != 0 || again.rtl_serial_invalid
-            || (k.serial[0] == '\0' && again.rtl_device != k.device) || names_device != (k.serial[0] == '\0')) {
+        if (strcmp(again.rtl_serial, k.serial) != 0 || again.rtl_serial_invalid || again.rtl_device != k.device
+            || names_device != (k.serial[0] == '\0' || k.device != 0)) {
             DSD_FPRINTF(stderr, "FAIL: %s rendered and reloaded as serial '%s' device %d:\n%s\n", k.keys,
                         again.rtl_serial, again.rtl_device, rendered);
             rc |= 1;
@@ -2193,14 +2193,15 @@ test_rtl_serial_snapshot_names_the_running_dongle(void) {
         int want_device;
         int want_invalid;
     } k_cases[] = {
-        {"rtl:serial=00000001:851.375M", 4, "", "00000001", 4, 0},
+        /* A serial names no index: the one it opened at is not saved beside it. */
+        {"rtl:serial=00000001:851.375M", 4, "", "00000001", 0, 0},
         {"rtl:serial=1090:851.375M", 0, "", "1090", 0, 0},
         {"rtl:A1B2:851.375M", 0, "", "A1B2", 0, 0},
         {"rtl:2:851.375M", 0, "OLD", "", 2, 0},
-        {"rtl", 3, "SESSION", "SESSION", 3, 0},
+        {"rtl", 3, "SESSION", "SESSION", 0, 0},
         {"rtl::851.375M", 5, "", "", 5, 0},
-        {"rtl::851.375M", 5, "SESSION SN", "SESSION SN", 5, 0},
-        {"rtl:serial=:851.375M", 1, "", "", 1, 1},
+        {"rtl::851.375M", 5, "SESSION SN", "SESSION SN", 0, 0},
+        {"rtl:serial=:851.375M", 1, "", "", 0, 1},
     };
 
     for (const auto& k : k_cases) {
@@ -2287,6 +2288,54 @@ test_retained_input_merges_the_rtl_selector(void) {
             rc |= 1;
         }
         n++;
+    }
+    dsd_user_config_forget_retained_input(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
+ * A retained [input] naming both an index and a serial (rtl_device = 2, rtl_serial = A) keeps the index through a save:
+ * the render writes it beside the serial, so after the reload a patch clearing the serial falls back on index 2, as it
+ * does before the save. The render dropped it, and the same patch then selected index 0. A serial-only config renders
+ * no index.
+ */
+static int
+test_retained_index_beside_a_serial_survives_a_save(void) {
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
+    auto loaded = std::unique_ptr<dsdneoUserConfig>(new dsdneoUserConfig{});
+    auto reloaded = std::unique_ptr<dsdneoUserConfig>(new dsdneoUserConfig{});
+    auto patch = std::unique_ptr<dsdneoUserConfig>(new dsdneoUserConfig{});
+    int rc = 0;
+    if (load_rtl_ini_text("[input]\nsource = \"rtl\"\nrtl_freq = \"851.375M\"\nrtl_device = 2\nrtl_serial = \"A\"\n",
+                          loaded.get())
+        != 0) {
+        return 1;
+    }
+    char rendered[16384];
+    if (render_config_to_buffer(loaded.get(), rendered, sizeof rendered) != 0
+        || load_rtl_ini_text(rendered, reloaded.get()) != 0) {
+        return 1;
+    }
+    rc |= dsd_user_config_retain_input(&state, reloaded.get()) == 0 ? 0 : 1;
+    dsd_user_config_init(patch.get());
+    patch->has_input = 1;
+    patch->rtl_serial_is_set = 1; /* rtl_serial = "" */
+    rc |= dsd_user_config_merge_retained_input(&state, patch.get()) == 0 ? 0 : 1;
+    const dsdneoUserConfig* kept = retained_of(&state);
+    if (kept->rtl_serial[0] != '\0' || kept->rtl_device != 2) {
+        DSD_FPRINTF(stderr, "FAIL: render, reload, clear the serial: serial '%s' device %d; rendered:\n%s\n",
+                    kept->rtl_serial, kept->rtl_device, rendered);
+        rc |= 1;
+    }
+    if (load_rtl_ini_text("[input]\nsource = \"rtl\"\nrtl_freq = \"851.375M\"\nrtl_serial = \"A\"\n", loaded.get()) != 0
+        || render_config_to_buffer(loaded.get(), rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "rtl_device") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: a serial-only config rendered an index:\n%s\n", rendered);
+        rc |= 1;
     }
     dsd_user_config_forget_retained_input(&state);
     dsd_state_ext_free_all(&state);
@@ -7166,6 +7215,7 @@ main(void) {
     rc |= test_rtl_serial_invalid_refuses_the_input();
     rc |= test_rtl_serial_snapshot_names_the_running_dongle();
     rc |= test_retained_input_merges_the_rtl_selector();
+    rc |= test_retained_index_beside_a_serial_survives_a_save();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_iq_stream_input_load_apply_snapshot();
     rc |= test_validate_iq_stream_input();
