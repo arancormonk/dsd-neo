@@ -209,6 +209,22 @@ test_serial_found_selects_its_index(void) {
     return rc;
 }
 
+/* A serial a dongle reports is shown escaped in the selected-device notice, as in the listing: never a line of its
+   own. */
+static int
+test_selected_notice_escapes_the_serial(void) {
+    set_devices(1, "A\nB\x1b[2J", NULL, NULL);
+    run_result r;
+    if (run_local_rtl_setup("rtl:0", &r) != 0) {
+        return 1;
+    }
+    int rc = expect_true("escaped notice: accepted", r.rc == 0 && r.dev_index == 0);
+    rc |= expect_log("escaped notice", "Selected Device #0 with Serial Number: A\\x0AB\\x1B[2J \n");
+    rc |= expect_log("escaped listing", "0:  Realtek, RTL2838UHIDIR, SN: A\\x0AB\\x1B[2J\n");
+    rc |= expect_true("escaped notice: no raw bytes", strstr(g_log, "A\nB") == NULL && strchr(g_log, 0x1b) == NULL);
+    return rc;
+}
+
 static int
 test_unreadable_after_readable_shows_no_stale_strings(void) {
     set_devices(2, "00000001", NULL, NULL);
@@ -352,6 +368,7 @@ main(void) {
 
     rc |= test_serial_found_selects_its_index();
     rc |= test_unreadable_after_readable_shows_no_stale_strings();
+    rc |= test_selected_notice_escapes_the_serial();
     rc |= test_serial_not_found_refuses();
     rc |= test_serial_duplicate_refuses();
     rc |= test_out_of_range_index();

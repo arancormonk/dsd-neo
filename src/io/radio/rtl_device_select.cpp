@@ -18,6 +18,8 @@
 #include <climits>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "rtl_select_driver.h"
@@ -215,11 +217,10 @@ constexpr size_t kShownSize = 4U * RTL_DEVICE_STRING_SIZE;
    device reports can never move the cursor, colour the terminal or forge a line. The string itself is not changed: it
    is what a serial is matched against. */
 void
-shown(const char* text, int quoted, char* out) {
+shown_into(const char* text, int quoted, char* out, size_t out_size) {
     static const char kHex[] = "0123456789ABCDEF";
     size_t n = 0;
-    for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c != '\0' && n + 5U <= kShownSize;
-         c++) {
+    for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c != '\0' && n + 5U <= out_size; c++) {
         if (*c == '\\' || (quoted && *c == '"')) {
             out[n++] = '\\';
             out[n++] = (char)*c;
@@ -235,7 +236,23 @@ shown(const char* text, int quoted, char* out) {
     out[n] = '\0';
 }
 
+void
+shown(const char* text, int quoted, char* out) {
+    shown_into(text, quoted, out, kShownSize);
+}
+
 } // namespace
+
+extern "C" void
+rtl_device_string_shown(const char* text, char* out, size_t out_size) {
+    if (out == nullptr || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    if (text != nullptr && out_size >= 5U) {
+        shown_into(text, 0, out, out_size);
+    }
+}
 
 extern "C" void
 rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_t out_size) {
@@ -300,13 +317,13 @@ rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out
     const char* note = "";
     char field[RTL_DEVICE_STRING_SIZE + 16];
     field[0] = '\0';
-    if (shared) {
+    if (shared > 0) {
         note = "  [duplicate serial: cannot be chosen by serial]";
     } else if (!dsd_rtl_serial_is_valid(entry->serial)) {
         note = "  [this serial cannot be given in -i rtl:]";
     } else if (!safe) {
         note = "  [spaces or shell characters: quote the whole -i argument]";
-    } else {
+    } else if (shared == 0) {
         char dev[RTL_DEVICE_STRING_SIZE + 8];
         spec_field(entry->serial, dev, sizeof dev);
         DSD_SNPRINTF(field, sizeof field, "  (-i rtl:%s)", dev);
@@ -319,6 +336,86 @@ rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out
     shown(entry->serial, !safe, serial);
     DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s, %s, SN: %s%s%s%s%s", entry->index, manufacturer, product, quote,
                  serial, quote, note, field);
+}
+
+namespace {
+
+/* How many times --rtl-list takes the listing again while it finds more devices than it had room for. */
+constexpr int kListAttempts = 3;
+
+/* Readable devices in @p list that carry @p e's serial. */
+int
+serial_count(const rtl_device_entry* list, int count, const rtl_device_entry* e) {
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        n += (list[i].readable && strcmp(list[i].serial, e->serial) == 0) ? 1 : 0;
+    }
+    return n;
+}
+
+/* The --rtl-list lines of @p list to @p out, and its notes to @p err; @p complete 0 when devices beyond it exist. */
+void
+print_listing(const rtl_device_entry* list, int count, int total, int complete, FILE* out, FILE* err) {
+    int duplicates = 0;
+    int unreadable = 0;
+    char line[RTL_DEVICE_LINE_SIZE];
+    for (int i = 0; i < count; i++) {
+        const rtl_device_entry* e = &list[i];
+        const int shared = !complete ? -1 : (e->readable && serial_count(list, count, e) > 1) ? 1 : 0;
+        duplicates |= shared > 0;
+        unreadable += e->readable ? 0 : 1;
+        rtl_device_list_line(e, shared, line, sizeof line);
+        DSD_FPRINTF(out, "%s\n", line);
+    }
+    if (!complete) {
+        DSD_FPRINTF(err,
+                    "The devices changed while they were listed (%d listed, %d now): this list is incomplete, so no -i "
+                    "argument is offered. Run dsd-neo --rtl-list again.\n",
+                    count, total);
+    }
+    if (duplicates) {
+        DSD_FPRINTF(err, "Dongles that share a serial cannot be told apart: give each its own serial with rtl_eeprom "
+                         "-s <serial> (with only that dongle plugged in).\n");
+    }
+    if (unreadable > 0) {
+        DSD_FPRINTF(err, "%d device(s) could not be read (in use by another program, or no permission).\n", unreadable);
+    }
+}
+
+} // namespace
+
+extern "C" int
+rtl_device_list_cli(FILE* out, FILE* err) {
+    int total = 0;
+    if (rtl_device_list(nullptr, 0, &total) < 0) {
+        DSD_FPRINTF(err, "RTL-SDR support unavailable or enumeration failed.\n");
+        return 1;
+    }
+    for (int attempt = 1;; attempt++) {
+        if (total == 0) {
+            DSD_FPRINTF(err, "No RTL-SDR devices found.\n");
+            return 0;
+        }
+        auto* list = static_cast<rtl_device_entry*>(calloc((size_t)total, sizeof(rtl_device_entry)));
+        if (list == nullptr) {
+            DSD_FPRINTF(err, "Out of memory listing the RTL-SDR devices.\n");
+            return 1;
+        }
+        int now = 0;
+        const int count = rtl_device_list(list, total, &now);
+        /* Room for every device found this time (fewer than counted is a whole list too), or no more tries. */
+        if (count >= 0 && (now <= total || attempt == kListAttempts)) {
+            print_listing(list, count, now, now <= total, out, err);
+            free(list);
+            return 0;
+        }
+        free(list);
+        if (count < 0) {
+            DSD_FPRINTF(err, "RTL-SDR support unavailable or enumeration failed.\n");
+            return 1;
+        }
+        total = now;
+    }
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS

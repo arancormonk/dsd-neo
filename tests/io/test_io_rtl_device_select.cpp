@@ -29,9 +29,11 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -72,6 +74,8 @@ struct fake_world {
     int handle_calls = 0;
     /* Called before the n-th (from 0) handle read: a test moves the devices there. */
     void (*before_handle_read)(int n) = nullptr;
+    /* Called before the n-th (from 0) device count: a test plugs devices in there. */
+    void (*before_count)(int n) = nullptr;
 };
 
 fake_world g_world;
@@ -88,6 +92,9 @@ put(char* dst, const char* src) {
 
 int
 fake_count(uint32_t* count) {
+    if (g_world.before_count != nullptr) {
+        g_world.before_count(g_world.count_calls);
+    }
     g_world.count_calls++;
     *count = (uint32_t)g_world.count;
     return g_world.count_rc;
@@ -207,6 +214,27 @@ rtl_device_find_result
 find(const char* serial, rtl_device_find_report* rep) {
     DSD_MEMSET(rep, 0x5a, sizeof *rep);
     return rtl_device_find_serial(serial, rep);
+}
+
+/* ---- Log tap ---- */
+
+std::mutex g_log_lock;
+std::string g_log;
+
+void
+capture_log(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    const std::lock_guard<std::mutex> guard(g_log_lock);
+    g_log += (text != nullptr) ? text : "";
+}
+
+std::string
+log_take(void) {
+    const std::lock_guard<std::mutex> guard(g_log_lock);
+    std::string out;
+    out.swap(g_log);
+    return out;
 }
 
 /* ---- Lookup and listing ---- */
@@ -407,6 +435,107 @@ test_list_lines(void) {
     assert(strstr(line, "[this serial cannot be given in -i rtl:]") != nullptr);
 }
 
+/* ---- dsd-neo --rtl-list ---- */
+
+/* What one rtl_device_list_cli() wrote: its result, its lines and its notes. */
+struct cli_run {
+    int rc = -1;
+    std::string out;
+    std::string err;
+};
+
+std::string
+read_back(FILE* f) {
+    std::string text;
+    fflush(f);
+    (void)fseek(f, 0, SEEK_SET);
+    char buf[4096];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+        text.append(buf, n);
+    }
+    fclose(f);
+    return text;
+}
+
+cli_run
+run_cli(void) {
+    FILE* out = tmpfile();
+    FILE* err = tmpfile();
+    assert(out != nullptr && err != nullptr);
+    cli_run run;
+    run.rc = rtl_device_list_cli(out, err);
+    run.out = read_back(out);
+    run.err = read_back(err);
+    return run;
+}
+
+/* A dongle plugged in at every count after the first (the listing's own count included): a list that grows. */
+void
+plug_one_more(int n) {
+    if (n > 0 && g_world.count < kMaxDevs) {
+        g_world.devs[g_world.count] = fake_dev{};
+        g_world.devs[g_world.count].serial = "00000001";
+        g_world.count++;
+    }
+}
+
+/* Plugged in once, between the count and the listing. */
+void
+plug_one_after_count(int n) {
+    if (n == 1) {
+        plug_one_more(1);
+    }
+}
+
+void
+unplug_one_after_count(int n) {
+    if (n == 1 && g_world.count > 0) {
+        g_world.count--;
+    }
+}
+
+void
+test_list_cli_takes_the_growth(void) {
+    /* Two dongles counted, a duplicate of the first plugged in before the listing: it is listed again, whole, and the
+       duplicate is seen (no -i argument offered for either twin). */
+    set_devs({"00000001", "00000002"});
+    g_world.before_count = plug_one_after_count;
+    cli_run run = run_cli();
+    assert(run.rc == 0);
+    assert(run.out.find("RTL-SDR 2: ") != std::string::npos);
+    assert(run.out.find("(-i rtl:00000001)") == std::string::npos);
+    assert(run.out.find("SN: 00000001  [duplicate serial") != std::string::npos);
+    assert(run.out.find("SN: 00000002  (-i rtl:00000002)") != std::string::npos);
+    assert(run.err.find("incomplete") == std::string::npos);
+
+    /* Still growing after every retry: the lines are printed with no -i argument and no duplicate mark at all, and
+       the list says it is incomplete. */
+    set_devs({"00000002", "00000003"});
+    g_world.before_count = plug_one_more;
+    run = run_cli();
+    assert(run.rc == 0);
+    assert(run.out.find("(-i rtl:") == std::string::npos && run.out.find("[duplicate") == std::string::npos);
+    assert(run.out.find("RTL-SDR 0: Realtek, RTL2838UHIDIR, SN: 00000002\n") != std::string::npos);
+    assert(run.err.find("this list is incomplete") != std::string::npos);
+
+    /* Fewer than counted (one unplugged between the count and the listing) is a whole list. */
+    set_devs({"00000001", "00000002", "00000003"});
+    g_world.before_count = unplug_one_after_count;
+    run = run_cli();
+    assert(run.rc == 0 && run.out.find("SN: 00000002  (-i rtl:00000002)") != std::string::npos);
+    assert(run.out.find("RTL-SDR 2:") == std::string::npos && run.err.find("incomplete") == std::string::npos);
+
+    set_devs({});
+    run = run_cli();
+    assert(run.rc == 0 && run.out.empty() && run.err.find("No RTL-SDR devices found.") != std::string::npos);
+    set_devs({"00000001"});
+    g_world.count_rc = -1;
+    run = run_cli();
+    assert(run.rc == 1 && run.err.find("enumeration failed") != std::string::npos);
+    world_reset();
+}
+
 /* ---- Opening by serial ---- */
 
 const int k_gains[] = {-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420};
@@ -503,10 +632,12 @@ test_open_mismatch_then_retry(void) {
 void
 test_open_mismatch_twice_fails(void) {
     set_devs({"00000001", "00000002"});
-    g_world.handle_serials[0] = "00000001";
+    /* What the handle reports reaches the log escaped, never as a line of its own or a terminal sequence. */
+    g_world.handle_serials[0] = "0000\n0001\x1b[2J";
     g_world.handle_serial_count = 1;
     rig r;
     dsd_input_failure_clear();
+    (void)log_take();
     int index = 7;
     rtl_device* dev = rtl_device_create_selected(0, "00000002", r.ring.get(), &index);
     assert(dev == nullptr && index == 7);
@@ -515,6 +646,9 @@ test_open_mismatch_twice_fails(void) {
     assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == 2 && r.dongle->calls[RTL_TEST_DONGLE_CLOSE] == 2);
     assert(r.dongle->open_handles == 0);
     assert(only_opens_and_closes(*r.dongle));
+    const std::string log = log_take();
+    assert(log.find("reports serial \"0000\\x0A0001\\x1B[2J\", not \"00000002\"") != std::string::npos);
+    assert(log.find("0000\n0001") == std::string::npos && log.find('\x1b') == std::string::npos);
     /* A handle whose strings cannot be read is no match either. */
     g_world.handle_serial_count = 0;
     g_world.handle_calls = 0;
@@ -793,6 +927,29 @@ test_stream_descriptor_index_is_zero(void) {
     assert(dsd_test_rmdir(dir) == 0);
 }
 
+/* The serial a descriptor's dongle reports reaches the refusal's log line escaped. */
+void
+test_preopened_refusal_log_escaped(void) {
+    rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
+    rtl_device_test_set_fd_identity_hook(fd_identity);
+    g_fd_serial = "A\nB";
+    g_fd_identity_rc = 0;
+    set_devs({});
+    {
+        rig r;
+        rtl_device_set_preopened_fd(9);
+        (void)log_take();
+        assert(rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr) == nullptr);
+        const std::string log = log_take();
+        assert(log.find("has serial \"A\\x0AB\", not the requested \"00000002\"") != std::string::npos);
+        assert(log.find("A\nB") == std::string::npos);
+    }
+    rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_fd_identity_hook(nullptr);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
+    dsd_input_failure_clear();
+}
+
 /* A descriptor whose dongle owes a USB reset (#782): with a serial, the reset is paid only on the dongle with that
    serial, read through the descriptor first. Another dongle, or one whose serial cannot be read that way, is refused
    untouched and keeps its obligation. */
@@ -884,6 +1041,7 @@ test_capture_names_the_dongle(void) {
 
 int
 main(void) {
+    dsd_neo_log_set_tap(capture_log, nullptr);
     rtl_device_select_set_driver_ops(&k_ops);
     rtl_usb_identity_set_driver_ops(&k_no_usb);
 
@@ -895,6 +1053,7 @@ main(void) {
     test_duplicate_beyond_capacity();
     test_no_devices_and_failed_enumeration();
     test_list_lines();
+    test_list_cli_takes_the_growth();
     test_open_verified_serial();
     test_open_mismatch_then_retry();
     test_open_mismatch_twice_fails();
@@ -903,6 +1062,7 @@ main(void) {
     test_preopened_serial_checked_on_its_dongle();
     test_preopened_owed_reset_paid_only_on_the_requested_dongle();
     test_preopened_by_index_records_its_serial();
+    test_preopened_refusal_log_escaped();
     test_capture_names_the_dongle();
     test_stream_looks_the_serial_up_at_every_start();
     test_stream_selects_from_its_spec();

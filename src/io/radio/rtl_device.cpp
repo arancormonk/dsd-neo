@@ -9560,8 +9560,10 @@ rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, co
     g_last_usb_open_error.store(RTL_DEVICE_ESERIAL, std::memory_order_release);
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, RTL_DEVICE_ESERIAL);
     if (got[0] != '\0') {
+        char shown[RTL_DEVICE_SHOWN_SIZE];
+        rtl_device_string_shown(got, shown, sizeof shown);
         LOG_ERROR("RTL-SDR: the USB device handed over (descriptor %d) has serial \"%s\", not the requested \"%s\".\n",
-                  fd, got, serial);
+                  fd, shown, serial);
     } else {
         LOG_ERROR("RTL-SDR: could not read the serial of the USB device handed over (descriptor %d); the requested "
                   "serial is \"%s\".\n",
@@ -9737,8 +9739,10 @@ rtl_device_open_by_serial(struct rtl_device* dev, const char* serial, int* out_i
             *out_index = rep.index;
             return 0;
         }
-        LOG_WARN("RTL-SDR: device %d reports serial \"%s\", not \"%s\"; looking the serial up again.\n", rep.index, got,
-                 serial);
+        char shown[RTL_DEVICE_SHOWN_SIZE];
+        rtl_device_string_shown(got, shown, sizeof shown);
+        LOG_WARN("RTL-SDR: device %d reports serial \"%s\", not \"%s\"; looking the serial up again.\n", rep.index,
+                 shown, serial);
         (void)rtl_usb_ctl_close(dev->dev);
         dev->dev = nullptr;
     }

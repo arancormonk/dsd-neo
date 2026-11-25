@@ -21,6 +21,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_SELECT_H_
 
 #include <stddef.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -94,17 +95,43 @@ rtl_device_find_result rtl_device_find_serial(const char* serial, struct rtl_dev
  */
 void rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_t out_size);
 
+/** Room for one USB string as rtl_device_string_shown() shows it, every byte escaped. */
+#define RTL_DEVICE_SHOWN_SIZE (4 * RTL_DEVICE_STRING_SIZE)
+
+/**
+ * @brief A string a device reported (manufacturer, product or serial), shown for a log line or the terminal: printable
+ *        ASCII as it is, a backslash doubled, any other byte (a newline, ESC, a control or non-ASCII byte) as `\xNN`,
+ *        as the listings show it. @p out (RTL_DEVICE_SHOWN_SIZE bytes holds any string) is cut short rather than
+ *        overrun. The string itself is what a serial is matched against; only its display is escaped.
+ */
+void rtl_device_string_shown(const char* text, char* out, size_t out_size);
+
 /**
  * @brief One `dsd-neo --rtl-list` line for @p entry, without its newline.
  *
  * `RTL-SDR N: Manufacturer, Product, SN: serial` and, for a readable device whose serial is unique among the readable
- * ones (@p shared 0) and made only of letters, digits, `.`, `_` and `-`, the `-i` argument that names it
+ * ones (@p shared 0; 1 when another carries it, -1 when that is not known: no argument and no mark) and made only of
+ * letters, digits, `.`, `_` and `-`, the `-i` argument that names it
  * (`(-i rtl:00000001)`, `(-i rtl:serial=1090)` for one that reads as an index), safe to paste into any shell. A serial
  * with other characters is shown as a quoted literal with a note to quote the whole `-i` argument, and no argument to
  * paste; a shared serial, or one a spec cannot hold, is marked so. The strings are escaped for display as in
  * rtl_device_entry_describe() (a quoted serial's '"' as `\"` too); @p out holds RTL_DEVICE_LINE_SIZE bytes.
  */
 void rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out, size_t out_size);
+
+/**
+ * @brief `dsd-neo --rtl-list`: every RTL-SDR librtlsdr enumerates, one rtl_device_list_line() each to @p out, and the
+ *        notes (duplicate serials, unreadable devices, nothing found) to @p err.
+ *
+ * Dongles plugged in between the count and the listing are listed too: the listing is taken again, a bounded number of
+ * times, while it finds more devices than it had room for. A list still growing after that is printed with no
+ * `-i` argument and no duplicate mark on any line (whether a serial is unique is not known) and a note that it is
+ * incomplete.
+ *
+ * @return 0 (an empty list too), or 1 without RTL-SDR support, when the enumeration failed or memory ran out, as
+ *         `--airspy-list`.
+ */
+int rtl_device_list_cli(FILE* out, FILE* err);
 
 #ifdef __cplusplus
 }
