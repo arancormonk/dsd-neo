@@ -389,11 +389,12 @@ switch_open(dsd_opts* opts, const dsd_audio_input_request* req, const char* path
 }
 
 /* 1 when a file input named @p path would read as another kind of input once it is the input's name
-   (dsd_opts::audio_in_dev): a radio spec (`rtl`, `airspy:...`) or a Pulse, TCP or UDP one. A saved config, the radio
-   rows and a restart read the name that way, so a file named `airspy` would come back as an Airspy. */
+   (dsd_opts::audio_in_dev): stdin (a leading '-'), a radio spec (`rtl`, `airspy:...`) or a Pulse, TCP or UDP one. A
+   saved config, the radio rows and a restart read the name that way, so a file named `airspy` would come back as an
+   Airspy. */
 static int
 switch_path_reads_as_input_spec(const char* path) {
-    return dsd_opts_audio_in_dev_is_radio_spec(path) || dsd_opts_audio_in_dev_is_pulse_spec(path)
+    return path[0] == '-' || dsd_opts_audio_in_dev_is_radio_spec(path) || dsd_opts_audio_in_dev_is_pulse_spec(path)
            || dsd_opts_audio_in_dev_is_tcp_spec(path) || dsd_opts_audio_in_dev_is_udp_spec(path)
            || dsd_opts_audio_in_dev_is_m17udp_spec(path);
 }
@@ -411,7 +412,9 @@ switch_copy_request_strings(const dsd_audio_input_request* req, char* path, size
             LOG_ERROR("Input switch: the path is longer than %zu characters\n", path_size - 1U);
             return -1;
         }
-        if (req->kind != DSD_AUDIO_INPUT_PULSE && switch_path_reads_as_input_spec(req->path)) {
+        const int file_kind = req->kind == DSD_AUDIO_INPUT_PCM_FILE || req->kind == DSD_AUDIO_INPUT_SYMBOL_FLT
+                              || req->kind == DSD_AUDIO_INPUT_SYMBOL_BIN;
+        if (file_kind && switch_path_reads_as_input_spec(req->path)) {
             LOG_ERROR("Input switch: the file name \"%s\" reads as an input type; give it as ./%s\n", req->path,
                       req->path);
             return -1;

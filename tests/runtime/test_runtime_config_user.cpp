@@ -1761,6 +1761,23 @@ test_replay_snapshot_saves_the_loaded_input(void) {
         DSD_FPRINTF(stderr, "FAIL: a live session saved source %d, want its own pulse input\n", snap.input_source);
         rc |= 1;
     }
+    /* A file whose name only starts with "pulse" is a file, as startup opens it: it was saved as a Pulse source. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse.wav");
+    DSD_MEMSET(&snap, 0, sizeof snap);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.input_source != DSDCFG_INPUT_FILE || strcmp(snap.file_path, "pulse.wav") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: pulse.wav saved as source %d path \"%s\", want the file\n", snap.input_source,
+                    snap.file_path);
+        rc |= 1;
+    }
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse:monitor0");
+    DSD_MEMSET(&snap, 0, sizeof snap);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.input_source != DSDCFG_INPUT_PULSE || strcmp(snap.pulse_input, "monitor0") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: pulse:monitor0 saved as source %d device \"%s\"\n", snap.input_source,
+                    snap.pulse_input);
+        rc |= 1;
+    }
     dsd_state_ext_free_all(&state);
     return rc;
 }

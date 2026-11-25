@@ -271,7 +271,7 @@ test_failed_open_changes_nothing(void) {
     }
     /* A file whose name reads as another input (a saved config and the radio rows read the input's name as that
        spec, so a file named `airspy` came back as an Airspy) is refused before anything closes; `./airspy` opens it. */
-    static const char* const spec_names[] = {"airspy", "rtl", "pulse", "udp", "iqreplay"};
+    static const char* const spec_names[] = {"airspy", "rtl", "pulse", "udp", "iqreplay", "-capture.wav"};
     for (size_t i = 0; i < sizeof spec_names / sizeof spec_names[0]; i++) {
         rc |= write_bytes(spec_names[i], 64U);
         rc |= expect_int_eq(spec_names[i], switch_to(&g_opts, &g_state, DSD_AUDIO_INPUT_PCM_FILE, spec_names[i]),
@@ -517,6 +517,25 @@ test_invalid_requests_change_nothing(void) {
     return rc;
 }
 
+/* Only a file request's path is checked for a name that reads as another input: a network request names its input by
+   host and port, so a stray path left in the request does not stop it. */
+static int
+test_network_switch_ignores_its_path(void) {
+    session_init(&g_opts, &g_state);
+    install_fake_hooks();
+    dsd_audio_input_request req;
+    DSD_MEMSET(&req, 0, sizeof req);
+    req.kind = DSD_AUDIO_INPUT_UDP;
+    req.path = "rtl";
+    req.host = "127.0.0.1";
+    req.port = 7010;
+    req.tcp_sockfd = DSD_INVALID_SOCKET;
+    int rc = expect_int_eq("udp with a stray path", dsd_audio_switch_input(&g_opts, &g_state, &req),
+                           DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_str_eq("named by its endpoint", g_opts.audio_in_dev, "udp:127.0.0.1:7010");
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -547,6 +566,7 @@ main(void) {
     rc |= test_tcp_switch_takes_the_socket();
     rc |= test_leaving_rtl_rederives_timing_and_keeps_the_spec();
     rc |= test_invalid_requests_change_nothing();
+    rc |= test_network_switch_ignores_its_path();
     closeAudioInDevice(&g_opts);
 
     static const char* const files[] = {"a.wav", "b.wav", "c.pcm", "d.rrc", "e.bin", "f.sym"};

@@ -2434,7 +2434,8 @@ snapshot_pcm_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUs
         snapshot_tcp_input_config(opts, state, cfg);
     } else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
         snapshot_udp_input_config(opts, state, cfg);
-    } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
+    } else if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
+        /* `pulse` or `pulse:<dev>`, as startup reads it: a file named `pulse.wav` is a file. */
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
         if (opts->audio_in_dev[5] == ':') {
