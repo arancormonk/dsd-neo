@@ -1869,6 +1869,55 @@ nxdn_run_in_place_follow_binds_call_case(void) {
     return rc;
 }
 
+/* The reverse order of the DCR case above (issue #903): an anonymous late-entry call is on the air when talkgroup 1400
+ * is followed in place, so the held call binds to it; a checked DCR Call segment then names that same transmission
+ * "JPN DCR" (nxdn_update_sacch2_identity_state() continues it). The DCR call is not the announced one: the held call is
+ * detached from it and awaits the next call, as when the DCR call was named first, and the announced call's own
+ * transmission is the one it binds to. */
+static int
+nxdn_run_in_place_follow_dcr_after_bind_case(void) {
+    const char* const name = "type-c-in-place-follow-anonymous-then-dcr";
+    type_c_fixture();
+    const long here = type_c_freq(16U);
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = here; /* the receiver sits on the carrier */
+    policy_row(1400U, 10, 0);
+    at_seconds(9800.0);
+    voice_live();
+    late_entry_call();
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE, name,
+                         "on-air", "an anonymous call is on the air");
+    const uint64_t a_epoch = call.epoch;
+    const uint64_t a_tx = dsd_call_snapshot_transmission(&call);
+    at_seconds(9801.5);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2;
+    send_assignment(0x04U, 1400U, 16U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == a_tx, name, "follow",
+                      "the held call is bound to the anonymous call");
+    at_seconds(9801.7);
+    voice_live();
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_CONTINUE);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && dsd_call_snapshot_transmission(&call) == a_tx
+                          && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text),
+                      name, "dcr", "the same transmission is now the DCR call");
+    g_state.last_vc_sync_time = dsd_decode_time() - 2;
+    send_assignment(0x04U, 1400U, 16U); /* the announcement repeats: the follow holds its call */
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == 0U,
+                      name, "dcr", "the held call is detached from the DCR call and awaits the next");
+    rc |= expect_awaited_call_binds(name, a_epoch);
+    return rc;
+}
+
 /* A Type-C VCALL from radio 2200 to the null destination is on the air when an assignment naming group 1400 but no
  * source is followed in place: the held call is bound to that transmission, so its source is the one the VCALL named
  * there (issue #903), and it is judged with radio 2200's row. With @p source_row that row ranks it at priority 100, so
@@ -3276,6 +3325,7 @@ main(void) {
     rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
+    rc |= nxdn_run_in_place_follow_dcr_after_bind_case();
     rc |= nxdn_run_in_place_follow_takes_vcall_source_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
     rc |= nxdn_run_type_c_group_preempts_same_number_private_case();

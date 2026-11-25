@@ -13277,7 +13277,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     transmission never inherits its identity; any other follow's binds to the first call to begin after the tune, except
     the same call named again while its call is faded but may still be reacquired, `dsd_call_snapshot_may_reacquire()`,
     which keeps its binding) and never outlives it
-    (`nxdn_call_identity_refresh()`, before every read): one still awaiting its call holds only on the route it was
+    (`nxdn_call_identity_refresh()`, before every read; nor is it ever bound to a DCR call, whichever came first: a
+    held call bound to a transmission a DCR Call segment then named, an anonymous late-entry call followed in place, is
+    detached and awaits the next call, as one followed while the DCR call was on the air does, and one awaiting its
+    call skips a DCR call, `nxdn_run_in_place_follow_dcr_after_bind_case()`): one still awaiting its call holds only on the route it was
     followed to (`nxdn_held_call_on_followed_route()`), so once that route is abandoned (the engine's hangtime or
     no-carrier return, a release, a retune elsewhere) it goes, and a call heard there later, without another grant, never takes
     it; its call's end, a sync loss included, clears it except on the

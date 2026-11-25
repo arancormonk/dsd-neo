@@ -1776,13 +1776,32 @@ nxdn_call_identity_track(const dsd_opts* opts, dsd_state* state, const dsd_call_
     (void)dsd_tg_policy_clear_active_call(state, -1);
 }
 
+/* A DCR call (@p call, transmission @p current) is never the call the held call names: one bound to it (a transmission
+ * a DCR Call segment named after the binding) is detached and awaits the next call, and one awaiting its call skips
+ * it (its floor moves past it). */
+static void
+nxdn_call_identity_skip_dcr(dsd_nxdn_call_identity* id, const dsd_call_snapshot* call, uint64_t current) {
+    if (current == 0U || !dsd_call_is_nxdn_dcr(call->protocol, call->ota_target_id, call->target_text)) {
+        return;
+    }
+    if (id->valid && current == id->call_epoch) {
+        id->call_epoch = 0U;
+        id->call_floor = current;
+    } else if (id->call_epoch == 0U && current > id->call_floor) {
+        id->call_floor = current;
+    }
+}
+
 /* Bind the held call to the canonical call it names, and let it go when that call is over. One awaiting its call binds
  * to the first to begin after it was named (a resumed older call is not it), and only on the route it was followed to:
  * only a follow leaves it awaiting, so once that route is abandoned (the engine's hangtime or no-carrier return, a
  * release, a retune elsewhere) the call it awaited can never be heard and it goes, before an unrelated call heard later
  * there could take it. Another call ends it; on the followed route, one that began within the hangtime of the named
  * call leaves a gap (unknown, valid 0) whose renaming as the same call keeps the follow time. A new call never inherits
- * the identity, its priority or its dwell. */
+ * the identity, its priority or its dwell. A DCR call ("JPN DCR", dsd_call_is_nxdn_dcr()) is never the call a held
+ * call names (its own Call message named it, issue #903), whichever came first: a held call bound to a transmission a
+ * DCR Call segment named since (an anonymous late-entry call, bound in place) is detached and awaits the next call, as
+ * one followed while the DCR call was on the air does (nxdn_on_air_call_is()), and one awaiting its call skips it. */
 static void
 nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
     dsd_nxdn_call_identity* const id = &state->nxdn_call;
@@ -1794,6 +1813,9 @@ nxdn_call_identity_refresh(const dsd_opts* opts, dsd_state* state) {
     const int have = dsd_call_state_get(state, 0U, &call) > 0;
     const uint64_t current = have ? dsd_call_snapshot_transmission(&call) : 0U;
     const double now_m = dsd_decode_now_mono_s();
+    if (have) {
+        nxdn_call_identity_skip_dcr(id, &call, current);
+    }
     if (id->call_epoch == 0U) {
         if (!nxdn_held_call_on_followed_route(opts, state)) {
             DSD_MEMSET(id, 0, sizeof(*id)); // its route was abandoned before its call began
@@ -3745,8 +3767,9 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs) is the frame's, classified before this
        SCCH acts (dsd_state::nxdn_frame_type_d), and kept past it as evidence of this carrier only
        (dsd_nxdn_type_d_layout_fresh()) once the transmission is confirmed (nxdn_frame()). An SCCH handed over with no
-       frame decoding names it here. */
-    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_NONE) {
+       frame decoding names it here, under the frame's rule (nxdn_decode_frame_channels()): its content defined and the
+       transmission confirmed, so a reserved prefix or an unconfirmed CRC-7 pass never stamps the evidence. */
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_NONE && info->acts && !info->diagnostic_only) {
         dsd_nxdn_note_type_d_layout(state);
     }
     if (!info->acts || info->diagnostic_only) {
