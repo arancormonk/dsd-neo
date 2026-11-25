@@ -998,9 +998,22 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
     return 1;
 }
 
+/* The rdio-scanner routing switches (issue #931): which system a call is filed under. */
+static int
+apply_recording_rdio_routing_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "rdio_system_by_frequency") != 0) {
+        return 0;
+    }
+    int b = 0;
+    if (user_config_parse_bool_value(val, &b) == 0) {
+        cfg->rdio_system_by_frequency = b;
+    }
+    return 1;
+}
+
 static void
 apply_recording_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (apply_recording_basic_keys(cfg, key_lc, val)) {
+    if (apply_recording_basic_keys(cfg, key_lc, val) || apply_recording_rdio_routing_keys(cfg, key_lc, val)) {
         return;
     }
     (void)apply_recording_rdio_keys(cfg, key_lc, val);

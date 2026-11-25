@@ -2142,6 +2142,195 @@ rdio_case_opts(void) {
     return g_rdio_case_opts;
 }
 
+/* Issue #931: the row and options a per-frequency system case exports: an analog (NFM) row, or a numbered P25 one,
+   heard on @p freq_hz, under base system @p base and analog system @p analog_id, the option on or off. Analog calls
+   with no frequency take talkgroup 77 so that every case is exported. */
+static void
+system_case_setup(Event_History_I* hist, dsd_opts* opts, int analog, int64_t freq_hz, int on, int base, int analog_id) {
+    analog_row(hist, freq_hz);
+    if (!analog) {
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_P25P1_POS;
+        item->target_id = 1201U;
+        item->gi = 0;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25");
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_by_frequency = on;
+    opts->rdio_system_id = base;
+    opts->rdio_analog_system_id = analog_id;
+    opts->rdio_analog_talkgroup = 77;
+}
+
+/* The case set up in @p hist / @p opts resolves to @p want_id and @p want_rule, in the resolver and the public id
+   function; with @p exported, its sidecar names that system and the rule's short_name (@p row_name unless the rule is
+   FREQUENCY). */
+static int
+expect_system_case_ex(const char* label, Event_History_I* hist, dsd_opts* opts, int want_id,
+                      dsd_rdio_system_rule want_rule, const char* row_name, int exported) {
+    const Event_History* item = &hist->Event_History_Items[0];
+    const dsd_rdio_system_choice got = dsd_rdio_resolve_call_system(opts, item);
+    int rc = 0;
+    if (got.id != want_id || got.rule != want_rule) {
+        DSD_FPRINTF(stderr, "%s: resolved %d rule %d, want %d rule %d\n", label, got.id, (int)got.rule, want_id,
+                    (int)want_rule);
+        rc = 1;
+    }
+    if (dsd_rdio_call_system_id(opts, item) != want_id) {
+        DSD_FPRINTF(stderr, "%s: dsd_rdio_call_system_id() differs from the resolver\n", label);
+        rc = 1;
+    }
+    if (!exported) {
+        return rc;
+    }
+    char body[4096];
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "%s: export failed\n", label);
+        return 1;
+    }
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"system\": %d,", want_id);
+    rc |= expect_body_has(label, body, want);
+    if (want_rule == DSD_RDIO_SYSTEM_RULE_FREQUENCY) {
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"System %d\",", want_id);
+    } else {
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", row_name);
+    }
+    rc |= expect_body_has(label, body, want);
+    return rc;
+}
+
+static int
+expect_system_case(const char* label, Event_History_I* hist, dsd_opts* opts, int want_id,
+                   dsd_rdio_system_rule want_rule, const char* row_name) {
+    return expect_system_case_ex(label, hist, opts, want_id, want_rule, row_name, 1);
+}
+
+// Issue #931 D3: --rdio-system-by-frequency files a call under its frequency in whole kHz, rounded down (1 kHz up to
+// 2147483647 kHz), as the sidecar's system, the upload's system and a "System <kHz>" short_name; an analog call with
+// --rdio-analog-system-id keeps that system; a call with no usable frequency, and every call with the option off, keep
+// today's system. Every combination of option, row kind, analog system, base system and frequency is resolved; the
+// sidecar is written for each combination at 154.4375 MHz and for every frequency of a digital row over base 48 with
+// the option on (each sidecar is synced to disk, so not all of them are).
+static int
+test_system_by_frequency_resolver(void) {
+    static const struct {
+        int64_t freq_hz;
+        int khz; /* the kHz system, 0 for none */
+    } freqs[] = {
+        {0, 0},
+        {999, 0},
+        {1000, 1},
+        {530000, 530},
+        {154437500, 154437},
+        {INT64_C(2147483647000), 2147483647},
+        {INT64_C(2147483648000), 0},
+    };
+
+    static const int bases[] = {0, 48};
+    static const int analog_ids[] = {0, 5};
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        for (int analog = 0; analog <= 1; analog++) {
+            for (size_t a = 0; a < sizeof analog_ids / sizeof analog_ids[0]; a++) {
+                for (size_t b = 0; b < sizeof bases / sizeof bases[0]; b++) {
+                    for (size_t f = 0; f < sizeof freqs / sizeof freqs[0]; f++) {
+                        system_case_setup(hist, opts, analog, freqs[f].freq_hz, on, bases[b], analog_ids[a]);
+                        int want_id = bases[b];
+                        dsd_rdio_system_rule want_rule = DSD_RDIO_SYSTEM_RULE_BASE;
+                        if (analog && analog_ids[a] > 0) {
+                            want_id = analog_ids[a];
+                            want_rule = DSD_RDIO_SYSTEM_RULE_ANALOG;
+                        } else if (on && freqs[f].khz > 0) {
+                            want_id = freqs[f].khz;
+                            want_rule = DSD_RDIO_SYSTEM_RULE_FREQUENCY;
+                        }
+                        char label[160];
+                        DSD_SNPRINTF(label, sizeof label, "option %d, %s row, analog id %d, base %d, %lld Hz", on,
+                                     analog ? "analog" : "digital", analog_ids[a], bases[b],
+                                     (long long)freqs[f].freq_hz);
+                        const int exported = freqs[f].freq_hz == 154437500 || (on && !analog && a == 0 && b == 1);
+                        rc |= expect_system_case_ex(label, hist, opts, want_id, want_rule, analog ? "NFM" : "P25",
+                                                    exported);
+                    }
+                }
+            }
+        }
+    }
+
+    // The label follows the rule, never the number: an analog system equal to the row's kHz is still the analog one,
+    // a base system equal to it with the option off is still the base one, and with the option on a kHz equal to the
+    // base system is still a frequency system.
+    system_case_setup(hist, opts, 1, 5000, 1, 48, 5);
+    rc |= expect_system_case("analog system equal to the kHz", hist, opts, 5, DSD_RDIO_SYSTEM_RULE_ANALOG, "NFM");
+    system_case_setup(hist, opts, 0, 48000, 0, 48, 0);
+    rc |= expect_system_case("option off, base equal to the kHz", hist, opts, 48, DSD_RDIO_SYSTEM_RULE_BASE, "P25");
+    system_case_setup(hist, opts, 0, 48000, 1, 48, 0);
+    rc |= expect_system_case("option on, kHz equal to the base", hist, opts, 48, DSD_RDIO_SYSTEM_RULE_FREQUENCY, "P25");
+
+    // No row: the base system; no options: system 0.
+    system_case_setup(hist, opts, 0, 154437500, 1, 48, 5);
+    dsd_rdio_system_choice got = dsd_rdio_resolve_call_system(opts, NULL);
+    if (got.id != 48 || got.rule != DSD_RDIO_SYSTEM_RULE_BASE || dsd_rdio_call_system_id(opts, NULL) != 48) {
+        DSD_FPRINTF(stderr, "no row: resolved %d rule %d, want 48 BASE\n", got.id, (int)got.rule);
+        rc = 1;
+    }
+    got = dsd_rdio_resolve_call_system(NULL, &hist->Event_History_Items[0]);
+    if (got.id != 0 || got.rule != DSD_RDIO_SYSTEM_RULE_BASE) {
+        DSD_FPRINTF(stderr, "no options: resolved %d rule %d, want 0 BASE\n", got.id, (int)got.rule);
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #931 D4: a frequency system's sidecar names it by number and by "System <kHz>", and the row's own system
+// string is left as it was (the WAV name, the journal and the event feed use it). A 530 kHz call has no storable freq
+// (0, no freqList) but still its 530 kHz system.
+static int
+test_system_by_frequency_sidecar(void) {
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    char body[4096];
+    system_case_setup(hist, opts, 0, 154437500, 1, 0, 0);
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "154.4375 MHz sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"system\": 154437,");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"short_name\": \"System 154437\",");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"freq\": 154437500,");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"talkgroup\": 1201,");
+    if (strcmp(hist->Event_History_Items[0].sysid_string, "P25") != 0) {
+        DSD_FPRINTF(stderr, "154.4375 MHz sidecar: the row's system string changed to '%s'\n",
+                    hist->Event_History_Items[0].sysid_string);
+        rc = 1;
+    }
+
+    system_case_setup(hist, opts, 0, 530000, 1, 48, 0);
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "530 kHz sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("530 kHz sidecar", body, "\"freq\": 0,");
+    rc |= expect_body_has("530 kHz sidecar", body, "\"system\": 530,");
+    rc |= expect_body_has("530 kHz sidecar", body, "\"short_name\": \"System 530\",");
+    if (strstr(body, "freqList") != NULL) {
+        DSD_FPRINTF(stderr, "530 kHz sidecar: freqList written\n%s\n", body);
+        rc = 1;
+    }
+    return rc;
+}
+
 // Issue #888 B6: the sidecar's emergency is the row's own flag (an NXDN VCALL with the emergency bit, say), never a
 // constant false.
 static int
@@ -3859,6 +4048,80 @@ test_api_fallback_call_meta_and_system(void) {
 #endif
 }
 
+// Issue #931 D3/D5: with --rdio-system-by-frequency and no base system, a 154.4375 MHz call uploads to system 154437 in
+// its form system part and its meta part alike, named "System 154437"; a call with no frequency still has no system
+// and is not queued, as before.
+static int
+test_api_system_by_frequency(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_export_freq_system_api")
+        || dsd_test_path_join(wav_path, sizeof(wav_path), dir, "freq_system.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir, "freq_system.json") != 0
+        || write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: setup failed\n");
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir);
+        return 1;
+    }
+    system_case_setup(hist, opts, 0, 154437500, 1, 0, 0);
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_by_frequency = 1;
+    opts->rdio_system_id = 0;
+    opts->rdio_api_delete_after_upload = 0; /* the WAV serves the second call too */
+
+    int rc = 0;
+    int queued = 0;
+    if (dsd_rdio_export_call_ex(opts, hist, wav_path, 0, 0, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: the upload was not queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: the server did not receive a complete upload\n");
+        rc = 1;
+    }
+    if (strcmp(server.system, "154437") != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: form system part '%s', want 154437\n", server.system);
+        rc = 1;
+    }
+    rc |= expect_body_has("per-frequency API upload", server.meta, "\"system\": 154437,");
+    rc |= expect_body_has("per-frequency API upload", server.meta, "\"short_name\": \"System 154437\",");
+    (void)remove(json_path);
+
+    // No frequency, no base system: nothing to upload to, so no job, as without the option.
+    hist->Event_History_Items[0].freq_hz = 0;
+    queued = 0;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav_path, 0, 0, &queued);
+    if (queued) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: a call with no frequency and no system was queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 static int
 test_analog_api_upload_contract(void) {
     int rc = 0;
@@ -5042,6 +5305,8 @@ main(void) {
     rc |= test_analog_talkgroup_sources();
     rc |= test_analog_tag_is_stable();
     rc |= test_analog_system_id();
+    rc |= test_system_by_frequency_resolver();
+    rc |= test_system_by_frequency_sidecar();
     rc |= test_sidecar_tag_of_unknown_kind_is_empty();
     rc |= test_sidecar_emergency_from_the_row();
     rc |= test_sidecar_short_name_falls_back_to_the_protocol();
@@ -5058,6 +5323,7 @@ main(void) {
     rc |= test_api_journaled_upload_keeps_the_wav();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
     rc |= test_api_fallback_call_meta_and_system();
+    rc |= test_api_system_by_frequency();
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();
     rc |= test_api_cancel_during_drain_returns_promptly();

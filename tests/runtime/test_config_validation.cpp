@@ -1767,6 +1767,19 @@ test_analog_preroll_validation(void) {
     return rc;
 }
 
+/* Issue #931: [recording] rdio_system_by_frequency takes the project's bool values, and anything else is an ERROR. */
+int
+test_rdio_system_by_frequency_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("rdio_system_by_frequency", "true", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "false", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "yes", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "0", -1, NULL);
+    rc |=
+        run_recording_key_case("rdio_system_by_frequency", "maybe", DSDCFG_DIAG_ERROR, "Invalid boolean value 'maybe'");
+    return rc;
+}
+
 /* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
  * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
 int
@@ -2549,6 +2562,7 @@ main(void) {
     rc |= test_analog_max_gap_validation();
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
+    rc |= test_rdio_system_by_frequency_validation();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

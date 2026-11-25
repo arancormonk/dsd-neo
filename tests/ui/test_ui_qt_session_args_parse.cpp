@@ -1371,7 +1371,7 @@ test_status_readings(void) {
     expect("the pre-roll moving is a change", changes == 6 && status.analogPrerollMs() == 700);
 }
 
-enum class Applied { Journal, DeleteAfterUpload, Folder, StaticWav, PerCall };
+enum class Applied { Journal, DeleteAfterUpload, Folder, StaticWav, PerCall, SystemByFrequency };
 
 /* Whether the parse in @p opts applied the recording option @p what, with its value under @p scratch. */
 bool
@@ -1382,6 +1382,7 @@ applied(Applied what, const dsd_opts& opts, const QString& scratch) {
         case Applied::Folder: return QString::fromUtf8(opts.wav_out_dir) == scratch;
         case Applied::StaticWav: return opts.static_wav_file != 0;
         case Applied::PerCall: return opts.dmr_stereo_wav != 0;
+        case Applied::SystemByFrequency: return opts.rdio_system_by_frequency != 0;
     }
     return false;
 }
@@ -1428,6 +1429,15 @@ test_extras_judged_as_the_parser_reads_them(const QString& scratch) {
         {"-o null -- -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
         {"-o -- -- -7 %1", false, SessionArgsError::None, false, false, Applied::Folder},
         {"-- -w %1/out.wav", false, SessionArgsError::None, true, false, Applied::StaticWav},
+        // Issue #931: the per-frequency rdio-scanner system switches take no value. They pass through, the last one
+        // given winning, and the option after either is still an option.
+        {"-o null --rdio-system-by-frequency", true, SessionArgsError::None, false, false, Applied::SystemByFrequency},
+        {"--rdio-system-by-frequency --no-rdio-system-by-frequency -o null", false, SessionArgsError::None, false,
+         false, Applied::SystemByFrequency},
+        {"--rdio-system-by-frequency -7 %1", true, SessionArgsError::CallRecordingOption, false, false,
+         Applied::Folder},
+        {"--no-rdio-system-by-frequency -7 %1", true, SessionArgsError::CallRecordingOption, false, false,
+         Applied::Folder},
     };
     for (const Case& c : cases) {
         const QString extras = QString::fromLatin1(c.extras).arg(scratch);

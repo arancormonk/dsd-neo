@@ -13058,6 +13058,87 @@ test_bootstrap_rdio_unknown_talkgroup_cli_over_ini(void) {
     return rc;
 }
 
+/* Issue #931: --rdio-system-by-frequency turns the per-frequency system on and --no-rdio-system-by-frequency turns it
+   off, the last one given winning, over the config's rdio_system_by_frequency either way; the config saved from that
+   run, and --print-config, write the key only when it is on. -h lists both. */
+static int
+test_bootstrap_rdio_system_by_frequency_cli_over_ini(void) {
+    static const char ini_on[] = "[recording]\nrdio_system_by_frequency = true\n";
+    static const char ini_off[] = "[recording]\nrdio_mode = \"dirwatch\"\n";
+
+    static const struct {
+        const char* ini;
+        const char* args[4];
+        int nargs;
+        int want;
+    } cases[] = {
+        {ini_off, {"--config", "{ini}"}, 2, 0},
+        {ini_on, {"--config", "{ini}"}, 2, 1},
+        {ini_on, {"--config", "{ini}", "--no-rdio-system-by-frequency"}, 3, 0},
+        {ini_off, {"--config", "{ini}", "--rdio-system-by-frequency"}, 3, 1},
+        {ini_off, {"--config", "{ini}", "--rdio-system-by-frequency", "--no-rdio-system-by-frequency"}, 4, 0},
+        {ini_on, {"--config", "{ini}", "--no-rdio-system-by-frequency", "--rdio-system-by-frequency"}, 4, 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+        if (!opts || !state || !snap) {
+            free(opts);
+            free(state);
+            free(snap);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot =
+            bootstrap_with_ini(cases[i].ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        dsd_snapshot_opts_to_user_config(opts, state, snap);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_system_by_frequency != cases[i].want
+            || snap->rdio_system_by_frequency != cases[i].want) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d exit=%d by_frequency=%d saved=%d (want %d)\n%s\n", i, boot,
+                        exit_rc, opts->rdio_system_by_frequency, snap->rdio_system_by_frequency, cases[i].want, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+        free(snap);
+
+        static char printed[65536];
+        const char* print_args[5];
+        for (int a = 0; a < cases[i].nargs; a++) {
+            print_args[a] = cases[i].args[a];
+        }
+        print_args[cases[i].nargs] = "--print-config";
+        if (print_config_with_ini(cases[i].ini, print_args, cases[i].nargs + 1, printed, sizeof printed) != 0) {
+            rc = 1;
+            continue;
+        }
+        const int shown = strstr(printed, "rdio_system_by_frequency") != NULL;
+        if (cases[i].want ? strstr(printed, "rdio_system_by_frequency = true\n") == NULL : shown) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config %s rdio_system_by_frequency (want %d):\n%s\n", i,
+                        shown ? "shows" : "omits", cases[i].want, printed);
+            rc = 1;
+        }
+    }
+
+    static char help[65536];
+    if (help_text(help, sizeof help) != 0
+        || strstr(help, "--rdio-system-by-frequency  Export each call with a known frequency to the rdio-scanner "
+                        "system\n")
+               == NULL
+        || strstr(help, "--no-rdio-system-by-frequency  Turn --rdio-system-by-frequency off (the default)\n") == NULL) {
+        DSD_FPRINTF(stderr, "-h does not list --rdio-system-by-frequency and --no-rdio-system-by-frequency\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 #ifdef USE_RADIO
 /* Issue #743 (D8): a config that runs an I/Q stream with [trunking] enabled, [trunking] scanner or [trunk_scan] enabled
    is refused at startup with exit 1, naming the key and the fix, before anything opens: the bootstrap returns before
@@ -14263,6 +14344,7 @@ main(void) {
     rc |= test_rdio_analog_options();
     rc |= test_rdio_unknown_talkgroup_option();
     rc |= test_bootstrap_rdio_unknown_talkgroup_cli_over_ini();
+    rc |= test_bootstrap_rdio_system_by_frequency_cli_over_ini();
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();

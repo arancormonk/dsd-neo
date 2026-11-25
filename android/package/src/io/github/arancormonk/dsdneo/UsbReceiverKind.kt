@@ -67,7 +67,7 @@ internal object UsbReceiverKind {
         "--strict-crc", "--no-scan-voice-only", "--dmr-debug-burst", "--dmr-debug-unsynced", "--show-keys",
         "--scan-voice-only", "--no-tone-filter", "--no-slot-filter", "--no-dcc-filter", "--no-ran-filter",
         "--no-nac-filter", "--no-service-names", "--record-unknown-only", "--scan-skip-silent",
-        "--no-scan-skip-silent",
+        "--no-scan-skip-silent", "--rdio-system-by-frequency", "--no-rdio-system-by-frequency",
     )
 
     /** Long options that take the next argument as their value, whatever it is. `k_skip_exact_next_any`. */

@@ -453,7 +453,7 @@ dsd_rdio_upload_holds(const char* path) {
     return held;
 }
 
-/* @p system_id is the call's own system (dsd_rdio_call_system_id()), resolved before the settings are validated: an
+/* @p system_id is the call's own system (dsd_rdio_resolve_call_system()), resolved before the settings are validated: an
    analog override uploads even when the base system is 0. */
 static void
 dsd_rdio_copy_api_config(dsd_rdio_api_config* out, const dsd_opts* opts, int system_id) {
@@ -1061,6 +1061,7 @@ typedef struct {
     const char* talkgroup_tag;
     const char* short_name;
     char generated_tag[64]; /* an analog call's frequency tag, or a fallback call's generated one (issue #888 D3) */
+    char system_name[24];   /* a frequency system's short_name, "System <kHz>" (issue #931) */
 } dsd_rdio_meta_fields;
 
 /* The Hz the sidecar's freq and freqList carry (issue #888 B5, B13, D8): from 1 MHz (included) up to what the signed
@@ -1180,15 +1181,32 @@ dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* event, int al
     return (opts && opts->rdio_unknown_talkgroup > 0) ? (uint32_t)opts->rdio_unknown_talkgroup : 0U;
 }
 
-int
-dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event) {
+dsd_rdio_system_choice
+dsd_rdio_resolve_call_system(const dsd_opts* opts, const Event_History* event) {
+    dsd_rdio_system_choice choice = {0, DSD_RDIO_SYSTEM_RULE_BASE};
     if (!opts) {
-        return 0;
+        return choice;
     }
     if (event && event->systype == DSD_SYNC_ANALOG && opts->rdio_analog_system_id > 0) {
-        return opts->rdio_analog_system_id;
+        choice.id = opts->rdio_analog_system_id;
+        choice.rule = DSD_RDIO_SYSTEM_RULE_ANALOG;
+        return choice;
     }
-    return opts->rdio_system_id;
+    // The digital kHz rule (1..INT32_MAX) keeps the number in the int every server's system field is: the analog
+    // talkgroup's wider range would not fit.
+    const uint32_t khz = (opts->rdio_system_by_frequency && event) ? dsd_rdio_digital_khz(event->freq_hz) : 0U;
+    if (khz > 0U) {
+        choice.id = (int)khz;
+        choice.rule = DSD_RDIO_SYSTEM_RULE_FREQUENCY;
+        return choice;
+    }
+    choice.id = opts->rdio_system_id;
+    return choice;
+}
+
+int
+dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event) {
+    return dsd_rdio_resolve_call_system(opts, event).id;
 }
 
 time_t
@@ -1361,9 +1379,10 @@ dsd_rdio_analog_meta_fields(const dsd_opts* opts, const Event_History* event, ds
     }
 }
 
+/* The sidecar fields of the call @p event, filed under @p system, the export's one choice of system. */
 static void
-dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event, time_t opened, time_t started,
-                                int allow_fallback, dsd_rdio_meta_fields* out) {
+dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event, const dsd_rdio_system_choice* system,
+                                time_t opened, time_t started, int allow_fallback, dsd_rdio_meta_fields* out) {
     if (!out) {
         return;
     }
@@ -1371,12 +1390,13 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     out->talkgroup = 0;
     out->source = 0;
     out->freq_hz = 0;
-    out->system_id = dsd_rdio_call_system_id(opts, event);
+    out->system_id = system->id;
     out->encrypted = 0;
     out->emergency = 0;
     out->talkgroup_tag = "";
     out->short_name = "";
     out->generated_tag[0] = '\0';
+    out->system_name[0] = '\0';
 
     if (!event) {
         return;
@@ -1388,6 +1408,13 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     // A row with no system string (an X2-TDMA call) is named by its protocol, so a v8 DirWatch, which resolves the
     // system from short_name, still finds one.
     out->short_name = event->sysid_string[0] != '\0' ? event->sysid_string : dsd_rdio_row_protocol_word(event);
+    if (system->rule == DSD_RDIO_SYSTEM_RULE_FREQUENCY) {
+        // A system per frequency is named as rdio-scanner 6 names one it creates, so a v8 DirWatch, which picks the
+        // system by short_name, files each frequency apart (issue #931). The row's own system string is untouched: the
+        // WAV name, the journal and the event feed keep it.
+        DSD_SNPRINTF(out->system_name, sizeof out->system_name, "System %d", system->id);
+        out->short_name = out->system_name;
+    }
     out->emergency = event->emergency ? 1 : 0;
     if (event->systype == DSD_SYNC_ANALOG) {
         dsd_rdio_analog_meta_fields(opts, event, out);
@@ -1495,12 +1522,12 @@ dsd_rdio_publish_temp_meta_file(const char* temp_meta_path, const char* out_meta
     return 0;
 }
 
-/* Write the sidecar of @p wav_path's call to a closed temp file, @p temp_meta_path, beside its public name
+/* Write the sidecar @p fields of @p wav_path's call to a closed temp file, @p temp_meta_path, beside its public name
    @p out_meta_path, which dsd_rdio_publish_temp_meta_file() then puts it under. */
 static int
-dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened,
-                                   time_t started, int allow_fallback, const char* wav_path, char* out_meta_path,
-                                   size_t out_meta_path_size, char* temp_meta_path, size_t temp_meta_path_size) {
+dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, dsd_rdio_meta_fields* fields, const char* wav_path,
+                                   char* out_meta_path, size_t out_meta_path_size, char* temp_meta_path,
+                                   size_t temp_meta_path_size) {
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -1510,27 +1537,24 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
         return -1;
     }
 
-    const Event_History* event = dsd_rdio_staged_row(event_struct);
-    dsd_rdio_meta_fields fields;
-    dsd_rdio_meta_fields_from_event(opts, event, opened, started, allow_fallback, &fields);
     // A backstop: the WAV close asks dsd_rdio_call_talkgroup() first, and exports only a call it gives a number.
-    if (fields.talkgroup == 0U) {
+    if (fields->talkgroup == 0U) {
         LOG_WARN("Rdio export: skipped %s (missing talkgroup/target ID)\n", wav_path);
         return -1;
     }
-    if (fields.start_time <= 0) {
-        fields.start_time = dsd_decode_time();
+    if (fields->start_time <= 0) {
+        fields->start_time = dsd_decode_time();
     }
 
     unsigned int duration_s = dsd_rdio_wav_duration_s(wav_path);
-    time_t stop_time = fields.start_time + (time_t)duration_s;
+    time_t stop_time = fields->start_time + (time_t)duration_s;
 
     FILE* fp = NULL;
     if (dsd_rdio_open_temp_meta_file(out_meta_path, temp_meta_path, temp_meta_path_size, &fp) != 0) {
         return -1;
     }
 
-    dsd_rdio_write_meta_json(fp, opts, &fields, stop_time);
+    dsd_rdio_write_meta_json(fp, opts, fields, stop_time);
     return dsd_rdio_close_temp_meta_file(fp, temp_meta_path);
 }
 
@@ -1827,16 +1851,17 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
 #endif
 
 /* The API side of an export whose sidecar waits, written and closed, at @p temp_meta_path: the sidecar is put in place
-   under @p meta_path whatever becomes of the upload, then the upload is queued (*@p api_queued set). Beside DirWatch
+   under @p meta_path whatever becomes of the upload, then the upload to @p system_id, the system the sidecar names, is
+   queued (*@p api_queued set). Beside DirWatch
    the job uploads from its own copies of the pair, made before the public sidecar appears, so a watch that takes and
    deletes the pair the moment its sidecar is there cannot take them first; a job whose copies cannot be made is not
    queued. */
 static int
-dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
-                    const char* meta_path, const char* temp_meta_path, int* api_queued) {
+dsd_rdio_export_api(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
+                    const char* temp_meta_path, int* api_queued) {
 #ifndef USE_CURL
     (void)opts;
-    (void)event_struct;
+    (void)system_id;
     (void)wav_path;
     (void)api_queued;
     if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
@@ -1851,9 +1876,9 @@ dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, c
         LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
     }
     dsd_rdio_upload_job* job = NULL;
-    const int prepared = dsd_rdio_prepare_api_job(
-        opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)), wav_path, meta_path,
-        wants_dirwatch ? temp_meta_path : NULL, !wants_dirwatch, rdio_api_removes_wav(opts, wants_dirwatch), &job);
+    const int prepared =
+        dsd_rdio_prepare_api_job(opts, system_id, wav_path, meta_path, wants_dirwatch ? temp_meta_path : NULL,
+                                 !wants_dirwatch, rdio_api_removes_wav(opts, wants_dirwatch), &job);
     if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
         dsd_rdio_upload_job_free(job);
         return -1;
@@ -1903,15 +1928,20 @@ dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event
         return 0;
     }
 
+    // One choice of system for the whole export: the sidecar (and so the API meta part) and the form's system part.
+    const Event_History* event = dsd_rdio_staged_row(event_struct);
+    const dsd_rdio_system_choice system = dsd_rdio_resolve_call_system(opts, event);
+    dsd_rdio_meta_fields fields;
+    dsd_rdio_meta_fields_from_event(opts, event, &system, opened, started, allow_fallback, &fields);
     char meta_path[DSD_RDIO_PATH_MAX];
     char temp_meta_path[DSD_RDIO_PATH_MAX];
-    if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, allow_fallback, wav_path, meta_path,
-                                           sizeof(meta_path), temp_meta_path, sizeof(temp_meta_path))
+    if (dsd_rdio_write_trunk_recorder_meta(opts, &fields, wav_path, meta_path, sizeof(meta_path), temp_meta_path,
+                                           sizeof(temp_meta_path))
         != 0) {
         return -1;
     }
     if (dsd_rdio_mode_wants_api(mode)) {
-        return dsd_rdio_export_api(opts, event_struct, wav_path, meta_path, temp_meta_path, api_queued);
+        return dsd_rdio_export_api(opts, system.id, wav_path, meta_path, temp_meta_path, api_queued);
     }
     return dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path);
 }

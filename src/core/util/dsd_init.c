@@ -234,6 +234,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rdio_analog_system_id = 0;
     opts->rdio_analog_talkgroup = 0;
     opts->rdio_unknown_talkgroup = 0;
+    opts->rdio_system_by_frequency = 0;
     opts->record_unknown_only = 0;
     opts->analog_record_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     opts->analog_record_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;

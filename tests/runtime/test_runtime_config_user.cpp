@@ -5705,6 +5705,72 @@ test_recording_rdio_unknown_talkgroup_roundtrip(void) {
     }
     return rc;
 }
+
+/* Issue #931: [recording] rdio_system_by_frequency loads as a bool, reaches dsd_opts, saves back as true, and loads
+   again; false (the default) is not written. A value that is not a bool keeps the one already loaded. */
+int
+test_recording_rdio_system_by_frequency_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg{};
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency did not load (%d)\n", cfg.rdio_system_by_frequency);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    if (opts.rdio_system_by_frequency != 0) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency defaults to %d, want 0\n", opts.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency did not reach dsd_opts (%d)\n",
+                    opts.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("rdio_system_by_frequency saved", rendered, "rdio_system_by_frequency = true\n");
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || reloaded.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load rdio_system_by_frequency back\n");
+        rc |= 1;
+    }
+
+    /* false turns it off, and a config at the default neither writes it nor loads anything but off. */
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\nrdio_system_by_frequency = false\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 0) {
+        DSD_FPRINTF(stderr, "FAIL: false did not turn rdio_system_by_frequency off (%d)\n",
+                    cfg.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (opts.rdio_system_by_frequency != 0 || strstr(rendered, "rdio_system_by_frequency") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency off reached dsd_opts or the saved config\n");
+        rc |= 1;
+    }
+
+    /* Not a bool: the value already loaded stays. */
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\nrdio_system_by_frequency = maybe\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency = maybe changed the value (%d)\n",
+                    cfg.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    return rc;
+}
 } // namespace
 
 /*
@@ -7241,6 +7307,7 @@ main(void) {
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
+    rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();

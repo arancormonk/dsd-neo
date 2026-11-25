@@ -2335,6 +2335,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-system-by-frequency") == 0) {                                                      \
+            opts->rdio_system_by_frequency = 1;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-rdio-system-by-frequency") == 0) {                                                   \
+            opts->rdio_system_by_frequency = 0;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
             recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \

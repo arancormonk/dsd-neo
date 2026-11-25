@@ -129,7 +129,9 @@ int dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallba
 
 /**
  * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p
- * opts->rdio_analog_system_id for an analog row when it is set, else @p opts->rdio_system_id. 0 for a NULL @p opts.
+ * opts->rdio_analog_system_id for an analog row when it is set; else, with @p opts->rdio_system_by_frequency (issue
+ * #931), the row's frequency in whole kHz, rounded down, when that is 1..2147483647; else @p opts->rdio_system_id. 0
+ * for a NULL @p opts.
  */
 int dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event);
 

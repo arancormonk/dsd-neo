@@ -61,9 +61,13 @@ dsd_cli_usage_rdio_options(void) {
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for analog calls\n");
     printf("                 (0 to 65535; 0 = use --rdio-system-id, the default)\n");
+    printf("      --rdio-system-by-frequency  Export each call with a known frequency to the rdio-scanner system\n");
+    printf(
+        "                 numbered by that frequency in kHz (an analog call with --rdio-analog-system-id keeps it)\n");
+    printf("      --no-rdio-system-by-frequency  Turn --rdio-system-by-frequency off (the default)\n");
     printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for analog calls with no known frequency\n");
-    printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
-    printf("                 is exported under it in kHz.)\n");
+    printf("                 (audio input with no -Y or --trunk-scan landing; 0 to 2147483647, 0 = not exported,\n");
+    printf("                 the default. A call with a frequency is exported under it in kHz.)\n");
     printf(
         "      --rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and no known "
         "frequency\n");

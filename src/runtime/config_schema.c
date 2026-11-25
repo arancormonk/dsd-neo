@@ -253,6 +253,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
         0,
         2147483647,
     },
+    {"recording", "rdio_system_by_frequency",
+     "File each rdio-scanner call with a known frequency under the system numbered by that frequency in kHz", "false",
+     NULL, DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [dsp] section */
     {"dsp", "iq_balance", "Enable RTL IQ balance (image suppression)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
