@@ -4,6 +4,7 @@ import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
 Item {
+    id: root
     width: 420
     height: 900
 
@@ -210,7 +211,11 @@ Item {
             var panel = item("otherSlotPanel");
             verify(panel.visible);
             compare(item("otherSlotLabel").text, "SLOT " + slot + " · idle");
-            verify(!item("otherSlotIdentity").visible);
+            // The line's node is the strip's one node, idle too (issue #901 r4 F3, r5 H2): it reads the idle
+            // state the label draws, and the identity is not drawn.
+            verify(item("otherSlotNode").visible, "the strip's node is kept while idle");
+            verify(!item("otherSlotIdentity").visible, "idle, the identity is not drawn");
+            compare(item("otherSlotNode").Accessible.name, "SLOT " + slot + " · idle");
             var skip = item("otherSlotSkip");
             var more = item("otherSlotMore");
             verify(!skip.visible && !more.visible);
@@ -246,6 +251,44 @@ Item {
             compare(testContext.lastSkipSlot(), other - 1);
         }
         // Large text widens Skip rather than cutting its label short; normal text keeps the 70 px button.
+        // Issue #901 r5 H1: an ended call's flags are kept through its hold (slotCallView()), but the idle strip
+        // draws only "SLOT 2 · idle" and must say only that: its node read "SLOT 2 · idle, PRIVATE, EMERGENCY, ENC"
+        // for a private encrypted emergency call that had ended. An active call's tags are still read, drawn or not.
+        function test_idle_strip_says_no_ended_call_tags() {
+            testContext.setMetric("twoSlotCarrier", true);
+            testContext.setMetric("slot2CallKind", 3); // CALL_KIND_PRIVATE
+            testContext.setMetric("slot2CallEmergency", true);
+            testContext.setMetric("slot2CallEnc", true);
+            // r8 L4: wide enough that the plan draws all three tags beside the call, so the idle strip's hiding them is
+            // the idle rule's doing, not the room's (at 420 dp PRIVATE and ENC were left out for want of room).
+            root.width = 700;
+            try {
+                waitForRendering(monitor);
+                verify(monitor.otherPrivate && monitor.otherEmergency && monitor.otherEnc, "the call's flags");
+                for (var shown of ["otherSlotLabel", "otherPrivateTag", "otherEmergencyTag", "otherEncTag"])
+                    verify(item(shown).visible, "the call's strip draws " + shown + " at 700 dp");
+                var active = item("otherSlotNode").Accessible.name;
+                for (var word of ["SLOT 2", "PRIVATE", "EMERGENCY", "ENC"])
+                    verify(active.indexOf(word) >= 0, "an active call reads " + word + ": " + active);
+                // Ended, held: the flags stay, the strip is idle.
+                testContext.setMetric("slot2CallState", 1);
+                waitForRendering(monitor);
+                verify(monitor.stripIdle, "the ended call leaves the strip idle");
+                verify(monitor.otherEmergency && monitor.otherEnc, "the hold keeps the flags");
+                compare(item("otherSlotLabel").text, "SLOT 2 · idle");
+                // r7 K5: nor does it draw them, so the text-reach walk's exemption for idle tags is only for its
+                // every-branch pass, which forces them visible.
+                for (var tag of ["otherPrivateTag", "otherEmergencyTag", "otherEncTag"])
+                    verify(!item(tag).visible, "the idle strip draws " + tag);
+                verify(item("otherSlotLabel").visible && !item("otherSlotLabel").truncated, "the idle label, whole");
+                compare(item("otherSlotNode").Accessible.name, "SLOT 2 · idle", "the idle strip says only what it draws");
+            } finally {
+                root.width = 420;
+                testContext.setMetric("slot2CallEmergency", false);
+                testContext.setMetric("slot2CallEnc", false);
+            }
+        }
+
         function test_skip_label_fits_large_text() {
             var skip = item("otherSlotSkip");
             compare(skip.width, 70);

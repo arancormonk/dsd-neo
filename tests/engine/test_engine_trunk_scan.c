@@ -33,6 +33,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/voice_chain.h>
@@ -54,18 +55,23 @@
 #endif
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -87,6 +93,7 @@
 #include <unistd.h>
 #endif
 #include "analog_tone_policy.h"
+#include "checked_media_test_support.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
@@ -155,6 +162,45 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
     g_scan_dsp_rate_reads++;
     return g_scan_dsp_rate_hz;
+}
+
+/* --- Issue #890: the TETRA visit reset (protocol/tetra/tetra.c) and the TED timing the stream applied
+ * (trunk_tuning.c), which this fixture does not link: each reset counted, with whether the scan held the TETRA state
+ * then and what the frontends were shown (cleared, as the real one clears it); the TED timing is what a test sets. */
+static int g_tetra_visit_resets;
+static int g_tetra_visit_reset_held;
+static int g_tetra_ted_override;
+static int g_tetra_ted_applied;
+
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_tetra_visit_resets++;
+    g_tetra_visit_reset_held = state->tetra_ext_scan_held;
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    dsd_tetra_publication_reset(&state->tetra_pub);
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = g_tetra_ted_override;
+    }
+    if (applied_sps) {
+        *applied_sps = g_tetra_ted_applied;
+    }
+}
+
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a test sets. */
+static int g_tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tetra_chain_other;
 }
 
 /* When the RTL input came back from its last retune's mute (trunk_tuning.c): 0 none, -1 still muted. */
@@ -439,6 +485,13 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
     ctx->state = (opts && state && opts->trunk_enable == 1 && state->p25_cc_freq == 0 && state->trunk_cc_freq != 0)
                      ? DMR_SM_ON_CC
                      : DMR_SM_IDLE;
+}
+
+/* The channel map writer's control-channel rule (dmr_t3_chan_learn()): known and not on a voice channel, as the real
+   machine reads it while it follows nothing. */
+int
+dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state) {
+    return opts != NULL && state != NULL && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 0;
 }
 
 void
@@ -1578,6 +1631,11 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
     return write_targets_file(out_dir, body, out_path, out_sz);
 }
 
+/* One options and state pair on the heap that the issue #890 cases reuse in turn (allocated in main()): each case
+   resets it as it starts (reset_scan_opts_state()), so none keeps a 2 MB state of its own for the whole run. */
+static dsd_opts* g_case_opts = NULL;
+static dsd_state* g_case_state = NULL;
+
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
@@ -2036,6 +2094,380 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     test_rc |= expect_target0_p25_state(&state);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Two DMR targets that share LPCN 12 (discussion #900 F2): A learns it over the air (SITE), B has it from a file. Each
+   switch saves the target left and restores the one parked on, so neither origin nor row leaks across. */
+static int
+test_dmr_channel_origins_restore_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    if (dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 1) {
+        DSD_FPRINTF(stderr, "dmr origins: target A did not learn LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 0
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+
+    dsd_state_set_trunk_chan_freq(&state, 12U, 453025000L);
+    dmr_t3_chan_note_map_loaded(&state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[12] != 452012500L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_SITE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 not restored (%ld, origin %d)\n", state.trunk_chan_map[12],
+                    (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 453025000L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_FILE
+        || dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: target B's file row not restored (%ld, origin %d)\n",
+                    state.trunk_chan_map[12], (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
+   start, so a checked grant for a mapped channel keeps its Tier III evidence on a fresh scan (the grant path allocates
+   no record), and the evidence goes and comes back with the target. */
+static int
+test_dmr_target_map_makes_the_record(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char chan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n14,452037500\n") != 0
+        || write_targets_file(dir,
+                              "a,dmr-trunk,452000000,chan.csv,250,,tier iii\n"
+                              "b,p25-trunk,851000000,,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "target map record: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (!dmr_t3_chan_recorded(&state) || state.trunk_chan_map[14] != 452037500L
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: none for A's map (recorded %d, row %ld, origin %d)\n",
+                    dmr_t3_chan_recorded(&state), state.trunk_chan_map[14], (int)dmr_t3_chan_origin(&state, 14U));
+        test_rc = 1;
+    }
+    /* A checked grant for mapped channel 14, the first thing A's control channel sends. */
+    dmr_t3_note_tier3_if_recorded(&state, 1);
+    if (!dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: the grant's Tier III evidence was dropped\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence leaked into B\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_t3_tier3_seen(&state)
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence not restored\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+/* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): what
+   another target left there never reaches a P25 target, where channel 0x0000 (IDEN 0, channel 0) is checked against
+   the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. */
+static int
+test_chan_map_zero_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,p25-trunk,851000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "row 0: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    dsd_state_set_trunk_chan_freq(&state, 0U, 452500000L);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 0) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed leaked into P25 target B (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    /* P25's channel cache for IDEN 0 channel 0, as process_channel_to_freq() writes it. */
+    dsd_state_set_trunk_chan_freq(&state, 0U, 851000000L);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[0] != 452500000L) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed not restored (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 851000000L) {
+        DSD_FPRINTF(stderr, "row 0: target B's channel 0 not restored (%ld)\n", state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int g_dmr_missing_summaries;
+static char g_dmr_missing_summary[2][256];
+
+#ifdef USE_RADIO
+static void qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx);
+#endif
+
+/* The process's one log tap (dsd_neo_log_set_tap() installs only the first): it counts the DMR per-target exit
+   summaries here and, with radio support, the quiet check's lines (qt_count_notice()). */
+static void
+trunk_scan_test_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    if (text != NULL && strncmp(text, "NOTICE: DMR Tier III (", 22) == 0) {
+        if (g_dmr_missing_summaries < 2) {
+            DSD_SNPRINTF(g_dmr_missing_summary[g_dmr_missing_summaries], sizeof g_dmr_missing_summary[0], "%s", text);
+        }
+        g_dmr_missing_summaries++;
+    }
+#ifdef USE_RADIO
+    qt_count_notice(level, text, ctx);
+#else
+    (void)level;
+    (void)ctx;
+#endif
+}
+
+/* Whether the live ledger holds exactly LPCN @p lpcn. */
+static int
+dmr_missing_only(const dsd_state* state, uint16_t lpcn) {
+    static dmr_t3_missing_ledger l;
+    dmr_t3_missing_copy(state, &l);
+    return dmr_t3_missing_count(state) == 1U && l.detail_count == 1U && l.details[0].lpcn == lpcn
+           && ((l.missing[lpcn >> 3] >> (lpcn & 7U)) & 1U) != 0U;
+}
+
+/* Two DMR targets each record their own channel granted without a frequency (discussion #900 F1): A's 12 and B's 30
+   leave and come back with their target, never show on the other, and the exit summary names each target's own. */
+static int
+test_dmr_missing_ledger_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr missing: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    const dmr_t3_grant_class group = {1U, 0U, 2002U, 1001U};
+    dmr_t3_missing_note_grant(opts, state, 12U, &group, 0U, 0);
+    if (!dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A did not record LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_missing_count(state) != 0U) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+    dmr_t3_missing_note_grant(opts, state, 30U, &group, 1U, 1);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || !dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's ledger not restored\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || !dmr_missing_only(state, 30U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target B's ledger not restored\n");
+        test_rc = 1;
+    }
+
+    g_dmr_missing_summaries = 0;
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (g_dmr_missing_summaries != 2 || strstr(g_dmr_missing_summary[0], "(a)") == NULL
+        || strstr(g_dmr_missing_summary[0], " 12") == NULL || strstr(g_dmr_missing_summary[1], "(b)") == NULL
+        || strstr(g_dmr_missing_summary[1], " 30 (unchecked)") == NULL) {
+        DSD_FPRINTF(stderr, "dmr missing: exit summaries %d [%s] [%s]\n", g_dmr_missing_summaries,
+                    g_dmr_missing_summary[0], g_dmr_missing_summary[1]);
+        test_rc = 1;
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Review Focus 3 (discussion #900 F3): the user's channels are the global map's and never a target's. A live edit is
+   refused under the scan, and even an overlay seeded on target A (unchecked, as no path under a scan can) is emptied
+   by the next target switch: it never shows on B, nor comes back with A. */
+static int
+test_dmr_overlay_never_crosses_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* A live edit is refused under the scan. */
+    if (dmr_t3_overlay_apply(opts, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
+        != DMR_T3_SET_TRUNK_SCAN) {
+        DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_chan_effective_hz(state, 12U) != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_overlay_get(state, 12U, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -3367,6 +3799,24 @@ qt_shared_state(void) {
     return g_qt_shared_state;
 }
 
+static dsd_opts* g_qt_shared_opts;
+
+#ifdef USE_RADIO
+/* One heap-backed options fixture the quiet-check cases share, cleared for each case. */
+static dsd_opts*
+qt_shared_opts(void) {
+    if (!g_qt_shared_opts) {
+        g_qt_shared_opts = (dsd_opts*)calloc(1, sizeof *g_qt_shared_opts);
+        if (!g_qt_shared_opts) {
+            abort();
+        }
+        return g_qt_shared_opts;
+    }
+    DSD_MEMSET(g_qt_shared_opts, 0, sizeof *g_qt_shared_opts);
+    return g_qt_shared_opts;
+}
+#endif
+
 static void
 qt_shared_state_free(void) {
     if (g_qt_shared_state) {
@@ -3374,6 +3824,8 @@ qt_shared_state_free(void) {
     }
     free(g_qt_shared_state);
     g_qt_shared_state = NULL;
+    free(g_qt_shared_opts);
+    g_qt_shared_opts = NULL;
 }
 
 /* A trunk scan started from the menu after the run's first stream landed the receiver (run_landed 1): its first park is
@@ -5056,14 +5508,15 @@ test_nxdn48_conventional_activity_hold(void) {
  * The span must reach DSD_SCAN_VOICE_MIN_SPAN_S (0.10 s) before the probe counts it.
  */
 static int
-seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, dsd_call_crypto_state crypto) {
+seed_voice_gate_media_epoch_proto(dsd_state* state, int protocol, double begin_m, double media_m,
+                                  dsd_call_crypto_state crypto) {
     if (dsd_call_state_ensure(state) <= 0) {
         DSD_FPRINTF(stderr, "voice-gate seed: call-state ensure failed\n");
         return -1;
     }
     dsd_call_observation obs;
     DSD_MEMSET(&obs, 0, sizeof(obs));
-    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.protocol = protocol;
     obs.slot = 0U;
     obs.kind = DSD_CALL_KIND_GROUP_VOICE;
     obs.ota_target_id = 1001U;
@@ -5079,14 +5532,18 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
         DSD_MEMSET(&update, 0, sizeof(update));
         update.classification = crypto;
         update.observed_m = begin_m;
-        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &update);
+        (void)dsd_call_state_update_crypto(state, 0U, protocol, &update);
     }
-    if (dsd_call_state_update_media(state, 0U, 1, begin_m) != 1
-        || dsd_call_state_update_media(state, 0U, 1, media_m) != 1) {
+    if (decoded_media(state, 0U, 1, begin_m) != 1 || decoded_media(state, 0U, 1, media_m) != 1) {
         DSD_FPRINTF(stderr, "voice-gate seed: media update failed\n");
         return -1;
     }
     return 0;
+}
+
+static int
+seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, dsd_call_crypto_state crypto) {
+    return seed_voice_gate_media_epoch_proto(state, DSD_SYNC_DMR_BS_VOICE_POS, begin_m, media_m, crypto);
 }
 
 /* With the gate on, a header alone never holds a conventional target: not a data header
@@ -5172,6 +5629,965 @@ test_conventional_voice_gate_voice_header_no_hold(void) {
     return rc;
 }
 
+static int expect_active_target(const dsd_state* state, const char* stage, size_t want);
+
+/* Issue #890: a scan observation counts only for the visit its read began on. A frame whose read began while the
+ * coordinator was on target a and that reports after b landed (the same decode time), a frame cut by an input
+ * interruption or a carrier boundary, and a report decoded while b's park is in flight (the frame is a's, its index
+ * already b's) hold nothing; a report from b's own frame does. @p body names two conventional targets of @p report's
+ * family (on two frequencies, or two types of one family on one frequency). */
+typedef void (*conventional_report_fn)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int);
+
+static int
+run_conventional_activity_origin_case(const char* tag, const char* body, conventional_report_fn report) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    /* A frame whose read begins on a. */
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
+    if (visit_a == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's landing set no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "origin: rotation to b", 1U);
+    if (state->scan_landing_visit == visit_a || state->scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's landing set no visit of its own\n", tag);
+        test_rc = 1;
+    }
+    /* That frame reports now, at b's landing time. */
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    /* b's own frames, cut by an input interruption and by a carrier boundary. */
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
+    state->input_interrupted = 1;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->input_interrupted = 0;
+    state->frame_dispatch_carrier_seq = state->carrier_seq - 1U;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a delayed, interrupted or cut report held b\n", tag);
+        test_rc = 1;
+    }
+    /* Back on a: a report from its own frame holds it past the dwell. */
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = state->carrier_seq;
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.80);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report of the visit's own frame did not hold it\n", tag);
+        test_rc = 1;
+    }
+
+    /* A park in flight: the index is b's, the receiver still a's. What is decoded then holds nothing. a's hold ends
+       at 2.52 and its dwell at 2.77. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(2.85);
+    dsd_engine_trunk_scan_tick(opts, state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(state, "origin: rotation to b in flight", 1U);
+    if (g_scan_tune_pending_request == 0U || state->scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park is not in flight (request %llu, visit %llu)\n", tag,
+                    (unsigned long long)g_scan_tune_pending_request, (unsigned long long)state->scan_landing_visit);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(2.86);
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(2.87);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "origin: b landed", 1U);
+    if (state->scan_landing_visit == 0U) {
+        DSD_FPRINTF(stderr, "%s: b's park landed no visit\n", tag);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(3.15);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a report decoded while b's park was in flight held b\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a restart of the radio stream (a gain, bandwidth or device change) while a conventional target is landed
+ * forgets every landing at the stream's start; when the new stream opens on the same source and the target's frequency
+ * the target lands again under a new visit: a frame read before the restart holds nothing, and its own traffic after
+ * the restart holds it. With @p elsewhere the stream opens on another centre: no landing, nothing holds the target. */
+static int
+run_conventional_activity_after_restart_case(int elsewhere) {
+    const char* tag = elsewhere ? "restart elsewhere" : "restart on the target";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_before = state->scan_landing_visit;
+    const uint32_t carrier_before = state->carrier_seq;
+    state->carrier_source_key = 1U;
+    trunk_scan_test_set_now(0.05);
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(opts, state);
+    /* The stream start (dsd_engine_note_stream_source()): the same source's reopen is a stream gap, and every landing
+       is forgotten. */
+    state->carrier_seq++;
+    dsd_engine_scan_landing_forget(state);
+    opts->rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
+    dsd_engine_trunk_scan_stream_reopened(opts, state, 1);
+    p25_sm_tick_guard_leave();
+    if (elsewhere ? state->scan_landing_visit != 0U
+                  : (state->scan_landing_visit == 0U || state->scan_landing_visit == visit_before
+                     || !dsd_engine_trunk_scan_target_confirmed(state, 0))) {
+        DSD_FPRINTF(stderr, "%s: visit %llu after the reopen (before %llu)\n", tag,
+                    (unsigned long long)state->scan_landing_visit, (unsigned long long)visit_before);
+        test_rc = 1;
+    }
+    /* A frame read before the restart reports now: nothing. Then the target's own traffic after it. */
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_before;
+    state->frame_dispatch_scan_visit = visit_before;
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_carrier_seq = state->carrier_seq;
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, tag, elsewhere ? 1U : 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a stream that reopens on the landed target's frequency lands nothing again when the scan was paused
+ * meanwhile (@p mode 0), when the target on air had a park in flight at the stop rather than a landing (1: the park's
+ * own reopen rule decides it at the next tick, not this one), or when the stream reopened on another radio source (2).
+ */
+static int
+run_restart_relands_nothing_case(int mode) {
+    static const char* const tags[] = {"restart while paused", "restart with a park in flight",
+                                       "restart on another source"};
+    const char* tag = tags[mode];
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    uint32_t reopen_hz = 461000000U;
+    if (mode == 1) {
+        /* The rotation to b goes in flight. */
+        g_scan_tune_to_freq_pending = 1;
+        g_scan_tune_pending_request = 0U;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(opts, state);
+        g_scan_tune_to_freq_pending = 0;
+        test_rc |= expect_active_target(state, tag, 1U);
+        reopen_hz = 462000000U;
+    }
+    state->carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(opts, state);
+    p25_sm_tick_guard_leave();
+    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
+        DSD_FPRINTF(stderr, "%s: the pause failed\n", tag);
+        test_rc = 1;
+    }
+    p25_sm_tick_guard_enter();
+    state->carrier_seq++;
+    dsd_engine_scan_landing_forget(state);
+    if (mode == 2) {
+        state->carrier_source_key = 2U;
+    }
+    opts->rtlsdr_center_freq = reopen_hz;
+    dsd_engine_trunk_scan_stream_reopened(opts, state, 1);
+    p25_sm_tick_guard_leave();
+    if (state->scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state->scan_landing_visit);
+        test_rc = 1;
+    }
+    g_scan_tune_pending_request = 0U;
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #890: a visit that is stale while the carrier count is unchanged (a trunk-scan rotation between two targets
+ * moves no carrier boundary): a frame dispatched under the visit before, its carrier the current one, holds nothing. */
+static int
+test_conventional_activity_stale_visit_same_carrier(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,2000,\n"
+                             "b,dmr-conventional,462000000,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "stale visit: scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state->scan_landing_visit;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "stale visit: on b", 1U);
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = state->carrier_seq; /* the carrier count is the current one */
+    state->frame_dispatch_scan_visit = visit_a;
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "stale visit: a's report held nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* ---- Issue #890: simplex digital activity, the policy table at the coordinator, and the key matrix ---- */
+
+static int load_nfm_targets(const char* body, dsd_trunk_scan_target_list* list, char* err, size_t err_sz);
+
+/* An identity for a simplex report (dsd_trunk_scan_activity_identity): a clear voice call of known party, numeric IDs
+   when @p numeric. */
+static dsd_trunk_scan_activity_identity
+simplex_identity(int numeric) {
+    dsd_trunk_scan_activity_identity id;
+    DSD_MEMSET(&id, 0, sizeof(id));
+    id.known = DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    if (numeric) {
+        id.target = 1001U;
+        id.source = 2002U;
+        id.known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+    }
+    return id;
+}
+
+/* The DSP rate a two-target list of @p type is visited at: a TETRA DMO target only at a TETRA rate (issue #890 D3),
+   every other type at the fixture's own (0, none published). */
+static int
+simplex_case_dsp_rate_hz(const char* type) {
+    return strncmp(type, "tetra-dmo", 9) == 0 ? 72000 : 0;
+}
+
+/* Two conventional targets of @p type (250 ms dwell and hold): a checked report of @p protocol through the runtime hook
+   holds the first past its dwell, one of @p other (another family) does not, and none does under voice-only scanning
+   or the allow list for a numeric family (the stand-in evaluator refuses every listed lookup); a callsign family takes
+   no allow list. A receive slot filter does not apply (F10). */
+static int
+run_digital_activity_family_case(const char* type, int protocol, int other, int numeric) {
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,461000000,,250,250,\nb,%s,462000000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    int test_rc = 0;
+    const dsd_trunk_scan_activity_identity id = simplex_identity(numeric);
+    for (int pass = 0; pass < 4; pass++) {
+        reset_scan_opts_state(opts, state);
+        g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
+        /* pass 1: another family's report; 2: voice-only; 3: the allow list, with a slot filter set. */
+        opts->scan_voice_only = pass == 2;
+        opts->trunk_use_allow_list = pass == 3;
+        if (pass == 3) {
+            unsigned int seen = 0U;
+            char ferr[128] = {0};
+            if (dsd_receive_option_apply(&opts->receive, &seen, "--slot-allow", "2", ferr, sizeof ferr) != 0) {
+                DSD_FPRINTF(stderr, "%s: slot filter: %s\n", type, ferr);
+                test_rc = 1;
+            }
+        }
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "%s: init failed: %s\n", type, err);
+            test_rc = 1;
+            break;
+        }
+        trunk_scan_test_set_now(0.10);
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, pass == 1 ? other : protocol, -1, &id);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        const int held = pass == 0 || (pass == 3 && !numeric);
+        if ((dsd_engine_trunk_scan_active_index(state) == 0) != held) {
+            DSD_FPRINTF(stderr, "%s pass %d: active %zu, want %s\n", type, pass,
+                        dsd_engine_trunk_scan_active_index(state), held ? "held on a" : "rotated to b");
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_digital_activity_holds_its_family(void) {
+    int rc = run_digital_activity_family_case("ysf-conventional", DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_HD_POS, 0);
+    rc |= run_digital_activity_family_case("dstar-conventional", DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_YSF_POS, 0);
+    rc |= run_digital_activity_family_case("dpmr-conventional", DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_NXDN_POS, 1);
+    rc |= run_digital_activity_family_case("m17-conventional", DSD_SYNC_M17_LSF_POS, DSD_SYNC_YSF_POS, 0);
+    rc |= run_digital_activity_family_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, DSD_SYNC_DPMR_FS2_POS, 1);
+    /* A report of DMR's own family through this slot claims no target: DMR reports through its own. */
+    rc |= run_digital_activity_family_case("dpmr-conventional", DSD_SYNC_DPMR_FS2_POS, DSD_SYNC_DMR_BS_VOICE_POS, 1);
+    return rc;
+}
+
+/* A report read on the visit before (the frame's dispatch origin, issue #890 A2) holds nothing for the target on air,
+   for a simplex family as for DMR: two YSF targets. */
+static int
+test_digital_activity_binds_its_visit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,ysf-conventional,461000000,,250,2000,\nb,ysf-conventional,461012500,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "ysf visit: init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "ysf visit: rotation to b", 1U);
+    const dsd_trunk_scan_activity_identity id = simplex_identity(0);
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_YSF_POS, -1, &id);
+    state->frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "ysf visit: a's report held b nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The key matrix at the target list's own entry points (issue #890): a type whose class takes no key columns refuses
+   each legacy key column, with its class's reason and never the cell; the options cell refuses a key switch the class
+   does not take, naming why; dPMR takes the scoped -R and what a legacy NXDN-scrambler system carries with it. */
+static int
+test_simplex_targets_follow_the_key_matrix(void) {
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list;
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+
+    static const struct {
+        const char* row;
+        const char* diagnostic;
+    } refused[] = {
+        {"a,ysf-conventional,433000000,,,,,,,keys.csv,,,\n",
+         "row 2: key columns are not supported for a ysf-conventional target: it decrypts nothing"},
+        {"a,dstar-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a dstar-conventional target: it decrypts nothing"},
+        {"a,tetra-dmo-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a tetra-dmo-conventional target: it decrypts nothing"},
+        {"a,m17-conventional,433000000,,,,,,,keys.csv,,,\n",
+         "row 2: key columns are not supported for a m17-conventional target: it takes no keys of its own: the "
+         "session's keys apply"},
+        {"a,dpmr-conventional,433000000,,,,,,,,12345,,\n",
+         "row 2: key columns are not supported for a dpmr-conventional target: it takes only an -R scrambler key in "
+         "its options"},
+        {"a,dpmr-conventional,433000000,,,,,,,keys.csv,,-R 17,\n",
+         "row 2: key columns are not supported for a dpmr-conventional target"},
+        {"a,m17-conventional,433000000,,,,,,,,,--key-profile-ref m17-ref,\n",
+         "row 2: --key-profile-ref: a m17 row or target takes no key setting: it takes no keys of its own"},
+        {"a,m17-conventional,433000000,,,,,,,,,--no-decryption-keys,\n",
+         "row 2: --no-decryption-keys: a m17 row or target takes no key setting"},
+        {"a,ysf-conventional,433000000,,,,,,,,,--no-force-key,\n",
+         "row 2: --no-force-key: a ysf row or target takes no key setting: it decrypts nothing"},
+        {"a,tetra-dmo-conventional,433000000,,,,,,,,,-R 17,\n",
+         "row 2: -R: a tetra-dmo row or target takes no key setting: it decrypts nothing"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-R 32768,\n", "row 2: -R: invalid value"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-K keys.csv,\n", "row 2: -K: not supported for this mode/target"},
+        {"a,dpmr-conventional,433000000,,,,,,,,,-0,\n", "row 2: -0: not supported for this mode/target"},
+    };
+
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        DSD_MEMSET(err, 0, sizeof err);
+        const int rc = load_nfm_targets(refused[i].row, &list, err, sizeof err);
+        if (rc != -1 || !strstr(err, refused[i].diagnostic) || strstr(err, "12345") || strstr(err, "keys.csv")) {
+            DSD_FPRINTF(stderr, "key matrix row '%s': rc=%d err='%s', want '%s'\n", refused[i].row, rc, err,
+                        refused[i].diagnostic);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+    }
+    /* What the Qt scan list writes for a legacy NXDN-scrambler dPMR system, and an M17 row's talkgroup file alone. */
+    if (load_nfm_targets("a,dpmr-conventional,433000000,,,,,,,,,-R 17 -4 --key-profile-ref legacy-ref,\n"
+                         "b,dpmr-conventional,433100000,,,,,,,,,--no-decryption-keys --no-force-key,\n"
+                         "c,m17-conventional,433200000,,,,,,,,,--strict-crc --enc-lockout,\n",
+                         &list, err, sizeof err)
+        != 0) {
+        DSD_FPRINTF(stderr, "key matrix: legacy dPMR rows refused: %s\n", err);
+        return 1;
+    }
+    const dsd_trunk_scan_target* a = &list.targets[0];
+    if (list.count != 3 || a->single_key_scalars.R != 17U || !a->single_keys_present || a->row_options.force != 1
+        || strcmp(a->row_options.key_profile_ref, "legacy-ref") != 0
+        || (list.targets[1].row_options.present & DSD_SCAN_OPT_CLEAR_KEYS) == 0U) {
+        DSD_FPRINTF(stderr, "key matrix: legacy dPMR rows parsed wrong\n");
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    return test_rc;
+}
+
+/* A live key change for the target on air (dsd_trunk_scan_hook_decryption_apply()), by material and operation: a YSF,
+   D-STAR, TETRA DMO or M17 target refuses every one, a force choice alone and a clear-keys input included; a dPMR target
+   takes its scrambler key, a clear-keys input and a force of 0 or 1, and refuses a key loader, AES, a -1 multi-scalar
+   key, a DMR key map and an ALG ID force. */
+static int
+run_live_key_change_case(const char* type, int keyed) {
+    char body[192];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,433000000,,250,250,\nb,%s,433100000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: live keys init failed: %s\n", type, err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    dsd_dmr_key_map no_map;
+    DSD_MEMSET(&no_map, 0, sizeof no_map);
+
+    enum { OP_SCRAMBLER, OP_CLEAR, OP_FORCE_ON, OP_FORCE_OFF, OP_FORCE_ALG, OP_LOADER, OP_AES, OP_MULTI, OP_COUNT };
+
+    /* Taken by a keyed (dPMR) target; never by an unkeyed one. */
+    static const int k_keyed_takes[OP_COUNT] = {1, 1, 1, 1, 0, 0, 0, 0};
+    for (int op = 0; op < OP_COUNT; op++) {
+        dsd_key_set keys;
+        DSD_MEMSET(&keys, 0, sizeof keys);
+        uint32_t fields = DSD_TRUNK_KEY_MATERIAL;
+        int force = 0;
+        switch (op) {
+            case OP_SCRAMBLER:
+                keys.present = 1U;
+                keys.scalars.R = 17U;
+                keys.scalars.scalar_key_present[0] = 1U;
+                break;
+            case OP_CLEAR: keys.present = 1U; break;
+            case OP_FORCE_ON:
+                fields = DSD_TRUNK_KEY_FORCE;
+                force = 1;
+                break;
+            case OP_FORCE_OFF: fields = DSD_TRUNK_KEY_FORCE; break;
+            case OP_FORCE_ALG:
+                fields = DSD_TRUNK_KEY_FORCE;
+                force = 0x21;
+                break;
+            case OP_LOADER:
+                keys.present = 1U;
+                keys.keyloader = 1;
+                break;
+            case OP_AES:
+                keys.present = 1U;
+                keys.scalars.aes_key_loaded[0] = 1;
+                keys.scalars.aes_key_segments[0] = 4U;
+                break;
+            case OP_MULTI:
+            default:
+                keys.present = 1U;
+                keys.scalars.R = 0x1111111111ULL;
+                keys.scalars.RR = 0x1111111111ULL;
+                keys.scalars.scalar_key_present[0] = 1U;
+                keys.scalars.scalar_key_present[1] = 1U;
+                break;
+        }
+        const int want = keyed && k_keyed_takes[op] ? DSD_TRUNK_KEY_APPLIED : DSD_TRUNK_KEY_INVALID;
+        const int got =
+            dsd_trunk_scan_hook_decryption_apply(opts, state, "a", generation, fields, &keys, &no_map, force);
+        if (got != want) {
+            DSD_FPRINTF(stderr, "%s: live key op %d: %d, want %d\n", type, op, got, want);
+            test_rc = 1;
+        }
+        DSD_SECURE_ZERO(&keys, sizeof keys);
+    }
+    dsd_dmr_key_map map;
+    DSD_MEMSET(&map, 0, sizeof map);
+    map.count = 1U;
+    dsd_key_set none;
+    DSD_MEMSET(&none, 0, sizeof none);
+    if (dsd_trunk_scan_hook_decryption_apply(opts, state, "a", generation, DSD_TRUNK_KEY_MAP, &none, &map, 0)
+        != DSD_TRUNK_KEY_INVALID) {
+        DSD_FPRINTF(stderr, "%s: a DMR key map was taken\n", type);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_live_key_changes_follow_the_key_matrix(void) {
+    int rc = run_live_key_change_case("dpmr-conventional", 1);
+    rc |= run_live_key_change_case("m17-conventional", 0);
+    rc |= run_live_key_change_case("ysf-conventional", 0);
+    rc |= run_live_key_change_case("dstar-conventional", 0);
+    rc |= run_live_key_change_case("tetra-dmo-conventional", 0);
+    return rc;
+}
+
+/* A keyed dPMR target alternating with an M17 one (issue #890): M17 reads the shared scrambler register (state->R) as
+   its session key, so the dPMR target's -R must never be in it while M17 is on air. Landing on dPMR installs its key,
+   M17 gets the session's back, a pause on dPMR hands the manual session its own key, and a failed switch to M17 leaves
+   dPMR's in force (its rollback), the next successful one the session's. */
+static int
+test_keyed_dpmr_alternates_with_m17(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "d,dpmr-conventional,446100000,,250,,keyed,-R 17 -4\n"
+                                       "m,m17-conventional,433475000,,250,,session,\n",
+                                       path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    state->R = 0x1234U; /* the session's M17 scrambler seed */
+    state->M = 0;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
+    if (!failed) {
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U || state->M != 1;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 1 || state->R != 0x1234U || state->M != 0;
+        trunk_scan_test_set_now(0.52);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 rotation: active %zu R %llu M %d\n",
+                        dsd_engine_trunk_scan_active_index(state), (unsigned long long)state->R, state->M);
+        }
+        /* Paused on dPMR: the manual session runs its own keys. Resumed: dPMR's again. */
+        failed |= dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0;
+        failed |= state->R != 0x1234U || state->M != 0;
+        failed |= dsd_engine_trunk_scan_resume_locked(opts, state) != 0;
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 pause: R %llu M %d\n", (unsigned long long)state->R, state->M);
+        }
+        /* A switch to M17 that fails keeps dPMR on air with its own key; the retry lands with the session's. */
+        g_scan_tune_to_freq_failures_remaining = 1;
+        trunk_scan_test_set_now(0.90);
+        dsd_engine_trunk_scan_tick(opts, state);
+        /* The switch was tried (its one failure spent) and rolled back. */
+        failed |= g_scan_tune_to_freq_failures_remaining != 0;
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U || state->M != 1;
+        g_scan_tune_to_freq_failures_remaining = 0;
+        trunk_scan_test_set_now(4.00);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 1 || state->R != 0x1234U || state->M != 0;
+        if (failed) {
+            DSD_FPRINTF(stderr, "dpmr/m17 failed switch: active %zu R %llu M %d\n",
+                        dsd_engine_trunk_scan_active_index(state), (unsigned long long)state->R, state->M);
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        failed |= state->R != 0x1234U || state->M != 0;
+    } else {
+        DSD_FPRINTF(stderr, "dpmr/m17 init failed: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
+/* Issue #890: two lists naming simplex targets merge as every target does (issue #697: one id is one target). The same
+   id with the same settings is one target in both lists; the same id with another family, options or key is refused,
+   naming the setting; two ids on one frequency are two targets, whatever their families. */
+static int
+run_simplex_merge_case(const char* tag, const char* first, const char* second, int want_targets, const char* want_err) {
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path_a[DSD_TEST_PATH_MAX];
+    char path_b[DSD_TEST_PATH_MAX];
+    char body[512];
+    if (make_temp_dir(dir, sizeof dir) != 0 || dsd_test_path_join(path_a, sizeof path_a, dir, "first.csv") != 0
+        || dsd_test_path_join(path_b, sizeof path_b, dir, "second.csv") != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(body, sizeof body, "%s%s", header, first);
+    int failed = write_text_file(path_a, body) != 0;
+    DSD_SNPRINTF(body, sizeof body, "%s%s", header, second);
+    failed |= write_text_file(path_b, body) != 0;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path_a);
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", path_b);
+    opts->trunk_scan_list_count = 2;
+    char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+    trunk_scan_test_set_now(0.0);
+    const int rc = failed ? -1 : dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    if (want_err == NULL) {
+        if (rc != 0 || dsd_engine_trunk_scan_target_count(state) != (size_t)want_targets) {
+            DSD_FPRINTF(stderr, "%s: rc %d, %zu targets, want %d: %s\n", tag, rc,
+                        dsd_engine_trunk_scan_target_count(state), want_targets, err);
+            failed = 1;
+        }
+    } else if (rc == 0 || strstr(err, want_err) == NULL) {
+        DSD_FPRINTF(stderr, "%s: rc %d err '%s', want '%s'\n", tag, rc, err, want_err);
+        failed = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    (void)remove(path_a);
+    (void)remove(path_b);
+    (void)dsd_test_rmdir(dir);
+    return failed;
+}
+
+static int
+test_simplex_targets_merge_across_lists(void) {
+    int rc = run_simplex_merge_case("same id, same settings", "y,ysf-conventional,433000000,,250,250,,\n",
+                                    "y,ysf-conventional,433000000,,250,250,,\n", 1, NULL);
+    rc |= run_simplex_merge_case("same id, another family", "x,ysf-conventional,433000000,,250,250,,\n",
+                                 "x,m17-conventional,433000000,,250,250,,\n", 0, "with another type");
+    rc |= run_simplex_merge_case("same id, other options", "d,dpmr-conventional,446100000,,250,250,,--strict-crc\n",
+                                 "d,dpmr-conventional,446100000,,250,250,,\n", 0, "with another -F/--strict-crc");
+    rc |= run_simplex_merge_case("same id, another key", "d,dpmr-conventional,446100000,,250,250,,-R 17\n",
+                                 "d,dpmr-conventional,446100000,,250,250,,-R 18\n", 0, "the key columns differ");
+    rc |= run_simplex_merge_case("distinct ids, one frequency", "a,ysf-conventional,433000000,,250,250,,\n",
+                                 "b,m17-conventional,433000000,,250,250,,\n", 2, NULL);
+    rc |= run_simplex_merge_case("distinct ids, one frequency, tetra and dpmr",
+                                 "t,tetra-dmo-conventional,433000000,,250,250,,\n",
+                                 "d,dpmr-conventional,433000000,,250,250,,-R 17\n", 2, NULL);
+    return rc;
+}
+
+/* Issue #890 B3 review ruling: an opaque DM-2-C DSB and a D-PRS record inside DV with no header-named call are known
+   non-data presence, so under the defaults (--no-data-calls among them) they hold their target; DM-2-C stays known
+   encrypted, so under --enc-lockout it holds nothing. The identities are those the protocols report
+   (tetra_calls.c, dstar_slow_data.c). */
+static int
+run_presence_case(const char* type, int protocol, const dsd_trunk_scan_activity_identity* id, int enc_lockout,
+                  int want_held) {
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,461000000,,250,250,\nb,%s,462000000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
+    opts->trunk_tune_enc_calls = enc_lockout ? 0 : 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s presence: init failed: %s\n", type, err);
+        test_rc = 1;
+    } else {
+        if (opts->trunk_tune_data_calls != 0) {
+            DSD_FPRINTF(stderr, "%s presence: the defaults follow data calls\n", type);
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(0.10);
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, protocol, -1, id);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if ((dsd_engine_trunk_scan_active_index(state) == 0) != want_held) {
+            DSD_FPRINTF(stderr, "%s presence (enc lockout %d): active %zu, want %s\n", type, enc_lockout,
+                        dsd_engine_trunk_scan_active_index(state), want_held ? "held" : "rotated");
+            test_rc = 1;
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_presence_reports_hold_under_the_defaults(void) {
+    dsd_trunk_scan_activity_identity dm2c;
+    DSD_MEMSET(&dm2c, 0, sizeof dm2c);
+    dm2c.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    dm2c.encrypted = 1U;
+    dsd_trunk_scan_activity_identity dprs;
+    DSD_MEMSET(&dprs, 0, sizeof dprs);
+    dprs.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    int rc = run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &dm2c, 0, 1);
+    rc |= run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &dm2c, 1, 0);
+    rc |= run_presence_case("dstar-conventional", DSD_SYNC_DSTAR_VOICE_POS, &dprs, 0, 1);
+    rc |= run_presence_case("dstar-conventional", DSD_SYNC_DSTAR_VOICE_POS, &dprs, 1, 1);
+    /* What they were before the ruling, data unknown: withheld under the defaults (F9). */
+    dsd_trunk_scan_activity_identity unknown = dm2c;
+    unknown.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    rc |= run_presence_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, &unknown, 0, 0);
+    return rc;
+}
+
+static int
+test_conventional_activity_after_a_stream_restart(void) {
+    int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
+    for (int mode = 0; mode < 3; mode++) {
+        rc |= run_restart_relands_nothing_case(mode);
+    }
+    return rc;
+}
+
+static int
+test_conventional_activity_binds_its_visit(void) {
+    int rc = run_conventional_activity_origin_case("two frequencies",
+                                                   "a,dmr-conventional,461000000,,250,2000,\n"
+                                                   "b,dmr-conventional,462000000,,250,2000,\n",
+                                                   dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_conventional_activity_origin_case("one frequency",
+                                                "a,nxdn-conventional,461000000,,250,2000,\n"
+                                                "b,nxdn48-conventional,461000000,,250,2000,\n",
+                                                dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* Issue #890: under --scan-voice-only a target holds only on checked media of its own landed visit. A call whose frames
+ * were read on target a, decoded and ended after b landed (its last frame at b's landing time), holds b nothing; nor do
+ * media marks without checked media (frames the vocoder failed or concealed) past the dwell, nor checked media decoded
+ * while a park is in flight. b's own checked media holds b, through a sync loss. @p body names two conventional
+ * targets. */
+static int
+run_voice_gate_media_origin_case(const char* tag, const char* body, int protocol) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    opts->scan_voice_only = 1;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: voice origin scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: rotation to b", 1U);
+    /* Frames read on a, decoded now: checked media up to b's landing time, then the call ends. */
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    state->frame_dispatch_active = 0;
+    (void)dsd_call_state_end_ex(state, 0U, 0.26, DSD_CALL_END_TERMINATOR);
+    dsd_engine_trunk_scan_tick(opts, state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "%s: a's ended call held b\n", tag);
+        test_rc = 1;
+    }
+
+    /* On a (landed 0.52): marks without checked media, past a's 250 ms dwell. */
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = protocol;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1001U;
+    obs.policy_target_id = 1001U;
+    obs.observed_m = 0.53;
+    (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    for (int f = 0; f < 13; f++) {
+        (void)dsd_call_state_update_media(state, 0U, 1, 0.53 + (0.02 * f));
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media marks with no checked media held a\n", tag);
+        test_rc = 1;
+    }
+
+    /* On b (landed 0.78): its own checked media holds it past its dwell, a sync loss after it too. */
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    (void)dsd_call_state_end_ex(state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
+    trunk_scan_test_set_now(1.10);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: b held by its own media past a sync loss", 1U);
+
+    /* b's hold ends at 1.20 and its dwell at 1.45: the park to a goes in flight, and media decoded meanwhile is no
+       media of a's. */
+    g_scan_tune_to_freq_pending = 1;
+    g_scan_tune_pending_request = 0U;
+    trunk_scan_test_set_now(1.50);
+    dsd_engine_trunk_scan_tick(opts, state);
+    g_scan_tune_to_freq_pending = 0;
+    test_rc |= expect_active_target(state, "voice origin: rotation to a in flight", 0U);
+    if (g_scan_tune_pending_request == 0U) {
+        DSD_FPRINTF(stderr, "%s: a's park is not in flight\n", tag);
+        test_rc = 1;
+    }
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
+    trunk_scan_test_set_now(1.71);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: a landed", 0U);
+    trunk_scan_test_set_now(1.97);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1) {
+        DSD_FPRINTF(stderr, "%s: media decoded while a's park was in flight held a\n", tag);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_voice_gate_media_binds_its_visit(void) {
+    int rc = run_voice_gate_media_origin_case("two frequencies",
+                                              "a,dmr-conventional,461000000,,250,250,\n"
+                                              "b,dmr-conventional,462000000,,250,250,\n",
+                                              DSD_SYNC_DMR_BS_VOICE_POS);
+    /* Media of the rows' own family (issue #890: a row's voice credit is its family's only). */
+    rc |= run_voice_gate_media_origin_case("one frequency",
+                                           "a,nxdn-conventional,461000000,,250,250,\n"
+                                           "b,nxdn48-conventional,461000000,,250,250,\n",
+                                           DSD_SYNC_NXDN_POS);
+    return rc;
+}
+
 /* With the gate on, decoded voice media holds a conventional target with no header ever
  * reported: the 250 ms dwell would otherwise rotate at 0.25. Fresh media refreshes the
  * hold, and the target rotates only after the hold lapses and the dwell re-elapses. */
@@ -5219,7 +6635,7 @@ test_conventional_voice_gate_media_hold(void) {
     }
 
     // Fresh media refreshes the hold: without it the 0.25 media would lapse at 0.50.
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -5325,8 +6741,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
             obs.ota_source_id = 2002U;
             obs.observed_m = 0.10;
             if (dsd_call_state_ensure(state) <= 0 || dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.10) != 1
-                || dsd_call_state_update_media(state, 0U, 1, 0.25) != 1) {
+                || decoded_media(state, 0U, 1, 0.10) != 1 || decoded_media(state, 0U, 1, 0.25) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional voice-gate media seed failed\n");
                 test_rc = 1;
                 goto cleanup;
@@ -5343,7 +6758,7 @@ test_p25_conventional_voice_gate_media_hold(void) {
                 DSD_FPRINTF(stderr, "P25 conventional fresh media did not publish VOICE\n");
                 test_rc = 1;
             }
-            if (dsd_call_state_update_media(state, 0U, 1, 0.49) != 1
+            if (decoded_media(state, 0U, 1, 0.49) != 1
                 || dsd_call_state_end_ex(state, 0U, 0.50, DSD_CALL_END_TERMINATOR) != 1) {
                 DSD_FPRINTF(stderr, "P25 conventional media refresh/end failed\n");
                 test_rc = 1;
@@ -12189,7 +13604,7 @@ test_scan_timing_voice_gate_phases(void) {
     test_rc |= expect_scan_timing(&state, "voice", DSD_SCAN_STAY_VOICE, 0.50, 250U, 250U);
     test_rc |= expect_scan_timing_window(&state, "voice", 0.25, 250U);
 
-    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+    if (decoded_media(&state, 0U, 1, 0.49) != 1) {
         DSD_FPRINTF(stderr, "scan timing voice-gate media refresh failed\n");
         test_rc = 1;
     }
@@ -14085,7 +15500,7 @@ static int
 test_nfm_target_parse_and_row_diagnostics(void) {
     int test_rc = 0;
     dsd_trunk_scan_target_list list;
-    char err[256] = {0};
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
     if (load_nfm_targets("fire,nfm-conventional,154430000,,1500,2000,county fire,,20,,,"
                          "--nfm-bandwidth-hz 12500 --squelch-db -60 --scan-max-visit-ms 5000,\n"
                          "dmr,dmr-conventional,461000000,,1500,1200,,gfsk,,,,,\n",
@@ -14116,8 +15531,9 @@ test_nfm_target_parse_and_row_diagnostics(void) {
         {"a,nfm,154430000,,,,,,,,,,\n", "row 2 has invalid target type 'nfm' (use nfm-conventional)"},
         {"a,NFM-conventional,154430000,,,,,,,,,,\n",
          "row 2 has invalid target type 'NFM-conventional'; expected p25-trunk, p25-conventional, dmr-trunk, "
-         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk, nfm-conventional or "
-         "am-conventional"},
+         "dmr-conventional, nxdn-trunk, nxdn-conventional, nxdn48-conventional, nxdn48-trunk, nfm-conventional, "
+         "am-conventional, ysf-conventional, dstar-conventional, dpmr-conventional, m17-conventional or "
+         "tetra-dmo-conventional"},
         {"a,nfm-conventional,154430000,,,,,auto,,,,,\n", "row 2: an analog target takes no modulation"},
         {"a,nfm-conventional,154430000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
         {"a,nfm-conventional,154430000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
@@ -15544,9 +16960,12 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
 }
 
 /* The decoder's side of the rule (issue #583): a trunk-scan target's scope says its CQPSK choice is its own when it is
- * P25 with a modulation value (auto, c4fm or cqpsk) or DMR/NXDN at either rate, and the landing rate is asked with
- * cqpsk_explicit set then. A P25 target without a modulation, and a -Y row of any of those modes, are asked without it:
- * they land where an open of the mode would, as DSD_NEO_CQPSK says. */
+ * P25 with a modulation value (auto, c4fm or cqpsk) or any other digital class (DMR/NXDN at either rate, and the
+ * simplex classes, issue #890: dPMR, D-STAR, YSF and M17 with CQPSK off, TETRA DMO with it on, whatever the caller's
+ * CQPSK state), and the landing rate is asked with cqpsk_explicit set then. A P25 target without a modulation, and a
+ * -Y row of any of those modes but TETRA DMO, are asked without it: they land where an open of the mode would, as
+ * DSD_NEO_CQPSK says. A -Y tetra-dmo row runs only its class's CQPSK chain, whatever a -m lock left on rf_mod, so it
+ * makes the choice as its target type does (issue #890). */
 static int
 test_symbol_timing_explicit_follows_the_scope(void) {
     static dsd_opts opts;
@@ -15564,19 +16983,26 @@ test_symbol_timing_explicit_follows_the_scope(void) {
         dsd_scan_mode mode;
         dsd_scan_modulation modulation;
         int want_explicit;
+        int want_cqpsk;
     } rows[] = {
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_C4FM, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1},
-        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0},
-        {1, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 1},
-        {1, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_GFSK, 1},
-        {1, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_AUTO, 1},
-        {1, DSD_SCAN_MODE_DPMR, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0},
-        {0, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0},
-        {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_C4FM, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {1, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_GFSK, 1, 0},
+        {1, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_DPMR, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_DSTAR, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_INHERIT, 1, 0},
+        {1, DSD_SCAN_MODE_M17, DSD_SCAN_MODULATION_AUTO, 1, 0},
+        {1, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 1, 1},
+        {0, DSD_SCAN_MODE_P25, DSD_SCAN_MODULATION_CQPSK, 0, 0},
+        {0, DSD_SCAN_MODE_DMR, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 1, 1},
     };
 
     int test_rc = 0;
@@ -15590,12 +17016,16 @@ test_symbol_timing_explicit_follows_the_scope(void) {
         }
         dsd_scan_mode_target_modulation(&state, rows[i].modulation);
         g_fake_family_last_explicit = -1;
+        g_fake_family_last_cqpsk = -1;
         const int rate_hz = dsd_scan_mode_symbol_timing_rate_hz(&opts, &state, 4800, 0);
-        if (rate_hz != 24000 || g_fake_family_last_explicit != rows[i].want_explicit) {
+        if (rate_hz != 24000 || g_fake_family_last_explicit != rows[i].want_explicit
+            || g_fake_family_last_cqpsk != rows[i].want_cqpsk) {
             DSD_FPRINTF(stderr,
-                        "timing scope row %zu (%s, %s, modulation %d): rate=%d explicit=%d, want 24000 and %d\n", i,
-                        rows[i].trunk_scan ? "--trunk-scan" : "-Y", dsd_scan_mode_name(rows[i].mode),
-                        (int)rows[i].modulation, rate_hz, g_fake_family_last_explicit, rows[i].want_explicit);
+                        "timing scope row %zu (%s, %s, modulation %d): rate=%d explicit=%d cqpsk=%d, want 24000, %d "
+                        "and %d\n",
+                        i, rows[i].trunk_scan ? "--trunk-scan" : "-Y", dsd_scan_mode_name(rows[i].mode),
+                        (int)rows[i].modulation, rate_hz, g_fake_family_last_explicit, g_fake_family_last_cqpsk,
+                        rows[i].want_explicit, rows[i].want_cqpsk);
             test_rc = 1;
         }
     }
@@ -15603,6 +17033,584 @@ test_symbol_timing_explicit_follows_the_scope(void) {
     g_fake_family_analog = 0;
     dsd_rtl_stream_metrics_hooks_set(NULL);
     reset_scan_opts_state(&opts, &state);
+    return test_rc;
+}
+
+/* --- Issue #890: the simplex digital target types --- */
+
+_Static_assert(DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL == 10 && DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL == 11
+                   && DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL == 12 && DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL == 13
+                   && DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL == 14,
+               "the simplex target types are appended as 10..14");
+
+/* The five simplex types parse by their one spelling into conventional targets of their class, with an empty or auto
+ * modulation; every other modulation, a channel map, a band plan and a -trunk spelling are refused with a row
+ * diagnostic that says what to do. */
+static int
+test_simplex_target_types_parse_and_diagnostics(void) {
+    static const struct {
+        const char* name;
+        dsd_trunk_scan_target_type type;
+        dsd_scan_mode mode;
+    } types[] = {
+        {"ysf-conventional", DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, DSD_SCAN_MODE_YSF},
+        {"dstar-conventional", DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL, DSD_SCAN_MODE_DSTAR},
+        {"dpmr-conventional", DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL, DSD_SCAN_MODE_DPMR},
+        {"m17-conventional", DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL, DSD_SCAN_MODE_M17},
+        {"tetra-dmo-conventional", DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, DSD_SCAN_MODE_TETRA_DMO},
+    };
+
+    int test_rc = 0;
+    dsd_trunk_scan_target_list list = {0};
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+    char body[512];
+    for (size_t i = 0; i < sizeof types / sizeof types[0]; i++) {
+        DSD_SNPRINTF(body, sizeof body,
+                     "a,%s,145500000,,1500,2000,,,,,,,\n"
+                     "b,%s,145525000,,,,,auto,,,,,\n",
+                     types[i].name, types[i].name);
+        if (load_nfm_targets(body, &list, err, sizeof err) != 0 || list.count != 2
+            || list.targets[0].type != types[i].type || list.targets[1].type != types[i].type
+            || list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_UNSET
+            || list.targets[1].modulation != DSD_TRUNK_SCAN_MODULATION_AUTO
+            || strcmp(dsd_trunk_scan_target_type_name(types[i].type), types[i].name) != 0) {
+            DSD_FPRINTF(stderr, "%s rows: rc/err '%s', count %zu\n", types[i].name, err, list.count);
+            test_rc = 1;
+        }
+        dsd_trunk_scan_target_list_reset(&list);
+        dsd_trunk_scan_landing landing;
+        if (dsd_trunk_scan_type_landing(types[i].type, &landing) != 1 || landing.mode != types[i].mode) {
+            DSD_FPRINTF(stderr, "%s: no landing of its class\n", types[i].name);
+            test_rc = 1;
+        }
+
+        static const char* const modulations[] = {"c4fm", "cqpsk", "gfsk", "Auto", "qpsk"};
+        for (size_t m = 0; m < sizeof modulations / sizeof modulations[0]; m++) {
+            DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,%s,,,,,\n", types[i].name, modulations[m]);
+            char want[160];
+            DSD_SNPRINTF(want, sizeof want, "row 2 has modulation '%s'; %s targets take only auto or an empty cell",
+                         modulations[m], types[i].name);
+            DSD_MEMSET(err, 0, sizeof err);
+            if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want) != 0) {
+                DSD_FPRINTF(stderr, "%s modulation %s: err '%s', want '%s'\n", types[i].name, modulations[m], err,
+                            want);
+                test_rc = 1;
+                dsd_trunk_scan_target_list_reset(&list);
+            }
+        }
+
+        /* A long cell is echoed as a long type cell is: 48 bytes and "...". */
+        char long_cell[201];
+        DSD_MEMSET(long_cell, 'm', sizeof long_cell - 1U);
+        long_cell[sizeof long_cell - 1U] = '\0';
+        DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,%s,,,,,\n", types[i].name, long_cell);
+        char want_long[192];
+        DSD_SNPRINTF(want_long, sizeof want_long,
+                     "row 2 has modulation '%.48s...'; %s targets take only auto or an empty cell", long_cell,
+                     types[i].name);
+        DSD_MEMSET(err, 0, sizeof err);
+        if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want_long) != 0) {
+            DSD_FPRINTF(stderr, "%s long modulation: err '%s', want '%s'\n", types[i].name, err, want_long);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
+        }
+
+        const struct {
+            const char* rest;
+            const char* want;
+        } refused[] = {
+            {",145500000,chan.csv,,,,,,,,,\n", "row 2 sets chan_csv for a conventional target"},
+            {",145500000,,,,,,,,,,plan.csv\n", "row 2 sets p25_bandplan_csv for a conventional target"},
+        };
+
+        for (size_t r = 0; r < sizeof refused / sizeof refused[0]; r++) {
+            DSD_SNPRINTF(body, sizeof body, "a,%s%s", types[i].name, refused[r].rest);
+            DSD_MEMSET(err, 0, sizeof err);
+            if (load_nfm_targets(body, &list, err, sizeof err) != -1 || !strstr(err, refused[r].want)) {
+                DSD_FPRINTF(stderr, "%s row '%s': err '%s', want '%s'\n", types[i].name, body, err, refused[r].want);
+                test_rc = 1;
+                dsd_trunk_scan_target_list_reset(&list);
+            }
+        }
+        /* The -trunk spelling of the family. */
+        char family[32];
+        const size_t family_len = strlen(types[i].name) - strlen("-conventional");
+        DSD_MEMCPY(family, types[i].name, family_len);
+        family[family_len] = '\0';
+        DSD_SNPRINTF(body, sizeof body, "a,%s-trunk,145500000,,,,,,,,,,\n", family);
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "row 2: %s targets are conventional only (use %s)", family, types[i].name);
+        DSD_MEMSET(err, 0, sizeof err);
+        if (load_nfm_targets(body, &list, err, sizeof err) != -1 || strcmp(err, want) != 0) {
+            DSD_FPRINTF(stderr, "%s-trunk: err '%s', want '%s'\n", family, err, want);
+            test_rc = 1;
+            dsd_trunk_scan_target_list_reset(&list);
+        }
+    }
+    /* One frequency, two types: each type keeps its own (type, frequency) pair. */
+    if (load_nfm_targets("y,ysf-conventional,145500000,,,,,,,,,,\n"
+                         "m,m17-conventional,145500000,,,,,,,,,,\n",
+                         &list, err, sizeof err)
+            != 0
+        || list.count != 2) {
+        DSD_FPRINTF(stderr, "ysf and m17 on one frequency refused: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    return test_rc;
+}
+
+/* Issue #890 B1: an unknown type names every accepted spelling, however long the cell: the list loader's message holds
+ * the whole list after a cell cut to 48 bytes, and so does the session start's after a long list path, which the CLI
+ * logs whole. The app validator says the same. */
+static const char k_every_type[] =
+    "expected p25-trunk, p25-conventional, dmr-trunk, dmr-conventional, nxdn-trunk, nxdn-conventional, "
+    "nxdn48-conventional, nxdn48-trunk, nfm-conventional, am-conventional, ysf-conventional, dstar-conventional, "
+    "dpmr-conventional, m17-conventional or tetra-dmo-conventional";
+
+static int
+test_invalid_type_names_every_type(void) {
+    int test_rc = 0;
+    char cell[301];
+    DSD_MEMSET(cell, 'x', sizeof cell - 1U);
+    cell[sizeof cell - 1U] = '\0';
+    char body[512];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,145500000,,,,,,,,,,\n", cell);
+    char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
+    dsd_trunk_scan_target_list list;
+    char want_cell[64];
+    DSD_SNPRINTF(want_cell, sizeof want_cell, "'%.48s...'", cell);
+    if (load_nfm_targets(body, &list, err, sizeof err) != -1 || !strstr(err, k_every_type) || !strstr(err, want_cell)) {
+        DSD_FPRINTF(stderr, "long invalid type: err '%s'\n", err);
+        test_rc = 1;
+        dsd_trunk_scan_target_list_reset(&list);
+    }
+
+    /* The session start: the list's path, as long as a list path can be (1023 bytes: folders under the temporary one
+       to fill it, where the platform takes such a path; a 200-byte file name on Windows), then the row's message,
+       whole in DSD_TRUNK_SCAN_ERROR_MAX. */
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char folders[4][DSD_TEST_PATH_MAX];
+    size_t made = 0U;
+    char parent[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(parent, sizeof parent, "%s", dir);
+#if !DSD_PLATFORM_WIN_NATIVE
+    /* Folders of up to 240 bytes until a file name of 250 bytes or fewer brings the path to 1023 bytes. */
+    char folder_name[241];
+    for (; made < 4U; made++) {
+        const size_t rest = 1023U - strlen(parent) - 1U; /* after the separator */
+        if (rest <= 250U) {
+            break;
+        }
+        const size_t len = rest - 1U - 200U < 240U ? rest - 1U - 200U : 240U;
+        DSD_MEMSET(folder_name, 'd', len);
+        folder_name[len] = '\0';
+        if (dsd_test_path_join(folders[made], sizeof folders[made], parent, folder_name) != 0
+            || dsd_mkdir(folders[made], 0700) != 0) {
+            break;
+        }
+        DSD_SNPRINTF(parent, sizeof parent, "%s", folders[made]);
+    }
+    const size_t name_len = 1023U - strlen(parent) - 1U;
+#else
+    const size_t name_len = 200U;
+#endif
+    char name[256];
+    const size_t fill = name_len < sizeof name ? name_len : sizeof name - 1U;
+    DSD_MEMSET(name, 'n', fill);
+    name[fill] = '\0';
+    DSD_MEMCPY(name + fill - 4U, ".csv", 4U);
+    char content[1024];
+    DSD_SNPRINTF(content, sizeof content, "%s%s", k_nfm_targets_header, body);
+    if (dsd_test_path_join(target_path, sizeof target_path, parent, name) != 0
+        || write_text_file(target_path, content) != 0) {
+        for (size_t i = made; i > 0U; i--) {
+            (void)dsd_test_rmdir(folders[i - 1U]);
+        }
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (strlen(target_path) != 1023U) {
+        DSD_FPRINTF(stderr, "long list path: %zu bytes, want 1023\n", strlen(target_path));
+        test_rc = 1;
+    }
+#endif
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    char init_err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+    if (dsd_engine_trunk_scan_init(opts, state, init_err, sizeof init_err) == 0 || !strstr(init_err, target_path)
+        || !strstr(init_err, k_every_type)) {
+        DSD_FPRINTF(stderr, "session start with a long path: err '%s'\n", init_err);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)remove(target_path);
+    for (size_t i = made; i > 0U; i--) {
+        (void)dsd_test_rmdir(folders[i - 1U]);
+    }
+    cleanup_paths(dir, NULL, NULL);
+    return test_rc;
+}
+
+/* The class part of every type's landing (dsd_trunk_scan_type_landing()): rate, levels, hunt profile, the class's own
+ * modulation, the chain and its filter; none for an analog type. And the TETRA chain's TED rule: an explicit override
+ * that gives the rate's samples per symbol is honoured, one that disagrees, or an applied TED that disagrees, or an
+ * unknown or inexact complex rate, is not. */
+static int
+test_type_landing_and_ted_rule(void) {
+    static const struct {
+        dsd_trunk_scan_target_type type;
+        int rate;
+        int levels;
+        int hunt;
+        int rf_mod;
+        int cqpsk;
+        int profile;
+    } want[] = {
+        {DSD_TRUNK_SCAN_TARGET_P25_TRUNK, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM},
+        {DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL, 4800, 2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25},
+        {DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5},
+        {DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, 18000, 4, DSD_FRAME_SYNC_SPS_PROFILE_18000_4, 1, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        dsd_trunk_scan_landing l;
+        if (dsd_trunk_scan_type_landing(want[i].type, &l) != 1 || l.symbol_rate_hz != want[i].rate
+            || l.levels != want[i].levels || l.sps_hunt_idx != want[i].hunt || l.rf_mod != want[i].rf_mod
+            || l.cqpsk != want[i].cqpsk || l.channel_profile != want[i].profile || l.output_rate_hz != 0
+            || l.samples_per_symbol != 0 || l.complex_rate_hz != 0 || l.ted_sps != 0) {
+            DSD_FPRINTF(stderr, "type %d landing: rate %d levels %d hunt %d rf_mod %d cqpsk %d profile %d\n",
+                        (int)want[i].type, l.symbol_rate_hz, l.levels, l.sps_hunt_idx, l.rf_mod, l.cqpsk,
+                        l.channel_profile);
+            test_rc = 1;
+        }
+    }
+    /* Every type up to the last has its row of axes: a class (a row missing from the table reads as INHERIT) and a
+       spelling. */
+    for (int type = 0; type <= (int)DSD_TRUNK_SCAN_TARGET_LAST; type++) {
+        dsd_trunk_scan_landing l;
+        (void)dsd_trunk_scan_type_landing((dsd_trunk_scan_target_type)type, &l);
+        if (l.mode == DSD_SCAN_MODE_INHERIT
+            || dsd_trunk_scan_target_type_name((dsd_trunk_scan_target_type)type)[0] == '\0') {
+            DSD_FPRINTF(stderr, "type %d has no class or no spelling\n", type);
+            test_rc = 1;
+        }
+    }
+    dsd_trunk_scan_landing analog;
+    if (dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL, &analog) != 0
+        || analog.mode != DSD_SCAN_MODE_NFM || analog.symbol_rate_hz != 0
+        || dsd_trunk_scan_type_landing((dsd_trunk_scan_target_type)99, &analog) != 0
+        || dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL, NULL) != 0) {
+        DSD_FPRINTF(stderr, "an analog or unknown type has a landing\n");
+        test_rc = 1;
+    }
+
+    dsd_trunk_scan_landing tetra;
+    (void)dsd_trunk_scan_type_landing(DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL, &tetra);
+    tetra.complex_rate_hz = 72000;
+    tetra.ted_sps = 4;
+
+    static const struct {
+        int override_sps;
+        int applied;
+        int agrees;
+    } ted[] = {
+        {0, 0, 1}, {0, 4, 1}, {4, 0, 1}, {4, 4, 1}, {5, 4, 0}, {0, 5, 0}, {4, 5, 0}, {3, 0, 0},
+    };
+
+    for (size_t i = 0; i < sizeof ted / sizeof ted[0]; i++) {
+        if (dsd_trunk_scan_landing_ted_agrees(&tetra, ted[i].override_sps, ted[i].applied) != ted[i].agrees) {
+            DSD_FPRINTF(stderr, "TETRA TED override %d applied %d: want %d\n", ted[i].override_sps, ted[i].applied,
+                        ted[i].agrees);
+            test_rc = 1;
+        }
+    }
+    dsd_trunk_scan_landing inexact = tetra;
+    inexact.complex_rate_hz = 64000; /* not a multiple of 18 kHz */
+    inexact.ted_sps = 4;
+    dsd_trunk_scan_landing unknown = tetra;
+    unknown.complex_rate_hz = 0;
+    unknown.ted_sps = 0;
+    if (dsd_trunk_scan_landing_ted_agrees(&inexact, 0, 0) != 0 || dsd_trunk_scan_landing_ted_agrees(&unknown, 0, 0) != 0
+        || dsd_trunk_scan_landing_ted_agrees(&analog, 0, 0) != 0
+        || dsd_trunk_scan_landing_ted_agrees(NULL, 0, 0) != 0) {
+        DSD_FPRINTF(stderr, "TETRA TED rule agreed with no usable complex rate\n");
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+/* The front end's rates for the landing tests: the analog monitor delivers 48 kHz, the digital family the 72 kHz DSP
+ * rate, and a retune that switches family lands the CQPSK output at 72 kHz and the FSK discriminator resampled to
+ * 48 kHz. */
+static unsigned int
+landing_output_rate_hz(void) {
+    return g_fake_family_analog ? 48000U : 72000U;
+}
+
+static unsigned int
+landing_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    (void)symbol_rate_hz;
+    g_fake_family_last_cqpsk = cqpsk_enable;
+    g_fake_family_last_explicit = cqpsk_explicit;
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        return 48000U;
+    }
+    return cqpsk_enable ? 72000U : 48000U;
+}
+
+/* One expected landing. */
+typedef struct {
+    size_t target;
+    dsd_scan_mode mode;
+    int rate;
+    int levels;
+    int hunt;
+    int rf_mod;
+    int rf_mod_locked; /* under a -mq lock */
+    int cqpsk;
+    int profile;
+    int output_rate; /* 48000 after the analog target, else the live 72000 */
+} landing_want;
+
+static int
+expect_class_landing(const dsd_opts* opts, const dsd_state* state, const landing_want* w, int locked,
+                     const char* stage) {
+    dsd_trunk_scan_landing l;
+    const int rf_mod = locked ? w->rf_mod_locked : w->rf_mod;
+    const int sps = dsd_opts_compute_sps_rate(opts, w->rate, w->output_rate);
+    const int ted = dsd_opts_compute_sps_rate(opts, w->rate, 72000);
+    const int have = dsd_engine_trunk_scan_active_landing(state, &l);
+    dsd_trunk_scan_landing c;
+    if (dsd_engine_trunk_scan_active_class_landing(state, &c) != 1 || c.mode != w->mode || c.symbol_rate_hz != w->rate
+        || c.levels != w->levels || c.cqpsk != w->cqpsk || c.channel_profile != w->profile || c.output_rate_hz != 0) {
+        DSD_FPRINTF(stderr, "%s (lock %d): the class part of target %zu disagrees\n", stage, locked, w->target);
+        return 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(state) != w->target || !have || l.mode != w->mode
+        || l.symbol_rate_hz != w->rate || l.levels != w->levels || l.cqpsk != w->cqpsk
+        || l.channel_profile != w->profile || l.rf_mod != rf_mod || l.output_rate_hz != w->output_rate
+        || l.samples_per_symbol != sps || l.complex_rate_hz != 72000 || l.ted_sps != ted
+        || state->samplesPerSymbol != sps || state->symbolCenter != dsd_opts_symbol_center(sps)
+        || state->rf_mod != rf_mod || state->sps_hunt_idx != w->hunt || g_scan_tune_to_freq_ted_sps != sps) {
+        DSD_FPRINTF(stderr,
+                    "%s (lock %d): target %zu mode %d rate %d levels %d cqpsk %d profile %d rf_mod %d out %d sps %d "
+                    "ted %d; state sps %d rf_mod %d hunt %d; tune ted %d; want target %zu rf_mod %d sps %d\n",
+                    stage, locked, dsd_engine_trunk_scan_active_index(state), (int)l.mode, l.symbol_rate_hz, l.levels,
+                    l.cqpsk, l.channel_profile, l.rf_mod, l.output_rate_hz, l.samples_per_symbol, l.ted_sps,
+                    state->samplesPerSymbol, state->rf_mod, state->sps_hunt_idx, g_scan_tune_to_freq_ted_sps, w->target,
+                    rf_mod, sps);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #890 B3: each landing runs its class's profile, whatever ran before it: NFM -> YSF (out of the analog family),
+ * YSF -> M17 on the same frequency, NXDN48 -> D-STAR (4800 sym/s over two levels in 6.25 kHz), dPMR (2400/4), into and
+ * out of TETRA DMO at a 72 kHz DSP rate (CQPSK, the TETRA filter, 4 samples per symbol at the complex rate), and DMR
+ * after it. The retune carries the landing's timing as its TED (no class lands without one, which would keep the chain
+ * the target before it left), and a command's resume keeps the landing. The target's own snapshot (saved with whatever
+ * the decoder ran when it was left) never replaces its class's timing or modulation. Under a -mq lock, auto lands the
+ * class's own modulation (B2: never GFSK for a class without it) and an empty column keeps the lock's slicer, while the
+ * chain stays the class's. */
+static int
+test_simplex_targets_land_their_class_profile(void) {
+    static const landing_want want[] = {
+        {1U, DSD_SCAN_MODE_YSF, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 48000},
+        {2U, DSD_SCAN_MODE_M17, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 72000},
+        {3U, DSD_SCAN_MODE_NXDN48, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 2, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {4U, DSD_SCAN_MODE_DSTAR, 4800, 2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 2, 1, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {5U, DSD_SCAN_MODE_DPMR, 2400, 4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 0, 0, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_6K25, 72000},
+        {6U, DSD_SCAN_MODE_TETRA_DMO, 18000, 4, DSD_FRAME_SYNC_SPS_PROFILE_18000_4, 1, 1, 1,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA, 72000},
+        {7U, DSD_SCAN_MODE_DMR, 4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2, 2, 0,
+         DSD_RTL_STREAM_CHANNEL_PROFILE_12K5, 72000},
+    };
+    int test_rc = 0;
+    for (int locked = 0; locked <= 1; locked++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char target_path[DSD_TEST_PATH_MAX];
+        dsd_opts* opts = g_case_opts;
+        dsd_state* state = g_case_state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                              "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                              "ysf,ysf-conventional,145500000,,250,250,,auto,,,,,\n"
+                                              "m17,m17-conventional,145500000,,250,250,,,,,,,\n"
+                                              "n48,nxdn48-conventional,461556250,,250,250,,,,,,,\n"
+                                              "dst,dstar-conventional,145670000,,250,250,,,,,,,\n"
+                                              "dpm,dpmr-conventional,446006250,,250,250,,auto,,,,,\n"
+                                              "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                              "dmr,dmr-conventional,461000000,,250,250,,gfsk,,,,,\n",
+                                              target_path, sizeof target_path)
+                   != 0) {
+            cleanup_paths(dir, NULL, NULL);
+            return 1;
+        }
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
+        if (locked) {
+            opts->mod_cli_lock = 1;
+            opts->mod_qpsk = 1;
+            state->rf_mod = 1;
+        }
+        dsd_rtl_stream_metrics_hooks hooks = {0};
+        hooks.output_rate_hz = landing_output_rate_hz;
+        hooks.analog_family_active = fake_family_analog_active;
+        hooks.output_rate_for_family = landing_rate_for_family;
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        g_fake_family_tracking = 1;
+        g_fake_family_analog = 0;
+        g_scan_tune_to_freq_failures_remaining = 0;
+        g_scan_dsp_rate_hz = 72000;
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "simplex landing init failed: %s\n", err);
+            test_rc = 1;
+        }
+        test_rc |= expect_active_target(state, "simplex landing init", 0U);
+        if (dsd_engine_trunk_scan_active_landing(state, NULL) != 0 || g_fake_family_analog != 1) {
+            DSD_FPRINTF(stderr, "the nfm target has a landing profile or did not land the analog family\n");
+            test_rc = 1;
+        }
+        double now = 0.0;
+        for (int round = 0; round < 2; round++) {
+            for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+                now += 0.26;
+                g_fake_family_last_cqpsk = -1;
+                g_fake_family_last_explicit = -1;
+                g_scan_tune_to_freq_ted_sps = 0;
+                trunk_scan_test_set_now(now);
+                dsd_engine_trunk_scan_tick(opts, state);
+                test_rc |=
+                    expect_class_landing(opts, state, &want[i], locked, round == 0 ? "landing" : "second landing");
+                if (i == 0
+                    && (g_fake_family_last_cqpsk != 0 || g_fake_family_last_explicit != 1 || g_fake_family_analog != 0
+                        || opts->frame_ysf != 1 || opts->mod_c4fm != 1 || opts->mod_gfsk != 0)) {
+                    DSD_FPRINTF(stderr,
+                                "ysf after nfm: cqpsk asked %d explicit %d analog %d frame_ysf %d c4fm %d gfsk %d\n",
+                                g_fake_family_last_cqpsk, g_fake_family_last_explicit, g_fake_family_analog,
+                                opts->frame_ysf, opts->mod_c4fm, opts->mod_gfsk);
+                    test_rc = 1;
+                }
+                if (want[i].mode == DSD_SCAN_MODE_M17 && (opts->frame_m17 != 1 || opts->frame_ysf != 0)) {
+                    DSD_FPRINTF(stderr, "m17 on the ysf frequency runs ysf=%d m17=%d\n", opts->frame_ysf,
+                                opts->frame_m17);
+                    test_rc = 1;
+                }
+                if (want[i].mode == DSD_SCAN_MODE_TETRA_DMO && (opts->frame_tetra != 1 || opts->frame_dmr != 0)) {
+                    DSD_FPRINTF(stderr, "the TETRA DMO target runs tetra=%d dmr=%d\n", opts->frame_tetra,
+                                opts->frame_dmr);
+                    test_rc = 1;
+                }
+                /* A command under the target: the resume keeps the landing. */
+                (void)dsd_scan_mode_suspend(opts, state);
+                (void)dsd_scan_mode_resume(opts, state);
+                test_rc |= expect_class_landing(opts, state, &want[i], locked, "resume");
+                if (round == 0 && want[i].mode == DSD_SCAN_MODE_M17) {
+                    /* The decoder left on GFSK: under the -mq lock the next landing takes the lock's QPSK, not this. */
+                    state->rf_mod = 2;
+                }
+                if (round == 0 && want[i].mode == DSD_SCAN_MODE_YSF) {
+                    /* What the decoder runs when the target is left goes into its snapshot: another class's timing. */
+                    state->samplesPerSymbol = 4;
+                    state->symbolCenter = 1;
+                    state->rf_mod = 1;
+                    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+                }
+            }
+            now += 0.26;
+            g_scan_tune_to_freq_ted_sps = -1;
+            trunk_scan_test_set_now(now);
+            dsd_engine_trunk_scan_tick(opts, state);
+            test_rc |= expect_active_target(state, "the analog target again", 0U);
+            if (g_scan_tune_to_freq_ted_sps != 0 || g_fake_family_analog != 1
+                || dsd_engine_trunk_scan_active_landing(state, NULL) != 0) {
+                DSD_FPRINTF(stderr, "nfm after dmr: ted %d analog %d\n", g_scan_tune_to_freq_ted_sps,
+                            g_fake_family_analog);
+                test_rc = 1;
+            }
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        g_fake_family_tracking = 0;
+        g_fake_family_analog = 0;
+        g_scan_dsp_rate_hz = 0;
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+    }
+    return test_rc;
+}
+
+/* A tetra-dmo row or target has no width class for the quiet check: its facts give the unsupported-mode reason and its
+ * own WARN line, never the missing-NFM-width one, whatever the -8 monitor beside it; an untyped row under -fT keeps the
+ * decoders' reason. */
+static int
+test_scan_quiet_tetra_dmo_reason(void) {
+    int test_rc = 0;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    scan_quiet_eligibility e;
+    DSD_MEMSET(&e, 0, sizeof(e));
+    e.classes = scan_quiet_mode_classes(DSD_SCAN_MODE_TETRA_DMO);
+    if (e.classes != 0U
+        || scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_TETRA_DMO)
+               != (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        DSD_FPRINTF(stderr, "tetra-dmo facts: classes %u, not the unsupported-mode reason\n", (unsigned)e.classes);
+        test_rc = 1;
+    }
+    opts.monitor_input_audio = 1; /* the -8 monitor with no NFM width */
+    if (scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_TETRA_DMO)
+        != (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        DSD_FPRINTF(stderr, "tetra-dmo facts beside -8: not the unsupported-mode reason\n");
+        test_rc = 1;
+    }
+    opts.monitor_input_audio = 0;
+    opts.frame_tetra = 1;
+    if (scan_quiet_facts_reason(&opts, &e, DSD_SCAN_MODE_INHERIT) != (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
+        DSD_FPRINTF(stderr, "an untyped row under -fT lost the decoders' reason\n");
+        test_rc = 1;
+    }
+    char line[384];
+    (void)scan_quiet_format_warn(line, sizeof line, (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, 0, 0U, "dmo", 0,
+                                 425000000U, 0, 0U);
+    if (strcmp(line,
+               "WARNING: scan: silent channel skip cannot check dmo 425.000000 MHz: it has no check for TETRA DMO "
+               "channels. Normal scan timing applies.\n")
+        != 0) {
+        DSD_FPRINTF(stderr, "tetra-dmo WARN line: '%s'\n", line);
+        test_rc = 1;
+    }
     return test_rc;
 }
 
@@ -15781,6 +17789,691 @@ expect_entry_reasons(const dsd_state* state, const char* stage, uint8_t first, u
         return 1;
     }
     return 0;
+}
+
+/* --- Issue #890: TETRA DMO targets: their eligibility, the start's refusal, the on-air check and the TETRA state's
+ * lifetime. --- */
+
+static void tick_at(dsd_opts* opts, dsd_state* state, double now_m);
+
+static const char k_tetra_mixed_targets[] = "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                            "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                            "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+
+/* The TETRA state extension a decoder would hold: a stand-in whose frees are counted. */
+static int g_fake_tetra_ext;
+static int g_fake_tetra_ext_frees;
+
+static void
+fake_tetra_ext_free(void* ptr) {
+    (void)ptr;
+    g_fake_tetra_ext_frees++;
+}
+
+static void
+fake_tetra_ext_install(dsd_state* state) {
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, &g_fake_tetra_ext, fake_tetra_ext_free);
+}
+
+static int
+fake_tetra_ext_present(const dsd_state* state) {
+    return dsd_state_ext_get_const(state, DSD_STATE_EXT_PROTO_TETRA) == &g_fake_tetra_ext;
+}
+
+/* A trunk scan over @p body (k_nfm_targets_header's columns) at DSP rate @p rate_hz, its start's log in @p log;
+ * returns the init's answer, its error in @p err. @p dir and @p path start empty, so tetra_rig_finish() removes only
+ * what this made even when the temporary setup failed (2). */
+static int
+tetra_rig_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz,
+                const char* body, int rate_hz, char* err, size_t err_sz, char* log, size_t log_sz) {
+    if (dir_sz > 0U) {
+        dir[0] = '\0';
+    }
+    if (path_sz > 0U) {
+        path[0] = '\0';
+    }
+    if (make_temp_dir(dir, dir_sz) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header, body, path, path_sz) != 0) {
+        return 2;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = rate_hz;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_scan_tune_watch_hz = 425000000L;
+    g_scan_tune_watch_calls = 0;
+    g_tetra_visit_resets = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 0;
+    g_fake_tetra_ext_frees = 0;
+    trunk_scan_test_set_now(0.0);
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetra") == 0;
+    const int rc = dsd_engine_trunk_scan_init(opts, state, err, err_sz);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        if (log && log_sz > 0U) {
+            log[0] = '\0';
+            (void)dsd_test_capture_stderr_read(&cap, log, log_sz);
+        } else {
+            (void)remove(cap.path); /* the read removes it otherwise */
+        }
+    }
+    return rc;
+}
+
+static void
+tetra_rig_finish(dsd_opts* opts, dsd_state* state, const char* dir, const char* path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    g_scan_dsp_rate_hz = 0;
+    g_scan_tune_watch_hz = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir[0] != '\0' ? dir : NULL, path[0] != '\0' ? path : NULL, NULL);
+}
+
+/* A TETRA DMO target needs a TETRA DSP rate (issue #890 D3): at 48 kHz the start names it, the status line says it is
+ * skipped at every visit, the rotation passes it over without a tune and a typed frequency is told why; at 72 kHz the
+ * rotation visits it, and a typed frequency picks it again at once. */
+static int
+test_tetra_dmo_target_skipped_off_a_tetra_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    char log[8192] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    int rc = tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_tetra_mixed_targets, 48000, err,
+                             sizeof err, log, sizeof log)
+             != 0;
+    rc |= expect_active_target(state, "a TETRA target at 48 kHz: the start", 0U);
+    if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA needs a 72 kHz DSP bandwidth, not 48 kHz") != 1
+        || count_text(log, "it is skipped at every visit until then.") != 1
+        || strstr(state->ui_msg, "Skipped at every visit: Trunk scan target 'dmo': TETRA DMO needs a 72 kHz DSP "
+                                 "bandwidth, not 48 kHz")
+               == NULL) {
+        DSD_FPRINTF(stderr, "TETRA at 48 kHz: start log '%s', status '%s'\n", log, state->ui_msg);
+        rc = 1;
+    }
+    double now = 0.0;
+    for (int hop = 0; hop < 4; hop++) {
+        now += 0.3;
+        tick_at(opts, state, now);
+        rc |= dsd_engine_trunk_scan_active_index(state) == 1U;
+    }
+    rc |= g_scan_tune_watch_calls != 0;
+    rc |= state->trunk_scan_entry_reason_count != 3U || state->trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_TETRA_RATE;
+    dsd_scan_entry_match_t match;
+    rc |= dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 0 || match.reason != DSD_SCAN_ENTRY_TETRA_RATE
+          || match.row != 1;
+    g_scan_dsp_rate_hz = 72000;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= state->trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_OK;
+    rc |= dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 1 || match.row != 1;
+    int visited = 0;
+    for (int hop = 0; hop < 4 && !visited; hop++) {
+        now += 0.3;
+        tick_at(opts, state, now);
+        visited = dsd_engine_trunk_scan_active_index(state) == 1U;
+    }
+    if (rc || !visited || g_scan_tune_watch_calls != 1) {
+        DSD_FPRINTF(stderr, "TETRA at 48 then 72 kHz: rc %d visited %d tunes %d reason %d\n", rc, visited,
+                    g_scan_tune_watch_calls, match.reason);
+        rc = 1;
+    }
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* A start none of whose targets can be visited is refused, naming the first and why, with nothing tuned (issue #890
+ * A3): TETRA DMO targets at 48 kHz, on a rigctl peer behind audio input, under --tetra-uplink and with the channel filter
+ * forced off; and --trunk-scan-hold on a TETRA DMO target the scan cannot visit. A rate the radio has not published
+ * yet is no refusal: the start waits on it, tunes nothing, and parks once the rate is known. */
+static int
+test_tetra_dmo_start_refused_when_nothing_can_be_visited(void) {
+    static const char k_two[] = "a,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                "b,tetra-dmo-conventional,426000000,,250,250,,,,,,,\n";
+
+    static const struct {
+        const char* what;
+        int rate_hz;
+        int rigctl_audio;
+        int uplink;
+        int lpf_off;
+        const char* hold;
+        const char* body;
+        const char* want;
+    } k_cases[] = {
+        {"48 kHz", 48000, 0, 0, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA needs a 72 kHz DSP "
+         "bandwidth, not 48 kHz; dsd-neo does not change it on its own, so set it to 72 kHz "
+         "(-i rtl:dev:freq:gain:ppm:72)"},
+        {"a rigctl peer", 72000, 1, 0, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO needs a radio "
+         "I/Q input dsd-neo tunes (RTL-SDR, rtl_tcp, SoapySDR or Airspy); audio input, a rigctl peer, an I/Q replay or "
+         "an I/Q stream cannot run it"},
+        {"--tetra-uplink", 72000, 0, 1, 0, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO decodes the "
+         "downlink chain, which --tetra-uplink turns off"},
+        {"the channel filter off", 72000, 0, 0, 1, NULL, k_two,
+         "--trunk-scan: no target can be visited on this input; target \"a\" (and 1 more): TETRA DMO needs the channel "
+         "filter, which DSD_NEO_CHANNEL_LPF=0 turns off"},
+        {"a held start", 48000, 0, 0, 0, "dmo", k_tetra_mixed_targets,
+         "--trunk-scan-hold: target \"dmo\" cannot be visited: TETRA needs a 72 kHz DSP bandwidth, not 48 kHz; dsd-neo "
+         "does not change it on its own, so set it to 72 kHz (-i rtl:dev:freq:gain:ppm:72)"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        char dir[DSD_TEST_PATH_MAX];
+        char path[DSD_TEST_PATH_MAX];
+        char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+        dsd_opts* opts = g_case_opts;
+        dsd_state* state = g_case_state;
+        if (make_temp_dir(dir, sizeof dir) != 0
+            || write_targets_file_with_header(dir, k_nfm_targets_header, k_cases[i].body, path, sizeof path) != 0) {
+            return 1;
+        }
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+        opts->trunk_scan_list_count = 1;
+        if (k_cases[i].rigctl_audio) {
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            opts->use_rigctl = 1;
+        }
+        opts->tetra_uplink = k_cases[i].uplink;
+        if (k_cases[i].lpf_off) {
+            (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+            dsd_neo_config_init();
+        }
+        if (k_cases[i].hold) {
+            DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", k_cases[i].hold);
+        }
+        g_scan_dsp_rate_hz = k_cases[i].rate_hz;
+        g_scan_tune_watch_hz = 425000000L;
+        g_scan_tune_watch_calls = 0;
+        trunk_scan_test_set_now(0.0);
+        const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+        const int attached = dsd_engine_trunk_scan_target_count(state) != 0U;
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        if (k_cases[i].lpf_off) {
+            (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
+            dsd_neo_config_init();
+        }
+        if (init_rc == 0 || attached || g_scan_tune_watch_calls != 0 || strcmp(err, k_cases[i].want) != 0) {
+            DSD_FPRINTF(stderr, "TETRA start refused (%s): rc %d attached %d tunes %d err '%s'\n", k_cases[i].what,
+                        init_rc, attached, g_scan_tune_watch_calls, err);
+            rc = 1;
+        }
+        g_scan_dsp_rate_hz = 0;
+        g_scan_tune_watch_hz = 0;
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, path, NULL);
+    }
+
+    /* The rate not known yet: the start waits on it. */
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    int wait_rc = tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_two, 0, err, sizeof err, NULL, 0U);
+    const int waited_tunes = g_scan_tune_watch_calls;
+    g_scan_dsp_rate_hz = 72000;
+    int parked = 0;
+    for (int t = 1; t <= 40 && !parked; t++) {
+        tick_at(opts, state, 0.1 * t);
+        parked = g_scan_tune_watch_calls > 0 && dsd_engine_trunk_scan_target_confirmed(state, 0);
+    }
+    if (wait_rc != 0 || waited_tunes != 0 || !parked) {
+        DSD_FPRINTF(stderr, "TETRA start with the rate unknown: rc %d (%s), tunes while unknown %d, parked %d\n",
+                    wait_rc, err, waited_tunes, parked);
+        rc = 1;
+    }
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* The TETRA DMO target on air is judged again (issue #890 A3): once its park landed, against the TED timing the stream
+ * applied, and whenever the rate moves. One whose chain cannot run leaves at once, ahead of an operator's hold, as a
+ * target out of the rotation does; a rate the reopening radio has not published yet keeps it. */
+static int
+test_tetra_dmo_target_on_air_judged_again(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= expect_active_target(state, "the TETRA target first", 0U);
+    rc |= expect_control_rc("hold", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_tetra_ted_applied = 4; /* 72 kHz over 18000 symbols/s */
+    tick_at(opts, state, 0.1);
+    rc |= expect_active_target(state, "the TED timing the rate's", 0U);
+    /* The radio reopening: no rate yet. */
+    g_scan_dsp_rate_hz = 0;
+    tick_at(opts, state, 0.2);
+    rc |= expect_active_target(state, "the rate not known yet", 0U);
+    g_scan_dsp_rate_hz = 72000;
+    g_tetra_ted_applied = 5; /* a TED timing the 72 kHz chain does not run at */
+    dsd_test_capture_stderr cap;
+    char log[4096] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonair") == 0;
+    tick_at(opts, state, 0.3);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    rc |= expect_active_target(state, "a TED timing that disagrees, held", 1U);
+    if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed at the DSP rate") != 1
+        || strstr(state->ui_msg, "TETRA DMO's TED timing does not fit the DSP rate") == NULL) {
+        DSD_FPRINTF(stderr, "TETRA TED on air: log '%s' status '%s'\n", log, state->ui_msg);
+        rc = 1;
+    }
+    /* Back on it with the timing right, then the rate changed under it. */
+    g_tetra_ted_applied = 4;
+    rc |= expect_control_rc("advance back", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                            0);
+    rc |= expect_active_target(state, "back on the TETRA target", 0U);
+    tick_at(opts, state, 0.4);
+    rc |= expect_active_target(state, "still on it", 0U);
+    g_scan_dsp_rate_hz = 48000;
+    g_tetra_ted_applied = 0;
+    tick_at(opts, state, 0.5);
+    rc |= expect_active_target(state, "the rate moved to 48 kHz", 1U);
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* A departure the TETRA DMO target on air owes whose park fails (issue #890): the receiver stays, the cause is kept with
+ * it, so the next ticks name nothing again and wait for the failed alternate's cooldown, not the next tick; the
+ * departure goes once that cooldown ends. */
+static int
+test_tetra_dmo_failed_departure_keeps_its_cause(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= expect_control_rc("hold", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_tetra_ted_applied = 5;
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafaileddeparture") == 0;
+    tick_at(opts, state, 0.1);
+    const int stayed = dsd_engine_trunk_scan_active_index(state) == 0U;
+    const int due_early = dsd_engine_trunk_scan_departure_due(opts, state);
+    tick_at(opts, state, 0.2);
+    tick_at(opts, state, 0.3);
+    const int still = dsd_engine_trunk_scan_active_index(state) == 0U;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
+    tick_at(opts, state, 2.2); /* past the failed park's cooldown */
+    const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
+    if (rc || !stayed || due_early || !still || named != 1 || !left) {
+        DSD_FPRINTF(stderr, "TETRA failed departure: rc %d stayed %d due %d still %d named %d left %d\n%s\n", rc,
+                    stayed, due_early, still, named, left, log);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* A frequency typed for the TETRA DMO target on air reads the scan's landed verdict (issue #890): with its TED timing
+ * found wrong on air and its departure's park failed, so the receiver is still on it, the typed frequency is no pick
+ * (TETRA chain), not a hold the scan is about to break; with the timing right again it is the target on air. */
+static int
+test_tetra_dmo_entry_reads_the_on_air_verdict(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    g_tetra_ted_applied = 5;
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraentry") == 0;
+    tick_at(opts, state, 0.1);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path); /* the warning is not checked here; a read would remove the file */
+    }
+    dsd_scan_entry_match_t match;
+    DSD_MEMSET(&match, 0, sizeof match);
+    const int stayed = dsd_engine_trunk_scan_active_index(state) == 0U;
+    const int picked = dsd_engine_scan_entry_match(opts, state, 425000000U, &match);
+    if (rc || !stayed || picked != 0 || match.reason != DSD_SCAN_ENTRY_TETRA_CHAIN) {
+        DSD_FPRINTF(stderr, "TETRA entry on air: rc %d stayed %d picked %d reason %d\n", rc, stayed, picked,
+                    (int)match.reason);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 4;
+    tick_at(opts, state, 0.2);
+    DSD_MEMSET(&match, 0, sizeof match);
+    if (dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 1 || match.row != 0 || !match.on_air) {
+        DSD_FPRINTF(stderr, "TETRA entry, timing right: reason %d row %d on air %d\n", (int)match.reason, match.row,
+                    match.on_air);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* Two TETRA DMO targets whose applied TED timing stays wrong (issue #890): the scan leaves each for the other at every
+ * tick. Each target's cause is remembered on its own, so each is named once however often the rotation returns to it,
+ * and the entry reasons the frontends read always agree with the engine's own pick (dsd_engine_scan_entry_match()):
+ * the target on air by its landed verdict, the other prospectively, published again whenever the target on air
+ * changes. */
+static int
+test_tetra_dmo_two_targets_named_once_and_published(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmoa,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmob,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n";
+    static const uint32_t k_hz[2] = {425000000U, 425500000U};
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    g_tetra_ted_applied = 5;
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratwo") == 0;
+    int mismatches = 0;
+    int switches = 0;
+    size_t last = dsd_engine_trunk_scan_active_index(state);
+    for (int t = 1; t <= 8; t++) {
+        tick_at(opts, state, 0.1 * t);
+        const size_t now = dsd_engine_trunk_scan_active_index(state);
+        switches += now != last;
+        last = now;
+        for (size_t i = 0; i < 2U; i++) {
+            dsd_scan_entry_match_t match;
+            DSD_MEMSET(&match, 0, sizeof match);
+            (void)dsd_engine_scan_entry_match(opts, state, k_hz[i], &match);
+            const int published = state->trunk_scan_entry_reason_count == 2U && state->trunk_scan_entry_reasons
+                                      ? (int)state->trunk_scan_entry_reasons[i]
+                                      : -1;
+            mismatches += published != (int)match.reason;
+        }
+    }
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named_a = count_text(log, "WARNING: Trunk scan target 'dmoa': TETRA DMO needs the TED timed");
+    const int named_b = count_text(log, "WARNING: Trunk scan target 'dmob': TETRA DMO needs the TED timed");
+    if (rc || switches < 4 || named_a != 1 || named_b != 1 || mismatches != 0) {
+        DSD_FPRINTF(stderr, "TETRA two targets: rc %d switches %d named a %d b %d, published reasons disagreeing %d\n",
+                    rc, switches, named_a, named_b, mismatches);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* A TETRA DMO target is named once for the scan session (issue #890): named for a cause, found healthy at a later
+ * landing, then failing again, it leaves each time it fails but is not named again in the log or on the status line. */
+static int
+test_tetra_dmo_warned_once_per_session(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    if (tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0) {
+        DSD_FPRINTF(stderr, "TETRA warned once: scan start failed: %s\n", err);
+        tetra_rig_finish(opts, state, dir, path);
+        return 1;
+    }
+    int rc = 0;
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonce") == 0;
+    g_tetra_ted_applied = 5;
+    tick_at(opts, state, 0.1);
+    const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
+    g_tetra_ted_applied = 4;
+    rc |= expect_control_rc("advance back", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                            0);
+    tick_at(opts, state, 0.2);
+    const int healthy = dsd_engine_trunk_scan_active_index(state) == 0U;
+    g_tetra_ted_applied = 5;
+    tick_at(opts, state, 0.3);
+    const int left_again = dsd_engine_trunk_scan_active_index(state) == 1U;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
+    if (rc || !left || !healthy || !left_again || named != 1) {
+        DSD_FPRINTF(stderr, "TETRA warned once: rc %d left %d healthy %d left again %d named %d\n", rc, left, healthy,
+                    left_again, named);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* A TETRA DMO target is named once for the session whichever check finds it first (issue #890): @p from_start 0, the
+ * on-air judge names it when the rate moves to 48 kHz while it is on air, and the list-wide recheck the retune runs at
+ * the new rate counts it without naming it again; 1, the start names it skipped at 48 kHz, the rate then moves to
+ * 72 kHz, and a TED that disagrees on air later leaves it unnamed. */
+static int
+tetra_named_once_across_checks_case(int from_start) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    char start_log[8192] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    if (tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, from_start ? 48000 : 72000, err,
+                        sizeof err, start_log, sizeof start_log)
+        != 0) {
+        DSD_FPRINTF(stderr, "TETRA named once across checks: scan start failed: %s\n", err);
+        tetra_rig_finish(opts, state, dir, path);
+        return 1;
+    }
+    int rc = 0;
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonceall") == 0;
+    if (from_start) {
+        g_scan_dsp_rate_hz = 72000;
+        tick_at(opts, state, 0.1);
+        g_tetra_ted_applied = 5;
+        if (dsd_engine_trunk_scan_active_index(state) != 0U) {
+            rc |= expect_control_rc("advance to the TETRA target",
+                                    dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+        }
+        tick_at(opts, state, 0.2);
+    } else {
+        g_tetra_ted_applied = 4;
+        tick_at(opts, state, 0.1);
+        g_scan_dsp_rate_hz = 48000;
+        g_tetra_ted_applied = 0;
+        tick_at(opts, state, 0.2);
+    }
+    tick_at(opts, state, 0.3);
+    const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = count_text(start_log, "WARNING: Trunk scan target 'dmo':")
+                      + count_text(log, "WARNING: Trunk scan target 'dmo':");
+    if (rc || !left || named != 1) {
+        DSD_FPRINTF(stderr, "TETRA named once across checks (%s): rc %d left %d named %d\n%s%s\n",
+                    from_start ? "from the start" : "on air", rc, left, named, start_log, log);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+static int
+test_tetra_dmo_named_once_across_checks(void) {
+    return tetra_named_once_across_checks_case(0) | tetra_named_once_across_checks_case(1);
+}
+
+/* The TETRA state across a mixed list (issue #890 A4): a session with a TETRA DMO target holds the extension from its
+ * first park, so no hop frees or replaces it; every park starts it cold (the visit reset, TETRA after TETRA included);
+ * a pause into manual decoding and the stop let it go cold, freeing it when the settings in force run no TETRA. A
+ * configured -fT session's state is kept through a start whose parks all fail and the stop after it. */
+static int
+test_tetra_state_held_across_mixed_hops(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
+                                 "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmo2,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= state->tetra_ext_scan_held != 1U || g_tetra_visit_resets != 1;
+    /* The decoder's state, made on the first TETRA burst. */
+    fake_tetra_ext_install(state);
+    double now = 0.0;
+    int resets = g_tetra_visit_resets;
+    for (int hop = 0; hop < 8; hop++) {
+        now += 0.3;
+        tick_at(opts, state, now);
+        rc |= g_tetra_visit_resets != resets + 1 || !g_tetra_visit_reset_held;
+        resets = g_tetra_visit_resets;
+        const size_t on = dsd_engine_trunk_scan_active_index(state);
+        rc |= (on == 1U || on == 2U) != (opts->frame_tetra == 1);
+    }
+    if (rc || !fake_tetra_ext_present(state) || g_fake_tetra_ext_frees != 0) {
+        DSD_FPRINTF(stderr, "TETRA held across hops: rc %d present %d frees %d resets %d\n", rc,
+                    fake_tetra_ext_present(state), g_fake_tetra_ext_frees, g_tetra_visit_resets);
+        rc = 1;
+    }
+    /* A pause into manual decoding (the configured DMR session): cold, then freed. */
+    p25_sm_tick_guard_enter();
+    rc |= dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
+    p25_sm_tick_guard_leave();
+    rc |= state->tetra_ext_scan_held != 0U || g_tetra_visit_resets != resets + 1 || fake_tetra_ext_present(state)
+          || g_fake_tetra_ext_frees != 1 || opts->frame_tetra != 0;
+    /* A resume takes the hold again at its park. */
+    p25_sm_tick_guard_enter();
+    rc |= dsd_engine_trunk_scan_resume_locked(opts, state) < 0;
+    p25_sm_tick_guard_leave();
+    rc |= state->tetra_ext_scan_held != 1U;
+    tetra_rig_finish(opts, state, dir, path);
+    rc |= state->tetra_ext_scan_held != 0U;
+    if (rc) {
+        DSD_FPRINTF(stderr, "TETRA pause/resume: held %u resets %d frees %d frame_tetra %d\n",
+                    (unsigned)state->tetra_ext_scan_held, g_tetra_visit_resets, g_fake_tetra_ext_frees,
+                    opts->frame_tetra);
+    }
+
+    /* A configured -fT session, whose first parks fail: its state is held, reset, and kept for it at the stop. */
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_nfm_targets_header,
+                                          "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                          "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n",
+                                          path, sizeof path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    fake_tetra_ext_install(state);
+    state->tetra_pub.mcc = 460U;
+    g_fake_tetra_ext_frees = 0;
+    g_tetra_visit_resets = 0;
+    g_scan_dsp_rate_hz = 72000;
+    g_scan_tune_to_freq_failures_remaining = 2;
+    trunk_scan_test_set_now(0.0);
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafailed") == 0;
+    const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path);
+    }
+    const int held = state->tetra_ext_scan_held;
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (init_rc != 0 || held != 1 || g_tetra_visit_resets < 2 || !fake_tetra_ext_present(state)
+        || g_fake_tetra_ext_frees != 0 || state->tetra_ext_scan_held != 0U || opts->frame_tetra != 1
+        || state->tetra_pub.mcc != 0U) {
+        DSD_FPRINTF(stderr,
+                    "configured -fT, failed parks: rc %d (%s) held %d resets %d present %d frees %d held after %u "
+                    "frame_tetra %d mcc %u\n",
+                    init_rc, err, held, g_tetra_visit_resets, fake_tetra_ext_present(state), g_fake_tetra_ext_frees,
+                    (unsigned)state->tetra_ext_scan_held, opts->frame_tetra, (unsigned)state->tetra_pub.mcc);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* The published entry reasons follow what a TETRA DMO target's chain depends on beyond the rate (issue #890): a
+ * --tetra-uplink switched on, then off, republishes them at the next tick, not a second later. */
+static int
+test_tetra_entry_reasons_follow_the_chain(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
+                                 "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "at 72 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    uint64_t rev = state->trunk_scan_entry_rev;
+    opts->tetra_uplink = 1;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "--tetra-uplink on", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_CHAIN);
+    rc |= state->trunk_scan_entry_rev == rev;
+    rev = state->trunk_scan_entry_rev;
+    opts->tetra_uplink = 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "--tetra-uplink off", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    rc |= state->trunk_scan_entry_rev == rev;
+    g_scan_dsp_rate_hz = 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "the rate not known", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_WAIT);
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
 }
 
 /* Issue #644: the coordinator publishes whether a frequency typed by hand could pick each target, as the entry match
@@ -17591,7 +20284,8 @@ test_paused_scan_gates_every_consumer(void) {
     int cqpsk = -1;
     if (dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL
         || dsd_trunk_scan_hook_active_chan_csv(&state) != NULL
-        || dsd_engine_trunk_scan_active_gfsk_symbol_rate(&state) != 0
+        || dsd_engine_trunk_scan_active_landing(&state, NULL) != 0
+        || dsd_engine_trunk_scan_active_class_landing(&state, NULL) != 0
         || dsd_engine_trunk_scan_active_is_p25_class(&state) != 0
         || dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk) != 0 || cqpsk != -1) {
         DSD_FPRINTF(stderr, "gates: a paused target still answered for the receiver\n");
@@ -18929,6 +21623,47 @@ expect_list_rc(const char* stage, int got, int want) {
         return 1;
     }
     return 0;
+}
+
+/* A list toggle's last-usable count reads the TETRA DMO target on air by its landed verdict (issue #890): with its TED
+   found wrong on air and the departure's park of the DMR target failed, so the receiver stays on it, switching the
+   DMR target's list off would leave only a target the scan is leaving, and is refused; with the timing right again it
+   is allowed. */
+static int
+test_tetra_dmo_list_toggle_reads_the_on_air_verdict(void) {
+    static const char* const names[] = {"dmo", "dmr"};
+    static const char* const bodies[] = {"dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n",
+                                         "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    scan_list_files files;
+    g_scan_dsp_rate_hz = 72000;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 4;
+    if (scan_lists_init(&files, k_nfm_targets_header, names, bodies, NULL, 2, opts, state) != 0) {
+        return 1;
+    }
+    int rc = expect_active_target(state, "the TETRA target first", 0U);
+    g_tetra_ted_applied = 5;                    /* a TED timing the 72 kHz chain does not run at */
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratoggle") == 0;
+    tick_at(opts, state, 0.1);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path);
+    }
+    rc |= expect_active_target(state, "the failed departure keeps the receiver", 0U);
+    rc |= expect_list_rc("dmr's list off beside a TETRA target leaving", list_set(opts, state, 2, 0),
+                         DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    g_tetra_ted_applied = 4;
+    rc |= expect_list_rc("dmr's list off, the timing right", list_set(opts, state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_applied = 0;
+    g_scan_dsp_rate_hz = 0;
+    scan_lists_finish(&files, opts, state);
+    return rc;
 }
 
 /* The list on air (1-based, 0 none), whether its list is off, and the readout: n of m over the lists on. */
@@ -21042,51 +23777,43 @@ test_lists_departure_waits_for_the_soonest_cooldown(void) {
     return test_rc;
 }
 
-/* The startup park's fallback: with every target in the rotation skipped for its width (list one, whose target is
- * receivable, starts off), the scan starts on the first one in the rotation; the front end refuses that park before
- * any backend moves, with no "retune failed" line of the coordinator's own, and the advance after it finds nowhere to
- * go. */
+/* Issue #890 A3: a start none of whose targets in the rotation the scan can visit (here every one on is skipped for its
+ * width: list one, whose target is receivable, starts off) is refused, naming the first one and why, before anything is
+ * tuned; it used to start on that target, whose park the front end refused, and run on nowhere. */
 static int
-test_lists_start_on_an_unreachable_target_when_nothing_else_is_on(void) {
+test_lists_start_refused_when_no_target_can_be_visited(void) {
     static const char* const names[] = {"one", "two"};
     static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n",
                                          "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"};
     static const int off[] = {1, 0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     scan_list_files files;
     if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 2) != 0) {
         scan_list_files_remove(&files);
         return 1;
     }
-    reset_scan_opts_state(&opts, &state);
-    scan_list_files_to_opts(&files, off, &opts);
-    dsd_test_capture_stderr cap;
-    char buf[8192] = {0};
-    if (dsd_test_capture_stderr_begin(&cap, "trunkscanstartfallback") != 0) {
-        scan_list_files_remove(&files);
-        return 1;
-    }
+    reset_scan_opts_state(opts, state);
+    scan_list_files_to_opts(&files, off, opts);
     g_scan_tune_refuses_unfit_width = 1;
     g_scan_tune_width_refusals = 0;
     g_scan_dsp_rate_hz = 16000;
     char err[512] = {0};
     trunk_scan_test_set_now(0.0);
-    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
-    const size_t started_on = dsd_engine_trunk_scan_active_index(&state);
+    const int rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    const int attached = dsd_engine_trunk_scan_target_count(state) != 0;
     const int refusals = g_scan_tune_width_refusals;
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
-    (void)dsd_test_capture_stderr_end(&cap);
-    (void)dsd_test_capture_stderr_read(&cap, buf, sizeof buf);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     scan_list_files_remove(&files);
-    const int failed = count_text(buf, "Trunk scan target 'wide' retune failed");
-    if (rc != 0 || started_on != 1U || refusals != 1 || failed != 0) {
-        DSD_FPRINTF(stderr,
-                    "start fallback (rc=%d %s): started on %zu, refused %d, retune-failed %d; want 1, 1, 0\n%s\n", rc,
-                    err, started_on, refusals, failed, buf);
+    if (rc == 0 || attached || refusals != 0
+        || strcmp(err, "--trunk-scan: no target can be visited on this input; target \"wide\": NFM 20 kHz does not fit "
+                       "the 16 kHz DSP rate")
+               != 0) {
+        DSD_FPRINTF(stderr, "start with no target to visit: rc=%d attached=%d refused tunes %d, err '%s'\n", rc,
+                    attached, refusals, err);
         return 1;
     }
     return 0;
@@ -23040,6 +25767,10 @@ typedef struct {
     int analog_ok;
     uint32_t refused_rate_hz; /* one capture rate the calibration did not validate, 0 for none */
     uint32_t session;         /* rtl_stream_session_generation(): the stream opens and stops */
+    uint32_t word_bumps;      /* moves the capture word with the capture unchanged (a reset) */
+    int word_loads;           /* rtl_signal_capture_seq() loads */
+    uint32_t late_ticket;     /* an earlier request's ticket the tap still answers (quiet), 0 for none */
+    uint32_t late_request_id;
 } quiet_fake_tap;
 
 static quiet_fake_tap g_tap;
@@ -23052,6 +25783,30 @@ rtl_signal_capture_get(dsd_signal_capture* capture) {
     }
     *capture = g_tap.capture;
     return 1;
+}
+
+/* The tap's capture word: a function of the capture the fake holds, so a case that changes the capture moves it. */
+static uint32_t
+quiet_fake_capture_word(void) {
+    if (!g_tap.have_capture) {
+        return 0x9e3779b9U ^ g_tap.word_bumps;
+    }
+    return (g_tap.capture.generation * 2654435761U) ^ g_tap.capture.capture_hz
+           ^ (uint32_t)g_tap.capture.capture_offset_hz ^ (g_tap.word_bumps << 24);
+}
+
+uint32_t
+rtl_signal_capture_seq(void) {
+    g_tap.word_loads++;
+    return quiet_fake_capture_word();
+}
+
+int
+rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq) {
+    if (seq) {
+        *seq = quiet_fake_capture_word();
+    }
+    return rtl_signal_capture_get(capture);
 }
 
 int
@@ -23073,6 +25828,9 @@ rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* tick
 
 int
 rtl_signal_quiet_status(uint32_t ticket) {
+    if (ticket != 0U && ticket == g_tap.late_ticket) {
+        return 1;
+    }
     if (ticket == 0U || ticket != g_tap.ticket) {
         return -1;
     }
@@ -23089,6 +25847,13 @@ rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result) {
     if (status < 0) {
         result->failure = DSD_SIGNAL_MEASURE_SUPERSEDED;
         return -1;
+    }
+    if (ticket == g_tap.late_ticket) {
+        result->valid = 1U;
+        result->quiet = 1U;
+        result->request_id = g_tap.late_request_id;
+        g_tap.late_ticket = 0U;
+        return 1;
     }
     *result = g_tap.result;
     result->request_id = g_tap.last_request.request_id;
@@ -23150,6 +25915,7 @@ enum {
 };
 
 static const uint32_t k_qt_hz_a = 452000000U;
+static const uint32_t k_qt_hz_b = 453000000U;
 
 static uint32_t g_quiet_stream_gen = 0U;
 
@@ -23338,6 +26104,9 @@ qt_pass(dsd_opts* opts, dsd_state* state) {
 
 static int g_qt_notices = 0;
 static char g_qt_notice[192];
+/* The shortened-reading WARN lines (issue #834 follow-up, D3): how many, and the last. */
+static int g_qt_short_warns = 0;
+static char g_qt_short_warn[320];
 /* The silent-channel skip's WARN lines (issue #834 R6), counted by the same tap: a process installs one tap only. */
 static int g_qt_warns = 0;
 static char g_qt_warn[512];
@@ -23354,13 +26123,17 @@ qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_qt_warns++;
         DSD_SNPRINTF(g_qt_warn, sizeof g_qt_warn, "%s", text);
     }
+    if (text && strncmp(text, "WARNING: scan: --scan-skip-silent-ms", 36) == 0) {
+        g_qt_short_warns++;
+        DSD_SNPRINTF(g_qt_short_warn, sizeof g_qt_short_warn, "%s", text);
+    }
 }
 
 static void
 qt_notices_watch(int on) {
     g_qt_notices = 0;
     g_qt_notice[0] = '\0';
-    dsd_neo_log_set_tap(on ? qt_count_notice : NULL, NULL);
+    dsd_neo_log_set_tap(on ? trunk_scan_test_log_tap : NULL, NULL);
 }
 
 /* A pass that publishes the target on air measures it, and the tap finds it quiet: READY, handed back. */
@@ -23400,9 +26173,13 @@ qt_frame(dsd_state* state, int level, uint32_t hold_ms) {
     dsd_engine_scan_quiet_frame_end(state);
 }
 
+/* How often the check read its clock in the portable cases: what a service does when it has something to do. */
+static int g_qt_clock_reads = 0;
+
 /* The check's clock in the portable cases: the rig's, which moves only when a case moves it. */
 static uint64_t
 qt_seam_clock(void) {
+    g_qt_clock_reads++;
     return g_quiet_rt_ms;
 }
 
@@ -23637,7 +26414,7 @@ test_scan_quiet_evidence_notes_bookkeeping(void) {
     dsd_engine_scan_quiet_pending_reset(state_p);
     rc |= qt_expect("the frame loop's early leave clears it", owner->pending_until_m < 1e-9 && !owner->frame_pending);
     qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 160U);
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     rc |= qt_expect("the setting's change clears it", owner->pending_until_m < 1e-9);
     dsd_state_ext_free_all(state_p);
     dsd_decode_clock_use_system();
@@ -23686,6 +26463,69 @@ test_scan_quiet_evidence_hook_off_is_one_load(void) {
     rc |= qt_expect("no scan owner made", dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) == NULL);
     dsd_frame_sync_hooks_set(&saved);
     dsd_state_ext_free_all(state_p);
+    return rc;
+}
+
+/* Issue #890: a transmission only its sync words confirmed (D-STAR's two exact resync words, SYNC_ONLY) is no heard
+   content. Through the runtime wrapper it stores nothing for the -Y step, with the setting off or on. To a quiet check
+   it is a verdict still open: a READY quiet result is held while such frames keep coming, never ended as activity, and
+   handed back once their hold runs out. A CRC-proven frame still ends the check. */
+static int
+test_scan_quiet_sync_only_is_no_content(void) {
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(state_p, 0, sizeof *state_p);
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        opts.scan_skip_silent = on;
+        const uint32_t content = state_p->scan_y_content_seq;
+        const uint32_t partial = state_p->scan_y_partial_seq;
+        dsd_frame_sync_hook_content_evidence(&opts, state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+        rc |= qt_expect(on ? "on: SYNC_ONLY stores no -Y content or open verdict"
+                           : "off: SYNC_ONLY stores no -Y content or open verdict",
+                        state_p->scan_y_content_seq == content && state_p->scan_y_partial_seq == partial);
+    }
+    dsd_state_ext_free_all(state_p);
+
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    const dsd_engine_scan_owner* owner =
+        (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state_p, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    const uint64_t activity = owner ? owner->activity_seq : 0U;
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    rc |= qt_expect_held(&opts, state_p, "a resync-confirmed frame: held");
+    rc |= qt_expect("a resync-confirmed frame is no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(10U + 420U + 839U);
+    rc |= qt_expect_held(&opts, state_p, "the next one renews the wait: held");
+    rc |= qt_expect("still no activity", owner && owner->activity_seq == activity);
+    qt_decode_at(10U + 420U + 841U);
+    rc |= qt_expect("the frames stopped: the hunt hands back",
+                    dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    dsd_engine_trunk_scan_tick(&opts, state_p);
+    rc |= expect_active_target(state_p, "the frames stopped: the tick skips", 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+
+    /* A CRC after the resync-confirmed frames still ends the check: nothing skips. */
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    rc |= qt_pass_to_ready(&opts, state_p);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_SYNC_ONLY, 840U);
+    qt_decode_at(430U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    rc |= qt_expect("a header CRC: no hand-back", dsd_engine_scan_quiet_service(&opts, state_p) == DSD_SCAN_QUIET_NONE);
+    qt_pass(&opts, state_p);
+    rc |= expect_active_target(state_p, "a header CRC: the target stays", 0U);
+    quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
 }
 
@@ -23897,6 +26737,619 @@ test_scan_quiet_frame_boundary_late_capture_and_retry(void) {
     rc |= qt_capture_bound_case(1);
     rc |= qt_late_retry_case(800U);
     rc |= qt_late_retry_case(950U);
+    return rc;
+}
+
+/* --- Issue #834 follow-up: the hunt's event service (dsd_engine_scan_quiet_event_service()), which acts as soon as the
+ * tap's capture word or the request's status word moves, never ends a check for time, never moves the 50 ms legacy
+ * schedule, and requests no earlier than a frame boundary may once a settle is in force. --- */
+
+/* The event service @p ms of realtime later. */
+static int
+qt_event_after(dsd_opts* opts, dsd_state* state, uint64_t ms) {
+    g_quiet_rt_ms += ms;
+    return dsd_engine_scan_quiet_event_service(opts, state);
+}
+
+/* A capture appears: the event service requests at once, with the 10 ms lead; nothing moved: no capture read; the
+   answer is collected as its status word turns done, and handed back once by events (the hunt's point still hands
+   back); an event read leaves the legacy 50 ms schedule alone. */
+static int
+test_scan_quiet_event_acts_when_ready(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    int rc = qt_expect("published with no capture yet", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    const int reads = g_tap.capture_reads;
+    rc |= qt_expect("nothing moved: no capture read", qt_event_after(opts, state_p, 2U) == DSD_SCAN_QUIET_LIVE
+                                                          && g_tap.capture_reads == reads && g_tap.word_loads > 0);
+    /* A capture of the old generation moves the word but does not qualify: read once, nothing asked. */
+    quiet_tap_capture(k_qt_hz_a, QT_GEN);
+    g_quiet_rt_ms = landed_ms + 20U;
+    rc |= qt_expect("a capture that does not qualify: read, waits",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && g_tap.capture_reads == reads + 1 && g_tap.requests == 0);
+    /* The legacy schedule the publication at +10 set: its next read is due at +60, and the event read did not move
+       it. */
+    g_quiet_rt_ms = landed_ms + 60U;
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the legacy point still reads at +60", g_tap.capture_reads == reads + 2);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed_ms + 61U;
+    rc |= qt_expect("the landed capture: requested at once",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    rc |= qt_expect("with a 10 ms lead", g_tap.last_request.lead_pairs == 1536000U / 100U);
+    rc |= qt_expect("pending: nothing taken", qt_event_after(opts, state_p, 50U) == DSD_SCAN_QUIET_LIVE
+                                                  && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 50U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the answer: handed back at once",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("handed back by events once", qt_event_after(opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE
+                                                      && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    rc |= qt_expect("the hunt's point still hands it back",
+                    quiet_service_after(opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("and the tick applies it", quiet_apply(opts, state_p, SCAN_QUIET_OWNER_TRUNK) == 1);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* A settle in force: a frame boundary saw the capture first, so the event service requests only once its 125 ms have
+   run; and a lost guard leaves READY to the hunt's point, not to events. */
+static int
+test_scan_quiet_event_respects_the_settle(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    int rc = qt_expect("a frame boundary sees it first: settling",
+                       qt_frame_at(opts, state_p, landed_ms, 100U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+    for (uint64_t at = 101U; at < 225U; at += 7U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("no event request inside the settle", g_tap.requests == 0);
+    g_quiet_rt_ms = landed_ms + 226U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests",
+                    g_tap.requests == 1 && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 100U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |=
+        qt_expect("ready: handed back", dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    scan_quiet_reconcile_declined(opts, state_p, SCAN_QUIET_OWNER_TRUNK, 1);
+    rc |= qt_expect("a tick that lost its guard: still READY, not handed back by events again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_READY
+                        && qt_event_after(opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE);
+    rc |=
+        qt_expect("the hunt's point hands it back", quiet_service_after(opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* The late retry of qt_late_retry_case() with short hunts between the frames: a retryable failure collected at a
+   frame boundary @p failed_at ms in sets a settle; events never end the visit past the 1 s bound (main's frame
+   boundary would still request it) and never request inside the settle; the first event past it requests. A failure
+   past its deadline, or a result past its age, gives no hand-back. */
+static int
+qt_event_late_retry_case(uint64_t failed_at) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + failed_at - 200U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + failed_at - 10U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    rc |= qt_expect("the failure collected at a frame boundary",
+                    qt_frame_at(opts, state_p, landed_ms, failed_at) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    uint64_t at = failed_at + 1U;
+    for (; at < failed_at + SCAN_QUIET_FRAME_SETTLE_MS; at += 7U) {
+        if (at >= failed_at + 80U && at < failed_at + 87U) {
+            (void)qt_frame_at(opts, state_p, landed_ms, at);
+        } else {
+            g_quiet_rt_ms = landed_ms + at;
+            (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+        }
+        rc |= qt_expect("inside the settle: waiting, never ended",
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    }
+    g_quiet_rt_ms = landed_ms + failed_at + SCAN_QUIET_FRAME_SETTLE_MS;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    /* This answer completes past its 400 ms deadline: no READY, no hand-back. */
+    g_quiet_rt_ms += SCAN_QUIET_REQUEST_DEADLINE_MS;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("an answer past its deadline: DONE, no hand-back",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_NONE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* A READY result a PARTIAL frame verdict holds: events hand it back once the hold ends inside its 250 ms age, and not
+   at all once the age ran out first. */
+static int
+qt_event_hold_case(uint32_t hold_ms, int expect_hand_back) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 120U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    qt_decode_at(120U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, hold_ms);
+    rc |= qt_expect("collected, held by the frame's verdict",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    int handed = 0;
+    for (uint64_t at = 130U; at <= 120U + hold_ms + 20U && !handed; at += 10U) {
+        g_quiet_rt_ms = landed_ms + at;
+        qt_decode_at(at);
+        const int answer = dsd_engine_scan_quiet_event_service(opts, state_p);
+        handed = answer == DSD_SCAN_QUIET_HAND_BACK;
+        if (!handed && 120U + hold_ms > at) {
+            rc |= qt_expect("inside the hold: not handed back", answer == DSD_SCAN_QUIET_LIVE);
+        }
+    }
+    rc |= qt_expect(expect_hand_back ? "the hold ends inside the age: handed back"
+                                     : "the age ran out first: never handed back",
+                    handed == expect_hand_back);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* The event service's hand-back, taken by the tick as the hunt's would be: the target skips with one NOTICE, and the
+   next target is tuned once. */
+static int
+test_scan_quiet_event_hand_back_skips_the_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 110U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the event service hands back",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    qt_decode_at(110U);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("the tick skips the target, with one NOTICE",
+                    g_qt_notices == 1 && dsd_engine_trunk_scan_active_index(state_p) == 1U);
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* --- Issue #834 follow-up, D3: --scan-skip-silent-ms sets the reading's sub-window count. --- */
+
+static const char k_qt_p25_targets[] = "a,p25-conventional,452000000,,2000,1000,\n"
+                                       "b,p25-conventional,453000000,,2000,1000,\n";
+
+/* The rig's first visit published by the outer pass at +10 ms with its capture there, with @p ms set: the request's
+   sub-window count, or -1 when nothing was asked. */
+static int
+qt_reading_windows(const char* body, int ms, int* warns) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path, body);
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return -2;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = ms;
+    g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
+    g_qt_short_warns = 0;
+    qt_notices_watch(1);
+    g_qt_short_warns = 0;
+    qt_decode_at(10U);
+    qt_pass(opts, state_p);
+    const int windows = g_tap.requests == 1 ? (int)g_tap.last_request.windows : -1;
+    if (warns) {
+        *warns = g_qt_short_warns;
+    }
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return windows;
+}
+
+/* Unset: the calibrated reading (0, the detector's nine). 30 ms: three sub-windows on a P25 target, six (the DMR
+   floor) on a DMR target, each with its WARN lines once; 85 ms rounds to the calibrated nine and warns nothing;
+   500 ms: fifty, with no warning. */
+static int
+test_scan_quiet_reading_length_per_visit(void) {
+    int warns = 0;
+    int rc = qt_expect("unset: the calibrated reading",
+                       qt_reading_windows(k_qt_dwell_targets, 0, &warns) == 0 && warns == 0);
+    rc |=
+        qt_expect("30 ms on a P25 target: three", qt_reading_windows(k_qt_p25_targets, 30, &warns) == 3 && warns == 1);
+    rc |= qt_expect("the warning names the reading",
+                    strstr(g_qt_short_warn, "--scan-skip-silent-ms 30 reads 3 slices (30 to ") != NULL
+                        && strstr(g_qt_short_warn, "shorter than the calibrated 9") != NULL);
+    rc |= qt_expect("30 ms on a DMR target: the floor of six",
+                    qt_reading_windows(k_qt_dwell_targets, 30, &warns) == 6 && warns == 2);
+    rc |= qt_expect("the DMR line names the floor",
+                    strstr(g_qt_short_warn, "DMR channels are read for 6 slices") != NULL);
+    rc |= qt_expect("85 ms rounds to nine: no warning",
+                    qt_reading_windows(k_qt_p25_targets, 85, &warns) == 9 && warns == 0);
+    rc |= qt_expect("500 ms: fifty", qt_reading_windows(k_qt_dwell_targets, 500, &warns) == 50 && warns == 0);
+    char line[320];
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 5, 1536000U, 0);
+    rc |= qt_expect("the span at 1.536 Msps",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to "
+                                 "53 ms), shorter than the calibrated 9: a weak or fading signal "
+                                 "can read silent and be skipped.\n")
+                        == 0);
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 6, 1024000U, 1);
+    rc |= qt_expect("one length at 1.024 Msps",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50: DMR channels are "
+                                 "read for 6 slices (60 ms), the fewest that always hold one "
+                                 "whole slice inside a burst of an ongoing DMR transmission.\n")
+                        == 0);
+    rc |= qt_expect("the helpers",
+                    scan_quiet_request_windows(0U, 1) == 0U && scan_quiet_request_windows(3U, 0) == 3U
+                        && scan_quiet_request_windows(3U, 1) == 6U && scan_quiet_request_windows(7U, 1) == 7U
+                        && scan_quiet_request_deadline_ms(0U) == 400U && scan_quiet_request_deadline_ms(9U) == 400U
+                        && scan_quiet_request_deadline_ms(50U) == 892U);
+    return rc;
+}
+
+/* A fifty-sub-window reading's answer has 892 ms: one completing 1 ms before is taken, one completing at it is not. */
+static int
+qt_long_deadline_case(uint64_t completes_after) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    opts->scan_skip_silent_ms = 500;
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested with fifty",
+                       scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.last_request.windows == 50U);
+    g_quiet_rt_ms = landed_ms + 10U + completes_after;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    const int answer = dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect(completes_after < 892U ? "1 ms before the grown deadline: taken" : "at the grown deadline: not",
+                    completes_after < 892U
+                        ? answer == DSD_SCAN_QUIET_HAND_BACK
+                        : (answer == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE));
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_reading_length_deadline(void) {
+    return qt_long_deadline_case(891U) | qt_long_deadline_case(892U);
+}
+
+/* Issue #834 follow-up: a retryable failure at +950 ms with only short hunts after it (no frame boundary): the event
+   service keeps the capture it sees inside the settle. With events alone the first event past the settle requests;
+   a hunt point past the 1 s bound then requests it as a frame boundary's sighting lets it (a legacy point requests at
+   once), and never ends the visit. */
+static int
+qt_event_retry_without_frames_case(int legacy_at_1007) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 750U;
+    quiet_publish(opts, state_p);
+    int rc = qt_expect("requested", g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 940U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    (void)qt_frame_at(opts, state_p, landed_ms, 950U);
+    rc |= qt_expect("the failure collected at +950", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    for (uint64_t at = 951U; at < 950U + SCAN_QUIET_FRAME_SETTLE_MS; at += 7U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+        if (legacy_at_1007 && at == 1007U) {
+            (void)dsd_engine_scan_quiet_service(opts, state_p); /* the hunt's point past the 1 s bound */
+            rc |= qt_expect("the hunt's point past the bound requests the capture seen in time",
+                            scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+            quiet_rig_finish(opts, state_p, dir, path);
+            return rc;
+        }
+    }
+    rc |= qt_expect("events alone: still waiting out the settle, never ended",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 950U + SCAN_QUIET_FRAME_SETTLE_MS;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the first event past the settle requests",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_event_retry_without_frames(void) {
+    return qt_event_retry_without_frames_case(0) | qt_event_retry_without_frames_case(1);
+}
+
+/* Issue #834 follow-up: events that cannot lead to a request are taken once. A capture a frame boundary saw goes away
+   inside the settle (the tap reset): one read, then no clock or capture reads until the word moves. A word change past
+   the 1 s bound with no capture seen: taken once. */
+static int
+test_scan_quiet_event_takes_dead_events_once(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    int rc = qt_expect("a frame boundary sees it: settling",
+                       qt_frame_at(opts, state_p, landed_ms, 100U) == DSD_SCAN_QUIET_LIVE);
+    g_tap.have_capture = 0;
+    g_tap.word_bumps++; /* the tap reset: the word moves, the capture is gone */
+    g_quiet_rt_ms = landed_ms + 150U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    const int reads = g_tap.capture_reads;
+    const int clocks = g_qt_clock_reads;
+    for (uint64_t at = 230U; at < 400U; at += 3U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("the capture gone: no polling past the settle",
+                    g_tap.capture_reads == reads && g_qt_clock_reads == clocks && g_tap.requests == 0);
+    quiet_rig_finish(opts, state_p, dir, path);
+
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed2_ms = qt_publish_without_capture(opts, state_p, 10U);
+    g_quiet_rt_ms = landed2_ms + 20U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed2_ms + 1001U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    const int clocks2 = g_qt_clock_reads;
+    for (uint64_t at = 1002U; at < 1100U; at += 3U) {
+        g_quiet_rt_ms = landed2_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    }
+    rc |= qt_expect("a word change past the bound: taken once", g_qt_clock_reads == clocks2 && g_tap.requests == 0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* Issue #834 follow-up: a failure the event service collects keeps the legacy 50 ms schedule; and a READY result past
+   its age is declined by events but left READY (a revision change could still restart the visit), for the legacy
+   service to end. */
+static int
+test_scan_quiet_event_keeps_legacy_timing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(opts, state_p, 10U);
+    g_quiet_rt_ms = landed_ms + 60U;
+    (void)dsd_engine_scan_quiet_service(opts, state_p); /* a legacy read: the next one is due at +110 */
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed_ms + 61U;
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    int rc = qt_expect("the event requests", g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + 62U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_DROPPED);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    rc |= qt_expect("the drop collected: waiting again", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    g_quiet_rt_ms = landed_ms + 63U;
+    quiet_publish(opts, state_p);
+    rc |= qt_expect("a publication inside the 50 ms schedule asks nothing", g_tap.requests == 1);
+    quiet_rig_finish(opts, state_p, dir, path);
+
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    const uint64_t landed2_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed2_ms + 10U;
+    quiet_publish(opts, state_p);
+    g_quiet_rt_ms = landed2_ms + 120U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    qt_decode_at(120U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, 300U);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    g_quiet_rt_ms = landed2_ms + 430U;
+    qt_decode_at(430U);
+    rc |= qt_expect("the hold ends past the age: declined by events",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_LIVE);
+    rc |= qt_expect("and left READY", scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the legacy service ends it", scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+/* Issue #834 follow-up, D3: the shortened reading's WARN line, once per setting and capture rate: a rate seen before
+   under the same setting logs nothing again, at any number of rates, a config apply that leaves the setting as it was
+   keeps that, and a real setting transition logs it again. */
+static int
+test_scan_quiet_short_warn_once_per_setting_and_rate(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_p25_targets);
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return 1;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = 30;
+    qt_notices_watch(1);
+    g_qt_short_warns = 0;
+
+    /* apply: 0 none, 1 a config apply that leaves the setting as it was, 2 the setting to the default and back. */
+    static const struct {
+        uint32_t rate_hz;
+        int apply;
+        int want;
+    } steps[] = {
+        {960000U, 0, 1},  {1024000U, 0, 2}, {960000U, 0, 2},  {1152000U, 0, 3}, {1200000U, 0, 4},
+        {1280000U, 0, 5}, {1280000U, 0, 5}, {1280000U, 1, 5}, {1280000U, 2, 6}, {960000U, 0, 7},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++) {
+        if (steps[i].apply == 1) {
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 0);
+        } else if (steps[i].apply == 2) {
+            opts->scan_skip_silent_ms = 0;
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
+            opts->scan_skip_silent_ms = 30;
+            dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
+        }
+        if (i > 0) {
+            quiet_land_again(state_p, k_qt_hz_a);
+        }
+        g_tap.capture.rate_hz = steps[i].rate_hz;
+        g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
+        quiet_publish(opts, state_p);
+        rc |= qt_expect("one WARN line per setting and rate", g_qt_short_warns == steps[i].want);
+    }
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    char line[320];
+    (void)scan_quiet_format_short_warn(line, sizeof line, 60, 6, 1152000U, 1);
+    rc |= qt_expect("the span from the rounded totals, and the slice guarantee",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 60: DMR channels are read for 6 slices (61 to "
+                                 "64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR "
+                                 "transmission.\n")
+                        == 0);
+    return rc;
+}
+
+/* Issue #834 follow-up: a target's short dwell runs out while a long (fifty-slice) reading is still pending: the tick
+   rotates on its dwell, the old answer that comes after skips nothing, and the next target is measured on its own. */
+static int
+test_scan_quiet_short_dwell_beats_a_long_reading(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(opts, state_p, dir, sizeof dir, path, sizeof path,
+                                           "a,p25-conventional,452000000,,250,1000,\n"
+                                           "b,p25-conventional,453000000,,250,1000,\n");
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return 1;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts->scan_skip_silent_ms = 500;
+    qt_notices_watch(1);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    qt_decode_at(10U);
+    qt_pass(opts, state_p);
+    int rc = qt_expect("a fifty-slice reading pending", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED
+                                                            && g_tap.last_request.windows == 50U
+                                                            && dsd_trunk_scan_hook_dwell_due(opts, state_p) == 0);
+    const uint32_t a_ticket = g_tap.ticket;
+    const uint32_t a_request_id = g_tap.last_request.request_id;
+    /* The dwell runs out first: the hunt hands back on it (dwell_due), and only then does the loop tick. */
+    g_quiet_rt_ms = landed_ms + 300U;
+    qt_decode_at(300U);
+    rc |= qt_expect("the dwell is due with the reading still pending",
+                    dsd_trunk_scan_hook_dwell_due(opts, state_p) == 1
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("the dwell rotates and cancels A's reading", dsd_engine_trunk_scan_active_index(state_p) == 1U
+                                                                     && g_tap.last_cancel == a_ticket
+                                                                     && g_tap.ticket == 0U);
+    /* B's visit gets its own capture and request. */
+    g_quiet_stream_gen++;
+    quiet_tap_capture(k_qt_hz_b, g_quiet_stream_gen);
+    const uint64_t b_landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = b_landed_ms + 10U;
+    qt_decode_at(310U);
+    qt_pass(opts, state_p);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p); /* the hunt sees the capture word move */
+    const uint32_t b_ticket = g_tap.ticket;
+    rc |= qt_expect("B's own reading pending",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && b_ticket != 0U && b_ticket != a_ticket
+                        && g_tap.last_request.frequency_hz == k_qt_hz_b && g_tap.requests == 2);
+    /* The tap then answers A's old ticket, quiet, while B's request is live. */
+    g_tap.late_ticket = a_ticket;
+    g_tap.late_request_id = a_request_id;
+    g_scan_tune_watch_hz = (long int)k_qt_hz_a;
+    g_scan_tune_watch_calls = 0;
+    const uint64_t b_epoch = dsd_engine_scan_landing_get(state_p)->epoch;
+    g_quiet_rt_ms = b_landed_ms + 100U;
+    qt_decode_at(400U);
+    (void)dsd_engine_scan_quiet_event_service(opts, state_p);
+    (void)dsd_engine_scan_quiet_service(opts, state_p);
+    rc |= qt_expect("the hunt is not handed back for B", dsd_trunk_scan_hook_dwell_due(opts, state_p) == 0);
+    qt_pass(opts, state_p);
+    rc |= qt_expect("A's old answer skips nothing: B stays pending, nothing tuned, no NOTICE",
+                    g_qt_notices == 0 && dsd_engine_trunk_scan_active_index(state_p) == 1U
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.ticket == b_ticket
+                        && g_scan_tune_watch_calls == 0 && dsd_engine_scan_landing_get(state_p)->epoch == b_epoch);
+    g_scan_tune_watch_hz = 0;
+    g_tap.late_ticket = 0U;
+    qt_notices_watch(0);
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_event_late_retry_and_holds(void) {
+    int rc = qt_event_late_retry_case(800U);
+    rc |= qt_event_late_retry_case(950U);
+    rc |= qt_event_hold_case(150U, 1);
+    rc |= qt_event_hold_case(300U, 0);
     return rc;
 }
 
@@ -24191,7 +27644,6 @@ test_scan_quiet_frame_boundary_setting_off(void) {
 #endif
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
-static const uint32_t k_qt_hz_b = 453000000U;
 static const char k_qt_targets[] = "a,dmr-conventional,452000000,,250,,\n"
                                    "b,dmr-conventional,453000000,,250,,\n";
 
@@ -24794,16 +28246,16 @@ qt_mut_hold_twice(dsd_opts* opts, dsd_state* state) {
 static void
 qt_mut_setting_off_on(dsd_opts* opts, dsd_state* state) {
     opts->scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state, 0);
+    dsd_engine_scan_quiet_setting_changed(state, 0, 1);
     opts->scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state, 1);
+    dsd_engine_scan_quiet_setting_changed(state, 1, 1);
 }
 
 /* The setting written while on, as a config apply that leaves it on does. */
 static void
 qt_mut_setting_reapplied(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    dsd_engine_scan_quiet_setting_changed(state, 0);
+    dsd_engine_scan_quiet_setting_changed(state, 0, 0);
 }
 
 static void
@@ -24916,7 +28368,7 @@ test_scan_quiet_mutation_sites_move_the_counters(void) {
     (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     QT_MOVED("a park in flight (tune_pending set)");
     g_scan_tune_to_freq_pending = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
     QT_MOVED("the setting");
     dsd_engine_scan_entry_hold_now(&state);
     QT_MOVED("-Y entry hold set");
@@ -25488,11 +28940,11 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
         return 1;
     }
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(&state, 0);
+    dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
     quiet_land_again(&state, k_qt_hz_a);
     g_quiet_rt_ms += 100U;
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(&state, 1);
+    dsd_engine_scan_quiet_setting_changed(&state, 1, 1);
     int requests = g_tap.requests;
     int rc = qt_expect("on mid-visit: the visit wants no eligibility",
                        scan_quiet_wants_eligibility(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0);
@@ -25524,7 +28976,7 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
        completed, a sync heard while off) with its landing not yet noted. */
     for (int landed = 0; landed <= 1; landed++) {
         opts.scan_skip_silent = 0;
-        dsd_engine_scan_quiet_setting_changed(&state, 0);
+        dsd_engine_scan_quiet_setting_changed(&state, 0, 1);
         const uint32_t session = dsd_engine_scan_landing_get(&state)->session;
         const int from = (int)dsd_engine_trunk_scan_active_index(&state);
         g_scan_tune_to_freq_pending = 1;
@@ -25538,7 +28990,7 @@ test_scan_quiet_turned_on_mid_visit_applies_from_the_next_visit(void) {
             dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
         }
         opts.scan_skip_silent = 1;
-        dsd_engine_scan_quiet_setting_changed(&state, 1);
+        dsd_engine_scan_quiet_setting_changed(&state, 1, 1);
         scan_quiet_eligibility e = quiet_elig(&opts, &state);
         e.key.index = to;
         e.key.session = session;
@@ -26498,12 +29950,12 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* --- Issue #834 R6: the check says when and why it cannot check a visit, through the trunk scan's timing publication
  * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
-/* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
+/* Count the WARN lines from here (qt_count_notice(), through the process's one tap). */
 static void
 qt_warns_watch(void) {
     g_qt_warns = 0;
     g_qt_warn[0] = '\0';
-    dsd_neo_log_set_tap(qt_count_notice, NULL);
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
 }
 
 /* The quiet status and reason the timing publication carries. */
@@ -26618,12 +30070,12 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
 
     /* Off, then on: the visit on air waits for the next tune, which logs its line again. */
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     qt_decode_at(120U);
     qt_pass(&opts, state_p);
     rc |= qt_expect_quiet(state_p, "the setting off", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE);
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state_p, 1);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1, 1);
     qt_next_target(&opts, state_p, k_qt_hz_b, 0);
     qt_next_target(&opts, state_p, k_qt_hz_a, 0);
     qt_decode_at(130U);
@@ -26645,6 +30097,53 @@ test_scan_quiet_trunk_says_why_a_visit_is_not_checked(void) {
     rc |= qt_expect_warn("its own reason, logged", 5, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun", k_qt_hz_b, 0, 0U);
     quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
+}
+
+/* Issue #890: a TETRA DMO target is never checked, and says so through the trunk scan's timing publication (No check:
+   mode, never the missing-width reason) with one WARN line however many ticks follow, and stays on air; with the -8
+   monitor beside its decoder too (@p monitor_nfm_hz >= 0), whose class a target with no class of its own never takes. */
+static int
+scan_quiet_trunk_tetra_dmo_says_no_check(int monitor_nfm_hz) {
+    static const char k_targets[] = "n15,nfm-conventional,452000000,,2000,1000,,--nfm-bandwidth-hz 15000\n"
+                                    "dmo,tetra-dmo-conventional,453000000,,2000,1000,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_monitor_nfm_hz = monitor_nfm_hz;
+    const int failed = qt_warn_rig_start(&opts, state_p, dir, sizeof dir, path, sizeof path, k_targets);
+    g_qt_monitor_nfm_hz = -1;
+    if (failed != 0) {
+        return 1;
+    }
+    /* A TETRA DMO target is visited only at a TETRA DSP rate (issue #890 D3). */
+    g_scan_dsp_rate_hz = 72000;
+    qt_warns_watch();
+    qt_decode_at(10U);
+    qt_pass(&opts, state_p);
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_OK);
+    (void)quiet_service_after(&opts, state_p, 10U);
+    qt_pass(&opts, state_p);
+    const int requests = g_tap.requests;
+    qt_next_target(&opts, state_p, k_qt_hz_b, 384000);
+    for (int pass = 0; pass < 3; pass++) {
+        qt_decode_at(20U + 10U * (uint64_t)pass);
+        qt_pass(&opts, state_p);
+        dsd_engine_trunk_scan_tick(&opts, state_p);
+    }
+    int rc = qt_expect_quiet(state_p, "a TETRA DMO target", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                             DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE);
+    rc |= qt_expect_warn("a TETRA DMO target: one line", 1, DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, 0, 0U, "dmo",
+                         k_qt_hz_b, 0, 0U);
+    rc |= qt_expect("a TETRA DMO target: nothing requested", g_tap.requests == requests);
+    rc |= qt_expect("a TETRA DMO target: still on air", dsd_engine_trunk_scan_active_index(state_p) == 1U);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_trunk_tetra_dmo_says_no_check(void) {
+    return scan_quiet_trunk_tetra_dmo_says_no_check(-1) | scan_quiet_trunk_tetra_dmo_says_no_check(12500);
 }
 
 /* Every no-check cause, through the trunk scan's timing publication: the -8 monitor with no width, an uncalibrated
@@ -27046,12 +30545,12 @@ test_scan_quiet_input_has_no_check(void) {
     }
     const dsd_scan_timing_publication on = state_p->scan_timing;
     opts.scan_skip_silent = 0;
-    dsd_engine_scan_quiet_setting_changed(state_p, 0);
+    dsd_engine_scan_quiet_setting_changed(state_p, 0, 1);
     trunk_scan_test_set_now(0.6);
     dsd_engine_trunk_scan_tick(&opts, state_p);
     const dsd_scan_timing_publication off = state_p->scan_timing;
     opts.scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state_p, 1);
+    dsd_engine_scan_quiet_setting_changed(state_p, 1, 1);
     trunk_scan_test_set_now(0.7);
     dsd_engine_trunk_scan_tick(&opts, state_p);
     dsd_engine_trunk_scan_tick(&opts, state_p);
@@ -27150,6 +30649,7 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_tick_setting_off_keeps_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_ready_declines_at_its_own_sites);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_says_why_a_visit_is_not_checked);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_tetra_dmo_says_no_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
@@ -27158,12 +30658,24 @@ test_scan_quiet_all(void) {
 #ifdef USE_RADIO
     rc |= test_scan_quiet_evidence_notes_bookkeeping();
     rc |= test_scan_quiet_evidence_hook_off_is_one_load();
+    rc |= run_with_default_tune_hook(test_scan_quiet_sync_only_is_no_content);
     rc |= run_with_default_tune_hook(test_scan_quiet_rejected_sync_keeps_the_check);
     rc |= run_with_default_tune_hook(test_scan_quiet_y_noise_frames_still_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_pending_verdict_holds_every_skip_point);
     rc |= run_with_default_tune_hook(test_scan_quiet_evidence_moves_no_trunk_activity);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_settles_before_requesting);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_late_capture_and_retry);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_acts_when_ready);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_respects_the_settle);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_late_retry_and_holds);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_hand_back_skips_the_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_per_visit);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_deadline);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_retry_without_frames);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_takes_dead_events_once);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_keeps_legacy_timing);
+    rc |= run_with_default_tune_hook(test_scan_quiet_short_warn_once_per_setting_and_rate);
+    rc |= run_with_default_tune_hook(test_scan_quiet_short_dwell_beats_a_long_reading);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundaries_run_every_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);
@@ -27180,6 +30692,14 @@ test_scan_quiet_all(void) {
 int
 main(void) {
     int rc = 0;
+    g_case_opts = (dsd_opts*)calloc(1, sizeof(*g_case_opts));
+    g_case_state = (dsd_state*)calloc(1, sizeof(*g_case_state));
+    if (!g_case_opts || !g_case_state) {
+        DSD_FPRINTF(stderr, "case fixture allocation failed\n");
+        free(g_case_opts);
+        free(g_case_state);
+        return 1;
+    }
     rc |= test_scan_quiet_all();
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_target_confirmed_only_by_its_park);
@@ -27199,6 +30719,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_target_map_makes_the_record);
+    rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_overlay_never_crosses_targets);
+    rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
@@ -27239,7 +30764,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_advance_reads_the_rate_once_per_walk);
     rc |= run_with_default_tune_hook(test_dwell_advance_cools_a_target_whose_switch_fails_to_prepare);
     rc |= run_with_default_tune_hook(test_lists_departure_waits_for_the_soonest_cooldown);
-    rc |= run_with_default_tune_hook(test_lists_start_on_an_unreachable_target_when_nothing_else_is_on);
+    rc |= run_with_default_tune_hook(test_lists_start_refused_when_no_target_can_be_visited);
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
     rc |= run_with_default_tune_hook(test_lists_switch_publishes_timing_under_the_guard);
     rc |= run_with_default_tune_hook(test_lists_alternate_walk_skips_a_list_off);
@@ -27281,6 +30806,16 @@ main(void) {
     rc |= run_with_default_tune_hook(test_p25_scan_retune_restarts_pending_cc_acquisition);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
+    rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_digital_activity_holds_its_family);
+    rc |= run_with_default_tune_hook(test_digital_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_simplex_targets_follow_the_key_matrix);
+    rc |= run_with_default_tune_hook(test_live_key_changes_follow_the_key_matrix);
+    rc |= run_with_default_tune_hook(test_keyed_dpmr_alternates_with_m17);
+    rc |= run_with_default_tune_hook(test_simplex_targets_merge_across_lists);
+    rc |= run_with_default_tune_hook(test_presence_reports_hold_under_the_defaults);
+    rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
+    rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
@@ -27299,6 +30834,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_binds_its_visit);
     rc |= run_with_default_tune_hook(test_p25_conventional_voice_gate_media_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_terminator_before_first_tick);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
@@ -27428,11 +30964,28 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_refuses_live_decryption);
     rc |= run_with_default_tune_hook(test_nfm_target_warnings_at_scan_start);
     rc |= run_with_default_tune_hook(test_digital_target_after_nfm_timed_for_digital_family);
+    rc |= test_simplex_target_types_parse_and_diagnostics();
+    rc |= test_invalid_type_names_every_type();
+    rc |= test_type_landing_and_ted_rule();
+    rc |= run_with_default_tune_hook(test_simplex_targets_land_their_class_profile);
+    rc |= test_scan_quiet_tetra_dmo_reason();
     rc |= run_with_default_tune_hook(test_symbol_timing_explicit_follows_the_scope);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_entry_match_reads_the_targets_effective_width);
     rc |= run_with_default_tune_hook(test_entry_reasons_follow_the_rate_and_a_width_edit);
+    /* Issue #890: TETRA DMO targets. */
+    rc |= run_with_default_tune_hook(test_tetra_dmo_target_skipped_off_a_tetra_rate);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_start_refused_when_nothing_can_be_visited);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_target_on_air_judged_again);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_failed_departure_keeps_its_cause);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_entry_reads_the_on_air_verdict);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_list_toggle_reads_the_on_air_verdict);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_two_targets_named_once_and_published);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_warned_once_per_session);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_named_once_across_checks);
+    rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
+    rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
@@ -27510,6 +31063,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_hold_start_refused_park_runs_on_unheld);
     rc |= run_with_default_tune_hook(test_hold_start_single_target_refused_stays_unheld);
     qt_shared_state_free();
+    reset_scan_opts_state(g_case_opts, g_case_state);
+    free(g_case_state);
+    free(g_case_opts);
     return rc;
 }
 
@@ -27564,6 +31120,28 @@ dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
 
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
+
+/* The DMR channel writer's notice (dmr_t3_channels.c, linked for the per-target provenance): DMR_T3_CHANNELS runs the
+   real emitter. */
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)observation;
+    (void)notice;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
+    return 0;
+}
 
 /* The close of the recordings no call owns, which a target switch runs as it leaves the carrier (issue #809 B4):
    counted. CORE_WAV_JOURNAL runs the real one through the real switch. */

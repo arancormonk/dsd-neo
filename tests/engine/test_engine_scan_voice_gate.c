@@ -36,12 +36,15 @@
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 
+#include "checked_media_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -357,8 +360,8 @@ open_voice_epoch_slot(gate_fixture* fix, uint8_t slot, double t, double span, ds
         update.observed_m = t;
         (void)dsd_call_state_update_crypto(fix->state, slot, DSD_SYNC_P25P1_NEG, &update);
     }
-    (void)dsd_call_state_update_media(fix->state, slot, 1, t);
-    (void)dsd_call_state_update_media(fix->state, slot, 1, t + span);
+    (void)decoded_media(fix->state, slot, 1, t);
+    (void)decoded_media(fix->state, slot, 1, t + span);
 }
 
 static void
@@ -480,11 +483,151 @@ test_span_debounce(void) {
     dsd_scan_voice_probe_result media = probe_voice(&fix);
     CHECK("short active span ignored", media.active_media_m < 0.0);
     CHECK("short retained span ignored", media.retained_media_m < 0.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 100.2);
+    (void)decoded_media(fix.state, 0, 1, 100.2);
     media = probe_voice(&fix);
     CHECK("long active span counts", media.active_media_m > 0.0);
     CHECK("long retained span counts", media.retained_media_m > 0.0);
     fixture_free(&fix);
+}
+
+/* Issue #890: a call's media marks, made before each frame is decoded, are no voice to the gate: frames the vocoder
+ * failed or concealed mark media past the qualify window yet never qualify the row, which steps at its qualify window
+ * as a silent one does. Checked media of the same call qualifies from its first frame. */
+static void
+test_unchecked_media_never_qualifies(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_VOICE;
+    obs.observed_m = 100.1;
+    CHECK("unchecked: a call opens", dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    for (int f = 0; f <= 60; f++) {
+        /* 1.2 s of failed or concealed frames: the media mark each one gets before its decode, and nothing after. */
+        (void)dsd_call_state_update_media(fix.state, 0U, 1, 100.1 + (0.02 * f));
+        dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.1 + (0.02 * f));
+    }
+    dsd_scan_voice_probe_result media = probe_voice(&fix);
+    CHECK("unchecked: no active media", media.active_media_m < 0.0);
+    CHECK("unchecked: no retained media", media.retained_media_m < 0.0);
+    CHECK("unchecked: no voice anchor", fix.state->scan_voice_gate_voice_m < 0.0);
+    CHECK("unchecked: the row steps at its qualify window",
+          dsd_scan_voice_gate_should_step(fix.opts, fix.state, 101.3) != 0);
+    /* Good frames of the same call: checked media, which qualifies once it spans 100 ms. */
+    CHECK("checked: first frame",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_DSTAR_VOICE_NEG, 101.32) == 1);
+    CHECK("checked: next frame",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_DSTAR_VOICE_POS, 101.44) == 1);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 101.44);
+    media = probe_voice(&fix);
+    CHECK("checked: active media", fabs(media.active_media_m - 101.44) < 1e-6);
+    CHECK("checked: voice anchor", fabs(fix.state->scan_voice_gate_voice_m - 101.44) < 1e-6);
+    CHECK("checked: another protocol's frame is not this call's",
+          dsd_call_state_note_checked_media(fix.state, 0U, DSD_SYNC_YSF_POS, 101.46) == 0);
+    fixture_free(&fix);
+}
+
+/* Issue #890: checked media counts only for the scan visit and carrier it was read on. A call heard before the landing
+ * in force -- ended, with its last frame at the very decode time the row landed -- is no voice of the row; nor is media
+ * of a frame whose read began on the visit before (a frame dispatched before the landing), nor media from before a
+ * carrier boundary. Media read on the visit holds it, through a sync loss too. */
+static void
+test_probe_binds_media_to_its_visit(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.state->scan_landing_visit = 4U; /* row A landed */
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    open_voice_epoch(&fix, 100.1, 0.4, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    (void)dsd_call_state_end_ex(fix.state, 0U, 100.5, DSD_CALL_END_TERMINATOR);
+    dsd_scan_voice_probe_result media = probe_voice(&fix);
+    CHECK("visit A: its call is its voice", fabs(media.retained_media_m - 100.5) < 1e-6);
+
+    /* Row B lands at the decode time A's last frame carried. */
+    fix.state->scan_landing_visit = 5U;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.5);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.5);
+    media = probe_voice(&fix);
+    CHECK("visit B: A's ended call is no voice", media.retained_media_m < 0.0 && media.active_media_m < 0.0);
+    CHECK("visit B: no voice anchor", fix.state->scan_voice_gate_voice_m < 0.0);
+
+    /* A frame whose read began on A's visit, decoded after B landed. */
+    open_voice_epoch(&fix, 100.6, 0.0, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    fix.state->frame_dispatch_active = 1;
+    fix.state->frame_dispatch_carrier_seq = fix.state->carrier_seq;
+    fix.state->frame_dispatch_scan_visit = 4U;
+    (void)dsd_call_state_note_checked_media(fix.state, 0U, 1, 100.6);
+    (void)dsd_call_state_note_checked_media(fix.state, 0U, 1, 100.8);
+    fix.state->frame_dispatch_active = 0;
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.8);
+    media = probe_voice(&fix);
+    CHECK("visit B: a frame read on A's visit is no voice", media.retained_media_m < 0.0);
+
+    /* B's own frames: voice, kept through a sync loss. */
+    open_voice_epoch(&fix, 101.0, 0.2, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    (void)dsd_call_state_end_ex(fix.state, 0U, 101.3, DSD_CALL_END_SYNC_LOSS);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 0, 101.3);
+    media = probe_voice(&fix);
+    CHECK("visit B: its media past a sync loss", fabs(media.retained_media_m - 101.2) < 1e-6);
+    CHECK("visit B: tail", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_TAIL);
+
+    /* A carrier boundary: what was read before it is no longer the carrier's. The tail earned stays the gate's. */
+    fix.state->carrier_seq++;
+    media = probe_voice(&fix);
+    CHECK("another carrier: no media", media.retained_media_m < 0.0);
+    CHECK("another carrier: the earned tail stays", fabs(fix.state->scan_voice_gate_voice_m - 101.2) < 1e-6);
+    fixture_free(&fix);
+}
+
+/* Issue #890: the encrypted-call tuning rule needs no talkgroup. A call known encrypted, its target not decoded yet (or
+ * an M17 call, outside talkgroup policy), holds nothing under --enc-lockout; with encrypted calls allowed it holds. */
+static void
+test_encrypted_lockout_needs_no_target(void) {
+    for (int m17 = 0; m17 <= 1; m17++) {
+        for (int allowed = 0; allowed <= 1; allowed++) {
+            gate_fixture fix;
+            if (fixture_init(&fix) != 0) {
+                DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+                g_failures++;
+                return;
+            }
+            fix.opts->trunk_tune_enc_calls = allowed;
+            dsd_call_observation obs;
+            DSD_MEMSET(&obs, 0, sizeof(obs));
+            obs.protocol = m17 ? DSD_SYNC_M17_STR_POS : DSD_SYNC_P25P1_POS;
+            obs.slot = 0U;
+            obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+            obs.observed_m = 100.0;
+            (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+            dsd_call_crypto_update update;
+            DSD_MEMSET(&update, 0, sizeof(update));
+            update.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+            update.observed_m = 100.0;
+            (void)dsd_call_state_update_crypto(fix.state, 0U, obs.protocol, &update);
+            (void)decoded_media(fix.state, 0U, 1, 100.0);
+            (void)decoded_media(fix.state, 0U, 1, 100.2);
+            const dsd_scan_voice_probe_result media = probe_voice(&fix);
+            if (allowed) {
+                CHECK(m17 ? "M17 encrypted, allowed: holds" : "no target, encrypted allowed: holds",
+                      media.retained_media_m > 0.0);
+            } else {
+                CHECK(m17 ? "M17 encrypted under the lockout: nothing"
+                          : "no target, encrypted under the lockout: nothing",
+                      media.retained_media_m < 0.0);
+            }
+            fixture_free(&fix);
+        }
+    }
 }
 
 static void
@@ -513,7 +656,7 @@ test_reacquired_segment_reearns_span(void) {
         observation.kind = DSD_CALL_KIND_VOICE;
         observation.observed_m = 100.45;
         CHECK("recoverable end reopens", dsd_call_state_observe(fix.state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-        CHECK("first reacquired media marks", dsd_call_state_update_media(fix.state, 0U, 1, 100.45) == 1);
+        CHECK("first reacquired media marks", decoded_media(fix.state, 0U, 1, 100.45) == 1);
         dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.45);
         dsd_scan_voice_probe_result media = probe_voice(&fix);
         CHECK("single reacquired frame is not voice", media.active_media_m < 0.0 && media.retained_media_m < 0.0);
@@ -521,7 +664,7 @@ test_reacquired_segment_reearns_span(void) {
         CHECK("single reacquired frame stays qualify",
               fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY);
 
-        CHECK("reacquired media continues", dsd_call_state_update_media(fix.state, 0U, 1, 100.56) == 1);
+        CHECK("reacquired media continues", decoded_media(fix.state, 0U, 1, 100.56) == 1);
         dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.56);
         media = probe_voice(&fix);
         CHECK("reacquired span counts", fabs(media.active_media_m - 100.56) < 1e-6);
@@ -636,8 +779,8 @@ test_policy_gating(void) {
     dsd_call_observation obs = dsd_call_observation_data(1, 0, 11, 22);
     obs.observed_m = 100.0;
     (void)dsd_call_state_observe(data.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(data.state, 0, 1, 100.0);
-    (void)dsd_call_state_update_media(data.state, 0, 1, 100.2);
+    (void)decoded_media(data.state, 0, 1, 100.0);
+    (void)decoded_media(data.state, 0, 1, 100.2);
     CHECK("data ignored", probe_voice(&data).retained_media_m < 0.0);
     fixture_free(&data);
 }
@@ -655,8 +798,8 @@ open_voice_epoch_proto(gate_fixture* fix, int protocol, double t, double span, d
     obs.policy_target_id = dst;
     obs.observed_m = t;
     (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(fix->state, 0U, 1, t);
-    (void)dsd_call_state_update_media(fix->state, 0U, 1, t + span);
+    (void)decoded_media(fix->state, 0U, 1, t);
+    (void)decoded_media(fix->state, 0U, 1, t + span);
 }
 
 /* M17 addresses calls by callsign, so talkgroup policy never applies: a 48-bit callsign value must not be
@@ -740,7 +883,11 @@ test_wide_ids_read_as_unknown(void) {
     }
     wide_target.opts->trunk_use_allow_list = 1;
     open_voice_epoch_proto(&wide_target, 1, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 0x100000064ULL);
-    CHECK("wide target is unknown and holds", probe_voice(&wide_target).retained_media_m > 0.0);
+    /* Unknown, so anonymous: under the allow list an anonymous call holds nothing (issue #890 policy table, fail
+       closed), whatever its truncated low half (100) would say. */
+    CHECK("wide target is unknown, anonymous under the allow list", probe_voice(&wide_target).retained_media_m < 0.0);
+    wide_target.opts->trunk_use_allow_list = 0;
+    CHECK("wide target is unknown and holds without the allow list", probe_voice(&wide_target).retained_media_m > 0.0);
     fixture_free(&wide_target);
 
     gate_fixture narrow;
@@ -1971,8 +2118,8 @@ test_receive_admission_bounds_acquisition(void) {
     (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
     const dsd_call_crypto_update crypto = {.classification = DSD_CALL_CRYPTO_CLEAR, .audio_permitted = 1};
     (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 101.25);
+    (void)decoded_media(fix.state, 0, 1, 101.0);
+    (void)decoded_media(fix.state, 0, 1, 101.25);
     fix.state->currentslot = 1;
     CHECK("rejected second slot cannot interrupt accepted first slot",
           !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 101.3));
@@ -1983,7 +2130,7 @@ test_receive_admission_bounds_acquisition(void) {
     fix.state->currentslot = 0;
     CHECK("an idle admitted lane cannot hold rejected traffic",
           dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 103.9);
+    (void)decoded_media(fix.state, 0, 1, 103.9);
     CHECK("admitted media on either lane holds", !dsd_scan_receive_should_leave(fix.opts, fix.state, 100.0, 104.0));
     /* Issue #637: an admitted call that ended still holds through its voice hold, for the reply, and no longer. */
     (void)dsd_call_state_end(fix.state, 0, 104.0);
@@ -2018,14 +2165,360 @@ test_receive_admission_bounds_acquisition(void) {
     voice2.observed_m = 120.0;
     (void)dsd_call_state_observe(fix.state, &voice2, DSD_CALL_BOUNDARY_BEGIN);
     (void)dsd_call_state_update_crypto(fix.state, 0, DSD_SYNC_DMR_BS_VOICE_POS, &crypto);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.0);
-    (void)dsd_call_state_update_media(fix.state, 0, 1, 120.5);
+    (void)decoded_media(fix.state, 0, 1, 120.0);
+    (void)decoded_media(fix.state, 0, 1, 120.5);
     fix.state->dmr_color_code = 16;
     fix.opts->scan_voice_only = 1;
     CHECK("an admitted call keeps its hold while the live code is unknown",
           !dsd_scan_receive_should_leave(fix.opts, fix.state, 119.0, 121.0));
     fix.opts->scan_voice_only = 0;
     fixture_free(&fix);
+}
+
+/* ---- Issue #890: the policy table, family binding and the DMO Hold rule ---- */
+
+/* One identity of the policy table's tests: the known bits and the values. */
+static dsd_trunk_scan_activity_identity
+policy_identity(uint8_t known, uint32_t target, uint32_t source, uint8_t is_private, uint8_t encrypted, uint8_t data) {
+    dsd_trunk_scan_activity_identity id;
+    DSD_MEMSET(&id, 0, sizeof(id));
+    id.known = known;
+    id.target = target;
+    id.source = source;
+    id.is_private = is_private;
+    id.encrypted = encrypted;
+    id.data_call = data;
+    return id;
+}
+
+/* The policy table, family row by family row (dsd_scan_activity_policy_allows()), on the stand-in evaluators: a callsign
+   family (YSF, D-STAR, M17) takes no talkgroup policy, so neither the allow list nor a Hold stops it, while the known
+   data, party and encryption restrictions do; a numeric family (dPMR, TETRA DMO) goes through the evaluators with a
+   known target, and holds nothing anonymous under a Hold, the allow list or a blocked source. A restriction that
+   depends on a field the report does not know holds nothing (F9). */
+static void
+test_policy_table_rows(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_opts* o = fix.opts;
+    dsd_state* st = fix.state;
+    const uint8_t all =
+        DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    const int callsigns[] = {DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_M17_LSF_POS};
+    for (size_t i = 0; i < sizeof(callsigns) / sizeof(callsigns[0]); i++) {
+        const int p = callsigns[i];
+        dsd_trunk_scan_activity_identity voice = policy_identity(all, 0U, 0U, 0U, 0U, 0U);
+        CHECK("callsign: a clear group voice call holds", dsd_scan_activity_policy_allows(o, st, p, &voice) == 1);
+        /* Issue #890: one the protocol's own receive filter refused (M17's CAN filter) holds nothing. */
+        dsd_trunk_scan_activity_identity refused = voice;
+        refused.receive_refused = 1U;
+        CHECK("callsign: a call its receive filter refused holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &refused) == 0);
+        o->trunk_use_allow_list = 1;
+        st->tg_hold = 55U;
+        CHECK("callsign: no allow list or Hold applies", dsd_scan_activity_policy_allows(o, st, p, &voice) == 1);
+        o->trunk_use_allow_list = 0;
+        st->tg_hold = 0U;
+        dsd_trunk_scan_activity_identity data = policy_identity(all, 0U, 0U, 0U, 0U, 1U);
+        CHECK("callsign: data under --no-data-calls holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &data) == 0);
+        o->trunk_tune_data_calls = 1;
+        CHECK("callsign: data followed holds", dsd_scan_activity_policy_allows(o, st, p, &data) == 1);
+        o->trunk_tune_data_calls = 0;
+        dsd_trunk_scan_activity_identity unknown_data =
+            policy_identity(DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0U, 0U, 0U, 0U, 0U);
+        CHECK("callsign: data unknown under --no-data-calls holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_data) == 0);
+        o->trunk_tune_data_calls = 1;
+        CHECK("callsign: data unknown with data followed holds",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_data) == 1);
+        o->trunk_tune_data_calls = 0;
+        dsd_trunk_scan_activity_identity enc = policy_identity(all, 0U, 0U, 0U, 1U, 0U);
+        dsd_trunk_scan_activity_identity unknown_enc =
+            policy_identity(DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0U, 0U, 0U, 0U, 0U);
+        CHECK("callsign: encrypted holds with encrypted calls followed",
+              dsd_scan_activity_policy_allows(o, st, p, &enc));
+        CHECK("callsign: encryption unknown holds without a lockout",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_enc));
+        o->trunk_tune_enc_calls = 0;
+        CHECK("callsign: encrypted under --enc-lockout holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &enc) == 0);
+        CHECK("callsign: encryption unknown under --enc-lockout holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_enc) == 0);
+        CHECK("callsign: clear under --enc-lockout holds", dsd_scan_activity_policy_allows(o, st, p, &voice) == 1);
+        o->trunk_tune_enc_calls = 1;
+        dsd_trunk_scan_activity_identity priv = policy_identity(all, 0U, 0U, 1U, 0U, 0U);
+        dsd_trunk_scan_activity_identity unknown_party =
+            policy_identity(DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED, 0U, 0U, 0U, 0U, 0U);
+        o->trunk_tune_private_calls = 0;
+        CHECK("callsign: a private call with private calls off holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &priv) == 0);
+        CHECK("callsign: a group call with private calls off holds", dsd_scan_activity_policy_allows(o, st, p, &voice));
+        CHECK("callsign: party unknown with private calls off holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_party) == 0);
+        o->trunk_tune_private_calls = 1;
+        o->trunk_tune_group_calls = 0;
+        CHECK("callsign: a group call with group calls off holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &voice) == 0);
+        CHECK("callsign: party unknown with group calls off holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_party) == 0);
+        o->trunk_tune_group_calls = 1;
+        CHECK("callsign: party unknown with both followed holds",
+              dsd_scan_activity_policy_allows(o, st, p, &unknown_party) == 1);
+    }
+    const int numerics[] = {DSD_SYNC_DPMR_FS2_POS, DSD_SYNC_TETRA_SB_POS};
+    const uint8_t known_ids = DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED
+                              | DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+    for (size_t i = 0; i < sizeof(numerics) / sizeof(numerics[0]); i++) {
+        const int p = numerics[i];
+        dsd_trunk_scan_activity_identity anon =
+            policy_identity(all & ~DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0U, 0U, 0U, 0U, 0U);
+        CHECK("numeric: anonymous holds without a Hold or allow list",
+              dsd_scan_activity_policy_allows(o, st, p, &anon));
+        dsd_trunk_scan_activity_identity anon_refused = anon;
+        anon_refused.receive_refused = 1U;
+        CHECK("numeric: a call its receive filter refused holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &anon_refused) == 0);
+        st->tg_hold = 55U;
+        CHECK("numeric: anonymous under a Hold holds nothing", dsd_scan_activity_policy_allows(o, st, p, &anon) == 0);
+        st->tg_hold = 0U;
+        o->trunk_use_allow_list = 1;
+        CHECK("numeric: anonymous under the allow list holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &anon) == 0);
+        o->trunk_use_allow_list = 0;
+        dsd_trunk_scan_activity_identity anon_src = policy_identity(
+            DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_SOURCE, 0U, 777U,
+            0U, 0U, 0U);
+        g_blocked_radio = 777U;
+        CHECK("numeric: anonymous from a blocked source holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &anon_src) == 0);
+        g_blocked_radio = 0U;
+        CHECK("numeric: anonymous from another source holds", dsd_scan_activity_policy_allows(o, st, p, &anon_src));
+        dsd_trunk_scan_activity_identity call = policy_identity(known_ids, 100U, 200U, 0U, 0U, 0U);
+        CHECK("numeric: a known target of unknown party holds", dsd_scan_activity_policy_allows(o, st, p, &call));
+        o->trunk_use_allow_list = 1;
+        CHECK("numeric: a known target goes through the evaluator (allow list refuses it)",
+              dsd_scan_activity_policy_allows(o, st, p, &call) == 0);
+        g_allowed_radio = 200U;
+        CHECK("numeric: the source reaches the evaluator", dsd_scan_activity_policy_allows(o, st, p, &call) == 1);
+        g_allowed_radio = 0U;
+        o->trunk_use_allow_list = 0;
+        dsd_trunk_scan_activity_identity priv =
+            policy_identity(known_ids | DSD_SCAN_ACTIVITY_KNOWN_PARTY, 100U, 200U, 1U, 0U, 0U);
+        dsd_trunk_scan_activity_identity group =
+            policy_identity(known_ids | DSD_SCAN_ACTIVITY_KNOWN_PARTY, 100U, 200U, 0U, 0U, 0U);
+        o->trunk_tune_private_calls = 0;
+        CHECK("numeric: private evaluator for a private call", dsd_scan_activity_policy_allows(o, st, p, &priv) == 0);
+        CHECK("numeric: group evaluator for a group call", dsd_scan_activity_policy_allows(o, st, p, &group) == 1);
+        CHECK("numeric: party unknown with private calls off holds nothing (F9)",
+              dsd_scan_activity_policy_allows(o, st, p, &call) == 0);
+        o->trunk_tune_private_calls = 1;
+        dsd_trunk_scan_activity_identity data = policy_identity(known_ids, 100U, 200U, 0U, 0U, 1U);
+        CHECK("numeric: data under --no-data-calls holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &data) == 0);
+        dsd_trunk_scan_activity_identity anon_enc = policy_identity(DSD_SCAN_ACTIVITY_KNOWN_DATA, 0U, 0U, 0U, 0U, 0U);
+        o->trunk_tune_enc_calls = 0;
+        CHECK("numeric: encryption unknown under --enc-lockout holds nothing",
+              dsd_scan_activity_policy_allows(o, st, p, &anon_enc) == 0);
+        o->trunk_tune_enc_calls = 1;
+        CHECK("numeric: encryption unknown with encrypted calls followed holds",
+              dsd_scan_activity_policy_allows(o, st, p, &anon_enc) == 1);
+    }
+    CHECK("no identity holds nothing", dsd_scan_activity_policy_allows(o, st, DSD_SYNC_YSF_POS, NULL) == 0);
+    fixture_free(&fix);
+}
+
+/* A TETRA voice epoch on slot 0 whose checked speech is direct mode (@p direct) or trunked, from @p t over @p span. */
+static void
+open_tetra_epoch(gate_fixture* fix, int direct, double t, double span, uint64_t src, uint64_t dst) {
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_TETRA_NDB_POS;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_source_id = src;
+    obs.ota_target_id = dst;
+    obs.policy_target_id = dst;
+    obs.observed_m = t;
+    (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t);
+    (void)dsd_call_state_note_checked_media_tetra(fix->state, 0U, direct, t);
+    (void)dsd_call_state_update_media(fix->state, 0U, 1, t + span);
+    (void)dsd_call_state_note_checked_media_tetra(fix->state, 0U, direct, t + span);
+}
+
+/* The voice probe takes media only of the row's family (scan_voice_call_of_row_family()): an untyped row every
+   protocol's, a typed row its class's alone, and a tetra-dmo row only direct mode speech. TMO speech on a DMO row holds
+   nothing, and a span of TMO then DMO speech starts again at the DMO frame. */
+static void
+test_voice_probe_binds_the_row_family(void) {
+    static const struct {
+        dsd_scan_mode mode;
+        int protocol;
+        int held;
+        const char* tag;
+    } cases[] = {
+        {DSD_SCAN_MODE_INHERIT, DSD_SYNC_DMR_BS_VOICE_POS, 1, "untyped row: DMR media"},
+        {DSD_SCAN_MODE_YSF, DSD_SYNC_YSF_POS, 1, "ysf row: YSF media"},
+        {DSD_SCAN_MODE_YSF, DSD_SYNC_DMR_BS_VOICE_POS, 0, "ysf row: DMR media"},
+        {DSD_SCAN_MODE_DSTAR, DSD_SYNC_DSTAR_VOICE_POS, 1, "dstar row: D-STAR media"},
+        {DSD_SCAN_MODE_DSTAR, DSD_SYNC_YSF_POS, 0, "dstar row: YSF media"},
+        {DSD_SCAN_MODE_DPMR, DSD_SYNC_DPMR_FS2_POS, 1, "dpmr row: dPMR media"},
+        {DSD_SCAN_MODE_DPMR, DSD_SYNC_NXDN_POS, 0, "dpmr row: NXDN media"},
+        {DSD_SCAN_MODE_M17, DSD_SYNC_M17_STR_POS, 1, "m17 row: M17 media"},
+        {DSD_SCAN_MODE_M17, DSD_SYNC_P25P1_POS, 0, "m17 row: P25 media"},
+        {DSD_SCAN_MODE_NXDN48, DSD_SYNC_NXDN_POS, 1, "nxdn48 row: NXDN media"},
+        {DSD_SCAN_MODE_P25, DSD_SYNC_P25P2_POS, 1, "p25 row: Phase 2 media"},
+        {DSD_SCAN_MODE_TETRA_DMO, DSD_SYNC_DMR_BS_VOICE_POS, 0, "tetra-dmo row: DMR media"},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+            g_failures++;
+            return;
+        }
+        if (cases[i].mode != DSD_SCAN_MODE_INHERIT) {
+            CHECK("scope entered", dsd_scan_mode_enter(fix.opts, fix.state, cases[i].mode) == 0);
+        }
+        open_voice_epoch_proto(&fix, cases[i].protocol, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0U, 0U);
+        CHECK(cases[i].tag, (probe_voice(&fix).retained_media_m > 0.0) == cases[i].held);
+        fixture_free(&fix);
+    }
+    for (int direct = 0; direct < 2; direct++) {
+        for (int typed = 0; typed < 2; typed++) {
+            gate_fixture fix;
+            if (fixture_init(&fix) != 0) {
+                g_failures++;
+                return;
+            }
+            if (typed) {
+                CHECK("tetra-dmo scope entered",
+                      dsd_scan_mode_enter(fix.opts, fix.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+            }
+            open_tetra_epoch(&fix, direct, 100.0, 0.15, 0U, 0U);
+            const int want = !typed || direct;
+            CHECK(direct ? "DMO speech" : "TMO speech", (probe_voice(&fix).retained_media_m > 0.0) == want);
+            fixture_free(&fix);
+        }
+    }
+    /* TMO speech, then one DMO frame: the span starts again at it, too short to qualify on a DMO row. */
+    gate_fixture mixed;
+    if (fixture_init(&mixed) != 0) {
+        g_failures++;
+        return;
+    }
+    CHECK("tetra-dmo scope entered", dsd_scan_mode_enter(mixed.opts, mixed.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    open_tetra_epoch(&mixed, 0, 100.0, 0.15, 0U, 0U);
+    (void)dsd_call_state_note_checked_media_tetra(mixed.state, 0U, 1, 100.2);
+    dsd_call_snapshot call;
+    CHECK("call read", dsd_call_state_get(mixed.state, 0U, &call) > 0);
+    CHECK("the span restarted at the DMO frame",
+          call.checked_media_tetra_direct == 1U && fabs(call.checked_media_started_m - 100.2) < 1e-9);
+    CHECK("one DMO frame after TMO speech holds nothing", probe_voice(&mixed).retained_media_m < 0.0);
+    fixture_free(&mixed);
+}
+
+/* Media the row's family decoded before the row's landing (another visit) holds nothing on a typed row either. */
+static void
+test_voice_probe_typed_row_takes_its_own_visit(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        g_failures++;
+        return;
+    }
+    CHECK("ysf scope entered", dsd_scan_mode_enter(fix.opts, fix.state, DSD_SCAN_MODE_YSF) == 0);
+    fix.state->scan_landing_visit = 7U;
+    open_voice_epoch_proto(&fix, DSD_SYNC_YSF_POS, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 0U, 0U);
+    CHECK("YSF media of the visit holds", probe_voice(&fix).retained_media_m > 0.0);
+    fix.state->scan_landing_visit = 8U;
+    CHECK("retained media from before the landing holds nothing", probe_voice(&fix).retained_media_m < 0.0);
+    fixture_free(&fix);
+}
+
+/* F7: a talkgroup Hold suspends a typed tetra-dmo row's visit cap only for an admitted direct mode talkspurt of this
+   visit: a trunked call on the Hold, or a DMO one whose speech another visit heard, does not; an untyped row keeps the
+   Hold's old reading (any active call of the held target). A typed row of another class takes its own family's call. */
+static void
+test_tg_hold_on_a_dmo_row_needs_its_dmo_talkspurt(void) {
+    for (int typed = 0; typed < 2; typed++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            g_failures++;
+            return;
+        }
+        if (typed) {
+            CHECK("tetra-dmo scope entered", dsd_scan_mode_enter(fix.opts, fix.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+        }
+        fix.state->scan_landing_visit = 3U;
+        fix.state->tg_hold = 9001U;
+        open_tetra_epoch(&fix, 0, 100.0, 0.15, 42U, 9001U);
+        CHECK(typed ? "dmo row: a TMO call on the Hold does not suspend"
+                    : "untyped row: a TMO call on the Hold suspends",
+              dsd_scan_tg_hold_call_active(fix.opts, fix.state) == !typed);
+        open_tetra_epoch(&fix, 1, 101.0, 0.15, 42U, 9001U);
+        CHECK("a DMO talkspurt on the Hold suspends", dsd_scan_tg_hold_call_active(fix.opts, fix.state) == 1);
+        fix.state->scan_landing_visit = 4U;
+        CHECK(typed ? "dmo row: a talkspurt of another visit does not suspend"
+                    : "untyped row: the active held call suspends",
+              dsd_scan_tg_hold_call_active(fix.opts, fix.state) == !typed);
+        fixture_free(&fix);
+    }
+    gate_fixture other;
+    if (fixture_init(&other) != 0) {
+        g_failures++;
+        return;
+    }
+    CHECK("dpmr scope entered", dsd_scan_mode_enter(other.opts, other.state, DSD_SCAN_MODE_DPMR) == 0);
+    other.state->tg_hold = 22U;
+    open_voice_epoch_proto(&other, DSD_SYNC_DMR_BS_VOICE_POS, 100.0, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11U, 22U);
+    CHECK("dpmr row: a DMR call on the Hold does not suspend",
+          dsd_scan_tg_hold_call_active(other.opts, other.state) == 0);
+    fixture_free(&other);
+}
+
+/* Issue #890: a talkgroup Hold is a number, and the callsign families (YSF, D-STAR, M17) name stations by callsign: an
+   M17 destination's base-40 code (the placeholder TEST, no call sign, is 1310620) can equal a held talkgroup by chance,
+   one a dPMR call can name too (its 24-bit air IDs reach 16777215).
+   No call of those families stands for the Hold, neither by its target nor, for a private call, by its source, so none
+   suspends a visit cap; a numeric family's call on the held talkgroup (dPMR) still does. */
+static void
+test_tg_hold_ignores_callsign_families(void) {
+    static const struct {
+        uint64_t src;
+        uint64_t dst;
+        const char* what;
+        dsd_scan_mode mode;
+        int protocol;
+        dsd_call_kind kind;
+        int suspends;
+    } cases[] = {
+        {11U, 1310620U, "M17 call to TEST (1310620)", DSD_SCAN_MODE_M17, DSD_SYNC_M17_STR_POS, DSD_CALL_KIND_VOICE, 0},
+        {1310620U, 12U, "M17 private call from 1310620", DSD_SCAN_MODE_M17, DSD_SYNC_M17_STR_POS,
+         DSD_CALL_KIND_PRIVATE_VOICE, 0},
+        {13U, 1310620U, "YSF call coded 1310620", DSD_SCAN_MODE_YSF, DSD_SYNC_YSF_POS, DSD_CALL_KIND_GROUP_VOICE, 0},
+        {14U, 1310620U, "D-STAR call coded 1310620", DSD_SCAN_MODE_DSTAR, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE,
+         0},
+        {15U, 1310620U, "dPMR call to 1310620", DSD_SCAN_MODE_DPMR, DSD_SYNC_DPMR_FS2_POS, DSD_CALL_KIND_VOICE, 1},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            g_failures++;
+            return;
+        }
+        CHECK("row scope entered", dsd_scan_mode_enter(fix.opts, fix.state, cases[i].mode) == 0);
+        fix.state->scan_landing_visit = 3U;
+        fix.state->tg_hold = 1310620U;
+        open_voice_epoch_proto(&fix, cases[i].protocol, 100.0, 0.15, cases[i].kind, cases[i].src, cases[i].dst);
+        CHECK(cases[i].what, dsd_scan_tg_hold_call_active(fix.opts, fix.state) == cases[i].suspends);
+        fixture_free(&fix);
+    }
 }
 
 int
@@ -2038,6 +2531,9 @@ main(void) {
     test_voice_holds_through_tail();
     test_terminator_before_first_tick_holds();
     test_span_debounce();
+    test_unchecked_media_never_qualifies();
+    test_encrypted_lockout_needs_no_target();
+    test_probe_binds_media_to_its_visit();
     test_reacquired_segment_reearns_span();
     test_non_media_updates_do_not_extend_hold();
     test_probe_tracks_active_and_retained_slots_independently();
@@ -2069,6 +2565,11 @@ main(void) {
     test_visit_cap_ignores_continuous_voice();
     test_visit_cap_manual_hold_suspends_and_release_restarts();
     test_visit_cap_tg_hold_match_suspends();
+    test_policy_table_rows();
+    test_voice_probe_binds_the_row_family();
+    test_voice_probe_typed_row_takes_its_own_visit();
+    test_tg_hold_on_a_dmo_row_needs_its_dmo_talkspurt();
+    test_tg_hold_ignores_callsign_families();
     test_visit_cap_row_change_restarts();
     test_visit_cap_needs_a_second_usable_row();
     test_visit_cap_pending_tune_does_not_fire();

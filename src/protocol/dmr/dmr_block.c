@@ -33,6 +33,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_abs_params.h"
 #include "dmr_address_layout.h"
 #include "dmr_ars.h"
 #include "dmr_block_crypto.h"
@@ -1714,14 +1715,12 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-/* An MBC is its header and the continuation blocks received after it: ctx->blockcounter of them at its last block
-   (ctx->blocks never goes below one, so it cannot tell a header that is its own last block, which carries no
-   continuation, from one that has one). A header-only MBC is rejected before any continuation byte is checked: the
-   assembly buffer past the header holds nothing this MBC sent. A rejected MBC ends its assembly
-   (dmr_block_assembler()), so no later continuation is taken for its header or appended to it. */
+/* An MBC is a header and one to three continuations (TS 102 361-1 §7.4.0), counted as received (a header whose last
+   block bit is set ends with none); a UDT has its own bound. Any other count is refused, and its assembly ends: a
+   continuation after it joins nothing. */
 static uint8_t DSD_ATTR_USED
 dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
-    if (ctx->is_udt || (ctx->blockcounter >= 1 && ctx->blockcounter <= 4)) {
+    if (ctx->is_udt || (ctx->blockcounter >= 1 && ctx->blockcounter <= 3)) {
         return 1;
     }
 
@@ -1729,6 +1728,7 @@ dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blockcounter);
     DSD_FPRINTF(stderr, "%s", KNRM);
     ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
+    ctx->state->dmr_mbc_armed[ctx->slot] = 0;
     return 0;
 }
 
@@ -1753,23 +1753,17 @@ dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
     // header and init_ctx only caps it at 127, so a malformed UDT header would drive the
     // copy below - and the CRC read after it - well past the buffer. Bound both locally.
     const int cap = (int)sizeof(mbc_block_bits);
-    int limit = 12 * 8 * 3;
+    // Every block after the header, and no more: the last block's CRC covers them all (TS 102 361-1 §7.4.0).
+    int limit = 12 * 8 * ctx->blocks;
+    if (limit > cap) {
+        limit = cap;
+    }
 
     ctx->mbc_crc_good[0] = ctx->state->data_block_crc_valid[ctx->slot][0];
     ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blocks));
     DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
-    for (int i = 0; i < limit && i < cap; i++) {
+    for (int i = 0; i < limit; i++) {
         mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
-    }
-    if (ctx->is_udt) {
-        DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
-        limit = 12 * 8 * ctx->blocks;
-        if (limit > cap) {
-            limit = cap;
-        }
-        for (int i = 0; i < limit; i++) {
-            mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
-        }
     }
 
     // The tail past `limit` is zeroed, so clamping at the buffer rather than at `limit`
@@ -1823,11 +1817,20 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
         const uint32_t accepted = ctx->crc_correct
                                   || (ctx->opts->aggressive_framesync == 0 && ctx->mbc_crc_good[1]
                                       && ctx->state->data_header_valid[ctx->slot]);
+        // The header and its first continuation, so the PDU's handlers can tell what it was assembled from.
+        const uint8_t* const sf = ctx->state->dmr_pdu_sf[ctx->slot];
+        const dmr_cspdu_shape shape = {
+            .is_mbc = 1U,
+            .continuations = ctx->blockcounter,
+            .header_csbko = (uint8_t)(sf[0] & 0x3FU),
+            .cont_csbko = (uint8_t)(sf[ctx->block_len] & 0x3FU),
+            .cont_lb = (uint8_t)(sf[ctx->block_len] >> 7),
+            .proves_content = (uint8_t)(accepted && ctx->state->dmr_mbc_header_proven[ctx->slot]),
+        };
         const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
         ctx->state->event_crc_invalid[ctx->slot] |= crc_flags;
-        // The continuation blocks received (dmr_block_type2_length_ok(): 1..4 here), not the processing length.
-        dmr_cspdu_mbc(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
-                      accepted ? 0U : ctx->irrecoverable_errors, ctx->blockcounter);
+        dmr_cspdu_ex(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
+                     accepted ? 0U : ctx->irrecoverable_errors, &shape);
         ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
     }
     if (ctx->is_udt && !ctx->pf) {
@@ -1924,6 +1927,7 @@ dmr_block_assembler_reset_type2(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_dd_format[ctx->slot] = 0;
     ctx->state->data_header_bit_padding[ctx->slot] = 0;
     ctx->state->udt_uab_reserved[ctx->slot] = 0;
+    ctx->state->dmr_mbc_armed[ctx->slot] = 0;
 }
 
 static void
@@ -1937,13 +1941,65 @@ dmr_block_assembler_finalize(dmr_block_assembler_ctx* ctx) {
     }
 }
 
+/* A slot's next burst is one TDMA frame (two 144-symbol bursts) after its last (TS 102 361-1 §4.2). The grid's slips
+   move a burst by a few symbols either way; a burst missed in between moves it a whole frame. */
+#define DMR_MBC_NEXT_BURST_SYMBOLS 288U
+#define DMR_MBC_POSITION_TOLERANCE 12U
+
+static void
+dmr_block_mbc_arm(dsd_state* state, uint8_t slot) {
+    state->dmr_mbc_armed[slot] = 1;
+    state->dmr_mbc_clock[slot] = state->symbol_clock;
+    state->dmr_mbc_epoch[slot] = state->symbol_clock_epoch;
+    state->dmr_mbc_carrier[slot] = state->carrier_seq;
+}
+
+/* 1 when the slot is armed and this burst is the slot's next one after the MBC's last block, on the same carrier and
+   symbol timeline. */
+static int
+dmr_block_mbc_is_next_burst(const dsd_state* state, uint8_t slot) {
+    if (!state->dmr_mbc_armed[slot] || state->dmr_mbc_epoch[slot] != state->symbol_clock_epoch
+        || state->dmr_mbc_carrier[slot] != state->carrier_seq) {
+        return 0;
+    }
+    const uint64_t since = state->symbol_clock - state->dmr_mbc_clock[slot];
+    return since >= (uint64_t)(DMR_MBC_NEXT_BURST_SYMBOLS - DMR_MBC_POSITION_TOLERANCE)
+           && since <= (uint64_t)(DMR_MBC_NEXT_BURST_SYMBOLS + DMR_MBC_POSITION_TOLERANCE);
+}
+
+/* An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms the
+   slot, and a continuation (data type 5) joins it only while armed and only as the slot's next burst after the MBC's
+   last block. The burst handler disarms the slot on any other burst there, as do the voice readers, a sync loss and a
+   retune (dmr_reset_blocks()); a burst the decoder never saw is caught by its position. Returns 0 for a continuation
+   that joins nothing, which is dropped and ends the assembly. */
+static int
+dmr_block_mbc_continuity(dsd_state* state, uint8_t slot, uint8_t databurst) {
+    if (databurst == 0x04) {
+        dmr_block_mbc_arm(state, slot);
+        return 1;
+    }
+    if (databurst != 0x05) {
+        return 1;
+    }
+    if (dmr_block_mbc_is_next_burst(state, slot)) {
+        dmr_block_mbc_arm(state, slot);
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "\n Slot %d - MBC continuation not the next burst after its header on this slot; dropped;",
+                slot + 1);
+    state->dmr_mbc_armed[slot] = 0;
+    return 0;
+}
+
 void
 dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uint8_t block_len, uint8_t databurst,
                     uint8_t type) {
     dmr_block_assembler_ctx ctx;
 
-    UNUSED(databurst);
     dmr_block_assembler_init_ctx(&ctx, opts, state, block_bytes, block_len, type);
+    if (ctx.type == 2 && !ctx.is_udt && !dmr_block_mbc_continuity(state, ctx.slot, databurst)) {
+        return;
+    }
     if ((ctx.type == 1 || ctx.is_udt) && state->data_header_valid[ctx.slot] == 1
         && !dmr_data_header_binds(state, ctx.slot)) {
         // A block from another slot, sender or reception than the header that armed the lane is not this packet's:

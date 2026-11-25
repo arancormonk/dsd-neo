@@ -49,6 +49,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -137,8 +138,11 @@ rtl_profile_for_sps_profile(const dsd_opts* opts, const dsd_state* state, const 
     }
     /* Shared with the operator-facing modulation control, which reaches the same
      * front end by a different route: two copies of this drift, and then the
-     * filter changes under the user every time the hunt re-runs. */
-    return dsd_rtl_channel_profile_for(opts, profile->symbol_rate_hz, profile->levels, state ? state->rf_mod : 0);
+     * filter changes under the user every time the hunt re-runs. The chain is the scan row's
+     * (dsd_scan_mode_chain_rf_mod(), issue #890): frame_sync_apply_cli_mod_lock() puts a -m lock back on rf_mod at
+     * every getFrameSync() entry, and a -Y -mc tetra-dmo row must keep the CQPSK chain and TETRA filter it landed. */
+    return dsd_rtl_channel_profile_for(opts, profile->symbol_rate_hz, profile->levels,
+                                       state ? dsd_scan_mode_chain_rf_mod(opts, state) : 0);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -168,8 +172,9 @@ rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, cons
        profile lands at (issue #806), which digital_resample can leave below that rate. */
     const int ted_sps =
         dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, frame_sync_current_demod_rate(opts, state));
-    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile->symbol_rate_hz, profile->levels,
-                                                          rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(
+        dsd_scan_mode_chain_rf_mod(opts, state) == 1, dsd_scan_mode_cqpsk_explicit(opts, state, NULL),
+        profile->symbol_rate_hz, profile->levels, rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
 }
 
 static void
@@ -1295,17 +1300,61 @@ frame_sync_note_dpmr_fs2_frame(dsd_state* state) {
     state->dpmr_fs2_frame_valid = 1;
 }
 
+/* A dPMR header or end frame that passed its check (frame_sync_dpmr_candidate_complete()), accepted on its last
+ * symbol: the hunt read the whole frame, so its handler reads nothing, and no warm start follows (the window is the
+ * frame's payload, not its word; the frame was sliced on its word's levels). */
+static int
+frame_sync_accept_dpmr_checked(frame_sync_match_ctx* ctx, int synctype) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, opts->inverted_dpmr == 1 ? "-dPMR " : "+dPMR ", ctx->synctest_pos + 1,
+                       ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    return synctype;
+}
+
+/* dPMR (ETSI TS 102 658 6.1): FS2 opens a voice frame and is accepted on its word; FS1 (a header) and FS3 (an end
+ * frame, only where one can be) mark a candidate whose frame the hunt reads on, every matcher with it, and are accepted
+ * once their frame passed its check (src/dsp/frame_sync_dpmr.c). The configured polarity alone, as for FS2: the other
+ * polarity's FS1 is FS4 (6.1.4 NOTE). */
 static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (!frame_sync_dpmr_enabled(ctx) || !frame_sync_match_window_ready(ctx, 12)) {
+    if (!frame_sync_dpmr_enabled(ctx)) {
+        return DSD_SYNC_NONE;
+    }
+    /* A candidate's frame is read back from the soft history, not from the windows: it completes on its last symbol
+       even when this call's windows are not filled yet (another protocol's frame read some of it). */
+    const int checked = frame_sync_dpmr_candidate_complete(opts, state);
+    if (checked != DSD_SYNC_NONE) {
+        return frame_sync_accept_dpmr_checked(ctx, checked);
+    }
+    if (!frame_sync_match_window_ready(ctx, 12)) {
+        return DSD_SYNC_NONE;
+    }
+    /* FS1's own 24-symbol window, all of it the carrier's. An FS1 while a candidate is read is kept beside it, read on
+       if the older candidate fails (frame_sync_dpmr_arm_header()). */
+    if (frame_sync_match_window_ready(ctx, 24) && !frame_sync_burst_settling(ctx, 24)
+        && frame_sync_dpmr_arm_header(opts, state, ctx->synctest)) {
+        return DSD_SYNC_NONE;
+    }
+    /* No FS2 or FS3 inside a header or end frame being read: a sync word there is its payload's. */
+    if (frame_sync_dpmr_candidate_reading(state)) {
+        return DSD_SYNC_NONE;
+    }
+    if (frame_sync_dpmr_arm_end(opts, state, ctx->synctest12)) {
         return DSD_SYNC_NONE;
     }
 
     if (opts->inverted_dpmr == 0 && strcmp(ctx->synctest12, DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
         frame_sync_note_dpmr_fs2_frame(state);
+        frame_sync_dpmr_note_fs2(opts, state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -1318,6 +1367,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     if (opts->inverted_dpmr == 1 && strcmp(ctx->synctest12, INV_DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
         frame_sync_note_dpmr_fs2_frame(state);
+        frame_sync_dpmr_note_fs2(opts, state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -1646,17 +1696,12 @@ frame_sync_m17_eot_allowed_after(int lastsynctype) {
            || lastsynctype == DSD_SYNC_M17_BRT_POS || lastsynctype == DSD_SYNC_M17_BRT_NEG;
 }
 
+/* Take the end of transmission: the marker's DSD_FRAME_SYNC_M17_EOT_WORDS words were heard in a row. */
 static int
-frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, int is_inverted) {
+frame_sync_accept_m17_eot(frame_sync_match_ctx* ctx, int inverted) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    const int ham = is_inverted ? ham_eot_inv : ham_eot;
-    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)
-        || !frame_sync_m17_chain_has_evidence(state)) {
-        return DSD_SYNC_NONE;
-    }
-
-    if (is_inverted) {
+    if (inverted) {
         printFrameSync(opts, state, "-M17 EOT", ctx->synctest_pos + 1, ctx->modulation);
         state->lastsynctype = DSD_SYNC_M17_EOT_NEG;
     } else {
@@ -1667,6 +1712,49 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     state->m17_polarity = 0;
     DSD_FPRINTF(stderr, "\n");
     return state->lastsynctype;
+}
+
+/*
+ * The M17 end-of-transmission marker: 0x555D repeated for 192 symbols, +3 six times, -3, +3 (M17 spec 2.0.11, End of
+ * Transmission Marker). Taken only behind a frame of a transmission that has shown evidence, and only on
+ * DSD_FRAME_SYNC_M17_EOT_WORDS words in a row (dsd_frame_sync_m17_eot_word()), the later ones exactly a word after the
+ * one before: a single window within one symbol of a word is any flat run, which a fade after real traffic supplies,
+ * and it used to end the call there and skip the frame behind it. While the later words are read the hunt goes on: any
+ * sync it takes meanwhile drops the marker in the reading (frame_sync_try_protocol_matches()), and a window that is not
+ * the next word drops it and may start one afresh. A window the hunt did not evaluate at a word's end (a gate skipped
+ * it) is a word not heard.
+ */
+static int
+frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int is_inverted) {
+    dsd_state* state = ctx->state;
+    if (!frame_sync_m17_eot_allowed_after(state->lastsynctype) || !frame_sync_m17_chain_has_evidence(state)) {
+        state->m17_eot_pending = 0U;
+        return DSD_SYNC_NONE;
+    }
+    const uint32_t now = (uint32_t)state->symbolcnt;
+    if (state->m17_eot_pending != 0U) {
+        const uint32_t since = now - state->m17_eot_symbolcnt;
+        const uint32_t next_end = DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS * (uint32_t)state->m17_eot_words;
+        if (since < next_end) {
+            return DSD_SYNC_NONE; /* inside the next word */
+        }
+        const int inverted = state->m17_eot_pending == 2U;
+        if (since == next_end && dsd_frame_sync_m17_eot_word(ctx->synctest8, inverted)) {
+            state->m17_eot_words++;
+            if (state->m17_eot_words < DSD_FRAME_SYNC_M17_EOT_WORDS) {
+                return DSD_SYNC_NONE;
+            }
+            state->m17_eot_pending = 0U;
+            return frame_sync_accept_m17_eot(ctx, inverted);
+        }
+        state->m17_eot_pending = 0U;
+    }
+    if (dsd_frame_sync_m17_eot_word(ctx->synctest8, is_inverted)) {
+        state->m17_eot_pending = (uint8_t)(is_inverted ? 2U : 1U);
+        state->m17_eot_words = 1U;
+        state->m17_eot_symbolcnt = now;
+    }
+    return DSD_SYNC_NONE;
 }
 
 /*
@@ -2008,8 +2096,6 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     int ham_str = dsd_sync_hamming_distance(ctx->synctest8, M17_STR, 8);
     int ham_pkt = dsd_sync_hamming_distance(ctx->synctest8, M17_PKT, 8);
     int ham_brt = dsd_sync_hamming_distance(ctx->synctest8, M17_BRT, 8);
-    int ham_eot = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT, 8);
-    int ham_eot_inv = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT_INV, 8);
     int is_inverted = opts->inverted_m17;
     if (!opts->inverted_m17) {
         /* Before any frame has been accepted the polarity of the run in hand is all there is to
@@ -2023,7 +2109,7 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     frame_sync_age_m17_pre_candidate(state);
     frame_sync_note_m17_pre_candidate(ctx, ham_pre, ham_piv);
 
-    int sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
+    int sync_type = frame_sync_try_m17_eot(ctx, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
@@ -2811,6 +2897,10 @@ static const char* const k_frame_sync_p25p2_words[] = {
 static const char* const k_frame_sync_dpmr_words[] = {
     DPMR_FRAME_SYNC_2,
     INV_DPMR_FRAME_SYNC_2,
+    DPMR_FRAME_SYNC_1,
+    INV_DPMR_FRAME_SYNC_1,
+    DPMR_FRAME_SYNC_3,
+    INV_DPMR_FRAME_SYNC_3,
     NULL,
 };
 static const char* const k_frame_sync_tetra_words[] = {
@@ -3011,11 +3101,16 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
  * are inside the sync word whatever matched -- no protocol's word is shorter -- so no
  * per-protocol window table has to be kept in step with the matchers above.
  *
- * In-frame resyncs a protocol handler does privately do not come through here. */
+ * In-frame resyncs a protocol handler does privately do not come through here, and neither are a dPMR header or end
+ * frame measured: they are accepted on their frame's last symbol (src/dsp/frame_sync_dpmr.c), 132 or 36 symbols after
+ * the word, so the trailing dibits are payload, no template. */
 static int
-frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+frame_sync_try_protocol_matches_any(frame_sync_match_ctx* ctx) {
     const int sync_type = frame_sync_try_protocol_matches_inner(ctx);
-    if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
+    const int accepted_after_frame = sync_type == DSD_SYNC_DPMR_FS1_POS || sync_type == DSD_SYNC_DPMR_FS1_NEG
+                                     || sync_type == DSD_SYNC_DPMR_FS3_POS || sync_type == DSD_SYNC_DPMR_FS3_NEG;
+    if (sync_type != DSD_SYNC_NONE && !accepted_after_frame
+        && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
     }
     /* The P25 anchors' words are tried last, once no matcher of any protocol matched exactly: an exact word never loses
@@ -3038,6 +3133,16 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
             frame_sync_p25p2_anchor_note_accept(ctx->state, tolerant);
         }
         return tolerant;
+    }
+    return sync_type;
+}
+
+static int
+frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+    const int sync_type = frame_sync_try_protocol_matches_any(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        /* Whatever was taken, the M17 marker words in the reading are not a marker the hunt goes on reading. */
+        ctx->state->m17_eot_pending = 0U;
     }
     return sync_type;
 }
@@ -3694,6 +3799,8 @@ typedef struct frame_sync_runtime_ctx {
     /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
        read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
     int resumed;
+    /* The taken-up history's last window is scored before the first read (dsd_frame_sync_history_carry). */
+    int score_on_resume;
     uint64_t resume_clock;
     uint32_t resume_epoch;
     /* The symbol clock's epoch the window was read on: a read that moves it (a stream flush, a CQPSK reacquisition,
@@ -3718,6 +3825,9 @@ typedef struct frame_sync_runtime_ctx {
     char synctest16[17];
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
+    /* The last scan quiet answer said a check is under way (issue #834 follow-up): the hunt asks the check's event
+       service before each symbol. */
+    int quiet_live;
     /* The level window, t_max levels; a carried history brings its levels (dsd_frame_sync_history_carry::levels). */
     float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
@@ -3825,8 +3935,10 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
 static void
 frame_sync_runtime_restart(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
     const frame_sync_cc_stamps cc_stamp_at_entry = rt->cc_stamp_at_entry;
+    const int quiet_live = rt->quiet_live;
     frame_sync_runtime_init(rt, opts, state);
     rt->cc_stamp_at_entry = cc_stamp_at_entry;
+    rt->quiet_live = quiet_live;
 }
 
 static int
@@ -3917,7 +4029,14 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     carry->pass_symbols = 0;
     /* The no-carrier reset after the exit clears the rolling dibit buffers: none of the history is in them. */
     carry->own_symbols = 0;
+    carry->score_on_resume = 0;
     carry->valid = 1;
+}
+
+char
+dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
+    /* The C4FM hunt's slicing (frame_sync_symbol_to_dibit()), as frame_sync_history_carry_symbols() reads it back. */
+    return dsd_symbol_history_get_back(state, back) > 0.0f ? '1' : '3';
 }
 
 void
@@ -3955,7 +4074,31 @@ frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols
        still hold the stream when it starts (frame_sync_history_resume(): a clear since, or one before the word's first
        symbols were read, leaves fewer). */
     carry->own_symbols = count;
+    carry->score_on_resume = 0;
     carry->valid = 1;
+}
+
+void
+dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
+    if (state == NULL || symbols <= 0) {
+        return;
+    }
+    /* A new pass: the decoder's frame was a sync's. */
+    frame_sync_history_carry_symbols(state, symbols, 0);
+    /* The decoder's slicer wrote its own dibits for them, and no DMR payload: nothing decodes a burst back from them. */
+    state->frame_sync_carry.own_symbols = 0;
+}
+
+void
+dsd_frame_sync_hand_back_word(dsd_state* state, int symbols) {
+    /* The symbol hand-back's own guards: nothing handed back marks no window, least of all one an earlier exit kept. */
+    if (state == NULL || symbols <= 0) {
+        return;
+    }
+    dsd_frame_sync_hand_back_symbols(state, symbols);
+    /* The handed-back word may be a whole sync word itself (a co-channel stream right after a shortened M17 marker):
+       its window is scored where it ends, before the next symbol is read. */
+    state->frame_sync_carry.score_on_resume = state->frame_sync_carry.valid;
 }
 
 /* Any other exit: the next call starts with no history. */
@@ -3998,9 +4141,12 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
                          && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
                          && !dsd_frame_sync_off_thread_tune_pending() && frame_sync_history_carry_in_range(carry);
     carry->valid = 0;
+    const uint8_t score = carry->score_on_resume;
+    carry->score_on_resume = 0;
     if (!unbroken) {
         return;
     }
+    rt->score_on_resume = score;
     DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
     rt->history_head = carry->head;
     rt->history_count = carry->count;
@@ -6022,6 +6168,28 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
     return budget_step != 0;
 }
 
+/* A call's runtime, set up with the last call's history taken up (frame_sync_history_resume()); the window ending on the last of the symbols a frame
+   handler handed back (dsd_frame_sync_history_carry score_on_resume) is scored once where it ends, before the next
+   symbol is read: the sync it holds, or none. */
+static int
+frame_sync_take_up_history(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now, double nowm,
+                           const frame_sync_cc_stamps* cc_stamp_at_entry) {
+    frame_sync_runtime_init(rt, opts, state);
+    rt->cc_stamp_at_entry = *cc_stamp_at_entry;
+    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
+    frame_sync_history_resume(rt, state);
+    if (!rt->score_on_resume || rt->history_count < 8) {
+        return DSD_SYNC_NONE;
+    }
+    rt->score_on_resume = 0;
+    const int sync_type = frame_sync_eval_window(opts, state, rt, now, nowm);
+    if (sync_type != DSD_SYNC_NONE) {
+        frame_sync_history_drop(state);
+        frame_sync_sps_hunt_mark_return(state);
+    }
+    return sync_type;
+}
+
 /* A P25 tick inside the hunt moved the chain (frame_sync_watchdog_tick.c): the hunt hands back at once with no sync, as
    a read that left for a queued command does, and the engine's next call starts on the new carrier with the tuning
    generation and the decode time taken afresh. No no-carrier pass: nothing was lost, the receiver moved. */
@@ -6056,6 +6224,74 @@ frame_sync_entry_ends_call(dsd_opts* opts, dsd_state* state, time_t now, int* ou
     return 0;
 }
 
+/* A Signal search probe asked the hunt to give way: an interruption, as a read that left for a command, with the history
+   and any dPMR frame being read dropped. No sync. */
+static int
+frame_sync_yield_to_search(dsd_state* state) {
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+    frame_sync_history_drop(state);
+    frame_sync_dpmr_forget(state);
+    frame_sync_sps_hunt_mark_return(state);
+    return DSD_SYNC_NONE;
+}
+
+/* The scan quiet check's event service before a hunt symbol (issue #834 follow-up): asked only while the last quiet
+   answer said a check is under way, and not where the 300-symbol point just ran its own service. 1 when it hands back,
+   the hunt then leaving with no sync and its history kept, as at that point's hand-back: no symbol was read for it. */
+static int
+frame_sync_quiet_event_hands_back(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
+    if (!rt->quiet_live) {
+        return 0;
+    }
+    const int quiet = dsd_frame_sync_hook_scan_quiet_event(opts, state);
+    rt->quiet_live = quiet == DSD_SCAN_QUIET_LIVE;
+    if (quiet != DSD_SCAN_QUIET_HAND_BACK) {
+        return 0;
+    }
+    frame_sync_history_keep(rt, state);
+    frame_sync_sps_hunt_mark_return(state);
+    return 1;
+}
+
+/* The hunt's 300-symbol point: the UI publication, a P25 watchdog beat's tick (one that moved the chain hands back at
+   once, as a read that left for a queued command does), a Signal search's yield, a trunk-scan target's idle dwell run
+   out, and the scan quiet check's service. Returns 1 when the hunt leaves, with its return in @p out.
+
+   A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands back once per
+   1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at 4800 sym/s, 750 ms at
+   2400). The hand-back is a no-sync return like the pass's own, only earlier: the engine's next tick rotates under the
+   coordinator's guard, and its no-carrier pass runs as after any. It keeps its history as the pass end does: a tick
+   that keeps the target leaves a sync straddling the hand-back to the next call, and one that rotates retunes, which
+   drops the history (issue #834). A scan quiet check whose quiet result the tick may skip on hands back the same way;
+   it does its measurement work inside the call and costs one load with skip-silent off (issue #834); a check merely
+   under way (LIVE) hands nothing back, and makes the hunt ask its event service before each symbol until the next
+   answer (issue #834 follow-up). */
+static int
+frame_sync_hunt_point_leaves(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, int* out) {
+    frame_sync_publish_ui_throttled(opts, state);
+    if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
+        frame_sync_sps_hunt_mark_return(state);
+        *out = frame_sync_hand_back_after_tick(state);
+        return 1;
+    }
+    if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
+        *out = frame_sync_yield_to_search(state);
+        return 1;
+    }
+    const int dwell = dsd_trunk_scan_hook_dwell_due(opts, state);
+    const int quiet = dwell ? DSD_SCAN_QUIET_NONE : dsd_frame_sync_hook_scan_quiet_service(opts, state);
+    if (!dwell) {
+        rt->quiet_live = quiet == DSD_SCAN_QUIET_LIVE;
+    }
+    if (dwell || quiet == DSD_SCAN_QUIET_HAND_BACK) {
+        frame_sync_history_keep(rt, state);
+        frame_sync_sps_hunt_mark_return(state);
+        *out = DSD_SYNC_NONE;
+        return 1;
+    }
+    return 0;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
@@ -6071,44 +6307,28 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);
     frame_sync_runtime_ctx rt;
-    frame_sync_runtime_init(&rt, opts, state);
-    rt.cc_stamp_at_entry = cc_stamp_at_entry;
-    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
-    frame_sync_history_resume(&rt, state);
+    const int handed_back = frame_sync_take_up_history(opts, state, &rt, now, nowm, &cc_stamp_at_entry);
+    if (handed_back != DSD_SYNC_NONE) {
+        return handed_back;
+    }
 
     frame_sync_publish_ui_throttled(opts, state);
     dsd_event_sync_slot(opts, state, 0);
     dsd_event_sync_slot(opts, state, 1);
+    /* A check under way is asked at once: a READY result an engine publication collected hands back here. */
+    rt.quiet_live = opts->scan_skip_silent;
+    if (frame_sync_quiet_event_hands_back(opts, state, &rt)) {
+        return DSD_SYNC_NONE;
+    }
 
     for (;;) {
         rt.t++;
         if ((rt.t % 300) == 0) {
-            frame_sync_publish_ui_throttled(opts, state);
-            if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
-                frame_sync_sps_hunt_mark_return(state);
-                return frame_sync_hand_back_after_tick(state);
+            if (frame_sync_hunt_point_leaves(opts, state, &rt, &ended)) {
+                return ended;
             }
-            if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
-                dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
-                frame_sync_history_drop(state);
-                frame_sync_sps_hunt_mark_return(state);
-                return DSD_SYNC_NONE;
-            }
-            /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
-               back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
-               4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
-               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. It
-               keeps its history as the pass end does: a tick that keeps the target leaves a sync straddling the
-               hand-back to the next call, and one that rotates retunes, which drops the history (issue #834). A scan
-               quiet check whose quiet result the tick may skip on hands back the same way; it does its measurement
-               work inside the call and costs one load with skip-silent off (issue #834); a check merely under way
-               (LIVE) hands nothing back. */
-            if (dsd_trunk_scan_hook_dwell_due(opts, state)
-                || dsd_frame_sync_hook_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK) {
-                frame_sync_history_keep(&rt, state);
-                frame_sync_sps_hunt_mark_return(state);
-                return DSD_SYNC_NONE;
-            }
+        } else if (frame_sync_quiet_event_hands_back(opts, state, &rt)) {
+            return DSD_SYNC_NONE;
         }
 
         rt.symbol = getSymbol(opts, state, 0);
@@ -6117,6 +6337,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
             frame_sync_read_left(state);
+            /* A dPMR frame being read lost its symbols too. */
+            frame_sync_dpmr_forget(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }

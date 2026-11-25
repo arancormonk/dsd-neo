@@ -8,7 +8,8 @@ import "Util.js" as Util
 // each, at the top of Home until dismissed. `storeNotices` is process-lifetime
 // (src/ui/qt/store_notices.h) and keeps what was dismissed and what was read
 // out, so a rebuilt screen neither shows nor announces either again; a notice
-// that changes later (its file kept aside after all) shows again.
+// that changes later (its file kept aside after all) shows again. Discussion
+// #900: also a saved system's DMR channels file a start couldn't write.
 // The card is one alert named by everything it says; its lines are plain
 // Text, which a screen reader reaches only through it.
 UiPanel {
@@ -33,6 +34,8 @@ UiPanel {
     function title(notice) {
         if (notice.state === "leftInPlace")
             return qsTr("Signal search history from an older version couldn't be read");
+        if (notice.state === "unwritten")
+            return qsTr("%1 couldn't be written").arg(Util.storeLabel(notice.store));
         return qsTr("%1 couldn't be read completely").arg(Util.storeLabel(notice.store));
     }
     // What became of the file. "May be missing": a file can also be empty or
@@ -41,6 +44,8 @@ UiPanel {
         var kept = String(notice.kept || "");
         if (notice.state === "leftInPlace")
             return qsTr("It was left in place.");
+        if (notice.state === "unwritten")
+            return qsTr("Starts run without this system's saved channels until they can be written. Check that the device has free storage.");
         if (notice.state === "kept")
             return qsTr("Some entries may be missing. The file was kept as %1.").arg(kept);
         // Defaults: nothing the file held is in use, so no entry is "missing".
@@ -86,7 +91,9 @@ UiPanel {
         interval: 0
         onTriggered: card.announceNew()
     }
-    onSpeechChanged: announceLater.restart()
+    // The list, not only what it says: a new failure of the same file reads the
+    // same, and only its episode tells it apart.
+    onNoticesChanged: announceLater.restart()
     onVisibleChanged: announceLater.restart()
     onNavigationAllowedChanged: announceLater.restart()
     Component.onCompleted: announceLater.restart()

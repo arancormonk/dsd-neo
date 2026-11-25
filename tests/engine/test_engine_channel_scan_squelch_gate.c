@@ -179,6 +179,29 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return 0;
 }
 
+/* The TED timing a TETRA DMO row's chain is verified against (trunk_tuning.c, issue #890): none published here. */
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = 0;
+    }
+    if (applied_sps) {
+        *applied_sps = 0;
+    }
+}
+
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a test sets. */
+static int g_tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tetra_chain_other;
+}
+
 /* When the input came back from a retune's mute (trunk_tuning.c), for the -Y countdown: no retune armed one here. */
 double
 dsd_engine_scan_input_listening_since_m(const dsd_opts* opts, const dsd_state* state) {

@@ -81,6 +81,11 @@ uint16_t cqpsk_soft_symbol_to_viterbi_cost(float symbol, int bit_position);
  * supported TETRA receiver) all three read them on the adaptive levels.
  */
 int dsd_tetra_quadrant_levels(const dsd_state* state);
+/**
+ * \brief Viterbi cost (0 a sure 0, 65535 a sure 1) of a two-level GMSK symbol's bit, the bit the hard slicer reads
+ * under state->synctype's polarity (digitize()): a positive two-level sync reads a high symbol as 0, a negative one, or
+ * none, as 1. 32768 for a NULL @p state.
+ */
 uint16_t gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state);
 /**
  * \brief Confidence (0 = none, 255 = full) in a two-level symbol's hard bit, for soft-decision vocoder FEC.

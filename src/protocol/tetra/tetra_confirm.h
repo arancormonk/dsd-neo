@@ -21,7 +21,17 @@
  * The evidence belongs to one carrier: tetra_confirm_reset() drops it at every carrier boundary, no-carrier pass and
  * trunking retune. A retune made while a burst is being decoded (a grant in its first block) leaves the rest of that
  * burst on the carrier that was left: the decoders stop there (tetra_confirm_burst_current()), and nothing the burst
- * decoded counts for the new carrier. The burst's own verdict still counts what it decoded.
+ * decoded counts for the new carrier. The burst's own verdict still counts what it decoded. So does a read the burst
+ * makes past its training sequence: a replay retune or another carrier boundary inside it, an input interruption
+ * that cut it (dsd_state_frame_read_lost()) or a stream flush inside it (dsd_state::symbol_clock_epoch) loses the rest
+ * of the burst, and a decoder that reads before it acts checks after the read, before it applies, publishes or commits
+ * anything of the burst (issue #890).
+ *
+ * What the burst proved about the channel (dsd_tetra_burst_proof, <dsd-neo/protocol/tetra/tetra.h>) is kept as it
+ * closes: the strongest proof its blocks reached (tetra_confirm_note_proof(); every CRC note raises it to PROFILE,
+ * trunked signalling to TMO), NONE for a burst whose read was lost. tetra_burst_proof() reads it; the burst decoder
+ * reports checked content (tetra_burst_proof_is_content()) to a -Y row and a scan quiet check as
+ * DSD_CONTENT_EVIDENCE_PROVEN.
  *
  * Sibling of src/protocol/nxdn/nxdn_confirm.{c,h}. Decoder thread only; the state lives in tetra_state_t::confirm.
  */
@@ -29,6 +39,7 @@
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_CONFIRM_H_
 
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -49,7 +60,9 @@ void tetra_confirm_burst_begin_captured(dsd_state* state, uint32_t epoch);
 /** Close the burst's accounting. @return 1 when the burst decoded a block whose CRC passed. */
 int tetra_confirm_burst_end(dsd_state* state);
 
-/** 1 unless the carrier was reset since tetra_confirm_burst_begin(): the rest of the burst is the last carrier's. */
+/** 1 unless the burst's read is lost: the carrier was reset since tetra_confirm_burst_begin() (the rest of the burst is
+ * the last carrier's), dsd_state::carrier_seq moved or an input interruption cut the read since
+ * (dsd_state_frame_read_lost()), or a stream flush moved dsd_state::symbol_clock_epoch since. Outside a burst, 1. */
 int tetra_confirm_burst_current(const dsd_state* state);
 
 /** A downlink BSCH or MAC block of this burst passed its CRC (after the block was decoded and acted on). */
@@ -58,8 +71,12 @@ void tetra_confirm_note_signalling(dsd_state* state);
 /** An uplink SCH/HU or MAC block of this burst passed its CRC-16: evidence about the carrier for publication only. */
 void tetra_confirm_note_uplink_signalling(dsd_state* state);
 
-/** Another block of this burst passed its CRC: a speech frame, or direct-mode signalling. */
+/** Another block of this burst passed its CRC: a speech frame, or direct-mode signalling. Its proof is PROFILE until
+ * tetra_confirm_note_proof() says more. */
 void tetra_confirm_note_block(dsd_state* state);
+
+/** What a block of this burst proved (dsd_tetra_burst_proof): the burst's proof rises to it, a weaker one leaves it. */
+void tetra_confirm_note_proof(dsd_state* state, dsd_tetra_burst_proof proof);
 
 /** 1 when a CRC-16 signalling block of this carrier was decoded (before the block being decoded): a downlink BSCH or
  * MAC block, or an uplink SCH/HU or MAC block. What publication waits for. */

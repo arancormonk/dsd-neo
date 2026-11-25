@@ -1,8 +1,8 @@
-add_library(dsd-neo_proto_dpmr)
+add_library(dsd-neo_proto_dpmr STATIC)
 
 target_sources(
     dsd-neo_proto_dpmr
-    PRIVATE dpmr_confirm.c dpmr_data.c dpmr_voice.c
+    PRIVATE dpmr_confirm.c dpmr_data.c dpmr_header.c dpmr_voice.c
 )
 
 target_include_directories(
@@ -17,10 +17,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_dpmr PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_dpmr
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

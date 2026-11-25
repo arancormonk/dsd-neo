@@ -17,6 +17,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_SESSION_ARGS_H_
 #define DSD_NEO_SRC_UI_QT_SESSION_ARGS_H_
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -82,7 +83,22 @@ QStringList session_args_scan_build(const QVariantMap& list, const QString& firs
  * the app's options. session_args_scan_build() is this with one path.
  */
 QStringList session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqMhz,
-                                          const QStringList& csvPaths, const SessionArgPrefs& prefs, QString* error);
+                                          const QStringList& csvPaths, const SessionArgPrefs& prefs, QString* error,
+                                          bool tetraTargets = false);
+/**
+ * @brief The DSP bandwidth, in kHz, a scan session started from @p list runs its radio at (issue #890, D3), as the
+ * radio runs it (session_args_dsp_bandwidth_khz()): the list's own bandwidth, else, when @p tetraTargets (a TETRA DMO
+ * target among any the session can visit: every list it loads, a list switched off at the start included), the 72 kHz
+ * TETRA decodes at, else the app's @p prefsKhz. The one answer for the editor's App default note, the join check, the
+ * analog-width warning and the argv (session_args_scan_build_lists()).
+ */
+int session_args_scan_list_bandwidth_khz(const QVariantMap& list, bool tetraTargets, int prefsKhz);
+/**
+ * @brief Why a scan session started from @p list cannot decode its TETRA DMO targets (@p tetraTargets), or empty: the
+ * list's own bandwidth is not one TETRA decodes at (session_args_tetra_runs_on()). Names the fix: 72 kHz or App
+ * default. Empty without TETRA targets, and for App default, which runs them at 72 kHz.
+ */
+QString session_args_scan_list_rate_error(const QVariantMap& list, bool tetraTargets, int prefsKhz);
 /**
  * @brief @p args, a scan session's argv, starting held on target @p targetId (issue #644): `--trunk-scan-hold
  * <targetId>` after the last list's `--trunk-scan`, ahead of the extra options (a "--" among them would make it an
@@ -108,10 +124,11 @@ constexpr int SessionArgsScanHoldDefaultMs = 1200;
 /**
  * @brief Why scan list @p other cannot join a session started from @p primary, or empty when it can (issue #697).
  *
- * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its
- * argv has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side
- * files are resolved to absolute paths: radio source (source type and device: Airspy serial, host and port), gain,
- * PPM correction, DSP bandwidth (as the radio runs it), bias tee, every other Airspy setting, voice only, skip silent
+ * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its argv
+ * has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side files
+ * are resolved to absolute paths: radio source (source type and device: Airspy serial, host and port), gain, PPM
+ * correction, DSP bandwidth (as the radio runs it, session_args_scan_list_bandwidth_khz(): App default is 72 kHz when
+ * @p tetraTargets, a TETRA DMO target in the session), bias tee, every other Airspy setting, voice only, skip silent
  * channels (issue #834), default dwell and hold (0 runs the engine's default), fallback talkgroups and source aliases.
  * The first that differs, in that order, is named: "Different radio source", "Different gain", "Different PPM
  * correction", "Different bandwidth", "Different bias tee", "Different Airspy settings", "Different voice-only
@@ -119,7 +136,7 @@ constexpr int SessionArgsScanHoldDefaultMs = 1200;
  * talkgroups" or "Different source aliases".
  */
 QString session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other,
-                                        const SessionArgPrefs& prefs);
+                                        const SessionArgPrefs& prefs, bool tetraTargets = false);
 
 enum class SessionArgsError {
     None,
@@ -162,6 +179,19 @@ enum class SessionArgsError {
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
 constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
+
+/**
+ * @brief The --dmr-chan-overrides file a start of @p system passes (discussion #900 F3), or empty for none: a header
+ * and one `lpcn,frequency_hz` row per entry of its dmrChannels (SavedSystemsModel::validDmrChannels(), 0 = hidden),
+ * by channel. Whatever the system decodes: the decoder applies the file only to a session that decodes DMR frames
+ * and runs no trunk scan, and starts any other without it, with a notice.
+ *
+ * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field last of all, after
+ * the decode flag, the system's and the app's extra options and the live radio settings: the decoder keeps the last
+ * --dmr-chan-overrides, so the saved channels win over one the user typed. SessionArgsBuilder::start() writes it, for a
+ * saved system's start only.
+ */
+QByteArray session_args_dmr_channels_csv(const QVariantMap& system);
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
@@ -393,9 +423,15 @@ class SessionArgsBuilder : public QObject {
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
                           const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
     /* start()'s build: with the session's call recording folder when @p host can record it (@p recording set, the
-       folder's session begun). */
+       folder's session begun). @p channelsUid: prepareDmrChannels()' answer for a saved system's start, else empty. */
     QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
-                              SessionArgsError* error, bool* recording) const;
+                              SessionArgsError* error, bool* recording, QString* channelsUid) const;
+    /* A saved system's start: @p input with its DMR Tier III channels' file written and named. Writes nothing, and
+       drops a file an earlier start left, when it has none. A file that cannot be written names none: the start goes
+       on without the channels, and a notice (json_store_post_notice()) says so.
+       @return the system's uid when the argv passes its channels or has none to pass, else empty. The start withdraws
+       the notice only once that argv goes to the host. */
+    QString prepareDmrChannels(QVariantMap* input) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     /* Both start()s: @p expects says whether the expectations are a roam's. */

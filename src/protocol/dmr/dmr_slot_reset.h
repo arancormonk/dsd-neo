@@ -53,6 +53,7 @@ dmr_slot_reset_blocks(dsd_state* state, uint8_t slot) {
     state->data_header_bit_padding[idx] = 0;
     state->data_byte_ctr[idx] = 0;
     state->udt_uab_reserved[idx] = 0;
+    state->dmr_mbc_armed[idx] = 0; // a continuation after the reset joins no MBC header
     state->data_ks_start[idx] = 0;
     state->data_header_blocks[idx] = 1;
     DSD_MEMSET(state->data_block_crc_valid[idx], 0, sizeof(state->data_block_crc_valid[idx]));

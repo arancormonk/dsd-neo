@@ -297,6 +297,11 @@ entry_reason_text(const dsd_scan_entry_match_t* match, const char* name, int tru
         case DSD_SCAN_ENTRY_AVOIDED: phrase = " is avoided"; break;
         case DSD_SCAN_ENTRY_LIST_OFF: phrase = " is in no list that is on"; break;
         case DSD_SCAN_ENTRY_WIDTH: phrase = "'s width does not fit"; break;
+        /* A TETRA DMO row the scan skips at every visit (issue #890): what would fix it. */
+        case DSD_SCAN_ENTRY_TETRA_INPUT: phrase = " needs a radio I/Q input for TETRA"; break;
+        case DSD_SCAN_ENTRY_TETRA_WAIT: phrase = " waits for the radio's DSP rate"; break;
+        case DSD_SCAN_ENTRY_TETRA_RATE: phrase = " needs a TETRA DSP bandwidth (72 kHz)"; break;
+        case DSD_SCAN_ENTRY_TETRA_CHAIN: phrase = " cannot run the TETRA receive chain"; break;
         default: out[0] = '\0'; return;
     }
     DSD_SNPRINTF(out, size, "; %s%s", name ? name : noun, phrase);

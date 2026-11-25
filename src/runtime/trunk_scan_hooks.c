@@ -18,6 +18,8 @@
 #include <stdint.h>
 
 static dsd_trunk_scan_hooks g_trunk_scan_hooks = {0};
+/* The -Y row hook (dsd_trunk_scan_row_activity_hook_set()), apart from the table a trunk scan installs. */
+static dsd_trunk_scan_row_activity_fn g_trunk_scan_row_activity = NULL;
 
 int
 dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
@@ -169,6 +171,25 @@ dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_st
     if (g_trunk_scan_hooks.p25_conventional_activity) {
         g_trunk_scan_hooks.p25_conventional_activity(opts, state, protocol, slot, target, source, is_private, encrypted,
                                                      data_call);
+    }
+}
+
+void
+dsd_trunk_scan_row_activity_hook_set(dsd_trunk_scan_row_activity_fn fn) {
+    g_trunk_scan_row_activity = fn;
+}
+
+void
+dsd_trunk_scan_hook_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                                  const dsd_trunk_scan_activity_identity* identity) {
+    if (!identity) {
+        return;
+    }
+    if (g_trunk_scan_hooks.digital_conventional_activity) {
+        g_trunk_scan_hooks.digital_conventional_activity(opts, state, protocol, slot, identity);
+    }
+    if (g_trunk_scan_row_activity) {
+        g_trunk_scan_row_activity(opts, state, protocol, slot, identity);
     }
 }
 

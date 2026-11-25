@@ -73,6 +73,23 @@ typedef enum {
 /** @brief Symbols in every M17 frame: a 16-bit sync burst and 368 bits of payload (M17 spec, Frame; 40 ms). */
 #define DSD_FRAME_SYNC_M17_FRAME_SYMBOLS       192U
 
+/** @brief Symbols in one word of the M17 end-of-transmission marker, 0x555D: +3 six times, -3, +3 (M17 spec 2.0.11,
+ * End of Transmission Marker). */
+#define DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS    8U
+
+/** @brief Words of the end-of-transmission marker a whole marker holds: 192 symbols, 40 ms. */
+#define DSD_FRAME_SYNC_M17_EOT_MARKER_WORDS    24U
+
+/**
+ * @brief Marker words in a row, each in phase, that the hunt takes as an M17 end of transmission.
+ *
+ * One word is no end: every flat eight-symbol run is within one symbol of it, and a fade after real traffic supplies
+ * flat runs. A word here also has to hold its one symbol of the other sign (dsd_frame_sync_m17_eot_word()), which a flat
+ * run never does, and three of them, eight symbols apart, are 24 of the marker's 192 symbols: a marker that lost its
+ * first words to a fade still offers them.
+ */
+#define DSD_FRAME_SYNC_M17_EOT_WORDS           3U
+
 /**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.
  *
@@ -343,6 +360,41 @@ int dsd_frame_sync_active_profile_levels(const dsd_state* state);
  * @brief Scan for a valid frame sync pattern and return its type.
  */
 int getFrameSync(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief A frame decoder read past its frame into symbols that are the hunt's, and hands the last @p symbols of them
+ * back (at most DSD_FRAME_SYNC_HISTORY_CARRY_DIBITS): the next getFrameSync() call starts its windows from them, as
+ * from a history a no-sync exit carries (dsd_frame_sync_history_carry), so a sync word whose first symbols the decoder
+ * read is matched where it ends. Dropped like any carry when something comes between (a read, a retune, a carrier
+ * boundary, another profile or modulation). The rolling dibit buffers do not count as holding them (own_symbols 0):
+ * DMR and X2-TDMA never decode a burst back from them. D-STAR reads the start of each resynchronization word this way,
+ * to tell it from the end pattern (src/protocol/dstar/dstar.c), and M17 the word after its end-of-transmission marker
+ * (src/engine/dispatch/dispatch_m17.c). Decoder thread.
+ */
+void dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols);
+
+/**
+ * @brief As dsd_frame_sync_hand_back_symbols(), for symbols that may end with a whole sync word: the next
+ * getFrameSync() call scores the window ending on the last of them once, before it reads a symbol
+ * (dsd_frame_sync_history_carry::score_on_resume). M17 hands back the word after its end-of-transmission marker this
+ * way (src/engine/dispatch/dispatch_m17.c), which may be a co-channel stream's sync word. Decoder thread.
+ */
+void dsd_frame_sync_hand_back_word(dsd_state* state, int symbols);
+
+/**
+ * @brief Whether eight hunt symbols are one word of the M17 end-of-transmission marker.
+ *
+ * @p window holds DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS signs, oldest first, as the hunt slices them ('1' positive, '3'
+ * negative). A word is the marker's (+3 six times, -3, +3; @p inverted, its inversion) to within one symbol, and the
+ * symbol of the other sign, the seventh, is one of the symbols it has right: a flat run is never a word.
+ */
+int dsd_frame_sync_m17_eot_word(const char* window, int inverted);
+
+/**
+ * @brief The sign the hunt reads for the symbol @p back symbols before the latest one read ('1' positive, '3'
+ * negative), from the symbol history (dsd_symbol_history_get_back()).
+ */
+char dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back);
 
 /**
  * @brief Emit diagnostic information about detected frame sync.

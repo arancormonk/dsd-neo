@@ -3890,7 +3890,7 @@ test_example_targets() {
     const auto result = importAndWait(model, QStringLiteral(DSD_NEO_TEST_EXAMPLES_DIR "/trunk_scan_targets.csv"),
                                       "Examples.csv", "trunkTargets");
     expect("shipped example imports all targets",
-           result.value("ok").toBool() && result.value("accepted").toInt() == 12);
+           result.value("ok").toBool() && result.value("accepted").toInt() == 17);
     if (!result.value("ok").toBool()) {
         return;
     }
@@ -3899,12 +3899,20 @@ test_example_targets() {
     /* Issue #526: the analog nfm-conventional and am-conventional targets preview with their canonical types and their
        own channel widths and squelch, which the import's copy keeps; a digital target carries no width. */
     expect("shipped row order retained",
-           rows.size() == 12 && rows[0].toMap().value("id") == "county-p25"
+           rows.size() == 17 && rows[0].toMap().value("id") == "county-p25"
                && rows[7].toMap().value("id") == "field-nxdn48" && rows[8].toMap().value("id") == "fire-nfm"
                && rows[8].toMap().value("type") == "nfm-conventional" && rows[9].toMap().value("id") == "tower-am"
                && rows[9].toMap().value("type") == "am-conventional" && rows[10].toMap().value("id") == "Mall"
                && rows[11].toMap().value("id") == "20R Local");
-    if (rows.size() == 12) {
+    /* Issue #890: one target of each simplex digital type, after them, with its canonical type and no width. */
+    const QStringList simplexTypes{"ysf-conventional", "dstar-conventional", "dpmr-conventional", "m17-conventional",
+                                   "tetra-dmo-conventional"};
+    for (int i = 0; i < simplexTypes.size() && rows.size() == 17; ++i) {
+        const QVariantMap row = rows[12 + i].toMap();
+        expect("previews a simplex target with its type and no width",
+               row.value("type") == simplexTypes[i] && !row.value("bandwidthHz").isValid());
+    }
+    if (rows.size() == 17) {
         expect("previews the nfm target's own width", rows[8].toMap().value("bandwidthHz").toInt() == 12500);
         expect("previews the am target's own width and auto squelch",
                rows[9].toMap().value("bandwidthHz").toInt() == 8333
@@ -3950,7 +3958,7 @@ test_example_targets() {
     const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
     expect("imported example initializes", initialized);
     if (initialized) {
-        expect("engine owns all twelve imported targets", dsd_engine_trunk_scan_target_count(state) == 12);
+        expect("engine owns all seventeen imported targets", dsd_engine_trunk_scan_target_count(state) == 17);
         expect("first target visit limit applies", opts->scan_max_visit_ms == 20000);
         expect("advance imported target",
                dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);

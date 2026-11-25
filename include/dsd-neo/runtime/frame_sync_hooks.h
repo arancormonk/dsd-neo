@@ -83,10 +83,15 @@ typedef struct {
  * dsd_frame_sync_hook_content_evidence()). PROVEN: the content passed the gate (a CRC, a checksum or an FEC codeword
  * that noise does not pass), so the channel is active. PARTIAL: the frame left evidence only a later frame can
  * complete (a short CRC whose weak streak needs a second frame, a colour code seen once), so the check waits for the
- * verdict for up to the protocol's hold. */
+ * verdict for up to the protocol's hold. SYNC_ONLY (issue #890): the protocol confirmed the transmission from its sync
+ * words alone (D-STAR's two exact resync words in a row), with no CRC or FEC behind any content: enough to play its
+ * audio, never content or activity to any scan. A quiet check waits on it as on PARTIAL, for up to the hold given, so
+ * a quiet result is never handed back while such frames keep coming; it never ends the check. The -Y step stores
+ * nothing for it. */
 enum {
     DSD_CONTENT_EVIDENCE_PARTIAL = 1,
     DSD_CONTENT_EVIDENCE_PROVEN = 2,
+    DSD_CONTENT_EVIDENCE_SYNC_ONLY = 3,
 };
 
 /** The scan quiet service's answer (dsd_frame_sync_hook_scan_quiet_service(), issue #834). NONE: no check under way
@@ -118,8 +123,9 @@ typedef struct {
     int (*signal_search_probe)(const dsd_opts* opts, const dsd_state* state);
     int (*tick_guard_enter)(void);
     void (*tick_guard_leave)(void);
-    void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on);
+    void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on, int reading_changed);
     int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
+    int (*scan_quiet_event)(const dsd_opts* opts, dsd_state* state);
     void (*content_evidence)(dsd_state* state, int level, uint32_t hold_ms);
 } dsd_frame_sync_hooks;
 
@@ -167,11 +173,12 @@ void dsd_frame_sync_hook_tick_guard_leave(int taken);
 /**
  * The session-wide scan skip-silent setting (dsd_opts::scan_skip_silent, #834) was written. The app-control handler
  * calls it on the decoder thread after storing the value; the engine drops the quiet checks it already made. With
- * @p turned_on (off before, on now) no visit tuned before gets a check: the setting applies from the next tune. This
- * table lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
+ * @p turned_on (off before, on now) no visit tuned before gets a check: the setting applies from the next tune.
+ * @p reading_changed is 1 when the switch or dsd_opts::scan_skip_silent_ms differs from before the write. This table
+ * lives for the whole engine run, not a trunk-scan coordinator's, so it serves -Y too. A no-op when nothing is
  * installed (headless runs, tests).
  */
-void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
+void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed);
 
 /**
  * The scan quiet check's in-hunt service (issue #834), asked at the frame-sync hunt's 300-symbol point beside the
@@ -184,15 +191,26 @@ void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
 int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
 
 /**
+ * The scan quiet check's event service (issue #834 follow-up), asked before each hunt symbol while the last quiet
+ * answer said a check is under way: the engine acts as soon as the tap's capture or the request's answer is there and
+ * answers as dsd_frame_sync_hook_scan_quiet_service() does; when nothing moved it does no more than lock-free loads.
+ * The hunt hands back on HAND_BACK alone, as at its 300-symbol point. One load and DSD_SCAN_QUIET_NONE with the
+ * skip-silent setting off; NONE too when nothing is installed.
+ */
+int dsd_frame_sync_hook_scan_quiet_event(const dsd_opts* opts, dsd_state* state);
+
+/**
  * Protocol code reports what its CRC/FEC gate made of the frame being decoded (issue #834): @p level
  * DSD_CONTENT_EVIDENCE_PROVEN for content that passed the gate, or DSD_CONTENT_EVIDENCE_PARTIAL with @p hold_ms, the
- * protocol's bound for the later frame that completes it. Whatever the setting, the note is stored for a -Y row's
+ * protocol's bound for the later frame that completes it, or DSD_CONTENT_EVIDENCE_SYNC_ONLY with @p hold_ms for a
+ * transmission its sync words alone confirmed (issue #890). Whatever the setting, the note is stored for a -Y row's
  * frame-boundary step: a PROVEN note moves dsd_state::scan_y_content_seq, the checked content that step reads, and a
  * PARTIAL one moves dsd_state::scan_y_partial_seq and raises dsd_state::scan_y_partial_hold_ms to @p hold_ms, the
- * verdict still open that the step waits out. With the setting off those stores (up to three) are all of it. Beyond
- * that only a scan quiet check hears it: PROVEN is activity that ends the visit's check, and PARTIAL holds a quiet
- * result back until the verdict or the hold's end. It moves no hold, other activity stamp, CRC flag, history or
- * event, and reaches no Signal search (which hears dsd_signal_search_note_evidence()). With the skip-silent setting
+ * verdict still open that the step waits out; a SYNC_ONLY note stores nothing, so it holds no -Y row. With the setting
+ * off those stores (up to three) are all of it. Beyond that only a scan quiet check hears it: PROVEN is activity that
+ * ends the visit's check, and PARTIAL and SYNC_ONLY hold a quiet result back until the verdict or the hold's end. It
+ * moves no hold, other activity stamp, CRC flag, history or event, and reaches no Signal search (which hears
+ * dsd_signal_search_note_evidence()). With the skip-silent setting
  * off (or @p opts NULL) it is those stores and one load and nothing else: no clock read, no scan owner looked up or
  * made, no hook called; nothing beyond the stores when nothing is installed. Decoder thread, inside the frame's
  * decode.

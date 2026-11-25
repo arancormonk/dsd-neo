@@ -166,6 +166,53 @@ test_analog_scan_entries_hold_no_profile(dsd_qt::DecryptionProfilesModel& profil
     check(scans.remove(list));
 }
 
+/* Issue #890: the scan entry editor offers a decryption choice only where the row takes keys (the key matrix): YSF,
+   D-STAR, TETRA DMO decrypt nothing and M17 runs the session's keys, so a profile those entries still name, a saved
+   TETRA system's entry among them, counts no use and can be removed. dPMR takes its scrambler key from a profile, so a
+   dPMR entry naming one holds it. */
+static void
+test_simplex_scan_entries_hold_no_profile(dsd_qt::DecryptionProfilesModel& profiles, dsd_qt::SavedSystemsModel& systems,
+                                          dsd_qt::ScanListsModel& scans) {
+    check(profiles
+              .saveProfile({{"uid", "profile-simplex"},
+                            {"label", "Hidden on simplex"},
+                            {"protocol", "dpmr"},
+                            {"mode", "direct"},
+                            {"directType", "scrambler"},
+                            {"directValue", "17"}})
+              .value("ok")
+              .toBool());
+    check(systems.add({{"name", "DMO"},
+                       {"sourceType", "rtltcp"},
+                       {"host", "127.0.0.1"},
+                       {"port", 1234},
+                       {"freqMhz", "430.5"},
+                       {"decodeFlag", "-fT"}}));
+    const QString dmoUid = systems.get(systems.count() - 1).value("uid").toString();
+    const auto named = [](QVariantMap entry) {
+        entry.insert("decryptionMode", "profile");
+        entry.insert("decryptionProfileUid", "profile-simplex");
+        return entry;
+    };
+    QVariantList hidden;
+    for (const char* protocol : {"ysf", "dstar", "m17", "tetra_dmo"}) {
+        hidden << named({{"kind", "freq"}, {"protocol", protocol}, {"freqMhz", "430.1"}});
+    }
+    hidden << named({{"kind", "system"}, {"systemUid", dmoUid}});
+    check(scans.add({{"name", "Simplex"}, {"entries", hidden}}));
+    const int list = scans.count() - 1;
+    check(profiles.useCount("profile-simplex") == 0);
+    QVariantList withDpmr = hidden;
+    withDpmr << named({{"kind", "freq"}, {"protocol", "dpmr"}, {"freqMhz", "446.1"}});
+    check(scans.update(list, {{"entries", withDpmr}}));
+    check(profiles.useCount("profile-simplex") == 1);
+    check(!profiles.removeProfile("profile-simplex").value("ok").toBool());
+    check(scans.update(list, {{"entries", hidden}}));
+    check(profiles.removeProfile("profile-simplex").value("ok").toBool());
+    check(scans.remove(list));
+    check(systems.remove(systems.count() - 1));
+}
+
 static QByteArray
 storeBytes() {
     QFile file(dsd_qt::json_store_path("decryption_profiles.json"));
@@ -1074,6 +1121,7 @@ main(int argc, char** argv) {
     test_aes256_profile_imports(profiles);
     test_simulcast_preset_is_p25(profiles, systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
+    test_simplex_scan_entries_hold_no_profile(profiles, systems, scans);
     dsd_neo_log_set_tap(captureWarning, nullptr);
     test_compiled_rows_load_unchanged();
     test_definitions_compile_at_load(secret);

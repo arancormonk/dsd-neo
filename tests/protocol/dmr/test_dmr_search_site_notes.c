@@ -8,7 +8,8 @@
  * passed Hamming(17,12,3) and its CRC-8 note the Tier III identity they carry; the same messages failing their checks
  * note nothing. Tier III numbers are shown one-based, split only by -D (the top SITE bits are the area), except on a
  * network a Motorola C_ALOHA recognised as Capacity Max, which shows them raw and whole; the received identity keeps
- * them raw, with the Connect Plus network in full and the Capacity Plus site from its checked messages.
+ * them raw, with the Connect Plus network in full and the Capacity Plus site from its checked messages. The checked
+ * short LCs also feed the Tier III channel map's network baseline, as a checked C_ALOHA does (discussion #900).
  */
 
 #include <dsd-neo/core/access_code.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
@@ -1255,6 +1257,36 @@ test_site_numbers(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A C_SYS_Parms (control channel) or P_SYS_Parms (payload channel) short LC that passed its checks names the network
+   the receiver is on, as a checked C_ALOHA does: a code of another MODEL or NET drops the channels the air taught and
+   bumps the generation, another SITE of the same network keeps them, and a short LC failing its CRC-8 changes nothing
+   (discussion #900 F2). */
+static int
+test_sys_parms_feed_network_baseline(dsd_opts* opts, dsd_state* state) {
+    enum { LPCN = 40 };
+
+    const long hz = 451012500L;
+    int rc = 0;
+    for (int slco = 2; slco <= 3; ++slco) {
+        dmr_t3_chan_network_changed(opts, state); /* no baseline yet */
+        const uint32_t gen = dmr_t3_chan_generation(state);
+        rc |= expect_int("baseline learn", dmr_t3_chan_learn(NULL, state, LPCN, hz, DMR_CHAN_ORIGIN_SITE), 1);
+        slco_sys_parms_code(opts, state, slco, SYSCODE_SMALL_12_3, 0);
+        rc |= expect_int("first checked code sets the baseline", state->trunk_chan_map[LPCN], hz);
+        slco_sys_parms_code(opts, state, slco, (1 << 12) | (12 << 5) | 7, 0);
+        rc |= expect_int("another site of the network keeps the row", state->trunk_chan_map[LPCN], hz);
+        rc |= expect_int("another site is no network change", (long)dmr_t3_chan_generation(state), (long)gen);
+        slco_sys_parms_code(opts, state, slco, SYSCODE_SMALL_2_27, 1);
+        rc |= expect_int("failed-crc short lc keeps the row", state->trunk_chan_map[LPCN], hz);
+        slco_sys_parms_code(opts, state, slco, SYSCODE_SMALL_2_27, 0);
+        rc |= expect_int("another network drops the row", state->trunk_chan_map[LPCN], 0);
+        rc |= expect_int("another network bumps the generation", (long)dmr_t3_chan_generation(state), (long)gen + 1L);
+        rc |= expect_int("dropped row has no origin", dmr_t3_chan_origin(state, LPCN), DMR_CHAN_ORIGIN_NONE);
+    }
+    dmr_t3_chan_network_changed(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1333,6 +1365,7 @@ main(void) {
 
     rc |= test_received_identity(opts, state);
     rc |= test_site_numbers(opts, state);
+    rc |= test_sys_parms_feed_network_baseline(opts, state);
 
     dsd_signal_search_site_set(NULL);
     dsd_signal_search_active_set(NULL);

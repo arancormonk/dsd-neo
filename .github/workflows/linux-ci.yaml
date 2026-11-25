@@ -1381,9 +1381,13 @@ jobs:
       - name: Prepare pinned PFFFT and TETRA_crypto sources for AUR
         if: steps.aur_up.outputs.available == 'true'
         run: |
-          git show origin/main:tools/ci-dependency-pins.env > "$RUNNER_TEMP/aur-pins.env"
-          python3 tools/update_aur_pffft.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
-          python3 tools/update_aur_tetra_crypto.py --pins "$RUNNER_TEMP/aur-pins.env" aur-package/PKGBUILD
+          # The helpers come from the same revision as the pins: a helper knows its pin's archive name and URL.
+          mkdir -p "$RUNNER_TEMP/aur-tools"
+          for file in ci-dependency-pins.env update_aur_pffft.py pffft_metadata.py update_aur_tetra_crypto.py tetra_crypto_metadata.py; do
+            git show "origin/main:tools/$file" > "$RUNNER_TEMP/aur-tools/$file"
+          done
+          python3 "$RUNNER_TEMP/aur-tools/update_aur_pffft.py" --pins "$RUNNER_TEMP/aur-tools/ci-dependency-pins.env" aur-package/PKGBUILD
+          python3 "$RUNNER_TEMP/aur-tools/update_aur_tetra_crypto.py" --pins "$RUNNER_TEMP/aur-tools/ci-dependency-pins.env" aur-package/PKGBUILD
 
       - name: Require the mbelib-neo version the build requires
         if: steps.aur_up.outputs.available == 'true'
@@ -2151,7 +2155,7 @@ jobs:
           bash tools/ci_arch_toolchain.sh bash -lc '
             set -euo pipefail
             source tools/ci-dependency-pins.env
-            tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft "$PFFFT_SHA" /tmp/dsd-pffft
+            tools/fetch-pinned-git.sh https://github.com/arancormonk/pffft-neo "$PFFFT_SHA" /tmp/dsd-pffft
             export DSD_PFFFT_SOURCE_DIR=/tmp/dsd-pffft
             tools/fetch-pinned-git.sh https://github.com/MidnightBlueLabs/TETRA_crypto "$TETRA_CRYPTO_SHA" /tmp/dsd-tetra-crypto
             export DSD_TETRA_CRYPTO_SOURCE_DIR=/tmp/dsd-tetra-crypto

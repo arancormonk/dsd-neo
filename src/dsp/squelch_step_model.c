@@ -258,7 +258,8 @@ ssm_record_responses(dsd_squelch_step_model* m) {
     const int64_t total_in = ((int64_t)M * (int64_t)m->spacing) + m->factor_len + m->step.taps_per_phase;
     float in[2 * DSD_LIVE_IQ_STEP_PASS_PAIRS];
     float out[2 * DSD_LIVE_IQ_STEP_PASS_PAIRS];
-    dsd_iq_resampler_clear(&m->step);
+    /* Impulse responses are the zero-state filter's: the factor's first tap must not fill the history. */
+    dsd_iq_resampler_clear_silent(&m->step);
     int64_t j = 0;
     int64_t n = 0;
     int k = 0;

@@ -171,15 +171,21 @@ expect_absent_quiet(const char* label, const char* haystack, const char* needle)
 }
 
 /*
- * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN) and
- * an analog target's carrier tail (trunk_scan_conventional_stay_reason(), --help, docs/trunk-scan.md). The schema text,
- * which --dump-config-template prints, said DMR/NXDN only.
+ * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN, and
+ * since issue #890 the simplex families) and an analog target's carrier tail (trunk_scan_conventional_stay_reason(),
+ * --help, docs/trunk-scan.md). The schema text, which --dump-config-template prints, said DMR/NXDN only.
  */
 static int
 test_trunk_scan_activity_hold_description(void) {
     const dsdcfg_schema_entry_t* e = dsdcfg_schema_find("trunk_scan", "activity_hold_ms");
-    if (!e || !e->description || !strstr(e->description, "DMR/P25/NXDN") || !strstr(e->description, "analog")) {
-        DSD_FPRINTF(stderr, "FAIL: [trunk_scan] activity_hold_ms description does not name P25 and analog: %s\n",
+    static const char* const families[] = {"DMR", "P25", "NXDN", "YSF", "D-STAR", "dPMR", "M17", "TETRA DMO", "analog"};
+    int named = e && e->description;
+    for (size_t i = 0; named && i < sizeof families / sizeof families[0]; i++) {
+        named = strstr(e->description, families[i]) != nullptr;
+    }
+    if (!named) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: [trunk_scan] activity_hold_ms description does not name every family and analog: %s\n",
                     (e && e->description) ? e->description : "(missing)");
         return 1;
     }
@@ -4055,6 +4061,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "src_csv"},
         {"trunking", "scan_voice_only"},
         {"trunking", "scan_skip_silent"},
+        {"trunking", "scan_skip_silent_ms"},
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
         {"trunking", "scan_max_visit_ms"},
@@ -4705,6 +4712,111 @@ test_scan_max_visit_roundtrip(void) {
     return rc;
 }
 
+/* The skip-silent reading length (#834): [trunking] scan_skip_silent_ms loads 0 (the calibrated reading) and 10..500
+ * as given, reaches dsd_opts, and saves back, always written; a [trunking] without it is 0, also over a live value. A
+ * value of 1..9, past 500, negative or not a whole number is refused with a warning naming the key, and the value
+ * already loaded stays: never clamped. */
+static int
+test_scan_skip_silent_ms_roundtrip(void) {
+    int rc = 0;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    for (int want : {0, 10, 85, 90, 500}) {
+        char ini[96];
+        DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent = true\nscan_skip_silent_ms = %d\n", want);
+        dsdneoUserConfig cfg{};
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        const int load_rc = dsd_user_config_load(path, &cfg);
+        (void)remove(path);
+        if (load_rc != 0 || cfg.trunk_scan_skip_silent_ms != want) {
+            DSD_FPRINTF(stderr, "FAIL: scan_skip_silent_ms = %d loaded as %d\n", want, cfg.trunk_scan_skip_silent_ms);
+            rc |= 1;
+            continue;
+        }
+        reset_opts_and_state(opts, state);
+        opts.scan_skip_silent_ms = 70;
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        if (opts.scan_skip_silent_ms != want) {
+            DSD_FPRINTF(stderr, "FAIL: scan_skip_silent_ms = %d reached dsd_opts as %d\n", want,
+                        opts.scan_skip_silent_ms);
+            rc |= 1;
+        }
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        char rendered[8192];
+        if (snap.trunk_scan_skip_silent_ms != want || render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: the snapshot dropped scan_skip_silent_ms = %d\n", want);
+            rc |= 1;
+            continue;
+        }
+        char line[64];
+        DSD_SNPRINTF(line, sizeof line, "scan_skip_silent_ms = %d\n", want);
+        rc |= expect_contains_quiet("trunking scan skip silent ms", rendered, line);
+        dsdneoUserConfig reloaded{};
+        if (write_temp_config(rendered, path, sizeof path) != 0) {
+            return 1;
+        }
+        const int reload_rc = dsd_user_config_load(path, &reloaded);
+        (void)remove(path);
+        if (reload_rc != 0 || reloaded.trunk_scan_skip_silent_ms != want) {
+            DSD_FPRINTF(stderr, "FAIL: the saved config did not load scan_skip_silent_ms = %d back\n", want);
+            rc |= 1;
+        }
+    }
+
+    /* Left out of a present [trunking]: 0, even over a live value. */
+    {
+        dsdneoUserConfig cfg{};
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config("[trunking]\nscan_skip_silent = true\n", path, sizeof path) != 0) {
+            return 1;
+        }
+        const int load_rc = dsd_user_config_load(path, &cfg);
+        (void)remove(path);
+        reset_opts_and_state(opts, state);
+        opts.scan_skip_silent_ms = 120;
+        if (load_rc != 0 || cfg.trunk_scan_skip_silent_ms != 0) {
+            DSD_FPRINTF(stderr, "FAIL: an omitted scan_skip_silent_ms loaded as %d\n", cfg.trunk_scan_skip_silent_ms);
+            rc |= 1;
+        }
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        if (opts.scan_skip_silent_ms != 0) {
+            DSD_FPRINTF(stderr, "FAIL: an omitted scan_skip_silent_ms kept %d\n", opts.scan_skip_silent_ms);
+            rc |= 1;
+        }
+    }
+
+    /* Each refused value follows a valid one in the same section, which stays, with a warning naming the key. */
+    for (const char* value : {"1", "9", "501", "-10", "abc", "5e1", "50ms", "99999999999"}) {
+        char ini[128];
+        DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = 50\nscan_skip_silent_ms = %s\n", value);
+        dsdneoUserConfig cfg{};
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        g_log_text[0] = '\0';
+        const int load_rc = dsd_user_config_load(path, &cfg);
+        (void)remove(path);
+        if (load_rc != 0 || cfg.trunk_scan_skip_silent_ms != 50) {
+            DSD_FPRINTF(stderr, "FAIL: scan_skip_silent_ms = %s was not refused (%d)\n", value,
+                        cfg.trunk_scan_skip_silent_ms);
+            rc |= 1;
+        }
+        if (!strstr(g_log_text, "scan_skip_silent_ms")) {
+            DSD_FPRINTF(stderr, "FAIL: scan_skip_silent_ms = %s refused without a warning (log: '%s')\n", value,
+                        g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 static int
 load_config_text(const char* ini, dsdneoUserConfig* cfg) {
     char path[DSD_TEST_PATH_MAX];
@@ -4953,6 +5065,78 @@ test_recording_rdio_analog_roundtrip(void) {
         if (loaded != 0 || kept != 77 || strstr(g_log_text, c.key) == nullptr) {
             DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", c.key, c.value, kept,
                         g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #888: [recording] rdio_unknown_talkgroup loads, reaches dsd_opts, and saves back; 0 (the default) is not
+   written, and loads as 0. A value outside 0..2147483647, or not a whole number, is refused with a warning and the
+   value already loaded stays: never clamped. */
+int
+test_recording_rdio_unknown_talkgroup_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg{};
+    if (load_config_text("[recording]\nrdio_unknown_talkgroup = 2147483647\n", &cfg) != 0
+        || cfg.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup did not load (%d)\n", cfg.rdio_unknown_talkgroup);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    if (opts.rdio_unknown_talkgroup != 0) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup defaults to %d, want 0\n", opts.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup did not reach dsd_opts (%d)\n", opts.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("rdio_unknown_talkgroup saved", rendered, "rdio_unknown_talkgroup = 2147483647\n");
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || reloaded.rdio_unknown_talkgroup != 2147483647) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load rdio_unknown_talkgroup back\n");
+        rc |= 1;
+    }
+
+    /* 0 resets it, and a config at the default neither writes it nor loads anything but 0. */
+    if (load_config_text("[recording]\nrdio_unknown_talkgroup = 4242\nrdio_unknown_talkgroup = 0\n", &cfg) != 0
+        || cfg.rdio_unknown_talkgroup != 0) {
+        DSD_FPRINTF(stderr, "FAIL: 0 did not reset rdio_unknown_talkgroup (%d)\n", cfg.rdio_unknown_talkgroup);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (opts.rdio_unknown_talkgroup != 0 || strstr(rendered, "rdio_unknown_talkgroup") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup at 0 reached dsd_opts or the saved config\n");
+        rc |= 1;
+    }
+
+    /* Each refused value follows a valid one in the same section, which stays, with a warning naming the key. */
+    static const char* const refused[] = {"-1", "2147483648", "99999999999", "1e3", "9x"};
+    for (const char* value : refused) {
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_unknown_talkgroup = 77\nrdio_unknown_talkgroup = %s\n", value);
+        g_log_text[0] = '\0';
+        const int loaded = load_config_text(ini, &cfg);
+        if (loaded != 0 || cfg.rdio_unknown_talkgroup != 77
+            || strstr(g_log_text, "rdio_unknown_talkgroup") == nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup = %s was not refused with a warning (%d; log: '%s')\n",
+                        value, cfg.rdio_unknown_talkgroup, g_log_text);
             rc |= 1;
         }
     }
@@ -6493,6 +6677,7 @@ main(void) {
     rc |= test_recording_analog_max_gap_roundtrip();
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
+    rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();
@@ -6557,6 +6742,7 @@ main(void) {
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_skip_silent_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
+    rc |= test_scan_skip_silent_ms_roundtrip();
     rc |= test_analog_nfm_bandwidth_roundtrip();
     rc |= test_radio_input_spec();
     rc |= test_am_mode_and_bandwidth_roundtrip();

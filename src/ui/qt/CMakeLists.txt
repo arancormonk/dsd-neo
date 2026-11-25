@@ -47,6 +47,7 @@ target_sources(
         decoder_host.cpp
         decryption_profiles_model.cpp
         diagnostics_log.cpp
+        dmr_channels_model.cpp # Discussion #900
         document_import_transport.cpp
         document_save_transport.cpp
         imported_files_model.cpp
@@ -89,6 +90,7 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
+        local_day_watch.cpp # Issue #902
         map_tile_cache.cpp # Issue #800
         map_tile_http.cpp # Issue #800
         map_tile_worker.cpp # Issue #800
@@ -118,6 +120,7 @@ qt_add_resources(
         qml/qmldir
         qml/Theme.qml
         qml/Navigation.qml
+        qml/LineBoxes.qml
         qml/NavigationLayer.qml
         qml/FocusFrame.qml
         qml/IconButton.qml
@@ -204,6 +207,8 @@ qt_add_resources(
         qml/ActionMenu.qml
         qml/MonitorScreen.qml
         qml/NetworkSheet.qml
+        qml/ChannelsSheet.qml
+        qml/ChannelEditSheet.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml

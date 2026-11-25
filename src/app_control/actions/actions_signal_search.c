@@ -11,9 +11,11 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -22,6 +24,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "../command_dispatch.h"
+#include "../commands_internal.h"
 
 /* How long one lock must be seen held before it becomes a detection's tone: longer than the brief locks a voice's
    talk-off, a 150.0/151.4 Hz neighbour read or the old channel's tone after a retune make (issue #802 B3). */
@@ -86,6 +89,56 @@ format_confirmed_access(dsd_signal_search_hit* hit) {
     }
 }
 
+/* The access code a checked note carried for the hit (issue #748 B14): the latest checked frame's code, so neither the
+   access the hit last carried nor the call record of an older call still running (format_confirmed_access()) stands
+   over it; DSD_ACCESS_CODE_NONE withdraws the code. */
+static void
+format_noted_access(dsd_signal_search_hit* hit) {
+    if (hit->access_noted) {
+        /* A kind with no format (DSD_ACCESS_CODE_NONE) leaves the text empty. */
+        (void)dsd_app_access_code_format(hit->access_kind, hit->access_value, DSD_APP_ACCESS_CODE_SHORT, hit->access,
+                                         sizeof(hit->access));
+    }
+}
+
+/* The M17 CAN the received identity holds: a checked LSF of the current reception noted it (dsd_rxid_note_access(),
+   before its search note and the call it publishes), and a sync of another family drops it (dsd_rxid_note_sync()).
+   1 with @p can set, else 0. */
+static int
+received_m17_can(uint16_t* can) {
+    const dsd_received_identity* const id = &observer.state->rx_id;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_M17 || (id->valid & DSD_RXID_ACCESS) == 0U
+        || id->access_kind != (uint8_t)DSD_ACCESS_CODE_CAN) {
+        return 0;
+    }
+    *can = id->access;
+    return 1;
+}
+
+/* An M17 detection's CAN (issue #748) shows only while the received identity holds that same CAN, whichever source
+   names it: the text the hit last carried, an active call record's service options (format_confirmed_access()) or the
+   carried note. It is judged on each live publication made while the decoder is on M17; a note naming another CAN is
+   not applied, and a note of DSD_ACCESS_CODE_NONE still withdraws the code. The ended publication, and one made while
+   the decoder is on another protocol, keep the text the hit last carried. */
+static void
+judge_m17_can(dsd_signal_search_hit* hit) {
+    if (hit->ended || !sync_is_hit_protocol(hit)) {
+        return;
+    }
+    uint16_t held = 0;
+    const int has = received_m17_can(&held);
+    if (hit->access_noted && (hit->access_kind != (uint8_t)DSD_ACCESS_CODE_CAN || (has && hit->access_value == held))) {
+        format_noted_access(hit);
+    }
+    char text[sizeof(hit->access)];
+    if (hit->access[0] != '\0'
+        && (!has
+            || !dsd_app_access_code_format(DSD_ACCESS_CODE_CAN, held, DSD_APP_ACCESS_CODE_SHORT, text, sizeof(text))
+            || strcmp(text, hit->access) != 0)) {
+        hit->access[0] = '\0';
+    }
+}
+
 /* Watch the received tone on a live publication of the hit. A lock continues the candidate only as the same lock of
    the same reception (its generation and lock epoch), so a tone lost and found again, or replaced, between two
    publications, which may be seconds apart, starts its time over. Anything but a lock ends the candidate and keeps the
@@ -141,17 +194,27 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
         publish_store(&copy, NULL);
         return;
     }
+    /* A TETRA detection's access code is the coordinator's, from the TETRA decoder's own gate, and a withdrawal clears
+       it there for the rest of the visit (issue #748): this neither reads one nor carries the one it had. */
+    const int coordinator_access = dsd_engine_signal_search_protocol_is_tetra(hit->protocol);
     if (hit->session_id == observer.last.session_id && hit->hit_id == observer.last.hit_id
         && strcmp(hit->protocol, observer.last.protocol) == 0) {
-        DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
+        if (!coordinator_access) {
+            DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
+        }
         DSD_MEMCPY(hit->tone, observer.last.tone, sizeof(hit->tone));
     } else {
         DSD_MEMSET(&observer.tone, 0, sizeof(observer.tone));
     }
     /* A periodic refresh can follow an unconfirmed sync or a damaged frame. Read
        decoded fields only in the synchronous, protocol-confirmed publication. */
-    if (changed && !hit->ended && hit->confirmed) {
+    if (changed && !hit->ended && hit->confirmed && !coordinator_access) {
         format_confirmed_access(hit);
+    }
+    if (dsd_engine_signal_search_family_matches(hit->protocol, DSD_SYNC_M17_LSF_POS)) {
+        judge_m17_can(hit);
+    } else {
+        format_noted_access(hit);
     }
     /* The ended publication keeps the tone the hit last carried. */
     if (!hit->ended) {
@@ -185,10 +248,11 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     observer.opts = opts;
     observer.state = state;
     char error[192] = "";
-    if (dsd_engine_signal_search_start(opts, state, &config, publish_search, NULL, error, sizeof(error))) {
+    if (dsd_engine_signal_search_start_with_commit(opts, state, &config, publish_search, NULL,
+                                                   dsd_app_signal_search_take_back_scan_resume, NULL, error,
+                                                   sizeof(error))) {
         dsd_signal_search_status status = {0};
         dsd_app_signal_search_status_get(&status, NULL, 0);
-        const uint64_t revision = status.revision + 1;
         if (!dsd_engine_signal_search_active(state)) {
             /* No coordinator owns the tuner: the error is for display, and session teardown retires it. */
             DSD_MEMSET(&status, 0, sizeof(status));
@@ -196,8 +260,10 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
             status.phase = DSD_SEARCH_ERROR;
             status.owned = 0;
         }
-        /* A rejected restart of a paused session leaves that coordinator, its phase and its ownership as they were. */
-        status.revision = revision;
+        /* A rejected restart of a paused session leaves that coordinator, its phase and its ownership as they were. Its
+           revision is the shared one the coordinator takes too, so the coordinator's next publication is new to a
+           frontend that skips a revision it has read (issue #748 B11). */
+        status.revision = dsd_signal_search_status_revision_next();
         DSD_SNPRINTF(status.message, sizeof(status.message), "%s", error);
         dsd_app_signal_search_publish(&status, NULL, NULL);
         return 2;

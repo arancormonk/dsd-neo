@@ -321,6 +321,10 @@ int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t ne
  * external scanner's move to another channel may be the only sign of) and a record a sync of another protocol dropped
  * name none until fresh checked evidence. */
 uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
+/** The DMR trunking system (dsd_rxid_dmr_trunk) the record's DMR trunking parts (site text, network and site numbers,
+ * brand, system code, Capacity Max marker, rest LSN, free LCN) name now: NONE when the record is not DMR's or none of
+ * them is valid. */
+uint8_t dsd_rxid_dmr_trunk_named(const dsd_state* state);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */
 void dsd_rxid_note_dmr_ras(dsd_state* state);
@@ -362,6 +366,9 @@ void dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la);
 /** A checked SYSINFO named another cell of the same network and colour code (another main carrier or location area):
  * the last cell's location area and control-channel frequency are dropped, before the SYSINFO's own are noted. */
 void dsd_rxid_note_tetra_other_cell(dsd_state* state);
+/** A checked SYSINFO names no main carrier a frequency can be given for (no CA main carrier, band 0, or a band with no
+ * base frequency): the control-channel frequency the cell's last SYSINFO named is dropped, the rest kept. */
+void dsd_rxid_note_tetra_no_main_carrier(dsd_state* state);
 /** A checked direct mode burst: the carrier belongs to no trunked network, so a TETRA record is dropped. */
 void dsd_rxid_note_tetra_direct_mode(dsd_state* state);
 

@@ -15,6 +15,39 @@ extern "C" {
 int processTetraFrame(dsd_opts* opts, dsd_state* state);
 int processTetraSBFrame(dsd_opts* opts, dsd_state* state);
 
+/* What the last TETRA burst proved about the channel (issue #890), strongest first among what its blocks reached:
+ *
+ * - DMO_SPEECH: direct mode speech whose CRC passed and that re-encodes like speech (EN 300 395-2 clauses 5.5, 5.6).
+ * - DMO_SERVICE: a direct mode PDU of a call or of short data whose CRC passed and that was read in the clear: DM-SETUP,
+ *   DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, or DM-SDS DATA / UDATA whose FCS did not fail, in a DSB's
+ *   SCH/H or a DNB's DMAC-DATA (EN 300 396-3 clause 9.4).
+ * - DMO_OPAQUE: a DMAC-SYNC whose SCH/H passed its CRC under DM-2-C, which encrypts its message type (EN 300 396-3
+ *   clause 8.5.3): an encrypted direct mode transmission, or a reservation, that no one can tell apart.
+ * - TMO: a trunked mode block whose CRC passed: a BSCH (the home cell's or another's), a downlink MAC block, an uplink
+ *   SCH/HU or MAC block, or trunked speech.
+ * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, whichever
+ *   decision decoded its SCH/S), a presence signal, or a direct mode PDU that sets up no call
+ *   (DM-RESERVED and the other reservation, end and request signalling).
+ * - NONE: no CRC passed, or the burst was read across a carrier boundary or cut by an input interruption.
+ *
+ * A burst is one or the other mode, so the order only ranks the blocks of one burst. */
+typedef enum {
+    DSD_TETRA_BURST_PROOF_NONE = 0,
+    DSD_TETRA_BURST_PROOF_PROFILE,
+    DSD_TETRA_BURST_PROOF_TMO,
+    DSD_TETRA_BURST_PROOF_DMO_OPAQUE,
+    DSD_TETRA_BURST_PROOF_DMO_SERVICE,
+    DSD_TETRA_BURST_PROOF_DMO_SPEECH,
+} dsd_tetra_burst_proof;
+
+/* What the last burst processTetraFrame() or processTetraSBFrame() closed proved (dsd_tetra_burst_proof), NONE after a
+ * carrier reset or for a session without TETRA state. Decoder thread. */
+dsd_tetra_burst_proof tetra_burst_proof(const dsd_state* state);
+
+/* 1 for a proof of checked content on the channel, which a -Y row holds on (DSD_CONTENT_EVIDENCE_PROVEN): TMO and every
+ * DMO proof; 0 for PROFILE and NONE. */
+int tetra_burst_proof_is_content(dsd_tetra_burst_proof proof);
+
 /* Run the BSCH-set TDMA clock to the slot of the normal downlink burst being decoded; call it straight after the
  * burst's training sequence. */
 void tetra_tdma_advance_ndb(dsd_state* state);
@@ -34,6 +67,22 @@ void tetra_confirm_reset(dsd_state* state);
  * its own DSB says otherwise. The engine calls it at every carrier boundary and no-carrier pass, and the trunking state
  * machine when a retune completes. A session without TETRA state is left without one; NULL is ignored. */
 void tetra_forget_carrier(dsd_state* state);
+
+/* Start a scan's visit to a TETRA row cold (issue #890): the engine calls it at every landing of a scan session that
+ * holds the TETRA state (dsd_state::tetra_ext_scan_held), a TETRA row after another TETRA row included, and when the
+ * session lets the state go; a Signal search's TETRA visit (issue #748) gets the same at its landing and departure. In
+ * this order it clears what the last visit's bursts proved (a Signal search's evidence among it, src/protocol/tetra/
+ * tetra_search.h), the direct mode call, then
+ * the network, each part once (tetra_bsch_forget_network(): the D-MM STATUS, the trunked calls kept with their
+ * canonical calls, the short data being rebuilt, its cell with SYSINFO and the TM-SDUs, then MCC, MNC, colour code and
+ * scrambling seed, net_known last), the carrier as
+ * tetra_forget_carrier() does (DM colour code and direct mode included), the trunking state machine's staged and
+ * in-flight work (tetra_sm_init()), the carrier's polarity with the frame sync's burst capture, and the frontends'
+ * publication. It keeps the state allocated with the speech decoder's storage, the operator air keys (which live in
+ * dsd_state) and the KSG evidence kept per network (tetra_state_t::air_ksg), which only that network's own identity
+ * reaches again; a --tetra-net preset seeds the identity again at the next burst. Never creates TETRA state; NULL
+ * @p state is ignored, and @p opts may be NULL. */
+void tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

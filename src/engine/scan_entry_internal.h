@@ -74,6 +74,11 @@ dsd_scan_entry_tally_end(const dsd_scan_entry_tally* tally) {
    demodulator runs, the front end takes at @p dsp_rate_hz, and that something demodulates. channel_scan.c. */
 int dsd_engine_channel_scan_row_width_fits(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz);
 
+/* Why -Y row @p row is skipped at every visit as a typed tetra-dmo row whose TETRA chain cannot run at @p dsp_rate_hz
+   (issue #890 D5), DSD_SCAN_ENTRY_OK for every other row. channel_scan.c. */
+dsd_scan_entry_reason dsd_engine_channel_scan_row_tetra_reason(const dsd_opts* opts, const dsd_state* state, int row,
+                                                               int dsp_rate_hz);
+
 /* Walk the trunk-scan targets on @p hz into @p tally, in list order; nothing without a coordinator. trunk_scan.c. */
 void dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
                                       dsd_scan_entry_tally* tally);

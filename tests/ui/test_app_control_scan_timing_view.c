@@ -572,6 +572,9 @@ test_quiet_status_is_the_phrase(void) {
         {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH, "No check: width",
          "Skip silent channels can't check this channel with no NFM channel width set. Set a width to have it checked. "
          "Normal scan timing applies."},
+        /* Issue #890: a TETRA DMO row or target, whose class has no check at all. */
+        {DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE, "No check: mode",
+         "Skip silent channels can't check TETRA DMO channels. Normal scan timing applies."},
     };
 
     static dsd_opts opts;
@@ -633,7 +636,7 @@ test_quiet_status_only_where_published(void) {
     publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NONE);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
-    publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, (uint8_t)(DSD_SCAN_QUIET_REASON_NO_WIDTH + 1));
+    publish_quiet(state, DSD_SCAN_QUIET_STATUS_NO_CHECK, (uint8_t)(DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE + 1));
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_quiet(&view, "Idle dwell", DSD_SCAN_QUIET_STATUS_NONE, DSD_SCAN_QUIET_REASON_NONE, NULL);
     publish_quiet(state, (uint8_t)(DSD_SCAN_QUIET_STATUS_NO_CHECK + 1), DSD_SCAN_QUIET_REASON_TUNER);

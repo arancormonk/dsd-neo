@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 Item {
     id: root
@@ -72,8 +73,13 @@ Item {
         id: systemsStub
         property var byUid: ({"uid-a": {uid: "uid-a", name: "Warehouse"}, "uid-b": {uid: "uid-b", name: "Dock", avoidSite: true}})
         function getByUid(uid) { return byUid[uid] || {}; }
-        // A fixed clock: local noon on 2026-11-09, so an export's suggested name is known.
-        function realtimeNowMs() { return new Date(2026, 10, 9, 12, 0, 0).getTime(); }
+        // A fixed clock: local noon on 2026-11-09, so an export's suggested name is known. A case may move it.
+        readonly property double noon: new Date(2026, 10, 9, 12, 0, 0).getTime()
+        property double nowMs: noon
+        function realtimeNowMs() { return nowMs; }
+        // Issue #902: the local day, as savedSystems.localDay notifies it: 2026-11-09.
+        readonly property var firstDay: ({startMs: new Date(2026, 10, 9).getTime(), revision: 1})
+        property var localDay: firstDay
     }
     TestCase {
         name: "SignalSearch"
@@ -118,6 +124,12 @@ Item {
             // A test that renames the range restores it even when it fails.
             if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
                 model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
+            // Issue #902: the clock, the day and the zone a case moved end with
+            // it, before the next case's _data() rows are built.
+            loader.item.systems = systemsStub;
+            systemsStub.nowMs = systemsStub.noon;
+            systemsStub.localDay = systemsStub.firstDay;
+            testContext.resetLocalDay();
         }
         function init() {
             verify(loader.item !== null);
@@ -518,6 +530,168 @@ Item {
             compare(findChild(editor, "searchStepNumerator").text, "6250");
             compare(findChild(editor, "searchStepDenominator").text, "1");
             compare(preset.currentIndex, 2);
+        }
+        // Issue #748: TETRA is the eleventh choice, stored as 10. Picking it
+        // fills in a 25 kHz channel and a four-second probe; both stay
+        // editable, and a range opened again keeps the values it was saved
+        // with. Another choice changes neither.
+        function test_range_editor_offers_tetra_with_presets() {
+            var ranges = model.ranges;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            var digital = findChild(editor, "searchRangeDigital");
+            var width = findChild(editor, "searchRangeBandwidth");
+            var probe = findChild(editor, "searchRangeProbe");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            compare(digital.count, 11);
+            compare(digital.textAt(9), "M17");
+            compare(digital.textAt(10), "TETRA");
+            compare(width.text, "16000");
+            compare(probe.text, "3");
+            digital.currentIndex = 10;
+            digital.activated(10);
+            compare(width.text, "25000");
+            compare(probe.text, "4");
+            compare(editor.formValue().digital, 10);
+            width.text = "20000";
+            probe.text = "6";
+            findChild(editor, "searchRangeSave").activate();
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].digital, 10);
+            compare(String(model.ranges[0].bandwidth), "20000");
+            compare(String(model.ranges[0].probe), "6");
+            editor.openFor(0, model.ranges[0]);
+            waitForRendering(editor);
+            compare(digital.currentIndex, 10);
+            compare(width.text, "20000", "an opened TETRA range keeps its own width");
+            compare(probe.text, "6", "and its own probe");
+            digital.currentIndex = 3;
+            digital.activated(3);
+            compare(width.text, "20000", "another choice leaves the width alone");
+            compare(probe.text, "6");
+            editor.visible = false;
+            model.ranges = ranges;
+        }
+        // The hint under the choice says what a TETRA range changes, and wraps
+        // whole inside the sheet at the narrowest phone and the largest text.
+        function test_range_editor_tetra_hint_wraps_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411}, {tag: "360 dp, largest text", scale: 1.6, width: 360}];
+        }
+        function test_range_editor_tetra_hint_wraps(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var hint = findChild(editor, "searchDigitalHint");
+            scrollTo(editor, hint);
+            verify(hint.text.indexOf("Auto does not include TETRA.") >= 0);
+            verify(hint.text.indexOf("72 kHz instead of 48 kHz") >= 0);
+            verify(hint.text.indexOf("The default bandwidth in Settings does not apply to Signal search.") >= 0);
+            verify(hint.lineCount > 2, "the hint wraps");
+            verify(!hint.truncated);
+            verify(hint.contentWidth <= hint.width + 0.5, "no line runs past the hint");
+            verify(hint.height >= hint.contentHeight - 0.5, "no line is clipped");
+            var panel = hint.parent;
+            verify(hint.mapToItem(panel, 0, 0).x + hint.width <= panel.width + 0.5, "the hint stays inside the sheet");
+            compare(hint.Accessible.name, hint.text);
+            editor.visible = false;
+        }
+        // Issue #748: the editor's pairs of fields (Start and End, the step's
+        // numerator and denominator, the probe and the longest visit) sit side
+        // by side while half the form shows each field's whole value, and one
+        // per row once it would not. At the narrowest phone with the largest
+        // text, Start and End had scrolled their leading digits out of sight
+        // ("0.000000"); a placeholder is shown whole too.
+        function test_range_editor_pairs_show_whole_values_data() {
+            return [{tag: "desktop", scale: 1.0, width: 1024, stacked: false},
+                {tag: "411 dp, default text", scale: 1.0, width: 411, stacked: false},
+                {tag: "360 dp, default text", scale: 1.0, width: 360, stacked: false},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, stacked: true}];
+        }
+        function test_range_editor_pairs_show_whole_values(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var start = findChild(editor, "searchRangeStart");
+            var end = findChild(editor, "searchRangeEnd");
+            var visit = findChild(editor, "searchRangeVisit");
+            var pairs = [[start, end],
+                [findChild(editor, "searchStepNumerator"), findChild(editor, "searchStepDenominator")],
+                [findChild(editor, "searchRangeProbe"), visit]];
+            var form = start.parent.parent;
+            function check(what) {
+                for (var pair of pairs) {
+                    for (var field of pair) {
+                        var at = field.mapToItem(form, 0, 0);
+                        verify(at.x >= -0.5 && at.x + field.width <= form.width + 0.5, field.label + " stays inside the form" + what);
+                        verify(field.input.contentWidth + field.input.cursorRectangle.width <= field.input.width + 0.5,
+                            field.label + " shows \"" + field.text + "\" whole" + what);
+                    }
+                    var side = Math.abs(pair[0].mapToItem(form, 0, 0).y - pair[1].mapToItem(form, 0, 0).y) < 0.5;
+                    if (side)
+                        verify(pair[1].mapToItem(form, 0, 0).x >= pair[0].mapToItem(form, 0, 0).x + pair[0].width, "side by side, apart");
+                    else
+                        verify(pair[1].mapToItem(form, 0, 0).y >= pair[0].mapToItem(form, 0, 0).y + pair[0].height, "one per row, apart");
+                }
+            }
+            check("");
+            compare(Math.abs(start.mapToItem(form, 0, 0).y - end.mapToItem(form, 0, 0).y) >= 0.5, data.stacked, "Start and End stacked");
+            if (!data.stacked) {
+                for (var pair of pairs)
+                    compare(pair[0].width, pair[1].width, "two equal halves");
+                compare(start.width, (form.width - 12) / 2, "the halves of the form, as before");
+            }
+            // A four-digit frequency, as a wide-band receiver takes, and the
+            // longest visit's placeholder.
+            start.text = "1240.000000";
+            end.text = "1300.000000";
+            visit.text = "";
+            waitForRendering(editor);
+            check(" (four digits)");
+            var placeholder = null;
+            for (var child of visit.children) {
+                if (child.text === visit.placeholderText && child.visible)
+                    placeholder = child;
+            }
+            verify(placeholder !== null, "the visit shows its placeholder");
+            verify(!placeholder.truncated, "\"" + visit.placeholderText + "\" shown whole");
+            editor.visible = false;
+        }
+        // Issue #748: the editor's check boxes take the form's width and wrap
+        // their label inside it. At the narrowest phone with the largest text,
+        // "Also require a minimum RF level" had run past the sheet and been cut
+        // at "minimum"; the Airspy one the same.
+        function test_range_editor_check_boxes_wrap_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411, source: "usb", name: "searchRangeMinimumSwitch", lines: 1},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, source: "usb", name: "searchRangeMinimumSwitch", lines: 2},
+                {tag: "Airspy, 411 dp, default text", scale: 1.0, width: 411, source: "airspy", name: "searchRangeAirspyOverride", lines: 1},
+                {tag: "Airspy, 360 dp, largest text", scale: 1.6, width: 360, source: "airspy", name: "searchRangeAirspyOverride", lines: 2}];
+        }
+        function test_range_editor_check_boxes_wrap(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            loader.item.sourceType = data.source;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var box = findChild(editor, data.name);
+            verify(box.visible);
+            scrollTo(editor, box);
+            var form = box.parent;
+            var label = box.contentItem;
+            verify(box.mapToItem(form, 0, 0).x + box.width <= form.width + 0.5, "the check box stays inside the form");
+            verify(label.contentWidth + label.leftPadding + label.rightPadding <= label.width + 0.5, "no line runs past the label");
+            verify(label.height >= label.contentHeight + label.topPadding + label.bottomPadding - 0.5, "no line is cut off");
+            verify(box.height >= label.y + label.height - 0.5, "the box holds every line");
+            compare(label.lineCount, data.lines);
+            editor.visible = false;
         }
         function test_controls_are_tagged_and_save_is_a_snapshot() {
             findChild(loader.item, "searchSkip").clicked();
@@ -1341,8 +1515,11 @@ Item {
             compare(cue.marks, marks + 1);
             verify(cue.visible);
         }
+        // Each action as the menu offers it now: `enabled` may be a function
+        // the menu evaluates (issue #902 B8), so its own verdict is read.
         function menuTexts() {
-            return findChild(loader.item, "searchDetectionMenu").actions.map(function (a) { return a.text + (a.enabled === false ? " (disabled)" : ""); });
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            return menu.actions.map(function (a, i) { return a.text + (menu.actionEnabled(i) ? "" : " (disabled)"); });
         }
         function menuItem(name) {
             var menu = findChild(loader.item, "searchDetectionMenu");
@@ -1445,6 +1622,51 @@ Item {
             menuItem("searchActionExplore").activate();
             compare(explored.signalArguments[1][0].frequency, 462575000);
             model.history = [];
+        }
+        // Issue #748 B18 and B6: a detection made on a receiver the app cannot
+        // open, or confirmed as a protocol this build does not decode (its
+        // model row carries the reason), is neither explored nor saved: both
+        // actions are disabled and say why, from its history row and from the
+        // Now panel, whose Save as system is disabled too.
+        function test_unopenable_receiver_disables_explore_and_save_data() {
+            return [{tag: "SoapySDR receiver", reason: "Found on a SoapySDR receiver, which this app cannot open", refused: {inputSpec: "soapy:driver=rtlsdr"}},
+                {tag: "unknown protocol", reason: "This version cannot decode Tetrapol", refused: {inputSpec: "rtl:0:462.575M", confirmed: true, protocol: "Tetrapol"}}];
+        }
+        function test_unopenable_receiver_disables_explore_and_save(data) {
+            var screen = loader.item;
+            var reason = data.reason;
+            model.history = [historyHit(Object.assign({handoffRefusal: reason}, data.refused))];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            compare(menuTexts(), ["Explore here (disabled)", "Save as system (disabled)", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]);
+            var menu = findChild(screen, "searchDetectionMenu");
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            compare(findChild(menu, "actionMenuDescription1").text, reason);
+            verify(!menuItem("searchActionExplore").enabled);
+            verify(!menuItem("searchActionSave").enabled);
+            menuItem("searchActionExplore").activate();
+            menuItem("searchActionSave").activate();
+            compare(explored.count, 0);
+            compare(saved.count, 0);
+            menu.cancel();
+            // A receiver the app opens offers both.
+            model.history = [historyHit({inputSpec: "rtl:0:462.575M", handoffRefusal: ""})];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            verify(menuItem("searchActionExplore").enabled && menuItem("searchActionSave").enabled);
+            menu.cancel();
+            model.history = [];
+
+            var hit = model.status.hit;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, data.refused, {handoffRefusal: reason})});
+            var save = findChild(screen, "searchSave");
+            verify(save.visible && !save.enabled);
+            findChild(screen, "searchMore").clicked();
+            compare(menuTexts(), ["Explore here (disabled)"]);
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            menu.cancel();
+            model.status = Object.assign({}, model.status, {hit: hit});
+            verify(save.enabled);
         }
         // The Now panel's More leaves for the current detection: Explore here
         // and the saved systems it matched; the rest are its own buttons.
@@ -2103,7 +2325,7 @@ Item {
         }
         // The first characters of each line @p words wrap to at @p width in
         // @p text's font, read from a TextEdit laid out the same way (a Text gives
-        // no line's characters), and how many lines that is.
+        // no line's characters), each line's whole text, and how many lines that is.
         function renderedLineStarts(text, words, width) {
             var mirror = Qt.createQmlObject("import QtQuick; TextEdit { readOnly: true; visible: false; textFormat: TextEdit.PlainText }", root);
             mirror.width = width;
@@ -2111,17 +2333,21 @@ Item {
             mirror.wrapMode = text.wrapMode;
             mirror.text = words;
             var starts = [];
+            var at = [];
             var lastY = -1;
             for (var i = 0; i < mirror.length; ++i) {
                 var y = mirror.positionToRectangle(i).y;
                 if (y > lastY + 0.5) {
                     starts.push(mirror.getText(i, Math.min(mirror.length, i + 2)));
+                    at.push(i);
                     lastY = y;
                 }
             }
+            // Each drawn line's whole text.
+            var texts = at.map(function (from, k) { return mirror.getText(from, k + 1 < at.length ? at[k + 1] : mirror.length); });
             var lines = mirror.lineCount;
             mirror.destroy();
-            return {starts: starts, lines: lines};
+            return {starts: starts, texts: texts, lines: lines};
         }
         // A Recent detections row's details wrap only between values, at every
         // width from the narrowest row (360 dp, the largest text) up: a value that
@@ -2370,6 +2596,7 @@ Item {
             }
             screen.systems = systemsStub;
             verify(threw, "no clock to name the file by");
+            compare(exportCalls("prepare"), "[]", "the model took no rows (issue #902 B5)");
             verify(noRequest(), "no picker");
             compare(screen.exportToken, 0);
             verify(exportButton("detections").enabled && exportButton("avoids").enabled, "nothing pending");
@@ -2687,6 +2914,246 @@ Item {
             screen.visible = true;
             wait(0);
             compare(findChildren(screen, "searchHistoryRow").filter(function (row) { return row.visible; }).length, 5);
+        }
+        // ---- Issue #902: when each detection was found ----
+        function at(y, m, d, hh, mm, ss) {
+            return new Date(y, m - 1, d, hh, mm, ss).getTime();
+        }
+        function nextDay() {
+            return {startMs: new Date(2026, 10, 10).getTime(), revision: 2};
+        }
+        // The found time leads the verdict: a clock time on the screen's day,
+        // with its date on any other, before or after it. A row with no time
+        // (missing, 0 or less, not finite) reads as it always did.
+        function test_history_row_says_when_it_was_found_data() {
+            return [
+                {tag: "today", started: at(2026, 11, 9, 14, 32, 5), text: "14:32:05 · RF only · ended", found: "14:32:05"},
+                {tag: "today, confirmed", started: at(2026, 11, 9, 0, 0, 0), confirmed: true, text: "00:00:00 · DMR · confirmed · ended", found: "00:00:00"},
+                {tag: "another day", started: at(2026, 11, 8, 9, 5, 7), text: "2026-11-08 09:05:07 · RF only · ended", found: "2026-11-08 09:05:07"},
+                {tag: "later, after a clock correction", started: at(2026, 11, 10, 0, 0, 1), text: "2026-11-10 00:00:01 · RF only · ended", found: "2026-11-10 00:00:01"},
+                {tag: "zero", started: 0, text: "RF only · ended", found: ""},
+                {tag: "negative", started: -1000, text: "RF only · ended", found: ""},
+                {tag: "not a number", started: NaN, text: "RF only · ended", found: ""},
+                {tag: "infinite", started: Infinity, text: "RF only · ended", found: ""},
+                {tag: "missing", text: "RF only · ended", found: ""}
+            ];
+        }
+        function test_history_row_says_when_it_was_found(data) {
+            var extra = data.confirmed ? {confirmed: true, protocol: "DMR"} : {};
+            if (data.started !== undefined)
+                extra.started = data.started;
+            model.history = [historyHit(extra)];
+            wait(0);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            compare(detail.fullText, data.text);
+            compare(detail.text.replace(/\u00a0/g, " "), data.text, "drawn as written, the time one value");
+            compare(detail.Accessible.name, data.text, "the detail's name carries the time");
+            compare(findChild(loader.item, "searchHistoryActions").accessibleName,
+                    data.found.length ? "Actions for 462.5750 MHz, " + data.found : "Actions for 462.5750 MHz");
+            model.history = [];
+        }
+        // With no saved systems to say the day there is no today: every time has its date.
+        function test_history_row_without_a_day_has_the_date() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            loader.item.systems = null;
+            compare(loader.item.shownDay, null);
+            compare(findChild(loader.item, "searchHistoryDetail").fullText, "2026-11-09 14:32:05 · RF only · ended");
+            loader.item.systems = systemsStub;
+            compare(findChild(loader.item, "searchHistoryDetail").fullText, "14:32:05 · RF only · ended");
+            model.history = [];
+        }
+        // A day change on screen re-texts the row in place: no row is rebuilt.
+        function test_history_row_follows_the_day_in_place() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            var history = repeatersIn(loader.item).filter(function (r) { return r.count === 1 && r.itemAt(0).objectName === "searchHistoryRow"; });
+            compare(history.length, 1);
+            var row = history[0].itemAt(0);
+            var changes = 0;
+            var note = function () { changes++; };
+            history[0].itemAdded.connect(note);
+            history[0].itemRemoved.connect(note);
+            systemsStub.localDay = nextDay();
+            history[0].itemAdded.disconnect(note);
+            history[0].itemRemoved.disconnect(note);
+            compare(changes, 0, "no row rebuilt");
+            compare(history[0].itemAt(0), row);
+            compare(findChild(row, "searchHistoryDetail").fullText, "2026-11-09 14:32:05 · RF only · ended");
+            compare(findChild(row, "searchHistoryActions").accessibleName, "Actions for 462.5750 MHz, 2026-11-09 14:32:05");
+            model.history = [];
+        }
+        // Hidden, a row keeps its words, its height and the reader's place
+        // through a midnight and a recordings change (B7: three recordings to
+        // none shrank a hidden row); both land on show.
+        function test_hidden_screen_freezes_the_day_and_counts_data() {
+            return [{tag: "searching", active: true}, {tag: "idle", active: false}];
+        }
+        function test_hidden_screen_freezes_the_day_and_counts(data) {
+            var screen = loader.item;
+            screen.sessionActive = data.active;
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            var rows = [historyHit({started: at(2026, 11, 9, 14, 32, 5), site: "TIII Small · Net 12 · Site 3 · SYS 1183"})];
+            for (var i = 1; i < 5; ++i)
+                rows.push(historyHit({id: String(60 + i), recordingKey: "17:" + (60 + i)}));
+            var avoids = [];
+            for (i = 0; i < 40; ++i)
+                avoids.push(150000000 + i * 25000);
+            model.history = rows;
+            model.avoids = avoids;
+            var scroll = findChild(screen, "searchScroll");
+            waitForRendering(screen);
+            var row = findChildren(screen, "searchHistoryRow")[0];
+            var detail = findChild(row, "searchHistoryDetail");
+            // The count as the run's locale writes a whole number; the time is written the one way.
+            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n" + Number(3).toLocaleString(Qt.locale(), "f", 0) + " recordings";
+            compare(detail.fullText, before);
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
+            waitForRendering(screen);
+            var place = scroll.contentY;
+            var height = row.height;
+            verify(place > 0, "the page scrolls");
+            // The recordings alone: the row keeps its line while hidden and
+            // loses it on show.
+            screen.visible = false;
+            recordings.setDetectionRecordings("17:40", []);
+            wait(20);
+            compare(findChildren(screen, "searchHistoryRow")[0], row, "the same row");
+            compare(detail.fullText, before, "hidden, the row keeps its count");
+            compare(row.height, height, "and its height");
+            compare(scroll.contentY, place, "and the reader's place");
+            screen.visible = true;
+            waitForRendering(screen);
+            var shown = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183";
+            compare(detail.fullText, shown, "shown, the count goes");
+            verify(row.height < height, "the row is shorter by its recordings line");
+            // A midnight alone: the row keeps its time while hidden and takes
+            // its date on show.
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
+            waitForRendering(screen);
+            place = scroll.contentY;
+            height = row.height;
+            screen.visible = false;
+            systemsStub.localDay = nextDay();
+            wait(20);
+            compare(findChildren(screen, "searchHistoryRow")[0], row, "the same row");
+            compare(detail.fullText, shown, "hidden, the row keeps its time");
+            compare(row.height, height, "and its height");
+            compare(scroll.contentY, place, "and the reader's place");
+            screen.visible = true;
+            waitForRendering(screen);
+            compare(detail.fullText, "2026-11-09 14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183", "shown, the date lands");
+            scroll.contentY = 0;
+            model.history = [];
+            model.avoids = [];
+        }
+        // The menu names its detection with the found time, as its row; a
+        // midnight while it is open dates it.
+        function test_detection_menu_title_follows_the_day() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            verify(menu.visible);
+            compare(menu.title, "462.5750 MHz · 14:32:05");
+            compare(menu.accessibleName, "462.5750 MHz · 14:32:05");
+            systemsStub.localDay = nextDay();
+            compare(menu.title, "462.5750 MHz · 2026-11-09 14:32:05");
+            menu.cancel();
+            // The Now panel's More, for the live detection, by the same rule.
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {started: at(2026, 11, 10, 8, 1, 2)})});
+            findChild(loader.item, "searchMore").clicked();
+            compare(menu.title, "463.5521 MHz · 08:01:02");
+            menu.cancel();
+            model.history = [];
+        }
+        // Two visits to one frequency are two rows, told apart by their times;
+        // each menu acts on its own detection.
+        function test_two_visits_on_one_frequency() {
+            model.history = [historyHit({id: "44", started: at(2026, 11, 9, 15, 1, 10)}), historyHit({id: "40", started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            var buttons = findChildren(loader.item, "searchHistoryActions");
+            compare(buttons.length, 2);
+            compare(buttons[0].accessibleName, "Actions for 462.5750 MHz, 15:01:10");
+            compare(buttons[1].accessibleName, "Actions for 462.5750 MHz, 14:32:05");
+            buttons[1].activate();
+            compare(findChild(loader.item, "searchDetectionMenu").title, "462.5750 MHz · 14:32:05");
+            menuItem("searchActionSave").activate();
+            compare(saved.count, 1);
+            compare(saved.signalArguments[0][0].id, "40");
+            compare(saved.signalArguments[0][0].session, "17");
+            buttons[0].activate();
+            compare(findChild(loader.item, "searchDetectionMenu").title, "462.5750 MHz · 15:01:10");
+            menuItem("searchActionExplore").activate();
+            compare(explored.signalArguments[0][0].id, "44");
+            model.history = [];
+        }
+        // B8: Avoid this session is for the session running as the menu
+        // opened. Once that one ends, fails or another takes its place while
+        // the menu is open, the action is disabled, says why, and sends
+        // nothing to any session.
+        function test_avoid_this_session_keeps_its_session_data() {
+            return [{tag: "replaced", change: function () { model.status = Object.assign({}, model.status, {session: "18"}); }},
+                    {tag: "ended", change: function () { loader.item.sessionActive = false; }},
+                    {tag: "failed", change: function () { model.status = Object.assign({}, model.status, {phase: 7, hit: {}}); }}];
+        }
+        function test_avoid_this_session_keeps_its_session(data) {
+            // A detection an earlier search (16) found, listed while 17 runs:
+            // the avoid is for the running search, not the detection's.
+            model.history = [historyHit({session: "16", recordingKey: "16:40"})];
+            wait(0);
+            var more = findChild(loader.item, "searchHistoryActions");
+            more.activate();
+            menuItem("searchActionAvoidSession").activate();
+            compare(model.actions.join(","), "session,17,462575000", "the session the menu opened in");
+            model.actions = [];
+            more.activate();
+            var action = menuItem("searchActionAvoidSession");
+            verify(action.enabled);
+            data.change();
+            verify(!action.enabled, "disabled once its session is gone");
+            verify(menuTexts().indexOf("Avoid this session (disabled)") >= 0, JSON.stringify(menuTexts()));
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            var index = menu.actions.findIndex(function (a) { return a.key === "avoidSession"; });
+            compare(findChild(menu, "actionMenuDescription" + index).text, "That search session has ended.");
+            verify(action.accessibleName.indexOf("That search session has ended.") > 0, action.accessibleName);
+            menu.activate(index);
+            compare(model.actions.join(","), "", "nothing sent to any session");
+            verify(menu.visible, "the disabled action keeps the menu");
+            menu.cancel();
+            model.history = [];
+        }
+        // A date on a narrow phone at the largest text stays one value: it
+        // never splits, and no line starts with a separator.
+        function test_found_date_whole_at_360_large_text() {
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            model.history = [historyHit({started: at(2026, 11, 8, 9, 5, 7), confirmed: true, protocol: "P25 Phase 1", ended: false,
+                site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", crypt: "ALG 84 · KID 0001"})];
+            waitForRendering(loader.item);
+            var row = findChild(loader.item, "searchHistoryRow");
+            var detail = findChild(row, "searchHistoryDetail");
+            verify(detail.text.indexOf("2026-11-08\u00a009:05:07\u00a0·") === 0, JSON.stringify(detail.text));
+            verify(!/[^·\n] /.test(detail.text), "a value never splits across lines");
+            verify(detail.contentWidth <= detail.width + 0.5, "nothing drawn past the line");
+            // As Qt draws it: the whole time on the first line, and no later line starting with a separator.
+            var drawn = renderedLineStarts(detail, detail.text, detail.width);
+            compare(drawn.lines, detail.lineCount, "the mirror wraps as the row does");
+            verify(drawn.texts[0].replace(/\u00a0/g, " ").indexOf("2026-11-08 09:05:07") === 0, JSON.stringify(drawn.texts));
+            for (var k = 1; k < drawn.texts.length; ++k)
+                verify(drawn.texts[k].trim().charAt(0) !== "·", "a drawn line starts with a separator: " + JSON.stringify(drawn.texts));
+            var actions = findChild(row, "searchHistoryActions");
+            verify(actions.mapToItem(row, 0, 0).x + actions.width <= row.width + 0.5, "the row's actions stay inside it");
+            model.history = [];
+        }
+        // B11: the export's day is the local date, also at 00:00 UTC, which is the day before west of UTC.
+        function test_export_name_is_the_local_date() {
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
+            systemsStub.nowMs = Date.UTC(2026, 0, 1);
+            var id = beginExport("detections");
+            compare(testContext.lastDocumentRequest().name, "Signal search detections 2025-12-31.csv");
+            testContext.answerDocumentCancelled(id);
         }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];

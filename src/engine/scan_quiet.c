@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #endif
 #include "dsd-neo/runtime/analog_channel.h"
@@ -89,9 +91,49 @@ scan_quiet_mode_classes(dsd_scan_mode mode) {
         case DSD_SCAN_MODE_DSTAR: return QUIET_CLASS_6K25;
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM: return QUIET_CLASS_ANALOG;
+        /* No class: the check has no TETRA calibration (a decided limit, issue #890), so a tetra-dmo row or target is
+           never checked and says why (DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE). */
+        case DSD_SCAN_MODE_TETRA_DMO:
         case DSD_SCAN_MODE_INHERIT: return 0U;
     }
     return 0U;
+}
+
+uint8_t
+scan_quiet_mode_dmr(const dsd_opts* opts, dsd_scan_mode mode) {
+    if (mode == DSD_SCAN_MODE_DMR) {
+        return 1U;
+    }
+    return (uint8_t)(mode == DSD_SCAN_MODE_INHERIT && opts && opts->frame_dmr ? 1U : 0U);
+}
+
+uint8_t
+scan_quiet_visit_dmr(const dsd_opts* opts, dsd_scan_mode mode) {
+    const uint32_t setting = scan_quiet_setting_windows(opts);
+    return (uint8_t)(setting != 0U && setting < SCAN_QUIET_DMR_MIN_WINDOWS ? scan_quiet_mode_dmr(opts, mode) : 0U);
+}
+
+uint32_t
+scan_quiet_setting_windows(const dsd_opts* opts) {
+    if (!opts || opts->scan_skip_silent_ms <= 0) {
+        return 0U;
+    }
+    return (uint32_t)(opts->scan_skip_silent_ms + 9) / 10U;
+}
+
+uint32_t
+scan_quiet_request_windows(uint32_t setting_windows, int dmr) {
+    if (setting_windows == 0U) {
+        return 0U;
+    }
+    return dmr && setting_windows < SCAN_QUIET_DMR_MIN_WINDOWS ? (uint32_t)SCAN_QUIET_DMR_MIN_WINDOWS : setting_windows;
+}
+
+uint32_t
+scan_quiet_request_deadline_ms(uint32_t windows) {
+    const uint32_t calibrated = 9U; /* DSD_SIGNAL_QUIET_WINDOWS, which a radio header names */
+    const uint32_t extra = windows > calibrated ? (windows - calibrated) * SCAN_QUIET_DEADLINE_PER_WINDOW_MS : 0U;
+    return SCAN_QUIET_REQUEST_DEADLINE_MS + extra;
 }
 
 /* Whether the decoder set enables a mode of the 12.5 kHz class, and of the 6.25 kHz class. */
@@ -204,10 +246,16 @@ scan_quiet_format_skip(char* out, size_t out_size, const char* name, int row, ui
 }
 
 uint8_t
-scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, int decoder_set) {
+scan_quiet_facts_reason(const dsd_opts* opts, const scan_quiet_eligibility* e, dsd_scan_mode mode) {
     if (!e || (e->classes != 0U && !((e->classes & QUIET_CLASS_ANALOG) && e->analog_width_hz == 0U))) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
+    /* A class the check has no calibration for: nothing set on the row would give it one, so neither the width's text
+       nor the decoders' applies (issue #890). */
+    if (mode == DSD_SCAN_MODE_TETRA_DMO) {
+        return (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE;
+    }
+    const int decoder_set = mode == DSD_SCAN_MODE_INHERIT;
     /* No class from the decoder set itself: a mode with no known width, the encoder, or no mode of a class. An analog
        session, or a digital set whose -8 monitor has no width, is the width's. */
     if (decoder_set && opts && !dsd_opts_is_analog_family(opts)
@@ -387,6 +435,12 @@ quiet_format_channel_warn(char* out, size_t out_size, uint8_t reason, uint8_t de
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES) {
         return quiet_format_modes_warn(out, out_size, detail, who, mhz);
     }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check %s %s MHz: it has no check for TETRA DMO "
+                            "channels. Normal scan timing applies.\n",
+                            who, mhz);
+    }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH && (detail & SCAN_QUIET_WARN_MONITOR)) {
         return DSD_SNPRINTF(out, out_size,
                             "WARNING: scan: silent channel skip cannot check %s %s MHz: the -8 analog monitor beside "
@@ -553,6 +607,35 @@ quiet_revisions_equal(const scan_quiet_revisions* a, const scan_quiet_revisions*
            && a->am_width_hz == b->am_width_hz;
 }
 
+/* The shortened readings a WARN line was logged for (issue #834 follow-up, D3): the setting it was logged under and the
+   capture rates, one slot for each rate a check can be made at; a new setting, or a setting transition, starts it
+   again. */
+typedef struct {
+    uint32_t rates_hz[DSD_SIGNAL_QUIET_RATE_COUNT];
+    int setting_ms;
+    int count;
+} quiet_warned_reading;
+
+/* Whether a WARN line for @p setting_ms at @p rate_hz is new to @p w, noting it if so. */
+static int
+quiet_warned_new(quiet_warned_reading* w, int setting_ms, uint32_t rate_hz) {
+    if (w->setting_ms != setting_ms) {
+        DSD_MEMSET(w, 0, sizeof *w);
+        w->setting_ms = setting_ms;
+    }
+    for (int i = 0; i < w->count; i++) {
+        if (w->rates_hz[i] == rate_hz) {
+            return 0;
+        }
+    }
+    /* Only a supported rate is read, so every one has a slot; a full table logs nothing more rather than repeat. */
+    if (w->count >= (int)(sizeof w->rates_hz / sizeof w->rates_hz[0])) {
+        return 0;
+    }
+    w->rates_hz[w->count++] = rate_hz;
+    return 1;
+}
+
 typedef struct {
     scan_quiet_phase phase;
     scan_quiet_visit_key key;
@@ -561,6 +644,10 @@ typedef struct {
     uint64_t epoch_counter;
     /* As measured: the published classes, width, rate and frequency the request judged. */
     uint8_t classes;
+    uint8_t dmr;
+    /* The last capture read qualified (quiet_landed_capture()): what the event service waits out a settle on, apart
+       from capture_seen, which keeps an in-time sighting for the deadline. */
+    uint8_t capture_qualified;
     int analog_kind;
     uint32_t analog_width_hz;
     uint32_t dsp_rate_hz;
@@ -572,6 +659,15 @@ typedef struct {
     int origin_set;
     uint64_t origin_ms;
     uint64_t next_capture_check_ms;
+    /* The tap's capture word the check last read the capture with (rtl_signal_capture_get_seq()), and whether it read
+       one since it entered WAIT_CAPTURE: the event service reads the capture again only once the word moved
+       (issue #834 follow-up). */
+    uint32_t capture_seq_seen;
+    int capture_read;
+    /* The shortened reading a WARN line was last logged for (--scan-skip-silent-ms, its sub-window count at the
+       capture rate), and the DMR sub-window floor's own line: each once per setting and rate. */
+    quiet_warned_reading short_warned;
+    quiet_warned_reading dmr_warned;
     /* The frame-boundary settle wait (issue #834 R1): a request a frame-boundary service starts waits
        SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
        request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
@@ -586,6 +682,9 @@ typedef struct {
     int retries;
     uint64_t request_seq;
     uint32_t ticket;
+    /* A READY result the event service has handed back (or found not passing) once: it is never handed back again by
+       events, so a tick that keeps the visit or loses its guard leaves it to the hunt's 300-symbol point, as before. */
+    int event_handed;
     uint64_t deadline_ms;
     /* The visit's activity baseline: the activity sequence and the decode time when its tune was issued (a landed
        visit carries them on its landing's note; a park still in flight takes them at its first publication, and keeps
@@ -792,8 +891,8 @@ quiet_visit_heard_activity(const dsd_engine_scan_owner* owner, const scan_quiet_
 /* Reconcile: a changed visit or revision suspends the check; activity since the visit's activity baseline, or a READY
    result past its age, ends it. A pending frame verdict ends nothing: a READY result it holds back still ages out. */
 static void
-quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
-                uint64_t now_ms) {
+quiet_reconcile_visit(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner,
+                      scan_quiet_check* c) {
     if (!quiet_check_active(c)) {
         return;
     }
@@ -807,9 +906,22 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
     }
     if (quiet_visit_heard_activity(owner, c)) {
         quiet_end(c, SCAN_QUIET_DONE);
-        return;
     }
-    if (c->phase == SCAN_QUIET_READY && quiet_age_ms(now_ms, c->ready_ms) > SCAN_QUIET_READY_MAX_AGE_MS) {
+}
+
+/* Whether the READY result of @p c is past SCAN_QUIET_READY_MAX_AGE_MS (realtime). */
+static int
+quiet_ready_aged(const scan_quiet_check* c, uint64_t now_ms) {
+    return c->phase == SCAN_QUIET_READY && quiet_age_ms(now_ms, c->ready_ms) > SCAN_QUIET_READY_MAX_AGE_MS;
+}
+
+/* The legacy reconcile: quiet_reconcile_visit(), and a READY result past its age ends the check. The event service
+   reconciles the visit only and leaves that expiry here (issue #834 follow-up). */
+static void
+quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_scan_owner* owner, scan_quiet_check* c,
+                uint64_t now_ms) {
+    quiet_reconcile_visit(opts, state, owner, c);
+    if (quiet_ready_aged(c, now_ms)) {
         c->phase = SCAN_QUIET_DONE;
     }
 }
@@ -817,13 +929,16 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
 /* The capture of the landed channel, or 0 while there is none yet: a capture of the stream's live output generation,
    newer than the one read at the tune request, centred where the visit landed. */
 static int
-quiet_landed_capture(const scan_quiet_check* c, dsd_signal_capture* cap) {
-    if (!rtl_signal_capture_get(cap)) {
+quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
+    c->capture_read = 1;
+    c->capture_qualified = 0;
+    if (!rtl_signal_capture_get_seq(cap, &c->capture_seq_seen)) {
         return 0;
     }
-    return cap->generation != 0U && cap->generation == dsd_rtl_stream_metrics_hook_stream_generation()
-           && cap->generation != c->generation_before
-           && (int64_t)cap->capture_hz - cap->capture_offset_hz == (int64_t)c->frequency_hz;
+    c->capture_qualified = cap->generation != 0U && cap->generation == dsd_rtl_stream_metrics_hook_stream_generation()
+                           && cap->generation != c->generation_before
+                           && (int64_t)cap->capture_hz - cap->capture_offset_hz == (int64_t)c->frequency_hz;
+    return c->capture_qualified;
 }
 
 /* What the calibration refuses of the capture (dsd_scan_quiet_reason): TUNER for one with no Fs/4 rotation (centred
@@ -868,8 +983,83 @@ quiet_refuse(scan_quiet_check* c, uint8_t reason, uint32_t generation) {
     c->republish_owed = 0;
 }
 
+/* The length of one sub-window at @p rate_hz for a narrowest judged width of @p width_hz, in ms (the detector's rule:
+   the smallest whole number of transforms of at least 10 ms); 0 when no transform fits. */
+static double
+quiet_window_ms(uint32_t rate_hz, double width_hz) {
+    const int n = dsd_signal_fft_size_for_width(rate_hz, width_hz);
+    if (n <= 0 || rate_hz == 0U) {
+        return 0.0;
+    }
+    const uint64_t frames = ((uint64_t)rate_hz + 100U * (uint64_t)n - 1U) / (100U * (uint64_t)n);
+    return 1000.0 * (double)(frames * (uint64_t)n) / (double)rate_hz;
+}
+
+/* The shortest and longest sub-window any checked width has at @p rate_hz, in ms. */
 static void
-quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
+quiet_window_range_ms(uint32_t rate_hz, double* lo, double* hi) {
+    *lo = *hi = quiet_window_ms(rate_hz, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
+    const double digital = quiet_window_ms(rate_hz, DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
+    *lo = digital < *lo ? digital : *lo;
+    *hi = digital > *hi ? digital : *hi;
+    for (int kind = 0; kind < 2; kind++) {
+        size_t count = 0;
+        const uint32_t* widths = scan_quiet_warn_widths(kind ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM, &count);
+        for (size_t i = 0; i < count; i++) {
+            const double ms = quiet_window_ms(rate_hz, (double)widths[i]);
+            *lo = ms < *lo ? ms : *lo;
+            *hi = ms > *hi ? ms : *hi;
+        }
+    }
+}
+
+int
+scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_t windows, uint32_t rate_hz,
+                             int dmr_floor) {
+    double lo = 0.0;
+    double hi = 0.0;
+    quiet_window_range_ms(rate_hz, &lo, &hi);
+    /* The reading's span over every checked width, in whole ms: one figure when both ends print the same. */
+    const long first = lround(lo * windows);
+    const long last = lround(hi * windows);
+    char span[48];
+    if (first == last) {
+        DSD_SNPRINTF(span, sizeof span, "%ld ms", first);
+    } else {
+        DSD_SNPRINTF(span, sizeof span, "%ld to %ld ms", first, last);
+    }
+    if (dmr_floor) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: --scan-skip-silent-ms %d: DMR channels are read for %u slices (%s), the "
+                            "fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.\n",
+                            setting_ms, (unsigned)windows, span);
+    }
+    return DSD_SNPRINTF(out, out_size,
+                        "WARNING: scan: --scan-skip-silent-ms %d reads %u slices (%s), shorter than the calibrated "
+                        "9: a weak or fading signal can read silent and be skipped.\n",
+                        setting_ms, (unsigned)windows, span);
+}
+
+/* The WARN lines a shortened reading takes (issue #834 follow-up, D3): once per setting and capture rate for the
+   reading, and once more for the DMR floor when a DMR visit is read for longer than the setting asks. */
+static void
+quiet_warn_short(const dsd_opts* opts, scan_quiet_check* c, uint32_t rate_hz, uint32_t setting, uint32_t windows) {
+    if (setting == 0U || setting >= 9U) {
+        return;
+    }
+    char line[320];
+    if (quiet_warned_new(&c->short_warned, opts->scan_skip_silent_ms, rate_hz)) {
+        (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, setting, rate_hz, 0);
+        LOG_WARN("%s", line);
+    }
+    if (windows > setting && quiet_warned_new(&c->dmr_warned, opts->scan_skip_silent_ms, rate_hz)) {
+        (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, windows, rate_hz, 1);
+        LOG_WARN("%s", line);
+    }
+}
+
+static void
+quiet_request(const dsd_opts* opts, scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
     dsd_signal_quiet_request request;
     DSD_MEMSET(&request, 0, sizeof request);
     request.request_id = ++c->request_seq;
@@ -877,6 +1067,13 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
     request.frequency_hz = c->frequency_hz;
     request.classes = c->classes;
     request.analog_width_hz = (c->classes & QUIET_CLASS_ANALOG) ? c->analog_width_hz : 0U;
+    /* The reading starts SCAN_QUIET_LEAD_MS of samples after the request's capture (issue #834 follow-up, D1-a). */
+    request.lead_pairs = (uint32_t)((uint64_t)cap->rate_hz * SCAN_QUIET_LEAD_MS / 1000U);
+    /* The reading's length (issue #834 follow-up, D3): the calibrated one unless --scan-skip-silent-ms sets another,
+       never fewer than the DMR floor on a visit that can carry DMR. */
+    const uint32_t setting = scan_quiet_setting_windows(opts);
+    request.windows = scan_quiet_request_windows(setting, c->dmr);
+    quiet_warn_short(opts, c, cap->rate_hz, setting, request.windows);
     uint32_t ticket = 0U;
     if (rtl_signal_quiet_request(&request, &ticket, NULL) != 0) {
         /* Refused (a Signal search holds the tap, or no memory): no check this visit. */
@@ -884,7 +1081,7 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
         return;
     }
     c->ticket = ticket;
-    c->deadline_ms = now_ms + SCAN_QUIET_REQUEST_DEADLINE_MS;
+    c->deadline_ms = now_ms + scan_quiet_request_deadline_ms(request.windows);
     c->phase = SCAN_QUIET_REQUESTED;
 }
 
@@ -950,7 +1147,7 @@ quiet_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms, i
         quiet_refuse(c, refusal, cap.generation);
         return;
     }
-    quiet_request(c, &cap, now_ms);
+    quiet_request(opts, c, &cap, now_ms);
 }
 
 static int
@@ -960,7 +1157,7 @@ quiet_failure_retries(dsd_signal_measure_failure failure) {
 }
 
 static void
-quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
+quiet_collect(scan_quiet_check* c, uint64_t now_ms, int keep_schedule) {
     dsd_signal_quiet_result result;
     DSD_MEMSET(&result, 0, sizeof result);
     const int taken = rtl_signal_quiet_status(c->ticket) == 0 ? 0 : rtl_signal_quiet_take(c->ticket, &result);
@@ -986,6 +1183,7 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
             && quiet_age_ms(now_ms, completed_ms) <= SCAN_QUIET_READY_MAX_AGE_MS) {
             c->result = result;
             c->ready_ms = completed_ms;
+            c->event_handed = 0;
             c->phase = SCAN_QUIET_READY;
         } else {
             c->phase = SCAN_QUIET_DONE; /* busy, not measurable, or stale */
@@ -994,11 +1192,16 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
     }
     if (quiet_failure_retries(result.failure) && c->retries < SCAN_QUIET_MAX_RETRIES) {
         c->retries++;
-        c->next_capture_check_ms = 0U;
+        if (!keep_schedule) {
+            /* A legacy pickup reads the capture again at its next opportunity; an event's keeps the 50 ms schedule. */
+            c->next_capture_check_ms = 0U;
+        }
         /* A retry started at a frame boundary waits out the settle from this failure. */
         c->settle_set = 1;
         c->settle_from_ms = now_ms;
         c->capture_seen = 0;
+        c->capture_read = 0;
+        c->capture_qualified = 0;
         c->phase = SCAN_QUIET_WAIT_CAPTURE;
         return;
     }
@@ -1011,7 +1214,7 @@ quiet_step(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms, int at_fr
     if (c->phase == SCAN_QUIET_WAIT_CAPTURE) {
         quiet_wait_capture(opts, c, now_ms, at_frame);
     } else if (c->phase == SCAN_QUIET_REQUESTED) {
-        quiet_collect(c, now_ms);
+        quiet_collect(c, now_ms, 0);
     }
 }
 
@@ -1087,14 +1290,16 @@ static int
 quiet_published_as_measured(const scan_quiet_check* c, const scan_quiet_eligibility* e) {
     return quiet_key_equal(&c->key, &e->key) && c->classes == e->classes && c->analog_kind == e->analog_kind
            && c->analog_width_hz == e->analog_width_hz && c->dsp_rate_hz == e->dsp_rate_hz
-           && c->frequency_hz == e->frequency_hz && quiet_revisions_equal(&c->revisions, &e->revisions);
+           && c->frequency_hz == e->frequency_hz && c->dmr == e->dmr
+           && quiet_revisions_equal(&c->revisions, &e->revisions);
 }
 
 /* The effective classes, the analog kind and width (with the analog class) and the DSP rate in force
    (@p current, this pass's facts) are still the ones measured. */
 static int
 quiet_measured_as_current(const scan_quiet_check* c, const scan_quiet_eligibility* current) {
-    if (!current || current->classes != c->classes || current->dsp_rate_hz != c->dsp_rate_hz) {
+    if (!current || current->classes != c->classes || current->dsp_rate_hz != c->dsp_rate_hz
+        || current->dmr != c->dmr) {
         return 0;
     }
     return !(c->classes & QUIET_CLASS_ANALOG)
@@ -1116,12 +1321,15 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->analog_width_hz = e->analog_width_hz;
     c->dsp_rate_hz = e->dsp_rate_hz;
     c->frequency_hz = e->frequency_hz;
+    c->dmr = e->dmr;
     c->revisions = e->revisions;
     c->republish_seen = e->revisions;
     c->generation_before = landed ? owner->landing.generation_before_tune : owner->tune_generation_before;
     c->origin_set = landed;
     c->origin_ms = restart ? now_ms : (landed ? owner->landing.landed_realtime_ms : 0U);
     c->next_capture_check_ms = 0U;
+    c->capture_read = 0;
+    c->capture_qualified = 0;
     c->settle_set = 0;
     c->settle_from_ms = 0U;
     c->capture_seen = 0;
@@ -1329,6 +1537,109 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
            && dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_HAND_BACK;
 }
 
+/* WAIT_CAPTURE from the event service (issue #834 follow-up): as a frame boundary may, never earlier, and never ending
+   the check. A park in flight starts its wait once the ledger reports it landed. A qualifying capture is requested at
+   once when no settle is in force (the visit's first request: the legacy rule), else once the settle has run since the
+   first qualifying capture a frame boundary saw, or since the retryable failure. Past the capture deadline a capture
+   not seen in time is no capture: the legacy and frame calls end the check there, as before. The 50 ms legacy schedule
+   is not moved. */
+static void
+quiet_event_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms) {
+    if (!c->origin_set) {
+        if (!dsd_trunk_tuning_request_landed(c->key.tune_request)) {
+            return;
+        }
+        c->origin_set = 1;
+        c->origin_ms = now_ms;
+    }
+    if (now_ms >= quiet_capture_deadline_ms(c, 1) && !c->capture_seen) {
+        /* Too late for a capture: nothing can be requested, so the word is taken as read (each change wakes the
+           service once) and the legacy and frame calls end the check. */
+        c->capture_read = 1;
+        c->capture_qualified = 0;
+        c->capture_seq_seen = rtl_signal_capture_seq();
+        return;
+    }
+    dsd_signal_capture cap;
+    if (!quiet_landed_capture(c, &cap)) {
+        return;
+    }
+    /* A settle in force before this sighting (a frame boundary saw the capture, or a retry's failure set it) is waited
+       out; the sighting is kept either way, so the deadline is extended as a frame boundary's sighting extends it. */
+    const int settle_in_force = c->settle_set;
+    if (!c->capture_seen) {
+        c->capture_seen = 1;
+        if (!c->settle_set) {
+            c->settle_set = 1;
+            c->settle_from_ms = now_ms;
+        }
+    }
+    if (settle_in_force && quiet_age_ms(now_ms, c->settle_from_ms) < SCAN_QUIET_FRAME_SETTLE_MS) {
+        return;
+    }
+    const uint8_t refusal = quiet_capture_refusal(opts, c, &cap);
+    if (refusal != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
+        quiet_refuse(c, refusal, cap.generation);
+        return;
+    }
+    quiet_request(opts, c, &cap, now_ms);
+}
+
+/* Whether the event service has anything to do for @p c: lock-free loads, and a clock read only while a settle or a
+   frame verdict's hold runs out. */
+static int
+quiet_event_due(const dsd_engine_scan_owner* owner, const scan_quiet_check* c) {
+    switch (c->phase) {
+        case SCAN_QUIET_WAIT_CAPTURE:
+            if (!c->origin_set) {
+                return dsd_trunk_tuning_request_landed(c->key.tune_request);
+            }
+            if (!c->capture_read || rtl_signal_capture_seq() != c->capture_seq_seen) {
+                return 1;
+            }
+            /* A qualifying capture waiting out a settle: due once the settle has run, and read again then. */
+            return c->capture_qualified && c->settle_set
+                   && quiet_age_ms(quiet_realtime_ms(), c->settle_from_ms) >= SCAN_QUIET_FRAME_SETTLE_MS;
+        case SCAN_QUIET_REQUESTED: return rtl_signal_quiet_status(c->ticket) != 0;
+        case SCAN_QUIET_READY: return !c->event_handed && !quiet_pending(owner);
+        default: return 0;
+    }
+}
+
+int
+dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state) {
+    /* The setting before anything else: with it off, the null check and one load. */
+    if (!opts || !opts->scan_skip_silent) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    scan_quiet_check* c = quiet_check_get(owner);
+    if (!c || !quiet_check_active(c)) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    if (!quiet_event_due(owner, c)) {
+        return DSD_SCAN_QUIET_LIVE;
+    }
+    const uint64_t now_ms = quiet_realtime_ms();
+    /* The visit only: a READY result past its age is declined here, and ended by the legacy services as before. */
+    quiet_reconcile_visit(opts, state, owner, c);
+    if (c->phase == SCAN_QUIET_WAIT_CAPTURE) {
+        quiet_event_wait_capture(opts, c, now_ms);
+    } else if (c->phase == SCAN_QUIET_REQUESTED) {
+        quiet_collect(c, now_ms, 1);
+    }
+    if (!quiet_check_active(c)) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    if (c->phase == SCAN_QUIET_READY && !c->event_handed && !quiet_pending(owner)) {
+        c->event_handed = 1;
+        if (!quiet_ready_aged(c, now_ms) && quiet_ready_passes(opts, state, c)) {
+            return DSD_SCAN_QUIET_HAND_BACK;
+        }
+    }
+    return DSD_SCAN_QUIET_LIVE;
+}
+
 /* A visit SUSPENDED whose revisions moved since it was published: once per change, so it is republished and starts
    again on the same visit under syncs that keep the frame loop running (as a suspension of a check under way owes one,
    R5). That is a visit with a reason it cannot be checked (a refusal, or facts with no check) and a width or row edit,
@@ -1480,7 +1791,8 @@ quiet_capture_reason(uint8_t reason) {
 static int
 quiet_channel_reason(uint8_t reason) {
     return reason == (uint8_t)DSD_SCAN_QUIET_REASON_MODES || reason == (uint8_t)DSD_SCAN_QUIET_REASON_WIDTH
-           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH;
+           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_NO_WIDTH
+           || reason == (uint8_t)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE;
 }
 
 /* Log the receiver's WARN line for the capture's verdict @p reason (TUNER or RATE), once per key. */
@@ -1676,6 +1988,13 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
+dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return DSD_SCAN_QUIET_NONE;
+}
+
+int
 dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state, int owner_kind) {
     (void)opts;
     (void)state;
@@ -1788,7 +2107,7 @@ scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_
 }
 
 void
-dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
+dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed) {
     dsd_engine_scan_quiet_invalidate(state);
     /* Nothing noted while the setting was on is waited for once it changes. */
     dsd_engine_scan_quiet_pending_reset(state);
@@ -1803,6 +2122,12 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     if (c) {
         c->visit_set = 0;
         quiet_warn_channels_forget(c);
+        /* A shortened reading's WARN lines are logged again once it takes effect again: after the switch or the
+           length really changed, not after an apply that left both as they were. */
+        if (reading_changed) {
+            DSD_MEMSET(&c->short_warned, 0, sizeof c->short_warned);
+            DSD_MEMSET(&c->dmr_warned, 0, sizeof c->dmr_warned);
+        }
     }
     if (turned_on && owner) {
         owner->quiet_first_tune_seq = owner->tune_seq + 1U;
@@ -1810,6 +2135,7 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     }
 #else
     (void)turned_on;
+    (void)reading_changed;
 #endif
 }
 
@@ -1829,6 +2155,12 @@ dsd_engine_scan_quiet_note_evidence(dsd_state* state, int level, uint32_t hold_m
     dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
     if (!owner) {
         return;
+    }
+    /* A transmission its sync words alone confirmed (issue #890) is no activity: the check waits on it as on a verdict
+       still open, so frames that keep coming never let a quiet result be handed back sooner than activity would, and
+       the check completes once they stop. */
+    if (level == DSD_CONTENT_EVIDENCE_SYNC_ONLY) {
+        level = DSD_CONTENT_EVIDENCE_PARTIAL;
     }
     if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
         /* Activity, once a frame however many of its checks pass; it dominates: nothing is waited for any more. */

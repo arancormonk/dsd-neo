@@ -16,7 +16,9 @@ dsd_dispatch_matches_tetra(int synctype) {
 /*
  * One TETRA burst and its verdict. A training sequence is weak enough for receiver noise to match, so a burst proves
  * its profile only when it decoded a block whose CRC passed (a signalling block, or a speech frame that also re-encodes
- * like speech); a burst that decoded none consumed symbols and validated nothing.
+ * like speech); a burst that decoded none consumed symbols and validated nothing. What the burst proved of the channel
+ * beyond the profile (tetra_burst_proof()) its decoder reports as content evidence itself, so the -Y step credits no
+ * TETRA frame unchecked (protocol_dispatch.c, issue #890).
  */
 dsd_frame_verdict
 dsd_dispatch_handle_tetra(dsd_opts* opts, dsd_state* state) {

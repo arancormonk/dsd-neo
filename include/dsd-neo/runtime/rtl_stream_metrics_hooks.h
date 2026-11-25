@@ -73,7 +73,8 @@ typedef struct {
     void (*p25_timing_proof)(uint64_t proof);
     int (*stream_active)(void);
     int (*input_level)(dsd_input_level_snapshot* out);
-    int (*apply_demod_profile)(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps);
+    int (*apply_demod_profile)(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels,
+                               int channel_profile, int ted_sps);
     /** Channel squelch threshold in mean-power units (rtl_squelch_level's); 0 switches it off. */
     void (*set_channel_squelch)(double mean_power);
     /** The whole channel squelch setting: a LEVEL threshold or an AUTO margin over the learned floor. */
@@ -141,10 +142,12 @@ int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
  * @brief Synchronize the RTL demodulator family, symbol profile, and timing recovery rate.
  *
  * The engine implementation applies the family transition before updating TED timing and the
- * symbol/channel profile.
+ * symbol/channel profile. @p cqpsk_explicit says @p cqpsk_enable is the scan row's own choice
+ * (dsd_scan_mode_cqpsk_explicit(), issue #890: a tetra-dmo row's CQPSK chain), which stands over DSD_NEO_CQPSK as a
+ * row's retune does; otherwise the request is an automatic one, which a DSD_NEO_CQPSK override leaves alone.
  */
-int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
-                                                    int channel_profile, int ted_sps);
+int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz,
+                                                    int levels, int channel_profile, int ted_sps);
 /**
  * @brief Hand the demodulator's channel squelch a new threshold.
  *

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QChar>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -17,7 +18,6 @@
 #include <QTemporaryFile>
 #include <QVariant>
 #include <QVariantList>
-#include <Qt>
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
@@ -37,6 +37,7 @@
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
+#include "scan_protocol_catalog.h"
 #include "session_args.h"
 #include "stored_int.h"
 
@@ -83,42 +84,29 @@ collectCsvAnalogTarget(const dsd_app_scan_csv_target* target, void* context) {
  */
 int
 configuredAnalogWidthHz(const QString& extraArgs, int kind) {
-    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
-    const QString option =
-        kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
-    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    int widthHz = 0;
-    for (qsizetype i = 0; i < tokens.size(); ++i) {
-        QString value;
-        if (tokens.at(i) == option) {
-            value = i + 1 < tokens.size() ? tokens.at(i + 1) : QString();
-        } else if (tokens.at(i).startsWith(option + QLatin1Char('='))) {
-            value = tokens.at(i).mid(option.size() + 1);
-        } else {
-            continue;
-        }
-        widthHz = wholeHz.match(value).hasMatch() ? value.toInt() : 0;
-    }
-    return widthHz;
+    const QList<ScanListWidthOption> found = scan_list_width_options(extraArgs, kind, nullptr);
+    return found.isEmpty() ? 0 : found.back().hz;
 }
 
 /*
  * Issue #526: the editor's own DSP-rate row diagnostic. A radio list runs every target at the rate its DSP bandwidth
- * sets -- the list's own, else the app's, read as the session's spec carries it (session_args_analog_width_fits(): an
- * Airspy's snapped as the session snaps it, its capture rate stepped to it, issue #806) -- so an analog target whose
- * width that rate cannot filter is skipped at every visit: its own width, else the configured width of its kind the
- * session runs (configuredAnalogWidthHz()), else the AM default an am target runs, which always runs its channel
- * filter. The unset NFM default runs at any rate. Said beside the targets ready, as the engine names such a row when a
- * map loads, not as a refusal: the rest of the list still scans.
+ * sets -- the list's own, else 72 kHz in a session with a TETRA DMO target (issue #890), else the app's, read as the
+ * session's spec carries it (session_args_analog_width_fits(): an Airspy's snapped as the session snaps it, its capture
+ * rate stepped to it, issue #806) -- so an analog target whose width that rate cannot filter is skipped at every visit:
+ * its own width, else the configured width of its kind the session runs (configuredAnalogWidthHz()), else the AM
+ * default an am target runs, which always runs its channel filter. The unset NFM default runs at any rate. Said beside
+ * the targets ready, as the engine names such a row when a map loads, not as a refusal: the rest of the list still
+ * scans.
  */
 QString
-analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const QList<AnalogTarget>& targets) {
+analogRateWarning(const QVariantMap& list, const SessionArgPrefs& prefs, const QList<AnalogTarget>& targets,
+                  bool tetraTargets) {
     if (targets.isEmpty()) {
         return {};
     }
     const QString source = list.value("sourceType").toString();
-    const int listKhz = stored_int_or(list.value("bandwidthKhz"), -1);
-    const int khz = listKhz > 0 ? listKhz : prefs.bandwidthKhz;
+    /* The rate the session runs at (issue #890): App default is 72 kHz with a TETRA DMO target. */
+    const int khz = session_args_scan_list_bandwidth_khz(list, tetraTargets, prefs.bandwidthKhz);
     const int nfmHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_FM);
     const int amHz = configuredAnalogWidthHz(prefs.extraArgs, DSD_ANALOG_DEMOD_AM);
     int skipped = 0;
@@ -154,8 +142,32 @@ entryAnalogKind(const QVariantMap& entry, const SavedSystemsModel* systems) {
     return scan_list_entry_analog_kind(entry, flag);
 }
 
+/* The decode flags of saved system entry @p entry's system, empty for a frequency entry. */
+QString
+entrySystemFlag(const QVariantMap& entry, const SavedSystemsModel* systems) {
+    return entry.value("kind").toString() == QStringLiteral("system") && systems
+               ? systems->getByUid(entry.value("systemUid").toString()).value("decodeFlag").toString()
+               : QString();
+}
+
+/* Whether a list entry's own decryption choice applies (scan_list_entry_takes_keys(), issue #890): the editor hides it
+   for a protocol with no keys of its own, so whatever it holds is resolved, retained and checked for none of those. */
+bool
+entryTakesKeys(const QVariantMap& entry, const SavedSystemsModel* systems) {
+    return scan_list_entry_takes_keys(entry, entrySystemFlag(entry, systems));
+}
+
+/* Whether the decryption profile a saved system entry inherits is resolved: for every protocol with keys, and for M17,
+   whose row refuses one with the reason (its session's keys apply); never for one that decrypts nothing. */
+bool
+entryResolvesSystemKeys(const QVariantMap& entry, const SavedSystemsModel* systems) {
+    const ScanProtocol* protocol = scan_list_entry_protocol(entry, entrySystemFlag(entry, systems));
+    return protocol == nullptr || protocol->keys != ScanProtocolKeys::None;
+}
+
 /* The enabled analog entries of a manual list, each named as the editor shows it: a saved system by its name, a
-   frequency entry by its name, else its frequency. None sets a width of its own. */
+   frequency entry by its name, else its frequency. A saved system's own width is the one its Extra arguments carry
+   into the list (scan_list_saved_system_width_hz(), issue #890); a frequency entry sets none. */
 QList<AnalogTarget>
 manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
     QList<AnalogTarget> analog;
@@ -165,10 +177,11 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
         if (kind < 0) {
             continue;
         }
-        const QString name = entry.value("kind").toString() == QStringLiteral("system") && systems
-                                 ? systems->getByUid(entry.value("systemUid").toString()).value("name").toString()
-                                 : entry.value("name").toString();
-        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind, 0});
+        const bool system = entry.value("kind").toString() == QStringLiteral("system") && systems;
+        const QVariantMap saved = system ? systems->getByUid(entry.value("systemUid").toString()) : QVariantMap();
+        const QString name = system ? saved.value("name").toString() : entry.value("name").toString();
+        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind,
+                       scan_list_saved_system_width_hz(saved.value("extraArgs").toString(), kind)});
     }
     return analog;
 }
@@ -176,15 +189,27 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
 /* The DSP-rate warning for a CSV-backed list (analogRateWarning()), each analog target held at its own width. The file
    was validated already; one the inspection cannot read says nothing more. */
 QStringList
-csvAnalogRateWarnings(const QVariantMap& list, const QString& path, const SessionArgPrefs& prefs) {
+csvAnalogRateWarnings(const QVariantMap& list, const QString& path, const SessionArgPrefs& prefs, bool tetraTargets) {
     QList<AnalogTarget> analog;
     const dsd_app_scan_csv_callbacks callbacks{collectCsvAnalogTarget, nullptr, &analog, nullptr};
     char detail[512] = {};
     if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, detail, sizeof detail) != 0) {
         return {};
     }
-    const QString warning = analogRateWarning(list, prefs, analog);
+    const QString warning = analogRateWarning(list, prefs, analog, tetraTargets);
     return warning.isEmpty() ? QStringList() : QStringList{warning};
+}
+
+/* Issue #890: the type of each row of an imported target CSV, appended to @p context (a QStringList). */
+void
+collectCsvTargetType(const dsd_app_scan_csv_target* target, void* context) {
+    static_cast<QStringList*>(context)->append(QString::fromUtf8(target->type));
+}
+
+/* Whether @p protocol is TETRA DMO. */
+bool
+isTetraDmo(const ScanProtocol* protocol) {
+    return protocol != nullptr && QLatin1String(protocol->id) == QLatin1String("tetra_dmo");
 }
 
 QVariantMap
@@ -364,23 +389,98 @@ ScanListStarter::ScanListStarter(const AppPrefs* prefs, const SavedSystemsModel*
 
 QVariantMap
 ScanListStarter::build(const QVariantMap& list) const {
-    return prepare(list, true);
+    return prepare(list, true, hasTetraTargets(list));
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+namespace {
+int g_tetra_csv_reads = 0;
+} // namespace
+
+int
+scan_list_tetra_csv_reads_for_test() {
+    return g_tetra_csv_reads;
+}
+#endif
+
+void
+ScanListStarter::forgetTargetFiles() {
+    m_csvTetra.clear();
+}
+
+bool
+ScanListStarter::csvHasTetraTargets(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    QFileInfo info(path);
+    info.setCaching(false);
+    CsvTetraVerdict now;
+    if (info.isFile()) {
+        now.size = info.size();
+        now.modifiedMs = info.lastModified().toMSecsSinceEpoch();
+        now.changedMs = info.metadataChangeTime().toMSecsSinceEpoch();
+        now.bornMs = info.birthTime().toMSecsSinceEpoch();
+    }
+    const auto known = m_csvTetra.constFind(path);
+    if (now.size >= 0 && known != m_csvTetra.cend() && known->size == now.size && known->modifiedMs == now.modifiedMs
+        && known->changedMs == now.changedMs && known->bornMs == now.bornMs) {
+        return known->tetra;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    ++g_tetra_csv_reads;
+#endif
+    QStringList types;
+    const dsd_app_scan_csv_callbacks callbacks{collectCsvTargetType, nullptr, &types, nullptr};
+    now.tetra = dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) == 0
+                && std::any_of(types.cbegin(), types.cend(),
+                               [](const QString& type) { return isTetraDmo(scan_protocol_for_type(type)); });
+    if (now.size >= 0) {
+        m_csvTetra.insert(path, now);
+    } else {
+        m_csvTetra.remove(path);
+    }
+    return now.tetra;
+}
+
+bool
+ScanListStarter::hasTetraTargets(const QVariantMap& list) const {
+    if (list.value("targetSource", "entries").toString() == QStringLiteral("csv")) {
+        return csvHasTetraTargets(list.value("targetsCsvPath").toString());
+    }
+    const QVariantList entries = list.value("entries").toList();
+    return std::any_of(entries.cbegin(), entries.cend(), [this](const QVariant& value) {
+        const QVariantMap entry = value.toMap();
+        return entry.value("enabled", true).toBool()
+               && isTetraDmo(scan_list_entry_protocol(entry, entrySystemFlag(entry, m_systems)));
+    });
+}
+
+bool
+ScanListStarter::sessionHasTetra(const QVariantList& lists) const {
+    return std::any_of(lists.cbegin(), lists.cend(),
+                       [this](const QVariant& list) { return hasTetraTargets(list.toMap()); });
+}
+
+int
+ScanListStarter::bandwidthKhz(const QVariantMap& list) const {
+    return session_args_scan_list_bandwidth_khz(list, hasTetraTargets(list), session_args_prefs(m_prefs).bandwidthKhz);
 }
 
 QVariantMap
 ScanListStarter::prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording,
-                                 const QStringList& companionPaths) const {
+                                 const QStringList& companionPaths, bool tetraTargets) const {
     // The list's call recording folder goes into its argv (issue #708), so a start that can record checks the list
     // first and asks for the folder only for a list that can start; the build that writes the CSV then names it. A
     // draft never can (only that build refuses it), so it asks for none.
     const bool canRecord = host && m_recordingSessions && !list.value("isDraft").toBool();
-    auto result = prepare(list, !canRecord, QString(), false, companionPaths);
+    auto result = prepare(list, !canRecord, tetraTargets, QString(), false, companionPaths);
     *recording = false;
     if (canRecord && result.value("ok").toBool()) {
         *recording = true;
         const QString folder = m_recordingSessions->beginSession(QStringLiteral("scan"), list.value("uid").toString(),
                                                                  list.value("name").toString());
-        result = prepare(list, true, folder, folder.isEmpty(), companionPaths);
+        result = prepare(list, true, tetraTargets, folder, folder.isEmpty(), companionPaths);
     }
     return result;
 }
@@ -396,7 +496,7 @@ void
 ScanListStarter::retainProfiles(const QVariantMap& list) const {
     for (const auto& value : list.value("entries").toList()) {
         const auto entry = value.toMap();
-        if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
+        if (!entry.value("enabled", true).toBool() || !entryTakesKeys(entry, m_systems)) {
             continue;
         }
         const QString mode = entry.value("decryptionMode", "inherit").toString();
@@ -414,7 +514,7 @@ ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, con
                                const QString& holdTargetId) const {
     const QVariantMap list = lists.value(0).toMap();
     bool recording = false;
-    auto result = prepareForStart(list, host, &recording, companionPaths);
+    auto result = prepareForStart(list, host, &recording, companionPaths, sessionHasTetra(lists));
     auto args = result.take("args").toStringList();
     if (result.value("ok").toBool() && !holdTargetId.isEmpty()) {
         args = session_args_with_scan_hold(args, holdTargetId);
@@ -532,26 +632,75 @@ ScanListStarter::draftRefusal() {
 }
 
 QString
-ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other) const {
-    return session_args_scan_join_conflict(primary, other, session_args_prefs(m_prefs));
+ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other, const QVariantList& chosen) const {
+    /* The session the start would run: the primary, @p other, then each other chosen list (none twice). */
+    QVariantList session{primary, other};
+    const QString otherUid = other.value("uid").toString();
+    for (const QVariant& value : chosen) {
+        /* A list that no longer exists (an empty map) is in no session. */
+        const QString uid = value.toMap().value("uid").toString();
+        if (!uid.isEmpty() && uid != otherUid && uid != primary.value("uid").toString()) {
+            session << value;
+        }
+    }
+    const SessionArgPrefs prefs = session_args_prefs(m_prefs);
+    /* The chosen lists that stay switched on without @p other: one that cannot join the primary in the session the
+       others make leaves the choice (the sheet drops it), and with it any TETRA DMO target it set the bandwidth by, so
+       those go until every one left joins at the bandwidth they share. A list dropped so names no reason for
+       @p other: switching a TETRA DMO list off drops a list fixed at 72 kHz, not a compatible one beside it. */
+    for (bool pruned = true; pruned;) {
+        pruned = false;
+        QVariantList stay{primary};
+        for (qsizetype i = 2; i < session.size(); ++i) {
+            stay << session.at(i);
+        }
+        const bool stayTetra = sessionHasTetra(stay);
+        for (qsizetype i = 2; i < session.size();) {
+            if (session_args_scan_join_conflict(primary, session.at(i).toMap(), prefs, stayTetra).isEmpty()) {
+                ++i;
+            } else {
+                session.removeAt(i);
+                pruned = true;
+            }
+        }
+    }
+    /* @p other joins when it and every list that stays join the primary at the bandwidth they would all run at: one
+       whose TETRA DMO target would move a staying list off its fixed bandwidth is named for it. */
+    const bool tetraTargets = sessionHasTetra(session);
+    for (qsizetype i = 1; i < session.size(); ++i) {
+        const QString conflict = session_args_scan_join_conflict(primary, session.at(i).toMap(), prefs, tetraTargets);
+        if (!conflict.isEmpty()) {
+            return conflict;
+        }
+    }
+    /* Every list runs at the primary's bandwidth once they all join it. */
+    return session_args_scan_list_rate_error(primary, tetraTargets, prefs.bandwidthKhz).isEmpty()
+               ? QString()
+               : QStringLiteral("TETRA DMO needs 72 kHz");
 }
 
 QString
-ScanListStarter::checkLists(const QVariantList& lists, QStringList* warnings) const {
+ScanListStarter::rateError(const QVariantMap& list) const {
+    return session_args_scan_list_rate_error(list, hasTetraTargets(list), session_args_prefs(m_prefs).bandwidthKhz);
+}
+
+QString
+ScanListStarter::checkLists(const QVariantList& lists, bool tetraTargets, QStringList* warnings) const {
     if (lists.size() > DSD_TRUNK_SCAN_MAX_LISTS) {
         return QStringLiteral("Scan at most %1 lists at once.").arg(DSD_TRUNK_SCAN_MAX_LISTS);
     }
     const QVariantMap primary = lists.value(0).toMap();
     for (const auto& value : lists) {
         const QVariantMap list = value.toMap();
-        const auto checked = prepare(list, false);
+        const auto checked = prepare(list, false, tetraTargets);
         if (!checked.value("ok").toBool()) {
             return quotedName(list) + QStringLiteral(": ") + checked.value("error").toString();
         }
         for (const auto& warning : checked.value("warnings").toStringList()) {
             *warnings << quotedName(list) + QStringLiteral(": ") + warning;
         }
-        const QString conflict = joinConflict(primary, list);
+        const QString conflict =
+            session_args_scan_join_conflict(primary, list, session_args_prefs(m_prefs), tetraTargets);
         if (!conflict.isEmpty()) {
             return QStringLiteral("%1 can't scan with %2: %3.")
                 .arg(quotedName(list), quotedName(primary), conflict.left(1).toLower() + conflict.mid(1));
@@ -561,12 +710,13 @@ ScanListStarter::checkLists(const QVariantList& lists, QStringList* warnings) co
 }
 
 QString
-ScanListStarter::materializeLists(const QVariantList& lists, QStringList* paths, int* total) const {
+ScanListStarter::materializeLists(const QVariantList& lists, bool tetraTargets, QStringList* paths, int* total) const {
     QList<QByteArray> pathBytes;
     QList<QByteArray> nameBytes;
     for (const auto& value : lists) {
         const QVariantMap list = value.toMap();
-        const auto built = prepare(list, true, QString(), false, QStringList(), static_cast<int>(paths->size()) + 1);
+        const auto built =
+            prepare(list, true, tetraTargets, QString(), false, QStringList(), static_cast<int>(paths->size()) + 1);
         if (!built.value("ok").toBool()) {
             return quotedName(list) + QStringLiteral(": ") + built.value("error").toString();
         }
@@ -595,11 +745,12 @@ ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host, const 
         return startPrepared({lists.value(0).toMap()}, host, {}, holdTargetId);
     }
     QStringList warnings;
-    QString error = checkLists(lists, &warnings);
+    const bool tetraTargets = sessionHasTetra(lists);
+    QString error = checkLists(lists, tetraTargets, &warnings);
     QStringList paths;
     int total = 0;
     if (error.isEmpty()) {
-        error = materializeLists(lists, &paths, &total);
+        error = materializeLists(lists, tetraTargets, &paths, &total);
     }
     if (!error.isEmpty()) {
         return listsRefusal(error);
@@ -612,7 +763,7 @@ ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host, const 
 
 QVariantMap
 ScanListStarter::validate(const QVariantMap& list) const {
-    return prepare(list, false);
+    return prepare(list, false, hasTetraTargets(list));
 }
 
 QVariantList
@@ -621,8 +772,8 @@ ScanListStarter::resolveSystems(const QVariantMap& list, QString* error) const {
     for (const auto& value : list.value("entries").toList()) {
         const auto entry = value.toMap();
         if (entry.value("kind").toString() == "system" && entry.value("enabled", true).toBool()
-            && entry.value("decryptionMode", "inherit").toString() == "inherit"
-            && entryAnalogKind(entry, m_systems) < 0) {
+            && (entry.value("decryptionMode", "inherit").toString() == "inherit" || !entryTakesKeys(entry, m_systems))
+            && entryResolvesSystemKeys(entry, m_systems)) {
             inheritedSystems.insert(entry.value("systemUid").toString());
         }
     }
@@ -660,7 +811,7 @@ ScanListStarter::resolveEntryProfiles(QVariantMap& prepared, QString* error) con
     QVariantList entries;
     for (const auto& value : prepared.value("entries").toList()) {
         auto entry = value.toMap();
-        if (!entry.value("enabled", true).toBool() || entryAnalogKind(entry, m_systems) >= 0) {
+        if (!entry.value("enabled", true).toBool() || !entryTakesKeys(entry, m_systems)) {
             entries.append(entry);
             continue;
         }
@@ -741,7 +892,7 @@ validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize
 }
 
 QVariantMap
-ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+ScanListStarter::prepare(const QVariantMap& list, bool materialize, bool tetraTargets, const QString& recordingFolder,
                          bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const {
     const auto fail = [](const QString& error, const QStringList& warnings = QStringList()) {
         return QVariantMap{
@@ -752,7 +903,8 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     }
     const QString source = list.value("targetSource", "entries").toString();
     if (source == "csv") {
-        return prepareCsv(list, materialize, recordingFolder, recordingUnavailable, companionPaths, listNumber);
+        return prepareCsv(list, materialize, tetraTargets, recordingFolder, recordingUnavailable, companionPaths,
+                          listNumber);
     }
     if (source != "entries" || !list.value("targetsCsvPath").toString().isEmpty()) {
         return fail(QStringLiteral("Choose either manual entries or an imported target CSV."));
@@ -770,8 +922,8 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     if (!generated.ok) {
         return fail(generated.error, generated.warnings);
     }
-    const QString rateWarning =
-        analogRateWarning(prepared, session_args_prefs(m_prefs), manualAnalogTargets(prepared, m_systems));
+    const QString rateWarning = analogRateWarning(prepared, session_args_prefs(m_prefs),
+                                                  manualAnalogTargets(prepared, m_systems), tetraTargets);
     if (!rateWarning.isEmpty()) {
         generated.warnings << rateWarning;
     }
@@ -786,7 +938,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     const QString path = scan_list_csv_path(uid, list.value("name").toString(), listNumber);
     QString error;
     const auto args = session_args_scan_build_lists(prepared, generated.firstFreqMhz,
-                                                    QStringList{path} + companionPaths, prefs, &error);
+                                                    QStringList{path} + companionPaths, prefs, &error, tetraTargets);
     if (args.isEmpty()) {
         return fail(error, generated.warnings);
     }
@@ -804,8 +956,9 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
 }
 
 QVariantMap
-ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
-                            bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const {
+ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, bool tetraTargets,
+                            const QString& recordingFolder, bool recordingUnavailable,
+                            const QStringList& companionPaths, int listNumber) const {
     const auto fail = [](const QString& error) {
         return QVariantMap{
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", QStringList()}, {"targetCount", 0}};
@@ -847,12 +1000,15 @@ ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize, const QSt
     prefs.recordingFolder = recordingFolder;
     prefs.recordingUnavailable = recordingUnavailable;
     const auto args = session_args_scan_build_lists(prepared, QString::number(first / 1e6, 'f', 6),
-                                                    QStringList{runPath} + companionPaths, prefs, &error);
+                                                    QStringList{runPath} + companionPaths, prefs, &error, tetraTargets);
     if (args.isEmpty()) {
         return fail(error);
     }
-    return {{"ok", true},           {"args", materialize ? args : QStringList()},
-            {"error", QString()},   {"warnings", csvAnalogRateWarnings(prepared, path, session_args_prefs(m_prefs))},
-            {"targetCount", count}, {"csvPath", runPath}};
+    return {{"ok", true},
+            {"args", materialize ? args : QStringList()},
+            {"error", QString()},
+            {"warnings", csvAnalogRateWarnings(prepared, path, session_args_prefs(m_prefs), tetraTargets)},
+            {"targetCount", count},
+            {"csvPath", runPath}};
 }
 } // namespace dsd_qt

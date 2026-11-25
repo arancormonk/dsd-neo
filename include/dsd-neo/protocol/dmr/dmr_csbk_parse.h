@@ -36,15 +36,21 @@ struct dmr_csbk_result {
     uint8_t st1;
     uint8_t st2;
     uint8_t st3;
+    /* A grant's called MS or talkgroup and its calling MS (dmr_t3_grant_classify(); for a duplex grant its Call
+       Direction decides which address is which). */
     uint32_t target;
     uint32_t source;
 
-    /* The frequency in Hz the grant states on air, 0 when it states none: a logical grant's LPCN is resolved, and its
-       mapping trusted or not, by the trunk state machine (never looked up here). */
+    /* The frequency in Hz the trunk state machine may use directly: the one an absolute grant states on air, or the
+       user's entry for the grant's LPCN (dmr_t3_overlay_resolve(), discussion #900), which also replaces an absolute
+       grant's frequency. 0 leaves the LPCN's channel-map resolution and its trust check (lpcn_is_trusted()) to the
+       machine; the CSBK layer never hands it a map lookup of its own. */
     long freq_hz;
 
-    /* The grant's classification and talkgroup policy verdict, as the CSBK layer judged it (dmr_csbk_handle() hands
-       them to the trunk state machine, which never re-evaluates a grant). */
+    /* The grant's classification (group or private, data or voice; dmr_t3_grant_classify()) and talkgroup policy
+       verdict, as the CSBK layer judged it (dmr_csbk_handle() hands them to the trunk state machine, which never
+       re-evaluates a grant). */
+    int group_call;
     int data_call;
     int policy_valid;
     dsd_tg_policy_decision policy;
@@ -56,6 +62,10 @@ struct dmr_csbk_result {
 /**
  * Decode basic CSBK header fields and, for channel-grant opcodes, the
  * common grant fields used by trunking logic.
+ *
+ * The PDU is taken as outbound (BS-sourced): opcode 56 reads as a group data
+ * grant (dmr_t3_grant_classify() with outbound 1). The caller tells an inbound
+ * BS_Dwn_Act (56 on MS-sourced data) apart and does not pass it here.
  *
  * @return 0 on success, negative on error.
  */

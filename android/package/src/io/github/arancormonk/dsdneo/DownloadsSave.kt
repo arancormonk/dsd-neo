@@ -172,16 +172,25 @@ object DownloadsSave {
      * are checked before the first slice, so a settle that comes already cancelled or after the abort returns at once
      * and leaves the delete queued. A cancel that comes once the publication began is too late: the document is saved.
      *
+     * [stillWanted] is asked on the worker right before the publication begins, after every wait: false deletes the row
+     * as a failed write does (a call recording export whose selection went stale meanwhile, #902).
+     *
      * @return whether the document stands: true when its row was published, or when it is no row of this app's and no
      *     discard took it.
      */
-    fun settle(resolver: ContentResolver, uriText: String, ok: Boolean, signal: CancellationSignal?): Boolean {
+    fun settle(
+        resolver: ContentResolver,
+        uriText: String,
+        ok: Boolean,
+        signal: CancellationSignal?,
+        stillWanted: () -> Boolean = { true },
+    ): Boolean {
         if (!claim(uriText)) {
             return synchronized(lock) { uriText !in discarded }
         }
         val settlement = Settlement()
         val task = try {
-            worker.submit(Callable { finish(resolver, Uri.parse(uriText), ok, signal, settlement) })
+            worker.submit(Callable { finish(resolver, Uri.parse(uriText), ok, signal, settlement, stillWanted) })
         } catch (e: RejectedExecutionException) {
             // No worker to run it on: the row this settle claimed is deleted here, so it is not left pending.
             Log.w(TAG, "could not settle a row in the Download folder", e)
@@ -253,8 +262,9 @@ object DownloadsSave {
         ok: Boolean,
         signal: CancellationSignal?,
         settlement: Settlement,
+        stillWanted: () -> Boolean,
     ): Boolean {
-        if (ok && !DocumentTransfer.isAborted && signal?.isCanceled != true && settlement.publish()) {
+        if (ok && !DocumentTransfer.isAborted && signal?.isCanceled != true && stillWanted() && settlement.publish()) {
             val name = publish(resolver, uri)
             if (name != null) {
                 remember(uri.toString(), name)

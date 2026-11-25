@@ -5,6 +5,7 @@
 
 #include "tetra_confirm.h"
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <stddef.h>
@@ -23,6 +24,25 @@ confirm_for_note(dsd_state* state, int* carrier_current) {
     }
     *carrier_current = !(ts->confirm.burst_open && ts->confirm.burst_stale);
     return &ts->confirm;
+}
+
+/* The open burst's proof rises to @p proof; a weaker note leaves it. */
+static void
+confirm_raise_proof(tetra_confirm_t* c, dsd_tetra_burst_proof proof) {
+    if ((uint8_t)proof > c->burst_proof) {
+        c->burst_proof = (uint8_t)proof;
+    }
+}
+
+/* The open burst's read is lost: the carrier was reset since it began (a trunking retune, the settle at its entry, a
+ * replay retune or a carrier boundary inside its read), the read crossed a carrier boundary or an input interruption
+ * cut it (dsd_state_frame_read_lost() against the carrier count the burst began on), or a stream flush came inside it
+ * (the symbol clock's epoch moved): the symbols after the flush are not the same transmission's as those before. */
+static int
+confirm_burst_lost(const dsd_state* state, const tetra_confirm_t* c) {
+    return c->burst_open
+           && (c->burst_stale || c->burst_epoch != state->symbol_clock_epoch
+               || dsd_state_frame_read_lost(state, c->burst_carrier_seq));
 }
 
 /* Receive permission and the AACH run behind it go with the followed call's proof: they are about that call on this
@@ -54,6 +74,8 @@ tetra_confirm_reset(dsd_state* state) {
     c->followed_call = 0;
     confirm_forget_rx(c);
     c->burst_stale = c->burst_open;
+    /* What the last burst proved was about the carrier left. */
+    c->last_proof = (uint8_t)DSD_TETRA_BURST_PROOF_NONE;
 }
 
 void
@@ -65,6 +87,9 @@ tetra_confirm_burst_begin(dsd_state* state) {
     ts->confirm.burst_open = 1;
     ts->confirm.burst_stale = 0;
     ts->confirm.burst_proven = 0;
+    ts->confirm.burst_proof = (uint8_t)DSD_TETRA_BURST_PROOF_NONE;
+    ts->confirm.burst_carrier_seq = state->carrier_seq;
+    ts->confirm.burst_epoch = state->symbol_clock_epoch;
 }
 
 void
@@ -82,15 +107,18 @@ tetra_confirm_burst_end(dsd_state* state) {
     if (!ts) {
         return 0;
     }
-    ts->confirm.burst_open = 0;
-    ts->confirm.burst_stale = 0;
-    return ts->confirm.burst_proven != 0;
+    tetra_confirm_t* const c = &ts->confirm;
+    /* A burst whose read was lost proves nothing on the carrier the receiver is on now, nor on the one it left. */
+    c->last_proof = confirm_burst_lost(state, c) ? (uint8_t)DSD_TETRA_BURST_PROOF_NONE : c->burst_proof;
+    c->burst_open = 0;
+    c->burst_stale = 0;
+    return c->burst_proven != 0;
 }
 
 int
 tetra_confirm_burst_current(const dsd_state* state) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    return ts && !(ts->confirm.burst_open && ts->confirm.burst_stale);
+    return ts && !confirm_burst_lost(state, &ts->confirm);
 }
 
 /* A CRC-16 signalling block of the carrier: evidence for publication, and with @p downlink of a control channel. */
@@ -102,6 +130,7 @@ confirm_note_carrier_block(dsd_state* state, int downlink) {
         return;
     }
     c->burst_proven = 1;
+    confirm_raise_proof(c, DSD_TETRA_BURST_PROOF_TMO);
     if (!carrier_current) {
         return;
     }
@@ -129,6 +158,35 @@ tetra_confirm_note_block(dsd_state* state) {
     tetra_confirm_t* const c = confirm_for_note(state, &carrier_current);
     if (c) {
         c->burst_proven = 1;
+        confirm_raise_proof(c, DSD_TETRA_BURST_PROOF_PROFILE);
+    }
+}
+
+void
+tetra_confirm_note_proof(dsd_state* state, dsd_tetra_burst_proof proof) {
+    int carrier_current = 0;
+    tetra_confirm_t* const c = confirm_for_note(state, &carrier_current);
+    if (c) {
+        confirm_raise_proof(c, proof);
+    }
+}
+
+dsd_tetra_burst_proof
+tetra_burst_proof(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts ? (dsd_tetra_burst_proof)ts->confirm.last_proof : DSD_TETRA_BURST_PROOF_NONE;
+}
+
+int
+tetra_burst_proof_is_content(dsd_tetra_burst_proof proof) {
+    switch (proof) {
+        case DSD_TETRA_BURST_PROOF_TMO:
+        case DSD_TETRA_BURST_PROOF_DMO_OPAQUE:
+        case DSD_TETRA_BURST_PROOF_DMO_SERVICE:
+        case DSD_TETRA_BURST_PROOF_DMO_SPEECH: return 1;
+        case DSD_TETRA_BURST_PROOF_NONE:
+        case DSD_TETRA_BURST_PROOF_PROFILE:
+        default: return 0;
     }
 }
 

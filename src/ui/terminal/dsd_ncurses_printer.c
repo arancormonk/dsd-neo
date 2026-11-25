@@ -18,6 +18,7 @@
 
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include "dsd-neo/core/input_level.h"
@@ -276,6 +277,7 @@ ui_synctype_in_scan_class(int synctype, dsd_scan_mode mode) {
         case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_IS_DSTAR(synctype);
         case DSD_SCAN_MODE_YSF: return DSD_SYNC_IS_YSF(synctype);
         case DSD_SCAN_MODE_M17: return DSD_SYNC_IS_M17(synctype);
+        case DSD_SCAN_MODE_TETRA_DMO: return DSD_SYNC_IS_TETRA(synctype);
         /* An analog row has no frame sync: no digital sync type describes it. */
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM: return 0;
@@ -295,6 +297,8 @@ ui_scan_class_idle_synctype(dsd_scan_mode mode, const dsd_state* state) {
         case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_DSTAR_VOICE_POS;
         case DSD_SCAN_MODE_YSF: return DSD_SYNC_YSF_POS;
         case DSD_SCAN_MODE_M17: return DSD_SYNC_M17_STR_POS;
+        /* A DMO channel is acquired on its synchronisation burst (DSB, EN 300 396-2 clause 9.4.3.2). */
+        case DSD_SCAN_MODE_TETRA_DMO: return DSD_SYNC_TETRA_SB_POS;
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM:
         case DSD_SCAN_MODE_INHERIT: return DSD_SYNC_NONE;
@@ -2877,6 +2881,18 @@ ui_render_call_info_ysf(const dsd_state* state) {
     ui_print_ysf_remarks(state);
 }
 
+/* The Channels panel shows when the menu toggle is on, or on its own while Tier III channels were granted with no
+   frequency (discussion #900 F3): the receiver cannot follow their calls, so the panel says which. Never compact, and
+   not for them on a carrier that names another system (dsd_app_dmr_t3_view_missing_shown(), as Qt's NO FREQ). */
+static int
+ui_channels_panel_open(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->frontend_terminal_display.terminal_compact != 0) {
+        return 0;
+    }
+    return opts->frontend_display.show_channels == 1
+           || dsd_app_dmr_t3_view_missing_shown(dsd_app_dmr_t3_view(state)) > 0U;
+}
+
 static int
 ui_channel_label_is_locked(const dsd_opts* opts, const dsd_state* state, const char* label) {
     int locked = ui_is_locked_from_label(state, label);
@@ -4558,8 +4574,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     // Bottom border for Call Info section
     ui_print_hr();
 
-    // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
-    if (opts->frontend_display.show_channels == 1 && opts->frontend_terminal_display.terminal_compact == 0) {
+    // Render learned LCNs just under the Call Info section when trunking (toggle in menu), or missing Tier III channels
+    if (ui_channels_panel_open(opts, state)) {
         ui_print_learned_lcns(opts, state);
         // fence bottom only when Channels are shown
         ui_print_hr();

@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -562,26 +563,44 @@ dsd_engine_retune_lands_digital_family(const dsd_opts* opts, const dsd_state* st
            && (timed_digital_family || rtl_stream_family_landing_after_pending());
 }
 
+/* The class part of the parked trunk-scan target's landing when the tuning layer builds its chain from it: every
+ * digital target but a P25 one, whose chain follows its learned modulation (dsd_engine_prepare_p25_cc_rtl_chain()).
+ * 0 with @p out zeroed otherwise, a -Y row and a plain -T retune (no coordinator) included. The class part only: it is
+ * read from the target's type, which a park never rewrites, so the P25 watchdog's tunes off the decoder thread read
+ * it as safely as the decoder's own (the resolved landing, rewritten at every park, is the decoder thread's). */
+static int
+dsd_engine_trunk_scan_symbol_landing(const dsd_state* state, dsd_trunk_scan_landing* out) {
+    if (dsd_engine_trunk_scan_active_class_landing(state, out) && out->mode != DSD_SCAN_MODE_P25) {
+        return 1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
+
 /* Whether the CQPSK state of the symbol profile queued for the parked trunk-scan target is the target's own choice,
  * which stands over DSD_NEO_CQPSK where a retune out of the analog family lands (issue #583), as it does on a retune
  * that stays on the digital family: a P25 target with a modulation value (c4fm, cqpsk or auto:
- * dsd_engine_trunk_scan_active_p25_cqpsk_request() answers), or a DMR or NXDN target, whose GFSK chain always queues
- * CQPSK off. A P25 target with no modulation, a -Y row and a plain -T retune (no coordinator) land where an open of the
- * mode would. The decoder's timing decides the same from the scan scope (dsd_scan_mode_symbol_timing_rate_hz()). */
+ * dsd_engine_trunk_scan_active_p25_cqpsk_request() answers), or any other digital target, whose landing profile
+ * queues its class's CQPSK state (off for DMR, NXDN, dPMR, D-STAR, YSF and M17, on for TETRA DMO, issue #890). A P25
+ * target with no modulation, a -Y row and a plain -T retune (no coordinator) land where an open of the mode would. The
+ * decoder's timing decides the same from the scan scope (dsd_scan_mode_symbol_timing_rate_hz()). */
 static int
 dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
     int requested_cqpsk = 0;
+    dsd_trunk_scan_landing landing;
     return (dsd_engine_trunk_scan_active_p25_cqpsk_request(state, &requested_cqpsk)
-            || dsd_engine_trunk_scan_active_gfsk_symbol_rate(state) > 0)
+            || dsd_engine_trunk_scan_symbol_landing(state, &landing))
                ? 1
                : 0;
 }
 
 /*
- * Four-level GFSK control/park channel. The symbol rate is a parameter because the family spans
- * two of them: DMR and NXDN96 at 4800 sym/s in a 12.5 kHz channel, NXDN48 at 2400 sym/s in a
- * 6.25 kHz one. dsd_rtl_channel_profile_for() owns the rate-to-filter mapping, so the front end
- * and the SPS hunt cannot drift apart on which filter a rate wants.
+ * A parked target's own chain (issue #890: the landing profile, dsd_trunk_scan_landing), or a plain -T GFSK control
+ * channel's: its symbol rate, levels, CQPSK state and channel filter. DMR and NXDN96 run 4800 sym/s on the FSK
+ * discriminator in a 12.5 kHz channel, NXDN48 and dPMR 2400 sym/s in a 6.25 kHz one, D-STAR 4800 sym/s over two levels
+ * in 6.25 kHz, YSF and M17 4800 sym/s in 12.5 kHz, and TETRA DMO 18000 sym/s on the CQPSK chain with its own filter.
+ * dsd_rtl_channel_profile_for() owns the rate-to-filter mapping, so the front end and the SPS hunt cannot drift apart
+ * on which filter a rate wants.
  *
  * The TED is the front end's own timing, at the complex rate the discriminator runs at (issue #806), not at the
  * decoder's output rate: the digital family a retune lands, or digital_resample, resamples only the output, and a TED
@@ -590,38 +609,44 @@ dsd_engine_trunk_scan_cqpsk_explicit(const dsd_state* state) {
  * so the queued request names the timing the landing runs, which the engine's retune tests check without a stream.
  */
 static void
-dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,
-                                     int symbol_rate_hz) {
+dsd_engine_prepare_landing_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,
+                                     const dsd_trunk_scan_landing* landing) {
     int retune_ted_sps = ted_sps;
     const int complex_rate_hz = rtl_stream_get_complex_rate_hz();
     if (state->rtl_ctx && complex_rate_hz > 0) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, complex_rate_hz);
+        retune_ted_sps = dsd_opts_compute_sps_rate(opts, landing->symbol_rate_hz, complex_rate_hz);
     }
-    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
-                                                 dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, landing->cqpsk ? 1 : 0,
+                                                 landing->symbol_rate_hz, landing->levels, landing->channel_profile,
                                                  retune_ted_sps, 0);
 }
 
 /*
- * Symbol rate for a four-level GFSK retune, or 0 when this is not one.
+ * The chain a symbol retune lands that is no P25 one, or 0 when this is not one.
  *
- * Under trunk scan the coordinator's parked target type is authoritative. The symbol rate and the
- * channel filter belong to the target's channel, not to the modulation lock, which keeps owning
- * symbol slicing through rf_mod and is left alone here. Deriving the rate from rf_mod == 2 instead
- * loses every GFSK target whose modulation column is empty under a global -mc/-mq lock, because the
- * coordinator then leaves rf_mod at the locked value: the retune falls through to re-queuing
- * whatever chain the previous target left on the front end -- after an nxdn48-conventional dwell, a
- * 2400 sym/s 6.25 kHz chain on a 12.5 kHz channel -- and a locked SPS hunt never re-applies over it,
- * since it only rotates among equal-timing profiles. Outside trunk scan the coordinator answers 0
- * and the rf_mod gate keeps plain -T retunes unchanged.
+ * Under trunk scan the coordinator's landing profile for its parked target is authoritative (issue #890). The symbol
+ * rate, levels, CQPSK state and channel filter belong to the target's class, not to the modulation lock, which keeps
+ * owning symbol slicing through rf_mod and is left alone here. Deriving the chain from rf_mod == 2 instead loses every
+ * GFSK target whose modulation column is empty under a global -mc/-mq lock, because the coordinator then leaves rf_mod
+ * at the locked value: the retune falls through to re-queuing whatever chain the previous target left on the front end
+ * -- after an nxdn48-conventional dwell, a 2400 sym/s 6.25 kHz chain on a 12.5 kHz channel -- and a locked SPS hunt
+ * never re-applies over it, since it only rotates among equal-timing profiles. It loses every class with no GFSK too
+ * (YSF, M17, dPMR on C4FM, TETRA on QPSK), which would otherwise keep the previous target's chain. Outside trunk scan
+ * the coordinator answers nothing and the rf_mod gate keeps plain -T GFSK retunes on the 4800 sym/s four-level chain.
  */
 static int
-dsd_engine_gfsk_cc_symbol_rate(const dsd_state* state) {
-    const int scan_rate = dsd_engine_trunk_scan_active_gfsk_symbol_rate(state);
-    if (scan_rate > 0) {
-        return scan_rate;
+dsd_engine_symbol_cc_landing(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_landing* out) {
+    if (dsd_engine_trunk_scan_symbol_landing(state, out)) {
+        return 1;
     }
-    return (state && state->rf_mod == 2) ? 4800 : 0;
+    if (!state || state->rf_mod != 2) {
+        return 0;
+    }
+    out->symbol_rate_hz = 4800;
+    out->levels = 4;
+    out->rf_mod = 2;
+    out->channel_profile = dsd_rtl_channel_profile_for(opts, 4800, 4, 2);
+    return 1;
 }
 
 static void
@@ -671,16 +696,19 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
  * request queued before it (a width edit for the analog target). It is attached when the retune carries that family
  * (@p lands_digital_family, the preparation's dsd_engine_retune_lands_digital_family(): the row was timed for that
  * landing, or the front end runs the analog family or outstanding work lands a family); a digital-only session never
- * does, so it retunes as it always has. It says whether the profile's CQPSK state is a trunk-scan target's own
- * choice (dsd_engine_trunk_scan_cqpsk_explicit()), which the stream then lands over DSD_NEO_CQPSK (issue #583); the
- * stream ignores that for a profile that leaves the CQPSK state alone. */
+ * does, so it retunes as it always has. It says whether the profile's CQPSK state is the target's own choice, which
+ * the stream then lands over DSD_NEO_CQPSK (issue #583): a trunk-scan target's (dsd_engine_trunk_scan_cqpsk_explicit())
+ * or, with @p row_cqpsk_explicit, the -Y row's its timing recorded (dsd_scan_mode_timed_cqpsk(): a tetra-dmo row's
+ * CQPSK chain, issue #890), so a tetra-dmo row after an nfm row lands its chain whatever DSD_NEO_CQPSK says. The stream
+ * ignores that for a profile that leaves the CQPSK state alone. */
 static void
-dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lands_digital_family) {
+dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lands_digital_family,
+                                  int row_cqpsk_explicit) {
     if (!lands_digital_family) {
         return;
     }
-    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0,
-                                                      dsd_engine_trunk_scan_cqpsk_explicit(state)};
+    const int cqpsk_explicit = row_cqpsk_explicit || dsd_engine_trunk_scan_cqpsk_explicit(state);
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, cqpsk_explicit};
     (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 
@@ -694,9 +722,9 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
         return;
     }
     if (ted_sps > 0) {
-        const int gfsk_rate = dsd_engine_gfsk_cc_symbol_rate(state);
-        if (gfsk_rate > 0) {
-            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate);
+        dsd_trunk_scan_landing landing;
+        if (dsd_engine_symbol_cc_landing(opts, state, &landing)) {
+            dsd_engine_prepare_landing_rtl_chain(opts, state, target_freq_hz, ted_sps, &landing);
             return;
         }
     }
@@ -1006,6 +1034,24 @@ engine_fixed_tuning_refusal(const dsd_opts* opts) {
     return engine_fixed_tuning_result(opts);
 }
 
+#ifdef USE_RADIO
+/* RigctlFrequencyMoves() as the last RTL landing of a rigctl tune read it (dsd_engine_rtl_landing_peer_moved()). */
+static dsd_atomic_u64 s_rtl_landing_peer_moves;
+
+/* Whether the rigctl peer may have moved since the last RTL landing of a rigctl tune: this tune's request went out
+ * (the peer was last confirmed elsewhere, @p sent_before_hz), or any leg sent one since the last landing (a manual
+ * tune, the legacy direct return to the control channel, a scan step), which RigctlFrequencyMoves() counts even when
+ * it went away and came back to this frequency. The landing then flushes the stream's output and starts its filters
+ * over, whatever the stream's own records say. */
+static int
+dsd_engine_rtl_landing_peer_moved(uint32_t sent_before_hz, uint32_t freq_hz) {
+    const uint64_t moves = RigctlFrequencyMoves();
+    const uint64_t at_last_landing = dsd_atomic_u64_load_relaxed(&s_rtl_landing_peer_moves);
+    dsd_atomic_u64_store_relaxed(&s_rtl_landing_peer_moves, moves);
+    return sent_before_hz == 0U || sent_before_hz != freq_hz || moves != at_last_landing;
+}
+#endif
+
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     /* Nothing has moved yet: a refusal below must not report the last tune's rigctl move as this one's. */
@@ -1036,7 +1082,8 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         opts->rigctl_sent_freq_hz = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
-            rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
+            rtl_stream_apply_pending_retune_profile_for_target(
+                (uint32_t)freq, dsd_engine_rtl_landing_peer_moved(sent_before_hz, (uint32_t)freq));
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
@@ -1497,7 +1544,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
 #ifdef USE_RADIO
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
-        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family, 0);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
@@ -1552,16 +1599,24 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
     }
     if (ted_sps > 0) {
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
+        int row_explicit = 0;
         if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
             const int levels = dsd_frame_sync_active_profile_levels(state);
-            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, state->rf_mod == 1, rate, levels,
-                                                         dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
+            /* The row's chain: its class's own where it has one (a tetra-dmo row runs only the CQPSK chain with the
+               TETRA filter, issue #890, whatever a global -m lock left on rf_mod), as the row's timing assumed it, else
+               the decoder's. The row is staged here, not yet the scope's, so its timing's record answers for it; the
+               family switch out of an analog row carries the same choice. */
+            int class_cqpsk = 0;
+            row_explicit = dsd_scan_mode_timed_cqpsk(state, &class_cqpsk);
+            const int rf_mod = row_explicit ? (class_cqpsk ? 1 : 0) : state->rf_mod;
+            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, rf_mod == 1, rate, levels,
+                                                         dsd_rtl_channel_profile_for(opts, rate, levels, rf_mod),
                                                          ted_sps, 0);
         } else {
             dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         }
-        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family, row_explicit);
     }
     return 0;
 }
@@ -1581,6 +1636,68 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)state;
 #endif
     return 0;
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    if (override_sps) {
+        *override_sps = 0;
+    }
+    if (applied_sps) {
+        *applied_sps = 0;
+    }
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    int symbol_rate_hz = 0;
+    int channel_profile = 0;
+    int cqpsk = 0;
+    (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, &channel_profile);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+    /* The TED timing is the TETRA landing's only once the stream publishes the TETRA profile it came with, which sets
+       the TED and sets or clears the override; before that both are the last profile's, which say nothing about this
+       landing. */
+    if (!cqpsk || symbol_rate_hz != DSD_TETRA_SYMBOL_RATE_HZ || channel_profile != RTL_STREAM_CHANNEL_PROFILE_TETRA) {
+        return;
+    }
+    const int override = rtl_stream_get_ted_sps_override();
+    const int applied = rtl_stream_get_ted_sps();
+    if (override_sps && override > 0) {
+        *override_sps = override;
+    }
+    if (applied_sps && applied > 0) {
+        *applied_sps = applied;
+    }
+#else
+    (void)opts;
+    (void)state;
+#endif
+}
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return 0;
+    }
+    /* A receive request the demod thread has not taken yet may still bring the TETRA profile: what the stream
+       publishes is the stream before it (rtl_stream_receive_request_outcome()). */
+    const uint32_t seq = rtl_stream_receive_request_seq();
+    if (seq != 0U && rtl_stream_receive_request_outcome(seq) == RTL_STREAM_RX_REQUEST_PENDING) {
+        return 0;
+    }
+    int symbol_rate_hz = 0;
+    int channel_profile = 0;
+    int cqpsk = 0;
+    (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, &channel_profile);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+    return !cqpsk || symbol_rate_hz != DSD_TETRA_SYMBOL_RATE_HZ || channel_profile != RTL_STREAM_CHANNEL_PROFILE_TETRA;
+#else
+    (void)opts;
+    (void)state;
+    return 0;
+#endif
 }
 
 double

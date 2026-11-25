@@ -12,6 +12,7 @@ static dsd_signal_search_active_fn active_fn = NULL;
 static dsd_signal_search_site_fn site_fn = NULL;
 static dsd_signal_search_call_fn call_fn = NULL;
 static dsd_signal_search_access_fn access_fn = NULL;
+static dsd_signal_search_activity_fn activity_fn = NULL;
 static dsd_signal_search_p25p2_codes_fn p25p2_codes_fn = NULL;
 static dsd_signal_search_p25p2_code_fn p25p2_code_fn = NULL;
 
@@ -76,7 +77,15 @@ dsd_signal_search_access_set(dsd_signal_search_access_fn fn) {
 void
 dsd_signal_search_note_access(const dsd_state* state) {
     if (access_fn) {
-        access_fn(state);
+        access_fn(state, NULL);
+    }
+}
+
+void
+dsd_signal_search_note_access_code(const dsd_state* state, int sync, uint8_t kind, uint16_t value) {
+    if (access_fn) {
+        const dsd_signal_search_access_note note = {sync, kind, value};
+        access_fn(state, &note);
     }
 }
 
@@ -103,5 +112,17 @@ void
 dsd_signal_search_note_p25p2_code(const dsd_state* state, uint64_t code, int source) {
     if (p25p2_code_fn) {
         p25p2_code_fn(state, code, source);
+    }
+}
+
+void
+dsd_signal_search_activity_set(dsd_signal_search_activity_fn fn) {
+    activity_fn = fn;
+}
+
+void
+dsd_signal_search_note_activity(const dsd_state* state) {
+    if (activity_fn) {
+        activity_fn(state);
     }
 }

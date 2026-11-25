@@ -69,9 +69,11 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -6675,9 +6677,9 @@ test_scan_avoid_counts_width_skipped_rows_out(void) {
 }
 
 /*
- * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Channels a DMR site announces are then
- * appended to the list (dmr_cspdu_pf0_c_bcast_track_freq()), and they are no list to scan: neither the per-visit cap nor
- * the voice gate ends a reception for them, and none of them is somewhere to go.
+ * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Rows another source then puts in the list (a
+ * protocol's control channel seed) are no list to scan: neither the per-visit cap nor the voice gate ends a reception
+ * for them, and none of them is somewhere to go.
  */
 static int
 test_clear_channel_map_leaves_learned_channels_unscanned(void) {
@@ -8686,12 +8688,14 @@ test_scoped_mode_commands_and_config(void) {
 
 static int g_quiet_setting_calls;
 static int g_quiet_setting_turned_on;
+static int g_quiet_setting_reading_changed;
 
 static void
-count_quiet_setting_changed(dsd_state* state, int turned_on) {
+count_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed) {
     (void)state;
     g_quiet_setting_calls++;
     g_quiet_setting_turned_on = turned_on;
+    g_quiet_setting_reading_changed = reading_changed;
 }
 
 /* Session-wide skip-silent (#834): a plain int32 setter that tells the engine through the runtime hook, never
@@ -8719,6 +8723,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent applied", opts.scan_skip_silent, 1);
     rc |= expect_int("skip-silent told the engine", g_quiet_setting_calls, 1);
     rc |= expect_int("skip-silent off to on: turned on", g_quiet_setting_turned_on, 1);
+    rc |= expect_int("skip-silent off to on: changed", g_quiet_setting_reading_changed, 1);
     rc |= expect_contains("skip-silent toast", state.ui_msg, "Silent channel skip -> On");
 
     /* A scan-mode row enter and leave neither captures nor restores it. */
@@ -8730,6 +8735,7 @@ test_scan_skip_silent_command(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("skip-silent off drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("skip-silent on to off: not turned on", g_quiet_setting_turned_on, 0);
+    rc |= expect_int("skip-silent on to off: changed", g_quiet_setting_reading_changed, 1);
     dsd_scan_mode_leave(&opts, &state);
     rc |= expect_int("row leave does not restore skip-silent", opts.scan_skip_silent, 0);
     rc |= expect_contains("skip-silent off toast", state.ui_msg, "Silent channel skip -> Off");
@@ -8749,6 +8755,7 @@ test_scan_skip_silent_command(void) {
     rc |= expect_int("skip-silent pair drained", dsd_app_drain_cmds(&opts, &state), 2);
     rc |= expect_int("skip-silent nonzero means on", opts.scan_skip_silent, 1);
     rc |= expect_int("skip-silent on to on: not turned on", g_quiet_setting_turned_on, 0);
+    rc |= expect_int("skip-silent on to on: unchanged", g_quiet_setting_reading_changed, 0);
 
     /* The table outlives the trunk-scan coordinator: installing and clearing the coordinator's hooks (what its init
      * and teardown do) leaves the slot in place. */
@@ -8772,12 +8779,23 @@ test_scan_skip_silent_command(void) {
         rc |= expect_int("config apply drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("config apply told the engine", g_quiet_setting_calls, 1);
         rc |= expect_int("config apply off to on: turned on", g_quiet_setting_turned_on, 1);
+        rc |= expect_int("config apply off to on: changed", g_quiet_setting_reading_changed, 1);
         rc |=
             expect_int("config apply again queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
                        DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int("config apply again drained", dsd_app_drain_cmds(&opts, &state), 1);
         rc |= expect_int("config apply on to on: told, not turned on",
                          g_quiet_setting_calls == 2 && g_quiet_setting_turned_on == 0, 1);
+        rc |= expect_int("config apply on to on: unchanged", g_quiet_setting_reading_changed, 0);
+        cfg.trunk_scan_skip_silent_ms = 30;
+        rc |=
+            expect_int("config apply length queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg),
+                       DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("config apply length drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("config apply length: changed",
+                         opts.scan_skip_silent_ms == 30 && g_quiet_setting_turned_on == 0
+                             && g_quiet_setting_reading_changed == 1,
+                         1);
     }
 
     dsd_frame_sync_hooks_set(NULL);
@@ -10784,6 +10802,11 @@ test_commands_that_need_the_frame_loop(void) {
     dsd_app_scan_avoid_remove_payload put_back;
     DSD_MEMSET(&put_back, 0, sizeof put_back);
     put_back.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+    dsd_app_dmr_channel_set_payload channel_edit;
+    DSD_MEMSET(&channel_edit, 0, sizeof channel_edit);
+    channel_edit.lpcn = 12U;
+    channel_edit.op = DMR_T3_OVERLAY_SET;
+    channel_edit.hz = 451137500;
 
     const struct {
         const void* payload;
@@ -10828,6 +10851,8 @@ test_commands_that_need_the_frame_loop(void) {
         {NULL, 0U, "clear avoids", DSD_APP_CMD_SCAN_AVOID_CLEAR, 0},
         {&put_back, sizeof put_back, "put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0},
         {NULL, 0U, "avoid", DSD_APP_CMD_SCAN_AVOID, 1},
+        /* A Tier III channel edit changes only the map, so a DMR voice loop keeps its call. */
+        {&channel_edit, sizeof channel_edit, "DMR channel edit", DSD_APP_CMD_DMR_CHANNEL_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -13367,11 +13392,17 @@ test_user_moves_while_trunking_forget_the_record(void) {
     seed_p25_record(&state);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
     state.dmr_ras_signatures = 1U; /* the carrier left's RAS evidence */
+    rc |= expect_int("a DMR channel learned before the return",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
     rc |= expect_int("a user return-to-CC forgets the RAS evidence", (int)state.dmr_ras_signatures, 0);
+    /* The same network's control channel: what its site taught stays (discussion #900 F2). */
+    rc |=
+        expect_true("a user return-to-CC keeps the learned DMR channel",
+                    state.trunk_chan_map[12] == 451012500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_SITE);
     rc |= expect_true("the ended call keeps the system it ended with",
                       state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
     freeState(&state);
@@ -13384,13 +13415,34 @@ test_user_moves_while_trunking_forget_the_record(void) {
     state.trunk_lcn_freq[0] = 851000000L;
     state.trunk_lcn_freq[1] = 851500000L;
     seed_p25_record(&state);
+    rc |= expect_int("a DMR channel learned before the cycle",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |= expect_int("trunked channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunked channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("trunked channel cycle tuned", g_io_control_tune_calls, 1);
     rc |= expect_int("a trunked channel cycle forgets the record", (int)state.rx_id.valid, 0);
+    /* The move can land on another network: what the air taught goes, its trust with it (discussion #900 F2). */
+    rc |= expect_true("a trunked channel cycle drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
     freeState(&state);
+
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    /* A frequency entry runs the operator's carrier boundary (svc_operator_carrier_boundary()): the same. */
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    rc |= expect_int("a DMR channel learned before the frequency entry",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("frequency entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("frequency entry tuned", g_io_control_tune_calls, 1);
+    rc |= expect_true("an operator tune's boundary drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
+    freeState(&state);
+#endif
     return rc;
 }
 
@@ -26535,6 +26587,368 @@ test_channel_map_reload_expected_path(void) {
     return rc;
 }
 
+/* A DSD_APP_CMD_DMR_CHANNEL_SET against Tier III channel @p lpcn as the session holds it now (discussion #900 F3). */
+static dsd_app_dmr_channel_set_payload
+dmr_channel_edit(const dsd_state* state, uint16_t lpcn, uint8_t op, int64_t hz) {
+    dsd_app_dmr_channel_set_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.session_seq = dsd_app_command_session_generation();
+    p.request = dsd_app_dmr_channel_request_next();
+    p.generation = dmr_t3_chan_generation(state);
+    p.hz = hz;
+    p.expected_hz = dmr_t3_chan_effective_hz(state, lpcn);
+    p.lpcn = lpcn;
+    p.op = op;
+    p.expected_origin = (uint8_t)dmr_t3_chan_origin(state, lpcn);
+    return p;
+}
+
+/* Submit @p p, drain it, and return the code of its retained result (-100 when it got none). */
+static int32_t
+dmr_channel_edit_result(dsd_opts* opts, dsd_state* state, const dsd_app_dmr_channel_set_payload* p, size_t size) {
+    dsd_app_dmr_channel_set_result before;
+    (void)dsd_app_dmr_channel_set_result_get(&before);
+    if (dsd_app_command_submit(DSD_APP_CMD_DMR_CHANNEL_SET, p, size) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return -100;
+    }
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_dmr_channel_set_result out[4];
+    const int n = dsd_app_dmr_channel_set_results_since(before.sequence, out, 4);
+    if (n != 1 || out[0].request != p->request || out[0].lpcn != p->lpcn || out[0].op != p->op) {
+        return -100;
+    }
+    return out[0].code;
+}
+
+/* The channel-set command: applied against the row the editor read, refused when the session, the network or the row
+   moved on, under a trunk scan or for a payload it cannot take, and every request answered through its result. */
+static int
+test_dmr_channel_set_command(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    char map[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_map", "channel,freq\n12,451012500\n13,451025000\n");
+    if (rc != 0) {
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(opts, state), 1);
+
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("channel set applied", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("channel set is the user's, beside the shared row",
+                      dmr_t3_chan_effective_hz(state, 12U) == 451137500L
+                          && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER
+                          && state->trunk_chan_map[12] == 451012500L);
+    dsd_app_dmr_channel_set_result last;
+    rc |= expect_true("the result carries the channel revision", dsd_app_dmr_channel_set_result_get(&last) == 1
+                                                                     && last.revision == dmr_t3_chan_revision(state)
+                                                                     && last.session_seq == p.session_seq);
+
+    /* Stale: the row moved on, its origin, the network, the session. Nothing changes. */
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.expected_hz = 451012500;
+    rc |= expect_int("a moved row is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.expected_origin = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    rc |= expect_int("another origin is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.generation++;
+    rc |= expect_int("another network is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.session_seq++;
+    rc |= expect_int("another session is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(state, 15U, DMR_T3_OVERLAY_HIDE, -1);
+    rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("the HIDE applied", dmr_t3_overlay_get(state, 15U, NULL) == DMR_T3_OVERLAY_HIDE
+                                              && dmr_t3_chan_origin(state, 15U) == DMR_CHAN_ORIGIN_USER);
+    rc |= expect_true("stale edits change nothing", state->trunk_chan_map[13] == 451025000L
+                                                        && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE);
+
+    /* Invalid: no such channel or frequency, a short payload. */
+    p = dmr_channel_edit(state, 4095U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("channel 4095 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, INT64_C(4294967296));
+    rc |= expect_int("a frequency no row holds is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    /* An operation the overlay does not have, as a frontend's payload byte carries it. */
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.op = 0U;
+    rc |= expect_int("operation 0 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p.op = 4U;
+    rc |= expect_int("operation 4 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("a short payload is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p - 4U),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+
+    /* Refused under a trunk scan: its targets' channels are read-only. */
+    opts->trunk_scan_enabled = 1;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("refused under trunk scan", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN);
+    opts->trunk_scan_enabled = 0;
+    rc |= expect_true("the trunk scan refusal changes nothing", state->trunk_chan_map[13] == 451025000L);
+
+    /* Refused once the session no longer decodes DMR (a live mode change to P25 only), judged as
+       the edit is applied: one queued before the change is refused too. */
+    dsd_app_dmr_channel_set_result mode_before;
+    (void)dsd_app_dmr_channel_set_result_get(&mode_before);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("an edit queued before the mode change", dsd_app_command_dmr_channel_set(&p),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    opts->frame_dmr = 0;
+    opts->frame_p25p1 = 1;
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_dmr_channel_set_result no_dmr[2];
+    rc |= expect_true("refused once DMR is off",
+                      dsd_app_dmr_channel_set_results_since(mode_before.sequence, no_dmr, 2) == 1
+                          && no_dmr[0].request == p.request && no_dmr[0].code == DSD_APP_DMR_CHANNEL_SET_NO_DMR);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("refused while DMR is off", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_NO_DMR);
+    rc |= expect_true("the DMR-off refusals change nothing", dmr_t3_overlay_get(state, 13U, NULL) == 0);
+    opts->frame_dmr = 1;
+
+    /* Refused while the carrier names another system, its map being that system's. An edit the
+       editor queued before a Connect Plus identity arrived is judged as it is applied, on the decoder thread. */
+    dsd_app_dmr_channel_set_result queued_before;
+    (void)dsd_app_dmr_channel_set_result_get(&queued_before);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("an edit queued before the identity", dsd_app_command_dmr_channel_set(&p),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    state->rx_id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET;
+    state->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_dmr_channel_set_result other[2];
+    rc |= expect_true("refused on a Connect Plus carrier",
+                      dsd_app_dmr_channel_set_results_since(queued_before.sequence, other, 2) == 1
+                          && other[0].request == p.request && other[0].code == DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_P25;
+    state->rx_id.valid = DSD_RXID_P25_SYSID;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("refused on a P25 carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    /* So does a carrier whose protocol sends no identity (YSF), the record holding no family. */
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    dsd_rxid_note_sync(state, DSD_SYNC_YSF_POS);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("refused on a YSF carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    dsd_rxid_reset(state);
+    rc |= expect_true("the other-system refusals change nothing",
+                      state->trunk_chan_map[13] == 451025000L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE
+                          && dmr_t3_overlay_get(state, 13U, NULL) == 0);
+    /* Back on a Tier III carrier, or one that named nothing yet: edits apply again. */
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    state->rx_id.valid = DSD_RXID_DMR_T3_SYSCODE;
+    state->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("applied on a Tier III carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("restored on a Tier III carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+
+    /* A request the stop discards unapplied is answered too. */
+    dsd_app_dmr_channel_set_result before;
+    (void)dsd_app_dmr_channel_set_result_get(&before);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("dropped edit queued", dsd_app_command_dmr_channel_set(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_frontend_runtime_stop();
+    dsd_app_dmr_channel_set_result dropped[2];
+    rc |= expect_true("the stop answers the queued edit DROPPED",
+                      dsd_app_dmr_channel_set_results_since(before.sequence, dropped, 2) == 1
+                          && dropped[0].request == p.request && dropped[0].code == DSD_APP_DMR_CHANNEL_SET_DROPPED);
+    rc |= expect_int("a NULL edit is rejected", dsd_app_command_dmr_channel_set(NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
+    freeState(state);
+    free(state);
+    free(opts);
+    (void)remove(map);
+    return rc;
+}
+
+/* The user's channels lie beside the shared map, never in it. A reload of the saved map (what an
+   RR refresh posts after writing the file) and its clear change only the map, through the real import services: the
+   entries keep deciding what DMR uses, the map holds the file's rows, and RESTORE shows the reloaded row. */
+static int
+test_dmr_channel_restore_after_reload_shows_the_reloaded_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    char map[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_reload", "channel,freq\n12,451012500\n13,451025000\n");
+    if (rc != 0) {
+        freeState(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("reload map import drained", dsd_app_drain_cmds(opts, state), 1);
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("reload: channel 12 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("reload: channel 13 hidden", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+
+    const char* refreshed = "channel,freq\n12,451012600\n13,451025100\n14,451037500\n";
+    rc |= write_file_bytes(map, refreshed, strlen(refreshed));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, map);
+    rc |= expect_int("overlay map reload drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("after the reload channel 12 is the user's over the reloaded row",
+                      dmr_t3_chan_effective_hz(state, 12U) == 451137500L
+                          && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER
+                          && state->trunk_chan_map[12] == 451012600L);
+    rc |=
+        expect_true("after the reload channel 13 is hidden over the reloaded row",
+                    dmr_t3_chan_effective_hz(state, 13U) == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER
+                        && state->trunk_chan_map[13] == 451025100L);
+    rc |= expect_true("the reload's new row loads", dmr_t3_chan_effective_hz(state, 14U) == 451037500L);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("reload: channel 13 restored", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("restore after the reload shows the reloaded row",
+                      dmr_t3_chan_effective_hz(state, 13U) == 451025100L
+                          && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE);
+
+    rc |= expect_int("overlay map clear queued", post_empty(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("overlay map clear drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("the clear empties the map and keeps the user's channel",
+                      dmr_t3_chan_effective_hz(state, 12U) == 451137500L && state->trunk_chan_map[12] == 0L
+                          && state->trunk_chan_map[13] == 0L && state->trunk_chan_map[14] == 0L
+                          && dmr_t3_overlay_count(state) == 1U);
+    p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("clear: channel 12 restored", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("restore after the clear shows no frequency",
+                      dmr_t3_chan_effective_hz(state, 12U) == 0L
+                          && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_NONE);
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+    (void)remove(map);
+    return rc;
+}
+
+/* In an Auto session (DMR and P25 both decoded) the user's entry for DMR LPCN 12 is not P25's
+   channel 0x000c. A P25 grant for 0x000c resolves through P25's own rules (its IDEN band plan), never at the user's
+   DMR frequency, and P25's cached row changes nothing DMR uses. */
+static int
+test_dmr_channel_set_leaves_p25_channels(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->frame_dmr = 1;
+    opts->frame_p25p1 = 1;
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    int rc = expect_int("auto: channel 12 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                        DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("auto: the entry is not in the shared map", state->trunk_chan_map[12] == 0L);
+    /* P25 IDEN 0: an FDMA plan at 851.000000 MHz base, 12.5 kHz spacing (both invented). */
+    state->p25_iden_fdma[0].populated = 1;
+    state->p25_iden_fdma[0].base_freq = 851000000L / 5L;
+    state->p25_iden_fdma[0].chan_spac = 100;
+    const long p25_hz = process_channel_to_freq(opts, state, 0x000C);
+    rc |= expect_true("auto: P25 channel 0x000c resolves by its band plan", p25_hz == 851150000L);
+    rc |= expect_true("auto: P25 cached its own row, DMR still uses the user's",
+                      state->trunk_chan_map[12] == 851150000L && dmr_t3_chan_effective_hz(state, 12U) == 451137500L);
+    rc |= expect_true("auto: a repeat resolves the same", process_channel_to_freq(opts, state, 0x000C) == 851150000L);
+    /* With the heuristic fill on, entries on 10 and 14 (empty shared rows) anchor no estimate for
+       the channels between them, so P25 channel 0x000b still resolves by its band plan. */
+    opts->dmr_t3_heuristic_fill = 1;
+    p = dmr_channel_edit(state, 10U, DMR_T3_OVERLAY_SET, 451112500);
+    rc |= expect_int("auto: channel 10 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(state, 14U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("auto: channel 14 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("auto: no estimate between the entries",
+                      state->trunk_chan_map[11] == 0L && state->trunk_chan_map[13] == 0L);
+    rc |= expect_true("auto: P25 channel 0x000b resolves by its band plan",
+                      process_channel_to_freq(opts, state, 0x000B) == 851137500L);
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/*
+ * Issue #900: a map whose only usable rows are positional (a Tier III control frequency under key 0, which names no
+ * channel) is a hunt list and loads; a file of zero-frequency placeholders has nothing to load and leaves the live map.
+ */
+static int
+test_channel_map_import_positional_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX], seed[DSD_TEST_PATH_MAX], blank[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_positional_map", "channel,freq\n1,851012500\n2,851512500\n");
+    rc |= make_group_file(seed, sizeof seed, "dsd_positional_seed", "channel,freq,note\n0,452012500,default cc\n");
+    rc |= make_group_file(blank, sizeof blank, "dsd_positional_blank", "channel,freq\n1,0\n2,0\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("positional: map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("positional: map loaded", state.trunk_chan_map[1] == 851012500, 1);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, seed);
+    rc |= expect_int("positional: seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: seed adopted", opts.chan_in_file, seed);
+    rc |= expect_true("positional: old rows gone", state.trunk_chan_map[1] == 0 && state.trunk_chan_map[2] == 0);
+    rc |= expect_true("positional: seed is the hunt list",
+                      state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, blank);
+    rc |= expect_int("positional: placeholder import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: placeholders refused", opts.chan_in_file, seed);
+    rc |= expect_true("positional: seed kept", state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(map);
+    (void)remove(seed);
+    (void)remove(blank);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* Where the followed call and its list stand when a group list command runs (spec R3). */
 enum {
@@ -32081,6 +32495,17 @@ test_scan_entry_toasts_fit_the_status_line(void) {
             "; that target is in no list that is on",
         },
         {1, DSD_SCAN_ENTRY_WIDTH, "; #3 fire-dispatch's width does not fit", "; that target's width does not fit"},
+        /* A TETRA DMO row the scan skips at every visit (issue #890). */
+        {0, DSD_SCAN_ENTRY_TETRA_RATE, "; fire-dispatch needs a TETRA DSP bandwidth (72 kHz)",
+         "; that row needs a TETRA DSP bandwidth (72 kHz)"},
+        {1, DSD_SCAN_ENTRY_TETRA_INPUT, "; #3 fire-dispatch needs a radio I/Q input for TETRA",
+         "; that target needs a radio I/Q input for TETRA"},
+        {1, DSD_SCAN_ENTRY_TETRA_WAIT, "; #3 fire-dispatch waits for the radio's DSP rate",
+         "; that target waits for the radio's DSP rate"},
+        {1, DSD_SCAN_ENTRY_TETRA_RATE, "; #3 fire-dispatch needs a TETRA DSP bandwidth (72 kHz)",
+         "; that target needs a TETRA DSP bandwidth (72 kHz)"},
+        {1, DSD_SCAN_ENTRY_TETRA_CHAIN, "; #3 fire-dispatch cannot run the TETRA receive chain",
+         "; that target cannot run the TETRA receive chain"},
     };
 
     static const char k_short[] = "Applied: frequency -> 461.000000 MHz; scan paused";
@@ -32415,6 +32840,10 @@ main(void) {
     rc |= test_group_reload_expected_path();
     rc |= test_group_reload_under_a_row_list();
     rc |= test_channel_map_reload_expected_path();
+    rc |= test_dmr_channel_set_command();
+    rc |= test_dmr_channel_restore_after_reload_shows_the_reloaded_row();
+    rc |= test_dmr_channel_set_leaves_p25_channels();
+    rc |= test_channel_map_import_positional_rows();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     for (int scenario = GROUP_RELEASE_IMPORT; scenario <= GROUP_RELEASE_RETURN_FAILS; scenario++) {
         rc |= test_group_list_command_releases_blocked_calls(scenario);

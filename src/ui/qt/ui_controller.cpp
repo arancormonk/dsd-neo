@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include "call_history_model.h"
 #include "decoder_host.h"
+#include "dmr_channels_model.h"
 #include "heard_talkgroup_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
@@ -163,8 +164,7 @@ UiController::onSessionStateChanged() {
     // The host can deliver a USB attachment synchronously just after publishing
     // Idle. Associate its last export before that attachment builds a new session.
     if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
-        pollTalkgroupExport();
-        pollDecryptionResult();
+        pollCommandResults();
         // Not saved here: the session's last rows are ingested later in the tick.
         m_historySaveOwed = true;
     }
@@ -190,6 +190,9 @@ UiController::clearLiveModels() {
     }
     if (m_network != nullptr) {
         m_network->clear();
+    }
+    if (m_dmrChannels != nullptr) {
+        m_dmrChannels->clear();
     }
     if (m_metrics != nullptr) {
         m_metrics->clear();
@@ -267,12 +270,42 @@ UiController::pollDecryptionResult() {
 }
 
 void
+UiController::pollCommandResults() {
+    pollTalkgroupExport();
+    pollDecryptionResult();
+    if (m_commands) {
+        m_commands->pollDmrChannelResults();
+    }
+}
+
+void
+UiController::setDmrChannels(DmrChannelsModel* model) {
+    if (m_dmrChannels != nullptr) {
+        disconnect(m_dmrChannels, nullptr, this, nullptr);
+    }
+    m_dmrChannels = model;
+    if (m_dmrChannels != nullptr) {
+        connect(m_dmrChannels, &DmrChannelsModel::activeChanged, this, &UiController::onDmrChannelsActiveChanged);
+    }
+}
+
+void
+UiController::onDmrChannelsActiveChanged() {
+    if (m_dmrChannels == nullptr || !m_dmrChannels->active() || !sessionIsLive()) {
+        return;
+    }
+    // The GUI thread's one reader (this file), between ticks: the same held buffers a tick reads.
+    m_dmrChannels->refresh(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(),
+                           dsd_app_command_session_generation());
+}
+
+void
 UiController::setCommandBridge(CommandBridge* commands) {
     m_commands = commands;
 }
 
 bool
-UiController::invalidateForTarget(const dsd_state* snapshot) {
+UiController::invalidateForTarget(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     if (!snapshot || snapshot->trunk_scan_active_ordinal == m_active_ordinal) {
         return false;
     }
@@ -285,6 +318,10 @@ UiController::invalidateForTarget(const dsd_state* snapshot) {
     // replacement (an empty list first would rebuild every row it shows).
     if (m_network) {
         m_network->replaceForTarget(sessionIsLive() ? snapshot : nullptr);
+    }
+    if (m_dmrChannels) {
+        m_dmrChannels->replaceForTarget(opts_snapshot, sessionIsLive() ? snapshot : nullptr,
+                                        dsd_app_command_session_generation());
     }
     if (m_talkgroups) {
         m_talkgroups->invalidateForTarget();
@@ -299,8 +336,7 @@ UiController::sessionIsLive() const {
 
 void
 UiController::tick() {
-    pollTalkgroupExport();
-    pollDecryptionResult();
+    pollCommandResults();
 
     if (m_diagnostics) {
         m_diagnostics->refresh();
@@ -314,8 +350,7 @@ UiController::tick() {
         m_host->refresh();
         // Terminal lifecycle publication can race the first result poll. Consume
         // its final retained export before queued QML restarts build their argv.
-        pollTalkgroupExport();
-        pollDecryptionResult();
+        pollCommandResults();
     }
 
     const bool sessionEnded = std::exchange(m_historySaveOwed, false);
@@ -377,7 +412,7 @@ UiController::refreshModels() {
     const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
 
-    const bool new_target = invalidateForTarget(snapshot);
+    const bool new_target = invalidateForTarget(opts_snapshot, snapshot);
     if (m_metrics != nullptr) {
         if (live) {
             m_metrics->refresh(opts_snapshot, snapshot, new_target);
@@ -395,6 +430,9 @@ UiController::refreshRedrawModels(const dsd_opts* opts_snapshot, const dsd_state
                                   bool new_target) {
     if (live && m_network != nullptr && !new_target) { // A hop has published this snapshot's network already.
         m_network->refresh(snapshot);
+    }
+    if (live && m_dmrChannels != nullptr && !new_target) { // As the network: a hop published these rows already.
+        m_dmrChannels->refresh(opts_snapshot, snapshot, dsd_app_command_session_generation());
     }
     /* The call history is persistent by design, so unlike the metrics it is never
      * cleared on session boundaries — only fed. */

@@ -1,4 +1,4 @@
-add_library(dsd-neo_proto_tetra)
+add_library(dsd-neo_proto_tetra STATIC)
 
 target_sources(
     dsd-neo_proto_tetra
@@ -14,6 +14,7 @@ target_sources(
         tetra_mac.c
         tetra_mle.c
         tetra_mm.c
+        tetra_search.c
         tetra_state.c
         tetra_trunk_sm.c
         tetra_ul.c
@@ -37,10 +38,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_tetra PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_tetra
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

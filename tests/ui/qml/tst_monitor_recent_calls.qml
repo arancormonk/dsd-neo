@@ -4,6 +4,7 @@
 import QtQuick
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // The monitor's recent-calls pane is the same newest-first list as the history
 // log, and drifts the same way if the top is not re-asserted. It carries no
@@ -760,21 +761,30 @@ Item {
                 root.width = 320
                 tryVerify(encryptionFits, 5000, "encryption does not fit on a narrow screen")
 
-                // An unknown algorithm leaves no phantom gap; ENC still fits.
+                // An unknown algorithm leaves no phantom gap; ENC still fits. The channel, placed before the ids
+                // grow (issue #901 G5), may follow ENC; the line ends at the last part drawn, flush right.
                 testContext.setMetric("slot1EncText", "")
+                var heroChannel = findChild(screenLoader.item, "heroChannel")
                 tryVerify(function () {
+                    var last = heroChannel.visible ? heroChannel : enc
                     return !algorithm.visible && ids.truncated && enc.visible
                             && enc.x >= ids.x + ids.width + ids.parent.spacing - 0.5
-                            && Math.abs(enc.x + enc.width - ids.parent.width) < 0.5
+                            && (!heroChannel.visible || heroChannel.x >= enc.x + enc.width + ids.parent.spacing - 0.5)
+                            && Math.abs(last.x + last.width - ids.parent.width) < 0.5
                 }, 5000, "a hidden algorithm still consumes identity space")
 
                 // Clear calls must not reserve space for hidden security fields,
                 // even if a previous header left an algorithm string behind.
                 testContext.setMetric("slot1EncText", "AES-256 K:65535")
                 testContext.setMetric("slot1CallEnc", false)
+                // The ids and the channel (G5) fill the line between them.
                 tryVerify(function () {
-                    return !enc.visible && !algorithm.visible && ids.truncated
-                            && Math.abs(ids.width - ids.parent.width) < 0.5
+                    var filled = heroChannel.visible
+                            ? heroChannel.x >= ids.x + ids.width + ids.parent.spacing - 0.5
+                              && Math.abs(heroChannel.x + heroChannel.width - ids.parent.width) < 0.5
+                              && Math.abs(ids.width + ids.parent.spacing + heroChannel.width - ids.parent.width) < 0.5
+                            : Math.abs(ids.width - ids.parent.width) < 0.5
+                    return !enc.visible && !algorithm.visible && ids.truncated && filled
                 }, 5000, "an unencrypted call loses space to hidden indicators")
 
                 // With no decoded identity the security fields start the row.
@@ -838,6 +848,80 @@ Item {
             testContext.setMetric("decodeNowMs", Date.now())
         }
 
+        // Issue #901: a row's age has a fixed slot (the widest of "now", "59m", "23h", "999d", "99y"). A call whose
+        // time is not known (when 0) shows no age, where it read "20833d"; an age of 1000 days or more reads whole
+        // years, capped at 99y. Through the Monitor's own rows at 411 dp and text 2.0: drawn inside the slot, clear of
+        // EMERGENCY.
+        // Issue #901 r2 C2: an encrypted call named "Snow Patrol" aged "now" said no age: the row searched its name
+        // for the age, and "now" is in "Snow". The Monitor says which fields its meta line holds ("encrypted"), and
+        // the row says the age and the emergency itself.
+        function test_03i_an_age_inside_the_name_is_still_said() {
+            var nowMs = Date.UTC(2026, 10, 21, 12, 0, 0)
+            try {
+                testContext.setMetric("decodeNowMs", nowMs)
+                callHistory.pushAt(nowMs / 1000 - 5)
+                verify(callHistory.nameNewest("Snow Patrol", "County", true, true))
+                tc.list.positionViewAtBeginning()
+                var row = null
+                tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "Snow Patrol" }, 5000)
+                compare(row.rightText, "now")
+                var description = row.node.Accessible.description
+                verify(row.metaText.indexOf("encrypted") >= 0, row.metaText)
+                compare(description, row.metaText + ", EMERGENCY, now", "the age and the tag are said; ENC once, in the meta line")
+            } finally {
+                testContext.setMetric("decodeNowMs", Date.now())
+            }
+        }
+
+        function test_03h_an_age_fits_its_slot() {
+            var nowMs = Date.UTC(2026, 10, 21, 12, 0, 0)
+            var nowSecs = nowMs / 1000
+            compare(Util.shortAge(0, nowMs), "", "an unknown time")
+            compare(Util.shortAge(nowSecs - 30, nowMs), "now")
+            compare(Util.shortAge(nowSecs - 59 * 60, nowMs), "59m")
+            compare(Util.shortAge(nowSecs - 23 * 3600, nowMs), "23h")
+            compare(Util.shortAge(nowSecs - 999 * 86400, nowMs), "999d")
+            compare(Util.shortAge(nowSecs - 1000 * 86400, nowMs), "2y")
+            compare(Util.shortAge(nowSecs - 1102 * 86400, nowMs), "3y")
+            compare(Util.shortAge(1, (1 + 40000 * 86400) * 1000), "99y", "the cap")
+            compare(Util.shortAge(nowSecs + 600, nowMs), "now", "a stamp just ahead of the clock")
+            var width = root.width
+            var scale = Ui.Theme.fontScale
+            try {
+                root.width = 411
+                Ui.Theme.fontScale = 2.0
+                testContext.setMetric("decodeNowMs", nowMs)
+                for (var c of [{when: 0, age: ""}, {when: nowSecs - 1102 * 86400, age: "3y"},
+                               {when: nowSecs - 999 * 86400, age: "999d"}, {when: 1, age: "56y"}]) {
+                    var name = callHistory.pushEmergencyAt(c.when)
+                    tc.list.positionViewAtBeginning()
+                    var row = null
+                    tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                              5000, "the row is on top")
+                    tc.waitForRendering(tc.list)
+                    compare(row.rightText, c.age, "the age of when " + c.when)
+                    var time = findChild(row, "callRowTime")
+                    var tag = findChild(row, "rowEmergencyTag")
+                    verify(tag.visible, "EMERGENCY gave way")
+                    if (c.age === "") {
+                        verify(!time.visible, "an unknown time draws an age")
+                        continue
+                    }
+                    verify(time.visible, c.age + " is not drawn at 411 dp, text 2.0")
+                    verify(time.contentWidth <= time.width + 0.5, c.age + " is " + time.contentWidth + " px in a "
+                           + time.width + " px slot")
+                    var slotX = time.mapToItem(row, 0, 0).x
+                    var tagRight = tag.mapToItem(row, 0, 0).x + tag.width
+                    verify(tagRight + 6 - 0.5 <= slotX, "EMERGENCY runs into " + c.age + "'s slot")
+                    verify(slotX + time.width <= row.width - 18 + 0.5, c.age + " past the row's margin")
+                }
+            } finally {
+                testContext.setMetric("decodeNowMs", Date.now())
+                Ui.Theme.fontScale = scale
+                root.width = width
+            }
+        }
+
         function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen,
             // past the list header (#718).
@@ -876,6 +960,46 @@ Item {
 
             tryVerify(function () { return tc.atNewest() }, 5000,
                       "the deferred pin never ran after the release")
+        }
+
+        // Issue #901 (B8): the rows a list has built, whatever its model says.
+        function rowsBuilt(list) {
+            var rows = 0
+            for (var child of list.contentItem.children) {
+                if (child.metaText !== undefined && child.node !== undefined)
+                    ++rows
+            }
+            return rows
+        }
+
+        // A hidden Monitor (no session: Main keeps it under Home) holds no rows,
+        // as the hidden lists of issue #782 do: each row built under a hidden
+        // screen is announced to accessibility clients. Calls landing meanwhile
+        // build none either; the empty state reads the calls there are, so it
+        // keeps the calls card closed. Shown, it lists the calls at its newest.
+        function test_06_a_hidden_monitor_builds_no_rows() {
+            var hidden = createTemporaryObject(Qt.createComponent(uiDir + "/MonitorScreen.qml"), root,
+                                               {width: 420, height: 900, visible: false})
+            verify(hidden !== null)
+            var list = findChild(hidden, "recentCallsList")
+            verify(list !== null)
+            tc.wait(50)
+            compare(rowsBuilt(list), 0, "a hidden Monitor built rows for the persisted calls")
+            callHistory.pushMany(3, "TODAY")
+            tc.wait(50)
+            compare(rowsBuilt(list), 0, "calls landing under a hidden Monitor built rows")
+            verify(list.footerItem !== null)
+            compare(list.footerItem.height, 6, "the empty state follows the calls there are, not the detached list")
+            var newest = callHistory.push("TODAY")
+            hidden.visible = true
+            tryVerify(function () { return rowsBuilt(list) > 0 }, 1000, "shown, the Monitor lists the calls")
+            compare(list.count, monitorView.count)
+            compare(list.itemAtIndex(0).name, newest)
+            verify(Math.abs(list.contentY - list.originY) < 1, "shown at its start")
+            compare(list.footerItem.height, 6)
+            // Hidden again, it lets the rows go.
+            hidden.visible = false
+            tryVerify(function () { return rowsBuilt(list) === 0 }, 1000, "hidden again, the rows stayed")
         }
     }
 }

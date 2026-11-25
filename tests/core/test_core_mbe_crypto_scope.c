@@ -1646,6 +1646,68 @@ test_file_playback_basic_privacy_stays_on_ambe2450(void) {
     return rc;
 }
 
+/* Issue #890: an AMBE frame the NXDN decoder does not play (a muted dPMR half) steps the Scramble exactly as decoding
+   it does, so the frames after it descramble as they do in sequence. Without a key, and for DES/AES, it steps
+   nothing. */
+static int
+test_nxdn_scramble_skip_matches_a_decoded_frame(void) {
+    static const struct {
+        const char* name;
+        dsd_voice_protocol owner;
+        key_setup_fn setup;
+    } cases[] = {
+        {"dpmr scramble", DSD_VOICE_PROTOCOL_DPMR, key_nxdn_cipher1},
+        {"nxdn scramble", DSD_VOICE_PROTOCOL_NXDN, key_nxdn_cipher1},
+        {"nxdn forced key", DSD_VOICE_PROTOCOL_NXDN, key_forced_scrambler},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        reset_state(DSD_SYNC_NXDN_POS, 0);
+        cases[c].setup(&g_state);
+        rc |= trace_begin();
+        for (int f = 0; f < 4; f++) {
+            processMbeFrame(&g_opts, &g_state, cases[c].owner, NULL, g_ambe_fr[f], NULL);
+        }
+        rc |= trace_end(&g_base);
+        const unsigned long long in_sequence = g_state.nxdn_payload_mi;
+
+        reset_state(DSD_SYNC_NXDN_POS, 0);
+        cases[c].setup(&g_state);
+        rc |= trace_begin();
+        dsd_mbe_nxdn_scramble_skip_voice_frame(&g_state);
+        for (int f = 1; f < 4; f++) {
+            processMbeFrame(&g_opts, &g_state, cases[c].owner, NULL, g_ambe_fr[f], NULL);
+        }
+        rc |= trace_end(&g_trace);
+
+        rc |= expect_int(cases[c].name, g_base.frames, 4);
+        rc |= expect_int(cases[c].name, g_trace.frames, 3);
+        for (int f = 0; f < 3 && f < g_trace.frames; f++) {
+            if (strcmp(g_trace.data[f], g_base.data[f + 1]) != 0) {
+                DSD_FPRINTF(stderr, "%s: frame %d after a skipped frame descrambles out of phase\n", cases[c].name,
+                            f + 1);
+                rc = 1;
+            }
+        }
+        rc |= expect_int(cases[c].name, g_state.nxdn_payload_mi == in_sequence, 1);
+        rc |= expect_int(cases[c].name, in_sequence != 0ULL, 1);
+    }
+
+    reset_state(DSD_SYNC_NXDN_POS, 0);
+    g_state.nxdn_cipher_type = 0x01;
+    g_state.nxdn_payload_mi = 0x7777ULL;
+    dsd_mbe_nxdn_scramble_skip_voice_frame(&g_state);
+    rc |= expect_int("scramble skip without a key", (long long)g_state.nxdn_payload_mi, 0x7777LL);
+
+    reset_state(DSD_SYNC_NXDN_POS, 0);
+    key_nxdn_cipher2(&g_state);
+    const unsigned long long des_mi = g_state.nxdn_payload_mi;
+    dsd_mbe_nxdn_scramble_skip_voice_frame(&g_state);
+    rc |= expect_int("scramble skip under des", g_state.nxdn_payload_mi == des_mi && g_state.bit_counterL == 0, 1);
+    return rc;
+}
+
 int
 main(void) {
     if (build_fixtures() != 0) {
@@ -1673,6 +1735,7 @@ main(void) {
     rc |= test_keystream_exhaustion_blocks_fdma_outputs();
     rc |= test_manual_keystream_takes_over_exhausted_frame();
     rc |= test_file_playback_basic_privacy_stays_on_ambe2450();
+    rc |= test_nxdn_scramble_skip_matches_a_decoded_frame();
 
     dsd_state_ext_free_all(&g_state);
     if (g_state.rc2_context != NULL) {

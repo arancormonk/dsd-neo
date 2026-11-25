@@ -130,6 +130,17 @@ Item {
                 compare(detail, "Some entries may be missing. The file won't be overwritten.");
         }
 
+        // Discussion #900: a saved system's channels file a start couldn't
+        // write is said as such, not as a file that couldn't be read.
+        function test_b_dmr_channels_unwritten() {
+            testContext.postStoreNotice("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv", "");
+            waitForNotices(1);
+            compare(texts("storeNoticeTitle"), ["A saved system's DMR channels couldn't be written"]);
+            // Posted while the start is prepared, so it
+            // claims no session ran.
+            compare(texts("storeNoticeDetail"), ["Starts run without this system's saved channels until they can be written. Check that the device has free storage."]);
+        }
+
         // The seen store is the app's own bookkeeping: logged, never on the card.
         function test_c_seen_store_is_not_shown() {
             testContext.postStoreNotice("call_history_seen.json", "");
@@ -237,6 +248,25 @@ Item {
             tryCompare(c, "announcements", before + 1);
             wait(50);
             compare(c.announcements, before + 1, "read out once");
+        }
+
+        // Discussion #900: a saved system's channels that fail again after a
+        // start passed them are a new failure, read out again even when the
+        // withdrawal and the new notice reach the list together.
+        function test_l_channels_failure_again_is_read_out() {
+            var c = card();
+            var before = c.announcements;
+            var file = "dmr_channels/6f2c1a94-3b7e-4d5a-8c09-1e2f3a4b5c6d.csv";
+            testContext.repostStoreNotice(file, 1);
+            waitForNotices(1);
+            tryCompare(c, "announcements", before + 1);
+            testContext.repostStoreNotice(file, 2);
+            tryCompare(c, "announcements", before + 2);
+            compare(storeNotices.notices.length, 1, "still one notice for the file");
+            wait(20);
+            compare(c.announcements, before + 2, "read out once");
+            testContext.repostStoreNotice(file, 0);
+            waitForNotices(0);
         }
 
         // Settings that couldn't be kept run on a scratch copy: what is changed now isn't saved, whether or not the

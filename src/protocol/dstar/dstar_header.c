@@ -26,6 +26,11 @@ dstar_header_copy_text(const char* field, size_t len, char* out) {
 
 int
 dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
+    return dstar_header_decode_soft_data(state, soft_symbols, NULL);
+}
+
+int
+dstar_header_decode_soft_data(dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS], int* data) {
     uint16_t soft_costs[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_deinterlv[DSD_DSTAR_HEADER_CODED_BITS];
@@ -104,7 +109,11 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     }
 
     const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
-    dstar_header_observe(state, protocol, ((uint8_t)radioheader[0] & 0x80U) != 0U, str1, str2, str3, str4);
+    const int is_data = ((uint8_t)radioheader[0] & 0x80U) != 0U;
+    if (data != NULL) {
+        *data = is_data;
+    }
+    dstar_header_observe(state, protocol, is_data, str1, str2, str3, str4);
     return 1;
 }
 

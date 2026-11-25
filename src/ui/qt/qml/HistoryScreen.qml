@@ -10,6 +10,10 @@ Item {
     id: screen
 
     property bool showTitle: true
+    // Issue #901 (D6): Compact view; the log's rows follow it.
+    readonly property bool compactView: typeof prefs !== "undefined" && !!prefs && prefs.compactView === true
+    // The height every row of the log has at its fonts and density.
+    readonly property real rowHeight: LineBoxes.callRowHeight(compactView)
     // Issue #800: the map (its kept tracks stay reachable after Stop), and a
     // row's "Show on map" with the sheet to return to.
     signal openMap
@@ -82,7 +86,7 @@ Item {
         flushPendingSearch();
         setExportMessage("", false);
         // Read before the exporter holds a file: a failure here leaves nothing pending.
-        var stamp = Qt.formatDate(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
+        var stamp = Qt.formatDateTime(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
         // The exporter builds the whole file now; a list that changes later does not change it.
         var prepared = historyExport.prepare(historyView) || {};
         var token = Number(prepared.token) || 0;
@@ -522,6 +526,7 @@ Item {
 
             interactive: true
             width: ListView.view.width
+            compact: screen.compactView
             name: model.name
             metaText: {
                 // A notice row's payload (the SMS body, the GPS string) is its
@@ -592,6 +597,12 @@ Item {
             // the row's description, already leads with it. A row with no start
             // time has no time to read.
             accessibleName: model.timeText.length > 0 ? model.name + ", " + model.timeText : model.name
+            // What the meta line and the name above already say (r2 C2): a
+            // call's meta line names EMERGENCY and "encrypted" (a notice's
+            // does not), and the name the time.
+            metaSaysEmergency: model.kind !== 1
+            metaSaysEnc: model.kind !== 1
+            nameSaysTime: true
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }
@@ -611,7 +622,9 @@ Item {
     // Keeps the newest call in view for a reader parked at the top of the log.
     FollowLatest {
         id: follow
+        objectName: "callLogFollow"
         list: logList
+        rowHeight: screen.rowHeight
     }
 
     // Hidden, the log holds no rows (issue #782): a session runs on the monitor
@@ -662,6 +675,25 @@ Item {
         function onFilterChanged() {
             logPlace.forget();
             Qt.callLater(logList.positionViewAtBeginning);
+        }
+    }
+
+    // Issue #901 (D11): a change of density puts the log back at the newest
+    // call, as a new search does; hidden, it comes back there rather than at
+    // the place it held. Deferred so the rows take their new height first, by
+    // a timer the screen owns, so nothing runs after it closes; the rows are
+    // laid out at their new height before the view is placed, or the start it
+    // found was the old layout's and a log read deep stayed off its top.
+    onCompactViewChanged: {
+        logPlace.forget();
+        logToStart.restart();
+    }
+    Timer {
+        id: logToStart
+        interval: 0
+        onTriggered: {
+            logList.forceLayout();
+            logList.positionViewAtBeginning();
         }
     }
 

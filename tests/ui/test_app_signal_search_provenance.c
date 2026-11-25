@@ -7,10 +7,12 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -24,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "command_dispatch.h"
+#include "commands_internal.h"
 
 static dsd_signal_search_publish_fn observer;
 static void* observer_user;
@@ -40,16 +43,30 @@ static int permanent_calls_at_control;
 static dsd_signal_search_control last_control;
 static char notice[192];
 
-int
-dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
-                               dsd_signal_search_publish_fn callback, void* user, char* error, size_t capacity) {
+/* The start's commit hook the handler passes, and how often a start committed with it. */
+static dsd_signal_search_commit_fn commit_hook;
+static int commits;
+
+void
+dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user) {
     (void)opts;
     (void)state;
+    (void)user;
+}
+
+int
+dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
+                                           dsd_signal_search_publish_fn callback, void* user,
+                                           dsd_signal_search_commit_fn commit, void* commit_user, char* error,
+                                           size_t capacity) {
     (void)config;
+    commit_hook = commit;
     if (reject_start) {
         DSD_SNPRINTF(error, capacity, "%s", "A search supports up to 100,000 enabled channels");
         return -1;
     }
+    commit(opts, state, commit_user);
+    ++commits;
     observer = callback;
     observer_user = user;
     return 0;
@@ -396,6 +413,61 @@ test_rejected_code_access(dsd_opts* opts, dsd_state* state) {
     state->p2_proven_nac = -1;
 }
 
+/* Issue #748: a TETRA detection's access code is the coordinator's, from the TETRA decoder's own gate (CC n), never the
+   decoder's generic received identity, which a reserved SYNC can set. A withdrawal the coordinator publishes (access and
+   site cleared) reaches the store as it is, in the live and the ended publication: the observer neither reads a code
+   nor carries the one the hit had. A direct mode hit has no access code. */
+static void
+test_tetra_access_is_the_coordinators(dsd_state* state) {
+    dsd_signal_search_status status = {0};
+    status.session_id = status.hit.session_id = 11;
+    status.hit.hit_id = 1;
+    status.hit.confirmed = 1;
+    status.phase = DSD_SEARCH_LISTENING;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "TETRA");
+    DSD_SNPRINTF(status.hit.access, sizeof(status.hit.access), "%s", "CC 5");
+    DSD_SNPRINTF(status.hit.site, sizeof(status.hit.site), "%s", "MCC 228 \xC2\xB7 MNC 8889");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    state->synctype = DSD_SYNC_TETRA_SB_POS;
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_TETRA;
+    state->rx_id.valid = DSD_RXID_TETRA_NET | DSD_RXID_ACCESS;
+    state->rx_id.access_kind = (uint8_t)DSD_ACCESS_CODE_COLOR_CODE;
+    state->rx_id.access = 9;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 5") == 0);
+    observer(&status, NULL, observer_user);
+    assert(strcmp(published.hit.access, "CC 5") == 0);
+    /* Withdrawn: both go, and stay gone through refreshes and the ended hit. */
+    status.hit.access[0] = '\0';
+    status.hit.site[0] = '\0';
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0' && published.hit.site[0] == '\0');
+    observer(&status, NULL, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0' && published.hit.site[0] == '\0');
+    /* A direct mode hit takes no code at all. */
+    status.hit.hit_id = 2;
+    status.hit.ended = 0;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "TETRA DMO");
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
+    state->synctype = DSD_SYNC_NONE;
+}
+
+/* The CAN a checked M17 LSF noted in the received identity (dsd_rxid_note_access()): an M17 CAN shows only while it is
+   held there (issue #748). */
+static void
+m17_received(dsd_state* state, uint16_t can) {
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_M17;
+    state->rx_id.valid = DSD_RXID_ACCESS;
+    state->rx_id.access_kind = (uint8_t)DSD_ACCESS_CODE_CAN;
+    state->rx_id.access = can;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -404,7 +476,9 @@ main(void) {
     assert(opts && state && command);
     command->n = sizeof(dsd_signal_search_config);
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 1);
-    assert(observer);
+    // The handler hands the start its -Y take-back as the commit hook, which only a start that goes on runs (issue
+    // #748 B13).
+    assert(observer && commit_hook == dsd_app_signal_search_take_back_scan_resume && commits == 1);
 
     dsd_signal_search_status status = {0};
     status.session_id = status.hit.session_id = 1;
@@ -505,6 +579,7 @@ main(void) {
     status.hit.slot = 0;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
     state->synctype = DSD_SYNC_M17_STR_POS;
+    m17_received(state, 7);
     DSD_MEMSET(&call, 0, sizeof(call));
     call.protocol = state->synctype;
     call.phase = DSD_CALL_PHASE_ACTIVE;
@@ -538,6 +613,7 @@ main(void) {
     status.hit.hit_id = 5;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
     state->synctype = DSD_SYNC_M17_LSF_POS;
+    m17_received(state, 5);
     call.protocol = state->synctype;
     call.phase = DSD_CALL_PHASE_ACTIVE;
     call.epoch = 1;
@@ -549,9 +625,54 @@ main(void) {
     observer(&status, &status.hit, observer_user);
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 5") == 0);
+
+    // Issue #748 B14: the coordinator names the CAN a checked call-free LSF carried (no call record has one). It is the
+    // hit's on every publication: a changed, a periodic and the ended one, over the call record of an older call still
+    // running, and over the CAN the hit last carried. A withdrawal clears it the same way.
+    status.hit.hit_id = 6;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    call.phase = DSD_CALL_PHASE_IDLE;
+    status.hit.access_noted = 1;
+    status.hit.access_kind = DSD_ACCESS_CODE_CAN;
+    status.hit.access_value = 3;
+    m17_received(state, 3);
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 3") == 0);
+    status.hit.access_value = 9;
+    m17_received(state, 9);
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    observer(&status, NULL, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    call.protocol = state->synctype;
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.epoch = 2;
+    call.service_options = 5U;
+    call.has_service_metadata = 1U;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    status.hit.ended = 0;
+    status.hit.access_kind = DSD_ACCESS_CODE_NONE;
+    status.hit.access_value = 0;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    observer(&status, NULL, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 0;
+    status.hit.access_noted = 0;
+    status.hit.access_kind = 0;
     status.hit.hit_id = 2;
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
 
     test_rejected_code_access(opts, state);
+    test_tetra_access_is_the_coordinators(state);
     test_detection_tone();
 
     // Issue #828: the session's own avoid list is the coordinator's (the runtime list the screens read), so the
@@ -634,11 +755,14 @@ main(void) {
     control_refused = 0;
     free(control);
 
-    // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it.
+    // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it. Its
+    // revision is a new one from the source every publisher takes it from, not the store's plus one, which the
+    // coordinator's own next publication could reuse (issue #748 B11).
     reject_start = 1;
     published.revision = 9;
+    const uint64_t before_refusal = dsd_signal_search_status_revision_next();
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
-    assert(published.phase == DSD_SEARCH_ERROR && !published.owned && published.revision == 10);
+    assert(published.phase == DSD_SEARCH_ERROR && !published.owned && published.revision == before_refusal + 1);
     assert(strstr(published.message, "100,000") != NULL);
 
     // A rejected restart of a paused session keeps that coordinator's phase, session and ownership.
@@ -648,8 +772,9 @@ main(void) {
     published.message[0] = '\0';
     coordinator_active = 1;
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
-    assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5);
-    assert(published.revision == 11 && strstr(published.message, "100,000") != NULL);
+    assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5 && commits == 1);
+    assert(published.revision == before_refusal + 2 && strstr(published.message, "100,000") != NULL);
+    assert(dsd_signal_search_status_revision_next() == before_refusal + 3);
 
     free(command);
     free(state);

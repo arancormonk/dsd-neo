@@ -40,6 +40,7 @@ class CallHistoryModel;
 class HeardTalkgroupStore;
 class MetricsModel;
 class P25NetworkModel; // WP-F2
+class DmrChannelsModel;
 class DiagnosticsLogModel;
 class TalkgroupListModel;
 class CommandBridge;
@@ -94,6 +95,10 @@ class UiController : public QObject {
     setP25Network(P25NetworkModel* model) {
         m_network = model;
     }
+
+    // Discussion #900 F3: the Channels sheet's rows, read as the network is (only while the sheet is open), and read
+    // from the held snapshot at once when the sheet opens.
+    void setDmrChannels(DmrChannelsModel* model);
 
     // The Activity screen's log: read from each redraw's held snapshot while a session runs, dropped at its edges.
     void
@@ -167,7 +172,12 @@ class UiController : public QObject {
     /** @brief The tick's write of the remembered talkgroups: at once when @p sessionEnded, else when one is due. */
     void flushHeardTalkgroups(bool sessionEnded);
     /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
-    bool invalidateForTarget(const dsd_state* snapshot);
+    bool invalidateForTarget(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief The retained command answers read on every tick and at the session's end: the export, decryption and
+     *  channel-set ones. */
+    void pollCommandResults();
+    /** @brief The Channels sheet opened: its rows from the held snapshot now, not at the next redraw. */
+    void onDmrChannelsActiveChanged();
     void onSessionStateChanged();
     /** @brief Off screen (Suspended or Hidden) the GUI thread may read no snapshot for hours: its buffers keep no key
      *  until it is on screen again, reads made meanwhile included (withholdSnapshotKeys()). */
@@ -192,6 +202,7 @@ class UiController : public QObject {
     TalkgroupListModel* m_talkgroups = nullptr;
     DiagnosticsLogModel* m_diagnostics = nullptr;
     P25NetworkModel* m_network = nullptr; // WP-F2
+    DmrChannelsModel* m_dmrChannels = nullptr;
     UnitActivityModel* m_unitActivity = nullptr;
     PositionModel* m_positions = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;

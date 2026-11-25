@@ -45,7 +45,7 @@ Item {
         // and labels do not.
         readonly property var everyLabel: [
             "Auto", "P25", "P25 Simulcast", "DMR", "NXDN48",
-            "NXDN96", "D-STAR", "YSF", "M17", "TETRA", "NFM — analog FM", "AM",
+            "NXDN96", "dPMR", "D-STAR", "YSF", "M17", "TETRA", "NFM — analog FM", "AM",
             "P25 LSM", "DMR Scan", "P25 Scan", "P25 LSM Scan",
             "NXDN48 Scan", "NXDN96 Scan", "EDACS", "EDACS EA"]
 

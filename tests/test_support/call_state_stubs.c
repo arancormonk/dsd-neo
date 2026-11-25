@@ -162,7 +162,36 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
                     && (call->source_home.unit != home->unit || call->source_home.wacn != home->wacn
                         || call->source_home.sysid != home->sysid);
     }
+    const int same_radio = call->source_home.valid != 0U && call->source_home.unit == home->unit
+                           && call->source_home.wacn == home->wacn && call->source_home.sysid == home->sysid;
+    const uint32_t kept_source = (same_radio && home->source == 0U) ? call->source_home.source : home->source;
     call->source_home = *home;
+    call->source_home.source = kept_source;
+    call->source_home.withdrawn = 0U;
+    return 1;
+}
+
+int
+dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped) {
+    if (dropped) {
+        *dropped = 0;
+    }
+    if (state == NULL || source == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    (void)protocol;
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    if (call->source_home.valid != 0U && call->source_home.source != source) {
+        DSD_MEMSET(&call->source_home, 0, sizeof(call->source_home));
+        call->source_home.withdrawn = 1U;
+        if (dropped) {
+            *dropped = 1;
+        }
+    }
     return 1;
 }
 
@@ -287,6 +316,24 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
         }
         call->media_updated_m = now_m;
     }
+    return 1;
+}
+
+int
+dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const double now_m = observed_m > 0.0 ? observed_m : (double)time(NULL);
+    if (call->checked_media_started_m <= 0.0) {
+        call->checked_media_started_m = now_m;
+    }
+    call->checked_media_updated_m = now_m;
     return 1;
 }
 

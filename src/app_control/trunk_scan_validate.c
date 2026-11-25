@@ -33,7 +33,7 @@ dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count, cha
 /* Load the list at @p path into @p list; a parser error is prefixed with the list's @p name. */
 static int
 validate_load_list(const char* path, const char* name, dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
-    char detail[512];
+    char detail[DSD_TRUNK_SCAN_ROW_ERROR_MAX];
     detail[0] = '\0';
     if (dsd_trunk_scan_load_targets_csv(path, NULL, list, detail, sizeof detail) == 0) {
         return 0;

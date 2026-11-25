@@ -12,6 +12,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -51,12 +52,14 @@ using namespace dsd_qt;
 static int failures;
 
 static void
-check(bool ok) {
+check_at(bool ok, int line) {
     if (!ok) {
         ++failures;
-        std::fputs("scan-list roundtrip assertion failed\n", stderr);
+        std::fprintf(stderr, "scan-list roundtrip assertion failed at line %d\n", line);
     }
 }
+
+#define check(...) check_at((__VA_ARGS__), __LINE__)
 
 namespace {
 
@@ -315,6 +318,41 @@ checkAnalogRateDiagnostic(const QTemporaryDir& dir) {
     }
     csvList["bandwidthKhz"] = 24;
     check(csvStarter.validate(csvList).value("warnings").toStringList().isEmpty());
+
+    // Issue #890: a saved analog system whose Extra arguments are exactly its kind's width option (a Signal search
+    // save) is held at that width: a 12.5 kHz NFM and a 20 kHz AM channel do not fit the 12 kHz DSP rate, where the
+    // unset NFM default and the 6 kHz AM default would.
+    SavedSystemsModel systems;
+    check(systems.add({{"name", "Found NFM"},
+                       {"decodeFlag", "-fA"},
+                       {"freqMhz", "154.43"},
+                       {"extraArgs", "--nfm-bandwidth-hz 12500"}}));
+    const QString foundNfm = systems.get(systems.count() - 1).value("uid").toString();
+    check(systems.add(
+        {{"name", "Found AM"}, {"decodeFlag", "-fM"}, {"freqMhz", "121.5"}, {"extraArgs", "--am-bandwidth-hz=20000"}}));
+    const QString foundAm = systems.get(systems.count() - 1).value("uid").toString();
+    QVariantMap savedList{
+        {"uid", "analog-rate-saved"},
+        {"name", "Saved"},
+        {"sourceType", "usb"},
+        {"bandwidthKhz", 12},
+        {"entries",
+         QVariantList{
+             QVariantMap{{"uid", "nfm-found"}, {"kind", "system"}, {"systemUid", foundNfm}, {"enabled", true}},
+             QVariantMap{{"uid", "am-found"}, {"kind", "system"}, {"systemUid", foundAm}, {"enabled", true}}}}};
+    ScanListStarter savedStarter(nullptr, &systems);
+    const auto savedNarrow = savedStarter.validate(savedList);
+    const QString savedWarning = savedNarrow.value("warnings").toStringList().join("\n");
+    check(savedNarrow.value("ok").toBool() && savedNarrow.value("targetCount").toInt() == 2);
+    check(savedWarning.contains("Skipped at every visit at this bandwidth: Found NFM: NFM bandwidth 12.5 kHz does not "
+                                "fit the 12 kHz DSP rate")
+          && savedWarning.contains("(and 1 more)"));
+    if (!savedWarning.contains("Found NFM")) {
+        std::fprintf(stderr, "saved-system rate diagnostic: '%s' (%s)\n", qPrintable(savedWarning),
+                     qPrintable(savedNarrow.value("error").toString()));
+    }
+    savedList["bandwidthKhz"] = 24;
+    check(savedStarter.validate(savedList).value("warnings").toStringList().isEmpty());
 }
 
 /* Issue #708: a scan list's start asks the call recording store for the list's folder before the host starts, names
@@ -756,6 +794,215 @@ checkCsvListWithoutUsableTargets(const QTemporaryDir& dir) {
     check(library.validate(list).value("ok").toBool());
 }
 
+/* Whether the app's target CSV check (the engine's own parser) takes the five issue #890 conventional types. */
+static bool
+engineTakesSimplexTypes(const QTemporaryDir& dir) {
+    const QString probe = dir.filePath("simplex-probe.csv");
+    QFile file(probe);
+    check(file.open(QIODevice::WriteOnly));
+    // The target loader's seven required columns (DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS), each row filling them.
+    file.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+               "y,ysf-conventional,430000000,,,,\nd,dstar-conventional,431000000,,,,\n"
+               "p,dpmr-conventional,432000000,,,,\nm,m17-conventional,433000000,,,,\n"
+               "t,tetra-dmo-conventional,434000000,,,,\n");
+    file.close();
+    int count = 0;
+    char error[512] = {};
+    const bool taken =
+        dsd_app_trunk_scan_validate_targets_csv(probe.toUtf8().constData(), &count, error, sizeof error) == 0
+        && count == 5;
+    if (!taken) {
+        std::fprintf(stderr, "simplex type probe refused: %s\n", error);
+    }
+    return taken;
+}
+
+/* The DSP rate an argv's radio spec carries: its field after gain and PPM (":<f>M:<gain>:<ppm>:<bw>:"). */
+static QString
+specBandwidth(const QStringList& argv) {
+    const QString spec = argv.value(argv.indexOf("-i") + 1);
+    const QStringList fields = spec.split(QLatin1Char(':'));
+    const qsizetype freq = fields.indexOf(QRegularExpression(QStringLiteral("^[0-9.]+M$")));
+    return freq >= 0 ? fields.value(freq + 3) : QString();
+}
+
+/* Issue #890 (D3): a scan session with a TETRA DMO target runs at one rate, resolved from every target the engine can
+   visit during the start: enabled manual entries (a switched-off entry is left out of the CSV and does not count),
+   saved TETRA systems, an imported list's rows and every companion list. App default is 72 kHz there; an explicit rate
+   TETRA cannot run at is refused before launch, naming the fix. */
+static void
+checkTetraListRate(const QTemporaryDir& dir) {
+    SavedSystemsModel systems;
+    check(systems.add({{"name", "DMO site"}, {"decodeFlag", "-fT"}, {"freqMhz", "430.0"}, {"trunking", false}}));
+    const QString dmoUid = systems.get(systems.count() - 1).value("uid").toString();
+    const QVariantMap p25{
+        {"uid", "site"}, {"kind", "freq"}, {"protocol", "p25"}, {"freqMhz", "851.5"}, {"enabled", true}};
+    QVariantMap dmo{
+        {"uid", "dmo"}, {"kind", "freq"}, {"protocol", "tetra_dmo"}, {"freqMhz", "430.5"}, {"enabled", true}};
+    QVariantMap dmoSystem{{"uid", "dmo-sys"}, {"kind", "system"}, {"systemUid", dmoUid}, {"enabled", true}};
+    const QVariantMap base{{"name", "Rate"}, {"sourceType", "usb"}, {"bandwidthKhz", -1}};
+    const auto listOf = [&base](const QString& uid, const QVariantList& entries, int khz) {
+        QVariantMap list = base;
+        list.insert("uid", uid);
+        list.insert("name", uid);
+        list.insert("entries", entries);
+        list.insert("bandwidthKhz", khz);
+        return list;
+    };
+    ScanListStarter starter(nullptr, &systems);
+    const QString refusal =
+        QStringLiteral("This scan has TETRA DMO targets, which decode only at a bandwidth of 72 kHz. "
+                       "Set this list's bandwidth to 72 kHz or App default, or remove the TETRA "
+                       "DMO targets.");
+    // Which targets count: enabled ones only, a frequency entry's and a saved TETRA system's alike.
+    check(!starter.hasTetraTargets(listOf("p25-only", {p25}, -1)));
+    check(starter.hasTetraTargets(listOf("freq-dmo", {p25, dmo}, -1)));
+    check(starter.hasTetraTargets(listOf("sys-dmo", {p25, dmoSystem}, -1)));
+    dmo["enabled"] = false;
+    dmoSystem["enabled"] = false;
+    check(!starter.hasTetraTargets(listOf("off-dmo", {p25, dmo, dmoSystem}, -1)));
+    // Explicit 48 with the TETRA entries switched off: they are not in the CSV, so 48 kHz builds.
+    const auto omitted = starter.build(listOf("omitted", {p25, dmo, dmoSystem}, 48));
+    check(omitted.value("ok").toBool() && omitted.value("targetCount").toInt() == 1
+          && specBandwidth(omitted.value("args").toStringList()) == "48");
+    if (!omitted.value("ok").toBool()) {
+        std::fprintf(stderr, "omitted TETRA entry: %s\n", qPrintable(omitted.value("error").toString()));
+    }
+    dmo["enabled"] = true;
+    dmoSystem["enabled"] = true;
+    // Explicit 48 with one on: refused before the engine is asked anything.
+    for (const QVariantMap& tetra : {dmo, dmoSystem}) {
+        const auto refused = starter.validate(listOf("explicit-48", {p25, tetra}, 48));
+        check(!refused.value("ok").toBool() && refused.value("error").toString() == refusal);
+    }
+    // The editor's App default note reads the same rate.
+    check(starter.bandwidthKhz(listOf("note", {p25, dmo}, -1)) == 72);
+    check(starter.bandwidthKhz(listOf("note", {p25}, -1)) == 48);
+    check(starter.bandwidthKhz(listOf("note", {p25, dmo}, 48)) == 48);
+    // Joining: two lists are one session, so App default is 72 kHz for both when either has TETRA.
+    check(starter.joinConflict(listOf("a", {p25}, -1), listOf("b", {dmo}, -1)).isEmpty());
+    check(starter.joinConflict(listOf("a", {p25}, 72), listOf("b", {dmo}, -1)).isEmpty());
+    check(starter.joinConflict(listOf("a", {p25}, 48), listOf("b", {dmo}, -1)) == "Different bandwidth");
+    // ...and with the lists already switched on: Default P25 joins an explicit-48 P25 list and a Default TETRA list
+    // each alone, but not both, whichever was switched on first, as the start would refuse them together.
+    const QVariantMap primaryDefault = listOf("primary", {p25}, -1);
+    const QVariantMap narrowP25 = listOf("narrow", {p25}, 48);
+    const QVariantMap defaultDmo = listOf("direct", {dmo}, -1);
+    check(starter.joinConflict(primaryDefault, narrowP25, {}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultDmo, {}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultDmo, {narrowP25}) == "Different bandwidth");
+    check(starter.joinConflict(primaryDefault, narrowP25, {defaultDmo}) == "Different bandwidth");
+    // A chosen list that no longer exists (an empty map) is in no session.
+    check(starter.joinConflict(primaryDefault, narrowP25, {QVariantMap()}).isEmpty());
+    // A list counts once: one already on is judged as itself, not twice.
+    check(starter.joinConflict(primaryDefault, defaultDmo, {defaultDmo, primaryDefault}).isEmpty());
+    // Switching the TETRA DMO list off: a list fixed at 72 kHz no longer joins and leaves the choice, but it names no
+    // reason for a Default list beside it, which still joins the Default primary at the app's 48 kHz.
+    const QVariantMap wideP25 = listOf("wide", {p25}, 72);
+    const QVariantMap defaultP25 = listOf("default-p25", {p25}, -1);
+    check(starter.joinConflict(primaryDefault, wideP25, {defaultDmo, wideP25, defaultP25}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultP25, {defaultDmo, wideP25, defaultP25}).isEmpty());
+    check(starter.joinConflict(primaryDefault, wideP25, {wideP25, defaultP25}) == "Different bandwidth");
+    check(starter.joinConflict(primaryDefault, defaultP25, {wideP25, defaultP25}).isEmpty());
+    // The TETRA DMO list switched on again joins both: the session runs at 72 kHz.
+    check(starter.joinConflict(primaryDefault, defaultDmo, {defaultP25}).isEmpty());
+    // Two lists at the same explicit 48 kHz agree on the bandwidth, but TETRA cannot decode at it.
+    check(starter.joinConflict(listOf("p48", {p25}, 48), listOf("d48", {dmo}, 48), {}) == "TETRA DMO needs 72 kHz");
+    check(starter.joinConflict(listOf("p48", {p25}, 48), narrowP25, {}).isEmpty());
+    check(starter.rateError(listOf("d48", {dmo}, 48)) == refusal
+          && starter.rateError(listOf("d", {dmo}, -1)).isEmpty());
+    // The start refuses that set too: each list's own check comes first, so it names the list whose bandwidth TETRA
+    // cannot run, with the fix.
+    ArgvHost setHost;
+    check(starter.startLists({primaryDefault, narrowP25, defaultDmo}, &setHost).value("error").toString()
+              == QString::fromUtf8("\u201cnarrow\u201d: ") + refusal
+          && setHost.received.isEmpty());
+    // A session-wide refusal: an explicit-48 P25 list started with a TETRA companion names the fix, before any file
+    // is written.
+    ArgvHost host;
+    const auto mixedRate = starter.startLists({listOf("p25-48", {p25}, 48), listOf("dmo-default", {dmo}, -1)}, &host);
+    check(!mixedRate.value("ok").toBool()
+          && mixedRate.value("error").toString() == QString::fromUtf8("“p25-48”: ") + refusal
+          && host.received.isEmpty());
+
+    check(engineTakesSimplexTypes(dir));
+    // Default P25 started with a Default TETRA companion: the session runs at 72 kHz; so does explicit 72 with a
+    // Default one.
+    for (int primaryKhz : {-1, 72}) {
+        ArgvHost started;
+        const auto result = starter.startLists(
+            {listOf("p25-default", {p25}, primaryKhz), listOf("dmo-companion", {dmo}, -1)}, &started);
+        check(result.value("started").toBool() && specBandwidth(started.received) == "72");
+        if (!result.value("started").toBool()) {
+            std::fprintf(stderr, "TETRA companion start: %s\n", qPrintable(result.value("error").toString()));
+        }
+    }
+    // An analog target is held at the rate the session runs: 72 kHz, not the app's 6.
+    AppPrefs prefs;
+    prefs.setBandwidthKhz(6);
+    ScanListStarter narrow(&prefs, &systems);
+    const QVariantMap guard{{"uid", "guard"},   {"kind", "freq"},     {"name", "Guard"},
+                            {"protocol", "am"}, {"freqMhz", "121.5"}, {"enabled", true}};
+    check(
+        narrow.validate(listOf("am-only", {guard}, -1)).value("warnings").toStringList().join("\n").contains("Guard"));
+    const auto heldAt72 = narrow.validate(listOf("am-dmo", {guard, dmo}, -1));
+    check(heldAt72.value("ok").toBool() && heldAt72.value("warnings").toStringList().isEmpty());
+    // Each family's frequency entry round-trips through the engine's parser with the catalog's type, no modulation.
+    const QStringList protocols{"ysf", "dstar", "dpmr", "m17", "tetra_dmo"};
+    QVariantList entries;
+    for (int i = 0; i < protocols.size(); ++i) {
+        entries << QVariantMap{{"uid", protocols[i]},      {"kind", "freq"},
+                               {"protocol", protocols[i]}, {"freqMhz", QString::number(440 + i)},
+                               {"modulation", "gfsk"},     {"enabled", true}};
+    }
+    const QVariantMap families = listOf("families", entries, -1);
+    const auto built = starter.build(families);
+    check(built.value("ok").toBool() && built.value("targetCount").toInt() == 5
+          && specBandwidth(built.value("args").toStringList()) == "72");
+    const auto generated = inspectTargets(built.value("csvPath").toString());
+    check(generated.types
+          == QStringList({"ysf-conventional", "dstar-conventional", "dpmr-conventional", "m17-conventional",
+                          "tetra-dmo-conventional"}));
+    // An imported list's TETRA DMO row counts as a manual entry does.
+    const QString targetPath = dir.filePath("dmo-targets.csv");
+    QFile targets(targetPath);
+    check(targets.open(QIODevice::WriteOnly));
+    targets.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "dmo,tetra-dmo-conventional,430500000,,,,,\nsite,p25-conventional,851500000,,,,,\n");
+    targets.close();
+    ScanListStarter csvStarter(nullptr, nullptr);
+    csvStarter.setTargetFileLookup([&targetPath](const QString& candidate) { return candidate == targetPath; });
+    QVariantMap csvList{{"uid", "dmo-csv"},   {"name", "DMO CSV"},     {"sourceType", "usb"},
+                        {"bandwidthKhz", 48}, {"targetSource", "csv"}, {"targetsCsvPath", targetPath}};
+    check(csvStarter.hasTetraTargets(csvList));
+    check(csvStarter.validate(csvList).value("error").toString() == refusal);
+    csvList["bandwidthKhz"] = -1;
+    const auto csvBuilt = csvStarter.build(csvList);
+    check(csvBuilt.value("ok").toBool() && specBandwidth(csvBuilt.value("args").toStringList()) == "72");
+
+    // The Scan with other lists sheet asks at each change: the file is read once, not at every ask, while it stays the
+    // same file; a rewrite and forgetTargetFiles() each read it again.
+    csvList["bandwidthKhz"] = -1;
+    const QVariantMap p25List = listOf("p25-default", {p25}, -1);
+    const int readsBefore = scan_list_tetra_csv_reads_for_test();
+    for (int i = 0; i < 8; ++i) {
+        check(csvStarter.hasTetraTargets(csvList));
+        check(csvStarter.joinConflict(p25List, csvList, {csvList}).isEmpty());
+    }
+    check(scan_list_tetra_csv_reads_for_test() - readsBefore <= 1);
+    check(targets.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    targets.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "site,p25-conventional,851500000,,,,,\n");
+    targets.close();
+    check(!csvStarter.hasTetraTargets(csvList));
+    const int readsAfterRewrite = scan_list_tetra_csv_reads_for_test();
+    check(!csvStarter.hasTetraTargets(csvList) && scan_list_tetra_csv_reads_for_test() == readsAfterRewrite);
+    csvStarter.forgetTargetFiles();
+    check(!csvStarter.hasTetraTargets(csvList) && scan_list_tetra_csv_reads_for_test() == readsAfterRewrite + 1);
+    check(QFile::remove(targetPath));
+    check(!csvStarter.hasTetraTargets(csvList));
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -843,8 +1090,11 @@ main(int argc, char** argv) {
     list["entries"] = QVariantList{QVariantMap{
         {"uid", "keyed"}, {"kind", "system"}, {"systemUid", systems.get(0).value("uid")}, {"enabled", true}}};
     ScanListStarter keyedStarter(nullptr, &systems);
+    // A key setting a P25 row cannot take (Basic Privacy is DMR's) is refused by name before anything is written,
+    // as the engine would refuse the row, and the last valid CSV stays.
     const auto rejected = keyedStarter.build(list);
-    check(!rejected.value("ok").toBool() && rejected.value("error").toString().startsWith("Scan list rejected: "));
+    check(!rejected.value("ok").toBool()
+          && rejected.value("error").toString().contains("P25 entries take no Motorola Basic Privacy key"));
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll() == lastValidCsv);
     file.close();
@@ -856,6 +1106,23 @@ main(int argc, char** argv) {
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll().contains(QByteArray("-1 ") + directKey.toUtf8()));
     file.close();
+    // An NXDN system's keys reach the real target parser only as its class takes them: a scrambler key with privacy
+    // forcing loads; Basic Privacy and an algorithm fallback, DMR's only, are refused by name before the engine is
+    // asked, where they used to fail the whole list with the parser's message.
+    systems.update(0, {{"decodeFlag", "-fi"}, {"encKeyType", "scrambler"}, {"encKeyValue", "17"}, {"encForceKey", 1}});
+    const auto nxdnKeyed = keyedStarter.build(list);
+    check(nxdnKeyed.value("ok").toBool());
+    if (!nxdnKeyed.value("ok").toBool()) {
+        std::fprintf(stderr, "NXDN keyed row: %s\n", qPrintable(nxdnKeyed.value("error").toString()));
+    }
+    systems.update(0, {{"encForceKey", 2}});
+    const QString nxdnForce = keyedStarter.build(list).value("error").toString();
+    check(nxdnForce.contains("NXDN48 entries take privacy forcing only") && !nxdnForce.contains("Scan list rejected"));
+    systems.update(0, {{"encForceKey", 0}, {"encKeyType", "basic"}, {"encKeyValue", "7"}});
+    const QString nxdnBasic = keyedStarter.build(list).value("error").toString();
+    check(nxdnBasic.contains("NXDN48 entries take no Motorola Basic Privacy key")
+          && !nxdnBasic.contains("Scan list rejected"));
+    systems.update(0, {{"decodeFlag", "-ft"}, {"encKeyType", "rc4"}, {"encKeyValue", directKey}});
     // RadioReference's combined P25 flags pass the real target parser with their scoped preference.
     systems.update(0, {{"decodeFlag", "-mq -^"}, {"trunking", true}});
     check(keyedStarter.build(list).value("ok").toBool());
@@ -935,6 +1202,7 @@ main(int argc, char** argv) {
     checkAnalogRateDiagnostic(dir);
     checkFallbackPathsClear();
     checkSessionSwitchesRoundTrip();
+    checkTetraListRate(dir);
     QDir(dataDir).removeRecursively();
     return failures ? 1 : 0;
 }

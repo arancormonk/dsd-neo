@@ -855,6 +855,14 @@ int svc_rtl_set_freq_locked(dsd_opts* opts, dsd_state* state, uint32_t hz);
    caller that runs the carrier boundary itself: once something else (a scan's pause) has run after the tune, or as the
    operator's (DSD_CARRIER_BOUNDARY_OPERATOR_TUNE, issue #903). */
 int svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz);
+/* The carrier boundary of a tune the operator made (dsd_engine_carrier_boundary(), DSD_CARRIER_BOUNDARY_TUNE): the
+   receiver may now be on another network, so the DMR Tier III channels the air taught go with it
+   (dmr_t3_chan_network_changed(), discussion #900 F2). Every app-control tune boundary runs this; a -Y step, a replay
+   retune and a signal search visit run the boundary alone. @p guard_held as the boundary's. */
+void svc_operator_carrier_boundary(dsd_opts* opts, dsd_state* state, int guard_held);
+/* svc_operator_carrier_boundary() of a tune that is the operator's whatever operator_tuned says
+   (DSD_CARRIER_BOUNDARY_OPERATOR_TUNE, issue #903): the frequency entry's and a spectrum tap's. */
+void svc_operator_tune_carrier_boundary(dsd_opts* opts, dsd_state* state, int guard_held);
 /* io_control_set_freq_tagged(), every app-control tune's io/control leg: a rigctl peer's confirmed move to another
    frequency is noted to the engine (dsd_engine_note_rigctl_retune(), issue #834), as the backend's own legs note it. */
 int svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out_pending_id);

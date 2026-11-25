@@ -84,6 +84,10 @@ p25p2_mac_motorola_payload_len(uint8_t opcode, int len) {
         case 0x8Fu:
         case 0x91u:
         case 0x95u: return p25p2_mac_positive_len(len);
+        /* Group Regroup Voice Channel User - Extended: 16 octets as transmitted, but a structure that declares another
+           length ends there, and the next message starts after it. One that declares less than its own opcode, MFID and
+           length octets, or 0, keeps the table's 16, so no segment starts inside its header. */
+        case 0xA0u: return (len >= 3) ? len : -1;
         case 0xBFu: return (len > 0) ? len : 3;
         default: return -1;
     }
@@ -241,13 +245,36 @@ p25p2_mac_parse_span(int type, int span, const unsigned long long mac[24], struc
     return 0;
 }
 
+static void p25p2_mac_voice_home(const unsigned long long mac[24], int pos, struct p25p2_mac_voice_identity* out);
+
+/* Whether @p segment holds @p needed octets of its message, all within the @p span octets the transport carries: a
+   first segment's own length may claim more than the span (p25p2_mac_parse_segments()). */
+static int
+p25p2_mac_segment_holds(const struct p25p2_mac_segment* segment, int span, int needed) {
+    return segment->length >= needed && segment->offset + needed <= span;
+}
+
+/* The length octet a Motorola 0xA0 voice user declares (octet 3, its low six bits counting the whole message from the
+   opcode). The segments follow it (p25p2_mac_motorola_payload_len()), but the decoder knows one layout only, of 16
+   octets: a message that declares those (or 0, which leaves the table's 16) is one it can read, anything else names
+   no identity. Only a declared 16 says the SUID was sent: the table's 16 say nothing of what was. */
+static unsigned int
+p25p2_mac_motorola_regroup_ext_declared(const unsigned long long mac[24], int pos) {
+    return p25p2_mac_octet(mac, pos + 2) & 0x3Fu;
+}
+
+/* The Motorola supergroup voice users. The extended form (0xA0, Group Regroup Voice Channel User - Extended, 16 octets)
+   carries the talker's working address at octets 7-9 and its Source SUID at octets 10-16 (WACN, System ID, unit ID),
+   as OP25 (tk_p25.py, op 0xa0 mfid 0x90: sa msg[6:9], ssuid msg[9:16]) and SDRTrunk
+   (MotorolaGroupRegroupVoiceChannelUserExtended: SOURCE_ADDRESS octet 7, SOURCE_SUID_WACN octet 10, SOURCE_SUID_ID
+   octet 14) decode it: the working address names the talker, the SUID is its home identity, as in 0x21. */
 static int
 p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
-                                          struct p25p2_mac_voice_identity* out) {
+                                          int span, struct p25p2_mac_voice_identity* out) {
     const int pos = 1 + segment->offset;
     const uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, pos);
 
-    if (segment->length < 8 || p25p2_mac_octet(mac, pos + 1) != 0x90u) {
+    if (!p25p2_mac_segment_holds(segment, span, 8) || p25p2_mac_octet(mac, pos + 1) != 0x90u) {
         return 0;
     }
 
@@ -256,11 +283,16 @@ p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], cons
         out->src = (int)((p25p2_mac_octet(mac, pos + 5) << 16) | (p25p2_mac_octet(mac, pos + 6) << 8)
                          | p25p2_mac_octet(mac, pos + 7));
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 2);
-    } else if (opcode == 0xA0u && segment->length >= 9) {
+    } else if (opcode == 0xA0u && p25p2_mac_segment_holds(segment, span, 16)
+               && (p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 16u
+                   || p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 0u)) {
         out->tg = (int)((p25p2_mac_octet(mac, pos + 4) << 8) | p25p2_mac_octet(mac, pos + 5));
         out->src = (int)((p25p2_mac_octet(mac, pos + 6) << 16) | (p25p2_mac_octet(mac, pos + 7) << 8)
                          | p25p2_mac_octet(mac, pos + 8));
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 3);
+        if (p25p2_mac_motorola_regroup_ext_declared(mac, pos) == 16u) {
+            p25p2_mac_voice_home(mac, pos + 9, out);
+        }
     } else {
         return 0;
     }
@@ -273,9 +305,9 @@ p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], cons
 
 static int
 p25p2_mac_telephone_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
-                                           struct p25p2_mac_voice_identity* out) {
+                                           int span, struct p25p2_mac_voice_identity* out) {
     const int pos = 1 + segment->offset;
-    if (p25p2_mac_octet(mac, pos) != 0x03u || segment->length < 7) {
+    if (p25p2_mac_octet(mac, pos) != 0x03u || !p25p2_mac_segment_holds(segment, span, 7)) {
         return 0;
     }
 
@@ -305,8 +337,22 @@ p25p2_mac_voice_home(const unsigned long long mac[24], int pos, struct p25p2_mac
     out->home_unit = unit;
 }
 
+/* The Source SUID of an extended voice user (0x21 after octet 7, 0x22 after octet 8) as the talker's home identity, when
+   the segment and the transport hold the whole message; none for the abbreviated forms. */
+static void
+p25p2_mac_extended_voice_home(const unsigned long long mac[24], const struct p25p2_mac_segment* segment, int span,
+                              struct p25p2_mac_voice_identity* out) {
+    const int pos = 1 + segment->offset;
+    const uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, pos);
+    if (opcode == 0x21u && p25p2_mac_segment_holds(segment, span, 14)) {
+        p25p2_mac_voice_home(mac, pos + 7, out);
+    } else if (opcode == 0x22u && p25p2_mac_segment_holds(segment, span, 15)) {
+        p25p2_mac_voice_home(mac, pos + 8, out);
+    }
+}
+
 static int
-p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
+p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment, int span,
                                  struct p25p2_mac_voice_identity* out) {
     const int pos = 1 + segment->offset;
     const uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, pos);
@@ -317,41 +363,40 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
 
     /* The extended forms (0x21, 0x22) carry the source's working address on this system, then its home SUID: the
        working address names the talker here, as in the abbreviated forms; the SUID is the radio's home identity and
-       never replaces it (issue #800). */
-    if ((opcode == 0x01u && segment->length >= 7) || (opcode == 0x21u && segment->length >= 14)) {
+       never replaces it (issue #800). Every form is read only when the segment and the span hold all of it: a first
+       segment's table length may claim more than the span, and octets past it are no checked content. */
+    if ((opcode == 0x01u && p25p2_mac_segment_holds(segment, span, 7))
+        || (opcode == 0x21u && p25p2_mac_segment_holds(segment, span, 14))) {
         out->tg = (int)((p25p2_mac_octet(mac, pos + 2) << 8) | p25p2_mac_octet(mac, pos + 3));
         out->dst = 0;
         out->src = (int)((p25p2_mac_octet(mac, pos + 4) << 16) | (p25p2_mac_octet(mac, pos + 5) << 8)
                          | p25p2_mac_octet(mac, pos + 6));
-        if (opcode == 0x21u) {
-            p25p2_mac_voice_home(mac, pos + 7, out);
-        }
+        p25p2_mac_extended_voice_home(mac, segment, span, out);
         out->is_group = 1;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
         out->source_optional = 0;
         return 1;
     }
 
-    if ((opcode == 0x02u && segment->length >= 8) || (opcode == 0x22u && segment->length >= 15)) {
+    if ((opcode == 0x02u && p25p2_mac_segment_holds(segment, span, 8))
+        || (opcode == 0x22u && p25p2_mac_segment_holds(segment, span, 15))) {
         out->tg = 0;
         out->dst = (int)((p25p2_mac_octet(mac, pos + 2) << 16) | (p25p2_mac_octet(mac, pos + 3) << 8)
                          | p25p2_mac_octet(mac, pos + 4));
         out->src = (int)((p25p2_mac_octet(mac, pos + 5) << 16) | (p25p2_mac_octet(mac, pos + 6) << 8)
                          | p25p2_mac_octet(mac, pos + 7));
-        if (opcode == 0x22u) {
-            p25p2_mac_voice_home(mac, pos + 8, out);
-        }
+        p25p2_mac_extended_voice_home(mac, segment, span, out);
         out->is_group = 0;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
         out->source_optional = 0;
         return 1;
     }
 
-    if (p25p2_mac_telephone_voice_identity_segment(mac, segment, out)) {
+    if (p25p2_mac_telephone_voice_identity_segment(mac, segment, span, out)) {
         return 1;
     }
 
-    if (opcode == 0x90u && segment->length >= 7 && p25p2_mac_octet(mac, pos + 1) <= 0x01u) {
+    if (opcode == 0x90u && p25p2_mac_segment_holds(segment, span, 7) && p25p2_mac_octet(mac, pos + 1) <= 0x01u) {
         out->tg = (int)((p25p2_mac_octet(mac, pos + 2) << 8) | p25p2_mac_octet(mac, pos + 3));
         out->dst = 0;
         out->src = (int)((p25p2_mac_octet(mac, pos + 4) << 16) | (p25p2_mac_octet(mac, pos + 5) << 8)
@@ -362,11 +407,17 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         return 1;
     }
 
-    return p25p2_mac_motorola_voice_identity_segment(mac, segment, out);
+    return p25p2_mac_motorola_voice_identity_segment(mac, segment, span, out);
 }
 
 int
 p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out) {
+    return p25p2_mac_decode_voice_identity_span(type, p25p2_mac_span(type, 0), mac, out);
+}
+
+int
+p25p2_mac_decode_voice_identity_span(int type, int span, const unsigned long long mac[24],
+                                     struct p25p2_mac_voice_identity* out) {
     struct p25p2_mac_result result;
     int found = 0;
 
@@ -384,14 +435,14 @@ p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], stru
     out->home_wacn = 0U;
     out->home_sysid = 0U;
     out->home_unit = 0U;
-    if (p25p2_mac_parse(type, mac, &result) != 0) {
+    if (p25p2_mac_parse_span(type, span, mac, &result) != 0) {
         return -1;
     }
 
     for (int i = 0; i < result.segment_count; i++) {
         /* The last voice user wins whole. */
         struct p25p2_mac_voice_identity segment = *out;
-        if (p25p2_mac_voice_identity_segment(mac, &result.segments[i], &segment)) {
+        if (p25p2_mac_voice_identity_segment(mac, &result.segments[i], result.span, &segment)) {
             *out = segment;
             found = 1;
         }

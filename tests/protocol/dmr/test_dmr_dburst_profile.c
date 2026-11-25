@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_abs_params.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_dburst_profile.h"
 #include "dmr_r34_internal.h"
@@ -288,13 +289,14 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
 }
 
 void
-dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
-          uint32_t IrrecoverableErrors) {
+dmr_cspdu_ex(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
+             uint32_t IrrecoverableErrors, const dmr_cspdu_shape* shape) {
     (void)opts;
     (void)state;
     (void)cs_pdu_bits;
     (void)cs_pdu;
     (void)IrrecoverableErrors;
+    (void)shape;
     g_cspdu_calls++;
     g_cspdu_last_crc_correct = CRCCorrect;
 }

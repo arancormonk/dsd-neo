@@ -1,5 +1,5 @@
 # Crypto module library
-add_library(dsd-neo_crypto)
+add_library(dsd-neo_crypto STATIC)
 
 target_sources(
     dsd-neo_crypto
@@ -33,11 +33,4 @@ target_include_directories(
 target_link_libraries(
     dsd-neo_crypto
     PRIVATE dsd-neo_warnings OpenSSL::Crypto dsd-neo_tetra_crypto
-)
-
-install(
-    TARGETS dsd-neo_crypto
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

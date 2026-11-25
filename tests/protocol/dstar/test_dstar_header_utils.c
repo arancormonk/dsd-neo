@@ -187,10 +187,30 @@ test_soft_data_header_preserves_callsigns(void) {
     state.max = 1.0F;
     build_encoded_header_fixture(soft_rx, 0x80U);
 
-    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    /* Issue #890: the checked DATA flag reaches the caller itself (the scan's report reads it there). */
+    int data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 1 && data == 1);
 
     const dsd_call_snapshot call = get_dstar_call(&state);
     assert(call.kind == DSD_CALL_KIND_DATA);
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x78U);
+    data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 1 && data == 0);
+    build_encoded_header_fixture_ex(soft_rx, 0x80U, 1);
+    data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 0 && data == -1);
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x80U);
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
     assert(strcmp(call.route_text[1], "RPT2TST") == 0);
     assert(strcmp(call.route_text[0], "RPT1TST") == 0);
     assert(strcmp(call.target_text, "CQCQCQ") == 0);
@@ -836,6 +856,81 @@ test_gps_blocks_classified_individually(void) {
     free(history);
 }
 
+/* A rebroadcast header's 41 octets (JARL STD 6.0 section 6.4) in the nine blocks from block @p first: five octets a
+ * block behind mini-header 0x55, the last octet behind 0x51; the CRC-16/X.25 over the first 39 (wrong when
+ * @p corrupt_crc). */
+static void
+layout_slow_data_header(uint8_t bytes[60], int first, int corrupt_crc) {
+    uint8_t header[45];
+    DSD_MEMSET(header, 0x66, sizeof(header));
+    header[0] = 0x00;
+    header[1] = 0x00;
+    header[2] = 0x00;
+    DSD_MEMCPY(header + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(header + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
+    DSD_MEMCPY(header + 27, "N0CALL  /TST", 12);
+    const uint16_t crc = (uint16_t)(dstar_crc16(header, 39U) ^ (corrupt_crc ? 0x0101U : 0x0000U));
+    header[39] = (uint8_t)(crc >> 8U);
+    header[40] = (uint8_t)crc;
+    for (int b = 0; b < 9; b++) {
+        uint8_t* block = bytes + ((size_t)(first + b) * 6U);
+        block[0] = b < 8 ? 0x55U : 0x51U;
+        DSD_MEMCPY(block + 1, header + ((size_t)b * 5U), 5U);
+    }
+}
+
+/* Issue #890 (B17): a radio that sends code squelch sends it in the two data frames right after the [Sync] frame (JARL
+ * STD 6.0 section 6.5), and its header rebroadcast in the nine blocks after that (section 6.4): blocks 1-9, to the
+ * superframe's end. The header is read there as it is from block 0: its CRC-16/X.25 proves the transmission and its
+ * callsigns name the call. A header whose CRC fails there names nothing; header blocks after a block that is no code
+ * squelch are no header. */
+static void
+test_slow_data_header_after_code_squelch(void) {
+    for (int layout = 0; layout < 4; layout++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        uint8_t bytes[60];
+        uint8_t bits[480];
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+        state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+        /* 0: block 0 (no code squelch); 1: after code squelch 23; 2: the same, CRC failed; 3: after a text block. */
+        const int first = layout == 0 ? 0 : 1;
+        if (layout == 1 || layout == 2) {
+            bytes[0] = 0xC2U;
+            bytes[1] = '2';
+            bytes[2] = '3';
+        } else if (layout == 3) {
+            bytes[0] = 0x40U;
+            DSD_MEMCPY(bytes + 1, "HELLO", 5U);
+        }
+        layout_slow_data_header(bytes, first, layout == 2);
+        pack_slow_data_bytes(bytes, bits);
+
+        processDSTAR_SD(&opts, &state, bits);
+
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        const int named = dsd_call_state_get(&state, 0U, &call) == 1;
+        if (layout <= 1) {
+            assert(named);
+            assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+            assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+            assert(strcmp(call.target_text, "CQCQCQ") == 0);
+            assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+            assert(state.dstar_confirmed == 1);
+            /* None of the header's octets is text. */
+            assert(state.dstar_txt[0] == '\0');
+        } else {
+            assert(!named);
+            assert(state.dstar_confirmed == 0);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 int
 main(void) {
     test_soft_decode_pipeline();
@@ -847,6 +942,7 @@ main(void) {
     test_soft_data_header_names_no_call_for_slow_data();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
+    test_slow_data_header_after_code_squelch();
     test_slow_data_header_search_evidence_follows_the_published_call();
     test_slow_data_text_by_mini_header();
     test_slow_data_text_needs_a_confirmed_dstar_call();

@@ -83,6 +83,11 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_RUNTIME_CONFIG_APPLY) {
                 continue;
             }
+            /* A Tier III channel edit carries the row as a frontend's snapshot showed it (its origin and the network
+               generation), and the API publishes no channel view to read them from (discussion #900 F3). */
+            if (value == DSD_APP_CMD_DMR_CHANNEL_SET) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }

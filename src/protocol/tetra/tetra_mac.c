@@ -1106,6 +1106,27 @@ sysinfo_applies(const mac_block* b, long dl_hz, const tetra_mac_sysinfo* si) {
     return 1;
 }
 
+/* A SYSINFO of the cell names no main carrier a frequency can be given for: none (band 0 and carrier 0, EN 300 392-2
+ * table 21.65 note 3), band 0 with another carrier, or a band with no base frequency (TS 100 392-15 table 1). The main
+ * carrier the cell's last SYSINFO named is no longer the cell's word: its frequency, carrier number, band and offset go,
+ * so the publication shows no control channel, with the control channel it set (not one set otherwise) and the received
+ * identity's control channel, so nothing pairs the old frequency with the new carrier number. The next valid SYSINFO
+ * takes them on again. The cell's last main carrier (cell_main_hz) stays, so a SYSINFO naming another one after this
+ * still tells another cell (tetra_bsch_sysinfo_cell()). On the carrier of a guarded follow such a SYSINFO is not
+ * applied at all (sysinfo_applies()). */
+static void
+sysinfo_no_main_carrier(const mac_block* b) {
+    tetra_state_t* const ts = b->ts;
+    if (ts->dl_carrier_hz > 0L && b->state->trunk_cc_freq == ts->dl_carrier_hz) {
+        b->state->trunk_cc_freq = 0;
+    }
+    ts->dl_carrier_hz = 0;
+    ts->sysinfo_main_carrier = 0;
+    ts->freq_band = 0;
+    ts->freq_offset = 0;
+    dsd_rxid_note_tetra_no_main_carrier(b->state);
+}
+
 /* Cache SYSINFO, once a main carrier or location area other than the cell's has forgotten the last cell
  * (tetra_bsch_sysinfo_cell()), unless it is another cell's on the carrier of a guarded follow (sysinfo_applies()). The
  * control channel moves to the main carrier only when it is a valid frequency. 1 when the SYSINFO was applied. */
@@ -1128,12 +1149,14 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     }
     if (dl_hz > 0L) {
         ts->dl_carrier_hz = dl_hz;
+        ts->cell_main_hz = dl_hz;
         ts->freq_band = si->band;
         ts->freq_offset = si->offset;
         b->state->trunk_cc_freq = dl_hz;
         tetra_sm_on_cc_sync(b->opts, b->state);
     } else {
-        TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA SYSINFO] CC=%d  no valid main carrier; control channel unchanged\n", b->cc);
+        TETRA_LOG_VERBOSE(b->ts, 1, "[TETRA SYSINFO] CC=%d  no valid main carrier; the last one is forgotten\n", b->cc);
+        sysinfo_no_main_carrier(b);
     }
     if (!si->cck_flag) {
         ts->hyperframe = si->hyperframe_or_cck;
@@ -1143,7 +1166,10 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
      * security elements mean something only on a cell that offers air interface encryption (table A.104 note 1). */
     const int sec_meaningful = si->security_present && (!si->mle_present || ((si->bs_service >> 1) & 1u) != 0u);
     tetra_air_sig_note_sysinfo(b->state, si->cck_flag, si->hyperframe_or_cck, sec_meaningful ? &si->security : NULL);
-    ts->sysinfo_main_carrier = si->main_carrier;
+    /* The carrier number of a main carrier the SYSINFO gives a frequency for; sysinfo_no_main_carrier() forgot it. */
+    if (dl_hz > 0L) {
+        ts->sysinfo_main_carrier = si->main_carrier;
+    }
     if (si->security_present) {
         ts->sec = si->security;
         ts->sec_valid = 1;

@@ -180,9 +180,10 @@ p25p2_xcch_emit_checked_voice_start(dsd_opts* opts, dsd_state* state, p25_sm_eve
 }
 
 static int
-p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
+p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int span, int slot,
+                       const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
-    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+    if (p25p2_mac_decode_voice_identity_span(type, span, mac, &identity) == 1) {
         p25_sm_event_t ev = identity.source_optional
                                 ? p25_sm_ev_active_call_source_absent(slot, identity.tg, identity.dst,
                                                                       identity.is_group, identity.svc_bits)
@@ -193,17 +194,23 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
         ev.source_nonlocal = (uint8_t)(identity.home_valid && identity.src == 0);
         const int accepted = p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
         /* The voice start may open the call after the voice-user pass named its home: the call it opened carries it, and
-           only that call (one naming this voice user's target). */
+           only that call (one naming this voice user's target). A voice user that names a working address and no home
+           takes away a home an earlier talker left on that call (p25p2_note_voice_home()). */
         const uint64_t named_target = (uint64_t)(uint32_t)(identity.is_group ? identity.tg : identity.dst);
+        const uint32_t working =
+            (!identity.source_optional && p25_source_id_is_subscriber((uint64_t)(uint32_t)identity.src))
+                ? (uint32_t)identity.src
+                : 0U;
         dsd_call_snapshot published;
-        if (accepted && identity.home_valid && named_target != 0U
+        if (accepted && (identity.home_valid || working != 0U) && named_target != 0U
             && dsd_call_state_get(state, (uint8_t)slot, &published) > 0 && published.phase == DSD_CALL_PHASE_ACTIVE
             && published.ota_target_id == named_target) {
             const dsd_call_source_home home = {.wacn = identity.home_wacn,
                                                .unit = identity.home_unit,
+                                               .source = working,
                                                .sysid = (uint16_t)identity.home_sysid,
-                                               .valid = 1U};
-            p25p2_note_voice_home(opts, state, slot, &home);
+                                               .valid = (uint8_t)(identity.home_valid != 0)};
+            p25p2_note_voice_home(opts, state, slot, working, &home);
         }
         return accepted;
     }
@@ -607,6 +614,9 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    /* The transport's message area, read before the VPDU pass clears p2_is_lcch: an LCCH carries fewer message octets
+       than a SACCH, and the voice identity below is parsed within the octets the CRC covered. */
+    const int span = p25p2_mac_span(1, state->p2_is_lcch == 1);
     const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
     if (p25p2_retune_token_changed(&token)) {
@@ -619,7 +629,7 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    if (!p25p2_xcch_emit_active(opts, state, 1, slot, smac)) {
+    if (!p25p2_xcch_emit_active(opts, state, 1, span, slot, smac)) {
         return;
     }
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
@@ -743,7 +753,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
         return;
     }
 
-    if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
+    if (!p25p2_xcch_emit_active(opts, state, 0, p25p2_mac_span(0, 0), slot, fmac)) {
         return;
     }
 

@@ -2127,6 +2127,65 @@ test_channel_import_accepts_hex_and_iden_chan_keys(void) {
     return failed;
 }
 
+/* A key-0 row (a DMR Tier III control channel seed, as RadioReference generates it) takes its slot at the front of the
+   list and also writes channel map row 0, so a hand-written P25 row "0,<Hz>" keeps mapping channel 0x0000. */
+static int
+test_channel_import_key_zero_writes_map_row_zero(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-key-zero-XXXXXX";
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    const int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    if (write_text_file(tmpl, "ChannelNumber(dec),frequency(Hz)\n"
+                              "0,451112500,default cc\n"
+                              "0,451212500,default cc\n"
+                              "5,451012500\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "key zero: import failed\n");
+        failed = 1;
+    }
+    if (state->trunk_chan_map[0] != 451212500L) {
+        DSD_FPRINTF(stderr, "key zero: channel map row 0 is %ld\n", state->trunk_chan_map[0]);
+        failed = 1;
+    }
+    if (state->trunk_chan_map[5] != 451012500L || state->trunk_chan_map_used_count != 1U) {
+        DSD_FPRINTF(stderr, "key zero: row 5 %ld used_count=%u\n", state->trunk_chan_map[5],
+                    state->trunk_chan_map_used_count);
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 3 || *dsd_state_trunk_lcn_slot_const(state, 0) != 451112500L
+        || *dsd_state_trunk_lcn_slot_const(state, 1) != 451212500L
+        || *dsd_state_trunk_lcn_slot_const(state, 2) != 451012500L) {
+        DSD_FPRINTF(stderr, "key zero: positional list count=%d\n", state->lcn_freq_count);
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
 static int
 bandplan_row_matches(const p25_bandplan_row_t* row, int iden, int is_tdma, long base_5hz, int spac_125hz, int type,
                      int trans_off, int bw_vu, unsigned long long wacn, unsigned long long sysid) {
@@ -2894,6 +2953,13 @@ test_nfm_channel_map_rows(void) {
         {"1,154430000,nfm,-G groups.csv\n", "row 2: -G: not supported for this mode/target"},
         {"1,154430000,nfm,--strict-crc\n", "row 2: --strict-crc: not supported for this mode/target"},
         {"1,154430000,nfm,--scan-voice-only\n", "row 2: --scan-voice-only: not supported for this mode/target"},
+        /* Skip-silent and its reading length (#834) are session-wide: an options cell refuses both, on every class. */
+        {"1,154430000,nfm,--scan-skip-silent\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,154430000,nfm,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,dmr,--scan-skip-silent-ms=120\n", "row 2: options: unsupported switch or positional argument"},
+        {"1,461000000,,--scan-skip-silent-ms 50\n", "row 2: options: unsupported switch or positional argument"},
         {"1,154430000,nfm,-b 1\n", "row 2: -b: not supported for this mode/target"},
         {"1,154430000,nfm,--nfm-bandwidth-hz 30000\n",
          "row 2: --nfm-bandwidth-hz: expects whole Hz from 8000 to 25000"},
@@ -2903,7 +2969,7 @@ test_nfm_channel_map_rows(void) {
         {"1,154430000,Analog,\n", "row 2: invalid mode 'Analog' (use nfm)"},
         {"1,154430000,wfm,\n", "row 2: invalid mode 'wfm' (use nfm)"},
         {"1,154430000,typo,\n",
-         "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am "
+         "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am, tetra-dmo "
          "or an empty cell"},
     };
 
@@ -2983,7 +3049,7 @@ test_am_channel_map_rows(void) {
         {"1,461000000,dmr,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
         {"1,461000000,,--am-bandwidth-hz 8333\n", "row 2: --am-bandwidth-hz: needs mode am"},
         {"1,118300000,am-conventional,\n", "row 2: invalid mode; expected p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, "
-                                           "m17, nfm, am or an empty cell"},
+                                           "m17, nfm, am, tetra-dmo or an empty cell"},
     };
 
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
@@ -3126,6 +3192,50 @@ test_nfm_channel_map_tone_lists(void) {
     return rc;
 }
 
+/* Issue #890 key matrix on -Y rows: a ysf, dstar, tetra-dmo, m17 or dpmr row takes no legacy key column (each says why,
+   never echoing the cell), a dpmr row takes its scoped -R in the options cell, and an m17 row refuses -R there. */
+static int
+test_simplex_channel_map_keys(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "simplex-map-");
+    assert(fd >= 0);
+    dsd_close(fd);
+    char log[4096];
+    int rc = 0;
+
+    static const struct {
+        const char* mode;
+        const char* why;
+    } modes[] = {
+        {"ysf", "key columns are not supported for mode ysf: it decrypts nothing"},
+        {"dstar", "key columns are not supported for mode dstar: it decrypts nothing"},
+        {"tetra-dmo", "key columns are not supported for mode tetra-dmo: it decrypts nothing"},
+        {"m17", "key columns are not supported for mode m17: it takes no keys of its own: the session's keys apply"},
+        {"dpmr", "key columns are not supported for mode dpmr: it takes only an -R scrambler key in its options"},
+    };
+
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof body, "channel,frequency_hz,mode,single_key_dec\n1,433000000,%s,SECRET123\n",
+                     modes[i].mode);
+        rc |= expect_import_refused(path, body, modes[i].why);
+        const int imported = import_channel_map_text(path, body, log, sizeof log);
+        rc |= fixture_check(imported != CHANNEL_MAP_NOT_IMPORTED && strstr(log, "SECRET") == NULL,
+                            "keyed simplex row: the key text stays out of the log");
+        DSD_SNPRINTF(body, sizeof body, "channel,frequency_hz,mode,keys_hex_csv,options\n1,433000000,%s,keys.csv,\n",
+                     modes[i].mode);
+        rc |= expect_import_refused(path, body, modes[i].why);
+    }
+    rc |= fixture_check(
+        import_channel_map_text(path, "channel,frequency_hz,mode,options\n1,446100000,dpmr,-R 17 -4\n", log, sizeof log)
+            == 0,
+        "a dpmr row takes its scoped -R");
+    rc |= expect_import_refused(path, "channel,frequency_hz,mode,options\n1,433475000,m17,-R 17\n",
+                                "row 2: -R: a m17 row or target takes no key setting");
+    assert(remove(path) == 0);
+    return rc;
+}
+
 int
 main(void) {
     if (test_bandplan_offset_boundaries() != 0) {
@@ -3141,6 +3251,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_warns_unreachable_names() != 0) {
+        return 1;
+    }
+    if (test_simplex_channel_map_keys() != 0) {
         return 1;
     }
     if (test_nfm_channel_map_rows() != 0) {
@@ -3200,6 +3313,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_accepts_hex_and_iden_chan_keys() != 0) {
+        return 1;
+    }
+    if (test_channel_import_key_zero_writes_map_row_zero() != 0) {
         return 1;
     }
     if (test_p25_bandplan_import_rows_units_and_seed() != 0) {

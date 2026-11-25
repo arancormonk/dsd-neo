@@ -440,6 +440,7 @@ the session; they never write the process environment.
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel. A save writes `true` for a scan the operator paused, so the next launch runs it | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_skip_silent` | BOOL | Leave a silent conventional trunk-scan target or `-Y` row as soon as a quick signal check finds it silent (`--scan-skip-silent`; session-wide, never a row option; see [Skipping silent channels](trunk-scan.md#skipping-silent-channels)) | `false` |
+| `scan_skip_silent_ms` | INT (0, 10-500) | Experts: how long the skip-silent check reads a channel (`--scan-skip-silent-ms`; session-wide). `0` is the calibrated reading, 9 slices of 10 ms (90 ms or a little more, by sample rate); other values round up to whole 10 ms slices. Fewer than nine slices (settings 10-80 ms) are not calibrated: a weak or fading signal can read silent and be skipped; DMR-capable channels are read for at least 6 slices; more than nine slices (settings over 90 ms) skip less often. Any other value is refused. See [Reading length (experts)](trunk-scan.md#reading-length-experts) | `0` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
 | `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; can cut an ongoing call short; `0` disables, else `1000..3600000` | `0` |
@@ -461,7 +462,7 @@ still save; **Skip** never saves or changes the list. See [Skip lifetimes](cli.m
 | `targets_csv_2` … `targets_csv_8` | PATH | Lists 2 to 8, scanned in the same session | (empty) |
 | `lists_off` | STRING | Lists that start switched off, by number (`2, 3`) | (empty) |
 | `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
-| `activity_hold_ms` | INT (250-600000) | Conventional DMR/P25/NXDN activity hold and analog (`nfm-conventional`/`am-conventional`) carrier tail | `1200` |
+| `activity_hold_ms` | INT (250-600000) | Conventional digital activity hold (DMR, P25, NXDN, YSF, D-STAR, dPMR, M17, TETRA DMO) and analog (`nfm-conventional`/`am-conventional`) carrier tail | `1200` |
 
 **[radioreference] section:**
 | Key | Type | Description | Default |
@@ -515,6 +516,7 @@ audio input) sound no alert.
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
 | `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
 | `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
+| `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -532,10 +534,13 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
-`rdio_analog_system_id` and `rdio_analog_talkgroup` outside their ranges, or not whole numbers, are refused with a
-warning, and the value already loaded stays; `--validate-config` reports them as errors. An analog call with a frequency
-is exported under it in kHz; how analog calls are exported, and the limits, are in `docs/cli.md`, "Analog calls in
-rdio-scanner".
+`rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges, or not whole
+numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them as errors.
+An analog call with a frequency is exported under it in kHz; how analog calls are exported, and the limits, are in
+`docs/cli.md`, "Analog calls in rdio-scanner". A digital call with no talkgroup is exported under its frequency in kHz
+too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in
+`docs/cli.md`, "Digital calls with no talkgroup in rdio-scanner". A saved config writes `rdio_unknown_talkgroup` only
+when it is above 0, and `--rdio-unknown-talkgroup 0` on the command line turns a config's value off.
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
@@ -1016,6 +1021,11 @@ Config/CLI interaction:
   it; a config loaded during a session without the key turns it off; a save and the exit autosave write the value
   the session runs, including one the terminal's `Silent channel skip` row changed. On without `-Y` or trunk scan, the
   start warns `[trunking] scan_skip_silent has no effect without -Y or --trunk-scan`.
+- `[trunking] scan_skip_silent_ms` is session-wide too, and `--scan-skip-silent-ms` wins over it. The loader refuses
+  a value other than `0` or `10..500` and keeps the one it had, and `--validate-config` reports it as an error, in a
+  profile as well. Set without `-Y` or trunk scan, the start warns that it has no effect without `-Y` or
+  `--trunk-scan`; set under a scan with skip-silent off, it warns
+  `[trunking] scan_skip_silent_ms has no effect without --scan-skip-silent`.
 - `--trunk-scan-hold <target-id>` (start held on one target) has no key: it is a one-shot start option, and no save
   or exit autosave writes it.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other

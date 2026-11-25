@@ -9,9 +9,9 @@ alone does not demonstrate delivery of complete corresponding source.
 For each release asset, preserve the following together:
 
 1. The exact signed DSD tag/commit, original tracked bytes and build scripts.
-2. Original PFFFT and TETRA_crypto archives matching the release's checksums,
-   and the exact mbelib source plus its PFFFT source. mbelib 2.6.11 supplies a
-   [source archive](https://github.com/arancormonk/mbelib-neo/releases/tag/v2.6.11);
+2. Original pffft-neo and TETRA_crypto archives matching the release's checksums,
+   and the exact mbelib source plus its pffft-neo source. mbelib 2.6.12 supplies a
+   [source archive](https://github.com/arancormonk/mbelib-neo/releases/tag/v2.6.12);
    that archive covers mbelib, not the whole DSD application.
 3. The sources, modifications, notices and build options for libraries actually
    bundled in the asset. Android's USB/RTL/Airspy snapshots and patch are in
