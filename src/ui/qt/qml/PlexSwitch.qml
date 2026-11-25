@@ -6,22 +6,29 @@ import QtQuick
 // The toggle: cyan-tinted track and cyan knob when on, control-border track when off.
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property bool checked: false
     property string accessibleName: ""
+    // What a screen reader reads after the name (a card's rank and tags, a
+    // switch's rule), gated as the name is.
+    property string accessibleDescription: ""
     property bool interactive: true
     signal toggled(bool checked)
     function activate() {
-        if (enabled && interactive && Navigation.allows(control)) {
+        if (enabled && interactive && Navigation.allows(control) && control.visible) {
             // Issue #718: a choice made mid-word keeps the word.
             Navigation.commitComposing(false);
             toggled(!checked);
         }
     }
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(control) && enabled && interactive) || activeFocus
+    activeFocusOnTab: (Navigation.allows(control) && visible && enabled && interactive) || activeFocus
     Accessible.role: Accessible.Switch
-    Accessible.name: accessibleName
+    Accessible.name: !Navigation.allows(control) || !visible || !interactive ? "" : accessibleName
+    Accessible.focusable: Navigation.allows(control) && visible && interactive
+    Accessible.description: !Navigation.allows(control) || !visible || !interactive ? "" : accessibleDescription
     Accessible.checkable: true
     Accessible.checked: checked
     Accessible.ignored: !Navigation.allows(control) || !visible || !interactive

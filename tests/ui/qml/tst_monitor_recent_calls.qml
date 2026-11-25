@@ -313,6 +313,21 @@ Item {
             }, 5000, "the source alias and ID are missing from the call row")
         }
 
+        // Issue #902: the list hidden (a cached node a screen reader still holds) scrolls nothing.
+        function test_hidden_list_scrolls_nothing() {
+            var before = tc.list.contentY
+            tc.list.visible = false
+            try {
+                tc.list.Accessible.scrollDownAction()
+                tc.list.Accessible.nextPageAction()
+                compare(tc.list.contentY, before, "hidden: nothing scrolled")
+            } finally {
+                tc.list.visible = true
+            }
+            tc.list.Accessible.scrollDownAction()
+            verify(tc.list.contentY > before, "shown: it scrolls")
+        }
+
         function test_01_the_call_that_just_ended_is_on_screen() {
             var newest = ""
             for (var i = 0; i < 4; i++) {

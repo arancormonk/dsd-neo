@@ -535,6 +535,52 @@ Item {
             compare(decoderHost.sessionState, 0);
         }
 
+        // Issue #902 B9: a row past the end of a shrinking list stays until the
+        // end of the turn; its Start and Unpin leave the tree, unnamed and no
+        // stop for a screen reader, while the row still there keeps both.
+        function test_sheet_row_past_the_end_is_no_stop() {
+            var first = addSystem("First", "rtltcp");
+            var second = addSystem("Second", "rtltcp");
+            compare(listenPins.pin("system", first), "");
+            compare(listenPins.pin("system", second), "");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            mouseClick(findChild(home, "pinnedStripMore"));
+            var sheet = findChild(app, "pinnedSheet");
+            tryCompare(sheet, "visible", true);
+            waitForRendering(sheet);
+            var buttons = function (name) {
+                var found = [];
+                var walk = function (item) {
+                    for (var child of item.children) {
+                        if (child.objectName === name)
+                            found.push(child);
+                        walk(child);
+                    }
+                };
+                walk(findChild(sheet, "pinnedSheetRows"));
+                return found;
+            };
+            var starts = buttons("pinnedSheetStart");
+            var unpins = buttons("pinnedSheetUnpin");
+            compare(starts.length, 2);
+            for (var button of starts.concat(unpins)) {
+                verify(!button.Accessible.ignored && button.Accessible.name.length > 0 && button.Accessible.focusable,
+                       button.objectName + " " + button.pinKey + ": in the tree");
+            }
+            // Within this turn: the last row is past the end, not yet let go.
+            listenPins.unpinKey(starts[1].pinKey);
+            for (var gone of [starts[1], unpins[1]]) {
+                verify(gone.Accessible.ignored, gone.objectName + ": out of the tree");
+                compare(gone.Accessible.name, "", gone.objectName + ": unnamed");
+                verify(!gone.Accessible.focusable, gone.objectName + ": no stop");
+            }
+            for (var kept of [starts[0], unpins[0]])
+                verify(!kept.Accessible.ignored && kept.Accessible.focusable, kept.objectName + ": the row left keeps its stop");
+            tryVerify(function () { return buttons("pinnedSheetStart").length === 1; }, 5000, "let go at the end of the turn");
+        }
+
         // Task 6: Pin to Listen in each source. Home's controls, found by what they are.
         function homeItem(name) {
             var found = findChild(findChild(app, "homeScreen"), name);

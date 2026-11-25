@@ -89,6 +89,30 @@ Item {
             tryCompare(row, "visible", false);
             tryCompare(item("siteSheet"), "visible", false);
         }
+        // Issue #902 B9: with the details collapsed the site row is hidden though
+        // a site is known; it is then out of the tree, nameless and no stop, and
+        // a press a screen reader sends the node it still holds opens nothing.
+        function test_hidden_site_row_offers_nothing() {
+            testContext.setMetric("siteProtocol", "P25");
+            testContext.setMetric("siteLine", "P25 · NAC 293");
+            testContext.setMetric("siteConfirmed", true);
+            var row = item("siteRow");
+            tryCompare(row, "visible", true);
+            compare(row.Accessible.name, "P25 · NAC 293");
+            verify(row.Accessible.focusable && !row.Accessible.ignored);
+            monitor.detailsExpanded = false;
+            try {
+                verify(!row.visible, "collapsed, the row is hidden");
+                verify(row.Accessible.ignored, "out of the tree");
+                compare(row.Accessible.name, "", "nameless");
+                verify(!row.Accessible.focusable, "no stop");
+                testContext.pressAccessible(row);
+                verify(!item("siteSheet").visible, "a press on the hidden row opens nothing");
+            } finally {
+                monitor.detailsExpanded = true;
+            }
+            compare(row.Accessible.name, "P25 · NAC 293", "shown again, named");
+        }
         // The Phase 2 seed is configuration, apart from the NAC the carrier sent: "(set)" when set by hand.
         function test_phase2_seed_row() {
             testContext.setMetric("siteProtocol", "P25");

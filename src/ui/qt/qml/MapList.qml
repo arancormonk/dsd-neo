@@ -77,6 +77,8 @@ Item {
             // The pin's row: what it is, whose, and its states, in the rows' grammar.
             Item {
                 id: pinRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(pinRow) && pinRow.visible
                 objectName: "mapPinRow"
 
                 readonly property var position: list.pin && list.pin.position ? list.pin.position : ({})
@@ -191,6 +193,8 @@ Item {
             // it out of the accessibility tree, so here it is in words (review r1).
             Item {
                 id: deviceRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(deviceRow) && deviceRow.visible
                 objectName: "mapDeviceRow"
 
                 readonly property string name: list.deviceLive ? qsTr("Your position") : qsTr("Your saved location")
@@ -370,7 +374,7 @@ Item {
             // nothing of it; re-laid, it is a bare node offering nothing.
             Accessible.ignored: !navigationAllowed || !visible
             function activate() {
-                if (!gap && Navigation.allows(row))
+                if (!gap && Navigation.allows(row) && row.visible)
                     list.activated(model.trackId);
             }
             Keys.onPressed: function (event) {
@@ -394,12 +398,14 @@ Item {
 
             Item {
                 id: rowNode
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(rowNode) && rowNode.visible
                 objectName: "mapRowNode"
                 // Sized by binding, not anchors: a row the view builds is measured at once.
                 width: row.width
                 height: row.height
                 readonly property bool reachable: row.navigationAllowed && row.visible
-                Accessible.role: row.gap ? Accessible.StaticText : Accessible.Button
+                Accessible.role: !reachable ? Accessible.Pane : (row.gap ? Accessible.StaticText : Accessible.Button)
                 Accessible.name: reachable ? pacer.spoken : ""
                 Accessible.description: reachable ? (row.gap ? row.gapDetail : [row.model.emergency ? qsTr("Emergency") : "", row.what].concat(row.states).concat([row.selected ? qsTr("selected") : "", row.followed ? qsTr("followed on the map") : ""]).filter(function (part) {
                     return part.length > 0;

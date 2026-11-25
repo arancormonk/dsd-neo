@@ -9,8 +9,8 @@ UiPanel {
     // "Reconnect" when the receiver ended the session (#647).
     property string retryText: qsTr("Retry")
     Accessible.role: Accessible.AlertMessage
-    Accessible.name: message
-    Accessible.description: source
+    Accessible.name: !navigationAllowed || !visible ? "" : message
+    Accessible.description: !navigationAllowed || !visible ? "" : source
     readonly property bool navigationAllowed: Navigation.allows(card)
     Accessible.ignored: !navigationAllowed || !visible
     property string announcedMessage: ""

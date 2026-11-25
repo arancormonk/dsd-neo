@@ -629,6 +629,35 @@ Item {
             verify(findChild(tc.screen, data.sheets[0]).visible);
         }
 
+        // Issue #902 B9: a closed picker's rows are kept but hidden; with the
+        // screen under them active again, each is out of the tree, nameless and
+        // no stop, and a press a screen reader sends one it still holds changes
+        // no choice.
+        function test_closed_picker_rows_offer_nothing() {
+            testContext.setRadioReference("countries", [{coid: 1, name: "United States", code: "US"},
+                                                        {coid: 2, name: "Canada", code: "CA"}]);
+            var sheet = findChild(tc.screen, "radioReferenceCountrySheet");
+            sheet.visible = true;
+            var row = findChild(sheet, "browseRow1");
+            verify(row !== null);
+            tryCompare(row, "visible", true);
+            compare(row.Accessible.name, "Canada");
+            sheet.visible = false;
+            verify(!row.visible, "the closed picker's row is hidden");
+            verify(row.navigationAllowed, "the screen under it is active again");
+            verify(row.Accessible.ignored, "out of the tree");
+            compare(row.Accessible.name, "", "nameless");
+            verify(!row.Accessible.focusable, "no stop");
+            var chosen = tc.screen.browseCoid;
+            testContext.pressAccessible(row);
+            compare(tc.screen.browseCoid, chosen, "a press on the hidden row chooses nothing");
+            var back = findChild(tc.screen, "radioReferenceBackToResults");
+            if (back !== null && !back.visible) {
+                verify(back.Accessible.ignored && back.Accessible.name === "" && !back.Accessible.focusable,
+                       "the hidden back row offers nothing either");
+            }
+        }
+
         function test_credential_labels_and_hint() {
             compare(findChild(tc.screen, "radioReferenceUsernameField").label, "RadioReference username");
             compare(findChild(tc.screen, "radioReferenceAppKeyField").label, "RadioReference application key");
@@ -1336,9 +1365,18 @@ Item {
             tc.screen.visible = true;
             compare(password.text, "");
             compare(password.placeholderText, "Entered for this session");
-            compare(password.input.Accessible.description, "Password. Entered for this session");
-            // Check with an empty draft checks the session password.
-            findChild(tc.screen, "radioReferenceCheckAccountButton").activate();
+            // The verified account hid the card: the field is out of the tree and describes nothing (issue #902 B9).
+            verify(!password.visible);
+            compare(password.input.Accessible.description, "");
+            // Check with an empty draft checks the session password, from the reopened form (hidden, its button
+            // takes no press: issue #902 B9).
+            var check = findChild(tc.screen, "radioReferenceCheckAccountButton");
+            check.activate();
+            compare(fakeAccount.accountChecks, 1, "a hidden Check account checks nothing");
+            tc.screen.accountEditorOpen = true;
+            verify(check.visible);
+            check.activate();
+            tc.screen.accountEditorOpen = false;
             compare(fakeAccount.accountChecks, 2);
             compare(fakeAccount.sessionPassword, "session-secret");
         }

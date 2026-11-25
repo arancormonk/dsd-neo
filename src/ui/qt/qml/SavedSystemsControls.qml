@@ -103,8 +103,7 @@ Column {
             ReadableText {
                 id: noticeText
                 width: parent.width
-                Accessible.ignored: !navigationAllowed || !visible || !notice.shown
-                Accessible.name: navigationAllowed && visible && notice.shown ? text : ""
+                reachable: navigationAllowed && visible && notice.shown
                 wrapMode: Text.Wrap
                 color: Theme.textPrimary
                 font.family: Theme.sans
@@ -120,8 +119,7 @@ Column {
                     readonly property bool shown: text.length > 0
                     width: parent.width
                     opacity: shown ? 1 : 0
-                    Accessible.ignored: !navigationAllowed || !visible || !shown || !notice.shown
-                    Accessible.name: navigationAllowed && visible && shown && notice.shown ? text : ""
+                    reachable: navigationAllowed && visible && shown && notice.shown
                     wrapMode: Text.Wrap
                     color: Theme.textSecondary
                     font.family: Theme.sans
@@ -413,6 +411,7 @@ Column {
             icon: "close"
             readonly property bool shown: systemsSearch.text.length > 0
             accessibleName: shown ? qsTr("Clear search text") : ""
+            Accessible.focusable: navigationAllowed && visible && shown
             Accessible.ignored: !navigationAllowed || !visible || !shown
             // Held, not hidden, with a screen reader (holdsParts): a tap on
             // it then reaches the field under it.
@@ -566,8 +565,7 @@ Column {
             spacing: 10
             ReadableText {
                 objectName: "systemsNoMatchText"
-                Accessible.ignored: !navigationAllowed || !visible || !noMatch.shown
-                Accessible.name: navigationAllowed && visible && noMatch.shown ? text : ""
+                reachable: navigationAllowed && visible && noMatch.shown
                 width: parent.width
                 text: controls.noMatchText
                 wrapMode: Text.Wrap

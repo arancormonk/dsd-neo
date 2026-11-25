@@ -286,13 +286,16 @@ ModalSheet {
         spacing: 10
         Text {
             id: squelchValueText
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: squelchValueText.Accessible.focusable
             objectName: "squelchValue"
             width: parent.width - 116
             anchors.verticalCenter: parent.verticalCenter
             text: sheet.squelchReading
             // Read aloud as the terminal prints it, row note, default and status included.
-            Accessible.role: Accessible.StaticText
+            Accessible.role: !Navigation.allows(squelchValueText) || !visible ? Accessible.Pane : Accessible.StaticText
             Accessible.name: squelchSpeech.spoken
+            Accessible.focusable: Navigation.allows(squelchValueText) && visible
             Accessible.ignored: !Navigation.allows(squelchValueText) || !visible
             // The auto and noise squelch readings move every tick (issue #782): heard at
             // once when the gate opens or closes or the setting changes, else at their pace.

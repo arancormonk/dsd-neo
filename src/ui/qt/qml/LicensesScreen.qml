@@ -110,6 +110,8 @@ Item {
 
             TextEdit {
                 id: qtSource
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: qtSource.navigationAllowed && qtSource.visible
                 objectName: "licensesQtSource"
                 width: parent.width
                 text: screen.visible ? decoderHost.qtSourceNotice() : ""
@@ -124,6 +126,11 @@ Item {
                 // that opens over the screen (Open with) takes it out of the tree.
                 readonly property bool navigationAllowed: Navigation.allows(qtSource)
                 Accessible.ignored: !navigationAllowed || !visible
+                // Issue #902: Qt reads a text field's words, and makes it a
+                // stop, whatever its flags; covered or hidden, a plain pane
+                // (see PlexTextField).
+                Accessible.role: navigationAllowed && visible ? Accessible.EditableText : Accessible.Pane
+                Accessible.focusable: navigationAllowed && visible
             }
 
             ReadableText {
@@ -181,6 +188,8 @@ Item {
 
         TextEdit {
             id: fileText
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: fileText.navigationAllowed && fileText.visible
             objectName: "licenseFileText"
             width: fileScroll.width
             text: screen.visible && screen.openFile.length > 0 ? decoderHost.licenseFileText(screen.openFile) : ""
@@ -194,6 +203,8 @@ Item {
             // A text field is a node of its own: its own gate (see the Qt source text above).
             readonly property bool navigationAllowed: Navigation.allows(fileText)
             Accessible.ignored: !navigationAllowed || !visible
+            Accessible.role: navigationAllowed && visible ? Accessible.EditableText : Accessible.Pane
+            Accessible.focusable: navigationAllowed && visible
         }
     }
 }

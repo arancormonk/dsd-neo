@@ -93,14 +93,18 @@ ModalSheet {
     Repeater {
         model: sheet.detailLines
         Text {
+            id: detailLine
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: detailLine.Accessible.focusable
             required property string modelData
             required property int index
             readonly property bool siteLine: index === sheet.siteLineIndex
             objectName: siteLine ? "historyDetailSite" : ""
             width: parent.width
             visible: modelData.length > 0
-            Accessible.role: Accessible.StaticText
-            Accessible.name: modelData
+            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
+            Accessible.name: !navigationAllowed || !visible ? "" : modelData
+            Accessible.focusable: navigationAllowed && visible
             readonly property bool navigationAllowed: Navigation.allows(sheet)
             Accessible.ignored: !navigationAllowed || !visible
             // The site line wraps only between its parts: each part's spaces,

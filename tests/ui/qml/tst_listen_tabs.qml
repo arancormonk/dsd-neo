@@ -359,11 +359,12 @@ Item {
         function test_choosing_is_blocked_under_a_sheet() {
             var held = focusTab("systems");
             Ui.Navigation.addModal(blocker);
-            verify(held.activeFocus, "the tab keeps the focus as the sheet opens");
+            // Issue #902: covered, the tab gives the keyboard up, so no key reaches the strip.
+            tryVerify(function () { return !held.activeFocus; }, 1000, "the tab gives the keyboard up under the sheet");
             keyClick(Qt.Key_Right);
             keyClick(Qt.Key_End);
             keyClick(Qt.Key_Return);
-            verify(held.activeFocus, "the arrows move nothing under a sheet");
+            verify(!tabs().some(function (tab) { return tab.activeFocus; }), "the arrows move nothing under a sheet");
             tabOf("explore").Accessible.pressAction();
             mouseClick(tabOf("scanLists"));
             compare(chosenIds(), [], "no key, press or tap chooses under a sheet");

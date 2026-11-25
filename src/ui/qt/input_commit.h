@@ -66,6 +66,22 @@ class InputCommit : public QObject {
      */
     Q_INVOKABLE void commitComposing(bool finishEditing = false);
 
+    /**
+     * @brief Commit @p item's composing text into its `text`, whether or not it is still the focus object.
+     *
+     * Issue #902: a field that turned unreachable while composing finishes its word even when its window left
+     * before the release ran. The focus object itself goes through commitComposing(); any other item composing is
+     * sent its own composing text as a commit, within the same requested-commit span.
+     */
+    Q_INVOKABLE void commitComposingOf(QObject* item);
+
+    /**
+     * @brief Whether a commitComposing() call is under way: an input method's commit that arrives now is the one
+     * the app asked for, whatever word it finishes the composing text as (a converting keyboard's candidate).
+     * Issue #902: PressGate lets that commit, and no other, into a field that turned unreachable while composing.
+     */
+    static bool committing();
+
   Q_SIGNALS:
     void composingChanged();
 

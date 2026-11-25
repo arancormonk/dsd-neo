@@ -112,7 +112,7 @@ Column {
 
             PlexInput {
                 id: textField
-                Accessible.name: textLabel.text
+                Accessible.name: !navigationAllowed || !visible ? "" : textLabel.text
 
                 readonly property string committedText: modelData.key === "sample_rate" && Number(panel.setting(modelData.key, 0)) === 0 ? "auto" : String(panel.setting(modelData.key, modelData.value))
 
@@ -198,7 +198,7 @@ Column {
 
             PlexInput {
                 id: gainField
-                Accessible.name: gainLabel.text
+                Accessible.name: !navigationAllowed || !visible ? "" : gainLabel.text
 
                 readonly property string committedText: String(panel.setting(modelData.key, modelData.value))
 

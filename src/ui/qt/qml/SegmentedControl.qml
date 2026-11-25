@@ -18,7 +18,7 @@ Rectangle {
     // screen reader reaches does: Qt lifts a part with none over its covered
     // parent, and it stayed in the tree under a sheet.
     property string accessibleName: ""
-    Accessible.name: accessibleName
+    Accessible.name: !navigationAllowed || !visible || accessibleName.length === 0 ? "" : accessibleName
     readonly property bool navigationAllowed: Navigation.allows(control)
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible || accessibleName.length === 0
@@ -69,6 +69,9 @@ Rectangle {
             }
 
             Rectangle {
+                id: segment
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(segment) && segment.visible
                 required property int index
                 required property var modelData
                 // The label's laid-out height (code_map "Qt QML editing
@@ -79,16 +82,17 @@ Rectangle {
                 onFitPixelSizeChanged: control.shareLabelSize()
 
                 // Held while it has the focus (see OutlineButton).
-                activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
+                activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
                 Accessible.role: Accessible.RadioButton
-                Accessible.name: modelData
+                Accessible.name: !navigationAllowed || !visible ? "" : modelData
+                Accessible.focusable: navigationAllowed && visible
                 Accessible.checkable: true
                 Accessible.checked: active
                 readonly property bool navigationAllowed: Navigation.allows(control)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: choose()
                 function choose() {
-                    if (!enabled || !Navigation.allows(control))
+                    if (!enabled || !Navigation.allows(control) || !control.visible)
                         return;
                     // Issue #718: a choice made mid-word keeps the word.
                     Navigation.commitComposing(false);

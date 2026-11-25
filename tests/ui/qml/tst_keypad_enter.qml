@@ -418,16 +418,25 @@ Item {
                 },
                 {
                     tag: "PlexTextField",
-                    control: textField.input
+                    control: textField.input,
+                    releases: true
                 }
             ];
         }
-        function holdsTabStopOnlyWhileFocused(tag, target) {
+        function holdsTabStopOnlyWhileFocused(tag, target, releases) {
             verify(target !== null, tag + " exists");
             verify(target.activeFocusOnTab, tag + " is a Tab stop");
             target.forceActiveFocus();
             verify(target.activeFocus, tag + " takes focus");
             cover();
+            if (releases) {
+                // Issue #902: a covered text field gives the keyboard up itself, so typing cannot edit it unseen.
+                tryVerify(function () { return !target.activeFocus; }, 1000, tag + " gives up the keyboard under the sheet");
+                verify(!target.activeFocusOnTab, tag + " is no Tab stop under the sheet");
+                Ui.Navigation.removeModal(blocker);
+                verify(target.activeFocusOnTab, tag + " is a Tab stop again");
+                return;
+            }
             verify(target.activeFocusOnTab, tag + " holds its stop while it has the focus");
             sheetField.forceActiveFocus();
             verify(sheetField.activeFocus, "the sheet takes the focus");
@@ -436,7 +445,7 @@ Item {
             verify(target.activeFocusOnTab, tag + " is a Tab stop again");
         }
         function test_a_covered_control_is_no_tab_stop_once_focus_leaves(data) {
-            holdsTabStopOnlyWhileFocused(data.tag, data.target !== undefined ? data.target : data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control);
+            holdsTabStopOnlyWhileFocused(data.tag, data.target !== undefined ? data.target : data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control, data.releases === true);
         }
 
         // The same hold on the screens' own stops.
@@ -581,11 +590,14 @@ Item {
             verify(target.activeFocus, tag + " takes focus");
             var before = effect();
             cover();
-            verify(target.activeFocus, tag + " keeps its focus under the sheet");
+            // Issue #902: covered, it gives the keyboard up (PressGate), so no key reaches it.
+            tryVerify(function () { return !target.activeFocus; }, 1000, tag + " gives up the keyboard under the sheet");
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             keyClick(Qt.Key_Return);
             compare(effect(), before, tag + ": under a sheet no key presses it");
             Ui.Navigation.removeModal(blocker);
+            target.forceActiveFocus();
+            verify(target.activeFocus, tag + " takes the keyboard again");
             // Before it acts, as acting can take it away.
             heldKeysActOnce(tag, target);
             compare(effect(), before, tag + ": a held key's repeats press nothing");
@@ -653,6 +665,9 @@ Item {
             testContext.setMetric("radioInput", true);
             var keySheet = item(monitor, "keySheet");
             var opens = 0;
+            // The Decryption row is in the details, shown while they are open (issue #902: hidden, no key presses it).
+            testContext.setPrefs("monitorDetailsExpanded", true);
+            tryVerify(function () { return item(monitor, "openKeySheetButton").visible; }, 2000, "the details are open");
             enterActsOnce("Decryption", item(monitor, "openKeySheetButton"), function () {
                 if (keySheet.visible) {
                     ++opens;
@@ -660,6 +675,7 @@ Item {
                 }
                 return opens;
             });
+            testContext.setPrefs("monitorDetailsExpanded", false);
         }
 
         function test_radioreference_rows_take_keypad_enter() {

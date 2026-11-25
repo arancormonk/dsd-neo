@@ -321,10 +321,12 @@ Item {
                 compare(tc.screen.announcements, said + i);
             }
             compare(importedFiles.count, 2);
-            tc.screen.notice = "";
             compare(findChild(tc.screen, "importsNotice").Accessible.role, Accessible.AlertMessage);
             tc.screen.noticeIsProblem = false;
             compare(findChild(tc.screen, "importsNotice").Accessible.role, Accessible.StaticText);
+            // Empty, the line hides: out of the tree as a plain pane (issue #902 B9).
+            tc.screen.notice = "";
+            compare(findChild(tc.screen, "importsNotice").Accessible.role, Accessible.Pane);
         }
         // Leaving the screen ends a pick still out; its late answer imports nothing.
         function test_a_pick_ends_when_the_screen_closes() {

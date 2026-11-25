@@ -200,7 +200,7 @@ ModalSheet {
     }
     PlexComboBox {
         width: parent.width
-        Accessible.name: qsTr("Profile protocol")
+        accessibleName: qsTr("Profile protocol")
         model: sheet.protocolNames
         currentIndex: Math.max(0, sheet.protocols.indexOf(sheet.draft.protocol))
         onActivated: sheet.setField("protocol", sheet.protocols[currentIndex])
@@ -210,7 +210,7 @@ ModalSheet {
     }
     PlexComboBox {
         width: parent.width
-        Accessible.name: qsTr("Key source")
+        accessibleName: qsTr("Key source")
         model: sheet.modes.map(function (mode) {
             return mode === "automatic" ? qsTr("Automatic keys") : mode === "direct" ? qsTr("Direct override") : mode === "vendor" ? qsTr("Advanced vendor mode") : qsTr("No keys");
         })
@@ -230,7 +230,7 @@ ModalSheet {
         visible: sheet.draft.mode === "direct"
         PlexComboBox {
             width: parent.width
-            Accessible.name: qsTr("Direct key format")
+            accessibleName: qsTr("Direct key format")
             model: sheet.types.map(function (item) {
                 return item.label;
             })
@@ -262,7 +262,7 @@ ModalSheet {
         visible: sheet.draft.mode === "vendor"
         PlexComboBox {
             width: parent.width
-            Accessible.name: qsTr("Vendor mode")
+            accessibleName: qsTr("Vendor mode")
             model: sheet.vendors.map(function (item) {
                 return item.label;
             })
@@ -299,7 +299,7 @@ ModalSheet {
         visible: sheet.draft.mode === "automatic"
         PlexComboBox {
             width: parent.width
-            Accessible.name: qsTr("Key collection source")
+            accessibleName: qsTr("Key collection source")
             model: [qsTr("Manage keys here"), qsTr("Imported key CSV")]
             currentIndex: sheet.draft.keySource === "csv" ? 1 : 0
             onActivated: sheet.setField("keySource", currentIndex === 1 ? "csv" : "managed")
@@ -386,7 +386,7 @@ ModalSheet {
     }
     PlexComboBox {
         width: parent.width
-        Accessible.name: qsTr("Identifier policy")
+        accessibleName: qsTr("Identifier policy")
         model: sheet.forceValues.map(function (value) {
             return value === -1 ? qsTr("Inherit") : value === 0 ? qsTr("Use received identifiers") : value === 1 ? qsTr("Force privacy") : qsTr("Missing DMR algorithm fallback");
         })
@@ -535,7 +535,7 @@ ModalSheet {
             id: keyKind
             objectName: "profileKeyKind"
             width: parent.width
-            Accessible.name: qsTr("Key format")
+            accessibleName: qsTr("Key format")
             model: sheet.kinds.map(function (kind) {
                 return kind.label;
             })
@@ -554,7 +554,7 @@ ModalSheet {
             id: keyLookup
             width: parent.width
             visible: sheet.draft.protocol !== "p25" || currentIndex === 1
-            Accessible.name: qsTr("Key lookup")
+            accessibleName: qsTr("Key lookup")
             model: [qsTr("Received key ID"), qsTr("Legacy destination ID")]
             onActivated: keyId.text = ""
         }

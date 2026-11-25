@@ -82,8 +82,9 @@ ModalSheet {
             ReadableText {
                 visible: sectionRows.live === 0
                 text: qsTr("(none announced)")
+                // In the tree while hidden, nameless, on purpose: it shows as its
+                // section empties, which refreshes TalkBack's cache.
                 Accessible.ignored: !navigationAllowed
-                Accessible.name: navigationAllowed && visible ? text : ""
                 font.family: Theme.sans
                 color: Theme.textSubdued
             }
@@ -146,8 +147,7 @@ ModalSheet {
                         opacity: index >= 0 && index < sectionRows.shown ? 1 : 0
                         onYChanged: sectionList.place()
                         onHeightChanged: sectionList.place()
-                        Accessible.ignored: !navigationAllowed || !visible || index < 0 || index >= sectionRows.live
-                        Accessible.name: navigationAllowed && visible && index >= 0 && index < sectionRows.live ? text : ""
+                        reachable: navigationAllowed && visible && index >= 0 && index < sectionRows.live
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.family: Theme.mono

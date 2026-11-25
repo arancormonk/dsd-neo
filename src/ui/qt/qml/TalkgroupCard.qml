@@ -120,7 +120,7 @@ Rectangle {
                 // card's last heard follows it, as it is drawn (issue #903), and is
                 // not said again in the description.
                 accessibleName: (card.name.length > 0 ? Util.fill(qsTr("Listen to %1, talkgroup %2"), [card.name, card.idText]) : qsTr("Listen to talkgroup %1").arg(card.idText)) + (card.heardWhen.length > 0 ? qsTr(", last heard %1").arg(card.heardWhen) : "")
-                Accessible.description: [card.rank.join(" · "), tagsLine.visible && card.heardWhen.length === 0 ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
+                accessibleDescription: [card.rank.join(" · "), tagsLine.visible && card.heardWhen.length === 0 ? tagsLine.text : "", avoidBadge.visible ? avoidBadge.text : ""].filter(function (part) {
                     return part.length > 0;
                 }).join(", ")
                 onToggled: card.clicked()

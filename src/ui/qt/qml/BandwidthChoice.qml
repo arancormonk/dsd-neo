@@ -74,7 +74,7 @@ Column {
         id: widthCombo
         objectName: choice.comboObjectName
         width: parent.width
-        Accessible.name: choice.accessibleName
+        accessibleName: choice.accessibleName
         model: choice.entries().map(function (khz, i) {
             return choice.inheritable && i === 0 ? qsTr("App default") : qsTr("%1 kHz").arg(khz);
         })

@@ -60,6 +60,8 @@ Rectangle {
 
     TextInput {
         id: input
+        // Issue #902: its reach for the keyboard (PressGate).
+        property alias inReach: input.reachable
 
         anchors.fill: parent
         anchors.leftMargin: 14
@@ -75,9 +77,15 @@ Rectangle {
         clip: true
         EnterKey.type: control.enterKeyType
         // Held while it has the focus (see OutlineButton).
-        activeFocusOnTab: (Navigation.allows(control) && control.enabled) || activeFocus
-        Accessible.role: Accessible.EditableText
-        Accessible.name: control.label
+        activeFocusOnTab: (Navigation.allows(control) && visible && control.enabled) || activeFocus
+        // Issue #902: Qt makes an editable text focusable, with a SetFocus
+        // action, whatever its flags; covered or hidden, the field is a plain
+        // pane, so a node a screen reader still holds can take no focus.
+        Accessible.role: navigationAllowed && visible ? Accessible.EditableText : Accessible.Pane
+        // Issue #902: hidden or covered, it keeps no focus and takes no key (PressGate).
+        readonly property bool reachable: navigationAllowed && visible
+        Accessible.name: !navigationAllowed || !visible ? "" : control.label
+        Accessible.focusable: navigationAllowed && visible
         // The label is the name; the unit, an example the placeholder shows
         // (issue #782: read even once the field has text) and the helper line
         // are the description, so the field reads as one item. Qt withholds a
@@ -87,7 +95,7 @@ Rectangle {
         // only a worded example is read.
         readonly property bool secret: echoMode === TextInput.Password
         readonly property bool placeholderWorded: control.placeholderText !== control.label && !/^\s*[-+]?[0-9]+([.,][0-9]+)?\s*$/.test(control.placeholderText)
-        Accessible.description: [secret ? control.label : "", control.unit, placeholderWorded ? control.placeholderText : "", control.hint, control.error].filter(function (s) {
+        Accessible.description: !navigationAllowed || !visible ? "" : [secret ? control.label : "", control.unit, placeholderWorded ? control.placeholderText : "", control.hint, control.error].filter(function (s) {
             return s.length > 0;
         }).join(". ")
         Accessible.passwordEdit: echoMode === TextInput.Password

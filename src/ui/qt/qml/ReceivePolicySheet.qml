@@ -141,7 +141,7 @@ ModalSheet {
         objectName: "receiveFilterKind"
         visible: !sheet.namesEditor
         width: parent.width
-        Accessible.name: qsTr("Filter identifier")
+        accessibleName: qsTr("Filter identifier")
         model: [qsTr("Slot · TDMA only"), qsTr("DCC · DMR"), qsTr("RAN · NXDN"), qsTr("NAC · P25")]
         currentIndex: sheet.kind
         onActivated: function (index) {
@@ -232,7 +232,7 @@ ModalSheet {
             spacing: 8
             PlexComboBox {
                 width: parent.width
-                Accessible.name: qsTr("Identifier for name %1").arg(ruleRow.index + 1)
+                accessibleName: qsTr("Identifier for name %1").arg(ruleRow.index + 1)
                 model: [qsTr("Slot"), qsTr("DCC"), qsTr("RAN"), qsTr("NAC"), qsTr("CTCSS / DCS")]
                 currentIndex: ruleRow.kind
                 onActivated: function (index) { sheet.changeRule(ruleRow.index, "kind", index); }
