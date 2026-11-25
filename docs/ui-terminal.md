@@ -413,8 +413,8 @@ that input with Input > `Switch source`, or stop the receiver, then load the con
 another radio input reopens the receiver on it. With audio input running, a config naming a radio input writes its
 spec for the switch back to the radio, as before.
 
-A PCM input whose file name is itself a radio spec (`rtl`, `rtl:...`, `airspy`, ...) is read as that radio spec by the
-RTL-SDR and radio rows, so give such a file a path, like `./rtl`.
+Switch source refuses a file whose name reads as another input (`rtl`, `airspy`, `pulse`, `udp`, ...): a saved config
+and the radio rows read the input's name, so it would come back as that input. Give such a file a path, like `./rtl`.
 
 ### Frequency entry
 

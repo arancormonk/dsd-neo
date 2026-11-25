@@ -269,6 +269,17 @@ test_failed_open_changes_nothing(void) {
         rc |= expect_true("no new stream", g_opts.pcm_input_generation == stream);
         rc |= expect_true("the failure latch is not written", dsd_input_failure_generation() == latch);
     }
+    /* A file whose name reads as another input (a saved config and the radio rows read the input's name as that
+       spec, so a file named `airspy` came back as an Airspy) is refused before anything closes; `./airspy` opens it. */
+    static const char* const spec_names[] = {"airspy", "rtl", "pulse", "udp", "iqreplay"};
+    for (size_t i = 0; i < sizeof spec_names / sizeof spec_names[0]; i++) {
+        rc |= write_bytes(spec_names[i], 64U);
+        rc |= expect_int_eq(spec_names[i], switch_to(&g_opts, &g_state, DSD_AUDIO_INPUT_PCM_FILE, spec_names[i]),
+                            DSD_AUDIO_INPUT_KEPT);
+        rc |= expect_true("the file stays for a spec name", g_opts.audio_in_file == file);
+        rc |= expect_str_eq("the name stays for a spec name", g_opts.audio_in_dev, "b.wav");
+        (void)remove(spec_names[i]);
+    }
 #if !DSD_PLATFORM_WIN_NATIVE
     /* A named pipe would block the decoder thread in its open until a writer turns up: refused at runtime. */
     if (mkfifo("pipe.wav", 0600) == 0) {

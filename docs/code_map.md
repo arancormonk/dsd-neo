@@ -8107,8 +8107,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_app_rtl_device_spec_field()` in `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which
   must be a local `rtl` spec; with PCM running the one the RTL-SDR row opens, picked by the row's own rule,
   `dsd_app_radio_row_source_field()`, a spec a config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept
-  (a documented limit: a PCM file whose name is itself a radio spec, `rtl`, `rtl:...` or `soapy`, reads as that spec
-  there; such a file is opened as `./rtl`); with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`),
+  (the input switch refuses a file whose name reads as another input, `switch_path_reads_as_input_spec()`, so a file
+  is given as `./rtl`); with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`),
   and the stream open selects from the spec it opens (IO, below), so the dongle that
   opens, the spec and a save always agree. The terminal's Device prompt opens on that spec's device field
   (`dsd_app_rtl_device_prefill()`; a bare `rtl` is `0`), never the device the options last opened. With PCM running
