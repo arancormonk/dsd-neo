@@ -93,10 +93,11 @@ quiet_frame(const dsd_opts* opts, dsd_state* state, const int* evidence, int cou
     return g_quiet_notes;
 }
 
-/* A superframe's verdict for a scan quiet check: PROVEN where a signal search hears the confirmation (an RF or
-   slow-data header CRC, the superframe completing a weak streak); PARTIAL at the superframe's end (two superframes, 840
-   ms) when only its own sync stands behind it and the streak is short; nothing for an empty superframe, or with the
-   setting off. A header CRC in the superframe leaves no PARTIAL. */
+/* A superframe's verdict for a scan quiet check: PROVEN for an RF or slow-data header CRC; SYNC_ONLY (two superframes,
+   840 ms) for a superframe that completes or continues a weak streak, whose two exact resync words confirm the audio but
+   no content (issue #890); PARTIAL at the superframe's end (840 ms) when only its own sync stands behind it and the
+   streak is short; nothing for an empty superframe, or with the setting off. A header CRC in the superframe leaves no
+   PARTIAL. */
 static void
 test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     static dsd_opts opts;
@@ -115,7 +116,47 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     expect("a lone voice superframe is PARTIAL", g_quiet_level, DSD_CONTENT_EVIDENCE_PARTIAL);
     expect("held for two superframes", (int)g_quiet_hold_ms, (int)DSTAR_CONFIRM_PARTIAL_HOLD_MS);
     expect("the second voice superframe: one note", quiet_frame(&opts, state, k_weak, 1), 1);
-    expect("the second voice superframe is PROVEN", g_quiet_level, DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("the second voice superframe is SYNC_ONLY", g_quiet_level, DSD_CONTENT_EVIDENCE_SYNC_ONLY);
+    expect("SYNC_ONLY waits two superframes", (int)g_quiet_hold_ms, (int)DSTAR_CONFIRM_PARTIAL_HOLD_MS);
+    expect("the third voice superframe: one note", quiet_frame(&opts, state, k_weak, 1), 1);
+    expect("the third voice superframe is SYNC_ONLY", g_quiet_level, DSD_CONTENT_EVIDENCE_SYNC_ONLY);
+    expect("a resync-confirmed stream still plays", dstar_confirm_is_confirmed(state), 1);
+    quiet_notes_install(0);
+    dstar_confirm_reset(state);
+}
+
+/* Issue #890: a transmission only its resync words confirmed is no checked content to the -Y step, whatever the
+   skip-silent setting: the scan_y_content counter, which holds a -Y row for -t, moves only for a CRC. The lone first
+   superframe still leaves an open verdict (PARTIAL), which the header repeat in slow data can complete. */
+static void
+test_sync_only_streak_is_no_y_content(dsd_state* state) {
+    static dsd_opts opts;
+    for (int skip_silent = 0; skip_silent <= 1; skip_silent++) {
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        opts.scan_skip_silent = skip_silent;
+        quiet_notes_install(1);
+        dstar_confirm_reset(state);
+        const uint32_t content = state->scan_y_content_seq;
+        const uint32_t partial = state->scan_y_partial_seq;
+        static const int k_weak[] = {DSTAR_EVIDENCE_WEAK};
+        for (int i = 0; i < 4; i++) {
+            (void)quiet_frame(&opts, state, k_weak, 1);
+        }
+        expect(skip_silent ? "skip-silent on: resync-confirmed: confirmed"
+                           : "skip-silent off: resync-confirmed: confirmed",
+               dstar_confirm_is_confirmed(state), 1);
+        expect(skip_silent ? "skip-silent on: resync-only superframes are no -Y content"
+                           : "skip-silent off: resync-only superframes are no -Y content",
+               (int)(state->scan_y_content_seq - content), 0);
+        expect(skip_silent ? "skip-silent on: only the first superframe leaves an open verdict"
+                           : "skip-silent off: only the first superframe leaves an open verdict",
+               (int)(state->scan_y_partial_seq - partial), 1);
+        static const int k_strong[] = {DSTAR_EVIDENCE_STRONG};
+        (void)quiet_frame(&opts, state, k_strong, 1);
+        expect(skip_silent ? "skip-silent on: a header CRC is -Y content"
+                           : "skip-silent off: a header CRC is -Y content",
+               (int)(state->scan_y_content_seq - content), 1);
+    }
     quiet_notes_install(0);
     dstar_confirm_reset(state);
 }
@@ -201,6 +242,7 @@ main(void) {
     expect("strong evidence overrides a pending streak", dstar_confirm_is_confirmed(state), 1);
 
     test_quiet_check_hears_the_frame_verdict(state);
+    test_sync_only_streak_is_no_y_content(state);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     dstar_confirm_reset(NULL);

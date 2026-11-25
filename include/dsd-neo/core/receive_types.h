@@ -81,4 +81,11 @@ typedef struct {
     unsigned int next;
 } dsd_receive_carriers;
 
+/** Where a scan observation was obtained (issue #890): the scan visit (dsd_state::scan_landing_visit, 0 for none) and
+ * the carrier count (dsd_state::carrier_seq) its read began under. */
+typedef struct {
+    uint64_t visit;
+    uint32_t carrier_seq;
+} dsd_scan_observation_origin;
+
 #endif

@@ -223,10 +223,16 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   [Startup control-channel hunt](cli.md#startup-control-channel-hunt)), except in an EDACS session. Explicit decoder
   modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: digital conventional targets hold only from decoded voice media (headers and data no longer
-  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)),
-  with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
-  hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
-  targets are unchanged (control-only rotates after dwell). The scanner-wide
+  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)).
+  Decoded voice is a frame the vocoder decoded with nothing concealed: a frame that failed, or that the vocoder
+  repeated, muted or replaced, plays as before but never holds, and M17 voice holds only in a build with Codec2.
+  Only speech the decoder could play counts, clear or decrypted: encrypted voice without a key never holds, in any
+  protocol, whatever its frames decode as; without `--scan-voice-only` such a call holds the target on its checked call
+  signalling, as any call does. It
+  must be heard on the target's own visit: a call from the target before, or voice decoded while the scan is still
+  tuning to the target, holds nothing. The per-target `dwell_ms` is the qualify window in which voice must appear and
+  `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next
+  scan tick; trunked targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).
@@ -570,10 +576,14 @@ During scanning:
   does not refresh the hold, so `-e` has no effect on this row.
   Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
   before HDU/LDU2 metadata arrives.
+- A conventional target holds only on what was received on its own visit: a call report decoded while the scan was
+  still tuning to the target, or from a frame that began on the target before it (two targets can share a
+  frequency), holds nothing. A sync loss keeps the hold a visit already earned.
 - With `--scan-voice-only`, all digital conventional types, including P25, hold only from decoded voice media, not
   headers or voice-start reports alone (an analog target holds on carrier; see
   [Analog NFM and AM targets](#analog-nfm-and-am-targets)). The hold refreshes from decoded voice media (stamped
-  with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
+  with a retained media time, so LC-less and just-ended voice hold; only frames the vocoder decoded with nothing
+  concealed, heard on the target's own visit), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
@@ -1125,9 +1135,11 @@ its calibrated nine slices, exactly as without the option. It is session-wide, l
   runs its normal dwell, hangtime or hold. Any carrier counts, whatever its tone or code, even one that ends before its
   tone check finishes. A sync alone does not count: noise that only looks like the start of a frame (NXDN48 and dPMR
   noise often does) no longer keeps a silent channel. A frame whose verdict is still open (one that passed part of its
-  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR frame type that carries
-  no check of its own) holds the skip back while it waits; if the check's answer is more than a quarter of a second old
-  by then, the visit keeps its normal timing.
+  checks and waits on the rest, such as a D-STAR voice frame waiting for its header, or a dPMR voice frame with one of
+  its two control halves checked) holds the skip back while it waits; if the check's answer is more than a quarter of a
+  second old by then, the visit keeps its normal timing. A D-STAR transmission proved only by its sync words (two exact
+  resync words in a row, with no header or D-PRS CRC) plays, but it is no checked content: its superframes hold the skip
+  back while they keep coming, and the check can still skip the channel once they stop.
 - A hold, an edit to the list or channel map, a width change, an input switch, a pause or a loaded config throws the
   reading away. Once nothing keeps the channel any more, the check can run again on the same visit.
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
@@ -1166,7 +1178,8 @@ brackets below), and the log says how to fix it; see
   width set is checked at its 6 kHz default. The same goes for the `-8` analog monitor beside a digital decoder: with
   no NFM width set, the rows and targets it plays on get no check.
 - An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
-  the check (`modes`). Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
+  the check (`modes`). TETRA frames are still checked for the `-Y` hangtime (see below); only this quiet check has no
+  TETRA width. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
   checked. Type the rows (a `mode` column), or choose decoders without those modes. An untyped row also gets no check
   while the M17 encoder runs, or when none of the decoders in use is one the check knows (P25, DMR, NXDN, YSF, M17,
   dPMR or D-STAR).
@@ -1258,8 +1271,15 @@ passed since the radio started listening again after the retune: a retune mutes 
 second on a HackRF at its lowest rates), and a row is never left before it has been heard for `-t`. The Scan Timing
 countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
-such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice, X2-TDMA and TETRA frames, which
-have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
+such frame, so a late-joined D-STAR call waiting for its header is not cut. A D-STAR call's resync words alone are
+not checked content: the row leaves once `-t` has passed since the call's last header, slow-data header or D-PRS record
+whose CRC passed (since the landing when none did), however long its superframes keep coming, unless
+`--scan-voice-only` holds it on its decoded voice. ProVoice and X2-TDMA frames, which have no such check, keep the row
+while they keep coming. TETRA bursts keep it only when their checks passed on something the channel carries: trunked
+signalling or speech (an idle control channel included, under `-fT`), a direct mode call or short data message, an
+encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks, a direct mode burst of which
+only the first half decoded, and a direct mode channel reservation do not keep it, so a reserved channel with no talker
+is left once `-t` has run out. DMR, P25, ProVoice and EDACS syncs restart the hangtime
 themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
 check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
 control-channel checks. The one exception is the start of an NXDN48 call whose first frame passed a strong check on
@@ -1393,6 +1413,10 @@ An explicit target option overrides the corresponding session default, and leavi
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
 on saved-system Extra arguments does not apply to a CSV's validated scoped options.
+A manual list refuses a saved system with Extra arguments, with one exception: an NFM or AM system
+whose Extra arguments are only its own channel width (`--nfm-bandwidth-hz N` for NFM,
+`--am-bandwidth-hz N` for AM), as **Save as system** from Signal search writes them. The list
+scans that system at that width.
 Imported targets are read-only in the editor; use **Update from file** in the
 imports library to replace their contents.
 

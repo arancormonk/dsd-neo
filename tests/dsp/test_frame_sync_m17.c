@@ -8,6 +8,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -18,6 +19,9 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_state_buffers.h"
+
+/* Three words of the end-of-transmission marker, in phase. */
+#define M17_EOT3 M17_EOT M17_EOT M17_EOT
 
 static size_t g_sample_index;
 static const char* g_sync_pattern = M17_PRE;
@@ -229,6 +233,75 @@ run_m17_after_lsf_case(int lsf_type, uint8_t stream_mode, const char* pattern, i
     return rc;
 }
 
+/* How the word the drain read past the marker goes back to the hunt: not at all, as history only
+   (dsd_frame_sync_hand_back_symbols()), or as history whose window is scored where it ends
+   (dsd_frame_sync_hand_back_word(), what dispatch_m17.c does). */
+enum { M17_DRAIN_KEEP_NONE = 0, M17_DRAIN_KEEP_SYMBOLS = 1, M17_DRAIN_KEEP_WORD = 2 };
+
+/* The air for the drain cases: @p lead, then @p words stream sync words one 192-symbol frame apart, each followed by a
+   frame body of '3' (none after the last). */
+static const char*
+m17_drain_air(char* out, size_t cap, const char* lead, int words) {
+    size_t n = 0U;
+    for (const char* c = lead; *c != '\0' && n + 1U < cap; c++) {
+        out[n++] = *c;
+    }
+    for (int w = 0; w < words; w++) {
+        for (const char* c = M17_STR; *c != '\0' && n + 1U < cap; c++) {
+            out[n++] = *c;
+        }
+        for (unsigned i = 0U; w + 1 < words && i < DSD_FRAME_SYNC_M17_FRAME_SYMBOLS - 8U && n + 1U < cap; i++) {
+            out[n++] = '3';
+        }
+    }
+    out[n] = '\0';
+    return out;
+}
+
+/* The hunt after an end-of-transmission marker, whose drain read one word past it (dispatch_m17.c): the word, the
+   first eight signs of @p air, is read on the decode path and goes back to the hunt as @p keep says, and the hunt reads
+   on from there. The hunt starts from what dsd_dispatch_handle_m17() leaves after the marker: no sync before, no
+   polarity, no evidence, no preamble candidate and no join hits, so a stream joins only on three exact stream words one
+   frame apart (frame_sync_try_m17_join()). @p expected_symbols: the symbols read when the sync is taken, 0 for none. */
+static int
+run_m17_after_drain_case(const char* air, int keep, int expected_sync, int expected_symbols, const char* label) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    dsd_frame_sync_reset_mod_state();
+    if (!init_m17_sync_case(&opts, &state, &fake_rtl_context)) {
+        return 1;
+    }
+    state.lastsynctype = DSD_SYNC_NONE;
+    state.m17_polarity = 0U;
+    state.m17_confirm_weak_streak = 0U;
+    state.m17_confirmed = 0U;
+
+    install_hooks();
+    g_sample_index = 0U;
+    g_sync_pattern = air;
+    g_fill_symbol = '3';
+    for (int i = 0; i < (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS; i++) {
+        (void)getSymbol(&opts, &state, 1);
+    }
+    if (keep == M17_DRAIN_KEEP_SYMBOLS) {
+        dsd_frame_sync_hand_back_symbols(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+    } else if (keep == M17_DRAIN_KEEP_WORD) {
+        dsd_frame_sync_hand_back_word(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+    }
+    const int sync = getFrameSync(&opts, &state);
+    const int symbols = (int)state.symbolcnt;
+    clear_hooks();
+    free_state_buffers(&state);
+    if (sync != expected_sync || (expected_symbols > 0 && symbols != expected_symbols)) {
+        DSD_FPRINTF(stderr, "%s returned %d after %d symbols, expected %d after %d\n", label, sync, symbols,
+                    expected_sync, expected_symbols);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* pattern, int expected_sync,
                   const char* label) {
@@ -248,8 +321,8 @@ main(void) {
     rc |= run_m17_sync_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, DSD_SYNC_M17_BRT_POS, "M17 BERT to BERT");
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 stream to stream");
     rc |= run_m17_sync_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 packet to packet");
-    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, DSD_SYNC_M17_EOT_POS, "M17 stream to EOT");
-    rc |= run_m17_sync_case(DSD_SYNC_NONE, 0U, M17_EOT, -1, "M17 rejects cold EOT");
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT3, DSD_SYNC_M17_EOT_POS, "M17 stream to EOT");
+    rc |= run_m17_sync_case(DSD_SYNC_NONE, 0U, M17_EOT3, -1, "M17 rejects cold EOT");
 
     /* Frames after the first in a chain are earned: a stream or packet following another needs
      * the transmission to have produced a clean LICH or a CRC, a BERT chain needs its PRBS9
@@ -257,7 +330,58 @@ main(void) {
     rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_STR, -1, "M17 stream chain needs evidence", 0, 1);
     rc |= run_m17_chain_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, -1, "M17 packet chain needs evidence", 0, 1);
     rc |= run_m17_chain_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, -1, "M17 BERT chain needs a PRBS9 lock", 1, 0);
-    rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, -1, "M17 EOT needs a transmission to end", 0, 1);
+    rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT3, -1, "M17 EOT needs a transmission to end", 0, 1);
+
+    /* The end-of-transmission marker is 0x555D repeated for 192 symbols, +3 six times, -3, +3 (M17 spec 2.0.11, End of
+     * Transmission Marker): the end is taken on three of its words in a row, each in phase and each holding its one
+     * symbol of the other sign. A flat run is within one symbol of a single word, and fades supply one; it ends
+     * nothing, at either polarity. */
+    g_fill_override = '1';
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, "11111111111111111111111111111111", -1, "M17 flat run is no EOT");
+    g_fill_override = '3';
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_NEG, 2U, "33333333333333333333333333333333", -1,
+                            "M17 inverted flat run is no EOT");
+    g_fill_override = 0;
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_NEG, 2U, M17_EOT_INV M17_EOT_INV M17_EOT_INV, DSD_SYNC_M17_EOT_NEG,
+                            "M17 inverted stream to EOT");
+    /* A marker whose first words were lost to a fade ends the call where three words in a row are heard. */
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, "1111111111111111" M17_EOT3, DSD_SYNC_M17_EOT_POS,
+                            "M17 EOT after a flat start");
+    /* Two words and a break, or one word with its other-sign symbol a place off, are not a marker. */
+    g_fill_override = '1';
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT M17_EOT "11111111", -1, "M17 interrupted EOT");
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT M17_EOT "11111311", -1, "M17 out-of-phase EOT word");
+    g_fill_override = '3';
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_NEG, 2U, M17_EOT_INV M17_EOT_INV "33333333", -1,
+                            "M17 interrupted inverted EOT");
+    g_fill_override = 0;
+    /* The word after a drained marker goes back to the hunt, which starts from the state the marker leaves: the stream
+     * that follows joins on three exact stream words one frame apart (issue #890). A stream word that began in the
+     * handed-back word is the first of the three; one word, or two, is no join. */
+    {
+        char air[600];
+        const int third = (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS + (2 * (int)DSD_FRAME_SYNC_M17_FRAME_SYMBOLS);
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "1111", 3), M17_DRAIN_KEEP_SYMBOLS,
+                                       DSD_SYNC_M17_STR_POS, third + 4, "M17 join begun in the drained word");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "1111", 3), M17_DRAIN_KEEP_NONE, -1, 0,
+                                       "M17 join begun in the drained word needs the word kept");
+        /* The handed-back word may be a whole sync word itself: its window is scored where it ends, and it is the
+           join's first word. */
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 3), M17_DRAIN_KEEP_WORD, DSD_SYNC_M17_STR_POS,
+                                       third, "M17 join whose first word is the handed-back word");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 3), M17_DRAIN_KEEP_SYMBOLS, -1, 0,
+                                       "M17 join on a handed-back whole word needs it scored");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 1), M17_DRAIN_KEEP_WORD, -1, 0,
+                                       "M17 handed-back word alone is no join");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 2), M17_DRAIN_KEEP_WORD, -1, 0,
+                                       "M17 handed-back word and one more are no join");
+    }
+    /* A sync word that arrives while the words after a first marker word are still being read is taken: the lookahead
+     * keeps the hunt running. */
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT M17_STR, DSD_SYNC_M17_STR_POS,
+                            "M17 stream after a lone EOT word");
+    rc |= run_m17_sync_case(DSD_SYNC_M17_STR_NEG, 2U, M17_EOT_INV M17_LSF, DSD_SYNC_M17_STR_NEG,
+                            "M17 inverted stream after a lone EOT word");
 
     /* A stream-mode LSF is followed by stream frames, never packet frames; a packet LSF, or one that failed its CRC,
      * leaves the packet word open (issue #834). */

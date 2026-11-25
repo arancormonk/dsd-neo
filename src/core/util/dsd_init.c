@@ -804,6 +804,8 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->frame_dispatch_active = 0;
     state->frame_dispatch_synctype = DSD_SYNC_NONE;
     state->frame_dispatch_carrier_seq = 0U;
+    state->scan_landing_visit = 0U;
+    state->frame_dispatch_scan_visit = 0U;
     state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     state->lastp25type = 0;
     state->offset = 0;
@@ -931,6 +933,8 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_confirm_last_frame_valid = 0;
     state->dpmr_confirm_last_frame_symbol = 0;
     state->dpmr_scrambled = 0;
+    state->dpmr_mode = 0;
+    state->dpmr_scramble_place = 0;
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
 }
@@ -1553,10 +1557,8 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
-    state->m17_text_meta_control_or = 0;
-    state->m17_text_meta_expected_bitmap = 0;
-    state->m17_text_meta_received_bitmap = 0;
-    DSD_MEMSET(state->m17_text_meta, 0, sizeof(state->m17_text_meta));
+    /* A new session: no M17 network end lost yet (the fallback has the M17 extension's lifetime). */
+    state->m17_ip_ended_lost = 0;
 }
 
 static void
@@ -1643,6 +1645,7 @@ freeState(dsd_state* state) {
         return;
     }
 
+    state->m17_ip_ended_lost = 0; // the M17 lost-end fallback goes with the M17 extension freed below
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);

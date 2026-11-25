@@ -167,6 +167,56 @@ main(int argc, char** argv) {
     check(!build().ok && build().error.contains("Example: Analog entries take no channel map; remove it"));
     check(!build().error.contains("trunked"));
     sys.remove("chanCsvPath");
+    // Issue #890: a Signal search save keeps its measured width as its only Extra arguments. Exactly one width option of
+    // the system's own analog kind, in whole Hz within the range the target's options parser takes, reaches the row's
+    // options column (written as --name value, ahead of the squelch); anything else in Extra arguments stays refused.
+    const QByteArray amRow = "am-conventional,851500000,,,,,,,,,,\"Example\",--am-bandwidth-hz 8333\n";
+    for (const auto& extra :
+         QStringList{"--am-bandwidth-hz 8333", "  --am-bandwidth-hz   8333 ", "--am-bandwidth-hz=8333"}) {
+        sys["extraArgs"] = extra;
+        check(build().ok && build().csv.endsWith(amRow));
+    }
+    sys["decodeFlag"] = "-fA";
+    sys["extraArgs"] = "--nfm-bandwidth-hz 12500";
+    sys["radioSettings"] = QVariantMap{{"squelch", "auto+12"}};
+    check(build().ok
+          && build().csv.endsWith("nfm-conventional,851500000,,,,,,,,,,\"Example\",--nfm-bandwidth-hz 12500 --squelch "
+                                  "auto+12\n"));
+    sys.remove("radioSettings");
+    const QString refused = QStringLiteral("Example: This saved system has standalone Extra arguments.");
+    const QList<QPair<QString, QString>> refusedExtras{{"-fA", "--am-bandwidth-hz 8333"},
+                                                       {"-fM", "--nfm-bandwidth-hz 12500"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500 -F"},
+                                                       {"-fA", "-F --nfm-bandwidth-hz 12500"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500 --nfm-bandwidth-hz 9000"},
+                                                       {"-fA", "--nfm-bandwidth-hz"},
+                                                       {"-fA", "--nfm-bandwidth-hz="},
+                                                       {"-fA", "--nfm-bandwidth-hz 7999"},
+                                                       {"-fA", "--nfm-bandwidth-hz 25001"},
+                                                       {"-fA", "--nfm-bandwidth-hz 12500.5"},
+                                                       {"-fA", "--nfm-bandwidth-hz '12500'"},
+                                                       {"-fA", "--nfm-bandwidth-hz +12500"},
+                                                       {"-fM", "--am-bandwidth-hz 4999"},
+                                                       {"-fM", "--am-bandwidth-hz 20001"},
+                                                       {"-ft", "--nfm-bandwidth-hz 12500"},
+                                                       {"-fs", "--am-bandwidth-hz 8333"}};
+    for (const auto& extra : refusedExtras) {
+        sys["decodeFlag"] = extra.first;
+        sys["extraArgs"] = extra.second;
+        const auto refusedTargets = build();
+        check(!refusedTargets.ok && refusedTargets.error.startsWith(refused));
+        if (refusedTargets.ok) {
+            std::fprintf(stderr, "accepted %s '%s'\n", qPrintable(extra.first), qPrintable(extra.second));
+        }
+    }
+    sys.remove("extraArgs");
+    sys["decodeFlag"] = "-fM";
+    // The rate warning reads the same width: the option of the system's own kind, else none.
+    check(scan_list_saved_system_width_hz("--am-bandwidth-hz 8333", DSD_ANALOG_DEMOD_AM) == 8333);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz=12500", DSD_ANALOG_DEMOD_FM) == 12500);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz 12500", DSD_ANALOG_DEMOD_AM) == 0);
+    check(scan_list_saved_system_width_hz("--nfm-bandwidth-hz 12500 -F", DSD_ANALOG_DEMOD_FM) == 0);
+    check(scan_list_saved_system_width_hz(QString(), DSD_ANALOG_DEMOD_FM) == 0);
     // The analog kind the starter and the editor share: the protocol of a frequency entry, the exact flag of a
     // saved system's.
     const QVariantMap systemEntry{{"kind", "system"}};

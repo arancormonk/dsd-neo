@@ -338,6 +338,17 @@ test_signature_collector(void) {
                          (uint64_t)-3);
     err |= expect_eq_u8("signature out of order bad sequence", collector.bad_sequence, 1U);
     err |= expect_eq_u8("signature out of order incomplete", collector.complete, 0U);
+
+    /* Chunks arriving 0, 1, 3, 2: the last chunk (0xFFFF) is the end, and the set is not complete there; the chunk
+       after it completes nothing (issue #890: every chunk must arrive before or with the end). */
+    static const uint16_t k_reordered[4] = {M17_STREAM_SIGNATURE_FN0, M17_STREAM_SIGNATURE_FN1,
+                                            M17_STREAM_SIGNATURE_FN3, M17_STREAM_SIGNATURE_FN2};
+    DSD_MEMSET(&collector, 0, sizeof collector);
+    for (size_t i = 0U; i < 4U; i++) {
+        const int rc = m17_signature_collector_push(&collector, k_reordered[i], payload);
+        err |= expect_eq_u64("a set out of order completes nowhere", (uint64_t)(rc > 0), 0U);
+    }
+    err |= expect_eq_u8("a set out of order is not complete", collector.complete, 0U);
     return err;
 }
 
@@ -345,6 +356,8 @@ static int
 test_stream_1600_arbitrary_assemble(void) {
     uint8_t accumulator[48];
     uint8_t out_packet[49];
+    uint8_t mask = 0U;
+    uint16_t group = 0U;
     DSD_MEMSET(accumulator, 0, sizeof(accumulator));
     DSD_MEMSET(out_packet, 0, sizeof(out_packet));
 
@@ -355,7 +368,7 @@ test_stream_1600_arbitrary_assemble(void) {
             chunk[i] = (uint8_t)((frame_number * 8U) + i + 1U);
         }
 
-        const int rc = m17_stream_1600_arbitrary_assemble(accumulator, frame_number, chunk, out_packet);
+        const int rc = m17_stream_1600_arbitrary_assemble(accumulator, &mask, &group, frame_number, chunk, out_packet);
         err |= expect_eq_u64("stream arbitrary assemble rc", (uint64_t)rc, (frame_number == 5U) ? 1ULL : 0ULL);
     }
 
@@ -364,15 +377,31 @@ test_stream_1600_arbitrary_assemble(void) {
         err |= expect_eq_u8("stream arbitrary payload", out_packet[i + 1U], (uint8_t)(i + 1U));
         err |= expect_eq_u8("stream arbitrary accumulator reset", accumulator[i], 0U);
     }
+    err |= expect_eq_u8("stream arbitrary mask reset", mask, 0U);
 
     uint8_t chunk[8] = {0xAAU, 0xBBU, 0xCCU, 0xDDU, 0xEEU, 0xF0U, 0x12U, 0x34U};
-    int rc = m17_stream_1600_arbitrary_assemble(accumulator, 12U, chunk, out_packet);
+    int rc = m17_stream_1600_arbitrary_assemble(accumulator, &mask, &group, 12U, chunk, out_packet);
     err |= expect_eq_u64("stream arbitrary wrapped rc", (uint64_t)rc, 0ULL);
     for (uint8_t i = 0; i < 8U; i++) {
         err |= expect_eq_u8("stream arbitrary wrapped chunk", accumulator[i], chunk[i]);
     }
 
-    rc = m17_stream_1600_arbitrary_assemble(NULL, 0U, chunk, out_packet);
+    /* Issue #890: a group's aggregate is only its own six chunks. Chunks of group 2 (frames 12..) then a joined stream's
+       frame 5 (group 0, slot 5): another group, so the accumulator is emptied and no aggregate is made of the mix; nor
+       of a group missing a chunk. */
+    DSD_MEMSET(out_packet, 0x5A, sizeof(out_packet));
+    rc = m17_stream_1600_arbitrary_assemble(accumulator, &mask, &group, 5U, chunk, out_packet);
+    err |= expect_eq_u64("another group's slot 5 assembles nothing", (uint64_t)rc, 0ULL);
+    err |= expect_eq_u8("another group's slot 5 writes nothing", out_packet[0], 0x5AU);
+    for (uint16_t frame_number = 18U; frame_number < 24U; frame_number++) {
+        if (frame_number == 20U) {
+            continue;
+        }
+        rc = m17_stream_1600_arbitrary_assemble(accumulator, &mask, &group, frame_number, chunk, out_packet);
+    }
+    err |= expect_eq_u64("a group missing a chunk assembles nothing", (uint64_t)rc, 0ULL);
+
+    rc = m17_stream_1600_arbitrary_assemble(NULL, &mask, &group, 0U, chunk, out_packet);
     if (rc != -1) {
         DSD_FPRINTF(stderr, "stream arbitrary null accumulator: got %d want -1\n", rc);
         err |= 1;

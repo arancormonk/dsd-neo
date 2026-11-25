@@ -216,6 +216,34 @@ void frame_sync_p25p1_candidate_hold(dsd_state* state, int pass_symbols);
  * (dsd_frame_sync_history_carry), at pass position @p pass_symbols: the next getFrameSync() call resumes it when
  * nothing came between. */
 void frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols);
+/* dPMR headers and end frames read inside the hunt (frame_sync_dpmr.c, dsd_dpmr_frame_sync). */
+/** The X^9 + X^5 + 1 scrambler's first @p count bits from its all-ones preset (TS 102 658 7.3). */
+void frame_sync_dpmr_keystream(uint8_t* out, int count);
+/** One 120-bit MI copy in wire order to its 72 information bits in @p info: 1 when all ten Hamming(12,8) words are
+ * correctable and the CRC-8 matches (7.6, 11.5), else 0 and @p info untouched. */
+int frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info);
+/** One 36-bit END copy in wire order to its 17 information bits in @p info, descrambled with the scrambler's bits from
+ * @p key_offset on (0 or 36: a fresh scrambler, or the second half of one 72-bit run): 1 when its three Hamming(12,8)
+ * words are correctable and the CRC-7 matches (7.7, 11.6), else 0 and @p info untouched. */
+int frame_sync_dpmr_decode_end(const uint8_t* wire, int key_offset, uint8_t* info);
+/** The pending header or end frame (dsd_dpmr_frame_sync::pending), once its last symbol is the newest: read back and
+ * checked, the synctype to accept when it passed (its contents in dsd_dpmr_frame_sync::checked_*), else
+ * DSD_SYNC_NONE. A candidate whose stream broke, or whose position the hunt passed, is dropped. */
+int frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state);
+/** Whether a header or end frame is being read: no FS2 is taken inside it. */
+int frame_sync_dpmr_candidate_reading(const dsd_state* state);
+/** Make the FS1 window @p window24 (sign-sliced, the newest symbol last) a pending header when it is the configured
+ * polarity's FS1: 1 if it did. */
+int frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* window24);
+/** Make @p window12 a pending end frame when it ends at an FS3 boundary (dsd_dpmr_frame_sync::fs3_at, within one
+ * symbol) and is the configured polarity's FS3: 1 if it did. */
+int frame_sync_dpmr_arm_end(const dsd_opts* opts, dsd_state* state, const char* window12);
+/** An FS2 sync was accepted: an FS3 may end one FS2 frame on. */
+void frame_sync_dpmr_note_fs2(const dsd_opts* opts, dsd_state* state);
+/** An input interruption cut the stream: no header or end frame being read, and no FS3 boundary, survives it. */
+void frame_sync_dpmr_forget(dsd_state* state);
+/** Drop every candidate being read (dsd_dpmr_frame_sync::pending). */
+void frame_sync_dpmr_forget_candidates(dsd_state* state);
 /** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p1
  * frame context. */
 void frame_sync_p25p1_anchor_note_accept(dsd_state* state, int synctype);

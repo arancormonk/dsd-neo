@@ -271,7 +271,76 @@ typedef struct {
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;
     uint8_t valid;
+    /* The window ending on the last carried dibit is scored once before the next call reads a symbol: the symbols a
+       frame handler read and handed back (dsd_frame_sync_hand_back_word(), the word after an M17 end-of-transmission
+       marker) may end with a whole sync word. */
+    uint8_t score_on_resume;
 } dsd_frame_sync_history_carry;
+
+/* The dPMR frames the frame sync reads inside the hunt before it accepts them (src/dsp/frame_sync_dpmr.c, ETSI TS 102
+ * 658 V2.6.1 4.2.2, 6.1): a header behind FS1 (MI0, the channel code and MI1, 132 dibits) and an end frame behind FS3
+ * (two END copies, 36 dibits). */
+enum {
+    DSD_DPMR_SYNC_FRAME_NONE = 0,
+    DSD_DPMR_SYNC_FRAME_HEADER = 1, /* FS1: a Message_Frame (TS 102 658 Table 5.2) */
+    DSD_DPMR_SYNC_FRAME_END = 2,    /* FS3: an End_Frame (Table 5.44) */
+};
+
+#define DSD_DPMR_HEADER_MI_BITS        72 /* MT, PARMS: one MI copy's information bits before its CRC-8 (11.5) */
+#define DSD_DPMR_HEADER_CC_BITS        24 /* the channel code between MI0 and MI1 */
+#define DSD_DPMR_END_INFO_BITS         17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
+#define DSD_DPMR_HEADER_DIBITS         132
+/* dPMR frame sync candidates read at once (dsd_dpmr_frame_sync::pending): FS1 overlaps itself at no shift, so its words
+   end 24 symbols apart at least, and one is read for 132 symbols after its end, so six header words (131 / 24 + 1) can
+   be read at once; an end frame's FS3 is marked only while none is read, and no more than two header words end within
+   its 36 symbols (src/dsp/frame_sync_dpmr.c checks the bound). */
+#define DSD_DPMR_PENDING_MAX           6
+#define DSD_DPMR_MESSAGE_FRAME_SYMBOLS 192 /* a whole Message_Frame on air: preamble 36, FS1 24, MI0 + CC + MI1 132 */
+#define DSD_DPMR_END_DIBITS            36
+#define DSD_DPMR_SYNC_COPY_0           0x1U
+#define DSD_DPMR_SYNC_COPY_1           0x2U
+
+/* Where a dPMR sync word ended on the stream (dsd_state::symbol_clock at its last symbol), and the stream it was read
+ * on; or, for dsd_dpmr_frame_sync::fs3_at, where an FS3 word may end. kind is a DSD_DPMR_SYNC_FRAME_* value, NONE when
+ * the mark is not set. */
+typedef struct {
+    uint64_t clock;
+    uint32_t epoch;       /* dsd_state::symbol_clock_epoch */
+    uint32_t input;       /* dsd_state::symbol_clock_input */
+    uint32_t carrier_seq; /* dsd_state::carrier_seq */
+    int sps_hunt_idx;
+    uint8_t kind;
+    uint8_t inverted; /* read under -xd (dsd_opts::inverted_dpmr) */
+} dsd_dpmr_sync_mark;
+
+/* The frame sync's dPMR header and end frames (src/dsp/frame_sync_dpmr.c). A sync word whose frame is still being
+ * read is pending: the hunt goes on over the frame's symbols (every matcher sees them, so a rejected candidate costs no
+ * other protocol a frame) and, once its last symbol is in, the frame is read back from the soft symbol history and
+ * checked. Only a frame that passed its CRC and FEC is accepted, as DSD_SYNC_DPMR_FS1_* or DSD_SYNC_DPMR_FS3_*, with
+ * what it decoded in checked_* for the dispatcher (dpmr_take_checked_frame()). fs3_at is where an FS3 may end: one
+ * FS2 frame after an accepted FS2, or straight after any checked header. Written
+ * by the frame sync, read by the dPMR decoder; decoder-thread private. */
+typedef struct {
+    /* The candidates being read, each checked on its own frame's last symbol: a header's FS1 that comes while another
+       is read is kept beside it (a real header's payload can hold FS1's sign pattern, and a false FS1 can come just
+       before a real one), so none is given up before its own check. */
+    dsd_dpmr_sync_mark pending[DSD_DPMR_PENDING_MAX];
+    dsd_dpmr_sync_mark fs3_at;
+    uint64_t checked_clock; /* dsd_state::symbol_clock when the checked frame was accepted */
+    uint32_t checked_epoch;
+    uint8_t checked_kind;   /* DSD_DPMR_SYNC_FRAME_*: what checked_bits hold */
+    uint8_t checked_copies; /* DSD_DPMR_SYNC_COPY_*: the copies (MI0/MI1, END0/END1) that passed */
+    /* A header's MT and PARMS (DSD_DPMR_HEADER_MI_BITS), or an END's information bits (DSD_DPMR_END_INFO_BITS). */
+    uint8_t checked_bits[DSD_DPMR_HEADER_MI_BITS];
+    uint8_t checked_cc[DSD_DPMR_HEADER_CC_BITS]; /* a header's channel code bits, as received */
+    /* The dPMR decoder's own: where the last checked header that opened or went on with a call was accepted
+       (src/protocol/dpmr/dpmr_header.c, dpmr_header_continues_call()), kind DSD_DPMR_SYNC_FRAME_HEADER when set. */
+    dsd_dpmr_sync_mark call_header;
+    uint8_t call_header_wu; /* that header's WU: how many header frames it said follow it (0 for a normal header) */
+    /* The colour code the call's run of headers decoded (the channel code is sent apart from the MI's CRC, so a header
+       may pass with it unread), or -1 while none has: only two known codes that differ split the run. */
+    int call_header_color_code;
+} dsd_dpmr_frame_sync;
 
 /* The NAC the P25 Phase 1 NIDs on the carrier being received established, and a NAC change held for corroboration
  * (p25p1_nid_verdict_classify(), src/protocol/p25/phase1/p25p1_nid_verdict.c). Established by an unborrowed NID naming
@@ -1044,6 +1113,15 @@ typedef struct {
     unsigned int Reserved[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int SlowData[NB_OF_DPMR_VOICE_FRAME_TO_DECODE]; /* 18-bit slow data field */
     unsigned int ColorCode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE / 2];
+    /* The identity the frame's two halves carry together (dpmr_update_superframe_part()): DPMR_FRAME_ID_CALLED or
+       DPMR_FRAME_ID_CALLING only when both halves passed their CRC-7 and are numbered 0/1 or 2/3 (TS 102 658 Tables
+       5.5 to 5.8), else DPMR_FRAME_ID_NONE; BoundIdValue is the 24-bit air interface ID. */
+    unsigned int BoundIdKind;
+    unsigned int BoundIdValue;
+    /* Per half (dpmr_resolve_half_scrambling()): the Communications Mode the half plays by, its own when its CRC-7
+       passed, else the transmission's checked one (dsd_state::dpmr_mode) or this frame's other checked half's;
+       DPMR_HALF_MODE_UNVERIFIED with none, which plays nothing. CommunicationMode itself is the raw field. */
+    unsigned int ServiceMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
 } dPMRVoiceFS2Frame_t;
 
 /**
@@ -1280,6 +1358,9 @@ enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS
    so an encrypted frame is undecryptable; an UNKNOWN one is never decodable, and plays only where clear and encrypted
    audio both would. */
 enum { DSD_X2TDMA_CRYPTO_UNKNOWN = 0, DSD_X2TDMA_CRYPTO_CLEAR = 1, DSD_X2TDMA_CRYPTO_ENCRYPTED = 2 };
+
+/* dsd_state::m17_ip_stream: whether an M17 network stream is open. */
+enum { DSD_M17_IP_STREAM_NONE = 0, DSD_M17_IP_STREAM_OPEN = 1 };
 
 /** Where received-tone detection stands (issue #522).
  * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
@@ -1893,6 +1974,8 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
+    /* dPMR headers and end frames read inside the hunt (dsd_dpmr_frame_sync). */
+    dsd_dpmr_frame_sync dpmr_sync;
     /* NXDN96 frame synchronization: the frame sync word hits lately seen (where in dsd_state::symbolcnt, and the
      * polarity, as the sync type) and the lock a transmission's accepted FSWs keep (src/dsp/dsd_frame_sync.c), moved
      * by the LICHs their frames read (dsd_nxdn96_sync_note_lich()). Cleared with the M17 join history (no carrier, an
@@ -2352,6 +2435,14 @@ struct dsd_state {
     /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
        1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
     uint8_t dpmr_scrambled;
+    /* The Communications Mode (TS 102 658 Table 5.55) the transmission's last checked CCH half or header signalled,
+       plus one; 0 none yet (issue #890). A half whose CRC-7 failed takes it, as it takes dpmr_scrambled; the same
+       boundaries forget it. */
+    uint8_t dpmr_mode;
+    /* Where the next dPMR half's first AMBE frame lies in its superframe's scrambler, 0 to 15, plus one; 0 not known
+       (issue #890). Learned from checked frame numbers, kept by dPMR alone (a frame before confirmation writes no NXDN
+       state), applied to nxdn_payload_mi when a confirmed scrambled half plays; the same boundaries forget it. */
+    uint8_t dpmr_scramble_place;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,
@@ -2919,6 +3010,12 @@ struct dsd_state {
     int frame_dispatch_active;
     int frame_dispatch_synctype;
     uint32_t frame_dispatch_carrier_seq;
+    /* The scan visit (issue #890): the epoch of the scan landing in force (engine/scan_landing.h, its only writer: a
+       -Y row or trunk-scan target confirmed on air), 0 while none is (a tune in flight, failed or forgotten, no scan).
+       frame_dispatch_scan_visit: what it was when processFrame() began dispatching the frame. With the carrier count
+       they are where a scan observation was obtained (dsd_state_scan_observation_origin()). Decoder thread. */
+    uint64_t scan_landing_visit;
+    uint64_t frame_dispatch_scan_visit;
     /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
     uint64_t carrier_source_key;
     /* The carrier on air is two-slot TDMA: since the last acquisition reset, a frame of DMR (base station, mobile or
@@ -3183,6 +3280,14 @@ struct dsd_state {
      * 192-symbol frames before a window joins the transmission there, for that frame alone: the history is cleared
      * when a join is taken, and with the NXDN96 sync above. */
     dsd_sync_hit_history m17_join_hits;
+    /* M17 end-of-transmission marker in the reading (src/dsp/dsd_frame_sync.c): the marker is 0x555D repeated for 192
+     * symbols, and a single eight-symbol word of it is no end (a flat run is within one symbol of it), so the hunt
+     * takes the end only on DSD_FRAME_SYNC_M17_EOT_WORDS words in a row, each in phase. m17_eot_pending: 0 none, 1 a
+     * word heard at normal polarity, 2 inverted; m17_eot_words: words heard so far; m17_eot_symbolcnt: the
+     * dsd_state::symbolcnt the first word ended on. The hunt goes on meanwhile, and any sync it takes drops this. */
+    uint8_t m17_eot_pending;
+    uint8_t m17_eot_words;
+    uint32_t m17_eot_symbolcnt;
 
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself
@@ -3200,11 +3305,7 @@ struct dsd_state {
     int m17_rate;    //sampling rate for audio input
     int m17_vox;     //vox enabled via PWR value
 
-    uint8_t m17_meta[16]; //packed meta
-    uint8_t m17_text_meta_control_or;
-    uint8_t m17_text_meta_expected_bitmap;
-    uint8_t m17_text_meta_received_bitmap;
-    uint8_t m17_text_meta[52];
+    uint8_t m17_meta[16];          //packed meta
     uint8_t m17_enc;               //enc type
     uint8_t m17_enc_st;            //scrambler or data subtye
     uint8_t m17_payload_decrypted; //current encrypted payload was successfully decrypted
@@ -3217,6 +3318,41 @@ struct dsd_state {
     uint8_t m17_signature_public_key[64];
     uint8_t m17_signature_public_key_loaded;
     uint8_t m17_signature_verification_status;
+    /* The transmission's checked link setup and its stream signature: kept from frame to frame and forgotten only at a
+     * transmission boundary (an LSF frame, an end of transmission, a lost carrier, a carrier boundary, another network
+     * stream). Every boundary drops everything held from the transmission through one helper,
+     * src/protocol/m17/m17_confirm.c m17_confirm_reset(): the decoded link setup (m17_str_dt to M17_STREAM_TYPE_UNKNOWN,
+     * m17_can, m17_enc, m17_enc_st, m17_payload_decrypted, m17_meta, m17_signature_advertised, m17_lsf_checked), the raw
+     * m17_lsf bits and m17_lich chunks, the packet, the BERT receiver, the signature and the texts being assembled
+     * (issue #890).
+     * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
+     *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
+     *   despite a failed CRC is then shown and never replaces them.
+     * m17_signature_voice_next / _voice_gap: the voice frames the digest counted, in order from frame 0 (the next one
+     *   it takes), and whether one was missed (the first not frame 0, or one skipped): a signature is verified only
+     *   when every voice frame arrived once and in order, and is "incomplete" otherwise (M17 spec 2.0.11, Signature
+     *   Verification: the receiver needs the whole stream).
+     * m17_tx_ended: the transmission ended (a stream frame's EOS bit, a packet's end, an IP EOT); the next one starts
+     *   with nothing of it (m17_confirm_reset() at its first frame) even when no EOT marker or LSF frame came between.
+     * m17_ip_stream / _sid / _src / _last_fn / _signed: the open network stream (DSD_M17_IP_STREAM_NONE or _OPEN), its
+     *   stream ID, the station its LSF names, the last frame number used and whether any of its LSFs was signed: each
+     *   frame number of it is used once and in order (an unsigned stream through the counter's wrap, a signed one
+     *   only rising), so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
+    uint8_t m17_lsf_checked;
+    uint16_t m17_signature_voice_next;
+    uint8_t m17_signature_voice_gap;
+    uint8_t m17_tx_ended;
+    uint8_t m17_ip_stream;
+    uint16_t m17_ip_stream_sid;
+    uint16_t m17_ip_stream_last_fn;
+    uint64_t m17_ip_stream_src;
+    uint8_t m17_ip_stream_signed;
+    /* An ended network stream's end may have gone unrecorded this session (one forgotten to make room in the M17
+     * extension's fixed table, or no table could be made to take a final frame): from then on a stream neither open
+     * nor remembered starts only at its frame 0 (fail closed, issue #890). Kept here, outside the allocation it stands
+     * in for, with its lifetime: cleared at the session boundary (initState(), m17_end_session() in
+     * dsd_engine_cleanup()), never at a transmission boundary. */
+    uint8_t m17_ip_ended_lost;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame
 
@@ -3442,7 +3578,7 @@ struct dsd_state {
     uint32_t scan_y_partial_seen;
     uint32_t scan_y_partial_hold_ms;
     double scan_y_partial_until_m;
-    /* A frame of a protocol with no content check for the -Y step (X2-TDMA, ProVoice, TETRA): scan_y_unchecked_seq moves
+    /* A frame of a protocol with no content check for the -Y step (X2-TDMA, ProVoice): scan_y_unchecked_seq moves
      * as processFrame() dispatches one, and the -Y frame boundary turns a move into scan_y_unchecked_m, its decode-mono
      * time (-1.0 for none). Such a frame is no content either: it only keeps the frame-boundary step from deciding on
      * a row while those frames keep coming, since their content cannot be told from noise. It moves before the handler,
@@ -3615,6 +3751,36 @@ dsd_state_reception_generation(const dsd_state* state) {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/**
+ * The origin of an observation made now (issue #890), such as a protocol's activity report or a frame its decoder
+ * output: inside a frame dispatch, the visit and carrier the frame's read began under (frame_dispatch_scan_visit,
+ * frame_dispatch_carrier_seq), so what a frame says after the scan moved on stays the frame's; outside one (a host's own
+ * decode, a test), the visit and carrier in force now. Returns 0, filling nothing, for a frame a carrier boundary or an
+ * input interruption cut (dsd_state_frame_read_lost()): no part of it is any visit's.
+ */
+static inline int
+dsd_state_scan_observation_origin(const dsd_state* state, dsd_scan_observation_origin* out) {
+    if (state->frame_dispatch_active) {
+        if (dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
+            return 0;
+        }
+        out->visit = state->frame_dispatch_scan_visit;
+        out->carrier_seq = state->frame_dispatch_carrier_seq;
+        return 1;
+    }
+    out->visit = state->scan_landing_visit;
+    out->carrier_seq = state->carrier_seq;
+    return 1;
+}
+
+/** Whether @p origin is the reception in force now (issue #890): neither the scan visit nor the carrier count it was
+ * obtained under has moved since. A landing, a landing forgotten and a carrier boundary each move one; an ordinary
+ * sync loss moves neither, so what a visit earned before one is still the visit's. */
+static inline int
+dsd_state_scan_observation_is_current(const dsd_state* state, const dsd_scan_observation_origin* origin) {
+    return origin->visit == state->scan_landing_visit && origin->carrier_seq == state->carrier_seq;
 }
 
 /* Publish the toast just written to state->ui_msg, shown until @p expire (epoch seconds of the real-time clock): every

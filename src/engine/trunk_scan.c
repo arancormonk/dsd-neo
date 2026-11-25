@@ -14,6 +14,7 @@
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25_patch_policy.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
@@ -415,6 +416,10 @@ typedef struct {
     size_t stop_target;
     uint32_t stop_hz;
     uint64_t stop_source_key;
+    /* A conventional target landed on its frequency, with no park in flight, when the stream stopped (issue #890):
+       the stream start forgets every landing, and a reopen on the same source and frequency lands it again
+       (dsd_engine_trunk_scan_stream_reopened()), so traffic after the restart is the visit's. */
+    int stop_landed;
     /* What the published entry reasons (dsd_state::trunk_scan_entry_reasons, issue #644) were last decided from: the
        DSP rate, the lists, the avoids and the session edits (edit_seq moves at every edit installed), and when they
        are next decided again whatever moved (a configured width, which nothing here counts, reaches them then). */
@@ -4647,6 +4652,38 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
     return -1;
 }
 
+/* Whether an observation made now is the target on air's (issue #890): the coordinator's active target has landed in
+   this session -- a park still in flight, failed or superseded by another has no landing in force -- and the
+   observation was obtained on that landing and carrier (dsd_state_scan_observation_origin(): a frame whose read began
+   on them and that nothing cut since). What a frame read on another visit says, delayed or not, and a frame of a tune
+   in flight, hold nothing, even on two rows of one family on one frequency. An ordinary sync loss moves neither, so
+   the hold a visit earned before one stays. One rule for every protocol's report and for checked voice media. */
+static int
+trunk_scan_observation_on_target(const dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    if (state->scan_landing_visit == 0U
+        || !dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session)) {
+        return 0;
+    }
+    dsd_scan_observation_origin origin;
+    return dsd_state_scan_observation_origin(state, &origin) && dsd_state_scan_observation_is_current(state, &origin);
+}
+
+/* The voice probe (dsd_scan_voice_probe()) for @p rt, the target on air: the probe takes only media of the visit in
+   force, and that visit must be this target's landing (issue #890), so media decoded while its park is in flight is
+   no media of it. Fills @p out (-1 for none) and returns the probe's result, 0 when the visit is not the target's. */
+static int
+trunk_scan_probe_target_voice(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt,
+                              dsd_scan_voice_probe_result* out) {
+    out->active_media_m = -1.0;
+    out->retained_media_m = -1.0;
+    const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!coord || coord->active >= coord->count || &coord->targets[coord->active] != rt
+        || !trunk_scan_observation_on_target(state, coord)) {
+        return 0;
+    }
+    return dsd_scan_voice_probe(opts, state, out);
+}
+
 /* Voice-only scan (issue #381): conventional targets hold only from decoded voice
  * media, stamped with the media time so LC-less voice still holds. Trunked targets
  * are unchanged: control-channel-only traffic already rotates after dwell. The
@@ -4665,7 +4702,7 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
     }
     const double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
     dsd_scan_voice_probe_result media;
-    const int probe_rc = dsd_scan_voice_probe(opts, state, &media);
+    const int probe_rc = trunk_scan_probe_target_voice(opts, state, rt, &media);
     if (probe_rc > 0 && media.retained_media_m > rt->last_allowed_activity_m) {
         rt->last_allowed_activity_m = media.retained_media_m;
     }
@@ -6079,6 +6116,10 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
     /* Voice-only scan: headers alone never hold, voice headers included; decoded
      * voice media refreshes the hold in trunk_scan_tick_locked(). */
     if (opts->scan_voice_only == 1) {
+        return;
+    }
+    /* Only what was heard on the target's own landed visit holds it (issue #890). */
+    if (!trunk_scan_observation_on_target(state, coord)) {
         return;
     }
 
@@ -7842,10 +7883,19 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
         return;
     }
     coord->stop_request = 0U;
+    coord->stop_landed = 0;
     if (!opts || coord->paused || coord->active >= coord->count) {
         return;
     }
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!rt->tune_pending && trunk_scan_type_is_conventional(rt->target.type) && rt->target.frequency_hz != 0U
+        && dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session)) {
+        coord->stop_landed = 1;
+        coord->stop_target = coord->active;
+        coord->stop_hz = rt->target.frequency_hz;
+        coord->stop_source_key = state->carrier_source_key;
+        return;
+    }
     if (!trunk_scan_park_live(rt) || rt->tune_hz == 0U) {
         return;
     }
@@ -7855,23 +7905,52 @@ dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* sta
     coord->stop_source_key = state->carrier_source_key;
 }
 
+/* Whether the stream a restart reopened (@p opened) is where the stop found the target on air: the scan running, the
+   target the stop noted still the active one, and the new stream on the same radio source and frequency. */
+static int
+trunk_scan_reopened_where_stopped(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                  int opened) {
+    return opened && !coord->paused && coord->active == coord->stop_target && coord->active < coord->count
+           && dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz);
+}
+
+/* The target landed before the stop, with no park in flight, and the stream reopened where it was (issue #890): it
+   lands again, under a new visit, so what was read before the restart stays the old visit's and traffic after it holds
+   the target. The visit's clocks and the hold it earned go on. */
+static void
+trunk_scan_reland_after_reopen(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int opened) {
+    if (trunk_scan_reopened_where_stopped(opts, state, coord, opened) && !coord->targets[coord->active].tune_pending) {
+        trunk_scan_note_landing(state, coord, &coord->targets[coord->active], 0U);
+    }
+}
+
+/* The park in flight at the stop, @p request: when the new stream opened on the frequency it asked for, the receiver is
+   there, so the park landed. */
+static void
+trunk_scan_land_park_at_reopen(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                               uint64_t request, int opened) {
+    if (request == 0U || !trunk_scan_reopened_where_stopped(opts, state, coord, opened)) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending && rt->tune_request_id == request) {
+        dsd_trunk_tuning_request_land_at_reopen(request);
+    }
+}
+
 void
-dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, dsd_state* state, int opened) {
     dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
     if (!coord) {
         return;
     }
+    const int landed = coord->stop_landed;
     const uint64_t request = coord->stop_request;
+    coord->stop_landed = 0;
     coord->stop_request = 0U;
-    if (!opened || request == 0U || coord->paused || coord->active != coord->stop_target
-        || coord->active >= coord->count) {
-        return;
+    if (landed) {
+        trunk_scan_reland_after_reopen(opts, state, coord, opened);
+    } else {
+        trunk_scan_land_park_at_reopen(opts, state, coord, request, opened);
     }
-    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (!rt->tune_pending || rt->tune_request_id != request
-        || !dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz)) {
-        return;
-    }
-    /* The new stream opened on the frequency the park asked for: the receiver is there, so the park landed. */
-    dsd_trunk_tuning_request_land_at_reopen(request);
 }
