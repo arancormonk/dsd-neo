@@ -1050,8 +1050,11 @@ dsd_engine_setup_rtl_index_out_of_range(dsd_opts* opts, int device_count) {
         DSD_SNPRINTF(digits, sizeof digits, "%d", requested);
         struct rtl_device_find_report rep;
         const rtl_device_find_result found = rtl_device_find_serial(digits, &rep);
-        if (found == RTL_DEVICE_FIND_FAILED) {
-            /* Whether a dongle has these digits as its serial is unknown: refused, never device 0 instead. */
+        if (found != RTL_DEVICE_FIND_NOT_FOUND && rep.matches == 0) {
+            /* Only an enumeration that listed the devices and found no readable one with these digits says no dongle
+               has them as its serial. A failed one, or one that lists no device at all where the listing just found
+               some (librtlsdr counts 0 when libusb cannot start), leaves it unknown: refused, never device 0
+               instead. */
             LOG_ERROR("RTL device index %d is out of range (found %d device(s)), and the devices could not be listed "
                       "again to check their serials.\n",
                       requested, device_count);
@@ -1077,8 +1080,15 @@ static int
 dsd_engine_setup_select_rtl_device(dsd_opts* opts) {
     if (rtl_device_preopened_fd_is_set()) {
         /* The device was chosen in the app, which handed down an open descriptor; USB discovery is disabled in that
-         * mode, so librtlsdr would enumerate no device. A serial is checked on the descriptor's device at its open. */
+         * mode, so librtlsdr would enumerate no device. A serial is checked on the descriptor's device at its open;
+         * an index names the one device the descriptor is, 0. */
         LOG_INFO("NOTICE: RTL Input: Using a pre-opened USB descriptor; skipping device enumeration.\n");
+        if (opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index != 0) {
+            LOG_WARN("WARNING: Requested RTL device index %d out of range (found 1 device(s)); using 0\n",
+                     opts->rtl_dev_index);
+            opts->rtl_dev_index = 0;
+            (void)dsd_rtl_spec_set_device(opts->audio_in_dev, sizeof opts->audio_in_dev, 0, NULL);
+        }
         return 1;
     }
     struct rtl_device_entry* list = (struct rtl_device_entry*)calloc(ENGINE_RTL_LIST_MAX, sizeof *list);

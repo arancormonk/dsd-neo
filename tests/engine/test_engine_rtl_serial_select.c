@@ -67,17 +67,18 @@ __wrap_rtlsdr_get_device_usb_strings(uint32_t index, char* manufact, char* produ
     return 0;
 }
 
-/* The lookup by serial, failing as an enumeration error makes it (an MSVC exception in the count) while
-   g_find_fails is set. */
-static int g_find_fails = 0;
+/* The lookup by serial, answering g_find_forced (with nothing seen) while it is not RTL_DEVICE_FIND_FOUND: FAILED as
+   an enumeration error makes it (an MSVC exception in the count), NO_DEVICES as a count of 0 does (librtlsdr's when
+   libusb cannot start). */
+static rtl_device_find_result g_find_forced = RTL_DEVICE_FIND_FOUND;
 rtl_device_find_result __real_rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report);
 
 rtl_device_find_result
 __wrap_rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report) {
-    if (g_find_fails) {
+    if (g_find_forced != RTL_DEVICE_FIND_FOUND) {
         DSD_MEMSET(report, 0, sizeof *report);
         report->index = -1;
-        return RTL_DEVICE_FIND_FAILED;
+        return g_find_forced;
     }
     return __real_rtl_device_find_serial(serial, report);
 }
@@ -280,16 +281,47 @@ test_out_of_range_index(void) {
     rc |= expect_true("other index: falls back to 0", r.rc == 0 && r.dev_index == 0 && r.in_type == AUDIO_IN_RTL);
     rc |= expect_true("other index: the spec says so", strcmp(r.spec, "rtl:0:851.375M:22") == 0);
     rc |= expect_log("other index", "Requested RTL device index 5 out of range (found 2 device(s)); using 0");
-    /* The serials cannot be read to tell whether one is 5: refused, never device 0 instead. */
-    g_find_fails = 1;
-    const int ran = run_local_rtl_setup("rtl:5:851.375M:22", &r);
-    g_find_fails = 0;
+    /* The serials cannot be read to tell whether one is 5 (the lookup failed, or listed no device at all): refused,
+       never device 0 instead. */
+    static const rtl_device_find_result kUnknown[] = {RTL_DEVICE_FIND_FAILED, RTL_DEVICE_FIND_NO_DEVICES};
+    for (size_t k = 0; k < sizeof kUnknown / sizeof kUnknown[0]; k++) {
+        g_find_forced = kUnknown[k];
+        const int ran = run_local_rtl_setup("rtl:5:851.375M:22", &r);
+        g_find_forced = RTL_DEVICE_FIND_FOUND;
+        if (ran != 0) {
+            return 1;
+        }
+        rc |= expect_refused("index past the devices, lookup failed", &r);
+        rc |= expect_log("index past the devices, lookup failed", "could not be listed again to check their serials");
+        rc |= expect_true("lookup failed: no fallback", strstr(g_log, "using 0") == NULL);
+    }
+    return rc;
+}
+
+/* A pre-opened descriptor is the one device there is: an index names it as 0, the spec saying so (as before serials),
+   with nothing enumerated; a serial is left for the open to check on it. */
+static int
+test_preopened_descriptor_index_is_zero(void) {
+    set_devices(0, NULL, NULL, NULL);
+    rtl_device_set_preopened_fd(11);
+    run_result r;
+    int ran = run_local_rtl_setup("rtl:3:851.375M", &r);
+    if (ran != 0) {
+        rtl_device_set_preopened_fd(-1);
+        return 1;
+    }
+    int rc = expect_true("descriptor index: accepted as 0", r.rc == 0 && r.in_type == AUDIO_IN_RTL && r.dev_index == 0);
+    rc |= expect_true("descriptor index: the spec says 0", strcmp(r.spec, "rtl:0:851.375M") == 0);
+    rc |= expect_true("descriptor index: nothing enumerated", g_device_count_calls == 0);
+    rc |= expect_log("descriptor index", "Requested RTL device index 3 out of range (found 1 device(s)); using 0");
+    rc |= expect_log("descriptor index", "RTL #0: Freq=851375000");
+    ran = run_local_rtl_setup("rtl:00000002:851.375M", &r);
+    rtl_device_set_preopened_fd(-1);
     if (ran != 0) {
         return 1;
     }
-    rc |= expect_refused("index past the devices, lookup failed", &r);
-    rc |= expect_log("index past the devices, lookup failed", "could not be listed again to check their serials");
-    rc |= expect_true("lookup failed: no fallback", strstr(g_log, "using 0") == NULL);
+    rc |= expect_true("descriptor serial: spec kept", strcmp(r.spec, "rtl:00000002:851.375M") == 0);
+    rc |= expect_true("descriptor serial: no index warning", strstr(g_log, "out of range") == NULL);
     return rc;
 }
 
@@ -324,6 +356,7 @@ main(void) {
     rc |= test_serial_duplicate_refuses();
     rc |= test_out_of_range_index();
     rc |= test_preopened_descriptor_skips_lookup();
+    rc |= test_preopened_descriptor_index_is_zero();
 
     rtl_device_set_preopened_fd(-1);
     dsd_exitflag_store(0);

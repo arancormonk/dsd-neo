@@ -70,10 +70,12 @@ Generated (do not edit/commit):
     `rtl_eeprom -s` hint) refuses the start as an invalid spec does (-1, `RTL-SDR input is unavailable.`), never
     falling back to device 0. An index past the devices found whose digits are a readable device's serial is refused
     with `use rtl:serial=<n>`; any other falls back to 0 with a warning and the spec rewritten by
-    `dsd_rtl_spec_set_device()`; a lookup that fails (an enumeration error) refuses rather than fall back. A pre-opened
-    descriptor skips listing and lookup (the IO open checks the serial on its
-    dongle). The tuning notice reads `RTL #N (SN <sn>): ...` for a serial. `carrier_source_key()` keys a dongle chosen by
-    serial as `rtl/sn/<serial>` (wherever it is found), one chosen by index as `rtl/<index>`. Tests:
+    `dsd_rtl_spec_set_device()`; a lookup that is not a clean "listed, no readable match" (an enumeration error, or
+    no device listed: librtlsdr counts 0 when libusb cannot start) refuses rather than fall back. A pre-opened
+    descriptor skips listing and lookup (the IO open checks the serial on its dongle); an index on it is the one
+    device, so any but 0 warns and becomes 0, the spec rewritten (as before serials). The tuning notice reads
+    `RTL #N (SN <sn>): ...` for a serial. `carrier_source_key()` keys a dongle chosen by serial as `rtl/sn/<serial>`
+    (wherever it is found), one chosen by index as `rtl/<index>`. Tests:
     `ENGINE_RTL_SERIAL_SELECT`, `ENGINE_RTL_PREOPENED_FD`, `ENGINE_NO_CARRIER_RESET`
   - Protocol/frame dispatch glue
   - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
