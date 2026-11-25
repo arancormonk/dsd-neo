@@ -9570,36 +9570,29 @@ rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, co
     return RTL_DEVICE_ESERIAL;
 }
 
-/* The reset the dongle behind descriptor @p fd owes, before it is opened. A dongle a stall wedged streams nothing after
- * a plain reopen; the reset through this descriptor clears it (#782). A refused reset opens without one and keeps the
- * obligation, and one that left the descriptor unusable lets the open fail with its own error. With @p serial
- * non-empty the reset is paid only on the dongle with that serial, read through the descriptor first: another dongle
- * is refused untouched (RTL_DEVICE_ESERIAL, the descriptor handed back, the obligation kept), and one whose serial
- * cannot be read that way is opened without the reset, keeping the obligation, for the handle check after the open.
- * 0 to go on to the open. */
+/* A dongle chosen by @p serial behind descriptor @p fd: its serial, read through the descriptor before anything opens
+ * it, must be exactly that one. rtlsdr_open_fd() claims the interface, writes the demodulator's registers, can reset
+ * the device and initialises its tuner, so another dongle, or one whose serial cannot be read that way (it reports
+ * none, or the read fails: then whether it is the one asked for is unknown), is refused untouched: RTL_DEVICE_ESERIAL,
+ * the descriptor handed back and any reset it owes kept. 0 when it is the one. */
 static int
-rtl_device_preopened_pay_reset(int fd, const char* serial) {
-    if (serial[0] != '\0') {
-        char before[RTL_DEVICE_STRING_SIZE];
-        const int rc = rtl_usb_fd_serial_read(fd, before);
-        if (rc == 0 && strcmp(before, serial) != 0) {
-            return rtl_device_refuse_preopened(nullptr, fd, serial, before);
-        }
-        if (rc != 0) {
-            LOG_WARN("RTL-SDR: could not read the serial through descriptor %d before its owed USB reset (errno %d); "
-                     "opening it without the reset\n",
-                     fd, -rc);
-            return 0;
-        }
+rtl_device_preopened_check_serial(int fd, const char* serial) {
+    char before[RTL_DEVICE_STRING_SIZE];
+    const int rc = rtl_usb_fd_serial_read(fd, before);
+    if (rc != 0) {
+        LOG_ERROR("RTL-SDR: could not read the serial through descriptor %d (errno %d).\n", fd, -rc);
+        before[0] = '\0';
     }
-    (void)rtl_usb_fd_reset(fd, "before opening it");
+    if (rc != 0 || strcmp(before, serial) != 0) {
+        return rtl_device_refuse_preopened(nullptr, fd, serial, before);
+    }
     return 0;
 }
 
 /* Open @p dev from the descriptor @p taken from the slot: 0, or the open's negative error, reported as the session's
  * failure with the descriptor released (the caller frees @p dev). With @p serial non-empty the dongle behind the
- * descriptor must report exactly that serial before anything else touches it; nothing is enumerated (USB discovery is
- * off in this mode). */
+ * descriptor must report exactly that serial through the descriptor before it is reset or opened, and again on the
+ * opened handle; nothing is enumerated (USB discovery is off in this mode). */
 static int
 rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* taken, const char* serial) {
     const int preopened_fd = taken->fd;
@@ -9607,8 +9600,14 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
      * descriptor is free while libusb is part way through taking it. libusb's own
      * error text reaches the diagnostics from here on (#782). */
     rtl_usb_log_install();
-    if (taken->reset_first && rtl_device_preopened_pay_reset(preopened_fd, serial) != 0) {
+    if (serial[0] != '\0' && rtl_device_preopened_check_serial(preopened_fd, serial) != 0) {
         return RTL_DEVICE_ESERIAL;
+    }
+    /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
+     * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
+     * unusable lets the open below fail with its own error. */
+    if (taken->reset_first) {
+        (void)rtl_usb_fd_reset(preopened_fd, "before opening it");
     }
     const int r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
     if (r < 0) {

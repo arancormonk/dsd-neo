@@ -3455,14 +3455,15 @@ dongle:
   readable dongle's serial: `rtl:1090` with one dongle whose serial is `1090` is refused with the hint
   `use rtl:serial=1090`.
 - The scheme may be written in capitals: `-i RTL:00000001` is `-i rtl:00000001`.
-- On Android the app picks the dongle and hands over its USB connection; a serial in the spec must then be that
-  dongle's, or the start is refused, and nothing is enumerated. A dongle that owes a USB reset (after a stall) gets it
-  only once its serial, read through the connection, is the one asked for; another dongle is refused untouched.
+- On Android the app picks the dongle and hands over its USB connection, and nothing is enumerated. A serial in the
+  spec must then be that dongle's: it is read through the connection before the dongle is opened or reset (after a
+  stall), so another dongle, or one whose serial cannot be read, is refused untouched; it is checked again once
+  open. An index names the one dongle handed over: any index but 0 warns and runs as 0.
 - An I/Q capture records the dongle as `index=N,serial=<sn>` (`source_args` in its sidecar), the serial read from the
   dongle whether it was chosen by serial or by index (by index on the desktop only where stall recovery identified
   it; on Android from the dongle the app handed over).
-- An index past the dongles found whose serials cannot be listed again to check (an enumeration error) is refused
-  rather than falling back to device 0.
+- An index past the dongles found whose serials cannot be listed again to check (an enumeration error, or a listing
+  that comes back empty) is refused rather than falling back to device 0.
 
 Three dongles, one antenna each, on Windows (one `.bat` per receiver, or all three from one):
 

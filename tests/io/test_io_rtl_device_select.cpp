@@ -557,26 +557,77 @@ test_open_by_index_unchanged(void) {
 
 /* ---- A pre-opened descriptor (Android) ---- */
 
+/* rtlsdr_open_fd() on the descriptor: counted, then the fake dongle opens as the device behind it. */
+int g_open_fd_calls = 0;
+
 int
 open_fd_opens_dongle(int fd) {
     (void)fd;
+    g_open_fd_calls++;
     return 1;
 }
 
+/* The descriptor's USB reset and identity (the strings of the dongle behind it, readable before and after the open). */
+int g_fd_resets = 0;
+const char* g_fd_serial = "";
+int g_fd_identity_rc = 0;
+
+int
+fd_reset_counts(int fd) {
+    (void)fd;
+    g_fd_resets++;
+    return 0;
+}
+
+int
+fd_identity(int fd, rtl_usb_identity* out) {
+    (void)fd;
+    if (g_fd_identity_rc != 0) {
+        return g_fd_identity_rc;
+    }
+    out->vid = 0x0bda;
+    out->pid = 0x2838;
+    put(out->manufacturer, "Realtek");
+    put(out->product, "RTL2838UHIDIR");
+    put(out->serial, g_fd_serial);
+    return 0;
+}
+
+/* With a serial, the dongle behind the descriptor must report it through the descriptor before anything opens it
+   (rtlsdr_open_fd() claims, writes registers, can reset and inits the tuner): another dongle, or one whose serial
+   cannot be read that way, is refused with no open at all. The handle check after the open stays. Nothing is
+   enumerated: USB discovery is off in this mode. */
 void
 test_preopened_serial_checked_on_its_dongle(void) {
     rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
-    for (int match = 0; match < 2; match++) {
+    rtl_device_test_set_fd_identity_hook(fd_identity);
+
+    struct {
+        const char* fd_serial; /* through the descriptor, nullptr: the read fails */
+        const char* handle_serial;
+        int opens;
+    } const cases[] = {
+        {"00000001", "00000001", 0},
+        {nullptr, "00000002", 0},
+        {"00000002", "00000001", 1},
+        {"00000002", "00000002", 1},
+    };
+
+    for (const auto& c : cases) {
         set_devs({});
-        g_world.handle_serials[0] = match ? "00000002" : "00000001";
+        g_world.handle_serials[0] = c.handle_serial;
         g_world.handle_serial_count = 1;
+        g_fd_serial = c.fd_serial != nullptr ? c.fd_serial : "";
+        g_fd_identity_rc = c.fd_serial != nullptr ? 0 : -EIO;
+        g_open_fd_calls = 0;
         rig r;
         dsd_input_failure_clear();
         rtl_device_set_preopened_fd(9);
         int index = -1;
         rtl_device* dev = rtl_device_create_selected(0, "00000002", r.ring.get(), &index);
-        /* Never enumerated: USB discovery is off in this mode. */
-        assert(g_world.count_calls == 0 && g_world.handle_calls == 1);
+        assert(g_world.count_calls == 0);
+        assert(g_open_fd_calls == c.opens && r.dongle->calls[RTL_TEST_DONGLE_OPEN] == c.opens);
+        const bool match = c.fd_serial != nullptr && strcmp(c.handle_serial, "00000002") == 0;
         if (match) {
             assert(dev != nullptr && index == 0 && rtl_device_preopened_fd_held() == 9);
             char sn[64];
@@ -584,13 +635,15 @@ test_preopened_serial_checked_on_its_dongle(void) {
             rtl_device_destroy(dev);
         } else {
             assert(dev == nullptr && reported_serial_failure());
-            /* The descriptor is handed back, its dongle closed as it was. */
+            /* The descriptor is handed back; a dongle opened is closed as it was. */
             assert(rtl_device_preopened_fd_in_use() == 0 && rtl_device_preopened_fd_held() == -1);
-            assert(r.dongle->calls[RTL_TEST_DONGLE_CLOSE] == 1 && r.dongle->open_handles == 0);
+            assert(r.dongle->calls[RTL_TEST_DONGLE_CLOSE] == c.opens && r.dongle->open_handles == 0);
+            assert(g_world.handle_calls == c.opens);
             assert(only_opens_and_closes(*r.dongle));
         }
         assert(rtl_device_preopened_fd_in_use() == 0);
     }
+    g_fd_identity_rc = 0;
     /* Without a serial the descriptor's dongle is taken as it is. */
     set_devs({});
     {
@@ -601,6 +654,7 @@ test_preopened_serial_checked_on_its_dongle(void) {
         rtl_device_destroy(dev);
     }
     rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_fd_identity_hook(nullptr);
     rtl_device_test_set_open_fd_failure_hook(nullptr);
     dsd_input_failure_clear();
 }
@@ -672,35 +726,9 @@ test_stream_looks_the_serial_up_at_every_start(void) {
     assert(dsd_test_rmdir(dir) == 0);
 }
 
-/* The descriptor's USB reset and identity (the strings of the dongle behind it, readable before and after the open). */
-int g_fd_resets = 0;
-const char* g_fd_serial = "";
-int g_fd_identity_rc = 0;
-
-int
-fd_reset_counts(int fd) {
-    (void)fd;
-    g_fd_resets++;
-    return 0;
-}
-
-int
-fd_identity(int fd, rtl_usb_identity* out) {
-    (void)fd;
-    if (g_fd_identity_rc != 0) {
-        return g_fd_identity_rc;
-    }
-    out->vid = 0x0bda;
-    out->pid = 0x2838;
-    put(out->manufacturer, "Realtek");
-    put(out->product, "RTL2838UHIDIR");
-    put(out->serial, g_fd_serial);
-    return 0;
-}
-
 /* A descriptor whose dongle owes a USB reset (#782): with a serial, the reset is paid only on the dongle with that
-   serial, read through the descriptor before anything opens it. Another dongle is refused untouched and keeps its
-   obligation; one whose serial cannot be read that way is opened without the reset, the handle check deciding. */
+   serial, read through the descriptor first. Another dongle, or one whose serial cannot be read that way, is refused
+   untouched and keeps its obligation. */
 void
 test_preopened_owed_reset_paid_only_on_the_requested_dongle(void) {
     rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
@@ -735,9 +763,10 @@ test_preopened_owed_reset_paid_only_on_the_requested_dongle(void) {
         g_fd_identity_rc = -EIO;
         g_fd_resets = 0;
         rtl_device_publish_preopened_fd(9, 1);
-        rtl_device* dev = rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr);
-        assert(dev != nullptr && g_fd_resets == 0 && rtl_device_preopened_fd_reset_owed() == 9);
-        rtl_device_destroy(dev);
+        g_open_fd_calls = 0;
+        assert(rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr) == nullptr);
+        assert(g_fd_resets == 0 && rtl_device_preopened_fd_reset_owed() == 9 && g_open_fd_calls == 0);
+        assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == 0 && rtl_device_preopened_fd_held() == -1);
         g_fd_identity_rc = 0;
     }
     rtl_device_publish_preopened_fd(-1, 0);
