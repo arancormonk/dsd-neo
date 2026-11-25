@@ -90,6 +90,7 @@ Item {
             testContext.setFileBrowserSupported(false);
             testContext.useLifecycleHost(false);
             testContext.resetHostPlayback();
+            testContext.resetLocalDay();
             screen = null;
         }
 
@@ -188,9 +189,11 @@ Item {
         function back() {
             Ui.Navigation.back(window());
         }
+        // Noon on 9 November of the local day's year, with the local day pinned
+        // to 1 July 2026 (issue #902), so a run across New Year reads one year.
         function thisYearNov9() {
-            var year = new Date(savedSystems.realtimeNowMs()).getFullYear();
-            return new Date(year, 10, 9, 12, 0, 0).getTime();
+            testContext.setLocalNowMs(new Date(2026, 6, 1, 12, 0, 0).getTime());
+            return new Date(2026, 10, 9, 12, 0, 0).getTime();
         }
 
         // ---- cases ----
@@ -279,6 +282,29 @@ Item {
             compare(screen.entrySubtitle(screen.entries[4]), "4.2 MB", "a file with no time shows its size only");
             compare(entryRow(paths[4]).node.Accessible.name, "fat.csv, file, 4.2 MB");
             compare(screen.entrySubtitle(screen.entries[0]), "", "a folder has no subtitle");
+        }
+
+        // Issue #902 B1: a row's date has its year outside the local day's,
+        // and follows that day: the year turning re-reads the same row's drawn
+        // subtitle and its spoken name. B11: a stamp at 00:00 UTC is the day
+        // before west of UTC.
+        function test_rows_follow_the_local_year() {
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
+            testContext.setLocalNowMs(Date.UTC(2026, 11, 31, 20, 0, 0));
+            openAtRoots();
+            openRoot("storage");
+            answerListing([entry(storagePath, "dmr.csv", false, 4200000, Date.UTC(2026, 10, 9, 20, 0, 0)), entry(storagePath, "new.csv", false, 4200000, Date.UTC(2026, 0, 1))]);
+            waitForRendering(screen);
+            var row = entryRow(storagePath + "/dmr.csv");
+            var subtitle = findChild(row, "fileBrowserEntrySubtitle");
+            compare(subtitle.text, "4.2 MB · Nov 9");
+            compare(row.node.Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9");
+            compare(entryRow(storagePath + "/new.csv").node.Accessible.name, "new.csv, file, 4.2 MB, Dec 31, 2025");
+            testContext.setLocalNowMs(Date.UTC(2027, 0, 1, 8, 0, 5));
+            compare(entryRow(storagePath + "/dmr.csv"), row, "the same row");
+            compare(subtitle.text, "4.2 MB · Nov 9, 2026");
+            compare(row.node.Accessible.name, "dmr.csv, file, 4.2 MB, Nov 9, 2026", "the spoken name follows");
         }
 
         function test_states_data() {

@@ -13,6 +13,7 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDate>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -36,6 +37,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTime>
 #include <QUuid>
 #include <QVariant>
 #include <QVariantList>
@@ -64,6 +66,7 @@
 #include "json_store.h"
 #include "json_store_test_hooks.h"
 #include "listen_pins.h"
+#include "local_day_watch.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "site_groups.h"
@@ -77,6 +80,7 @@ using dsd_qt::json_store_save_array;
 using dsd_qt::JsonStoreLoad;
 using dsd_qt::JsonStoreNotice;
 using dsd_qt::ListenPins;
+using dsd_qt::LocalDayWatch;
 using dsd_qt::SavedSystemsModel;
 using dsd_qt::ScanListsModel;
 
@@ -664,6 +668,42 @@ test_saved_systems(void) {
 /* A restored systems file whose whole numbers are past int's range (a backup keeps a large JSON number as a 64-bit
  * integer): each reads as the field's default, as an absent key does, never as its low 32 bits. Main read port 1234,
  * gain 36 dB, bandwidth 12 kHz, bias tee on, force key 1, RadioReference system 77 site 5 and a "hex" key type. */
+/* Issue #902: localDay is the shared watch's day, {startMs, revision}, and notifies with a new map when it changes. The
+ * test runs a QCoreApplication: the watch makes no app-state connection there, and still publishes. */
+qint64 g_localDayNowMs = 0;
+
+qint64
+local_day_clock() {
+    return g_localDayNowMs;
+}
+
+void
+test_saved_systems_local_day(void) {
+    const QDate day(2026, 4, 14);
+    g_localDayNowMs = QDateTime(day, QTime(15, 30)).toMSecsSinceEpoch();
+    LocalDayWatch::setClockForTest(&local_day_clock);
+    {
+        SavedSystemsModel model;
+        const QVariantMap first = model.property("localDay").toMap();
+        expect("localDay: the injected day's start",
+               first.value(QStringLiteral("startMs")).toLongLong() == day.startOfDay().toMSecsSinceEpoch());
+        int notified = 0;
+        QObject::connect(&model, &SavedSystemsModel::localDayChanged, [&]() { notified++; });
+        g_localDayNowMs += 3600000;
+        LocalDayWatch::shared()->check();
+        expect("localDay: the same day notifies nothing", notified == 0);
+        g_localDayNowMs = QDateTime(day.addDays(1), QTime(0, 0, 3)).toMSecsSinceEpoch();
+        LocalDayWatch::shared()->check();
+        const QVariantMap next = model.property("localDay").toMap();
+        expect("localDay: a new day notifies once", notified == 1);
+        expect("localDay: the new day's start",
+               next.value(QStringLiteral("startMs")).toLongLong() == day.addDays(1).startOfDay().toMSecsSinceEpoch());
+        expect("localDay: a new revision", next.value(QStringLiteral("revision")).toULongLong()
+                                               > first.value(QStringLiteral("revision")).toULongLong());
+    }
+    LocalDayWatch::resetClockForTest();
+}
+
 void
 test_saved_systems_past_int_range(void) {
     const qint64 past = qint64(1) << 32;
@@ -4176,6 +4216,7 @@ main(int argc, char** argv) {
     test_private_key_store();
     test_saved_systems();
     test_saved_systems_past_int_range();
+    test_saved_systems_local_day();
     test_saved_systems_gain_range();
     test_saved_systems_csv_fields();
     test_app_prefs();
