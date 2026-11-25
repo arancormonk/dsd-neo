@@ -22065,9 +22065,12 @@ Qt Quick frontend (`src/ui/qt`):
   `rtlSerial` (a saved system's and a scan list's flat field, like `gainDb`) names the USB dongle by serial, kept exactly
   as typed: `session_args_build()` opens it as `rtl:serial=<sn>` (always the explicit form; none is `rtl:0`) and refuses
   a serial no spec can carry (`session_args_rtl_serial_valid()`, the decoder's `dsd_rtl_serial_is_valid()`:
-  `SessionArgsError::RtlSerial`), since an imported or restored map never passed the editors' check
-  (`Util.rtlSerialValid()`, the same rule). The card's receiver label is `USB <serial>`; on Android, Main.qml asks for
-  the dongle by that serial and starts only once the connected one carries it exactly.
+  `SessionArgsError::RtlSerial`, start-check category "rtl-serial", whose text Main.qml shows), since an imported or
+  restored map never passed the editors' check (`Util.rtlSerialValid()`, the same rule). The card's receiver label is
+  `USB <serial>`; on Android, Main.qml asks for the dongle by that serial and starts only once the connected one
+  carries it exactly; a serial that rule refuses asks for no device, and the start is refused with that text. The
+  extra options' I/Q stream check (`extra_names_iq_stream()`) reads each `-i` value with its scheme normalized
+  (`dsd_input_spec_normalize_scheme()`), as the decoder's `-i` does.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
   `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
   `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,

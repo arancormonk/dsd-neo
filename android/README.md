@@ -1766,8 +1766,9 @@ session whose descriptor came owing one and was refused its reset) or a reset
 succeeds (`nativeUsbResetOwed()`). So every "stopped sending samples" ending of an
 RTL-SDR leaves it owing the reset its notice promises. The broker records it on the
 physical attachment (`UsbResetObligations.kt`: the device name, with VID:PID and
-serial, compared exactly; a record kept the last 16 characters of a serial before
-the broker kept it whole, and still matches a longer serial that ends with it; a
+serial, compared exactly; a record stored in the older four-field format kept
+the last 16 characters of a serial and still matches a longer serial that ends
+with it, while a record this version stores is marked whole and never does; a
 device keeps its name while it stays attached, so only a detach ends the
 attachment) after each run, and before it lets a connection go, and hands it with
 the next descriptor of that attachment; the open resets first. A refused reset keeps

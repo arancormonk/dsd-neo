@@ -27,8 +27,18 @@ package io.github.arancormonk.dsdneo
  * (#782 gate r1 G2). Plain Kotlin; [UsbSourceManager] makes every call on the main thread.
  */
 internal class UsbResetObligations {
-    /** One physical attachment: the device [name], its VID:PID, and its [serial], or "" when it could not be read. */
-    data class Attachment(val name: String, val vendorId: Int, val productId: Int, val serial: String)
+    /**
+     * One physical attachment: the device [name], its VID:PID, and its [serial], or "" when it could not be read.
+     * [wholeSerial] is false only for an entry read back in the format written before the broker kept an RTL-SDR's
+     * whole serial, whose [serial] may be the last 16 characters of a longer one ([sameSerial]).
+     */
+    data class Attachment(
+        val name: String,
+        val vendorId: Int,
+        val productId: Int,
+        val serial: String,
+        val wholeSerial: Boolean = true,
+    )
 
     private val owed = LinkedHashMap<String, Attachment>()
 
@@ -59,7 +69,7 @@ internal class UsbResetObligations {
      */
     fun owes(name: String, vendorId: Int, productId: Int, serial: String): Boolean {
         val entry = owed[name] ?: return false
-        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !sameSerial(entry.serial, clean(serial))
+        val serialDiffers = entry.serial.isNotEmpty() && serial.isNotEmpty() && !sameSerial(entry, clean(serial))
         if (entry.vendorId != vendorId || entry.productId != productId || serialDiffers) {
             owed.remove(name)
             noteBeforeRestore(name, changed = true)
@@ -87,9 +97,15 @@ internal class UsbResetObligations {
         return changed
     }
 
-    /** The entries as app-private storage keeps them: one line each. */
+    /**
+     * The entries as app-private storage keeps them: one line each, `name, VID, PID, serial` and, for a whole serial,
+     * a fifth field [WHOLE_SERIAL]. An entry read back without it keeps the four fields it was read with.
+     */
     fun encode(): String =
-        owed.values.joinToString("") { "${it.name}\t${it.vendorId}\t${it.productId}\t${it.serial}\n" }
+        owed.values.joinToString("") {
+            val whole = if (it.wholeSerial) "\t$WHOLE_SERIAL" else ""
+            "${it.name}\t${it.vendorId}\t${it.productId}\t${it.serial}$whole\n"
+        }
 
     /**
      * At process start: add the stored [text]'s entries whose device is attached now with the same VID:PID
@@ -105,12 +121,13 @@ internal class UsbResetObligations {
             val vendorId = fields.getOrNull(1)?.toIntOrNull()
             val productId = fields.getOrNull(2)?.toIntOrNull()
             val name = fields[0]
-            if (fields.size != 4 || vendorId == null || productId == null || attached[name] != (vendorId to productId) ||
-                name in decided) {
+            val whole = fields.size == 5 && fields[4] == WHOLE_SERIAL
+            if ((fields.size != 4 && !whole) || vendorId == null || productId == null ||
+                attached[name] != (vendorId to productId) || name in decided) {
                 dropped = true
                 continue
             }
-            merged[name] = Attachment(name, vendorId, productId, fields[3])
+            merged[name] = Attachment(name, vendorId, productId, fields[3], wholeSerial = whole)
         }
         merged.putAll(owed)
         owed.clear()
@@ -126,17 +143,22 @@ internal class UsbResetObligations {
     private fun clean(text: String) = text.replace('\t', ' ').replace('\n', ' ').replace('\r', ' ')
 
     /**
-     * Whether a [stored] serial is the device's [live] one. Records written before the broker kept an RTL-SDR's whole
-     * serial hold its last 16 characters: for a serial of 16 characters or fewer that is the whole serial, so the two
-     * compare equal as they are; a 16-character record is read as such a record of a longer live serial that ends with
-     * it (the attachment name and VID:PID already match).
+     * Whether [entry]'s serial is the device's [live] one: exactly, for an entry this version recorded or stored. An
+     * entry read back in the older format ([Attachment.wholeSerial] false) holds the last 16 characters of the serial:
+     * for a serial of 16 characters or fewer that is the whole serial, so the two compare equal as they are; a
+     * 16-character one is also read as the end of a longer live serial (the attachment name and VID:PID already
+     * match). A whole 16-character serial this version recorded never matches a longer one that merely ends with it.
      */
-    private fun sameSerial(stored: String, live: String): Boolean =
-        UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, stored, live) ||
-            (stored.length == LEGACY_SERIAL_LENGTH && live.length > LEGACY_SERIAL_LENGTH && live.endsWith(stored))
+    private fun sameSerial(entry: Attachment, live: String): Boolean =
+        UsbReceiverKind.sameSerial(UsbReceiverKind.RTL, entry.serial, live) ||
+            (!entry.wholeSerial && entry.serial.length == LEGACY_SERIAL_LENGTH && live.length > LEGACY_SERIAL_LENGTH &&
+                live.endsWith(entry.serial))
 
     private companion object {
         /** How many trailing characters of a serial the broker kept before it kept an RTL-SDR's whole serial. */
         const val LEGACY_SERIAL_LENGTH = 16
+
+        /** The fifth field of a stored entry whose serial is whole; the older format had four fields. */
+        const val WHOLE_SERIAL = "whole"
     }
 }

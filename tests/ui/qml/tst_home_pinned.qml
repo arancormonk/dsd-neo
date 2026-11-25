@@ -254,6 +254,22 @@ Item {
             compare(sessionUid(), uid);
         }
 
+        // A saved serial no rtl:serial= spec can carry (an import, a restored
+        // backup) asks Android for no dongle: the start is refused at once
+        // with the serial's reason, brokered or not, never the decryption one.
+        function test_invalid_rtl_serial_refuses_before_usb_access_data() {
+            return [{tag: "brokered", brokered: true}, {tag: "desktop", brokered: false}];
+        }
+        function test_invalid_rtl_serial_refuses_before_usb_access(data) {
+            var uid = addSystem("Imported", "usb", {rtlSerial: "A:B"});
+            testContext.setScanTestUsb(data.brokered, false);
+            app.startSystem(savedSystems.rowForUid(uid));
+            verify(!app.awaitingUsbAccess, "no wait on a dongle the session could never open");
+            compare(testContext.lastDeviceAccess().count, 0, "no device is asked for");
+            compare(decoderHost.sessionState, 0);
+            compare(app.startError, "Enter an RTL-SDR serial of up to 127 printable ASCII characters, with no : or \" and no space at either end.");
+        }
+
         // An Airspy's serial is still compared without case.
         function test_airspy_start_serial_ignores_case() {
             var uid = addSystem("Airspy site", "airspy", {airspy: {serial: "a74068c82f531693"}});
