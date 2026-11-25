@@ -3465,8 +3465,11 @@ dongle:
 - On Android the app picks the dongle and hands over its USB connection, and nothing is enumerated. A serial in the
   spec must then be that dongle's: it is read through the connection before the dongle is opened or reset (after a
   stall), so another dongle, or one whose serial cannot be read, is refused untouched; it is checked again once
-  open. An index names the one dongle handed over: any index but 0 warns and runs as 0, at a restart too (the spec,
-  the options and a capture then all say 0).
+  open; it must match exactly, character for character (one with a character past ASCII never matches). An index
+  names the one dongle handed over: any index but 0 warns and runs as 0, at a restart too (the spec, the options and
+  a capture then all say 0), and a dongle chosen by serial is index 0 too. A serial changed during a session, or a
+  reopen of the connection already handed over, checks only that this dongle reports the serial; a second permitted
+  dongle with the same serial is caught when the app takes the receiver for a session, not at such a reopen.
 - An I/Q capture records the dongle as `index=N,serial=<sn>` (`source_args` in its sidecar), the serial read from the
   dongle whether it was chosen by serial or by index (by index on the desktop only where stall recovery identified
   it; on Android from the dongle the app handed over).

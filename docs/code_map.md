@@ -11743,15 +11743,21 @@ Key public headers:
     serial up once more, then the open fails with `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the
     session's device failure. Decided limit: on the desktop the serial is readable only on a handle `rtlsdr_open()`
     has opened, which has claimed and initialised the dongle, so one hot-plugged into the looked-up index in that
-    instant is initialised (never streamed) before it is closed; no custom open is built for it. A pre-opened descriptor
+    instant is initialised (never streamed) before it is closed; no custom open is built for it. Decided limit, Android:
+    a live serial change or an in-session reopen of the published descriptor checks only that the dongle held reports
+    the serial; a permitted twin carrying the same serial is caught when the app's broker takes the receiver for a
+    session, not at such a reopen. A pre-opened descriptor
     (`rtl_device_open_preopened()`) is never enumerated: with a serial, the dongle behind it must report it or the
     handle is closed and the descriptor handed back (`g_preopened_usb_fd_held` -1), with the same error. Before
     that, and before any reset it owes, `rtl_device_preopened_check_serial()` reads the serial through the descriptor
-    (`rtl_usb_fd_serial_read()`: usbfs `GET_DESCRIPTOR` on ep0, as `libusb_get_string_descriptor_ascii()`), since
+    (`rtl_usb_fd_serial_descriptor()`: usbfs `GET_DESCRIPTOR` on ep0 in the device's first language) and compares it
+    losslessly (`rtl_usb_serial_descriptor_is()`: the descriptor's whole length, every UTF-16 code unit equal to the
+    serial's printable ASCII, so a NUL, a character past ASCII or another length never matches), since
     `rtlsdr_open_fd()` claims, writes registers, can reset and inits the tuner: another dongle, or one whose serial
     cannot be read that way, is refused with no open at all, its reset obligation kept (fail closed: the read is a
     control transfer on the same connection the open uses, so a dongle it cannot reach would not open either).
-    Without a serial, the descriptor identity's serial is the opened one. Every local RTL-SDR stream start selects
+    Without a serial, the descriptor identity's serial is the opened one. A descriptor is device 0: the device's and
+    the returned index are 0 whatever index the options held. Every local RTL-SDR stream start selects
     its dongle from the spec it opens (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`:
     `dsd_rtl_spec_select_device()`, so a cached index or serial a former spec left never opens another dongle; a field
     the grammar refuses fails the start before anything opens) and, with a pre-opened descriptor, runs an index as 0
