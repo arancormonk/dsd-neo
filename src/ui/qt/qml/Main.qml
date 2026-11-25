@@ -1921,7 +1921,12 @@ Window {
         };
         completionMessage = "";
         var wantedSerial = mainRoot.wantedDeviceSerial(sys);
-        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && !mainRoot.sameDeviceSerial(sys.sourceType, decoderHost.localDeviceSerial, wantedSerial)))) {
+        // A saved serial no spec can carry (an import or a restored backup
+        // never passed the editor) asks for no device: the start below
+        // refuses it with the reason, rather than wait on a dongle that the
+        // session could never open.
+        var deviceNamed = sys.sourceType !== "usb" || Util.rtlSerialValid(wantedSerial);
+        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && deviceNamed && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && !mainRoot.sameDeviceSerial(sys.sourceType, decoderHost.localDeviceSerial, wantedSerial)))) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
             // and it keeps updating as the permission dialog resolves. When the
@@ -1987,7 +1992,8 @@ Window {
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "call-recording-option" || built.error === "call-recording-static-wav"
-                       || built.error === "iq-stream-extra" || built.error === "extra-incomplete") {
+                       || built.error === "iq-stream-extra" || built.error === "extra-incomplete"
+                       || built.error === "rtl-serial") {
                 mainRoot.startError = built.errorText;
             } else if (built.error === "recording-missing") {
                 mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);

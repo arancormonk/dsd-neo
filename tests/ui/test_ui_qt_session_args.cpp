@@ -1017,6 +1017,19 @@ test_rtl_serial(void) {
     }
     expect("the refusal says what a serial may hold",
            dsd_qt::session_args_error_text(SessionArgsError::RtlSerial).contains(QStringLiteral("RTL-SDR serial")));
+    /* The start check QML reads names the serial, not the decryption configuration every unnamed error once fell to. */
+    {
+        dsd_qt::AppPrefs appPrefs;
+        const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+        QVariantMap bad = usb_system();
+        bad.insert(QStringLiteral("rtlSerial"), QStringLiteral("A:B"));
+        const QVariantMap result = builder.build(bad);
+        expect("the start check refuses an RTL-SDR serial as one",
+               !result.value(QStringLiteral("ok")).toBool()
+                   && result.value(QStringLiteral("error")).toString() == QStringLiteral("rtl-serial")
+                   && result.value(QStringLiteral("errorText")).toString()
+                          == dsd_qt::session_args_error_text(SessionArgsError::RtlSerial));
+    }
     sys.insert(QStringLiteral("rtlSerial"), QString(127, QLatin1Char('x')));
     expect("127 characters fit",
            !session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);

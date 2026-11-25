@@ -1587,6 +1587,7 @@ error_category(SessionArgsError error) {
         {SessionArgsError::CallRecordingStaticWav, "call-recording-static-wav"},
         {SessionArgsError::IqStreamExtra, "iq-stream-extra"},
         {SessionArgsError::ExtraIncomplete, "extra-incomplete"},
+        {SessionArgsError::RtlSerial, "rtl-serial"},
     };
 
     if (error == SessionArgsError::None) {
