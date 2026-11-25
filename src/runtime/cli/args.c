@@ -2330,14 +2330,22 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             if (!cli_has_value("--rdio-api-url", i, argc, out_exit_rc)) {                                              \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG(); /* refused, never cut to another endpoint (issue #931) */    \
+            if (!cli_value_fits("--rdio-api-url", "value", rdio_api_url_cli, sizeof opts->rdio_api_url,                \
+                                out_exit_rc)) {                                                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-key") == 0) {                                                                  \
             if (!cli_has_value("--rdio-api-key", i, argc, out_exit_rc)) {                                              \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG(); /* refused, never cut to another key (issue #931) */         \
+            if (!cli_value_fits("--rdio-api-key", "value", rdio_api_key_cli, sizeof opts->rdio_api_key,                \
+                                out_exit_rc)) {                                                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0) {                                                        \

@@ -5777,6 +5777,44 @@ test_recording_rdio_mode_refused(void) {
     return rc;
 }
 
+/* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
+   fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
+   stays, instead of a value cut to another endpoint or key. */
+static int
+test_recording_rdio_credentials_too_long(void) {
+    static const struct {
+        const char* key;
+        size_t capacity;
+    } fields[] = {
+        {"rdio_api_url", sizeof(dsdneoUserConfig::rdio_api_url)},
+        {"rdio_api_key", sizeof(dsdneoUserConfig::rdio_api_key)},
+    };
+
+    int rc = 0;
+    for (const auto& field : fields) {
+        for (size_t len = field.capacity - 1U; len <= field.capacity; len++) {
+            std::string value(len, 'q');
+            value.replace(0, 10, "SECRETMARK");
+            const std::string ini =
+                std::string("[recording]\n") + field.key + " = \"kept\"\n" + field.key + " = \"" + value + "\"\n";
+            dsdneoUserConfig cfg{};
+            g_log_text[0] = '\0';
+            const int loaded = load_config_text(ini.c_str(), &cfg);
+            const char* got = strcmp(field.key, "rdio_api_url") == 0 ? cfg.rdio_api_url : cfg.rdio_api_key;
+            const bool fits = len < field.capacity;
+            const bool ok =
+                loaded == 0
+                && (fits ? value == got : strcmp(got, "kept") == 0 && strstr(g_log_text, field.key) != nullptr);
+            if (!ok || strstr(g_log_text, "SECRETMARK") != nullptr) {
+                DSD_FPRINTF(stderr, "FAIL: %s of %zu bytes: loaded %zu bytes (log: '%s')\n", field.key, len,
+                            strlen(got), g_log_text);
+                rc |= 1;
+            }
+        }
+    }
+    return rc;
+}
+
 /* Issue #888: [recording] rdio_unknown_talkgroup loads, reaches dsd_opts, and saves back; 0 (the default) is not
    written, and loads as 0. A value outside 0..2147483647, or not a whole number, is refused with a warning and the
    value already loaded stays: never clamped. */
@@ -7451,6 +7489,7 @@ main(void) {
     rc |= test_recording_rdio_analog_roundtrip();
     rc |= test_recording_rdio_system_id_range();
     rc |= test_recording_rdio_mode_refused();
+    rc |= test_recording_rdio_credentials_too_long();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();

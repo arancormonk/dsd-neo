@@ -949,6 +949,19 @@ apply_recording_rdio_mode(dsdneoUserConfig* cfg, const char* val) {
     cfg->rdio_mode = mode;
 }
 
+/* Issue #931: the rdio-scanner API URL and key are refused when they do not fit, never cut short to another endpoint or
+   credential; the warning names the key, never the value, which can carry a credential. --validate-config reports it
+   as an error. */
+static void
+apply_recording_rdio_credential(const char* key_lc, char* dst, size_t dst_size, const char* val) {
+    if (strlen(val) >= dst_size) {
+        LOG_WARN("Config: invalid %s; too long (at most %zu bytes), keeping previous/default value\n", key_lc,
+                 dst_size - 1U);
+        return;
+    }
+    copy_text_value(dst, dst_size, val);
+}
+
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "per_call_wav") == 0) {
@@ -985,9 +998,9 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
     } else if (strcmp(key_lc, "rdio_system_id") == 0) {
         apply_recording_refused_range("rdio_system_id", val, 0, 2147483647, &cfg->rdio_system_id);
     } else if (strcmp(key_lc, "rdio_api_url") == 0) {
-        copy_text_value(cfg->rdio_api_url, sizeof cfg->rdio_api_url, val);
+        apply_recording_rdio_credential(key_lc, cfg->rdio_api_url, sizeof cfg->rdio_api_url, val);
     } else if (strcmp(key_lc, "rdio_api_key") == 0) {
-        copy_text_value(cfg->rdio_api_key, sizeof cfg->rdio_api_key, val);
+        apply_recording_rdio_credential(key_lc, cfg->rdio_api_key, sizeof cfg->rdio_api_key, val);
     } else if (strcmp(key_lc, "rdio_upload_timeout_ms") == 0) {
         apply_recording_rdio_range_value(val, cfg->rdio_upload_timeout_ms, 100, 120000, &cfg->rdio_upload_timeout_ms);
     } else if (strcmp(key_lc, "rdio_upload_retries") == 0) {

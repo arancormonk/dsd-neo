@@ -518,8 +518,8 @@ audio input) sound no alert.
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both; any other value, an empty one included, is refused with a warning and the mode already loaded stays | `off` |
 | `rdio_system_id` | INT | rdio-scanner numeric system ID, 0 to 2147483647 (`--rdio-system-id`) | `0` |
-| `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
-| `rdio_api_key` | STRING | rdio API key | (empty) |
+| `rdio_api_url` | STRING | rdio API base URL, up to 1023 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | `http://127.0.0.1:3000` |
+| `rdio_api_key` | STRING | rdio API key, up to 255 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |

@@ -335,6 +335,31 @@ validate_path_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_
     return 1;
 }
 
+/* The rdio-scanner API URL and key (issue #931): one that does not fit its field is refused by the loader (it keeps the
+   previous value), never cut short to another endpoint or credential. The message never quotes the value. */
+static int
+validate_rdio_credential_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                               int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "recording") != 0) {
+        return 0;
+    }
+    size_t capacity = 0U;
+    if (strcmp(entry->key, "rdio_api_url") == 0) {
+        capacity = sizeof(dsdneoUserConfig::rdio_api_url);
+    } else if (strcmp(entry->key, "rdio_api_key") == 0) {
+        capacity = sizeof(dsdneoUserConfig::rdio_api_key);
+    } else {
+        return 0;
+    }
+    if (strlen(val) >= capacity) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Value is too long (at most %zu bytes); the previous value is kept",
+                     capacity - 1U);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
 /* The keys with a check of their own instead of the schema walk's: nonzero once one of them took @p entry. Factored out
    of validate_entry_value() so it stays under the CCN 15 gate tools/lizard.sh --strict enforces. */
 static int
@@ -347,6 +372,7 @@ validate_keyed_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
            || validate_scan_skip_silent_ms_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_rtl_serial_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_rdio_credential_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key);
 }
 

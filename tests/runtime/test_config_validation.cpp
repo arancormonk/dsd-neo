@@ -1809,6 +1809,53 @@ test_rdio_analog_validation(void) {
     return rc;
 }
 
+/* Issue #931 (B11): an rdio_api_url or rdio_api_key the loader refuses as too long is an error that never quotes the
+ * value; the largest value that fits is none. */
+int
+test_rdio_credential_length_validation(void) {
+    static const struct {
+        const char* key;
+        size_t capacity;
+    } fields[] = {
+        {"rdio_api_url", sizeof(dsdneoUserConfig::rdio_api_url)},
+        {"rdio_api_key", sizeof(dsdneoUserConfig::rdio_api_key)},
+    };
+
+    int rc = 0;
+    for (const auto& field : fields) {
+        for (size_t len = field.capacity - 1U; len <= field.capacity; len++) {
+            std::string value(len, 'q');
+            value.replace(0, 10, "SECRETMARK");
+            const std::string ini = std::string("[recording]\n") + field.key + " = \"" + value + "\"\n";
+            char path[DSD_TEST_PATH_MAX];
+            if (write_temp_config(ini.c_str(), path, sizeof path) != 0) {
+                return 1;
+            }
+            dsdcfg_diagnostics_t diags;
+            DSD_MEMSET(&diags, 0, sizeof(diags));
+            (void)dsd_user_config_validate(path, &diags);
+            const bool fits = len < field.capacity;
+            bool ok = diags.count == (fits ? 0 : 1);
+            for (int i = 0; i < diags.count; i++) {
+                ok = ok && diags.items[i].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[i].key, field.key) == 0
+                     && strstr(diags.items[i].message, "too long") != nullptr
+                     && strstr(diags.items[i].message, "SECRETMARK") == nullptr;
+            }
+            if (!ok) {
+                DSD_FPRINTF(stderr, "FAIL: %s of %zu bytes: %d diagnostic(s)\n", field.key, len, diags.count);
+                for (int i = 0; i < diags.count; i++) {
+                    DSD_FPRINTF(stderr, "  %s.%s: %s\n", diags.items[i].section, diags.items[i].key,
+                                diags.items[i].message);
+                }
+                rc = 1;
+            }
+            dsdcfg_diags_free(&diags);
+            (void)remove(path);
+        }
+    }
+    return rc;
+}
+
 /* Issue #888: [recording] rdio_unknown_talkgroup (0..2147483647) is refused outside its range, as the analog talkgroup
  * is: an ERROR, never the schema walk's clamping warning. */
 int
@@ -2571,6 +2618,7 @@ main(void) {
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
     rc |= test_rdio_system_by_frequency_validation();
+    rc |= test_rdio_credential_length_validation();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

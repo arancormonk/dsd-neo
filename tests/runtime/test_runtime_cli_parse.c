@@ -8787,6 +8787,64 @@ test_enum_options_checked_per_occurrence(void) {
     return test_rc;
 }
 
+/* Issue #931 (B11): --rdio-api-url (1023 bytes at most) and --rdio-api-key (255) take the largest value that fits whole
+ * and refuse one byte more with exit 1 and a message naming the option, never the value, instead of cutting it to
+ * another endpoint or key. */
+static int
+test_rdio_credentials_too_long_refused(void) {
+    static const struct {
+        const char* option;
+        size_t capacity;
+    } fields[] = {
+        {"--rdio-api-url", sizeof(((dsd_opts*)0)->rdio_api_url)},
+        {"--rdio-api-key", sizeof(((dsd_opts*)0)->rdio_api_key)},
+    };
+
+    int test_rc = 0;
+    for (size_t f = 0; f < sizeof fields / sizeof fields[0]; f++) {
+        for (size_t len = fields[f].capacity - 1U; len <= fields[f].capacity; len++) {
+            char* value = (char*)calloc(len + 1U, 1U);
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!value || !opts || !state) {
+                free(value);
+                free(opts);
+                free(state);
+                return 1;
+            }
+            DSD_MEMSET(value, 'q', len);
+            DSD_MEMCPY(value, "SECRETMARK", 10);
+            initOpts(opts);
+            initState(state);
+            char arg0[] = "dsd-neo";
+            char option[32];
+            DSD_SNPRINTF(option, sizeof option, "%s", fields[f].option);
+            char* argv[] = {arg0, option, value, NULL};
+            int argc_effective = 0;
+            int exit_rc = -1;
+            static char err[8192];
+            const int rc = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+            const char* stored = f == 0 ? opts->rdio_api_url : opts->rdio_api_key;
+            const int fits = len < fields[f].capacity;
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "%s value is too long", fields[f].option);
+            const int ok = fits ? (rc == DSD_PARSE_CONTINUE && strcmp(stored, value) == 0)
+                                : (rc == DSD_PARSE_ERROR && exit_rc == 1 && strstr(err, want) != NULL);
+            if (!ok || strstr(err, "SECRETMARK") != NULL) {
+                DSD_FPRINTF(stderr, "%s with %zu bytes: rc=%d exit_rc=%d stored %zu bytes\n%s\n", fields[f].option, len,
+                            rc, exit_rc, strlen(stored), err);
+                test_rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+            free(opts);
+            free(state);
+            free(value);
+        }
+    }
+    return test_rc;
+}
+
 /* Issue #931 (B3): --rdio-system-id and --rdio-analog-system-id take 0..2147483647 and refuse anything else with exit 1
  * and the range named, never clamped (154437 used to become 65535). Each occurrence is checked as it is read: a later
  * valid one does not hide an earlier invalid one. */
@@ -14774,6 +14832,7 @@ main(void) {
     rc |= test_enum_options_checked_per_occurrence();
     rc |= test_print_config_leaves_out_credentials();
     rc |= test_bootstrap_steps_over_option_values();
+    rc |= test_rdio_credentials_too_long_refused();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

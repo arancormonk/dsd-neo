@@ -435,9 +435,11 @@ Windows console runs:
   `--no-rdio-system-by-frequency` turns it off (the default); the last one given wins, over the config file too. INI:
   `[recording] rdio_system_by_frequency`. See [One rdio-scanner system per
   frequency](#one-rdio-scanner-system-per-frequency).
-- `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`). The URL is never printed, since
-  it can carry a user name and password: the log says `NOTICE: Rdio API URL configured`.
-- `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`. The key is never printed.
+- `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`). The URL is never printed,
+  since it can carry a user name and password: the log says `NOTICE: Rdio API URL configured`. A URL longer than 1023
+  bytes is refused (exit code 1), never cut short to another address.
+- `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`. The key is never printed. A key longer than
+  255 bytes is refused (exit code 1), never cut short to another key.
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
