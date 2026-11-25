@@ -1613,7 +1613,7 @@ ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_
 }
 
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
-   input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
+   input type, the rtl_tcp endpoint, the RTL-SDR's index or serial, the tuning and front-end settings a start copies, the Airspy
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
    its hot restart write. @c running says whether that input worked: any input but an RTL-family one (PCM, which no
    switch closes), or an RTL-family one with a stream. A start that fails on the input that replaced it puts this one
@@ -1634,6 +1634,7 @@ typedef struct {
     char rtltcp_hostname[sizeof(((dsd_opts*)0)->rtltcp_hostname)];
     int rtltcp_portno;
     int rtl_dev_index;
+    char rtl_dev_serial[sizeof(((dsd_opts*)0)->rtl_dev_serial)];
     uint32_t rtlsdr_center_freq;
     int rtl_dsp_bw_khz;
     int rtl_dsp_bw_source;
@@ -1681,6 +1682,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     DSD_MEMCPY(out->rtltcp_hostname, opts->rtltcp_hostname, sizeof out->rtltcp_hostname);
     out->rtltcp_portno = opts->rtltcp_portno;
     out->rtl_dev_index = opts->rtl_dev_index;
+    DSD_MEMCPY(out->rtl_dev_serial, opts->rtl_dev_serial, sizeof out->rtl_dev_serial);
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
     out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
@@ -1718,6 +1720,7 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     DSD_MEMCPY(opts->rtltcp_hostname, in->rtltcp_hostname, sizeof opts->rtltcp_hostname);
     opts->rtltcp_portno = in->rtltcp_portno;
     opts->rtl_dev_index = in->rtl_dev_index;
+    DSD_MEMCPY(opts->rtl_dev_serial, in->rtl_dev_serial, sizeof opts->rtl_dev_serial);
     opts->rtlsdr_center_freq = in->rtlsdr_center_freq;
     dsd_opts_set_rtl_dsp_bw(opts, in->rtl_dsp_bw_khz, in->rtl_dsp_bw_source);
     opts->rtl_gain_value = in->rtl_gain_value;
@@ -4699,6 +4702,20 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
                                       ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 
+/* The dongle an RTL-SDR [input] names, as the spec it built names it (rtl_serial over rtl_device; a negative index
+   reads as 0): the restart opens it, not the one the running input selected. A serial clears the index's selection
+   and an index the serial's, so a change from serial A to index 0 opens index 0. A refused rtl_serial never reaches
+   here (cfg_rtl_selector_valid()). The rollback of a failed start puts back the selector that ran (ui_radio_input). */
+static void
+apply_cfg_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_serial[0] != '\0') {
+        DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", cfg->rtl_serial);
+        return;
+    }
+    opts->rtl_dev_index = cfg->rtl_device >= 0 ? cfg->rtl_device : 0;
+    opts->rtl_dev_serial[0] = '\0';
+}
+
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
    ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
@@ -4734,9 +4751,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
-        if (cfg->rtl_device >= 0) {
-            opts->rtl_dev_index = cfg->rtl_device;
-        }
+        apply_cfg_rtl_selector(opts, cfg);
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
@@ -9530,6 +9545,15 @@ ui_cmd_handle_config_metadata_set(dsd_opts* opts, dsd_state* state, const struct
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* An rtl_serial the loader refused (rtl_serial_invalid) refuses a config whose [input] opens the RTL-SDR, or names no
+   source (a patch the [input] a save writes takes), before anything changes: the input it names never opens index 0
+   in place of the serial, as the next start refuses it too. */
+static int
+cfg_rtl_selector_valid(const dsdneoUserConfig* cfg) {
+    return !cfg->has_input || !cfg->rtl_serial_invalid
+           || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_UNSET);
+}
+
 static int
 cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_AIRSPY) {
@@ -10156,6 +10180,10 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
                           dsd_tg_policy_store** groups) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (!cfg_rtl_selector_valid(cfg)) {
+        ui_set_toast(state, 5, "Config not applied: rtl_serial is not a serial an RTL-SDR can have (see log)");
+        return UI_CMD_APPLY_FAILED;
     }
     const int stream_rc = cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
     if (stream_rc != UI_CMD_APPLY_COMPLETED) {

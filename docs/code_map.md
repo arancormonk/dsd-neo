@@ -8039,7 +8039,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
   start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
   the session without the input it had: the input a start reads is captured before
-  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
+  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, the RTL-SDR's index and serial, tuning, gain, ppm, squelch,
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
   it, and a background RTL stream it left running, which the failed start stopped, is not restarted, its I/Q capture
   stopping with it as below) and an RTL-family input that ran restarted; it is
@@ -8098,7 +8098,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (the bare
   `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
-  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). A config apply whose reopen of
+  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
+  RTL-SDR `[input]` opens the dongle the config names (`apply_cfg_rtl_selector()`: its `rtl_serial`, or its
+  `rtl_device` with the serial cleared), not the running input's selector. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
