@@ -529,6 +529,11 @@ test_list_cli_takes_the_growth(void) {
     set_devs({});
     run = run_cli();
     assert(run.rc == 0 && run.out.empty() && run.err.find("No RTL-SDR devices found.") != std::string::npos);
+    /* The only dongle unplugged between the count and the listing: none found, as an empty count says. */
+    set_devs({"00000001"});
+    g_world.before_count = unplug_one_after_count;
+    run = run_cli();
+    assert(run.rc == 0 && run.out.empty() && run.err.find("No RTL-SDR devices found.") != std::string::npos);
     set_devs({"00000001"});
     g_world.count_rc = -1;
     run = run_cli();

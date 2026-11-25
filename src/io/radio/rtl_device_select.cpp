@@ -405,7 +405,12 @@ rtl_device_list_cli(FILE* out, FILE* err) {
         const int count = rtl_device_list(list, total, &now);
         /* Room for every device found this time (fewer than counted is a whole list too), or no more tries. */
         if (count >= 0 && (now <= total || attempt == kListAttempts)) {
-            print_listing(list, count, now, now <= total, out, err);
+            /* Every dongle unplugged between the count and the listing reads as none found at all. */
+            if (count == 0) {
+                DSD_FPRINTF(err, "No RTL-SDR devices found.\n");
+            } else {
+                print_listing(list, count, now, now <= total, out, err);
+            }
             free(list);
             return 0;
         }
