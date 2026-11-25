@@ -19905,11 +19905,14 @@ Qt Quick frontend (`src/ui/qt`):
   options, the live radio settings), last of the options the decoder reads (before a `--` among
   them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
   win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
-  trunk scan (any other starts without it, with a notice). Known limit: extra decoder arguments (or decode flag
-  tokens) that end on an option missing its value take the next argument as that value, as they would on the command
-  line, so a `--profile` last takes `--dmr-chan-overrides` as the profile name and the saved channels are lost (a
-  short option such as `-C` last instead fails the start: compaction takes the long option and its path out first, so
-  getopt finds `-C` with no value); the builder does not mirror the parser to catch it. A file that cannot be written, or whose path does not fit
+  trunk scan (any other starts without it, with a notice). The two Extra arguments fields (the system's and the app's)
+  are checked each on its own before anything is appended (`session_args_extra_error()`,
+  `session_args_extra_incomplete()`, walked as the decoder walks its argv): one that ends on an option still waiting
+  for its value (`--profile`, `-C`) or holds a bare `--` that is no long option's value refuses the start with
+  `SessionArgsError::ExtraIncomplete`, so no such field takes `--dmr-chan-overrides` as a value or ends the options
+  before it. The decode flag's tokens are not checked that way; they come first, and the options the app always
+  appends after them (`-T` or `--tg-lockout-*`) stand between them and `--dmr-chan-overrides`. A file that cannot be
+  written, or whose path does not fit
   the CLI's 1023 bytes, never stops the start: it starts without the option, logs a warning and posts a
   `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
   `dmr-channels`) on Home's notice card ("Starts run without this system's saved channels until they can be written.",
