@@ -535,6 +535,11 @@ def receiver_option_tables_match():
     unknown = sorted(tables - {native for native, _ in pairs} - {"k_skip_exact_next_nonopt_optional"})
     if unknown:
         return f"compact.c has long-option tables UsbReceiverKind.kt does not mirror: {unknown}"
+    # -i lower-cases a known scheme given in another case, so "RTL:0" opens an RTL-SDR: the classifier reads it so too.
+    if "dsd_input_spec_normalize_scheme(opts->audio_in_dev);" in args and not all(
+        f'startsWith("{scheme}:", ignoreCase = true)' in kotlin for scheme in ("rtl", "airspy")
+    ):
+        return "UsbReceiverKind.kt must read an rtl: or airspy: scheme in any case, as -i normalizes it in args.c"
     return replay_prescan_matches(kotlin, args, compact)
 
 
@@ -569,12 +574,18 @@ def iq_stream_respelling(args):
     } or "if (dsd_iq_net_spec_parse(opts->audio_in_dev, &spec, why, sizeof why) != 0) {" not in body:
         return f"{where} must write only the canonical text of the spec it parsed from -i"
     calls = re.findall(r"\bcli_read_iq_stream_spec\(", args)
+    # Between the copy and the read, the scheme of a known input given in another case is lower-cased
+    # (dsd_input_spec_normalize_scheme(): "RTL:0" is "rtl:0"), which UsbReceiverKind.sourceOfArgs() reads alike.
     after_copy = (
         r"DSD_STRNCPY\(opts->audio_in_dev, optarg, 2047\);[^\n]*\n[^\n]*opts->audio_in_dev\[2047\] = '\\0';[^\n]*\n"
+        r"[^\n]*dsd_input_spec_normalize_scheme\(opts->audio_in_dev\);[^\n]*\n"
         r"[^\n]*opts->input_cli_seen = 1;[^\n]*\n[^\n]*if \(cli_read_iq_stream_spec\(opts, out_exit_rc\) != 0\)"
     )
     if len(calls) != 2 or not re.search(after_copy, args):
-        return f"{where} must run once, from getopt's -i right after its value is copied in"
+        return (
+            f"{where} must run once, from getopt's -i right after its value is copied in and its scheme"
+            " normalized (dsd_input_spec_normalize_scheme())"
+        )
     spec_path = REPO / "src/io/iq/iq_net_spec.c"
     try:
         spec_source = spec_path.read_text(encoding="utf-8")
