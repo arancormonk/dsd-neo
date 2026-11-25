@@ -393,6 +393,7 @@
     X(is_non_airspy_input)                                                                                             \
     X(is_not_qpsk)                                                                                                     \
     X(is_ted_allowed)                                                                                                  \
+    X(rtl_device_row_offered)                                                                                          \
     X(tuner_rows_offered)
 
 #endif /* DSD_NEO_TESTS_UI_TEST_UI_MENU_TREE_AUDIT_STUBS_H_ */

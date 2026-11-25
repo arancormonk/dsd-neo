@@ -1935,6 +1935,18 @@ tuner_rows_offered(const void* v) {
     return !c || !c->opts || !dsd_opts_input_is_radio(c->opts) || dsd_opts_radio_can_tune(c->opts);
 }
 
+/* Device...: a tuner row (tuner_rows_offered()), but not on a running rtl_tcp input, whose server chose its dongle:
+   every answer there is refused (svc_rtl_set_device()). Its gain and PPM rows stay. */
+bool
+rtl_device_row_offered(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_opts_audio_in_dev_is_rtltcp_spec(c->opts->audio_in_dev)) {
+        return false;
+    }
+    return tuner_rows_offered(v);
+}
+
 // NcMenuItem action callbacks require a mutable context signature.
 // cppcheck-suppress-begin constParameterPointer
 void
