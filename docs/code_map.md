@@ -11727,59 +11727,57 @@ Key public headers:
     totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
     its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
     reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
-  - RTL-SDR selection by USB serial (`<dsd-neo/io/rtl_device_select.h>`, `radio/rtl_device_select.cpp`, compiled
-    into `dsd-neo_io_radio` whatever `DSD_HAVE_LIBUSB` says; without `USE_RTLSDR` every call fails): the one listing
-    and lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`, lines from `rtl_device_list_line()`: the
-    `-i` argument to paste only for a serial of `[A-Za-z0-9._-]`, any other quoted with a note; every device string
-    shown escaped, any byte but printable ASCII as `\xNN`, by both line formatters and `rtl_device_string_shown()` for
-    log lines; `rtl_device_list_cli()` takes the listing again while it grows, at most 3 times, then prints it with no
-    `-i` argument and no duplicate mark, marked incomplete) and the open share.
-    `rtl_device_list()`
-    zeroes every entry before its read and checks the result, so an unreadable device never shows another's strings
-    (the startup listing once did); a read that fails, or succeeds with no string at all (a driver can return 0 with
-    empty buffers), is `strings_read` 0, and only an entry with a serial is `readable`.
-    `rtl_device_find_serial()` matches exactly (`strcmp`, as `rtlsdr_get_index_by_serial()`), counts every readable
-    match however many devices there are (FOUND / NOT_FOUND / DUPLICATE / NO_DEVICES / FAILED, with the device,
-    unreadable, no-serial and match counts and the first match's own index); a device whose strings could not be read
-    (`unreadable`) and one that reads but reports no serial (`no_serial`, index only) are counted apart and noted apart
-    by the engine and `--rtl-list`, and neither ever matches or counts as a duplicate. librtlsdr's three reads go
-    through `rtl_select_guarded_*()` (`radio/rtl_select_driver.h`, module-private): MSVC `__try` wrappers against
-    the exception a mismatched libusb DLL raises, which the identity unit's real driver ops call too;
-    `struct rtl_select_driver_ops` (`rtl_device_select_set_driver_ops()`, test hooks only) stands in for them. `rtl_device_create_selected()` takes the serial the `rtl:` spec names
+  - RTL-SDR selection by USB serial (`<dsd-neo/io/rtl_device_select.h>`, `radio/rtl_device_select.cpp`, compiled into
+    `dsd-neo_io_radio` whatever `DSD_HAVE_LIBUSB` says; without `USE_RTLSDR` every call fails): the one listing and
+    lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`, lines from `rtl_device_list_line()`: the `-i`
+    argument to paste only for a serial of `[A-Za-z0-9._-]`, any other quoted with a note; every device string shown
+    escaped, any byte but printable ASCII as `\xNN`, by both line formatters and `rtl_device_string_shown()` for log
+    lines; `rtl_device_list_cli()` takes the listing again while it grows, at most 3 times, then prints it with no `-i`
+    argument and no duplicate mark, marked incomplete) and the open share. `rtl_device_list()` zeroes every entry before
+    its read and checks the result, so an unreadable device never shows another's strings (the startup listing once
+    did); a read that fails, or succeeds with no string at all (a driver can return 0 with empty buffers), is
+    `strings_read` 0, and only an entry with a serial is `readable`. `rtl_device_find_serial()` matches exactly
+    (`strcmp`, as `rtlsdr_get_index_by_serial()`), counts every readable match however many devices there are (FOUND /
+    NOT_FOUND / DUPLICATE / NO_DEVICES / FAILED, with the device, unreadable, no-serial and match counts and the first
+    match's own index); a device whose strings could not be read (`unreadable`) and one that reads but reports no serial
+    (`no_serial`, index only) are counted apart and noted apart by the engine and `--rtl-list`, and neither ever matches
+    or counts as a duplicate. librtlsdr's three reads go through `rtl_select_guarded_*()` (`radio/rtl_select_driver.h`,
+    module-private): MSVC `__try` wrappers against the exception a mismatched libusb DLL raises, which the identity
+    unit's real driver ops call too; `struct rtl_select_driver_ops` (`rtl_device_select_set_driver_ops()`, test hooks
+    only) stands in for them. `rtl_device_create_selected()` takes the serial the `rtl:` spec names
     (`opts->rtl_dev_serial`, `dsd_rtl_device_field_parse()`) into the USB open (`rtl_device_open_by_serial()`): the
     serial is looked up at that open, the index found opened, and the raw handle's serial (`rtl_select_handle_serial()`)
     must match before this project configures or publishes it; a mismatch closes the handle directly (no tuning, gain,
     bias-tee or FIFO write, as `rtl_device_destroy()` would make), so it is refused and never streamed, and looks the
-    serial up once more, then the open fails with `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the
-    session's device failure. Decided limit: on the desktop the serial is readable only on a handle `rtlsdr_open()`
-    has opened, which has claimed and initialised the dongle, so one hot-plugged into the looked-up index in that
-    instant is initialised (never streamed) before it is closed; no custom open is built for it. Decided limit, Android:
-    a live serial change or an in-session reopen of the published descriptor checks only that the dongle held reports
-    the serial; a permitted twin carrying the same serial is caught when the app's broker takes the receiver for a
-    session, not at such a reopen. A pre-opened descriptor
-    (`rtl_device_open_preopened()`) is never enumerated: with a serial, the dongle behind it must report it or the
-    handle is closed and the descriptor handed back (`g_preopened_usb_fd_held` -1), with the same error. Before
-    that, and before any reset it owes, `rtl_device_preopened_check_serial()` reads the serial through the descriptor
-    (`rtl_usb_fd_serial_descriptor()`: usbfs `GET_DESCRIPTOR` on ep0 in the device's first language) and compares it
-    losslessly (`rtl_usb_serial_descriptor_is()`: the descriptor's whole length, every UTF-16 code unit equal to the
-    serial's printable ASCII, so a NUL, a character past ASCII or another length never matches), since
-    `rtlsdr_open_fd()` claims, writes registers, can reset and inits the tuner: another dongle, or one whose serial
-    cannot be read that way, is refused with no open at all, its reset obligation kept (fail closed: the read is a
-    control transfer on the same connection the open uses, so a dongle it cannot reach would not open either).
-    Without a serial, the descriptor identity's serial is the opened one. A descriptor is device 0: the device's and
-    the returned index are 0 whatever index the options held. Every local RTL-SDR stream start selects
-    its dongle from the spec it opens (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`:
-    `dsd_rtl_spec_select_device()`, so a cached index or serial a former spec left never opens another dongle; a field
-    the grammar refuses fails the start before anything opens, and so does a spec that is no `rtl` one, which
-    `detect_radio_source()` reads as a local dongle by default: a staged `pulse` opens nothing) and, with a pre-opened
-    descriptor, runs an index as 0
-    with the spec rewritten. The stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index`
-    and its options, and `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the
-    caller's spec moved on) to the caller's (decoder-owned) options, as it does `airspy_info`; the log
-    line is `Using RTLSDR Device Index: N (SN <sn>)`. `rtl_device_usb_serial()` is the serial verified on the handle
-    (the one chosen by, or for an index the stall recovery identity's), which an I/Q capture's `source_args` records as
-    `index=N,serial=<sn>` (`capture_rtl_usb_args()`, only a serial `dsd_rtl_serial_is_valid()` accepts). The auto
-    squelch's floor key hashes an `rtl:` device field that names a serial in its one form, `serial=<sn>`
+    serial up once more, then the open fails with `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the session's
+    device failure. Decided limit: on the desktop the serial is readable only on a handle `rtlsdr_open()` has opened,
+    which has claimed and initialised the dongle, so one hot-plugged into the looked-up index in that instant is
+    initialised (never streamed) before it is closed; no custom open is built for it. Decided limit, Android: a live
+    serial change or an in-session reopen of the published descriptor checks only that the dongle held reports the
+    serial; a permitted twin carrying the same serial is caught when the app's broker takes the receiver for a session,
+    not at such a reopen. A pre-opened descriptor (`rtl_device_open_preopened()`) is never enumerated: with a serial,
+    the dongle behind it must report it or the handle is closed and the descriptor handed back
+    (`g_preopened_usb_fd_held` -1), with the same error. Before that, and before any reset it owes,
+    `rtl_device_preopened_check_serial()` reads the serial through the descriptor (`rtl_usb_fd_serial_descriptor()`:
+    usbfs `GET_DESCRIPTOR` on ep0 in the device's first language) and compares it losslessly
+    (`rtl_usb_serial_descriptor_is()`: the descriptor's whole length, every UTF-16 code unit equal to the serial's
+    printable ASCII, so a NUL, a character past ASCII or another length never matches), since `rtlsdr_open_fd()` claims,
+    writes registers, can reset and inits the tuner: another dongle, or one whose serial cannot be read that way, is
+    refused with no open at all, its reset obligation kept (fail closed: the read is a control transfer on the same
+    connection the open uses, so a dongle it cannot reach would not open either). Without a serial, the descriptor
+    identity's serial is the opened one. A descriptor is device 0: the device's and the returned index are 0 whatever
+    index the options held. Every local RTL-SDR stream start selects its dongle from the spec it opens
+    (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`: `dsd_rtl_spec_select_device()`, so a cached index or
+    serial a former spec left never opens another dongle; a field the grammar refuses fails the start before anything
+    opens, and so does a spec that is no `rtl` one, which `detect_radio_source()` reads as a local dongle by default: a
+    staged `pulse` opens nothing) and, with a pre-opened descriptor, runs an index as 0 with the spec rewritten. The
+    stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index` and its options, and
+    `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the caller's spec moved on)
+    to the caller's (decoder-owned) options, as it does `airspy_info`; the log line is `Using RTLSDR Device Index: N (SN
+    <sn>)`. `rtl_device_usb_serial()` is the serial verified on the handle (the one chosen by, or for an index the stall
+    recovery identity's), which an I/Q capture's `source_args` records as `index=N,serial=<sn>`
+    (`capture_rtl_usb_args()`, only a serial `dsd_rtl_serial_is_valid()` accepts). The auto squelch's floor key hashes
+    an `rtl:` device field that names a serial in its one form, `serial=<sn>`
     (`squelch_device_spec_canonical_serial()`); an index stays hashed as written, so keys learned before stay. Tests:
     `IO_RTL_DEVICE_SELECT` (lookup, listing, open, descriptor, stream), `IO_RTL_SQUELCH_DEVICE_KEY`, `IO_IQ_METADATA`.
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
