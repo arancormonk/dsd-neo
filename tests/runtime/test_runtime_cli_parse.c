@@ -8557,6 +8557,14 @@ test_help_describes_recording_options(void) {
         DSD_FPRINTF(stderr, "-h recording text is wrong:\n%s\n", text);
         return 1;
     }
+    /* Issue #931: a base system is not required for every API upload (--rdio-analog-system-id and
+       --rdio-system-by-frequency number calls of their own; a call none numbers is skipped, not failed). */
+    if (strstr(text, "required for API uploads")
+        || !strstr(text, "--rdio-system-id <N>  rdio-scanner numeric system ID, 0 to 2147483647\n"
+                         "                 (API uploads need it for calls no other rdio system option numbers)\n")) {
+        DSD_FPRINTF(stderr, "-h --rdio-system-id text is wrong:\n%s\n", text);
+        return 1;
+    }
     return 0;
 }
 
