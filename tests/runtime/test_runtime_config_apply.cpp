@@ -1366,6 +1366,20 @@ start_radio_with_capture(dsd_opts* opts, dsd_state* state, const char* spec) {
  * anything changes: no stop, no open, the I/Q capture and the options untouched, a message saying how to proceed. A
  * file named like a radio spec (`airspy`) is a file too.
  */
+
+/* What a refused PCM [input] would have set is as it was: the input and its name, the receiver's selector and tuning,
+   and the squelch the config carried. */
+static int
+opts_kept_input(const dsd_opts* opts, const dsd_opts* before) {
+    return opts->audio_in_type == before->audio_in_type && strcmp(opts->audio_in_dev, before->audio_in_dev) == 0
+           && strcmp(opts->radio_in_dev, before->radio_in_dev) == 0 && opts->rtl_dev_index == before->rtl_dev_index
+           && strcmp(opts->rtl_dev_serial, before->rtl_dev_serial) == 0
+           && opts->rtlsdr_center_freq == before->rtlsdr_center_freq && opts->rtl_gain_value == before->rtl_gain_value
+           && opts->rtl_squelch_mode == before->rtl_squelch_mode
+           && fabs(opts->rtl_squelch_level - before->rtl_squelch_level) < 1e-12
+           && strcmp(opts->pa_input_idx, before->pa_input_idx) == 0 && opts->rtltcp_enabled == before->rtltcp_enabled;
+}
+
 static int
 test_pcm_config_over_a_running_radio_is_refused(void) {
     static const char* const kRtl = "rtl:serial=AAAA:851375000:22:0:24:0:2";
@@ -1417,7 +1431,7 @@ test_pcm_config_over_a_running_radio_is_refused(void) {
         DSD_SNPRINTF(label, sizeof label, "%s: nothing stops or opens", c->label);
         rc |= expect_true(label, g_wrap_stops == stops && g_wrap_creates == creates && state->rtl_ctx != NULL);
         DSD_SNPRINTF(label, sizeof label, "%s: the capture and the options are untouched", c->label);
-        rc |= expect_true(label, opts->iq_capture_requested == 1 && memcmp(opts, before, sizeof *opts) == 0
+        rc |= expect_true(label, opts->iq_capture_requested == 1 && opts_kept_input(opts, before)
                                      && strcmp(opts->audio_in_dev, c->running) == 0);
         DSD_SNPRINTF(label, sizeof label, "%s: the refusal says how to proceed", c->label);
         rc |= expect_true(label, strstr(state->ui_msg, "Refused: this config selects") != NULL

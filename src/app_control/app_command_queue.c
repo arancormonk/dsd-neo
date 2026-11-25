@@ -4787,9 +4787,6 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
            (dsd_engine_note_stream_source()). */
         apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
-    } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
-        apply_cfg_rtl_common(opts, state, cfg);
-        opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         if (cfg->rtltcp_host[0]) {
             DSD_SNPRINTF(opts->rtltcp_hostname, sizeof opts->rtltcp_hostname, "%s", cfg->rtltcp_host);
@@ -4799,7 +4796,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         }
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 1;
-    } else { // DSDCFG_INPUT_SOAPY
+    } else { // DSDCFG_INPUT_RTL (its dongle is the spec's device field) or DSDCFG_INPUT_SOAPY
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     }

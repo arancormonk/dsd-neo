@@ -212,7 +212,7 @@ rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report
 namespace {
 
 /* A USB string as shown: each byte at most four characters. */
-constexpr size_t kShownSize = 4U * RTL_DEVICE_STRING_SIZE;
+constexpr size_t kShownSize = static_cast<size_t>(4U) * static_cast<size_t>(RTL_DEVICE_STRING_SIZE);
 
 /* @p text for display, into @p out (kShownSize bytes): printable ASCII as it is, a backslash doubled, '"' escaped
    when @p quoted, and every other byte (a control character, ESC, a newline, a byte past ASCII) as \xNN, so a string a

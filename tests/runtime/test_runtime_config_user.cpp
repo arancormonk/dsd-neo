@@ -2255,28 +2255,28 @@ test_retained_input_merges_the_rtl_selector(void) {
     int rc = 0;
 
     struct step {
+        const char* serial;
+        const char* want_serial;
         int names_device;
         int device;
         int names_serial;
-        const char* serial;
         int invalid;
-        const char* want_serial;
         int want_device;
         int want_invalid;
     };
 
     static const step k_steps[] = {
-        {0, 0, 0, "", 0, "A", 2, 0},  /* tuning only: the serial stays */
-        {1, 0, 0, "", 0, "", 0, 0},   /* rtl_device = 0 drops it */
-        {0, 0, 1, "B", 0, "B", 0, 0}, /* a serial again */
-        {0, 0, 1, "", 0, "", 0, 0},   /* explicit empty serial: by the retained index */
-        {1, 6, 1, "C", 0, "C", 6, 0}, /* both: the serial */
-        {0, 0, 1, "", 1, "", 6, 1},   /* a refused serial stays refused */
-        {0, 0, 0, "", 0, "", 6, 1},   /* and a tuning patch keeps it refused */
+        {"", "A", 0, 0, 0, 0, 2, 0},  /* tuning only: the serial stays */
+        {"", "", 1, 0, 0, 0, 0, 0},   /* rtl_device = 0 drops it */
+        {"B", "B", 0, 0, 1, 0, 0, 0}, /* a serial again */
+        {"", "", 0, 0, 1, 0, 0, 0},   /* explicit empty serial: by the retained index */
+        {"C", "C", 1, 6, 1, 0, 6, 0}, /* both: the serial */
+        {"", "", 0, 0, 1, 1, 6, 1},   /* a refused serial stays refused */
+        {"", "", 0, 0, 0, 0, 6, 1},   /* and a tuning patch keeps it refused */
         /* A config a C caller filled in names its selector by value, without the loader's flags. */
-        {0, 2, 0, "", 0, "", 2, 0},   /* index 2 drops the refused serial */
-        {0, 0, 0, "Z", 0, "Z", 2, 0}, /* a serial */
-        {0, 0, 0, "", 0, "Z", 2, 0},  /* and a tuning patch keeps it */
+        {"", "", 0, 2, 0, 0, 2, 0},   /* index 2 drops the refused serial */
+        {"Z", "Z", 0, 0, 0, 0, 2, 0}, /* a serial */
+        {"", "Z", 0, 0, 0, 0, 2, 0},  /* and a tuning patch keeps it */
     };
     dsd_user_config_init(&loaded);
     loaded.has_input = 1;
