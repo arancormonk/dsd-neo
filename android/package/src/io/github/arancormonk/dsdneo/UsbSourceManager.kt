@@ -886,9 +886,9 @@ object UsbSourceManager {
         val manager = app.getSystemService(Context.USB_SERVICE) as UsbManager
         if (refusedTwins(manager, source, serial)) {
             return UsbSessionTake.failed(
-                UsbSessionTake.USB_OPEN_FAILED,
+                UsbSessionTake.USB_SERIAL_DUPLICATE,
                 "usb: more than one RTL-SDR carries serial $serial; not opened",
-                message = synchronized(lock) { status },
+                message = duplicateSerialText(twinCount(manager, source, serial), serial),
             )
         }
         if (connectedTo(source, serial)) return null
@@ -902,13 +902,27 @@ object UsbSourceManager {
         requestDevice(app, source, serial, hop = false)
         if (connectedTo(source, serial)) return null
         val (kind, text, pending) = synchronized(lock) { Triple(failureKind, status, requests.pending) }
-        val failure = when {
-            pending || kind == "permission" -> UsbSessionTake.USB_PERMISSION
-            kind == "detached" -> UsbSessionTake.USB_GONE
-            else -> UsbSessionTake.USB_OPEN_FAILED
+        val reason = "usb: RTL-SDR serial $serial is not connected: $text"
+        return when {
+            pending || kind == "permission" -> UsbSessionTake.failed(UsbSessionTake.USB_PERMISSION, reason)
+            // The request found no attached dongle with the serial (notFoundText()).
+            kind == "detached" ->
+                UsbSessionTake.failed(UsbSessionTake.USB_SERIAL_MISSING, reason, message = missingSerialText(serial))
+            else -> UsbSessionTake.failed(UsbSessionTake.USB_OPEN_FAILED, reason)
         }
-        return UsbSessionTake.failed(failure, "usb: RTL-SDR serial $serial is not connected: $text", message = text)
     }
+
+    /**
+     * Why a start naming RTL-SDR [serial] could not take a dongle that [count] readable dongles carry, and the fix: the
+     * failure card leads with it. rtl_eeprom runs on a computer; Android has no tool to write a dongle's serial.
+     */
+    private fun duplicateSerialText(count: Int, serial: String) =
+        "$count RTL-SDRs have serial $serial, so the app cannot tell which one to open. Unplug the extra one, or give " +
+            "each its own serial with rtl_eeprom -s on a computer."
+
+    /** Why a start naming RTL-SDR [serial] found no dongle that carries it, and the fix. */
+    private fun missingSerialText(serial: String) =
+        "No RTL-SDR with serial $serial is plugged in. Plug it in, or change the serial in the source's settings."
 
     /** Whether the ready connection is to a receiver of kind [source] carrying [serial], compared as the kind's own. */
     private fun connectedTo(source: String, serial: String): Boolean = synchronized(lock) {
@@ -1057,13 +1071,17 @@ object UsbSourceManager {
      */
     private fun refusedTwins(manager: UsbManager, source: String, serial: String): Boolean {
         if (source != UsbReceiverKind.RTL || serial.isEmpty()) return false
-        val twins = manager.deviceList.values.count {
-            isKnown(it) && sourceOf(it) == source && manager.hasPermission(it) && matchesSerial(it, serial)
-        }
+        val twins = twinCount(manager, source, serial)
         if (twins < 2) return false
         setStatus(twinsText(twins, serial), UsbRequestState.REFUSED)
         return true
     }
+
+    /** How many attached receivers of kind [source] this app may read carry [serial]. */
+    private fun twinCount(manager: UsbManager, source: String, serial: String): Int =
+        manager.deviceList.values.count {
+            isKnown(it) && sourceOf(it) == source && manager.hasPermission(it) && matchesSerial(it, serial)
+        }
 
     private fun twinsText(count: Int, serial: String) =
         "$count RTL-SDRs carry serial $serial; give each its own with rtl_eeprom -s"

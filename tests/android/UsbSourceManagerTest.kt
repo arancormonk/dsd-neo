@@ -1079,8 +1079,10 @@ private fun twinRtlSerialsAreRefused() {
     check(rig.text() == "2 RTL-SDRs carry serial 00000001; give each its own with rtl_eeprom -s" &&
         rig.kind() == UsbRequestState.REFUSED) { "a ready twin is refused: ${rig.record()}" }
     val take = rig.take("usb", "00000001")
-    check(take.failureKind == UsbSessionTake.USB_OPEN_FAILED && take.message == rig.text()) {
-        "and a session's take of it: $take"
+    check(take.failureKind == UsbSessionTake.USB_SERIAL_DUPLICATE &&
+        take.message == "2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open. Unplug the extra " +
+        "one, or give each its own serial with rtl_eeprom -s on a computer.") {
+        "and a session's take of it, with its own kind and the fix: $take"
     }
 }
 
@@ -1116,9 +1118,11 @@ private fun theTakeFollowsTheArgumentsSerial() {
     check(same.failureKind == "" && same.device == RTL_B) { "a later session reopens it as before: $same" }
 
     val missing = rig.take("usb", "00000009")
-    check(missing.failureKind == UsbSessionTake.USB_GONE && missing.message == "Requested RTL-SDR serial not found") {
-        "a serial not attached fails the start: $missing"
+    check(missing.failureKind == UsbSessionTake.USB_SERIAL_MISSING && missing.message == "No RTL-SDR with serial " +
+        "00000009 is plugged in. Plug it in, or change the serial in the source's settings.") {
+        "a serial not attached fails the start with its own kind and the fix: $missing"
     }
+    check(rig.text() == "Requested RTL-SDR serial not found") { "the broker's own line says it too: ${rig.text()}" }
 }
 
 // A dongle the arguments name that is not readable yet is prompted for, and the start fails until it is granted.

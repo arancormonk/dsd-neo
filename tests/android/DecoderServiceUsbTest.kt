@@ -204,14 +204,16 @@ private fun theTakeNamesTheArgumentsSerial() {
         finish(service)
     }
     val service = newService()
+    val text = "No RTL-SDR with serial 00000009 is plugged in. Plug it in, or change the serial in the source's settings."
     UsbSourceManager.answer = {
-        UsbSessionTake.failed(UsbSessionTake.USB_GONE, "usb: not connected", message = "Requested RTL-SDR serial not found")
+        UsbSessionTake.failed(UsbSessionTake.USB_SERIAL_MISSING, "usb: not connected", message = text)
     }
     val (_, intent) = hostStart(service, arrayOf("-i", "rtl:serial=00000009:851M"))
     val id = deliver(service, intent)
     val failed = record()
-    check(failed.optString("failureKind") == UsbSessionTake.USB_GONE &&
-        failed.optString("lastError") == "Requested RTL-SDR serial not found") { "the take's message is shown: $failed" }
+    check(failed.optString("failureKind") == "usb_serial_missing" && failed.optString("lastError") == text) {
+        "the take's own kind and message reach the record: $failed"
+    }
     endsQuietly(service, id, "a dongle by serial not connected")
 }
 

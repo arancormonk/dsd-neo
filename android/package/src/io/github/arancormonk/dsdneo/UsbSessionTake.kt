@@ -30,6 +30,12 @@ internal data class UsbSessionTake(
         const val USB_OPEN_FAILED = "usb_open_failed"
         const val USB_GONE = "usb_gone"
 
+        /** A start naming an RTL-SDR serial that two readable dongles carry; [message] names it and the fix. */
+        const val USB_SERIAL_DUPLICATE = "usb_serial_duplicate"
+
+        /** A start naming an RTL-SDR serial no attached dongle carries; [message] names it and the fix. */
+        const val USB_SERIAL_MISSING = "usb_serial_missing"
+
         fun failed(kind: String, reason: String, message: String = "") =
             UsbSessionTake(failureKind = kind, reason = reason, message = message)
     }

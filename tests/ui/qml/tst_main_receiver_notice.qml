@@ -530,6 +530,31 @@ Item {
             verify(card().message.indexOf("Tap Retry") >= 0 || card().message.indexOf("tap Retry") >= 0, card().message);
         }
 
+        // A start that named an RTL-SDR serial two readable dongles carry (13)
+        // or none attached carries (14): the service's own reason, which names
+        // the serial and the fix, leads on Listen's card and Signal search's
+        // screen, never the generic advice to retry or replug the receiver.
+        function test_serial_start_failure_data() {
+            var twins = "2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open. Unplug the extra one, or give each its own serial with rtl_eeprom -s on a computer.";
+            var missing = "No RTL-SDR with serial 00000003 is plugged in. Plug it in, or change the serial in the source's settings.";
+            return [
+                {tag: "duplicate", kind: 13, broker: 0, host: twins},
+                {tag: "missing", kind: 14, broker: 3, host: missing}
+            ];
+        }
+        function test_serial_start_failure(data) {
+            var reason = data.host;
+            startTarget("saved", "usb");
+            testContext.setDongleStatus(false, data.broker, "RTL-SDR not ready");
+            testContext.setLifecycleFailureKind(data.kind);
+            testContext.setLifecycleFailure(data.host);
+            testContext.setLifecyclePhase(4);
+            tryCompare(card(), "visible", true);
+            compare(card().message, reason + " Then tap Retry.");
+            verify(findChild(card(), "failureRetry").enabled);
+            compare(app.searchStartFailure(), reason + " Then start the search again.");
+        }
+
         // #782: a start refused while the previous session stops (8) or never answered (9) is worded for Signal
         // search's screen too, which has no Retry or Details, never as the host's own text.
         function test_attempt_failure_in_signal_search_data() {

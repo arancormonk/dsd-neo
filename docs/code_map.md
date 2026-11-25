@@ -24315,11 +24315,13 @@ cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's 
 The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s 1-7: 8
 `previous_stopping`, a start refused while the previous session stops, by the host or by the USB broker's take; 9
 undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`, the broker's take failing before
-configure; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
+configure; 13 `usb_serial_duplicate` and 14 `usb_serial_missing`, a take for the RTL-SDR serial the start's arguments
+name that two readable dongles carry or no attached one does; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
 every record, so an older session's input failure never comes back, until the next start, `stop()` (Retry) or
 `dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's `failureMessage()` words kinds 8 and
-9 for the card and `searchStartFailure()` for Signal search's own screen, and `receiverStartFailure()` kinds 10-12 for
-either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text
+9 for the card and `searchStartFailure()` for Signal search's own screen, `serialStartFailure()` kinds 13 and 14 for
+either (the service's own text, which names the serial and the fix, then "Then tap Retry." or "Then start the search
+again."), and `receiverStartFailure()` kinds 10-12 for either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text
 for a service-side kind is the record's `lastError` ("The USB receiver is no longer connected", ...). Both RTL-SDR open
 paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's code, and a successful open clears it,
 as Airspy's open does, so `failureMessage()` words them as kind 7 and a desktop run that opened after a failed open does
