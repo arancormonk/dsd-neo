@@ -55,6 +55,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -2555,26 +2556,113 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
+/* The RTL-SDR selector and the spec a device change rewrites, as the change found them. */
+typedef struct {
+    int index;
+    char serial[sizeof(((dsd_opts*)0)->rtl_dev_serial)];
+    char spec[sizeof(((dsd_opts*)0)->audio_in_dev)];
+} svc_rtl_device_choice;
+
+/* The spec a device change rewrites: the running RTL-SDR's, or with PCM running the one a switch back opens
+   (dsd_opts::radio_in_dev, which the terminal stages a receiver on). NULL when there is none (the change sets only the
+   selector, which the next start reads). */
+static const char*
+svc_rtl_device_spec(const dsd_opts* opts) {
+    const char* spec = opts->audio_in_type == AUDIO_IN_RTL ? opts->audio_in_dev : opts->radio_in_dev;
+    return dsd_opts_audio_in_dev_is_rtl_spec(spec) ? spec : NULL;
+}
+
+static void
+svc_rtl_device_select(dsd_opts* opts, const svc_rtl_device_choice* choice) {
+    opts->rtl_dev_index = choice->index;
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", choice->serial);
+    if (!svc_rtl_device_spec(opts)) {
+        return;
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
+    } else {
+        DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
+    }
+}
+
+/* Restart the stream on @p next, and on a failed start put @p previous back and start it again, inside one hold of the
+   P25 SM tick guard, which the watchdog reads the input under (svc_airspy_reopen_impl()). */
+static int
+svc_rtl_device_reopen(dsd_opts* opts, dsd_state* state, const svc_rtl_device_choice* next,
+                      const svc_rtl_device_choice* previous, int* out_capture_stopped) {
+    p25_sm_tick_guard_enter();
+    dsd_input_failure failure_before;
+    dsd_input_failure_get(&failure_before);
+    const int stream_stopped = state->rtl_ctx != NULL;
+    const int capture_before = opts->iq_capture_requested;
+    svc_rtl_device_select(opts, next);
+    const int rc = svc_rtl_restart_locked(opts, state);
+    if (rc != 0) {
+        svc_rtl_device_select(opts, previous);
+        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before,
+                                              out_capture_stopped);
+    }
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+/* An input with no local RTL-SDR to select. A fixed source (an I/Q replay) has no device to change: the restart would
+   only rewind it (issue #743 B2). An rtl_tcp server opens the dongle the server chose: a restart would only reconnect
+   it. */
+static int
+svc_rtl_device_not_selectable(const dsd_opts* opts) {
+    return svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+           || dsd_opts_input_has_fixed_tuning(opts)
+           || (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev));
+}
+
+/* The selector and spec in force (@p previous) and the ones the change makes (@p next), built before anything changes:
+   -1 for a serial the rule refuses or a spec the new device field does not fit. An index selection keeps no serial, so
+   the index opens; a serial keeps the index for the logs until it resolves. */
+static int
+svc_rtl_device_stage(const dsd_opts* opts, int index, const char* serial, svc_rtl_device_choice* previous,
+                     svc_rtl_device_choice* next) {
+    const int by_serial = serial && serial[0] != '\0';
+    if (by_serial && !dsd_rtl_serial_is_valid(serial)) {
+        return -1;
+    }
+    const char* spec = svc_rtl_device_spec(opts);
+    previous->index = opts->rtl_dev_index;
+    DSD_SNPRINTF(previous->serial, sizeof previous->serial, "%s", opts->rtl_dev_serial);
+    DSD_SNPRINTF(previous->spec, sizeof previous->spec, "%s", spec ? spec : "");
+    next->index = by_serial ? opts->rtl_dev_index : (index < 0 ? 0 : index);
+    DSD_SNPRINTF(next->serial, sizeof next->serial, "%s", by_serial ? serial : "");
+    /* The spec a save writes names the new dongle (B2: a change used to leave the old one in it). */
+    DSD_SNPRINTF(next->spec, sizeof next->spec, "%s", previous->spec);
+    if (spec && dsd_rtl_spec_set_device(next->spec, sizeof next->spec, next->index, next->serial) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int
-svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
+svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* serial, int* out_capture_stopped) {
+    if (out_capture_stopped) {
+        *out_capture_stopped = 0;
+    }
     if (!opts || !state) {
         return -1;
     }
-    /* A fixed source (an I/Q replay) has no device to change: the restart would only rewind it (issue #743 B2). */
-    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
-        || dsd_opts_input_has_fixed_tuning(opts)) {
+    if (svc_rtl_device_not_selectable(opts)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    if (index < 0) {
-        index = 0;
+    svc_rtl_device_choice previous;
+    svc_rtl_device_choice next;
+    if (svc_rtl_device_stage(opts, index, serial, &previous, &next) != 0) {
+        return -1;
     }
-    opts->rtl_dev_index = index;
-    /* Changing device requires reopen */
-    opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return svc_rtl_restart(opts, state);
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        svc_rtl_device_select(opts, &next);
+        opts->rtl_needs_restart = 1;
+        return 0;
     }
-    return 0;
+    return svc_rtl_device_reopen(opts, state, &next, &previous, out_capture_stopped);
 }
 
 int

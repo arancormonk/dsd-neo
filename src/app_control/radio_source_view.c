@@ -97,6 +97,19 @@ radio_source_rtltcp_name(const dsd_opts* opts, int running, const char* dev, cha
     }
 }
 
+/* A local RTL-SDR: the one running by its USB serial when the input names it by one (as an Airspy is named), else by
+   its index; one not running is "RTL-SDR". */
+static void
+radio_source_rtl_name(const dsd_opts* opts, int running, char* out, size_t out_size) {
+    if (running && opts->rtl_dev_serial[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR SN %s", opts->rtl_dev_serial);
+    } else if (running) {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR dev %d", opts->rtl_dev_index);
+    } else {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR");
+    }
+}
+
 void
 dsd_app_radio_source_name(const dsd_opts* opts, const char* dev, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
@@ -124,10 +137,8 @@ dsd_app_radio_source_name(const dsd_opts* opts, const char* dev, char* out, size
         } else {
             DSD_SNPRINTF(out, out_size, "SoapySDR");
         }
-    } else if (running) {
-        DSD_SNPRINTF(out, out_size, "RTL-SDR dev %d", opts->rtl_dev_index);
     } else {
-        DSD_SNPRINTF(out, out_size, "RTL-SDR");
+        radio_source_rtl_name(opts, running, out, out_size);
     }
 }
 

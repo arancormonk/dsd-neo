@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -348,11 +349,53 @@ apply_rtl_freq(const char* key_lc, const char* val, dsdneoUserConfig* cfg) {
     copy_text_value(cfg->rtl_freq, sizeof cfg->rtl_freq, val);
 }
 
+static_assert(sizeof(((dsdneoUserConfig*)0)->rtl_serial) == DSD_RTL_SERIAL_MAX + 1,
+              "rtl_serial holds the longest serial an input can name");
+
+/* rtl_serial: the dongle's USB serial, exactly ("" selects by rtl_device). A serial the rule refuses
+   (dsd_rtl_serial_is_valid()) is never cut or trimmed into another one: the key is marked refused, and the input it
+   builds does not start (format_rtl_input_spec()), as an invalid airspy_serial refuses the Airspy. */
+static void
+apply_rtl_serial(const char* val, dsdneoUserConfig* cfg) {
+    cfg->rtl_serial_is_set = 1;
+    cfg->rtl_serial[0] = '\0';
+    cfg->rtl_serial_invalid = 0;
+    if (val[0] == '\0') {
+        return;
+    }
+    if (!dsd_rtl_serial_is_valid(val) || strlen(val) >= sizeof cfg->rtl_serial) {
+        LOG_WARN("Config: invalid rtl_serial = '%s'; give the serial exactly as dsd-neo --rtl-list shows it (up to %d "
+                 "printable characters, no ':' or '\"', no space at either end). The RTL-SDR input will not start "
+                 "until it is fixed.\n",
+                 val, DSD_RTL_SERIAL_MAX);
+        cfg->rtl_serial_invalid = 1;
+        return;
+    }
+    DSD_SNPRINTF(cfg->rtl_serial, sizeof cfg->rtl_serial, "%s", val);
+}
+
+/* The keys that name the RTL-SDR: 1 when @p key_lc is one of them. */
+static int
+apply_input_rtl_selector_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
+    if (strcmp(key_lc, "rtl_device") == 0) {
+        if (apply_integer_setting(val, 0, mode, &cfg->rtl_device)) {
+            cfg->rtl_device_is_set = 1;
+        }
+        return 1;
+    }
+    if (strcmp(key_lc, "rtl_serial") == 0) {
+        apply_rtl_serial(val, cfg);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 apply_input_rtl_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
-    if (strcmp(key_lc, "rtl_device") == 0) {
-        (void)apply_integer_setting(val, 0, mode, &cfg->rtl_device);
-    } else if (strcmp(key_lc, "rtl_freq") == 0) {
+    if (apply_input_rtl_selector_keys(cfg, key_lc, val, mode)) {
+        return 1;
+    }
+    if (strcmp(key_lc, "rtl_freq") == 0) {
         apply_rtl_freq(key_lc, val, cfg);
     } else if (strcmp(key_lc, "rtl_gain") == 0) {
         if (apply_integer_setting(val, 22, mode, &cfg->rtl_gain)) {

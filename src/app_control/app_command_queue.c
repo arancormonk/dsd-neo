@@ -92,6 +92,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -396,6 +397,7 @@ static const int k_ui_cmd_string_ids[] = {
     DSD_APP_CMD_EXPORT_P25_BANDPLAN,
     DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
     DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
+    DSD_APP_CMD_RTL_SET_DEV_SERIAL,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -1599,7 +1601,7 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
     }
 }
 
-/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV): "Failed: " and
+/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN): "Failed: " and
    @p what for 4 s, as before; with the note of a capture the restart turned off before its start (issue #743 B16),
    which is the capture the command found on (@p capture_before) and that is off now, for the 5 s a rollback's note
    takes. */
@@ -1613,7 +1615,7 @@ ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_
 }
 
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
-   input type, the rtl_tcp endpoint, the RTL device index, the tuning and front-end settings a start copies, the Airspy
+   input type, the rtl_tcp endpoint, the RTL-SDR's index or serial, the tuning and front-end settings a start copies, the Airspy
    and SoapySDR settings, and the digital resample policy. These are what Input > Switch source, a config's [input] and
    its hot restart write. @c running says whether that input worked: any input but an RTL-family one (PCM, which no
    switch closes), or an RTL-family one with a stream. A start that fails on the input that replaced it puts this one
@@ -1634,6 +1636,7 @@ typedef struct {
     char rtltcp_hostname[sizeof(((dsd_opts*)0)->rtltcp_hostname)];
     int rtltcp_portno;
     int rtl_dev_index;
+    char rtl_dev_serial[sizeof(((dsd_opts*)0)->rtl_dev_serial)];
     uint32_t rtlsdr_center_freq;
     int rtl_dsp_bw_khz;
     int rtl_dsp_bw_source;
@@ -1681,6 +1684,7 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     DSD_MEMCPY(out->rtltcp_hostname, opts->rtltcp_hostname, sizeof out->rtltcp_hostname);
     out->rtltcp_portno = opts->rtltcp_portno;
     out->rtl_dev_index = opts->rtl_dev_index;
+    DSD_MEMCPY(out->rtl_dev_serial, opts->rtl_dev_serial, sizeof out->rtl_dev_serial);
     out->rtlsdr_center_freq = opts->rtlsdr_center_freq;
     out->tuned_freq_hz = dsd_opts_tuned_freq_hz(opts);
     out->rtl_dsp_bw_khz = opts->rtl_dsp_bw_khz;
@@ -1718,6 +1722,7 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     DSD_MEMCPY(opts->rtltcp_hostname, in->rtltcp_hostname, sizeof opts->rtltcp_hostname);
     opts->rtltcp_portno = in->rtltcp_portno;
     opts->rtl_dev_index = in->rtl_dev_index;
+    DSD_MEMCPY(opts->rtl_dev_serial, in->rtl_dev_serial, sizeof opts->rtl_dev_serial);
     opts->rtlsdr_center_freq = in->rtlsdr_center_freq;
     dsd_opts_set_rtl_dsp_bw(opts, in->rtl_dsp_bw_khz, in->rtl_dsp_bw_source);
     opts->rtl_gain_value = in->rtl_gain_value;
@@ -2174,28 +2179,62 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* The RTL-SDR a device change selects, as its toasts name it: "serial <sn>" or "index <n>". */
+static void
+ui_rtl_device_what(int index, const char* serial, char* out, size_t out_size) {
+    if (serial && serial[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "serial %s", serial);
+    } else {
+        DSD_SNPRINTF(out, out_size, "index %d", index < 0 ? 0 : index);
+    }
+}
+
+/* RTL_SET_DEV and RTL_SET_DEV_SERIAL: svc_rtl_set_device(), which puts the dongle that ran back when the new one does
+   not start; its toast says so with the note of an I/Q capture that restart turned off. */
+static int
+ui_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* serial) {
+    if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    char what[DSD_RTL_SERIAL_MAX + 32];
+    ui_rtl_device_what(index, serial, what, sizeof what);
+    int capture_stopped = 0;
+    const int rc = svc_rtl_set_device(opts, state, index, serial, &capture_stopped);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: RTL device -> %s", what);
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: this radio source has no RTL-SDR device to select");
+    } else {
+        char why[DSD_RTL_SERIAL_MAX + 64];
+        DSD_SNPRINTF(why, sizeof why, "RTL device -> %s (see log)", what);
+        ui_set_rollback_toast(state, "Failed: ", why, capture_stopped);
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
 static int
 ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
-            return UI_CMD_APPLY_UNSUPPORTED;
-        }
-        const int capture_before = opts && opts->iq_capture_requested;
-        int rc = svc_rtl_set_dev_index(opts, state, v);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: device index is not available for current radio source");
-        } else {
-            char what[48];
-            DSD_SNPRINTF(what, sizeof what, "RTL device index -> %d", (int)v);
-            ui_set_failed_restart_toast(state, opts, capture_before, what);
-        }
+    if (!state || !ui_cmd_parse_i32_payload(c, &v)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return result;
+    return ui_rtl_set_device(opts, state, (int)v, NULL);
+}
+
+/* A serial, whole and as the rule allows (dsd_rtl_serial_is_valid()): one cut short or refused would name another
+   dongle, so it changes nothing. A serial of digits stays a serial: the payload's command says it is one. */
+static int
+ui_cmd_handle_rtl_set_dev_serial(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!ui_cmd_copy_payload_path(c, serial, sizeof serial) || !dsd_rtl_serial_is_valid(serial)) {
+        ui_set_toast(state, 4, "Refused: not an RTL-SDR serial (up to %d printable characters, no ':' or '\"')",
+                     DSD_RTL_SERIAL_MAX);
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    return ui_rtl_set_device(opts, state, opts->rtl_dev_index, serial);
 }
 
 static int
@@ -2205,6 +2244,7 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
         {DSD_APP_CMD_RTL_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
         {DSD_APP_CMD_RTL_RESTART, ui_cmd_handle_rtl_restart},
         {DSD_APP_CMD_RTL_SET_DEV, ui_cmd_handle_rtl_set_dev},
+        {DSD_APP_CMD_RTL_SET_DEV_SERIAL, ui_cmd_handle_rtl_set_dev_serial},
     };
     if (!opts || !c) {
         return 0;
@@ -4699,6 +4739,32 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
                                       ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 
+/* The dongle an RTL-SDR [input] names, as the spec it built names it (rtl_serial over rtl_device; a negative index
+   reads as 0): the restart opens it, not the one the running input selected. A serial clears the index's selection
+   and an index the serial's, so a change from serial A to index 0 opens index 0. A refused rtl_serial never reaches
+   here (cfg_rtl_selector_valid()). The rollback of a failed start puts back the selector that ran (ui_radio_input). */
+static void
+apply_cfg_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_serial[0] != '\0') {
+        DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", cfg->rtl_serial);
+        return;
+    }
+    opts->rtl_dev_index = cfg->rtl_device >= 0 ? cfg->rtl_device : 0;
+    opts->rtl_dev_serial[0] = '\0';
+}
+
+/* An RTL-SDR [input] applied while PCM runs stages its spec for the switch back to the radio (the RTL-SDR row opens
+   it), and the dongle that switch opens is the one the options select: the config's, as the spec names it, not the one
+   the session last opened. */
+static void
+apply_cfg_stage_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev) {
+    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_RTL && opts->audio_in_type != AUDIO_IN_RTL
+        && dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+        && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        apply_cfg_rtl_selector(opts, cfg);
+    }
+}
+
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
    ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
@@ -4710,6 +4776,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
+        apply_cfg_stage_rtl_selector(opts, cfg, old_audio_in_dev);
         apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }
@@ -4734,9 +4801,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
-        if (cfg->rtl_device >= 0) {
-            opts->rtl_dev_index = cfg->rtl_device;
-        }
+        apply_cfg_rtl_selector(opts, cfg);
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
@@ -9530,6 +9595,15 @@ ui_cmd_handle_config_metadata_set(dsd_opts* opts, dsd_state* state, const struct
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/* An rtl_serial the loader refused (rtl_serial_invalid) refuses a config whose [input] opens the RTL-SDR, or names no
+   source (a patch the [input] a save writes takes), before anything changes: the input it names never opens index 0
+   in place of the serial, as the next start refuses it too. */
+static int
+cfg_rtl_selector_valid(const dsdneoUserConfig* cfg) {
+    return !cfg->has_input || !cfg->rtl_serial_invalid
+           || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_UNSET);
+}
+
 static int
 cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
     if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_AIRSPY) {
@@ -10156,6 +10230,10 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
                           dsd_tg_policy_store** groups) {
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (!cfg_rtl_selector_valid(cfg)) {
+        ui_set_toast(state, 5, "Config not applied: rtl_serial is not a serial an RTL-SDR can have (see log)");
+        return UI_CMD_APPLY_FAILED;
     }
     const int stream_rc = cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
     if (stream_rc != UI_CMD_APPLY_COMPLETED) {

@@ -88,6 +88,10 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_DMR_CHANNEL_SET) {
                 continue;
             }
+            /* rtl_set_dev's {serial} form: one command name selects the RTL-SDR by index or by serial. */
+            if (value == DSD_APP_CMD_RTL_SET_DEV_SERIAL) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }
@@ -330,6 +334,30 @@ check_rr_apply_tetra_accepted(const char* what, const char* audio_in_dev) {
 }
 
 #ifdef USE_RADIO
+/* rtl_set_dev {serial} reaches the decoder as RTL_SET_DEV_SERIAL, which the queue admits as a string command: a serial
+   of digits stays a serial, and {value} selects by index again, dropping it. With PCM running, nothing reopens: the
+   selector waits for the next RTL-SDR start. */
+static void
+check_rtl_set_dev_serial(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    api_session_start(&opts, &state, AUDIO_IN_PULSE, "pulse", 48);
+    api_execute_and_drain(opts, state, "rtl_set_dev", "{\"serial\":\"1090\"}");
+    if (strcmp(opts->rtl_dev_serial, "1090") != 0 || strcmp(state->ui_msg, "Applied: RTL device -> serial 1090") != 0) {
+        DSD_FPRINTF(stderr, "rtl_set_dev serial 1090: serial \"%s\", status message \"%s\"\n", opts->rtl_dev_serial,
+                    state->ui_msg);
+        assert(0);
+    }
+    api_execute_and_drain(opts, state, "rtl_set_dev", "{\"value\":1}");
+    if (opts->rtl_dev_serial[0] != '\0' || opts->rtl_dev_index != 1
+        || strcmp(state->ui_msg, "Applied: RTL device -> index 1") != 0) {
+        DSD_FPRINTF(stderr, "rtl_set_dev value 1: serial \"%s\" index %d, status message \"%s\"\n",
+                    opts->rtl_dev_serial, opts->rtl_dev_index, state->ui_msg);
+        assert(0);
+    }
+    api_session_stop(opts, state);
+}
+
 /* Issue #806: rtl_set_bw 72 on an Airspy is taken, as on an RTL-SDR (it was refused: "an Airspy cannot run a 72 kHz
    DSP bandwidth"). No stream runs (a PCM session naming the Airspy), so nothing reopens and the bandwidth is stored for
    the next start. A build without radio support handles no RTL_SET_BW. */
@@ -488,6 +516,7 @@ main(void) {
     check_rr_apply_tetra_accepted("on an RTL-SDR at 72 kHz", "rtl:0");
 #ifdef USE_RADIO
     check_rtl_set_bw_72_on_airspy();
+    check_rtl_set_dev_serial();
 #endif
     check_rr_apply_tetra_refusal("on an RTL-SDR at 48 kHz", AUDIO_IN_RTL, "rtl:0", 48,
                                  "Failed: RR import -> TETRA needs 72 kHz DSP bandwidth; set it and import again");

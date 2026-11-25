@@ -755,6 +755,10 @@ test_input_and_audio_labels(void) {
     opts.rtl_dev_index = 2;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "rtl");
     rc |= expect_str("source rtl", lbl_current_input(&ctx, b, sizeof(b)), "Source: RTL-SDR dev 2");
+    /* An RTL-SDR chosen by USB serial names its serial, as an Airspy does. */
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof(opts.rtl_dev_serial), "%s", "00000001");
+    rc |= expect_str("source rtl by serial", lbl_current_input(&ctx, b, sizeof(b)), "Source: RTL-SDR SN 00000001");
+    opts.rtl_dev_serial[0] = '\0';
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "soapy:driver=test");
     rc |= expect_str("source soapy", lbl_current_input(&ctx, b, sizeof(b)), "Source: SoapySDR [driver=test]");
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", "soapy");

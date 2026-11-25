@@ -4432,6 +4432,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        # The RTL-SDR device prompt reads its answer with the input spec's device-field parser.
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
@@ -4459,6 +4462,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+        # The RTL-SDR device prompt opens on the input's device field, written by the input spec's formatter.
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
@@ -7460,10 +7466,24 @@ add_executable(
     runtime/test_runtime_bootstrap_interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+    # The RTL-SDR question reads its answer with the input spec's device-field parser.
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_interactive
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_bootstrap_interactive
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
 )
 target_compile_definitions(
     dsd-neo_test_runtime_bootstrap_interactive

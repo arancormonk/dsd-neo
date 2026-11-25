@@ -5575,6 +5575,16 @@ suite runs under this compiler.
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+    - RTL-SDR selector: `[input] rtl_serial` (the USB serial, `dsd_rtl_serial_is_valid()`) wins over `rtl_device` in
+      the spec the apply builds (`format_rtl_device_field()`: `rtl:serial=<sn>:...` through
+      `dsd_rtl_device_field_format()`, else `rtl:<index>:...`). A serial the rule refuses is never cut or trimmed: the
+      loader marks it (`rtl_serial_invalid`), the spec carries `serial=`, which `dsd_rtl_input_spec_apply()` refuses so
+      the start refuses the input (never index 0), the render writes `rtl_serial = ":"` (refused again on load),
+      `--validate-config` errors, and a runtime apply refuses the config before anything changes
+      (`cfg_rtl_selector_valid()`). The render quotes the serial, which holds no `"` by the rule, so the comment
+      stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
+      a serial or an index, the other cleared; a bare `rtl` or an empty field is the session's own selector. Tests:
+      `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_PROFILE`.
     - Raw I/Q stream source (issue #743): `[input] source = "iqtcp" | "iqudp"` (`DSDCFG_INPUT_IQTCP` / `_IQUDP`) with
       `iq_host`, `iq_port`, `iq_rate`, `iq_format`, `iq_freq` (rate and frequency kept as text, as `rtl_freq` is).
       `dsd_user_config_iq_stream_input_spec()` builds the canonical spec from them (the parser in
@@ -5604,7 +5614,10 @@ suite runs under this compiler.
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
       (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
-      a sourceless patch keeps the source and endpoint. A patch is checked first on the `[input]` its merge would leave
+      a sourceless patch keeps the source and endpoint. The RTL-SDR selector merges as one choice by the keys a patch
+      names (`rtl_device_is_set`, `rtl_serial_is_set`; `merge_rtl_selector()`): `rtl_serial` (empty: by the retained
+      index; refused: stays refused) wins, `rtl_device` alone drops the retained serial, neither keeps it. A patch is
+      checked first on the `[input]` its merge would leave
       (`dsd_user_config_retained_input_patched()`, `cfg_check_retained_stream_patch()`): one that leaves a raw I/Q
       stream whose keys build no spec, or whose RATE no plan takes, is refused before anything changes, as the next start
       would refuse the save. An `[input]` that is a file input of a non-file spec
@@ -6281,7 +6294,9 @@ suite runs under this compiler.
     and a toast saying so, `dsd_decode_mode_keep_saved_am()`, which a runtime config apply of one shares) and the
     setup wizard (which asks it about the input it just configured, and also holds the AM width to the DSP bandwidth
     it just read, as the engine's pre-open check does: `interactive_am_refused()` in
-    `src/runtime/bootstrap/interactive.c`); once an input is
+    `src/runtime/bootstrap/interactive.c`, whose RTL-SDR question, `prompt_rtl_device()`, reads an index or a USB
+    serial with `dsd_rtl_device_field_parse()`, writes it as the spec's device field, and asks again on an answer
+    that names neither); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
     (`dsd_opts_input_is_radio()`): an input switch names the input it opens (`tcp:<host>:<port>` and the like, issue
     #634), but a replay session switched to Pulse keeps its replay request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
@@ -7457,8 +7472,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     on an entry, else its no-scan answer; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or avoid
     (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or removing
     avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by design). The
-    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`,
-    `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
+    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_DEV_SERIAL`, `RTL_SET_PPM`,
+    `PPM_DELTA`, `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
     stream only, since a replay's start may connect a peer) are refused with `ui_cmd_refuse_fixed_tuner_control()`
     (`svc_fixed_tuner_reason()`: "An I/Q replay has no tuner controls: it plays what was recorded." / "An I/Q stream has
     no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search
@@ -8038,7 +8053,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
   start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
   the session without the input it had: the input a start reads is captured before
-  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
+  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, the RTL-SDR's index and serial, tuning, gain, ppm, squelch,
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
   it, and a background RTL stream it left running, which the failed start stopped, is not restarted, its I/Q capture
   stopping with it as below) and an RTL-family input that ran restarted; it is
@@ -8055,15 +8070,25 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   or `Failed: <why>`. On an I/Q replay `svc_rtl_set_bandwidth_locked()` stores the request as EXPLICIT and re-plans
   the replay instead of reopening it (`svc_rtl_replay_replan_locked()`, see IO, "Run-time re-plan"): a bandwidth that
   plans the running chain reopens nothing, and a refused re-plan puts the request back with the replay running. These
-  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
-  config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Any
+  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET, the RTL-SDR device change
+  (`RTL_SET_DEV` by index, `RTL_SET_DEV_SERIAL` by USB serial; `svc_rtl_set_device()`) and a config apply's reopen;
+  a gain or explicit stream restart that fails still leaves no stream. The device change checks the selector and
+  builds the new spec before anything changes (`dsd_rtl_spec_set_device()` on a copy: a serial the rule refuses, or a
+  field the spec does not fit, changes nothing), writes the selector and the spec together (B2: the index alone left
+  the old device in the spec, which a save wrote), and reopens inside one hold of the P25 SM tick guard; a failed
+  start puts the selector and spec that ran back and starts them again through `svc_rtl_restart_recovery_locked()`,
+  as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note.
+  With PCM running it rewrites the spec the RTL-SDR row opens (`dsd_opts::radio_in_dev`, its tuning kept), so the
+  switch back opens the dongle staged. An active `rtltcp` source has no local dongle: `DSD_ERR_NOT_SUPPORTED`, the
+  server not reconnected. The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
+  stays a serial. Tests: `UI_MENU_SERVICES`, `APP_COMMAND_QUEUE`, `API_COMMAND_PAYLOADS`, `API_COMMANDS`. Any
   restart (`svc_rtl_restart_locked()`) of a stream that ran while `--iq-capture` was on turns the capture off before
   its start, whether the start then succeeds or not (issue #743 B16): the stop closed the file with what it recorded,
   and the start would open it for writing again and empty it. It logs a WARN naming the file and, after a start that
   worked, posts the capture-stopped notice (`dsd_app_note_capture_stopped_at_restart()`), so the next drain's toast
   follows the command's own. A start that failed posts nothing: no stream restarted. A rollback reports the stop in its
   toast (`svc_rtl_restart_recovery_locked()` takes the capture the change found on, `capture_before`), and a command
-  with no rollback (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV) ends its "Failed:" toast with "; I/Q capture stopped". On
+  with no rollback (RTL_RESTART, RTL_SET_GAIN) ends its "Failed:" toast with "; I/Q capture stopped". On
   an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`), the gain, device index, bias tee, rtl_tcp
   autotune and auto-PPM services, the PPM commands (RTL_SET_PPM, PPM_DELTA) and the tuner autogain DSP toggle refuse
   with `DSD_ERR_NOT_SUPPORTED` and their "Unsupported" toasts before any option changes or any restart (issue #743 B2:
@@ -8097,7 +8122,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (the bare
   `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
-  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). A config apply whose reopen of
+  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
+  RTL-SDR `[input]` opens the dongle the config names (`apply_cfg_rtl_selector()`: its `rtl_serial`, or its
+  `rtl_device` with the serial cleared), not the running input's selector; one applied while PCM runs stages that
+  selector with the spec it writes (`apply_cfg_stage_rtl_selector()`), so the switch back opens the dongle the config
+  names. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
@@ -18216,6 +18245,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     already past the answer, shared targets counted once), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
     (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
     key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+  - RTL-SDR device prompt: `ui_open_rtl_device_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO` too)
+    opens `Device (index or serial)` with capacity `DSD_RTL_SERIAL_MAX + 9` (room for `serial=` and the longest
+    serial, so a longer paste is refused, never read as another serial). The `rtl.dev` row (`Device...`,
+    `rtl_set_dev()`) prefills it with the input's own device field (`dsd_rtl_device_field_format()`: the index, or
+    `serial=<sn>`, so a serial of digits submitted again stays a serial). `cb_rtl_dev_text()` reads the answer with
+    `dsd_rtl_device_field_parse()`: an index posts `RTL_SET_DEV`, a serial `RTL_SET_DEV_SERIAL`, empty cancels, and
+    a refusal puts `Enter an index like 0 or a serial like 00000001` in the status and reopens the prompt with the text.
+    The I/O pane names a serial-chosen dongle on its identity row (`| RTL: SN <serial>;`, `ui_render_radio_identity_row()`).
+    Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -18500,7 +18538,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
   - Radio input names and tuner rows (issue #743, B5): `lbl_current_input()` names a radio input by its kind through
     the app-control radio-source view (`include/dsd-neo/app_control/radio_source_view.h`,
-    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N`, `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
+    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N` (`RTL-SDR SN <serial>` when the input names its dongle by
+    USB serial), `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
     `I/Q replay FILE`, `I/Q stream H:P (cs16, 240 kHz)` / `I/Q stream UDP :P (...)` (`dsd_app_iq_stream_describe()`; a
     host too long for the label is cut and marked so the samples stay), where rtl_tcp, Airspy and a replay all read
     `RTL-SDR dev N`. Switch source's radio row (`lbl_src_rtl()`) names the input it opens

@@ -34,6 +34,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -1856,6 +1857,15 @@ ui_open_freq_prompt(UiCtx* c, const char* prefill) {
     ui_prompt_open_string_async(k_freq_prompt_title, prefill, UI_FREQ_PROMPT_CAP, cb_rtl_freq_text, c);
 }
 
+/* Room for `serial=` and the longest serial, so a paste past it is cut to text the parser refuses, never another
+   serial it accepts. */
+#define UI_RTL_DEVICE_PROMPT_CAP (DSD_RTL_SERIAL_MAX + 9U)
+
+void
+ui_open_rtl_device_prompt(UiCtx* c, const char* prefill) {
+    ui_prompt_open_string_async("Device (index or serial)", prefill, UI_RTL_DEVICE_PROMPT_CAP, cb_rtl_dev_text, c);
+}
+
 void
 act_set_freq(void* v) {
     ui_open_freq_prompt((UiCtx*)v, NULL);
@@ -2031,10 +2041,18 @@ rtl_restart(void* v) {
     (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
 }
 
+/* The prompt opens on the device the input names: its index, or its serial in the explicit serial=<sn> form, so a serial
+   of digits submitted again stays a serial. */
 void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, c);
+    char current[DSD_RTL_SERIAL_MAX + 16];
+    if (dsd_rtl_device_field_format(c->opts->rtl_dev_index < 0 ? 0 : c->opts->rtl_dev_index, c->opts->rtl_dev_serial,
+                                    current, sizeof current)
+        != 0) {
+        current[0] = '\0';
+    }
+    ui_open_rtl_device_prompt(c, current);
 }
 
 static void

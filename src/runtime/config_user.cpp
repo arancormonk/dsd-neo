@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -566,6 +567,26 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     }
 }
 
+/* The dongle an rtl: spec's device field @p field names (dsd_rtl_device_field_parse()), as rtl_serial or rtl_device,
+   the other cleared. A bare `rtl` or an empty field is the dongle the session opens, by the serial or index it holds.
+   A field the parser refuses stays refused (rtl_serial_invalid): a save never turns it into an index. */
+static void
+snapshot_rtl_device_field(const dsd_opts* opts, const char* field, dsdneoUserConfig* cfg) {
+    int index = opts->rtl_dev_index;
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    serial[0] = '\0';
+    const dsd_rtl_dev_kind kind = dsd_rtl_device_field_parse(field, &index, serial, sizeof serial);
+    if (kind == DSD_RTL_DEV_INVALID) {
+        cfg->rtl_serial_invalid = 1;
+    } else if (kind == DSD_RTL_DEV_EMPTY && dsd_rtl_serial_is_valid(opts->rtl_dev_serial)) {
+        DSD_SNPRINTF(serial, sizeof serial, "%s", opts->rtl_dev_serial);
+    }
+    cfg->rtl_device = index;
+    DSD_SNPRINTF(cfg->rtl_serial, sizeof cfg->rtl_serial, "%s", serial);
+    cfg->rtl_device_is_set = 1;
+    cfg->rtl_serial_is_set = 1;
+}
+
 static void
 snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
@@ -575,12 +596,7 @@ snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     char buf[sizeof opts->audio_in_dev];
     char* tok[9] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    /* An empty device field is the device the session opens, its default. */
-    if (n > 1 && tok[1][0] == '\0') {
-        cfg->rtl_device = opts->rtl_dev_index;
-    } else {
-        snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
-    }
+    snapshot_rtl_device_field(opts, n > 1 ? tok[1] : NULL, cfg);
     snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
@@ -971,9 +987,30 @@ render_input_pulse(FILE* out, const dsdneoUserConfig* cfg) {
     }
 }
 
+/* An rtl_serial the loader refused, saved as a value it refuses again: the input it named stays refused on the next
+   start instead of opening rtl_device's index. */
+static const char kRtlSerialRefused[] = ":";
+
+/* The dongle the input opens: its serial, quoted (a valid serial holds no '"', so the reader gives back every
+   character, spaces, '#', ';' and '=' included), or its index. */
+static void
+render_input_rtl_selector(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_serial_invalid) {
+        LOG_WARN(
+            "WARNING: rtl_serial was refused when the config was loaded; it is saved as rtl_serial = \"%s\", which "
+            "keeps the RTL-SDR input refused until it names the dongle's serial.\n",
+            kRtlSerialRefused);
+        DSD_FPRINTF(out, "rtl_serial = \"%s\"\n", kRtlSerialRefused);
+    } else if (cfg->rtl_serial[0]) {
+        DSD_FPRINTF(out, "rtl_serial = \"%s\"\n", cfg->rtl_serial);
+    } else {
+        DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    }
+}
+
 static void
 render_input_rtl(FILE* out, const dsdneoUserConfig* cfg) {
-    DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    render_input_rtl_selector(out, cfg);
     render_input_rtl_common(out, cfg, 1);
 }
 
@@ -1488,6 +1525,19 @@ apply_input_source_pulse(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The device field of the spec an RTL-SDR [input] builds: `serial=<sn>` for rtl_serial, which wins, else rtl_device's
+   index (a negative one, which the key's range refuses, reads as 0, as the device command takes it). A refused
+   rtl_serial writes `serial=`, a field the spec parser refuses (dsd_rtl_input_spec_apply()), so the start refuses the
+   input rather than open another dongle. */
+static void
+format_rtl_device_field(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    if (cfg->rtl_serial_invalid
+        || dsd_rtl_device_field_format(cfg->rtl_device < 0 ? 0 : cfg->rtl_device, cfg->rtl_serial, out, out_size)
+               != 0) {
+        DSD_SNPRINTF(out, out_size, "%s", "serial=");
+    }
+}
+
 static int
 format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
     if (!cfg->rtl_freq[0]) {
@@ -1499,7 +1549,9 @@ format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* o
     char sql[16];
     int vol = 0;
     resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, sql, sizeof sql, &vol);
-    DSD_SNPRINTF(out, out_size, "rtl:%d:%s:%d:%d:%d:%s:%d", cfg->rtl_device, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    char dev[DSD_RTL_SERIAL_MAX + 8];
+    format_rtl_device_field(cfg, dev, sizeof dev);
+    DSD_SNPRINTF(out, out_size, "rtl:%s:%s:%d:%d:%d:%s:%d", dev, cfg->rtl_freq, gain, ppm, bw, sql, vol);
     return 0;
 }
 

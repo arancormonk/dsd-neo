@@ -29,6 +29,7 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
 
 #include <float.h>
 #include <stddef.h>
@@ -284,6 +285,30 @@ submit_string_opt(const api_command_desc* d, const dsd_json_node* params, uint64
         return dsd_app_command_action(d->cmd_id);
     }
     return submit_string(d, params, request_id);
+}
+
+/* rtl_set_dev: {value:<index>} as before, or {serial:"<sn>"}, exactly one of them. A serial goes as RTL_SET_DEV_SERIAL,
+   a serial even when it is all digits ("1090"); one the rule refuses (dsd_rtl_serial_is_valid()) or longer than
+   DSD_RTL_SERIAL_MAX is invalid, never cut. */
+static int
+submit_rtl_device(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)request_id;
+    const dsd_json_node* serial = dsd_json_obj_get(params, "serial");
+    if ((serial == NULL) == (dsd_json_obj_get(params, "value") == NULL)) {
+        return API_INVALID_PARAMS;
+    }
+    if (serial == NULL) {
+        int64_t v = 0;
+        if (param_i64(params, "value", 0, INT32_MAX, &v) != 0) {
+            return API_INVALID_PARAMS;
+        }
+        return dsd_app_command_set_i32(d->cmd_id, (int32_t)v);
+    }
+    const char* sn = dsd_json_as_str_bounded(serial, (size_t)DSD_RTL_SERIAL_MAX + 1U);
+    if (sn == NULL || !dsd_rtl_serial_is_valid(sn)) {
+        return API_INVALID_PARAMS;
+    }
+    return dsd_app_command_set_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, sn);
 }
 
 static int
@@ -1099,7 +1124,7 @@ static const api_command_desc k_commands[] = {
 
     API_ACTION("rtl_enable_input", DSD_APP_CMD_RTL_ENABLE_INPUT),
     API_ACTION("rtl_restart", DSD_APP_CMD_RTL_RESTART),
-    API_I32_RANGE("rtl_set_dev", DSD_APP_CMD_RTL_SET_DEV, 0, INT32_MAX, "{value:device index}"),
+    API_KIND("rtl_set_dev", DSD_APP_CMD_RTL_SET_DEV, submit_rtl_device, "{value:device index}|{serial:USB serial}"),
     API_U32("rtl_set_freq", DSD_APP_CMD_RTL_SET_FREQ, "{value:Hz}"),
     API_I32("rtl_set_gain", DSD_APP_CMD_RTL_SET_GAIN, "{value:int}"),
     API_I32("rtl_set_ppm", DSD_APP_CMD_RTL_SET_PPM, "{value:int}"),

@@ -60,6 +60,7 @@ Example:
 [input]
 source = "rtl"              # pulse / rtl / rtltcp / soapy / airspy / file / tcp / udp / iqtcp / iqudp
 rtl_device = 0
+# rtl_serial = "00000001"   # or name the dongle by its USB serial; wins over rtl_device
 rtl_freq = "851.375M"       # supports K/M/G suffix or raw Hz
 
 [output]
@@ -366,7 +367,8 @@ the session; they never write the process environment.
 | `source` | ENUM | Input source type (`pulse|rtl|rtltcp|soapy|airspy|file|tcp|udp|iqtcp|iqudp`) | `pulse` |
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
-| `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
+| `rtl_device` | INT (0-255) | RTL-SDR device index. Indexes follow USB enumeration and can change between boots; `rtl_serial` names a dongle that keeps its place | `0` |
+| `rtl_serial` | STRING | The RTL-SDR's USB serial, exactly as `dsd-neo --rtl-list` shows it (case and spaces count; no prefix match). It wins over `rtl_device` and builds the spec `rtl:serial=<sn>:...`, so a serial of digits (`1090`) stays a serial. Up to 127 printable characters with no `:` or `"` and no space at either end; always quote it (`rtl_serial = "00000001"`), since `#` and `;` outside quotes start a comment. A serial outside that rule is refused, never cut or trimmed: the load warns, `--validate-config` reports an error, a live apply is refused, and the RTL-SDR input does not start (it never opens `rtl_device`'s index instead); a save of such a config writes `rtl_serial = ":"`, which stays refused until it names the dongle. A save of a session writes the serial when the running spec names one, else `rtl_device`. Like the other `[input]` keys it builds the input only with `rtl_freq` set. Under a running I/Q replay, a patch naming `rtl_device` alone selects that index and drops a retained serial, and one naming neither key keeps it | (empty) |
 | `rtl_freq` | FREQ | RTL-SDR frequency in Hz, or with a K/M/G suffix (`851.375M`). A number without a suffix is Hz, as in `-i`: the terminal `Frequency...` prompt's MHz rule does not apply here. A value of 64 characters or more is refused with a warning (`too long`) rather than cut, and the key keeps the value it had (unset unless an earlier line set it). Saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR tuner gain: `0` is automatic (the tuner's automatic gain where it has one, plus the RTL2832U's digital AGC unless `DSD_NEO_RTL_AGC=0`), `1`-`49` a manual gain in dB run at the nearest step the tuner has (over rtl_tcp, the nearest step of the server's tuner, or the gain as written when the server's tuner is not one librtlsdr lists gains for; see `docs/cli.md`). A save writes the configured gain (`0` when it is automatic), and a load applies it like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
@@ -714,6 +716,9 @@ Output format:
 # Range: 0 to 255
 # rtl_device = 0
 
+# RTL-SDR USB serial (exact, as --rtl-list shows it; wins over rtl_device; empty selects by index)
+# rtl_serial =
+
 # RTL-SDR frequency (supports K/M/G suffix)
 # Frequency (supports K/M/G suffix)
 # rtl_freq = "851.375M"
@@ -727,7 +732,9 @@ Output format:
 - **RTL-SDR (`source = "rtl"`)**: Uses the `rtl_*` keys for frequency,
   gain, PPM correction, bandwidth, squelch, monitor gain, and auto-PPM.
   Omitted values use sensible defaults. To switch the input to RTL at
-  startup, set at least `rtl_freq` (and optionally `rtl_device`).
+  startup, set at least `rtl_freq` (and optionally `rtl_device`, or
+  `rtl_serial`, which wins over it). A section with `rtl_serial` but no
+  `rtl_freq` builds no spec and leaves the input as it was.
   Digital RTL decode uses direct DSP output: FSK feeds centered discriminator
   samples into the sample-domain symbolizer, while CQPSK feeds symbol-rate
   samples.
@@ -746,7 +753,7 @@ Output format:
     so trunking and retune behavior remains unchanged.
   - Digital decode uses the same FSK discriminator and CQPSK symbol contracts as RTL USB, RTL-TCP, and IQ replay.
   - `rtl_volume` remains a monitor/direct-output gain key; it does not scale RTL-family digital decode samples.
-  - `rtl_device` and `rtltcp_*` endpoint keys are not used in Soapy mode.
+  - `rtl_device`, `rtl_serial` and `rtltcp_*` endpoint keys are not used in Soapy mode.
   - Set `rtl_freq` explicitly for predictable startup frequency with non-RTL radios.
   - If frequency resolves to `0`, radio startup fails with `Please specify a frequency.`
   - Verify Soapy install and plugin discovery with `SoapySDRUtil --info`.

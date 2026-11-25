@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/fp_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 #include <sndfile.h>
@@ -672,13 +673,19 @@ dsd_audio_enumerate_devices(dsd_audio_device* inputs, dsd_audio_device* outputs,
     return 0;
 }
 
+/* The input spec formatter the device prompt opens with logs through this; nothing here reads the log. */
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)level;
+    (void)format;
+}
+
 /* The RTL rows hand their prompt results to these; the rows themselves are what
  * is under test, so the callbacks only have to exist. */
 void
-cb_rtl_dev(void* u, int ok, int i) {
+cb_rtl_dev_text(void* u, const char* text) {
     (void)u;
-    (void)ok;
-    (void)i;
+    (void)text;
 }
 
 void
@@ -1741,6 +1748,28 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_str("rtl freq reopen keeps the text", g_prompt.prefill, "146,52");
     rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
     rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+
+    /* Device... opens a string prompt on the device the input names: an index, or a serial in the explicit serial=<sn>
+       form, so a serial of digits submitted again stays a serial; room for the longest serial with its prefix. */
+    reset_capture();
+    opts.rtl_dev_index = 3;
+    opts.rtl_dev_serial[0] = '\0';
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt title", g_prompt.title, "Device (index or serial)");
+    rc |= expect_str("rtl device prompt shows the index", g_prompt.prefill, "3");
+    rc |= expect_int("rtl device prompt cap", (int)g_prompt.cap, DSD_RTL_SERIAL_MAX + 9);
+    rc |= expect_int("rtl device prompt callback", g_prompt.str_cb == cb_rtl_dev_text, 1);
+    rc |= expect_int("rtl device prompt user", g_prompt.user == (void*)&ctx, 1);
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "1090");
+    reset_capture();
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt shows a serial explicitly", g_prompt.prefill, "serial=1090");
+    opts.rtl_dev_serial[0] = '\0';
+    opts.rtl_dev_index = 0;
+    reset_capture();
+    ui_open_rtl_device_prompt(&ctx, "A:B");
+    rc |= expect_str("rtl device reopen keeps the text", g_prompt.prefill, "A:B");
+    rc |= expect_str("rtl device reopen title", g_prompt.title, "Device (index or serial)");
 
     /* '=' (issue #671) opens the same empty prompt where the row is offered, deciding on the frame's published options
        (the menu's context, issue #672 B9). */

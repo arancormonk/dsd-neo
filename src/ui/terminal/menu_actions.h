@@ -202,6 +202,10 @@ struct UiCtx;
    goes to cb_rtl_freq_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too,
    so that callback links in every build. */
 void ui_open_freq_prompt(struct UiCtx* c, const char* prefill);
+/* The RTL-SDR device prompt, "Device (index or serial)", prefilled with prefill (NULL for none). Its answer goes to
+   cb_rtl_dev_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too, so that
+   callback links in every build. */
+void ui_open_rtl_device_prompt(struct UiCtx* c, const char* prefill);
 /* Input > Frequency...: the prompt, empty. On a radio input, or on any input but a replay with a rigctl peer. */
 void act_set_freq(void* v);
 /* The '=' key's opener for the prompt-only overlay (issue #671): the prompt where the row is offered, judged on the
