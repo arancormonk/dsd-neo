@@ -1121,7 +1121,7 @@ test_simplex_targets_queue_their_landing_chain(dsd_opts* opts, dsd_state* state)
             g_rtl_analog_prepare_calls = 0;
             DSD_MEMSET(&g_rtl_analog_prepared, 0, sizeof(g_rtl_analog_prepared));
             const int decoder_sps = dsd_opts_compute_sps_rate(opts, targets[i].rate, 48000);
-            assert(dsd_engine_scan_tune_to_freq(opts, state, 145500000 + (long)i * 25000, decoder_sps, NULL)
+            assert(dsd_engine_scan_tune_to_freq(opts, state, 145500000 + (long)i * 25000, decoder_sps, 1, NULL)
                    == DSD_TRUNK_TUNE_RESULT_OK);
             if (g_rtl_cqpsk_enable != targets[i].cqpsk || g_rtl_symbol_rate_hz != targets[i].rate
                 || g_rtl_symbol_levels != targets[i].levels || g_rtl_channel_profile != targets[i].profile
