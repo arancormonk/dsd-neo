@@ -211,7 +211,8 @@ typedef struct {
     double t_voice_m;   // Time of last voice activity
     double t_cc_sync_m; // Time of last CC sync
     /* The followed grant's own media (voice for a voice grant, data for a data grant) was heard on its slot since the
-       follow: from then on its acquisition no longer holds that slot in the busy view. */
+       follow, or a P_CLEAR of that slot ended its acquisition: from then on its acquisition no longer holds that slot
+       in the busy view. */
     int vc_media_heard;
 
     /* CC probes do not replace the confirmed/configured return destination.
@@ -519,8 +520,9 @@ dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, cons
  * refuses a grant before submitting it (a call-type switch, data following off, the talkgroup policy) still hands it
  * here. One for the followed slot of the followed carrier (its explicit frequency, or its LPCN's mapping only where
  * that mapping is trusted) that names another call than the slot is followed for
- * (another target, address class or media; a repeat of the followed grant or of the call the slot names, whatever its
- * caller, is the same call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
+ * (another target, address class or media; a repeat of the followed grant or of the call the slot names is the same
+ * call: for a group call whatever its caller, for a private call the same two parties in either order, so a grant from
+ * a third radio to the same target is another call; a channel status never is another) ends that assignment: its call ends and the receiver stays only for a companion slot whose call still holds the carrier, else it returns to
  * the control channel (retried at the next tick when the tuner refuses the return). Anything else changes nothing.
  * An event of an origin dmr_sm_origin_e does not list changes nothing (0).
  * Returns 1 when the grant ended the assignment: it is not followed itself (its repeat is). Called inside the grant's

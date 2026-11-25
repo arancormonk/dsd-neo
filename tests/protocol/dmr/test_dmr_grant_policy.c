@@ -508,9 +508,9 @@ test_receive_csbk_tuned_carrier_window(dsd_opts* opts, dsd_state* state) {
 }
 
 /* Issue #637: with every receive filter off a voice channel whose colour code differs from its control channel's keeps
-   its grant's call. The tune forgets the published code (dsd_engine_forget_carrier_code_values()), so the voice sync
-   that precedes the channel's first EMB seeds the call with no identity, and the channel's code then names it rather
-   than ending it as a changed service. */
+   its grant's call. The tune forgets the published code (dsd_engine_forget_carrier_code_values()), so the first voice
+   sync with accepted voice seeds the call with no identity, and the channel's code then names it rather than ending it
+   as a changed service. A sync alone, before the burst's voice is accepted, publishes nothing (issue #903). */
 static int
 test_receive_vc_code_differs_from_cc(dsd_opts* opts, dsd_state* state) {
     init_env(opts, state);
@@ -525,7 +525,12 @@ test_receive_vc_code_differs_from_cc(dsd_opts* opts, dsd_state* state) {
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     dmr_sm_emit_voice_sync(opts, state, 0);
     dsd_call_snapshot call;
-    rc |= expect_true("the first voice sync opens the grant's call with no identity",
+    rc |= expect_true("a voice sync with no accepted voice opens no call",
+                      dsd_call_state_get(state, 0, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    rc |= expect_true("the first voice sync with accepted voice opens the grant's call with no identity",
                       dsd_call_state_get(state, 0, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
                           && call.ota_target_id == 100U && !call.receive_identity.known);
     state->dmr_color_code = 7U;

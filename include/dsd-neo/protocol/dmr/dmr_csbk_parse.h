@@ -41,8 +41,10 @@ struct dmr_csbk_result {
     uint32_t target;
     uint32_t source;
 
-    /* The frequency in Hz the grant states on air, 0 when it states none: a logical grant's LPCN is resolved, and its
-       mapping trusted or not, by the trunk state machine (never looked up here). */
+    /* The frequency in Hz the trunk state machine may use directly: the one an absolute grant states on air, or the
+       user's entry for the grant's LPCN (dmr_t3_overlay_resolve(), discussion #900), which also replaces an absolute
+       grant's frequency. 0 leaves the LPCN's channel-map resolution and its trust check (lpcn_is_trusted()) to the
+       machine; the CSBK layer never hands it a map lookup of its own. */
     long freq_hz;
 
     /* The grant's classification (group or private, data or voice; dmr_t3_grant_classify()) and talkgroup policy

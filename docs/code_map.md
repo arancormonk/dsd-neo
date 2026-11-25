@@ -14339,11 +14339,13 @@ Private per-protocol modules worth knowing about:
   (`dmr_cspdu_shape`: continuations, header and first continuation CSBKO, that continuation's LB, and whether its
   bursts prove scan activity) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before scan activity,
   the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
-  absolute-parameter opcode (C_BCAST, the grants and C_MOVE whatever the FID; P_CLEAR only under FID 0, since another
-  feature set's opcode 46 is the manufacturer's and keeps the legacy carrier-wide release) whose continuation is not
+  absolute-parameter opcode (C_BCAST and the grants whatever the FID; P_CLEAR and C_MOVE only under FID 0, since another
+  feature set's opcode 46 or 57 is the manufacturer's, opcode 46 keeping the legacy carrier-wide release,
+  `dmr_cspdu_appends_abs_params()`) whose continuation is not
   exactly one last block carrying its header's CSBKO; a standard (FID 0) C_BCAST single block whose LB is 0 (Table
   7.20; checked before the protect flag, a manufacturer's flags being its own); a grant, standard P_CLEAR or C_MOVE
-  naming anything but 0xFFF as an MBC (a logical channel 1..4094, or a P_CLEAR's 0, the last confirmed TSCC), which
+  naming anything but 0xFFF as an MBC (a logical channel 1..4094, or a P_CLEAR's 0, the last confirmed TSCC; P_CLEAR and
+  C_MOVE under FID 0 only), which
   the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block Ann_WD_TSCC naming 0xFFF as
   BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Vote_Now or Adjacent_Site MBC whose channel is not
   0xFFF (§7.2.19.3.0(b)); a Chan_Freq whose header CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
@@ -14445,14 +14447,23 @@ Private per-protocol modules worth knowing about:
 - DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
-  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call (`vc_tg`,
-  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's accepted on
-  the followed slot since, even one whose call a checked LC had named already). Those addresses stay valid
-  (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still cleared by
-  either party; only a new follow, a status follow or a release drops them. Otherwise it prints "not for the followed
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call's addresses
+  (`vc_clear_target`, `vc_clear_source`, `vc_clear_is_group`, with `vc_slot`: the followed grant's, or those of the
+  latest grant accepted on the followed slot since, a repeat of the followed grant included, and one whose call a
+  checked LC had named already; such a grant changes the clear's addresses and the followed channel's provenance,
+  never the grant identity `vc_tg`/`vc_dst`/`vc_src` a later grant for the slot is compared with). Those addresses
+  stay valid (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still
+  cleared by either party; only a new follow, a status follow or a release drops them, and a companion adopted for a
+  retired slot (`dmr_sm_end_changed_assignment()`) takes the addresses of the grant that named its call on the carrier,
+  or none (`dmr_sm_adopt_companion_clear_addresses()`, `test_p_clear_after_companion_adoption()`). Otherwise it prints "not for the followed
   call" ("no followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or
   release. Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy
-  companion slot keeps the carrier. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
+  companion slot keeps the carrier, zero hangtime included. Its slot release (`dmr_sm_release_slot()`) also retires
+  what would name a later transmission on that slot: its record, Capacity Plus seed and status-acquisition bit, and on
+  the followed slot the followed grant's pending publication and its acquisition, so a clear before the grant's first
+  voice leaves no acquisition holding the slot and the next anonymous voice there is not published as the cleared
+  grant's call (`test_p_clear_before_first_voice_retires_the_grant()`); the companion's call, activity and hangtime
+  and mono playout are untouched. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
   followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
   call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
   followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Decided limit
@@ -14577,7 +14588,8 @@ Private per-protocol modules worth knowing about:
     for the followed slot of the followed carrier that names another call than the slot is followed for
     (`dmr_sm_grant_replaces_followed()`: another media, a data grant for a slot followed for voice or the reverse; or,
     where the slot's record or the followed grant names a call, another target or address class than both, a repeat of
-    either being the same call whatever its caller; a grant naming the call the slot's record names is checked first,
+    either being the same call: a group call whatever its caller, a private call only as the same two parties in
+    either order, so a private grant from a third radio to the same target ends the assignment; a grant naming the call the slot's record names is checked first,
     so a voice call a checked LC opened on a slot followed for data survives its voice grant's repeat,
     `test_con_plus_voice_grant_repeat_keeps_lc_call()`) ends that assignment before any admission, whether the receiver
     would follow it or not: the Tier III and Connect Plus CSBK layers hand every decoded grant (Connect Plus: its voice
@@ -14615,7 +14627,9 @@ Private per-protocol modules worth knowing about:
     the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
     next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own
     tune, acquisition window, channel, CRC provenance, record and call (a new transmission, whatever its parties). The
-    voice sync publishes the followed grant's identity only into a call that names nothing yet
+    voice sync publishes the followed grant's identity only when its burst supplied accepted voice (a sync the
+    confidence gate has not corroborated, as `dmrBSBootstrap()` emits it first, publishes nothing and leaves the
+    publication pending, `test_unaccepted_sync_publishes_no_grant()`), and only into a call that names nothing yet
     (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
     grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
     splitting that call. Nor does it publish over a checked LC bound to the slot's active call
@@ -14832,9 +14846,10 @@ Private per-protocol modules worth knowing about:
     a held call of unknown identity (a Cap+ private LSN, an XPT private call, late entry before the LC) yields only to
     Hold; a followed Connect Plus data call is held as any followed call is (Hold, or a preempt past its dwell, takes
     the receiver from it inside the window, `test_con_plus_policy_before_window()`); the ranking covers one status
-    message (one XPT bank); a Connect Plus slot termination and a P_CLEAR release the whole carrier
-    (`dmr_sm_emit_release(opts, state, -1)`), a followed Connect Plus data call included, so with zero hangtime a live
-    call on the other slot is dropped. Tests: `DMR_PREEMPT`, `DMR_GRANT_POLICY`, `DMR_CSBK_HELPERS`,
+    message (one XPT bank); a Connect Plus slot termination, the synthesized lockout clear and another feature set's
+    opcode 46 release the whole carrier (`dmr_sm_emit_release(opts, state, -1)`), a followed Connect Plus data call
+    included, so with zero hangtime a live call on the other slot is dropped. A standard (FID 0) P_CLEAR matching the
+    followed call (P_CLEAR addressing above) releases its slot alone and can leave the receiver on the companion. Tests: `DMR_PREEMPT`, `DMR_GRANT_POLICY`, `DMR_CSBK_HELPERS`,
     `DMR_FLCO_PRIVACY_MODES`, `APP_COMMAND_QUEUE`.
 - P25 preemption (`p25_trunk_sm.c`, `p25p2_vpdu.c`, `p25_lcw.c`). While the SM holds a voice channel, grants and
   updates for another carrier that the voice channel carries (Phase 2 FACCH/SACCH MAC grants, Phase 1 LC `0x42`,

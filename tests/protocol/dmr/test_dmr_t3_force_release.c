@@ -419,6 +419,10 @@ test_p_clear_private_data_grant_is_not_voice_repeat(void) {
     dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 2002, /*src*/ 1001);
     dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 1001, /*src*/ 2002);
     assert(ctx->vc_src == 1001 && ctx->vc_dst == 2002 && ctx->vc_data_call == 0);
+    assert(opts.trunk_is_tuned == 1);
+    // A private voice grant from a third radio to the same target is another call: it ends the assignment.
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 2002, /*src*/ 3003);
+    assert(opts.trunk_is_tuned == 0);
 }
 
 /* An in-place grant for the call a checked LC already named on the followed slot renames the followed call for a clear
@@ -465,6 +469,95 @@ test_p_clear_in_place_grant_matching_slot_lc(void) {
         send_pclear(0U, 0U, 0U, party == 0 ? 2002U : 3003U);
         assert(opts.trunk_is_tuned == 0);
     }
+}
+
+/* A grant for another call on the followed TS1 retires it while TS2 carries a call, so the receiver stays for TS2.
+   Before any later grant there, a clear is matched to TS2's call: variant 0, a grant named it (TG 700), so a clear for
+   TS1's retired TG 300 changes nothing on TS2 and one for TG 700 applies; variant 1, nothing named it, so no addressed
+   clear matches until a grant does. */
+static void
+test_p_clear_after_companion_adoption(void) {
+    for (int variant = 0; variant < 2; variant++) {
+        init_env();
+        dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 300, /*src*/ 30);
+        observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 300U, 30U);
+        accepted_voice_sync(0U);
+        if (variant == 0) {
+            dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 1, /*tg*/ 700, /*src*/ 70);
+        }
+        observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 700U, 70U);
+        accepted_voice_sync(1U);
+        dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 400, /*src*/ 40);
+        const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 1);
+        state.dmrburstL = 9;
+        state.dmrburstR = 16;
+        send_pclear(1U, 0U, 1U, 300U); // the retired slot's talkgroup
+        assert(opts.trunk_is_tuned == 1 && state.dmrburstR == 16 && ctx->slots[1].voice_active == 1);
+        send_pclear(1U, 0U, 1U, 700U);
+        if (variant == 0) {
+            assert(state.dmrburstR == 9 && ctx->slots[1].voice_active == 0);
+        } else {
+            assert(ctx->vc_addresses_known == 0 && state.dmrburstR == 16 && ctx->slots[1].voice_active == 1);
+        }
+    }
+}
+
+/* Follow TG 1234, accept an in-place grant for TG 5678 a checked LC names on the slot, then a repeat of the TG 1234
+   grant: the latest accepted grant is the call a clear is matched to, so a stale clear for TG 5678 changes nothing and
+   one for TG 1234 applies. */
+static void
+test_p_clear_follows_a_repeated_grant(void) {
+    follow_group_ts1();
+    observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 5678, /*src*/ 51);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->vc_clear_target == 5678U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_clear_target == 1234U);
+    send_pclear(0U, 0U, 1U, 5678U); // stale
+    assert(opts.trunk_is_tuned == 1);
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 0);
+}
+
+/* A clear of the followed TS1 before its first voice, while TS2 carries a call, forces nothing: the receiver stays for
+   TS2. It retires TS1's pending grant all the same: the grant no longer counts as acquiring the slot, and the next
+   voice there (its header missed) is a new transmission the cleared grant does not name. */
+static void
+test_p_clear_before_first_voice_retires_the_grant(void) {
+    init_env();
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    accepted_voice_sync(1U);
+    state.dmrburstL = 9;
+    state.dmrburstR = 16;
+    send_pclear(0U, 0U, 1U, 1234U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(opts.trunk_is_tuned == 1 && ctx->slots[1].voice_active == 1 && ctx->vc_slot == 0);
+    assert(ctx->vc_identity_published == 1 && ctx->vc_media_heard == 1);
+    dmr_sm_busy_view_t view;
+    (void)dmr_sm_describe_held_calls(dmr_sm_get_ctx(), &opts, &state, dsd_decode_now_mono_s(), &view);
+    assert(view.held && view.members == 0x2);
+    accepted_voice_sync(0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0 || call.ota_target_id != 1234U);
+}
+
+/* A voice sync whose burst supplied no accepted voice (the confidence gate has not corroborated it) publishes nothing
+   and spends nothing; the first sync with accepted voice publishes the followed grant's call. */
+static void
+test_unaccepted_sync_publishes_no_grant(void) {
+    init_env();
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(dmr_sm_get_ctx()->vc_identity_published == 0);
+    accepted_voice_sync(0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == 1234U);
 }
 
 /* A private call's reverse leg (an embedded LC naming the other party as the talker) opens a new transmission on the
@@ -705,6 +798,10 @@ main(int argc, char** argv) {
     test_p_clear_private_data_grant_is_not_voice_repeat();
     test_p_clear_in_place_grant_matching_slot_lc();
     test_p_clear_private_reverse_leg();
+    test_p_clear_after_companion_adoption();
+    test_p_clear_follows_a_repeated_grant();
+    test_p_clear_before_first_voice_retires_the_grant();
+    test_unaccepted_sync_publishes_no_grant();
     test_p_clear_mono_stays_on_followed_slot();
     test_p_clear_named_tscc_becomes_candidate();
     test_p_clear_tscc_uses_the_users_channels();

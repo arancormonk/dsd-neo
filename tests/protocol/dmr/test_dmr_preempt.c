@@ -1491,11 +1491,10 @@ test_xpt_status_refreshes_lc_channel(dsd_opts* opts, dsd_state* st) {
 }
 
 /* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
-   absolute grant (CdefParms CHAN 0) names that call in place on the same frequency. It is the call a P_CLEAR is matched
-   to now (vc_clear_*), but it leaves the grant identity, which a later grant for the slot is compared with
-   (dmr_sm_grant_replaces_followed(), issue #903), as it was: the followed grant's, its channel and its RAS mark. The LC's
-   call is not renamed by the grant (it holds the slot's call) and takes the carrier's channel with that RAS mark, never
-   as verified; so does a companion LC's. */
+   absolute grant (CdefParms CHAN 0) confirms that call in place on the same frequency. The followed call reads verified
+   now, and its channel is unknown (the grant named none): neither the followed slot's call nor a companion LC's
+   publishes the RAS grant's channel. The grant is the call a P_CLEAR is matched to (vc_clear_*), while the grant
+   identity a later grant for the slot is compared with stays the followed grant's (issue #903). */
 static int
 test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
@@ -1511,23 +1510,21 @@ test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
     ev.slot = 0;
     rc |= expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
-    rc |=
-        expect_true("the clear's addresses are the grant's", sm()->vc_clear_target == 200U && sm()->vc_clear_is_group);
-    rc |= expect_true("the grant identity, its channel and RAS mark stay",
-                      sm()->vc_tg == 100 && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED
-                          && sm()->vc_lpcn == (int)LPCN_A);
+    rc |= expect_true("the followed call reads verified, its channel unknown",
+                      sm()->vc_clear_target == 200U && sm()->vc_crc_flags == 0U && sm()->vc_lpcn == 0
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE);
+    rc |= expect_true("the grant identity a later grant is compared with stays", sm()->vc_tg == 100);
     voice(opts, st, 0);
     dsd_call_snapshot call;
-    rc |= expect_true("the followed slot's call stays the LC's, with the carrier's channel unverified",
-                      dsd_call_state_get(st, 0U, &call) > 0 && call.policy_target_id == 200U && call.channel == LPCN_A
-                          && (call.crc_invalid & (uint8_t)DSD_CRC_RAS_UNVERIFIED) != 0U);
+    rc |= expect_true("the followed slot's call publishes no channel",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.policy_target_id == 200U && call.channel == 0U);
     clock_at(0.4);
     canonical_call_begins(st, 1, 300U, 3U);
     dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 300U, 3U);
+    rc |= expect_true("the companion LC inherits no channel", sm()->slots[1].channel == 0);
     voice(opts, st, 1);
-    rc |= expect_true("the companion call takes the carrier's channel unverified",
-                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == LPCN_A
-                          && (call.crc_invalid & (uint8_t)DSD_CRC_RAS_UNVERIFIED) != 0U);
+    rc |= expect_true("the companion call publishes no channel",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == 0U);
     return rc;
 }
 
