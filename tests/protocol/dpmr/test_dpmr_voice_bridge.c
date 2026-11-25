@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1743,6 +1744,44 @@ bridge_play(dsd_opts* opts, dsd_state* state, const bridge_frame* frame) {
     dpmr_play_voice_frames(opts, state, ambe_fr);
 }
 
+/* Issue #903: the place a frame whose halves both fail takes in its superframe's Scramble is the cadence's, so it holds
+   only while the frames run on. Checked frames 2/3 then, on time, a failed pair: frames 0/1, from the key. Checked
+   frames 2/3, then a gap of one FS2 (frames 0/1 missed) with no carrier reset: the next failed pair is not placed (it
+   runs on from the register as the last half left it), while the transmission's scrambling and mode stay. */
+static int
+test_frame_gap_forgets_the_scrambler_place(void) {
+    const unsigned long long key = 0x12345ULL;
+    const bridge_frame frames23 = {.crc = {1U, 1U}, .fn = {2U, 3U}, .mode = {0U, 0U}, .version = {3U, 3U}};
+    const bridge_frame failed = {.crc = {0U, 0U}, .fn = {2U, 3U}, .mode = {2U, 2U}, .version = {0U, 0U}};
+    int rc = 0;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int gap = 0; gap <= 1; gap++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        reset_capture();
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->R = key;
+        dpmr_confirm_note_frame_start(state, 1000U);
+        bridge_play(opts, state, &frames23);
+        rc |= expect_int("checked frames 2 and 3 play", (int)g_mbe_calls, 8);
+        const uint32_t next = 1000U + DPMR_CONFIRM_FRAME_SYMBOLS * (gap ? 2U : 1U);
+        dpmr_confirm_note_frame_start(state, next);
+        rc |= expect_int(gap ? "a gap forgets the place" : "an on-time frame keeps the place",
+                         (int)state->dpmr_scramble_place, gap ? 0 : 1);
+        rc |= expect_int("the transmission's scrambling stays", (int)state->dpmr_scrambled, 2);
+        rc |= expect_int("the transmission's mode stays", (int)state->dpmr_mode, 1);
+        const unsigned long long before = state->nxdn_payload_mi;
+        reset_capture();
+        bridge_play(opts, state, &failed);
+        rc |= expect_int("the failed pair plays by the transmission's checked mode", (int)g_mbe_calls, 8);
+        rc |= expect_u64(gap ? "after a gap the failed pair runs on from the register"
+                             : "on time the failed pair is frames 0/1, from the key",
+                         g_mbe_mi[0], gap ? before : scramble_register_at(key, 0));
+    }
+    return rc;
+}
+
 /* Issue #890: a half the bridge does not play keeps its place in the Scramble (four AMBE frames of 49 bits a half,
    frame 0 of each superframe from the key), so the next half played descrambles in phase. In a keyed Voice and
    attached data call (M = 101, TS 102 658 5.5.7, 11.1.1 Figure 11.3) consecutive payload frames carry speech; a frame
@@ -2033,6 +2072,7 @@ main(void) {
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
     rc |= test_attached_data_frames_are_no_voice();
     rc |= test_muted_halves_keep_the_scrambler_in_phase();
+    rc |= test_frame_gap_forgets_the_scrambler_place();
     rc |= test_unconfirmed_frame_keeps_the_scrambler_in_phase();
     rc |= test_impossible_half_numbers_keep_the_tracked_place();
     rc |= test_unconfirmed_frame_leaves_nxdn_crypto_alone();
