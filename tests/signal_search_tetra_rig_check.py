@@ -198,6 +198,11 @@ class LoopedTransmitter:
             return None
         return math.floor(t / self.seconds) * self.seconds
 
+    def playing_at(self, t):
+        """The start of the content the scene plays at scene time t (Scene.block() asks this since issue #834's
+        follow-up): call_at(), as the content has no silent lead; a subclass's call_at() decides it too."""
+        return self.call_at(t)
+
     def at_rate(self, rate):
         """One loop of the content at @p rate, as long as call_at()'s period there, followed by the start of the next:
         Scene.block() reads a whole block from where call_at() says the block starts, so a block that crosses the end
