@@ -1430,6 +1430,15 @@ test_rtl_and_soapy_input_source_rendering(void) {
                           "| Auto PPM: Off\n"
                           "| External RTL Tuning on UDP: 127.0.0.1:5555\n");
 
+    /* An RTL-SDR chosen by USB serial names its serial (the index it resolved to can change between boots) on a row of
+       its own, as an Airspy does: at 80 columns the readings keep their room and the frequency stays on the row. */
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof(opts.rtl_dev_serial), "%s", "00000001");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_starts_with("| RTL: SN 00000001;\n"
+                               "| G:  21dB; PPM:   -7; Mon: 3X; DSP-BW: 24 kHz; FRQ:  851.012500 MHz;\n");
+    opts.rtl_dev_serial[0] = '\0';
+
     /* Issue #575: an I/Q replay's recorded RETUNEs leave rtlsdr_center_freq on the capture's opening centre; the field
      * reads the centre the samples being decoded were captured on, and the tuned centre again once there is none. */
     DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "iqreplay:capture.iq.json");

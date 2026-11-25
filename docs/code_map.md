@@ -18196,6 +18196,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     already past the answer, shared targets counted once), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
     (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
     key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+  - RTL-SDR device prompt: `ui_open_rtl_device_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO` too)
+    opens `Device (index or serial)` with capacity `DSD_RTL_SERIAL_MAX + 9` (room for `serial=` and the longest
+    serial, so a longer paste is refused, never read as another serial). The `rtl.dev` row (`Device...`,
+    `rtl_set_dev()`) prefills it with the input's own device field (`dsd_rtl_device_field_format()`: the index, or
+    `serial=<sn>`, so a serial of digits submitted again stays a serial). `cb_rtl_dev_text()` reads the answer with
+    `dsd_rtl_device_field_parse()`: an index posts `RTL_SET_DEV`, a serial `RTL_SET_DEV_SERIAL`, empty cancels, and
+    a refusal puts `Enter an index like 0 or a serial like 00000001` in the status and reopens the prompt with the text.
+    The I/O pane names a serial-chosen dongle on its identity row (`| RTL: SN <serial>;`, `ui_render_radio_identity_row()`).
+    Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -18480,7 +18489,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
   - Radio input names and tuner rows (issue #743, B5): `lbl_current_input()` names a radio input by its kind through
     the app-control radio-source view (`include/dsd-neo/app_control/radio_source_view.h`,
-    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N`, `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
+    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N` (`RTL-SDR SN <serial>` when the input names its dongle by
+    USB serial), `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
     `I/Q replay FILE`, `I/Q stream H:P (cs16, 240 kHz)` / `I/Q stream UDP :P (...)` (`dsd_app_iq_stream_describe()`; a
     host too long for the label is cut and marked so the samples stay), where rtl_tcp, Airspy and a replay all read
     `RTL-SDR dev N`. Switch source's radio row (`lbl_src_rtl()`) names the input it opens

@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
 #include <stdint.h>
@@ -1011,14 +1012,23 @@ cb_input_vol(void* u, int ok, int m) {
 // ---- RTL callbacks ----
 
 void
-cb_rtl_dev(void* u, int ok, int i) {
-    const UiCtx* c = mutable_ui_ctx_from_callback(u);
-    if (!c) {
+cb_rtl_dev_text(void* u, const char* text) {
+    UiCtx* c = mutable_ui_ctx_from_callback(u);
+    if (!c || !text) {
         return;
     }
-    if (ok) {
-        int32_t v = i;
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_DEV, v);
+    int index = 0;
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    switch (dsd_rtl_device_field_parse(text, &index, serial, sizeof serial)) {
+        case DSD_RTL_DEV_EMPTY: return;
+        case DSD_RTL_DEV_INDEX: (void)dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_DEV, index); return;
+        case DSD_RTL_DEV_SERIAL: (void)dsd_app_command_set_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, serial); return;
+        case DSD_RTL_DEV_INVALID:
+        default:
+            /* The prompt shows the status in its own rows, next to the text it refers to (as the frequency's). */
+            ui_statusf("Enter an index like 0 or a serial like 00000001");
+            ui_open_rtl_device_prompt(c, text);
+            return;
     }
 }
 

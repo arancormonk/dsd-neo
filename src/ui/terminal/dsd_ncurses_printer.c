@@ -665,7 +665,8 @@ ui_row_iq_stream_identity(ui_row* row, const dsd_opts* opts) {
 }
 
 /* A radio input named on a row of its own, ahead of its readings (issue #669; #743 B5): an Airspy's serial and rate,
-   an rtl_tcp server, an I/Q replay's file and an I/Q stream, whose names leave the readings no room at 80 columns.
+   an rtl_tcp server, an I/Q replay's file, an I/Q stream and an RTL-SDR chosen by USB serial, whose names leave the
+   readings no room at 80 columns.
    Returns 1 when it drew one: the readings row then starts with its own border. */
 static int
 ui_render_radio_identity_row(const dsd_opts* opts) {
@@ -689,6 +690,9 @@ ui_render_radio_identity_row(const dsd_opts* opts) {
         }
     } else if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
         ui_row_field(&row, "| rtl_tcp: %s:%d;", opts->rtltcp_hostname, opts->rtltcp_portno);
+    } else if (opts->rtl_dev_serial[0] != '\0' && !ui_audio_in_is_soapy(opts)) {
+        /* An RTL-SDR chosen by USB serial: the serial, which stays when the index it opened at changes. */
+        ui_row_field(&row, "| RTL: SN %s;", opts->rtl_dev_serial);
     } else {
         return 0;
     }
