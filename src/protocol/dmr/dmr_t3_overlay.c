@@ -1,0 +1,176 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * The user's Tier III channels over the channel map (<dsd-neo/protocol/dmr/dmr_t3_channels.h>, discussion #900 F3):
+ * the edits a frontend sends (DSD_APP_CMD_DMR_CHANNEL_SET) and the --dmr-chan-overrides file. The overlay lives in the
+ * DMR state extension beside the origins (dmr_t3_channels_internal.h) and never writes the shared channel map.
+ */
+
+#include <dsd-neo/core/dmr_chan_overrides_csv.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/runtime/log.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "dmr_call_channel.h"
+#include "dmr_t3_channels_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+
+_Static_assert(DSD_DMR_CHAN_OVERRIDES_MAX_ROWS + 0 == DMR_T3_OVERLAY_MAX_ROWS + 0,
+               "the start-up file holds no more channels than the overlay");
+
+static int
+dmr_t3_overlay_args_valid(uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
+    if (!dmr_t3_lpcn_is_channel(lpcn)) {
+        return 0;
+    }
+    if (op == DMR_T3_OVERLAY_SET) {
+        return hz >= (long)DMR_T3_OVERLAY_MIN_HZ && hz <= (long)DMR_T3_OVERLAY_MAX_HZ;
+    }
+    return op == DMR_T3_OVERLAY_HIDE || op == DMR_T3_OVERLAY_RESTORE;
+}
+
+/* Whether the row is still the one the editor showed: the frequency DMR uses for it (the user's entry over the map, so
+   another writer of the shared row changes nothing an editor read), its origin, and the network it belonged to. */
+static int
+dmr_t3_overlay_expected(const dsd_state* state, uint16_t lpcn, long expected_hz, uint8_t expected_origin,
+                        uint32_t generation) {
+    return generation == dmr_t3_chan_generation(state) && expected_hz == dmr_t3_chan_effective_hz(state, lpcn)
+           && expected_origin == (uint8_t)dmr_t3_chan_origin(state, lpcn);
+}
+
+/* SET or HIDE @p l; returns 1 when it changed, 0 when it already was so, -1 for a new entry the overlay has no room
+   for. */
+static int
+dmr_t3_overlay_put(dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_op op, long hz) {
+    dmr_t3_overlay* o = &ext->overlay;
+    const long want_hz = op == DMR_T3_OVERLAY_SET ? hz : 0;
+    if (o->op[l] == (uint8_t)op && o->hz[l] == want_hz) {
+        return 0;
+    }
+    if (o->op[l] == 0U) {
+        if (o->count >= (uint16_t)DMR_T3_OVERLAY_MAX_ROWS) {
+            return -1; /* full: the caller refuses it */
+        }
+        o->count++;
+    }
+    o->op[l] = (uint8_t)op;
+    o->hz[l] = want_hz;
+    return 1;
+}
+
+/* Drop @p l's entry, so the shared map row under it decides again; returns whether there was one. */
+static int
+dmr_t3_overlay_drop(dmr_ext_t* ext, uint16_t l) {
+    dmr_t3_overlay* o = &ext->overlay;
+    if (o->op[l] == 0U) {
+        return 0;
+    }
+    o->op[l] = 0U;
+    o->hz[l] = 0;
+    o->count--;
+    return 1;
+}
+
+/* Make the edit of @p lpcn the overlay holds: SET or HIDE it (dmr_t3_overlay_put()), or RESTORE it
+   (dmr_t3_overlay_drop()). Returns 1 when it changed, 0 when nothing did, -1 for a new entry past the cap. */
+static int
+dmr_t3_overlay_change(dmr_ext_t* ext, uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
+    return op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(ext, lpcn) : dmr_t3_overlay_put(ext, lpcn, op, hz);
+}
+
+/* After the overlay changed: the revision moves, the ledger is reconciled and the heuristic estimates are redone. An
+   entry anchors nothing (the estimates go into the shared map), but its channel takes no estimate, so an entry made
+   or removed changes which gaps fill. */
+static void
+dmr_t3_overlay_settle(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
+    ext->revision++;
+    dmr_t3_missing_reconcile(state);
+    dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
+}
+
+dmr_t3_set_result
+dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_overlay_op op, long hz, long expected_hz,
+                     uint8_t expected_origin, uint32_t generation, int check) {
+    if (state == NULL || !dmr_t3_overlay_args_valid(lpcn, op, hz)) {
+        return DMR_T3_SET_INVALID;
+    }
+    if (opts != NULL && opts->trunk_scan_enabled == 1) {
+        return DMR_T3_SET_TRUNK_SCAN;
+    }
+    if (check && !dmr_t3_overlay_expected(state, lpcn, expected_hz, expected_origin, generation)) {
+        return DMR_T3_SET_STALE;
+    }
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return DMR_T3_SET_INVALID; /* out of memory: nothing could hold the entry */
+    }
+    const int changed = dmr_t3_overlay_change(ext, lpcn, op, hz);
+    if (changed < 0) {
+        return DMR_T3_SET_FULL;
+    }
+    if (changed > 0) {
+        dmr_t3_overlay_settle(opts, state, ext);
+    }
+    return DMR_T3_SET_OK;
+}
+
+typedef struct {
+    dmr_ext_t* ext;
+    int applied;
+    int changed;
+} dmr_t3_overlay_load_ctx;
+
+/* One row of the file: its entry only. The ledger and the estimates are settled once, after the last row. */
+static int
+dmr_t3_overlay_load_row(uint16_t lpcn, long hz, void* ctx) {
+    dmr_t3_overlay_load_ctx* c = (dmr_t3_overlay_load_ctx*)ctx;
+    const dmr_t3_overlay_op op = hz == 0 ? DMR_T3_OVERLAY_HIDE : DMR_T3_OVERLAY_SET;
+    if (!dmr_t3_overlay_args_valid(lpcn, op, hz)) {
+        return -1;
+    }
+    const int changed = dmr_t3_overlay_change(c->ext, lpcn, op, hz);
+    if (changed < 0) {
+        return -1;
+    }
+    if (changed > 0) {
+        c->ext->revision++;
+        c->changed = 1;
+    }
+    c->applied++;
+    return 0;
+}
+
+int
+dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (state == NULL || path == NULL || path[0] == '\0') {
+        return -1;
+    }
+    if (opts != NULL && opts->trunk_scan_enabled == 1) {
+        LOG_ERROR("--dmr-chan-overrides cannot be combined with --trunk-scan\n");
+        return -1;
+    }
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return -1; /* out of memory: nothing could hold the entries */
+    }
+    dmr_t3_overlay_load_ctx ctx = {ext, 0, 0};
+    const int taken = dsd_csv_dmr_chan_overrides_read(path, dmr_t3_overlay_load_row, &ctx);
+    /* The whole file is one change: the ledger reconciled and the estimates redone once, not per row (rows a failed
+       read already took included). */
+    if (ctx.changed) {
+        dmr_t3_missing_reconcile(state);
+        dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
+    }
+    if (taken < 0) {
+        return -1;
+    }
+    ext->overrides_applied = 1U;
+    LOG_INFO("NOTICE: Applied %d DMR Tier III channel entr%s from %s\n", ctx.applied, ctx.applied == 1 ? "y" : "ies",
+             path);
+    return ctx.applied;
+}

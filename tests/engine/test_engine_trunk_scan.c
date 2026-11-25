@@ -59,6 +59,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -2157,6 +2158,74 @@ test_dmr_channel_origins_restore_per_target(void) {
     return test_rc;
 }
 
+/* A DMR target's own channel map makes its DMR record when the target is built, as the -C map does at
+   start, so a checked grant for a mapped channel keeps its Tier III evidence on a fresh scan (the grant path allocates
+   no record), and the evidence goes and comes back with the target. */
+static int
+test_dmr_target_map_makes_the_record(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char chan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n14,452037500\n") != 0
+        || write_targets_file(dir,
+                              "a,dmr-trunk,452000000,chan.csv,250,,tier iii\n"
+                              "b,p25-trunk,851000000,,250,,\n",
+                              target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "target map record: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (!dmr_t3_chan_recorded(&state) || state.trunk_chan_map[14] != 452037500L
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: none for A's map (recorded %d, row %ld, origin %d)\n",
+                    dmr_t3_chan_recorded(&state), state.trunk_chan_map[14], (int)dmr_t3_chan_origin(&state, 14U));
+        test_rc = 1;
+    }
+    /* A checked grant for mapped channel 14, the first thing A's control channel sends. */
+    dmr_t3_note_tier3_if_recorded(&state, 1);
+    if (!dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: the grant's Tier III evidence was dropped\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_tier3_seen(&state)) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence leaked into B\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_t3_tier3_seen(&state)
+        || dmr_t3_chan_origin(&state, 14U) != DMR_CHAN_ORIGIN_FILE) {
+        DSD_FPRINTF(stderr, "target map record: A's Tier III evidence not restored\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
 /* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): what
    another target left there never reaches a P25 target, where channel 0x0000 (IDEN 0, channel 0) is checked against
    the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. */
@@ -2210,6 +2279,188 @@ test_chan_map_zero_per_target(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int g_dmr_missing_summaries;
+static char g_dmr_missing_summary[2][256];
+
+#ifdef USE_RADIO
+static void qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx);
+#endif
+
+/* The process's one log tap (dsd_neo_log_set_tap() installs only the first): it counts the DMR per-target exit
+   summaries here and, with radio support, the quiet check's lines (qt_count_notice()). */
+static void
+trunk_scan_test_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    if (text != NULL && strncmp(text, "NOTICE: DMR Tier III (", 22) == 0) {
+        if (g_dmr_missing_summaries < 2) {
+            DSD_SNPRINTF(g_dmr_missing_summary[g_dmr_missing_summaries], sizeof g_dmr_missing_summary[0], "%s", text);
+        }
+        g_dmr_missing_summaries++;
+    }
+#ifdef USE_RADIO
+    qt_count_notice(level, text, ctx);
+#else
+    (void)level;
+    (void)ctx;
+#endif
+}
+
+/* Whether the live ledger holds exactly LPCN @p lpcn. */
+static int
+dmr_missing_only(const dsd_state* state, uint16_t lpcn) {
+    static dmr_t3_missing_ledger l;
+    dmr_t3_missing_copy(state, &l);
+    return dmr_t3_missing_count(state) == 1U && l.detail_count == 1U && l.details[0].lpcn == lpcn
+           && ((l.missing[lpcn >> 3] >> (lpcn & 7U)) & 1U) != 0U;
+}
+
+/* Two DMR targets each record their own channel granted without a frequency (discussion #900 F1): A's 12 and B's 30
+   leave and come back with their target, never show on the other, and the exit summary names each target's own. */
+static int
+test_dmr_missing_ledger_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr missing: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    const dmr_t3_grant_class group = {1U, 0U, 2002U, 1001U};
+    dmr_t3_missing_note_grant(opts, state, 12U, &group, 0U, 0);
+    if (!dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A did not record LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_missing_count(state) != 0U) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+    dmr_t3_missing_note_grant(opts, state, 30U, &group, 1U, 1);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || !dmr_missing_only(state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's ledger not restored\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || !dmr_missing_only(state, 30U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target B's ledger not restored\n");
+        test_rc = 1;
+    }
+
+    g_dmr_missing_summaries = 0;
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (g_dmr_missing_summaries != 2 || strstr(g_dmr_missing_summary[0], "(a)") == NULL
+        || strstr(g_dmr_missing_summary[0], " 12") == NULL || strstr(g_dmr_missing_summary[1], "(b)") == NULL
+        || strstr(g_dmr_missing_summary[1], " 30 (unchecked)") == NULL) {
+        DSD_FPRINTF(stderr, "dmr missing: exit summaries %d [%s] [%s]\n", g_dmr_missing_summaries,
+                    g_dmr_missing_summary[0], g_dmr_missing_summary[1]);
+        test_rc = 1;
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Review Focus 3 (discussion #900 F3): the user's channels are the global map's and never a target's. A live edit is
+   refused under the scan, and even an overlay seeded on target A (unchecked, as no path under a scan can) is emptied
+   by the next target switch: it never shows on B, nor comes back with A. */
+static int
+test_dmr_overlay_never_crosses_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    /* A live edit is refused under the scan. */
+    if (dmr_t3_overlay_apply(opts, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
+        != DMR_T3_SET_TRUNK_SCAN) {
+        DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_chan_effective_hz(state, 12U) != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
+        test_rc = 1;
+    }
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_overlay_get(state, 12U, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -25865,7 +26116,7 @@ static void
 qt_notices_watch(int on) {
     g_qt_notices = 0;
     g_qt_notice[0] = '\0';
-    dsd_neo_log_set_tap(on ? qt_count_notice : NULL, NULL);
+    dsd_neo_log_set_tap(on ? trunk_scan_test_log_tap : NULL, NULL);
 }
 
 /* A pass that publishes the target on air measures it, and the tap finds it quiet: READY, handed back. */
@@ -29682,12 +29933,12 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* --- Issue #834 R6: the check says when and why it cannot check a visit, through the trunk scan's timing publication
  * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
-/* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
+/* Count the WARN lines from here (qt_count_notice(), through the process's one tap). */
 static void
 qt_warns_watch(void) {
     g_qt_warns = 0;
     g_qt_warn[0] = '\0';
-    dsd_neo_log_set_tap(qt_count_notice, NULL);
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
 }
 
 /* The quiet status and reason the timing publication carries. */
@@ -30452,6 +30703,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_target_map_makes_the_record);
+    rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_overlay_never_crosses_targets);
     rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
@@ -30859,6 +31113,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)state;
     (void)slot;
     (void)observation;
+    (void)notice;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
     (void)notice;
     return 0;
 }

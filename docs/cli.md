@@ -66,6 +66,8 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for
   that process. See `docs/config-system.md` for details.
+- `--profile` always takes the next argument as the profile name, whatever it starts with: `--profile --` names a
+  profile `[profile.--]` and does not end the options, so an option after it still applies.
 
 ## Inputs (`-i`)
 
@@ -2925,10 +2927,30 @@ channel is delayed.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
   the `2-2630` identifier-channel form printed after every P25 channel in the event history. Give `-C` once: a session
   uses one channel map, and a second `-C` is refused. To scan several files, give each its own `--trunk-scan` list.
+- Your DMR Tier III channels: `--dmr-chan-overrides <file>` (also `--dmr-chan-overrides=<file>`) — for DMR Tier III:
+  DMR uses these rows in place of the channel map's for those channels, and the channel map itself is not changed, so
+  P25, NXDN and the other trunking protocols, which share its channel numbers, never see them. One row per channel,
+  `lpcn,frequency_hz` in decimal (the channel number dsd-neo shows, 1..4094, and its frequency in Hz,
+  100000..2147483647), with an optional header line; a frequency of `0` hides the channel, so its calls are not
+  followed. The rows are applied before the first frame is decoded, and they stay in force when the map is imported
+  again, reloaded, cleared or refreshed from RadioReference. Nothing heard over the air replaces them. The file is
+  never written, and the channel map file is not changed. The command line only keeps the path; the file is opened at
+  start, and only by a session that applies it (below): there a file that does not exist or cannot be read stops the
+  start. A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows; a
+  channel given twice keeps its later row. The file names at most 256 channels; a row naming one more is skipped with
+  a warning. Given more than once, the last `--dmr-chan-overrides` is the one used: the Android and desktop app put a
+  saved system's own channels after every option the decoder reads (before a `--` that ends them), so they are used
+  over one named in the extra decoder arguments. The file is
+  applied only when the session decodes DMR frames and runs no trunk scan, judged after the
+  config file (its `[mode] decode`), `--profile` and the command line: a session that does not decode DMR, a run mode
+  that decodes no frames (MBE playback `-r`, M17 encoding, the M17 UDP/IP decoder `-fU`), or one that runs a trunk scan
+  (which has no global channel map) starts without it, logs one notice and never opens it, so a missing
+  file does not stop it. It has no INI key. Format and examples: [DMR Tier III](csv-formats.md#dmr-tier-iii) in
+  `docs/csv-formats.md`.
 - File paths: a path that does not fit is refused with "path is too long", never cut short to another file's name.
-  `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`, the `-Q` file name,
-  `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and `-o` (up to 1023) also
-  take device specs, so theirs is refused with "value is too long".
+  `-C`, `-G`, `--trunk-scan`, `--trunk-scan-off`, `--dmr-chan-overrides`, `-k`/`-K`, `-w`, `-6`, `-c`, `-J`, `-L`,
+  the `-Q` file name, `--frame-log`, `--wav-journal` and `--p25-sm-log` take up to 1023 bytes. `-i` (up to 2047) and
+  `-o` (up to 1023) also take device specs, so theirs is refused with "value is too long".
 - P25 band plan CSV: `--p25-bandplan <file>` — one row per band-plan identifier (base, spacing, type, offset,
   bandwidth, optional WACN/SYS) for sites that never broadcast `IDEN_UP`; rows yield to a real `IDEN_UP`. Format
   in `docs/csv-formats.md`, starter in `examples/p25_bandplan.csv`.

@@ -29,6 +29,7 @@
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
@@ -153,20 +154,36 @@ relative(const QString& path) {
 }
 
 /**
- * Whether @p name is a file the app generates under decryption/ or scan_lists/, written out here apart from the
- * apply's own rule: a compiled profile's key file, or a scan list's CSV.
+ * Whether @p name is a file the app generates under decryption/, scan_lists/ or dmr_channels/, written out here apart
+ * from the apply's own rule: a compiled profile's key file, a scan list's CSV, or a saved system's Tier III channels.
  */
 bool
 generated(const QString& name) {
     static const QRegularExpression pattern(QStringLiteral(
-        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"));
-    return pattern.match(name).hasMatch();
+        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"
+        "|^dmr_channels/[0-9a-f-]{36}\\.csv$"));
+    // '$' also matches before a final newline: the match must span the whole name.
+    const QRegularExpressionMatch match = pattern.match(name);
+    return match.hasMatch() && match.capturedLength() == name.size();
 }
 
-/** Files under decryption/ and scan_lists/ the app never generates, which every apply keeps byte-identical. */
+/** Files under decryption/, scan_lists/ and dmr_channels/ the app never generates, which every apply keeps
+ * byte-identical. On POSIX that includes a generated name with a newline after it, which a '$' alone would take for
+ * the generated one. */
 const char* const kUnknownBesideGenerated[] = {
-    "scan_lists/notes.txt", "scan_lists/sub dir/list.csv",  "scan_lists/Not a list.csv",
-    "decryption/stray.wav", "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+    "scan_lists/notes.txt",
+    "scan_lists/sub dir/list.csv",
+    "scan_lists/Not a list.csv",
+    "decryption/stray.wav",
+    "decryption/managed/notes.txt",
+    "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+    "dmr_channels/notes.txt",
+    "dmr_channels/not-a-uuid.csv",
+#ifndef _WIN32
+    "dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e70.csv\n",
+    "scan_lists/newline.csv\n",
+    "decryption/managed/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e70.hex.csv\n",
+#endif
 };
 
 QString
@@ -636,6 +653,9 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     expect("generated scan list file in its folder", write_file(at("scan_lists/old-uid/Old list.csv"), "id,type\n"));
     // The rule is the app's layout: any CSV in a uid-shaped folder of scan_lists/ is generated, a list behind it or not.
     expect("a CSV in a uid-shaped folder", write_file(at("scan_lists/sub/list.csv"), "id,type\n"));
+    // Discussion #900: a saved system's Tier III channels, written at each of its starts.
+    expect("generated Tier III channels file",
+           write_file(at("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv"), "lpcn,frequency_hz\n12,0\n"));
     // Beside what the app generates there, files it never does: someone else's, so every apply keeps them.
     for (const char* name : kUnknownBesideGenerated) {
         expect(QStringLiteral("unknown file %1").arg(QLatin1String(name)),
@@ -1204,10 +1224,11 @@ check_applied_content(const Backup& b, const Old& old) {
     for (const QString& name : got.files.keys()) {
         generatedLeft = generatedLeft || generated(name);
     }
-    expect("every generated file in decryption/ and scan_lists/ is gone", !generatedLeft);
+    expect("every generated file in decryption/, scan_lists/ and dmr_channels/ is gone", !generatedLeft);
     expect("what the app never generated there is kept, with its directories",
            read_file(at("scan_lists/notes.txt")) == "not generated: scan_lists/notes.txt\n"
                && read_file(at("decryption/managed/notes.txt")) == "not generated: decryption/managed/notes.txt\n"
+               && read_file(at("dmr_channels/notes.txt")) == "not generated: dmr_channels/notes.txt\n"
                && QFileInfo(at("scan_lists/sub dir")).isDir());
     expect("a directory that held only generated files goes", !QFileInfo::exists(at("decryption/old-only")));
     expect("a CSV in a uid-shaped scan_lists/ folder counts as generated and goes",
@@ -2311,6 +2332,40 @@ test_restore_place() {
 }
 
 /**
+ * Discussion #900 F3: a saved system's DMR Tier III channels go through the backup and its restore as they were saved
+ * (a hidden one included), and the restored model loads them; the system's channel map file stays its own field.
+ */
+void
+test_restore_dmr_channels() {
+    put_back(Tree());
+    const QVariantList channels{QVariantMap{{"lpcn", 12}, {"hz", 0}}, QVariantMap{{"lpcn", 40}, {"hz", 451137500}}};
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect("dmr channels: a Tier III system", systems.add({{"name", "Tier III"},
+                                                               {"sourceType", "usb"},
+                                                               {"decodeFlag", "-fs"},
+                                                               {"trunking", true},
+                                                               {"dmrChannels", channels}}));
+    }
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    const dsd_qt::backup::ParseResult parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("dmr channels: the backup builds and parses",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    const QJsonArray rows = parsed.stores.value("saved_systems.json");
+    expect("dmr channels: the backup carries them",
+           rows.size() == 1
+               && dsd_qt::SavedSystemsModel::validDmrChannels(rows.at(0).toObject().value("dmrChannels").toVariant())
+                      == channels);
+    const Tree tree = capture();
+    stage_over(parsed, built.archive, tree);
+    expect("dmr channels: applied", apply().outcome == ApplyOutcome::Applied);
+    dsd_qt::SavedSystemsModel restored;
+    expect("dmr channels: the restored system keeps them",
+           restored.rowCount() == 1 && restored.get(0).value("dmrChannels") == channels
+               && restored.get(0).value("chanCsvPath").toString().isEmpty());
+}
+
+/**
  * Two restores in a row: B, exported from a restored A, is restored over it. The second restore's journal owns
  * exactly what the first restore wrote (the moved "-1" bundle and the files with free names included), the stores and
  * the generated folders; its only owned roots are A's two bundles, so no wider root gains deletion authority, and
@@ -2454,6 +2509,7 @@ main(int argc, char** argv) {
         test_bundle_named_from_outside(host, old);
         test_restore_keeps_import_named_file(host);
         test_restore_place();
+        test_restore_dmr_channels();
     }
     dsd_app_signal_search_store_close();
 

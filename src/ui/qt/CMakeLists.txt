@@ -44,6 +44,7 @@ target_sources(
         decoder_host.cpp
         decryption_profiles_model.cpp
         diagnostics_log.cpp
+        dmr_channels_model.cpp # Discussion #900
         document_import_transport.cpp
         document_save_transport.cpp
         imported_files_model.cpp
@@ -203,6 +204,8 @@ qt_add_resources(
         qml/ActionMenu.qml
         qml/MonitorScreen.qml
         qml/NetworkSheet.qml
+        qml/ChannelsSheet.qml
+        qml/ChannelEditSheet.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml

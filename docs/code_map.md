@@ -185,10 +185,12 @@ Generated (do not edit/commit):
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
     here. A channel map that moved gets a new `trunk_chan_map_seq`. Start also saves the DMR Tier III provenance of the
-    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds and the network baseline), and every restore
-    puts it back with the rows: a visit that hears another network's checked system code drops the session's learned
-    rows, and the departure brings them back as they were (discussion #900). The P25 patch table is not part of the
-    site: Start
+    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds, the network baseline, the missing-channel
+    ledger and the Tier III flags), and every restore puts it back with the rows: a visit that hears another network's
+    checked system code drops the session's learned rows, and the departure brings them back as they were (discussion
+    #900). The user's Tier III channels are not part of it: they lie beside the shared map, never in it, and a search
+    refuses every edit, so the overlay stays the session's throughout while the session's rows under it come back with
+    every restore. The P25 patch table is not part of the site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -1539,8 +1541,10 @@ is a one-line wrapper over it, so no rotation, hold or step moves because of it.
 turns it into a row (see below).
 
 Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
-metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
-missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a channel number or learned
+metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, the NXDN
+missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`, and the DMR Tier III channel record from
+`<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (origins, trust bytes, the rows the air holds, missing-channel ledger and
+Tier III flags; never the user's channels, which belong to the global map only) — so a channel number or learned
 control-channel state from one system is never reused on another. That is also why trunk scan rejects a global `-C`
 channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
 `p25_bandplan_csv` straight from the path, so neither touches the live options.
@@ -3542,19 +3546,22 @@ suite runs under this compiler.
   (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
   the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
   #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below), and 17 (taken from the ui
-  range): `DSD_STATE_EXT_CORE_POSITION_FEED`, the run's verified position feed (below);
-  runtime 6, and 15 (taken from the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an
-  I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
+  range): `DSD_STATE_EXT_CORE_POSITION_FEED`, the run's verified position feed (below); runtime 6, and 15 (taken from
+  the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an I/Q replay session saves (issue
+  #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
-  app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
-  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17
-  decoder state no frontend reads (`src/protocol/m17/m17_state_ext.h` `m17_state_ext`: the GNSS META repeat state;
-  since issue #890 also the ended network streams, the streams admission opened, and the 1600 bit/s arbitrary data and
-  the text META being assembled), both slots issue #800's. `CORE_STATE_EXT` pins these nine. Slot 25,
-  `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
-  RC notice dedupe and the Tier III channel provenance (discussion #900).
+  app-control owns 16 and 18, from the ui range: 16 is `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to
+  still waits on its tune (issue #644), and 18 `DSD_STATE_EXT_APP_DMR_T3_VIEW`, set only on the UI snapshots, to the DMR
+  Tier III channel record they carry (discussion #900, below); protocols own 24-31, among them 30,
+  `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and
+  31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 decoder state no frontend reads (`src/protocol/m17/m17_state_ext.h`
+  `m17_state_ext`: the GNSS META repeat state; since issue #890 also the ended network streams, the streams admission
+  opened, and the 1600 bit/s arbitrary data and the text META being assembled), both slots issue #800's.
+  `CORE_STATE_EXT` pins these ten. Slot 25, `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension
+  (`src/protocol/dmr/dmr_t3_channels_internal.h`): the RC notice dedupe and the Tier III channel record (discussion
+  #900): the channel provenance, the missing-channel ledger, the user's channels, the Tier III identity and the control
+  channel evidence.
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -5127,7 +5134,9 @@ suite runs under this compiler.
   site of the same network, a trunk tune, the RAS reset and the no-carrier pass keep it. One site can so carry two
   texts (standard before recognition, Capacity Max after): a merge keeps the one that names Capacity Max
   (`dsd_rxid_site_union()`), the `-J` event line keeps the part (`SITE: Capacity Max Net 1 Site 1;`), and Qt History
-  re-reads a row whose text alone changed (its seen digest, Frontends, "Call history site and channel"). Threading:
+  re-reads a row whose text alone changed (its seen digest, Frontends, "Call history site and channel").
+  `dsd_rxid_dmr_trunk_named()` reads which DMR trunking system the record's trunking parts name now (NONE for a
+  record of another family or with none valid); the Tier III view's `other_system_here` uses it. Threading:
   the decoder thread owns the record and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
@@ -5452,9 +5461,14 @@ suite runs under this compiler.
       `ENGINE_CLEANUP_AUDIO`, `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
-    error. A token can read like an option (`--print-config`), so every pass over the raw argv -- bootstrap's
-    pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an option
-    `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. A frontend reading options a user typed
+    error. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
+    (`--dmr-chan-overrides`, `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`), so every pass over the raw argv --
+    bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an
+    option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. `--profile`'s name is any text
+    too: bootstrap reads it as the next argument, compaction steps over it, and so do `dsd_parse_args()`'s long-option
+    pre-scan and the one-shot check (`cli_option_value_read_by_bootstrap()`), so a profile named `--` ends no options
+    and one named `--print-config` is no one-shot. The Android receiver's
+    `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user typed
     walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
     `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
     parser's order: the long options out of the whole argv first, up to the first `--` that is no long option's value
@@ -7309,17 +7323,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     start states, never a live switch. Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
-  - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
-    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
-    history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
-    completion (the control API, which reports a `result_gap` when more completed than the history held).
-    `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
-    open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
-    sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
-    `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then.
-    A cursor at or past the newest sequence reads nothing (it is checked before it is moved on, so `UINT64_MAX` cannot
-    wrap to the start of the history).
+  - Retained results: talkgroup export, decryption, scan list toggle and DMR Tier III channel edit completions are kept
+    as the latest result (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`,
+    `dsd_app_scan_list_result_get()`, `dsd_app_dmr_channel_set_result_get()`) and in a history of the last
+    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`,
+    `dsd_app_dmr_channel_set_results_since()`), for a consumer that must see every completion (the control API, which
+    reports a `result_gap` when more completed than the history held; the channel edit results only the Qt
+    `CommandBridge` reads). `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder
+    run: the command session's open (`dsd_app_command_session_set_open()`, after it dropped what the last session left
+    queued) notes the newest sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives
+    the decoder (the API's `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results
+    stay readable until then. A cursor at or past the newest sequence reads nothing (it is checked before it is moved
+    on, so `UINT64_MAX` cannot wrap to the start of the history).
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
@@ -14123,7 +14139,8 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
-  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below),
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, the missing-channel ledger and the user's
+  channels, below),
   `<dsd-neo/protocol/dmr/dmr_t3_grant.h>` (Tier III grant classes, below)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
@@ -14221,9 +14238,16 @@ Private per-protocol modules worth knowing about:
   only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and ESTIMATE 0.
   The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
   slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
-  row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
-  drops every estimate and fills again, except an estimate confirmed at the frequency it holds, which is promoted in
-  place (it lies on the model line between the first and last anchors, so the model is unchanged). Decided limit
+  shared map row that has a frequency and is no estimate, and writes its rows as ESTIMATE through the writer into the
+  shared map, which every protocol reads; so the user's entries never anchor (two set channels
+  with empty shared rows would put an estimate between them where P25's frequency cache reads it as its own channel),
+  and a channel with an entry takes no estimate (the writer refuses it, its origin being USER), so an edit or the file
+  still redoes the fill; any anchor that appears, moves or goes drops every estimate and fills again,
+  except an estimate confirmed at the frequency it holds, which is promoted in place (it lies on the model line between
+  the first and last anchors, so the model is unchanged). The fill's summary is received data on the burst's slot when
+  a learned row moved the anchors (`DMR_T3_ANCHORS_FROM_AIR`); when the user's edit or start-up file did
+  (`DMR_T3_ANCHORS_FROM_USER`, `dmr_t3_overlay_apply()`) no burst produced it, and it is a system notice
+  (`dsd_event_emit_system_notice()`: no protocol, slot or CRC flags). Decided limit
   (discussion #900): with `DSD_NEO_DMR_T3_HEUR` on, estimates are recomputed when DMR itself changes an anchor row; a
   change by a channel map import or another protocol is not noticed until then. A row another
   writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
@@ -14251,6 +14275,163 @@ Private per-protocol modules worth knowing about:
   and past both sides on a restore. The snapshot saves the revision a reader sees (`dmr_t3_chan_revision()`, the
   takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
   `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+- Tier III missing-channel ledger (`dmr_t3_channels.c`, `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F1):
+  the channels a grant named that have no frequency, so the receiver cannot follow their calls. It sits in the same
+  extension (`dmr_t3_missing_ledger`): three 4096-bit sets (`missing`; `checked`, a checked grant ever named it, sticky;
+  `reported`, its notice was logged), a revision, and the 16 most recently heard channels' details (destination slot,
+  group or private, data, caller, recipient, `dsd_decode_now_mono_ms()` stamp, and `unverified`, the latest grant's
+  own provenance, so a RAS-only grant after a checked one marks its parties unchecked), newest
+  first; a channel past them is in the sets only, and frontends mark it unchecked from `checked`. Only the unmapped
+  branch of `dmr_cspdu_pf0_handle_grants()` feeds it
+  (`dmr_cspdu_pf0_note_missing_channel()` → `dmr_t3_missing_note_grant()`), so a mapped grant costs nothing: a standard
+  (FID 0) BS-sourced grant for LPCN 1..4094 whose CRC passed, or one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`,
+  then the detail's `unverified` set and `checked` left as it was); never an MS-sourced, manufacturer's, failed or
+  synthesized one, and never a
+  channel the user hid. The first grant for a channel on a network logs `DMR Tier III: channel 12 has no frequency;
+  dsd-neo cannot retune to its calls` (` (unchecked)` for RAS only). Every map or overlay change reconciles it
+  (`dmr_t3_missing_reconcile()`): a channel that now has a frequency, or that the user gave an entry, leaves it, and
+  none joins it. The extension keeps the `trunk_chan_map_seq` of the last reconcile (`missing_map_seq`), so a row
+  another writer filled (P25's frequency cache, a `-Y` visit, a replay) leaves it too: the learner reconciles the
+  whole set when the sequence moved before its own write (`dmr_t3_missing_note_written()`, else only its row), and
+  `dmr_t3_missing_sync()` does at the UI snapshot copy, the exit summary and `dmr_t3_chan_save()`; a mapped grant does
+  none of it. A network change empties it, `reported` included; nothing else clears
+  `reported`. Trunk scan per target and Signal search per session save and restore it with the provenance. At exit
+  `dmr_t3_missing_log_summary()` (engine, a single system, after `dsd_engine_signal_search_release_site()` gives back
+  a session that ended during a visit its own ledger) or `trunk_scan_log_missing_channel_summaries()` (each parked
+  target, named by its id) logs one line, `DMR Tier III: 3 channels were granted with no frequency, so dsd-neo could not
+  follow their calls: 7, 9 (unchecked), 12`, at most the detail count listed and then `(+n more)`, ending `...` when a
+  long target id cut it. Tests: `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`, `ENGINE_TRUNK_SCAN`.
+- Tier III "your channels" overlay (`dmr_t3_overlay.c`, the overlay helpers in `dmr_t3_channels.c`,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries live in the same extension
+  (`dmr_t3_overlay`: per LPCN an op, SET or HIDE, and the SET frequency; at most `DMR_T3_OVERLAY_MAX_ROWS` = 256
+  entries, a new one past them is FULL), beside the shared `trunk_chan_map` and never written into it: only DMR Tier
+  III's own lookups read them, so P25, NXDN and the other trunking protocols, which share the
+  map's channel numbers, never see a user's entry (an Auto session's P25 grant for channel `0x000c` resolves by P25's
+  rules, not at the user's frequency for LPCN 12). A channel with an entry reads as USER (`dmr_t3_chan_origin()`), so
+  nothing over the air writes the shared row under it; that row stays what the map file, a reload, a network change or
+  another writer made it, and RESTORE drops the entry so the row decides again. Nothing has to keep the map in step:
+  an import, a reload (what an RR refresh posts), an RR apply, a clear, a network change and a Signal search visit
+  change only the shared rows and leave the entries as they are. A trunk scan refuses every edit and the engine skips
+  the start-up file under one, so no target has an overlay: the target snapshot does not carry one and the target
+  switch empties it (`dmr_t3_overlay_discard()`). The overlay is the session's; `dmr_t3_chan_restore()` leaves it.
+  Every Tier III lookup of an LPCN's frequency reads one value: the grant resolver (`dmr_t3_overlay_resolve()`, one
+  extension lookup and the per-LPCN op byte, the only overlay read on the mapped-grant fast path: a logical grant and
+  an absolute grant's CdefParms LPCN alike follow the entry's frequency for SET and are not followed for HIDE, and only
+  a channel with no entry reads the shared map or the absolute grant's own frequency), and
+  `dmr_t3_chan_effective_hz()` (the entry's frequency, 0 when hidden, else the shared row) for Ann_WD_TSCC's logical
+  channels (the hunt candidates and the TSCC switch), a logical P_CLEAR's TSCC, a logical Move TSCC's printed
+  frequency; app-control's `dsd_app_dmr_t3_channel_hz()` (`dmr_t3_effective.c`) gives the
+  call view the same value on a snapshot (the view's `channel_hz`) and on the live state, and the terminal panel reads
+  `channel_hz`. Capacity Plus, Connect Plus and XPT lookups (rest LSNs, LCNs, the trunk machine's `resolve_freq()`,
+  which a Tier III grant reaches only with its frequency resolved) and P25/NXDN read the shared map. A hidden channel's
+  grants are not followed and never recorded as missing, and the ledger is reconciled against the same value (a
+  channel with an entry, or a shared row with a frequency, leaves it). `dmr_t3_overlay_apply()` refuses an unknown
+  channel, operation or frequency (INVALID), a trunk scan (TRUNK_SCAN), and with `check` an edit whose expected
+  frequency, origin or network generation is not the live one (STALE); the frequency is the effective one, so another
+  writer emptying or filling a row under an entry never makes an editor's edit stale, and the view gives frontends
+  that value (`channel_hz`, below); the same SET or HIDE again changes nothing; an applied edit bumps the revision,
+  reconciles the ledger and redoes the heuristic estimates. A followed call keeps its carrier: an edit takes effect
+  from the next grant. Frontends edit through `DSD_APP_CMD_DMR_CHANNEL_SET` (`src/app_control/dmr_channel_commands.c`):
+  the payload carries the channel as the editor read it plus the command session generation (another session is
+  STALE) and a request id from `dsd_app_dmr_channel_request_next()`; every request the queue took gets a retained
+  result `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` (OK, STALE,
+  TRUNK_SCAN, INVALID, FULL) plus app-control's `SEARCH`, `DROPPED`, `OTHER_SYSTEM` (7: the carrier names another
+  system, `dsd_app_dmr_t3_other_system_here()`) and `NO_DMR` (8: the options no longer decode DMR, `frame_dmr` off after
+  a live mode change, `dsd_app_dmr_t3_dmr_decoding()`). Both are judged on the decoder thread as
+  the edit is applied, so an edit queued before the identity arrived or before the mode change is refused too; `hz` is
+  checked only for SET, handed back along `apply_cmd()` in `ui_cmd_result_codes`. The command is in
+  `k_deferred_commands`: it changes only the overlay, so a DMR BS voice loop keeps its call and the edit applies once
+  the carrier ends. Not in the control API. At start, `--dmr-chan-overrides <csv>` (`lpcn,frequency_hz`, 0 hides; read
+  by `<dsd-neo/core/dmr_chan_overrides_csv.h>`, bad rows and rows past 256 channels skipped with a warning) is applied
+  unchecked by the engine before the first frame (`import_dmr_chan_overrides_if_needed()`). A startup `-C` map makes
+  the DMR record before then (`note_startup_channel_map()`, `dmr_t3_chan_note_map_loaded()`, as a live import does;
+  skipped when the state already has a record, and under a trunk scan, where a DMR target's own `chan_csv` makes the
+  record as the target is built, `trunk_scan_import_target_chan_csv()`, before its snapshot is saved), so a checked grant for a mapped channel keeps its Tier III evidence though the grant path never allocates. The file is one change
+  (`dmr_t3_overlay_load_csv()`): every row becomes its entry first, then the ledger is reconciled and the heuristic
+  estimates are redone once, so a long file with the fill on rebuilds once, not per row; once read,
+  `dmr_t3_overrides_applied()` is 1 for the session. The engine decides on the options as the config file (its
+  `[mode] decode`), `--profile` and the command line left them: it applies the file only in a run mode that decodes
+  frames (`dsd_engine_run_decodes_frames()`: not MBE playback `-r`, the M17 encoders or the M17 UDP/IP decoder `-fU`,
+  which `dsd_engine_run_dispatch_frameless_mode()` runs whatever the decode mode says), while DMR
+  decoding is on (`frame_dmr`) and no trunk scan runs, and otherwise starts without it after one
+  `NOTICE: DMR Tier III channels in <file> not applied: ...` and never opens it (no start failure; the parser refuses no
+  combination, so a profile's trunk scan starts). The parser only keeps the path (an empty one or one past the field is
+  refused) and checks no file: a session that takes it opens it at start and stops on a missing or unreadable one, while
+  a P25-only session, a frameless run mode or a trunk scan starts whatever the path names. The
+  bootstrap pre-scan steps over its separate value (`dsd_cli_option_takes_free_value()`), so a file named like a
+  one-shot option is the file. No INI key. Tests: `DMR_T3_CHANNELS`, `DMR_T3_ANN_WD_TSCC`, `DMR_T3_FORCE_RELEASE`,
+  `DMR_T3_CMOVE`, `APP_COMMAND_QUEUE` (the P25 `0x000c` Auto session, a restore after a map reload),
+  `APP_CONTROL_CALL_VIEW`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `ENGINE_SIGNAL_SEARCH`,
+  `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`, `CORE_INIT_STATE` (`initOpts()` clears the path).
+- Tier III identity and control channel evidence (`dmr_t3_channels.c`, discussion #900 F3). `dmr_t3_note_tier3()`
+  records that a message named the site Tier III: a C_ALOHA (any FID), an SLC C_SYS_Parms/P_SYS_Parms, or a standard
+  (FID 0, BS-sourced) grant or C_BCAST (`dmr_csbk_note_tier3()`). A checked one sets `tier3`, the identity; one -F
+  accepted as RAS sets `tier3_unchecked`, which only decides how channel numbers show. A grant records the flag only
+  when the DMR record already exists (`dmr_t3_note_tier3_if_recorded()`), so the grant path allocates nothing. Both
+  flags ride the target snapshot. `dmr_t3_cc_note_evidence()`, from the checked C_ALOHA and C_SYS_Parms handlers,
+  records the tuned frequency (`dsd_opts_tuned_freq_hz()`) as this carrier's TSCC while no call is followed, with
+  `dsd_state::carrier_seq`, the received identity's epoch (`dsd_state::rx_id.epoch`) and the runtime trunk-tuning
+  generation (`dsd_trunk_tuning_generation()`); `dmr_t3_cc_confirmed_hz()` returns it only while all three hold and no
+  tune is pending (`dsd_trunk_tuning_frame_is_current()`), so a carrier boundary, another identity on the same carrier
+  (a colour-code change: two DMR systems can share a frequency; the DMR reset) or a trunk retune
+  (a grant's voice channel, the return, a hunt's next candidate: these move the generation, not always the carrier
+  count) makes it stale, and a network change or target restore drops it, and so does the no-carrier pass
+  (`dmr_t3_cc_note_reception_lost()` from `dsd_engine_no_carrier_identity_stale()`, beside the received identity's
+  stale mark): sync loss leaves all three as they were, so only a checked C_ALOHA or C_SYS_Parms heard
+  after it offers "Use control channel frequency" again. A checked P_SYS_Parms on the carrier names
+  it a payload channel (`dmr_t3_cc_note_payload_channel()`): unless its Comp_CC bit says composite control channel, the
+  evidence ends, since the site can move its TSCC while the receiver stays. Tier III grant activity notices name the
+  channel in decimal (`Active Group Ch: 12 (TDMA S1) TG: 1234;`, B11); Connect Plus and P25 keep hex. Tests:
+  `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`.
+- Tier III channel record in the UI snapshots (`<dsd-neo/app_control/dmr_t3_view.h>`, `src/app_control/dmr_t3_view.c`,
+  `dmr_t3_view_copy.c`, `dmr_t3_view_internal.h`, discussion #900 F3). `dsd_ui_dmr_t3_view` holds owned copies of the
+  ledger (details included), `dmr_t3_chan_origin()` per LPCN (`dmr_t3_chan_origins_copy()`), the overlay rows by LPCN
+  (hidden ones too, each with `base_hz`, the shared map row under it, what RESTORE shows), the frequency DMR uses per
+  LPCN (`channel_hz`, `dmr_t3_chan_effective_copy()`: the entry's over the shared row, 0 when hidden; what a frontend
+  shows and sends as the edit's expected frequency, the snapshot's `trunk_chan_map` row being the shared one), `tier3`/`tier3_unchecked` (0 while `other_system_here`),
+  `other_system_here` (the carrier's `rx_id` names another protocol's system or another DMR trunking system,
+  `dsd_rxid_dmr_trunk_named()`: Capacity Plus, Connect Plus, XPT; or, naming none, the last frame sync was another
+  protocol's than DMR, `dsd_state::rx_sync_protocol`, as YSF, D-STAR and X2-TDMA send no identity;
+  0 while nothing was heard on the carrier yet, or DMR that named no trunking system; a scalar, copied every
+  publish; `dsd_app_dmr_t3_other_system_here()` in `dmr_t3_effective.c`, which also refuses edits),
+  `overrides_applied` (the `--dmr-chan-overrides` file applied to this session, `dmr_t3_overrides_applied()`: 0 when the
+  engine skipped it, whatever the options' path holds; a scalar), `dmr_decoding` (the options last published decode
+  DMR, `dsd_app_dmr_t3_dmr_decoding()`: each options snapshot notes it, `dsd_app_dmr_t3_note_opts()` in
+  `ui_opts_snapshot.c`, and the next publish copies it; 0 after a mode change left DMR off, when the decoder refuses
+  every edit `NO_DMR`, so a frontend offers no editor, as for `other_system_here`; a scalar),
+  `cc_hz`/`cc_confirmed_here`, the state instance, a target id (moves whenever `trunk_scan_active_id` changes), the channel revision and network generation (what
+  `DSD_APP_CMD_DMR_CHANNEL_SET` expects), `missing_seq` and `content_seq`. `ui_snapshot.c` fills it at both hops
+  (`dsd_app_dmr_t3_view_publish()`, `dsd_app_dmr_t3_view_consume()`) and points slot 18 of each snapshot at it. The
+  body is two parts, each with its own key in `dsd_app_dmr_t3_view_mark`: the ledger is copied
+  only when the state instance, the DMR record (`dmr_t3_chan_record_id()`, drawn when the extension is made, so a
+  host's next run on the same state, whose record the engine freed and made again, is another key), target or ledger revision moved (publish) or `missing_seq` moved (consume), the channel rows (origins, overlay
+  rows, `channel_hz`) only when the instance, record, target, channel revision or channel map sequence moved, or
+  `content_seq`; a grant heard again for a channel with no frequency (only its last-heard time
+  moves) copies the ledger alone, an idle refresh copies none, and two targets at equal revisions never alias. Each
+  hop returns the parts it copied (`DSD_APP_DMR_T3_VIEW_COPIED_*`; the test counters count each). Frontends read it
+  with `dsd_app_dmr_t3_view(snapshot)`; a live state has none. The terminal's Channels panel (`ui_print_learned_lcns()`)
+  opens while the ledger holds a channel, with the toggle off and in monitor mode too (`ui_channels_panel_open()`); both
+  read `dsd_app_dmr_t3_view_missing_shown()`, the ledger's count unless the carrier names another system
+  (`other_system_here`) or the session no longer decodes DMR (`dmr_decoding`), as Qt's NO FREQ does. It lists up to
+  eight as `CH 12: no frequency (TG 1234, slot 1)` (a row past the details reads `(unchecked)` from the checked set when
+  no checked grant named it), and when `dsd_app_dmr_t3_view_lists_lpcns()` holds (`dsd_app_dmr_t3_view_shows_lpcns()`:
+  Tier III named, checked or RAS-accepted, or a ledger or overlay entry, and no other system named on the carrier
+  (`other_system_here`), and DMR decoded (`dmr_decoding`); and the receiver is on a DMR system now, by the snapshot's
+  sync, or before any sync DMR the only trunking protocol decoded) lists the map by LPCN ascending in decimal from
+  `channel_hz` (a hidden channel is not listed, a set one shows the user's frequency), each LPCN even when two share a
+  frequency, and whether it has rows to list is `channel_hz`'s too, not the shared map's count (another protocol can
+  empty the rows under the user's entries); positional rows stay, named by the LPCN `channel_hz` gives their frequency,
+  P25 and Connect Plus rows keep hex, a P25 map after a move from a Tier III site and a Connect Plus site reached after
+  one included (the session's flags hold, the view's do not). The call view's VC lookup
+  (`app_recent_activity_vc_freq()`) takes a DMR activity row's channel from its observation, never its decimal text, by
+  the kind its grant gave it (`channel_kind`, set by `dmr_csbk_publish_activity()`: LPCN for a Tier III grant, LSN for
+  Capacity Plus, LCN for Connect Plus): an LPCN at `dsd_app_dmr_t3_channel_hz()` (a hidden channel has none), any other
+  at the shared row, so a Connect Plus grant -F accepted before any checked burst named the system never reads the
+  user's Tier III channel. Tests linking the call view without the DMR
+  module take `dmr_t3_chan_effective_hz()` from `tests/test_support/dmr_t3_effective_stub.c`
+  (`dsd-neo_test_dmr_t3_effective_stub`, the shared row); `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` links the real one.
+  Tests: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`, `UI_NCURSES_TRUNK_DISPLAY_HELPERS`,
+  `UI_NCURSES_PRINTER_HELPERS`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
@@ -19205,6 +19386,113 @@ Qt Quick frontend (`src/ui/qt`):
   which is configuration; `qml/SiteSheet.qml` shows it as its **Phase 2 seed** row, "(set)" when hand-set. `vcFreqHz`
   is the voice channel being followed. Tests: `UI_QT_METRICS_MODEL` (`test_site()`), `UI_QT_CONTROLLER` (stop clears),
   `UI_QT_QML_CALL_LISTS` (`tst_monitor_site.qml`).
+- DMR Tier III channels (discussion #900 F3). `DmrChannelsModel` (`dmr_channels_model.{h,cpp}`, the QML context property
+  `dmrChannels`) reads the snapshot's Tier III view (`dsd_app_dmr_t3_view()`) only while a sheet holds it `active`;
+  opening reads the held snapshot at once (`UiController::onDmrChannelsActiveChanged()`), a tick refreshes it, and a new
+  trunk-scan target replaces its rows in one go (`replaceForTarget()`). It publishes `missingPage` (the first
+  `missingLimit` ledger channels, newest first then the rest by channel, or by channel when `missingInChannelOrder`,
+  the fixed order a screen reader gets; the sheet binds both), `missingCount` (every ledger channel), `channels` (by
+  channel, each with its origin key: file, user, hidden, site, unchecked, neighbour, estimated, and the view's
+  `channel_hz`, the frequency DMR uses, never the shared map row another protocol can empty or fill under an entry),
+  the edit's expectations
+  (`generation`, `revision`, `session`, `channel(lpcn)`), `tier3`, `ccHz`/`ccConfirmedHere`, `trunkScanActive`,
+  `otherSystemHere` (the view's `other_system_here`, read whether or not the view holds a DMR record: both lists empty and `channel()` not `valid`, since that map is the other system's), `dmrDecoding` (the view's
+  `dmr_decoding`, true while no view is known: off after a live mode change
+  left DMR off, read as `otherSystemHere` is), `editable` (none of those, nor a trunk scan) and `sessionSystemUid` (Main
+  binds the saved system the session runs). The two lists are rebuilt apart, each from its part of the view: the
+  missing rows when the view's `missing_seq` or a name list moved, the Channels rows (up to 4094) when its
+  `content_seq` did (`channelRowBuilds()` counts those builds), and both when a flag that emptied the lists cleared,
+  so a grant heard again on a channel with no frequency rebuilds only the missing rows, and of those only the page
+  shown (the model keeps the ledger's sets and its named details, and builds `missingPage` from
+  them, also when the limit or the order moves; `missingRowBuilds()` counts the rows built); a list is published only
+  when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count), `dmrTier3` (checked Tier III
+  identity, or the view's `overrides_applied`: the saved system's channels file applied to this session; the path
+  alone says nothing,
+  since the engine leaves it set when it skipped the file) and `dmrUserChannels` (the live overlay holds rows; never
+  Tier III identity), all three off while the view's `other_system_here` says the carrier names another system or its
+  `dmr_decoding` says the session no longer decodes DMR (`noFreqCount` is `dsd_app_dmr_t3_view_missing_shown()`, which
+  the terminal's Channels panel reads too). `CommandBridge::setDmrChannel()` sends `DSD_APP_CMD_DMR_CHANNEL_SET`
+  against the row as read, capturing the saved system (result keys `dmrChannelResultKey()`, `OTHER_SYSTEM` as
+  `other-system`, `NO_DMR` as `no-dmr`); `pollDmrChannelResults()` (each tick, `UiController::pollCommandResults()`, and
+  at `QCoreApplication::aboutToQuit`, so an edit applied just before Android's activity teardown exits the loop is kept
+  while the bridge and the saved systems are still alive) reads the retained results and, for an OK edit, keeps it on
+  that system with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the
+  RadioReference provenance) before `dmrChannelResultReceived()`; `saveDmrChannelEdit()` runs that save again for a
+  captured uid. On Android, an edit still queued when the app quits is applied by the service but not saved to the
+  system. A saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number entries
+  only, never a bool, text or a fraction, the first per channel, at most 256, by channel). An edit is kept on the system
+  whatever its options say. Each start of a saved system with entries writes
+  `session_args_dmr_channels_csv()` to `dmr_channels/<uid>.csv` in the app's folder
+  (`SavedSystemsModel::writeDmrChannelsFile()`: never through a link; the folder must be a real
+  one, and a private temporary file beside the leaf is renamed over it, a link there included; a start with no entries
+  and the system's removal use `removeDmrChannelsFile()`, which removes nothing through a linked folder; known limit,
+  The folder is checked by path and each step resolves the path again, with no pinned directory
+  handle, so the no-follow checks guard a stale or accidental link, not a link swapped in between check and step by
+  something that can already write the app's private data folder) and passes `--dmr-chan-overrides`
+  after every option the user typed (the decode flag's tokens, the system's and the app's extra
+  options, the live radio settings), last of the options the decoder reads (before a `--` among
+  them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
+  win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
+  trunk scan (any other starts without it, with a notice). Known limit: extra decoder arguments (or decode flag
+  tokens) that end on an option missing its value take the next argument as that value, as they would on the command
+  line, so a `--profile` last takes `--dmr-chan-overrides` as the profile name and the saved channels are lost (a
+  short option such as `-C` last instead fails the start: compaction takes the long option and its path out first, so
+  getopt finds `-C` with no value); the builder does not mirror the parser to catch it. A file that cannot be written, or whose path does not fit
+  the CLI's 1023 bytes, never stops the start: it starts without the option, logs a warning and posts a
+  `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
+  `dmr-channels`) on Home's notice card ("Starts run without this system's saved channels until they can be written.",
+  naming no channel map in their place: a `--dmr-chan-overrides` among the extra options still applies). The notice
+  carries the system's failure episode (`JsonStoreNotice::episode`, part of `StoreNotices`' key and of each notice's
+  map, so a withdrawal and a new failure that reach the list in one `sync()` still change it, and the card, which
+  announces on any change of its `notices`, reads the new one out). The episode ends only
+  when `startSession()` hands the host an argv with the written file, or with none to pass (`prepareDmrChannels()`
+  answers the uid; a written file whose start is refused after it ends nothing; whether the decoder then uses the file
+  is not judged: the notice is about the write), and then
+  `json_store_withdraw_notice()` takes the notice off, so a later failure is a new notice, announced again, whether
+  or not the earlier one was dismissed. A Restore that removes no saved entry (a channel nothing saved with the system
+  set) answers `saved: false`, `saveError: "session-only"`, and the sheet says "Changed for this session only: nothing
+  saved with this system set this channel.", with no claim about which file sets it at the next start (the decoder
+  reads only the last `--dmr-chan-overrides`). A backup carries those files as generated
+  configuration, and removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds;
+  50 rows, "Show more
+  channels without a frequency" adds 50, the ledger can hold 4094) and "Channels" (tap edits; 50 rows by channel, "Show
+  more channels" adds 50), each holding rows only up to the pages shown and back to the first page on close, with an
+  "Add channel" button; it owns the request in flight, so an answer that comes while the editor or the sheet is closed
+  is still handled, and a status kept while it was closed is read out once when it opens; an edit still unanswered after
+  `slowRequestMs` (2 s; the decoder defers the command through a DMR voice call) shows "Saved when the current call
+  ends." in the editor that sent it, else in the sheet, read out once. Focus follows a channel that moves between the
+  lists only for an answer that came while the editor that sent the edit was still open (a later
+  answer is still handled and saved, but never moves the focus), and never while an editor opened since is up: a
+  channel listed on the page after the ones shown shows that one page first; one further on is not revealed (every page
+  before it would be built at once on a large map), and the focus waits on the Channels heading
+  (`channelsChannelsLabel`). A save that failed after the decoder applied the edit is kept
+  (the latest per system and channel) and "Try saving again" saves it; while one is owed for the session's system the
+  sheet and editor send nothing more ("Save the earlier change first: Try saving again.", `lockText`), so the saved list
+  never takes the edits in another order than the live one. On another system's carrier (`otherSystemHere`) the sheet
+  lists no rows and both say so; the decoder refuses an edit queued before it with `OTHER_SYSTEM`. A session no longer
+  decoding DMR (`dmrDecoding` false) is locked the same way ("This session isn't decoding DMR now, so channels can't be
+  changed.", also the `no-dmr` refusal). Hiding the sheet, or
+  the session ending, closes the editor and its discard question. `qml/ChannelEditSheet.qml` takes a number 1..4094 (its
+  action key goes on to the frequency, `nextField`) and a frequency, offers "Use control channel frequency" only with
+  `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
+  twice). The edit expects the channel as the editor read it (`opened`): a row's when the editor opened, and in Add
+  channel the typed number's, read each time the number changes, never at the button press, so a
+  frequency the decoder learned while the user typed refuses the edit as STALE. Add channel always opens with an empty
+  frequency, whatever row the editor showed before. A STALE refusal closes the editor that
+  sent it, and the sheet says "This channel changed while you were editing it. Open it again to see the current
+  value." (`channelsStatus`, read out once). While the editor's own edit is
+  unanswered (`sentPending`) its fields are read-only, so its answer closing the editor loses nothing typed, and Close
+  asks first only for what was typed beyond the edit on its way. Under a trunk scan, on another system's carrier, in a
+  session not decoding DMR and while a save is owed both are read-only, fields included, the editor saying why
+  (`channelEditLocked`); the sheet's rows then stay in the keyboard's focus order (focusable, not activatable), so the list can be read through by keyboard. The Site sheet's "Channels" button (DMR with `dmrTier3`
+  or `dmrUserChannels`) and
+  the Monitor's `NO FREQ n` reading (`noFreqRow`, `Theme.alert`, hidden at 0, also in the collapsed summary) open the
+  sheet, and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels`, or a save is
+  owed for the session's system whatever the live lists hold, and NO FREQ is hidden, before any site identity too); it
+  and the Site row take Tab, Space and Enter. Tests:
+  `UI_QT_DMR_CHANNELS_MODEL`, `UI_QT_CONTROLLER`, `UI_QT_METRICS_MODEL`, `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
+  `UI_QT_BACKUP_APPLY`, `UI_QT_QML_DMR_CHANNELS` (`tst_dmr_channels.qml`), `UI_QT_QML_A11Y_CHURN`
+  (`tst_a11y_dmr_channels.qml`).
 - TETRA: `MetricsModel` publishes the `tetra*` group (`tetraVisible`, `tetraModeText`, `tetraEncrypted`,
   `tetraNetworkText`, `tetraTrunkText`, `tetraOnTraffic`, `tetraControlText`, `tetraTrafficText`, `tetraMmStatusText`,
   `tetraCodecText`, `tetraCodecFault`) on its own `tetraChanged` signal, filled in `fillTetraView()` from
@@ -20382,9 +20670,10 @@ Qt Quick frontend (`src/ui/qt`):
   - One mutex guards the marks and the notices, and is held across a marked file's whole save, so two saves of a
     marked file never interleave. Unmarked saves run outside it: each model keeps its own saves of one file apart, as
     before (call history's single save worker, and the destructor's save after `waitForDone()`).
-  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName}` per file, oldest first;
-    `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
-    INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
+  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName, episode}` per file, oldest
+    first; `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the
+    settings INI and a saved system's DMR channels file), `json_store_withdraw_notice()` (takes a posted notice off once
+    what it said is over, which only the DMR channels file's poster does), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
     that loaded or saved. `call_history_seen.json` gets a notice like any store; it is internal, so a frontend
     shows no card for it (`StoreNotices` leaves it out).
   - Test seams (`DSD_NEO_TEST_HOOKS`, `json_store_test_hooks.h`): a read error, and a hook run right after the move.
@@ -22658,7 +22947,8 @@ options and their values out, then getopt's string from `args.c` reads the short
 such as an API token `-irtl`, is never an input; the last `-i` before any `--` wins, and arguments getopt refuses take
 nothing. A `--iq-replay <path>` or `--iq-replay=<path>` that `dsd_parse_args()`'s long-option pre-scan reads takes
 nothing whatever the `-i`, since the replay replaces the input after getopt; the pre-scan takes every long option's
-value except the bootstrap's `--config`, `--validate-config` and `--profile`, so the Kotlin walks it separately. An INI
+value, the bootstrap's `--profile` name included, except the bootstrap's `--config` and `--validate-config`, so the
+Kotlin walks it separately. An INI
 file's input is not read. `ANDROID_USB_RECEIVER_JVM` checks the Kotlin copies against `compact.c`, `args.c`'s getopt
 string and pre-scan, and that the replay is the only input the parse sets besides `-i`) and calls `takeForSession()`. A start
 with no broker connection of its kind takes nothing, and the native open then fails as kind 7. The first session on a

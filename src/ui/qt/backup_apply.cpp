@@ -26,6 +26,7 @@
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
+#include <QRegularExpressionMatch>
 #include <QSet>
 #include <QStringList>
 #include <QVariant>
@@ -215,21 +216,26 @@ ancestors(const QString& path) {
 }
 
 /**
- * Whether @p relative names a file the app generates, the only files of decryption/ and scan_lists/ that count as
- * configuration: a compiled profile's key file, decryption/<uid>/<uuid>.(hex|dec|map).csv (DecryptionProfilesModel's
- * ProfileCompiler, a uid its validId() accepts), or a scan list's CSV, scan_lists/<uid>/<name>.csv (ScanListStarter, the
- * same uid rule; issue #697), or scan_lists/<uid>.csv as older versions wrote it. scan_lists/ is the app's own folder,
- * so the rule is the layout, not a list of uids: any CSV in a subfolder whose name is uid-shaped
- * ([A-Za-z0-9_-]{1,63}) is generated, whether or not a list still has that uid. Anything else there (another file
- * type, a deeper folder, a folder whose name is not uid-shaped) is someone else's and survives a restore.
+ * Whether @p relative names a file the app generates, the only files of decryption/, scan_lists/ and dmr_channels/
+ * that count as configuration: a compiled profile's key file, decryption/<uid>/<uuid>.(hex|dec|map).csv
+ * (DecryptionProfilesModel's ProfileCompiler, a uid its validId() accepts), a scan list's CSV,
+ * scan_lists/<uid>/<name>.csv (ScanListStarter, the same uid rule; issue #697), or scan_lists/<uid>.csv as older
+ * versions wrote it, or a saved system's DMR Tier III channels, dmr_channels/<uuid>.csv (SessionArgsBuilder writes it
+ * at each start of the system; discussion #900). scan_lists/ is the app's own folder, so the rule is the layout, not a
+ * list of uids: any CSV in a subfolder whose name is uid-shaped ([A-Za-z0-9_-]{1,63}) is generated, whether or not a
+ * list still has that uid. Anything else there (another file type, a deeper folder, a folder whose name is not
+ * uid-shaped) is someone else's and survives a restore.
  */
 bool
 generated_file(const QString& relative) {
     static const QRegularExpression pattern(
         QStringLiteral("^(decryption/[A-Za-z0-9_-]{1,63}/"
                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(hex|dec|map)\\.csv"
-                       "|scan_lists/[A-Za-z0-9_-]{1,63}(/[^/]+)?\\.csv)$"));
-    return pattern.match(relative).hasMatch();
+                       "|scan_lists/[A-Za-z0-9_-]{1,63}(/[^/]+)?\\.csv"
+                       "|dmr_channels/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.csv)$"));
+    // '$' also matches before a final newline: the match must span the whole name, as leftover_name()'s does.
+    const QRegularExpressionMatch match = pattern.match(relative);
+    return match.hasMatch() && match.capturedLength() == relative.size();
 }
 
 /** The native avoid store's own format (signal_search_store.cpp save_avoids()): "[a,b]\n", "[]\n" when empty. */
@@ -354,8 +360,8 @@ class StagingReader {
 /**
  * The old configuration, positively identified from the live stores: the six store files, every regular file under
  * imports/ a File value names, every owned bundle root a library row claims (first claim of a folded name only), and
- * the files under decryption/ and scan_lists/ the app generates (generated_file()). Nothing reached through a symlink
- * counts.
+ * the files under decryption/, scan_lists/ and dmr_channels/ the app generates (generated_file()). Nothing reached
+ * through a symlink counts.
  */
 class LiveScan {
   public:
@@ -377,6 +383,7 @@ class LiveScan {
         }
         addTree(QStringLiteral("decryption"), generated_file);
         addTree(QStringLiteral("scan_lists"), generated_file);
+        addTree(QStringLiteral("dmr_channels"), generated_file);
         // A file a live recording names is a recording, whatever else names it and however the recording spells it.
         // (A store file is always replaced, so it stays.)
         const QStringList stores = six_store_files();

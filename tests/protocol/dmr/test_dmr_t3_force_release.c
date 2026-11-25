@@ -23,6 +23,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -33,6 +34,7 @@
 #include <stdio.h>
 #include "dmr_abs_params.h"
 #include "dmr_crc_provenance.h"
+#include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -66,6 +68,15 @@ dsd_event_emit_data_notice(dsd_opts* o, dsd_state* s, uint8_t slot, const dsd_ca
     (void)observation->ota_target_id;
     (void)notice;
     (void)slot;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* o, dsd_state* s, uint8_t slot, const char* notice) {
+    (void)o;
+    (void)s;
+    (void)slot;
+    (void)notice;
     return 0;
 }
 
@@ -546,6 +557,34 @@ test_p_clear_named_tscc_becomes_candidate(void) {
     assert(state.trunk_cc_freq == CC_HZ);
 }
 
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
+static void
+user_entry(dsd_state* s, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(s);
+    assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
+    ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
+    ext->overlay.hz[lpcn] = hz;
+    ext->overlay.count++;
+}
+
+/* A logical P_CLEAR TSCC reads the frequency DMR uses for it (the user's entry over the shared
+   row): a set channel whose row another protocol emptied is still a candidate, at the user's frequency; a hidden one
+   whose row another protocol filled is none. */
+static void
+test_p_clear_tscc_uses_the_users_channels(void) {
+    const long set_hz = 851537500L;
+    const long other_hz = 851562500L;
+    follow_group_ts1();
+    user_entry(&state, 33U, set_hz);
+    user_entry(&state, 34U, 0L);
+    dsd_state_set_trunk_chan_freq(&state, 33U, 0L);
+    dsd_state_set_trunk_chan_freq(&state, 34U, other_hz);
+    send_pclear(1U, 33U, 1U, 999U);
+    assert(candidate_count(set_hz) == 1);
+    send_pclear(1U, 34U, 1U, 999U);
+    assert(candidate_count(other_hz) == 0);
+}
+
 /* The clear the encryption lockout synthesizes names no address and always applies. */
 static void
 test_synth_lockout_clear_still_releases(void) {
@@ -659,6 +698,7 @@ main(int argc, char** argv) {
     test_p_clear_private_reverse_leg();
     test_p_clear_mono_stays_on_followed_slot();
     test_p_clear_named_tscc_becomes_candidate();
+    test_p_clear_tscc_uses_the_users_channels();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
     test_vendor_fid_clear_fff_bits_not_refused();

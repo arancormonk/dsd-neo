@@ -351,6 +351,17 @@ target_link_libraries(
 # (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. Also no-op LIP and
 # Cellocator service decoders for tests that compile dmr_pdu.c and define neither. The targets that need it are listed
 # once, after they are defined (_dsd_dmr_decoder_stub_targets).
+# The DMR module's channel query (dmr_t3_chan_effective_hz()) for tests that compile the call view without the module.
+add_library(
+    dsd-neo_test_dmr_t3_effective_stub
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_t3_effective_stub.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_effective_stub
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_dmr_decoder_stubs
     STATIC
@@ -1237,6 +1248,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_dmr_ras_view_cxx
   HEADERS_PUBLIC_APP_CONTROL_DMR_RAS_VIEW_CXX
   dsd-neo/app_control/dmr_ras_view.h
+  CXX
+)
+# Discussion #900: the DMR Tier III channel record the snapshots carry.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW
+  dsd-neo/app_control/dmr_t3_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW_CXX
+  dsd-neo/app_control/dmr_t3_view.h
   CXX
 )
 # Issue #521: the shared squelch readout.
@@ -3839,7 +3863,15 @@ add_executable(
     dsd-neo_test_app_control_call_view
     ui/test_app_control_call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_call_view
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_call_view
@@ -4157,8 +4189,16 @@ add_executable(
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_notification_status
@@ -4184,6 +4224,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
         ui/test_ui_ncurses_trunk_display_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -4211,8 +4252,15 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -4262,8 +4310,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -4284,6 +4334,11 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        )
+        # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+        target_link_libraries(
+            ${_target}
+            PRIVATE dsd-neo_test_dmr_t3_effective_stub
         )
         target_compile_definitions(${_target} PRIVATE NCURSES_REENTRANT=0)
         target_include_directories(
@@ -5189,7 +5244,15 @@ add_executable(
     dsd-neo_test_ui_qt_call_line
     ui/test_ui_qt_call_line.cpp
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
@@ -5622,8 +5685,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -5637,6 +5702,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -6584,6 +6654,9 @@ if(DSD_ENABLE_QT_UI)
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
+            # Discussion #900 F3: the Channels sheet's production model over a synthetic Tier III view.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             # The Activity screen's production model over the real view.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
@@ -6787,6 +6860,7 @@ if(DSD_ENABLE_QT_UI)
                 monitor_receiver
                 document_picker
                 file_browser
+                dmr_channels
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -6907,6 +6981,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6923,6 +7000,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_event_history
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
@@ -6956,6 +7037,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6972,6 +7056,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_unit_activity
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_unit_activity
@@ -7004,6 +7092,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -7021,6 +7112,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_position_view
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_position_view
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_position_view
@@ -7071,6 +7166,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -7085,6 +7183,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_history_tap
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_history_tap
@@ -7104,6 +7206,9 @@ add_executable(
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
@@ -7111,6 +7216,11 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_opts_snapshot
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
@@ -10550,6 +10660,30 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_test_support
     )
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
+    # --dmr-chan-overrides lies over the -C map before the first frame (discussion #900 F3).
+    add_executable(
+        dsd-neo_test_engine_dmr_chan_overrides
+        engine/test_engine_dmr_chan_overrides.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_dmr_chan_overrides
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=UDPBind"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_DMR_CHAN_OVERRIDES
+        COMMAND dsd-neo_test_engine_dmr_chan_overrides
+    )
 endif()
 
 # The engine commits and publishes the last call before the frontends' stop hooks, with the exit flag set first, so
@@ -10724,10 +10858,12 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
-    # The DMR channel provenance a target switch saves and restores, and its writer, which a test seeds through
-    # (discussion #900).
+    # The DMR channel provenance a target switch saves and restores, and its writers (the air's and the user's), which
+    # a test seeds through (discussion #900).
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_overlay.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/dmr_chan_overrides_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
@@ -27391,6 +27527,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp # Discussion #900
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_status.cpp
@@ -28448,6 +28585,23 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_P25_NETWORK_MODEL
         COMMAND dsd-neo_test_ui_qt_p25_network_model
+    )
+    # Discussion #900 F3: the DMR Tier III Channels sheet's model over a synthetic view.
+    add_executable(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        ui/test_ui_qt_dmr_channels_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE dsd-neo_ui_qt ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_DMR_CHANNELS_MODEL
+        COMMAND dsd-neo_test_ui_qt_dmr_channels_model
     )
     # The Activity screen's model over the unit activity ring and view.
     add_executable(
