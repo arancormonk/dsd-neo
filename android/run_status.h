@@ -41,7 +41,11 @@ enum AttemptFailureKind {
     kAttemptUndelivered = 9,      // host only
     kAttemptUsbPermission = 10,   // "usb_permission"
     kAttemptUsbOpenFailed = 11,   // "usb_open_failed"
-    kAttemptUsbGone = 12          // "usb_gone"
+    kAttemptUsbGone = 12,         // "usb_gone"
+    /* A start naming an RTL-SDR serial: the service's text says which serial and what to do, and Main.qml leads with
+       it (UsbSessionTake.message). */
+    kAttemptUsbSerialDuplicate = 13, // "usb_serial_duplicate": two readable dongles carry the serial
+    kAttemptUsbSerialMissing = 14    // "usb_serial_missing": no attached dongle carries it
 };
 
 /** A DecoderService "failureKind" wire value; empty, null or unknown is kAttemptNone. */
@@ -61,6 +65,12 @@ attempt_failure_from_wire(const char* wire) {
     }
     if (strcmp(wire, "usb_gone") == 0) {
         return kAttemptUsbGone;
+    }
+    if (strcmp(wire, "usb_serial_duplicate") == 0) {
+        return kAttemptUsbSerialDuplicate;
+    }
+    if (strcmp(wire, "usb_serial_missing") == 0) {
+        return kAttemptUsbSerialMissing;
     }
     return kAttemptNone;
 }

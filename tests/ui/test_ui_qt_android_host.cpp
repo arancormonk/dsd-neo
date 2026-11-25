@@ -3603,6 +3603,11 @@ check_receiver_take_failures() {
         {"usb_open_failed", "The USB receiver could not be reopened", "open_failed", kAttemptUsbOpenFailed,
          DecoderHost::DeviceOpenFailed},
         {"previous_stopping", "A previous session is still stopping", "", kAttemptPreviousStopping, -1},
+        /* A start naming an RTL-SDR serial: the service's own text, which Main.qml leads with. */
+        {"usb_serial_duplicate", "2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open.",
+         "refused", kAttemptUsbSerialDuplicate, DecoderHost::NoDeviceFailure},
+        {"usb_serial_missing", "No RTL-SDR with serial 00000003 is plugged in.", "detached", kAttemptUsbSerialMissing,
+         DecoderHost::DeviceDetached},
     };
     for (const Case& c : cases) {
         DecoderHostAndroid host;

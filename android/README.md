@@ -1576,7 +1576,12 @@ and never counts. A start takes the dongle its final arguments name
 (`UsbReceiverKind.rtlSerialOfArgs()`), so an Advanced `-i rtl:serial=B` wins over
 the saved serial: a connection to another dongle is switched for it at once
 while permission holds, or the start fails with the broker's reason and a
-permission prompt for it. The engine checks the descriptor's serial again.
+permission prompt for it. A start whose serial two readable dongles carry, or no
+attached dongle carries, fails with its own kind (`usb_serial_duplicate`,
+`usb_serial_missing`), and the failure card leads with the reason and the fix
+("2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open.
+Unplug the extra one, or give each its own serial with rtl_eeprom -s on a
+computer."). The engine checks the descriptor's serial again.
 When a saved system names one serial and its Advanced arguments name another,
 the app still asks for the saved one before the start, so give the serial in
 one place only.
