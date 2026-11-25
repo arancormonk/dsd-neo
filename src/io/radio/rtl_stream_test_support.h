@@ -145,6 +145,10 @@ typedef struct rtl_stream_test_cqpsk_toggle_result {
     int fsk_reset_pending_after_toggle;
     int reset_consumed;
     int have_prev_after_consume;
+    /* The CQPSK differential demodulator's previous phasor after the toggle (the helper seeds 0.25 - 0.25i when the
+       demod starts on CQPSK). */
+    float cqpsk_prev_r_after;
+    float cqpsk_prev_j_after;
 } rtl_stream_test_cqpsk_toggle_result;
 
 int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,
@@ -1057,10 +1061,9 @@ int rtl_stream_test_capture_plan(int dsp_bw_hz, uint32_t* out_capture_rate_hz, i
 /* The stream start's DSP rate warnings at @p dsp_rate_hz for a stream on CQPSK or not (@p cqpsk); returns 1 when it
  * warned that TETRA cannot run there. */
 int rtl_stream_test_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk);
-/* The derived-SPS lines the rate-chain log writes for an output rate, on CQPSK or not (@p cqpsk): the info line and
- * the atypical-rate warning, each empty when there is none. */
-void rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size,
-                                       char* warn, size_t warn_size);
+/* Logs the derived-SPS line the rate-chain log writes for an output rate, as stream open logs it, and writes it to
+ * @p info (empty when there is none). It is the only line the rate-chain log writes about samples per symbol. */
+void rtl_stream_test_log_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size);
 /* Forget the rate the last TETRA rate warning named, so the next one warns again. */
 void rtl_stream_test_reset_tetra_rate_warning(void);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,

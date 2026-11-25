@@ -27,6 +27,11 @@ Item {
         property int cancels: 0
         function control(action, session, hit) { return true; }
         function arm() { arms++; return ""; }
+        // As SignalSearchModel::searchBandwidthKhz() reads the ranges: 72 kHz while an enabled NFM range identifies
+        // TETRA (digital 10), else 48 kHz (issue #748).
+        function searchBandwidthKhz() {
+            return ranges.some(function (r) { return r.enabled && !r.am && r.digital === 10; }) ? 72 : 48;
+        }
         function cancelArm() { cancels++; }
         function removeAvoid(frequency) {}
         function avoidFrequency(session, frequency) { return true; }
@@ -35,21 +40,29 @@ Item {
         // handed, retuned to the detection with its mode and gain.
         // A detection that recorded its receiver ("inputSpec") gets that receiver's own settings instead: an RTL's
         // PPM, bias tee and tuner gain, an rtl_tcp server's endpoint too.
+        // A receiver the app cannot open, or a confirmed protocol this build does not decode, gives only the reason
+        // (issue #748 B18, B6). A confirmed TETRA detection, trunked or direct mode, decodes with -fT at 72 kHz; any
+        // other at 48 kHz, on both branches, whatever the source's rate (issue #748).
+        readonly property var flags: ({"TETRA": "-fT", "TETRA DMO": "-fT", "DMR": "-fs"})
         function systemForHit(hit, source) {
             var spec = hit.inputSpec || "";
+            if (spec.indexOf("soapy") === 0)
+                return {handoffRefusal: "Found on a SoapySDR receiver, which this app cannot open"};
+            var flag = hit.confirmed ? flags[hit.protocol] : "-fA";
+            if (!flag)
+                return {handoffRefusal: "This version cannot decode " + hit.protocol};
+            var found = {freqMhz: hit.freqMHz, decodeFlag: flag, gainDb: 21, trunking: false, searchUnresolved: false,
+                bandwidthKhz: flag === "-fT" ? 72 : 48};
             if (spec.length) {
                 var parts = spec.split(":");
-                var heard = {sourceType: spec.indexOf("rtltcp") === 0 ? "rtltcp" : "usb", ppm: "3", biasTee: 1,
-                    bandwidthKhz: 48};
+                var heard = {sourceType: spec.indexOf("rtltcp") === 0 ? "rtltcp" : "usb", ppm: "3", biasTee: 1};
                 if (heard.sourceType === "rtltcp") {
                     heard.host = parts[1];
                     heard.port = parseInt(parts[2], 10);
                 }
-                return Object.assign(heard, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
-                    searchUnresolved: false});
+                return Object.assign(heard, found);
             }
-            return Object.assign({}, source, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
-                searchUnresolved: false});
+            return Object.assign({}, source, found);
         }
     }
     TestCase {
@@ -166,6 +179,38 @@ Item {
             compare(app.sessionSystem.sourceType, "rtltcp");
             compare(app.sessionSystem.host, "10.0.0.7");
             verify(!app.exploring);
+        }
+        // Issue #748: a search starts at 72 kHz while an enabled range
+        // identifies TETRA and at 48 kHz otherwise, never at the app's
+        // default bandwidth; a retry follows the ranges as they are then.
+        function test_search_rate_follows_its_ranges() {
+            var ranges = searchStub.ranges;
+            var bandwidth = prefs.bandwidthKhz;
+            prefs.bandwidthKhz = 96;
+            var cases = [{ranges: ranges, khz: 48},
+                {ranges: [Object.assign({}, ranges[0], {digital: 3}), Object.assign({}, ranges[0], {name: "TETRA", digital: 10})], khz: 72},
+                {ranges: [Object.assign({}, ranges[0], {digital: 3}), Object.assign({}, ranges[0], {name: "TETRA", digital: 10, enabled: false})], khz: 48}];
+            try {
+                for (var c of cases) {
+                    searchStub.ranges = c.ranges;
+                    // Each start is a retry of the failed one before it, as the
+                    // screen's Start is: both arm the ranges as they are then.
+                    if (decoderHost.sessionState === 0) {
+                        startSearch();
+                    } else {
+                        testContext.setLifecycleFailure("rtl_tcp: connection refused");
+                        testContext.setLifecyclePhase(4);
+                        screen().requestClose();
+                        app.retrySource();
+                        tryCompare(decoderHost, "sessionState", 1);
+                    }
+                    verify(app.sessionSystem.signalSearch);
+                    compare(app.sessionSystem.bandwidthKhz, c.khz, JSON.stringify(c.ranges));
+                }
+            } finally {
+                searchStub.ranges = ranges;
+                prefs.bandwidthKhz = bandwidth;
+            }
         }
         // Editing a failed search opens Signal search, not Explore setup.
         function test_edit_of_a_failed_search_opens_the_search() {
@@ -413,6 +458,86 @@ Item {
             activateMenuItem("searchActionExplore");
             compare(decoderHost.sessionState, 1);
             compare(app.sessionSystem.name, "Exploring");
+            searchStub.history = [];
+        }
+        // Issue #748 B18: a history row found on a SoapySDR receiver offers
+        // neither Explore here nor Save as system, and a handoff asked for it
+        // anyway starts nothing and opens no wizard: no USB RTL-SDR stands in.
+        function test_unopenable_receiver_row_hands_off_nothing() {
+            var soapy = Object.assign({}, detection, {inputSpec: "soapy:driver=rtlsdr",
+                handoffRefusal: "Found on a SoapySDR receiver, which this app cannot open"});
+            searchStub.history = [soapy];
+            enterState(0);
+            wait(0);
+            findChild(screen(), "searchHistoryActions").activate();
+            var menu = findChild(screen(), "searchDetectionMenu");
+            verify(menu.visible);
+            verify(!findChild(menu, "searchActionExplore").enabled);
+            verify(!findChild(menu, "searchActionSave").enabled);
+            menu.cancel();
+            screen().exploreDetection(soapy);
+            screen().saveDetection(soapy);
+            compare(decoderHost.sessionState, 0);
+            verify(!app.wizardOpen);
+            verify(app.signalSearchOpen);
+            searchStub.history = [];
+        }
+        // Issue #748: a TETRA detection, trunked or direct mode, is saved from
+        // its history row as a -fT system at 72 kHz and explored the same
+        // way; a DMR one found by the same 72 kHz search is saved at 48 kHz.
+        function test_tetra_detection_hands_off_at_72_khz_data() {
+            return [{tag: "TETRA", protocol: "TETRA", flag: "-fT", khz: 72},
+                {tag: "TETRA DMO", protocol: "TETRA DMO", flag: "-fT", khz: 72},
+                {tag: "DMR from a 72 kHz search", protocol: "DMR", flag: "-fs", khz: 48}];
+        }
+        function test_tetra_detection_hands_off_at_72_khz(data) {
+            var ranges = searchStub.ranges;
+            var found = Object.assign({}, detection, {confirmed: true, protocol: data.protocol, freqMHz: "426.706250",
+                frequency: 426706250});
+            searchStub.ranges = [Object.assign({}, ranges[0], {digital: 10})];
+            try {
+                enterState(2);
+                compare(app.sessionSystem.bandwidthKhz, 72, "the search runs at 72 kHz");
+                searchStub.history = [found];
+                wait(0);
+                findChild(screen(), "searchHistoryActions").activate();
+                activateMenuItem("searchActionSave");
+                verify(app.wizardOpen);
+                var wizard = findChild(app, "wizardScreen");
+                compare(wizard.decodeFlag, data.flag);
+                compare(wizard.bwText, String(data.khz));
+                compare(wizard.freqText, "426.706250");
+                app.wizardOpen = false;
+                screen().exploreDetection(found);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(app.sessionSystem.name, "Exploring");
+                compare(app.sessionSystem.decodeFlag, data.flag);
+                compare(app.sessionSystem.bandwidthKhz, data.khz);
+                compare(app.sessionSystem.freqMhz, "426.706250");
+            } finally {
+                searchStub.history = [];
+                searchStub.ranges = ranges;
+            }
+        }
+        // Issue #748 B6: a detection confirmed as a protocol this build does
+        // not decode offers neither action, and a handoff asked for it anyway
+        // starts nothing and opens no wizard.
+        function test_unknown_protocol_row_hands_off_nothing() {
+            var unknown = Object.assign({}, detection, {confirmed: true, protocol: "Tetrapol",
+                handoffRefusal: "This version cannot decode Tetrapol"});
+            searchStub.history = [unknown];
+            enterState(0);
+            wait(0);
+            findChild(screen(), "searchHistoryActions").activate();
+            var menu = findChild(screen(), "searchDetectionMenu");
+            verify(menu.visible);
+            verify(!findChild(menu, "searchActionExplore").enabled);
+            verify(!findChild(menu, "searchActionSave").enabled);
+            menu.cancel();
+            screen().exploreDetection(unknown);
+            screen().saveDetection(unknown);
+            compare(decoderHost.sessionState, 0);
+            verify(!app.wizardOpen);
             searchStub.history = [];
         }
         // A USB permission wait keeps the request whole: granted, it starts

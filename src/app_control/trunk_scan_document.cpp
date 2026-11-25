@@ -348,19 +348,8 @@ inspectDocument(const char* path, const char* base, bool channel, Document& doc,
 
 const char*
 targetTypeName(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK: return "p25-trunk";
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK: return "dmr-trunk";
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return "dmr-conventional";
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return "nxdn-trunk";
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return "nxdn-conventional";
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK: return "nxdn48-trunk";
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return "nxdn48-conventional";
-        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL: return "p25-conventional";
-        case DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL: return "nfm-conventional";
-        case DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL: return "am-conventional";
-    }
-    return "";
+    /* The parser's own spellings, so a type added there is named here too (issue #890). */
+    return dsd_trunk_scan_target_type_name(type);
 }
 
 dsd_app_scan_csv_target

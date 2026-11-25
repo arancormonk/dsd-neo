@@ -1218,7 +1218,21 @@ test_stream_voice_replaces_foreign_active_call(void) {
                       M17_STREAM_CLEAR_DISPATCHED);
     (void)get_m17_call(state, &call);
     err |= expect_int("unchecked-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
+    /* A checked LSF a clean LICH chunk has since disputed (another transmission after a missed EOT and LSF frame) vouches
+       for nothing: its speech plays but earns no checked media either. */
     state->m17_lsf_checked = 1U;
+    m17_state_ext* link = test_m17_ext(state);
+    if (link == NULL) {
+        return 1;
+    }
+    link->lsf_unbroken = 1U; /* no break in RF continuity since the LSF was checked */
+    link->lsf_disputed = 1U;
+    err |= expect_int("disputed-LSF M17 voice dispatches under a scan",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    (void)get_m17_call(state, &call);
+    err |= expect_int("disputed-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
+    link->lsf_disputed = 0U;
     err |= expect_int(
         "checked-LSF M17 voice dispatches under a scan",
         m17_dispatch_stream_payload(opts, state, payload_bits, (uint16_t)(M17_REF_STREAM_FN + 1U), processed_bits),
@@ -2825,6 +2839,69 @@ test_lsf_search_evidence_follows_the_published_call(void) {
 
     dsd_signal_search_evidence_set(NULL);
     dsd_signal_search_call_set(NULL);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* The access notes an LSF sends a signal search, the last one's code, and how many noted the evidence before them. */
+static int g_access_code_notes, g_access_code_sync, g_access_code_before_evidence;
+static dsd_signal_search_access_note g_access_code_note;
+
+static void
+capture_access_code(const dsd_state* state, const dsd_signal_search_access_note* note) {
+    (void)state;
+    if (!note) {
+        return;
+    }
+    g_access_code_notes++;
+    g_access_code_note = *note;
+    g_access_code_sync = note->sync;
+    if (g_search_evidence.calls == 0) {
+        g_access_code_before_evidence++;
+    }
+}
+
+/* Issue #748 B14: an LSF of stream data type 0 is neither voice nor data and opens no call, so the CAN a signal search
+ * reads from the LSF's call record is not there. A CRC-valid one carries its CAN to the search through the access hook,
+ * of an M17 sync type, before the confirmation that reports it; one whose CRC failed carries nothing. */
+static int
+test_call_free_lsf_carries_its_can_to_search(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    g_access_code_notes = g_access_code_before_evidence = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(1U, 0U, 0U, 0U, 9U, 0U, 0U), NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    dsd_signal_search_evidence_set(capture_search_evidence);
+    dsd_signal_search_access_set(capture_access_code);
+
+    int err = 0;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("relaxed bad call-free LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_int("a failing LSF CRC carries no CAN", g_access_code_notes, 0);
+
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("valid call-free LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    dsd_call_snapshot call;
+    err |= expect_int("a call-free LSF publishes no call", get_m17_call(state, &call), 0);
+    err |= expect_int("a call-free LSF still confirms to search", g_search_evidence.calls, 1);
+    err |= expect_int("a call-free LSF carries its CAN once", g_access_code_notes, 1);
+    err |= expect_int("the CAN is carried before the confirmation", g_access_code_before_evidence, 1);
+    err |= expect_int("the carried CAN is of an M17 sync type", DSD_SYNC_IS_M17(g_access_code_sync) ? 1 : 0, 1);
+    err |= expect_u8("carried CAN kind", g_access_code_note.kind, (uint8_t)DSD_ACCESS_CODE_CAN);
+    err |= expect_int("carried CAN value", g_access_code_note.value, 9);
+
+    dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_access_set(NULL);
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -6205,6 +6282,9 @@ static int
 expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
     uint8_t zero_meta[sizeof(state->m17_meta)];
     DSD_MEMSET(zero_meta, 0, sizeof(zero_meta));
+    const m17_state_ext* link = m17_state_ext_find(state);
+    uint8_t zero_head[sizeof(link->lsf_checked_head)];
+    DSD_MEMSET(zero_head, 0, sizeof(zero_head));
     int err = 0;
     if (state->m17_lsf_checked != 0U || state->m17_str_dt != (uint8_t)TEST_STREAM_TYPE_UNKNOWN || state->m17_can != 0U
         || state->m17_enc != 0U || state->m17_enc_st != 0U || state->m17_payload_decrypted != 0U
@@ -6214,6 +6294,14 @@ expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
                     boundary, (unsigned)state->m17_lsf_checked, (unsigned)state->m17_str_dt, (unsigned)state->m17_can,
                     (unsigned)state->m17_enc, (unsigned)state->m17_enc_st, (unsigned)state->m17_payload_decrypted,
                     (unsigned)state->m17_signature_advertised, (unsigned)state->m17_meta[0]);
+        err = 1;
+    }
+    /* The scan side's copy of the checked LSF and its dispute go with it (issue #890). */
+    if (link != NULL
+        && (link->lsf_disputed != 0U || link->lsf_unbroken != 0U
+            || memcmp(link->lsf_checked_head, zero_head, sizeof(zero_head)) != 0)) {
+        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u unbroken %u head[0] %02X\n", boundary,
+                    (unsigned)link->lsf_disputed, (unsigned)link->lsf_unbroken, (unsigned)link->lsf_checked_head[0]);
         err = 1;
     }
     return err;
@@ -6316,6 +6404,11 @@ test_link_setup_boundaries_clear_the_same_set(void) {
         uint8_t held[M17_LICH_BITS];
         build_encoded_lich_chunk(lsf_bits, 1U, held);
         (void)m17_process_lich(state, opts, held);
+        /* A binding a scan hold already counts as disputed (another transmission's LICH, issue #890). */
+        m17_state_ext* link = m17_state_ext_find(state);
+        if (link != NULL) {
+            link->lsf_disputed = 1U;
+        }
         const char* label;
         switch (boundary) {
             case 0: {
@@ -7734,6 +7827,7 @@ main(void) {
     err |= test_lsf_crc_confirms_the_transmission();
     err |= test_lsf_names_stream_mode_only_behind_its_crc();
     err |= test_lsf_search_evidence_follows_the_published_call();
+    err |= test_call_free_lsf_carries_its_can_to_search();
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();
     err |= test_stream_voice_chain_onepoles_run_at_8k();

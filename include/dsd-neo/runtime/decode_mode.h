@@ -69,7 +69,9 @@ int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfi
  *
  * Every preset other than TETRA leaves it as it applies (dsd_apply_decode_mode_preset()). A selector that sets the
  * decoder flags itself, as the CLI's -fp, -fh, -fH, -fe, -fE, -fZ, -fB, -fP and -fU do, leaves it here, so the last
- * selector replaces TETRA rather than running beside it. NULL arguments do nothing.
+ * selector replaces TETRA rather than running beside it. While a scan session holds the extension
+ * (dsd_state::tetra_ext_scan_held, issue #890) the extension stays allocated for its next TETRA row, which starts it
+ * cold; the rest is left as above. NULL arguments do nothing.
  */
 void dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state);
 

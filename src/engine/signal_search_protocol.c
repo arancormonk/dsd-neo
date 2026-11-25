@@ -37,11 +37,28 @@ dsd_engine_signal_search_sync_protocol(int synctype) {
     if (DSD_SYNC_IS_DSTAR(synctype)) {
         return "D-STAR";
     }
+    /* Trunked and direct mode TETRA share these sync words: the burst names the family, and the decoder's own report
+       says which mode it confirmed (issue #748). */
+    if (DSD_SYNC_IS_TETRA(synctype)) {
+        return "TETRA";
+    }
     return NULL;
+}
+
+int
+dsd_engine_signal_search_protocol_is_tetra(const char* protocol) {
+    return protocol && (strcmp(protocol, "TETRA") == 0 || strcmp(protocol, "TETRA DMO") == 0);
 }
 
 int
 dsd_engine_signal_search_family_matches(const char* hit_protocol, int synctype) {
     const char* family = dsd_engine_signal_search_sync_protocol(synctype);
-    return family && hit_protocol && strncmp(hit_protocol, family, strlen(family)) == 0;
+    if (!family || !hit_protocol) {
+        return 0;
+    }
+    /* "TETRA DMO" is its own identification, not a TETRA rate the way NXDN48 is an NXDN one. */
+    if (strcmp(family, "TETRA") == 0) {
+        return strcmp(hit_protocol, family) == 0;
+    }
+    return strncmp(hit_protocol, family, strlen(family)) == 0;
 }

@@ -24,10 +24,12 @@ extern "C" {
  * same transmission already did. A zero means the decoder consumed a frame's worth of symbols and
  * proved nothing, which is what the SPS hunt needs to hear to stop crediting a false sync (#399,
  * #419). A frame any of them drops as cut by a flagged interruption or a carrier boundary
- * (dsd_state_frame_read_lost()) returns zero. Only processM17LSF() and processM17PKT() also count
- * the input's end inside the frame (shutdown, or a pending fallback to another input) as a cut,
- * marking it interrupted (dsd_state_note_input_end()) and returning zero; the stream and BERT
- * readers check only dsd_state_frame_read_lost(). processM17PKT() returns only the packet frame's own verdict (issue #890): 1 for a
+ * (dsd_state_frame_read_lost()) returns zero. processM17STR(), processM17LSF() and processM17PKT()
+ * also count the input's end inside the frame (shutdown, or a pending fallback to another input)
+ * as a cut, marking it interrupted (dsd_state_note_input_end()) and returning zero, and the stream
+ * and LSF readers drop a frame the symbol clock restarted inside (split between two receptions)
+ * the same way, before any of it is decoded (issue #890); the BERT reader checks only
+ * dsd_state_frame_read_lost(). processM17PKT() returns only the packet frame's own verdict (issue #890): 1 for a
  * chunk the strict RF packet rule accepted in order, or for a last frame (EOF) whose packet's CRC
  * passed, only the latter verifying the packet; zero for a frame the rule rejects (a chunk out of
  * order or out of step, malformed metadata, an empty packet, a failed packet CRC) even while the

@@ -1193,7 +1193,7 @@ test_idle_analog_width_is_no_acquisition_change(void) {
 
 /* --- Issue #526: the AM scan class --- */
 
-_Static_assert(DSD_SCAN_MODE_AM == 10 && DSD_SCAN_MODE_LAST == DSD_SCAN_MODE_AM, "am is reserved as the last class");
+_Static_assert(DSD_SCAN_MODE_AM == 10, "am is reserved as class 10");
 
 /* "am" is the one spelling, trimmed and case-insensitive, with no aliases; it is an analog class whose demodulator is
  * the AM envelope detector, as nfm's is the FM discriminator, and the digital classes run neither. */
@@ -1217,7 +1217,7 @@ test_am_class_names(void) {
     assert(dsd_scan_mode_alias_hint("am") == NULL);
     char names[128];
     assert(dsd_scan_mode_names_list(names, sizeof names) == 0);
-    assert(strcmp(names, "p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am") == 0);
+    assert(strcmp(names, "p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm, am, tetra-dmo") == 0);
 }
 
 /* An am row runs the AM monitor (the -fM preset: analog family, AM demodulator) over the saved baseline, whatever the
@@ -1543,12 +1543,21 @@ test_scope_cqpsk_explicit_rule(void) {
     }
     assert(dsd_scan_mode_cqpsk_explicit(o, s, NULL) == 1);
     assert(dsd_scan_mode_cqpsk_explicit(NULL, s, &cqpsk) == 0);
-    static const dsd_scan_mode gfsk[] = {DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODE_NXDN48};
+    static const dsd_scan_mode gfsk[] = {DSD_SCAN_MODE_DMR,  DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODE_NXDN48,
+                                         DSD_SCAN_MODE_DPMR, DSD_SCAN_MODE_DSTAR,  DSD_SCAN_MODE_YSF,
+                                         DSD_SCAN_MODE_M17};
     for (size_t i = 0; i < sizeof gfsk / sizeof gfsk[0]; i++) {
         assert(dsd_scan_mode_enter(o, s, gfsk[i]) == 0);
         s->rf_mod = 1;
         cqpsk = -1;
         assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == 0);
+    }
+    /* Issue #890: a TETRA DMO target lands the CQPSK chain, whatever modulation the decoder is on. */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    for (int rf_mod = 0; rf_mod <= 2; rf_mod++) {
+        s->rf_mod = rf_mod;
+        cqpsk = -1;
+        assert(dsd_scan_mode_cqpsk_explicit(o, s, &cqpsk) == 1 && cqpsk == 1);
     }
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_NFM) == 0);
     s->rf_mod = 1;
@@ -1673,6 +1682,125 @@ test_tetra_session_survives_typed_rows(void) {
     free(o);
 }
 
+/* --- Issue #890: the TETRA DMO scan class --- */
+
+_Static_assert(DSD_SCAN_MODE_TETRA_DMO == 11 && DSD_SCAN_MODE_LAST == DSD_SCAN_MODE_TETRA_DMO,
+               "tetra-dmo is appended as class 11, the last one");
+
+/* "tetra-dmo" is the one spelling, trimmed and case-insensitive; a digital class (no analog demodulator) on TETRA's own
+ * profile, 18000 sym/s over four levels, which an inherited row parked on that hunt profile recovers too. */
+static void
+test_tetra_dmo_class_names(void) {
+    dsd_scan_mode parsed = DSD_SCAN_MODE_INHERIT;
+    assert(dsd_scan_mode_parse(" TETRA-dmo ", &parsed) == 0 && parsed == DSD_SCAN_MODE_TETRA_DMO);
+    assert(strcmp(dsd_scan_mode_name(DSD_SCAN_MODE_TETRA_DMO), "tetra-dmo") == 0);
+    static const char* const refused[] = {"tetra", "tetra-dmo-conventional", "tetradmo", "dmo"};
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        assert(dsd_scan_mode_parse(refused[i], &parsed) == -1);
+    }
+    assert(!dsd_scan_mode_is_analog(DSD_SCAN_MODE_TETRA_DMO));
+    assert(dsd_scan_mode_analog_kind(DSD_SCAN_MODE_TETRA_DMO) == -1);
+    const dsd_decode_mode_profile profile = dsd_scan_mode_profile(DSD_SCAN_MODE_TETRA_DMO);
+    assert(profile.symbol_rate_hz == 18000 && profile.levels == 4
+           && profile.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+}
+
+/* A tetra-dmo row runs the TETRA preset over the saved baseline: the TETRA decoder and its CQPSK modulation, timed for
+ * 18000 sym/s, and its leave puts the configured DMR session back; on a TETRA session the row keeps what the decoder
+ * holds, which every other typed row leaves. */
+static void
+test_tetra_dmo_class_enters_tetra(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 72000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->pulse_digi_out_channels = 2;
+    o->pulse_digi_rate_out = 8000;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    dsd_scan_settings baseline;
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(dsd_scan_mode_active(s) == DSD_SCAN_MODE_TETRA_DMO);
+    assert(o->frame_tetra == 1 && o->frame_dmr == 0 && o->frame_p25p1 == 0 && o->analog_only == 0);
+    assert(o->mod_qpsk == 1 && s->rf_mod == 1);
+    assert(s->samplesPerSymbol == 4 && s->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    assert(dsd_scan_mode_effective_profile(o, s).symbol_rate_hz == 18000);
+    assert(o->pulse_digi_out_channels == 2 && o->pulse_digi_rate_out == 8000);
+    assert(dsd_scan_mode_configured_preset(o, s) == DSDCFG_MODE_DMR);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings restored;
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(o->frame_tetra == 0 && o->frame_dmr == 1 && settings_identical(&baseline, &restored));
+
+    /* On a TETRA session the row keeps the decoder's state extension. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    static int marker = 0; /* outlives the state slot that points at it */
+    assert(dsd_state_ext_set(s, DSD_STATE_EXT_PROTO_TETRA, &marker, NULL) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->frame_tetra == 1 && DSD_STATE_EXT_GET_AS(int, s, DSD_STATE_EXT_PROTO_TETRA) == &marker);
+    dsd_scan_mode_leave(o, s);
+    assert(o->frame_tetra == 1 && DSD_STATE_EXT_GET_AS(int, s, DSD_STATE_EXT_PROTO_TETRA) == &marker);
+    (void)dsd_state_ext_set(s, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
+/* Issue #890 B2: a target's modulation auto starts each class on the class's own modulation, not GFSK for every class
+ * but P25: C4FM for P25, YSF, M17 and dPMR, GFSK for DMR, NXDN and D-STAR, QPSK for TETRA DMO. Auto releases a -m lock,
+ * as it always has. */
+static void
+test_auto_modulation_is_the_class_own(void) {
+    static const struct {
+        dsd_scan_mode mode;
+        int rf_mod;
+    } classes[] = {
+        {DSD_SCAN_MODE_P25, 0},    {DSD_SCAN_MODE_YSF, 0},   {DSD_SCAN_MODE_M17, 0},
+        {DSD_SCAN_MODE_DPMR, 0},   {DSD_SCAN_MODE_DMR, 2},   {DSD_SCAN_MODE_NXDN96, 2},
+        {DSD_SCAN_MODE_NXDN48, 2}, {DSD_SCAN_MODE_DSTAR, 2}, {DSD_SCAN_MODE_TETRA_DMO, 1},
+    };
+
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    assert(o);
+    for (size_t i = 0; i < sizeof classes / sizeof classes[0]; i++) {
+        assert(dsd_scan_mode_auto_rf_mod(classes[i].mode) == classes[i].rf_mod);
+        o->mod_cli_lock = 1;
+        o->mod_c4fm = classes[i].rf_mod != 0;
+        o->mod_qpsk = classes[i].rf_mod != 1;
+        o->mod_gfsk = classes[i].rf_mod != 2;
+        dsd_scan_mode_apply_modulation(o, classes[i].mode, DSD_SCAN_MODULATION_AUTO);
+        assert(o->mod_cli_lock == 0);
+        assert(o->mod_c4fm == (classes[i].rf_mod == 0) && o->mod_qpsk == (classes[i].rf_mod == 1)
+               && o->mod_gfsk == (classes[i].rf_mod == 2));
+        assert(dsd_opts_modulation(o) == classes[i].rf_mod);
+    }
+    /* An explicit value stands whatever the class. */
+    dsd_scan_mode_apply_modulation(o, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_GFSK);
+    assert(o->mod_cli_lock == 1 && o->mod_gfsk == 1 && o->mod_c4fm == 0);
+    free(o);
+}
+
+/* Issue #890: a session whose decoder set no preset names (TETRA beside DMR), captured while the hunt was parked on
+ * TETRA's 18000/4 profile, restores that profile, as the other hunt profiles are restored, not the 4800/4 default an
+ * unnamed set gets. */
+static void
+test_inherited_tetra_profile_recovered(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->frame_tetra = 1;
+    o->frame_dmr = 1;
+    assert(dsd_infer_decode_mode_preset(o) == DSDCFG_MODE_AUTO);
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(o, s);
+    assert(profile.symbol_rate_hz == 18000 && profile.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_18000_4);
+    free(s);
+    free(o);
+}
+
 static int g_tetra_ext_cleanups;
 
 static void
@@ -1761,6 +1889,10 @@ test_baseline_is_configured_under_a_row(void) {
 
 int
 main(void) {
+    test_tetra_dmo_class_names();
+    test_tetra_dmo_class_enters_tetra();
+    test_auto_modulation_is_the_class_own();
+    test_inherited_tetra_profile_recovered();
     test_tetra_session_survives_typed_rows();
     test_tetra_session_survives_row_staging();
     test_nfm_class_names();

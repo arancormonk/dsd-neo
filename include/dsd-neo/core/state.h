@@ -1316,7 +1316,8 @@ typedef enum {
  * or a build without radio support. TUNER: a centred capture, with no Fs/4 shift (a native Airspy, offset tuning, the
  * shift off). RATE: a capture rate the calibration did not cover. MODES: an untyped -Y row under decoders with no known
  * channel width (ProVoice, X2-TDMA, TETRA). WIDTH: an analog width the calibration did not cover. NO_WIDTH: an NFM
- * channel with no width set, so no definite channel to judge. */
+ * channel with no width set, so no definite channel to judge. UNSUPPORTED_MODE (issue #890): a row or target whose own
+ * class has no check at all (tetra-dmo), whatever is set; a channel reason like MODES. */
 typedef enum {
     DSD_SCAN_QUIET_REASON_NONE = 0,
     DSD_SCAN_QUIET_REASON_INPUT = 1,
@@ -1325,6 +1326,7 @@ typedef enum {
     DSD_SCAN_QUIET_REASON_MODES = 4,
     DSD_SCAN_QUIET_REASON_WIDTH = 5,
     DSD_SCAN_QUIET_REASON_NO_WIDTH = 6,
+    DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE = 7,
 } dsd_scan_quiet_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
@@ -2975,6 +2977,10 @@ struct dsd_state {
     int input_interrupted;
     /* Why input_interrupted stands (dsd_input_interrupt_reason); the engine loop clears both. */
     int input_interrupt_reason;
+    /* The input interruptions the engine loop has taken up (dsd_state_consume_input_interrupt()): what a decoder
+       observed under one count was read before the input was cut when the count has moved since, though neither the
+       carrier count nor the symbol clock's stream did (a Signal search visit's hunt read that gave up). */
+    uint32_t input_interrupt_seq;
     /* The radio stream's discontinuity count the decoder has taken up to (D5): the symbol reader raises a stream-gap
        interruption when the samples a read returned carry a newer one, and the EDACS analog call loop and the M17
        encoder, which read the stream themselves, take it up there. The engine sets it to the stream's count at each
@@ -3361,6 +3367,10 @@ struct dsd_state {
      *   frame number of it is used once and in order (an unsigned stream through the counter's wrap, a signed one
      *   only rising), so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
+    /* The scan side's copy of the checked LSF's DST, SRC and TYPE, its dispute by a clean LICH chunk and its
+     * continuity since the RF stream was bound (issue #890) are M17's own: they live in the M17 state
+     * extension (src/protocol/m17/m17_state_ext.h, lsf_checked_head, lsf_disputed, lsf_unbroken, rf_frame_*), out of
+     * every frontend's snapshot. With no extension the binding vouches for nothing (fail closed). */
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
     uint8_t m17_tx_ended;
@@ -3722,6 +3732,12 @@ struct dsd_state {
      * frame sync and read by the TETRA decoder for the same burst. Decoder-thread private; never published.
      * The rest of the TETRA decoder state lives in its state extension (src/protocol/tetra/tetra_state.h). */
     dsd_tetra_sync_capture tetra_sync;
+    /* A scan session with a TETRA DMO row holds the TETRA state extension across its other rows (issue #890): while
+     * set, dsd_decode_mode_leave_tetra() turns the decoder off and clears its burst capture and publication but keeps
+     * the extension, so a mixed list's hops neither free nor allocate it. The scan sets it, starts every landing from a
+     * cold TETRA state while it holds it (tetra_scan_visit_reset()), and lets it go when it leaves its rows: a pause,
+     * a stop, a failed start (dsd_engine_scan_tetra_release()). Decoder thread; initState() clears it. */
+    uint8_t tetra_ext_scan_held;
     /* The frame sync's history from its last no-sync exit, for the next call (dsd_frame_sync_history_carry). */
     dsd_frame_sync_history_carry frame_sync_carry;
 
@@ -3855,6 +3871,18 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
     if (reason > state->input_interrupt_reason) {
         state->input_interrupt_reason = reason;
     }
+}
+
+/* The engine loop takes up the input interruption that stands (live_scanner_main_pass()): the flag and its reason
+   clear, and one that stood moves input_interrupt_seq on, so what was observed before it does not join what the next
+   pass reads. */
+static inline void
+dsd_state_consume_input_interrupt(dsd_state* state) {
+    if (state->input_interrupted) {
+        state->input_interrupt_seq++;
+    }
+    state->input_interrupted = 0;
+    state->input_interrupt_reason = DSD_INTERRUPT_NONE;
 }
 
 /* The input ended while a frame was read: the session is stopping (@p exit_requested, which every input that ends with

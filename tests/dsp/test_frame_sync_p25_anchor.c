@@ -912,7 +912,9 @@ static int g_profile_rate;
 static int g_profile_levels;
 
 static int
-capture_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+capture_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                      int ted_sps) {
+    (void)cqpsk_explicit;
     (void)channel_profile;
     (void)ted_sps;
     g_profile_pushes++;

@@ -25,11 +25,13 @@
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../test_support/scan_activity_capture.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
@@ -1038,6 +1040,64 @@ test_missed_first_block_starts_a_new_message(void) {
     rig_close(&r);
 }
 
+/* Issue #890 D4: a slow-data header and a D-PRS record whose CRC passed report the transmission to trunk scan's policy
+   table, with the header's DATA flag; a record is no call of its own, known non-data presence of its DV
+   transmission, named call or not. A record whose CRC failed reports nothing, and so
+   does one whose first byte was read on another scan visit (F4: bound to the transmission and the visit). */
+static void
+test_checked_slow_data_reports_to_trunk_scan(void) {
+    rig r;
+    rig_open(&r);
+    dsd_test_scan_activity_install();
+    uint8_t bytes[60];
+    build_slow_data_header(bytes, "N0CALL", 0x00U);
+    send_superframe(&r, bytes);
+    expect_int("a voice header reports", g_test_scan_activity.count, 1);
+    expect_int("as a D-STAR transmission", DSD_SYNC_IS_DSTAR(g_test_scan_activity.protocol), 1);
+    expect_int("voice, known", g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA,
+               DSD_SCAN_ACTIVITY_KNOWN_DATA);
+    expect_int("voice", g_test_scan_activity.last.data_call, 0);
+    dsd_test_scan_activity_reset();
+    build_slow_data_header(bytes, "N0CALL", 0x80U);
+    send_superframe(&r, bytes);
+    expect_int("a data header reports", g_test_scan_activity.count, 1);
+    expect_int("as data", g_test_scan_activity.last.data_call, 1);
+    rig_close(&r);
+
+    rig_open(&r);
+    dsd_test_scan_activity_install();
+    open_call(&r, "N0CALL");
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("a record of the named call reports", g_test_scan_activity.count, 1);
+    expect_int("as the call's voice", g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA,
+               DSD_SCAN_ACTIVITY_KNOWN_DATA);
+    expect_int("not data", g_test_scan_activity.last.data_call, 0);
+    dsd_test_scan_activity_reset();
+    char bad[128];
+    DSD_SNPRINTF(bad, sizeof(bad), "%s", k_vector);
+    bad[strlen(bad) - 3U] ^= 1;
+    send_gps(&r, bad, strlen(bad), 0);
+    expect_int("a record whose CRC failed reports nothing", g_test_scan_activity.count, 0);
+    rig_close(&r);
+
+    rig_open(&r);
+    dsd_test_scan_activity_install();
+    open_anonymous_call(&r);
+    send_gps(&r, k_vector, strlen(k_vector), 0);
+    expect_int("a late-entry record reports", g_test_scan_activity.count, 1);
+    expect_int("known no data call", g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA,
+               DSD_SCAN_ACTIVITY_KNOWN_DATA);
+    expect_int("presence, not data", g_test_scan_activity.last.data_call, 0);
+    dsd_test_scan_activity_reset();
+    r.state->scan_landing_visit = 5U;
+    send_gps(&r, k_vector, 25U, 0);
+    r.state->scan_landing_visit = 6U;
+    send_gps(&r, k_vector + 25U, strlen(k_vector) - 25U, 0);
+    expect_int("a record begun on another visit reports nothing", g_test_scan_activity.count, 0);
+    dsd_trunk_scan_hooks_set(NULL);
+    rig_close(&r);
+}
+
 int
 main(void) {
     test_vector_position();
@@ -1069,6 +1129,7 @@ main(void) {
     test_text_block_after_a_header();
     test_missed_first_block_starts_a_new_message();
     test_header_blocks_are_never_text_or_gps();
+    test_checked_slow_data_reports_to_trunk_scan();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSTAR_DPRS: %d failure(s)\n", g_failures);
         return 1;

@@ -817,6 +817,14 @@ dsd_rxid_note_tetra_other_cell(dsd_state* state) {
 }
 
 void
+dsd_rxid_note_tetra_no_main_carrier(dsd_state* state) {
+    dsd_received_identity* const id = rxid_tetra(state);
+    if (id != NULL) {
+        rxid_invalidate(id, DSD_RXID_CC_FREQ);
+    }
+}
+
+void
 dsd_rxid_note_tetra_direct_mode(dsd_state* state) {
     dsd_received_identity* const id = rxid_tetra(state);
     if (id != NULL) {

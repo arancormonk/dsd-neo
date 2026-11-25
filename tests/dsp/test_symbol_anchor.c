@@ -29,8 +29,14 @@
 #define SPS       10
 #define SYNC_LEN  24
 #define N_SYMBOLS 40
+#define MAX_SPS   15 /* the widest span a generated sync word below runs at (72 kHz's 4800 sym/s) */
 
 static const char* k_sync = "131111333113313313113313"; /* DMR BS voice sync */
+
+/* Marks a state as the radio's stream (dsd_state::rtl_ctx), whose symbol rate times the move cap; never read through.
+   The state's profile is the 4800 sym/s one it is calloc'd with. */
+static int g_fake_rtl;
+#define FAKE_RTL_CTX ((struct RtlSdrContext*)&g_fake_rtl)
 
 static double
 rc_pulse(double t) {
@@ -66,25 +72,33 @@ noise(void) {
     return ((double)(g_rng >> 11) / 9007199254740992.0) - 0.5;
 }
 
-/* N_SYMBOLS symbols of raised-cosine 4FSK whose true centres sit @p offset samples after the grid's centre index
-   (k * SPS + SPS/2), @p word (@p len symbols) starting at symbol 8, random symbols elsewhere. */
+/* N_SYMBOLS symbols of raised-cosine 4FSK at @p sps samples a symbol whose true centres sit @p offset samples after
+   k * sps + sps / 2 (exactly the index centres[k] at an even span, half a sample before it at an odd one), @p word
+   (@p len symbols) starting at symbol 8, random symbols elsewhere. */
 static void
-make_word_signal(const char* word, int len, double offset, double polarity, double noise_amp, float* samples,
-                 int* centres, char* dibits) {
+make_word_signal_at(int sps, const char* word, int len, double offset, double polarity, double noise_amp,
+                    float* samples, int* centres, char* dibits) {
+    assert(sps >= 2 && sps <= MAX_SPS);
     for (int k = 0; k < N_SYMBOLS; k++) {
         dibits[k] = (k >= 8 && k < 8 + len) ? word[k - 8] : (char)('0' + (int)((noise() + 0.5) * 3.999));
     }
-    for (int n = 0; n < N_SYMBOLS * SPS; n++) {
+    for (int n = 0; n < N_SYMBOLS * sps; n++) {
         double v = 0.0;
         for (int k = 0; k < N_SYMBOLS; k++) {
-            const double centre = (double)(k * SPS) + (0.5 * (double)SPS) + offset;
-            v += level_for(dibits[k]) * rc_pulse(((double)n - centre) / SPS);
+            const double centre = (double)(k * sps) + (0.5 * (double)sps) + offset;
+            v += level_for(dibits[k]) * rc_pulse(((double)n - centre) / sps);
         }
         samples[n] = (float)(polarity * v + noise_amp * noise());
     }
     for (int k = 0; k < N_SYMBOLS; k++) {
-        centres[k] = k * SPS + SPS / 2;
+        centres[k] = k * sps + sps / 2;
     }
+}
+
+static void
+make_word_signal(const char* word, int len, double offset, double polarity, double noise_amp, float* samples,
+                 int* centres, char* dibits) {
+    make_word_signal_at(SPS, word, len, offset, polarity, noise_amp, samples, centres, dibits);
 }
 
 /* The DMR BS voice sync at symbol 8. */
@@ -162,15 +176,19 @@ test_declines(void) {
     assert(dsd_symbol_anchor_measure_offset(samples, N_SYMBOLS * SPS, &centres[8], bad, SYNC_LEN, SPS, &measured) == 0);
 }
 
-/* Through the grid's side: push the samples symbol by symbol, name the sync word, and read the move. */
+/* Through the grid's side: push the samples symbol by symbol, name the sync word, and read the move, the symbols
+   @p offset samples after the grid's centres at @p sps samples a symbol. */
 static int
-run_ring(double offset) {
-    static float samples[N_SYMBOLS * SPS];
+run_ring_at(int sps, double offset, int radio) {
+    static float samples[N_SYMBOLS * MAX_SPS];
     int centres[N_SYMBOLS];
     char dibits[N_SYMBOLS];
-    make_signal(offset, 1.0, 0.0, samples, centres, dibits);
+    /* The grid's centre is sample sps / 2 of its span here, which make_word_signal_at() puts the symbols half a
+       sample after at an odd span. */
+    make_word_signal_at(sps, k_sync, SYNC_LEN, offset - (0.5 * (double)(sps % 2)), 1.0, 0.0, samples, centres, dibits);
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
+    state->rtl_ctx = radio ? FAKE_RTL_CTX : NULL;
     dsd_symbol_arm_sync_anchor(state);                    /* allocates and starts the recording */
     dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN); /* nothing recorded yet, so not measured */
     dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
@@ -178,10 +196,10 @@ run_ring(double offset) {
     assert(dsd_symbol_anchor_take_slip(anchor) == 0);
     int slip = 0;
     for (int k = 0; k < N_SYMBOLS; k++) {
-        for (int i = 0; i < SPS; i++) {
-            dsd_symbol_anchor_push_sample(anchor, samples[k * SPS + i], i == SPS / 2);
+        for (int i = 0; i < sps; i++) {
+            dsd_symbol_anchor_push_sample(anchor, samples[k * sps + i], i == sps / 2);
         }
-        dsd_symbol_anchor_end_symbol(anchor, SPS);
+        dsd_symbol_anchor_end_symbol(anchor, sps);
         if (k == 8 + SYNC_LEN - 1) {
             dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN);
         }
@@ -192,6 +210,11 @@ run_ring(double offset) {
     dsd_state_ext_free_all(state);
     free(state);
     return slip;
+}
+
+static int
+run_ring(double offset) {
+    return run_ring_at(SPS, offset, 1);
 }
 
 static void
@@ -232,30 +255,34 @@ test_reset_drops_the_pending_move(void) {
 /* At a matched filter's switch-on right behind the sync word (M17's LSF, issue #834): measured with no look-ahead
    symbol, after a recording a preamble kept alive past the 64 symbols an armed anchor waits. */
 static int
-run_switch(double offset, int lead_symbols) {
-    static float samples[N_SYMBOLS * SPS];
+run_switch_at(int sps, double offset, int lead_symbols, int radio) {
+    static float samples[N_SYMBOLS * MAX_SPS];
     int centres[N_SYMBOLS];
     char dibits[N_SYMBOLS];
-    /* The grid's centre is sample (SPS - 1) / 2 of its span (dsd_opts_symbol_center()), which leaves the half symbol
-       the measurement reads past the last centre inside the sync word's own span: one sample before make_signal()'s. */
-    make_signal(offset - 1.0, 1.0, 0.0, samples, centres, dibits);
+    /* The grid's centre is sample (sps - 1) / 2 of its span (dsd_opts_symbol_center()), which leaves the half symbol
+       the measurement reads past the last centre inside the sync word's own span: one sample before
+       make_word_signal_at()'s at an even span, half a sample before at an odd one. */
+    const int centre = (sps - 1) / 2;
+    make_word_signal_at(sps, k_sync, SYNC_LEN, offset - ((0.5 * (double)sps) - (double)centre), 1.0, 0.0, samples,
+                        centres, dibits);
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
+    state->rtl_ctx = radio ? FAKE_RTL_CTX : NULL;
     dsd_symbol_hold_sync_anchor(state);
     dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
     assert(anchor != NULL);
     for (int k = 0; k < lead_symbols; k++) { /* the run, held a symbol at a time */
-        for (int i = 0; i < SPS; i++) {
-            dsd_symbol_anchor_push_sample(anchor, 0.0f, i == (SPS - 1) / 2);
+        for (int i = 0; i < sps; i++) {
+            dsd_symbol_anchor_push_sample(anchor, 0.0f, i == (sps - 1) / 2);
         }
-        dsd_symbol_anchor_end_symbol(anchor, SPS);
+        dsd_symbol_anchor_end_symbol(anchor, sps);
         dsd_symbol_hold_sync_anchor(state);
     }
     for (int k = 0; k < 8 + SYNC_LEN; k++) {
-        for (int i = 0; i < SPS; i++) {
-            dsd_symbol_anchor_push_sample(anchor, samples[k * SPS + i], i == (SPS - 1) / 2);
+        for (int i = 0; i < sps; i++) {
+            dsd_symbol_anchor_push_sample(anchor, samples[k * sps + i], i == (sps - 1) / 2);
         }
-        dsd_symbol_anchor_end_symbol(anchor, SPS);
+        dsd_symbol_anchor_end_symbol(anchor, sps);
     }
     dsd_symbol_note_sync_anchor(state, k_sync, SYNC_LEN);
     const int move = dsd_symbol_anchor_take_switch_offset(state);
@@ -264,6 +291,11 @@ run_switch(double offset, int lead_symbols) {
     dsd_state_ext_free_all(state);
     free(state);
     return move;
+}
+
+static int
+run_switch(double offset, int lead_symbols) {
+    return run_switch_at(SPS, offset, lead_symbols, 1);
 }
 
 static void
@@ -277,6 +309,28 @@ test_switch_measures_without_a_look_ahead_symbol(void) {
     /* A preamble longer than an armed anchor waits: held, the recording is still there for the sync word. */
     assert(run_switch(2.0, 100) == 2);
     assert(run_switch(-1.0, 100) == -1);
+}
+
+/* A move is capped at two samples at 48 kHz, whatever the symbol rate, and at the same time on a faster radio stream:
+   three samples at 15 a symbol of 4800 sym/s (M17 at 72 kHz), where a cap fixed at two left the LSFs the switch-on
+   measured four or five samples off still two or three off, and those failed their CRC. 10 samples a symbol (48 kHz)
+   keeps two, and so does a span off the radio, whose rate the decoder does not time from. */
+static void
+test_move_cap_follows_the_rate(void) {
+    for (int sign = -1; sign <= 1; sign += 2) {
+        assert(run_switch_at(15, 2.0 * sign, 0, 1) == 2 * sign);
+        assert(run_switch_at(15, 3.0 * sign, 0, 1) == 3 * sign);
+        assert(run_switch_at(15, 4.0 * sign, 0, 1) == 3 * sign);
+        assert(run_switch_at(15, 5.0 * sign, 0, 1) == 3 * sign);
+        assert(run_switch_at(15, 4.0 * sign, 100, 1) == 3 * sign);
+        assert(run_ring_at(15, 3.0 * sign, 1) == 3 * sign);
+        assert(run_ring_at(15, 5.0 * sign, 1) == 3 * sign);
+        assert(run_switch(3.0 * sign, 0) == 2 * sign);
+        assert(run_ring(3.0 * sign) == 2 * sign);
+        assert(run_switch_at(15, 4.0 * sign, 0, 0) == 2 * sign);
+        assert(run_ring_at(15, 3.0 * sign, 0) == 2 * sign);
+    }
+    assert(run_switch_at(15, 0.0, 0, 1) == 0);
 }
 
 static void
@@ -591,6 +645,7 @@ run_p25_word(const p25_word_case* c) {
 
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
+    state->rtl_ctx = FAKE_RTL_CTX; /* the radio's stream: the move cap is timed for its rate */
     state->lastsynctype = c->lastsynctype;
     dsd_symbol_arm_sync_anchor(state);
     dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
@@ -625,9 +680,18 @@ static const int k_p25_walk[P25_WORD] = {0,  0,  0,  0,  -1, -1, 0, -1, -1, -1, 
                                          -3, -3, -3, -3, -2, -1, 0, 0,  0,  0,  0,  0};
 static const int k_no_walk[P25_WORD] = {0};
 
+/* The move a grid @p offset whole samples off its symbols takes at @p sps samples a symbol of a 4800 sym/s radio stream
+   (symbol_anchor.c): all of it up to two samples at 48 kHz and below, up to the same time at a faster rate. */
+static int
+capped_move(int offset, int sps) {
+    const int rate_hz = sps * 4800;
+    const int cap = rate_hz > 48000 ? ((2 * rate_hz) + 24000) / 48000 : 2;
+    return offset > cap ? cap : (offset < -cap ? -cap : offset);
+}
+
 /* The P25 Phase 1 word, named from its second symbol as the frame sync names it, measures where the frame's grid sits
-   against its symbols, and queues the move that centres it (at most two samples a word): at 24, 48 and 96 kHz (5, 10
-   and 20 samples a symbol), at a fractional rate (50 kHz, spans of 10 and 11), with the transmitter's clock 20 ppm off
+   against its symbols, and queues the move that centres it (at most capped_move()'s cap a word): at 24, 48, 72 and
+   96 kHz (5, 10, 15 and 20 samples a symbol), at a fractional rate (50 kHz, spans of 10 and 11), with the transmitter's clock 20 ppm off
    ours, either polarity. A grid already centred queues no move, measured all the same. */
 static void
 test_p25_word_measures_the_frame_grid(void) {
@@ -641,7 +705,7 @@ test_p25_word_measures_the_frame_grid(void) {
         {5, 0, 0, 1},        /* 24 kHz: the measurement reaches one sample either way */
         {20, 0, 0, 3},       /* 96 kHz */
         {10, 2000, 4800, 3}, /* 50 kHz */
-        {15, 0, 0, 3},       /* 72 kHz */
+        {15, 0, 0, 4},       /* 72 kHz: capped at three */
     };
 
     for (size_t r = 0; r < sizeof(k_rates) / sizeof(k_rates[0]); r++) {
@@ -660,7 +724,7 @@ test_p25_word_measures_the_frame_grid(void) {
                                              k_no_walk,
                                              0};
                     const int slip = run_p25_word(&c);
-                    const int want = offset > 2 ? 2 : (offset < -2 ? -2 : offset);
+                    const int want = capped_move(offset, k_rates[r].whole);
                     if (slip != want) {
                         DSD_FPRINTF(stderr, "P25 word, %d+%d/%d sps, offset %d, polarity %d, %d ppm: moved %d\n",
                                     k_rates[r].whole, k_rates[r].rem, k_rates[r].den, offset, polarity, ppm, slip);
@@ -767,6 +831,7 @@ hunt_word_state(const hunt_word_case* c) {
     }
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
+    state->rtl_ctx = FAKE_RTL_CTX; /* the radio's stream: the move cap is timed for its rate */
     state->samplesPerSymbol = sps;
     state->symbolCenter = centre;
     state->lastsynctype = c->polarity < 0.0 ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
@@ -817,7 +882,7 @@ run_hunt_word(const hunt_word_case* c, int plain, int* out_from_raw) {
     return slip;
 }
 
-/* The word moves the grid toward its symbols, at most two samples, at 24, 48 and 96 kHz, either polarity, read
+/* The word moves the grid toward its symbols, at most capped_move()'s cap, at 24, 48 and 96 kHz, either polarity, read
    unfiltered or through the P25 filter (whose group delay the raw stream runs ahead by), on noise of about a sixth of
    an outer level; the move is the seam's, which a filter switch keeps. A centred grid does not move. */
 static void
@@ -834,7 +899,7 @@ test_p25_hunt_word_moves_the_grid(void) {
                 const hunt_word_case c = {k_rates[r].sps, (double)offset, (double)polarity, k_rates[r].delay, 1.0};
                 int from_raw = 0;
                 const int slip = run_hunt_word(&c, 0, &from_raw);
-                const int want = offset > 2 ? 2 : (offset < -2 ? -2 : offset);
+                const int want = capped_move(offset, k_rates[r].sps);
                 if (slip != want) {
                     DSD_FPRINTF(stderr, "P25 hunt word, %d sps, delay %d, offset %d, polarity %d: moved %d\n",
                                 k_rates[r].sps, k_rates[r].delay, offset, polarity, slip);
@@ -962,7 +1027,7 @@ test_p25_marked_word_moves_the_grid_once_confirmed(void) {
                 int measured = 0;
                 int from_raw = 0;
                 const int slip = marked_word_move(state, &c, &mark, &measured, &from_raw);
-                const int want = offset > 2 ? 2 : (offset < -2 ? -2 : offset);
+                const int want = capped_move(offset, k_rates[r].sps);
                 if (slip != want) {
                     DSD_FPRINTF(stderr, "P25 marked word, %d sps, delay %d, offset %d, polarity %d: moved %d\n", c.sps,
                                 c.delay, offset, polarity, slip);
@@ -1043,6 +1108,8 @@ main(void) {
     test_p25_hunt_word_declines();
     test_p25_marked_word_moves_the_grid_once_confirmed();
     test_p25_marked_word_declines();
+    /* Last: its words draw on the shared random sequence, which the cases above were written against. */
+    test_move_cap_follows_the_rate();
     printf("symbol anchor: OK\n");
     return 0;
 }

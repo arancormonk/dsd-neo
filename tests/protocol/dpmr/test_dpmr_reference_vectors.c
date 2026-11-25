@@ -23,24 +23,32 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../test_support/scan_activity_capture.h"
 #include "dpmr_internal.h"
 #include "dpmr_reference_vectors.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -51,6 +59,16 @@
    2 MiB): each case clears it before use, so none sees another's. */
 static dsd_opts* g_opts;
 static dsd_state* g_state;
+
+/* Clear the decoder for a case. The call store build's real call store keeps its state in a state extension, which a
+   clear alone would leak: it is freed first. */
+static void
+reset_state(dsd_state* state) {
+#ifdef DPMR_TEST_REAL_CALL_STORE
+    dsd_state_ext_free_all(state);
+#endif
+    DSD_MEMSET(state, 0, sizeof(*state));
+}
 
 /* The dibit stream processdPMRvoice() reads, and how far into it we are. A frame body is
    copied in rather than pointed at: callers build one on their own stack, and nothing at
@@ -91,6 +109,21 @@ dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
     (void)state;
 }
 
+/* The capture close a colour code change makes (dpmr_end_call_on_colour_change()): counted, nothing to close. */
+static int g_capture_closes;
+
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)opts;
+    (void)state;
+    (void)slot_mask;
+    (void)synctype;
+    g_capture_closes++;
+}
+
+#ifndef DPMR_TEST_REAL_CALL_STORE /* the call store build links the real receive context (core/receive.c) */
+#include <dsd-neo/core/receive.h>
+
 /* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
 dsd_receive_context
 dsd_receive_context_begin(dsd_state* state, int protocol) {
@@ -105,6 +138,7 @@ dsd_receive_context_end(dsd_state* state, dsd_receive_context saved) {
     state->receive_context_protocol = saved.protocol;
     state->receive_context_active = saved.active;
 }
+#endif
 
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
@@ -411,7 +445,7 @@ test_reference_frames_decode_through_process_dpmr_voice(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
 
     for (int f = 0; f < DPMR_REF_FRAME_COUNT; f++) {
@@ -466,7 +500,7 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
 
     /* One flipped on-air bit inside the first CCH half: Hamming places it, CRC still passes. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[3] ^= 1U; /* low bit of dibit 3, i.e. on-air bit 7 of CCH half 0 */
@@ -479,7 +513,7 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
        six on-air bits apart land in the same codeword and defeat it -- which is the point
        of interleaving, and why the CRC is what stands behind it. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
+    reset_state(state);
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[0] ^= 2U; /* on-air bit 0 -> block 0 */
@@ -489,6 +523,269 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
     /* The second half was untouched and must be unaffected. */
     expect_int("two-errors-other-half-ok", (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[1], 1);
 }
+
+/* Issue #890: a frame whose two CCH halves passed their CRC-7 as a bound pair reports the call to trunk scan's policy
+   table with its service and scrambling from the checked Communications Mode and Version and no party (dPMR has no
+   group bit every call carries), but names no station: a call no checked header opened is anonymous. A frame with a
+   failed half reports nothing. A checked Communications_Start header reports both stations by their raw 24-bit air
+   interface IDs; another message type reports nothing. */
+static void
+test_checked_frames_and_headers_report_to_trunk_scan(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(state);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    for (int f = 0; f < 2; f++) {
+        dsd_test_scan_activity_reset();
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
+        expect_int(f == 0 ? "called pair reports" : "calling pair reports", g_test_scan_activity.count, 1);
+        expect_int("a dPMR report", DSD_SYNC_IS_DPMR(g_test_scan_activity.protocol), 1);
+        expect_int("no header: no station known",
+                   id->known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE), 0);
+        expect_int("no party", id->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0);
+        expect_int("service and scrambling known",
+                   id->known & (DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED),
+                   DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED);
+        expect_int("voice", id->data_call, 0);
+        expect_int("scrambling by the Version", id->encrypted, DPMR_REF_FRAMES[f].version[0] == 3U);
+    }
+    uint8_t body[372];
+    DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
+    body[0] ^= 2U;
+    body[3] ^= 2U;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, body, sizeof(body));
+    expect_int("a failed half reports nothing", g_test_scan_activity.count, 0);
+
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = 0x123456U;
+    header.calling_id = 0x654321U;
+    header.mode = 2U; /* data */
+    header.version = 3U;
+    header.color_code = -1;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("a Communications_Start header reports", g_test_scan_activity.count, 1);
+    expect_int("both stations",
+               g_test_scan_activity.last.target == 0x123456U && g_test_scan_activity.last.source == 0x654321U
+                   && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_TARGET)
+                   && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE),
+               1);
+    expect_int("a data call", g_test_scan_activity.last.data_call, 1);
+    expect_int("scrambled", g_test_scan_activity.last.encrypted, 1);
+    header.message_type = DPMR_MT_ACK;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("another message type reports nothing", g_test_scan_activity.count, 0);
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.mode = 6U; /* reserved: no call */
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("a reserved mode reports nothing", g_test_scan_activity.count, 0);
+}
+
+/* The two stations a reference frame pair names: frame 0's called station, frame 1's calling one. */
+static void
+reference_frame_stations(uint32_t* called, uint32_t* calling) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int f = 0; f < 2; f++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        reset_state(state);
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        *(f == 0 ? called : calling) = state->dPMRVoiceFS2Frame.BoundIdValue & 0xFFFFFFU;
+    }
+}
+
+/* What the last report said of each station: 1 known with @p want, 0 unknown. */
+static void
+expect_stations(const char* tag, int target_known, uint32_t target, int source_known, uint32_t source) {
+    const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
+    char what[96];
+    DSD_SNPRINTF(what, sizeof(what), "%s: target known", tag);
+    expect_int(what, (id->known & DSD_SCAN_ACTIVITY_KNOWN_TARGET) != 0U, target_known);
+    DSD_SNPRINTF(what, sizeof(what), "%s: source known", tag);
+    expect_int(what, (id->known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE) != 0U, source_known);
+    if (target_known) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: target", tag);
+        expect_int(what, (long)id->target, (long)target);
+    }
+    if (source_known) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: source", tag);
+        expect_int(what, (long)id->source, (long)source);
+    }
+}
+
+/* Issue #890: a dPMR call's stations, for its scan reports and the call the policy reads, come only from the checked
+   Communications_Start header that opened it. Its 0/1 and 2/3 pairs confirm it and report it with both of the header's
+   stations; a pair naming another station than the header begins another call, anonymous; so is a call a frame opens
+   after the last one ended (a sync loss), and every call no header opened. A verified colour code change (a frame with
+   a checked half on another code) ends the open call explicitly, with its stations, before the frame is judged. */
+static void
+test_stations_come_only_from_the_calls_header(void) {
+    uint32_t called = 0U;
+    uint32_t calling = 0U;
+    reference_frame_stations(&called, &calling);
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(state);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    dsd_call_snapshot call;
+
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = called;
+    header.calling_id = calling;
+    header.mode = 0U;
+    header.color_code = DPMR_REF_COLOUR_CODE;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_stations("header", 1, called, 1, calling);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("header call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("header call target id", (long)call.ota_target_id, (long)called);
+    expect_int("header call source id", (long)call.ota_source_id, (long)calling);
+    expect_int("header call keeps its dial strings", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
+    const uint64_t header_epoch = call.epoch;
+
+    for (int f = 0; f < 2; f++) {
+        dsd_test_scan_activity_reset();
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        expect_int("pair reports", g_test_scan_activity.count, 1);
+        expect_stations(f == 0 ? "called pair after the header" : "calling pair after the header", 1, called, 1,
+                        calling);
+    }
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("pairs go on with the header's call", call.epoch == header_epoch, 1);
+
+    /* A header naming another called station: its called pair (the reference one) is another call, anonymous. */
+    dpmr_scrambling_reset(state);
+    header.called_id = called ^ 0x000202U;
+    dpmr_process_header(opts, state, &header, 0);
+    header.called_id = called;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("a pair naming another station", 0, 0U, 0, 0U);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("that pair's call has no ids", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+
+    /* The call ended (a sync loss closed it) and the next frame's pair opens another call: anonymous. */
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("the call after an ended one", 0, 0U, 0, 0U);
+
+    /* A verified colour code change: a header on colour code 13, then the reference frames on 12, the caller the same.
+       The header's call ends explicitly before the frame is judged; the frame's call is another, anonymous. */
+    dpmr_confirm_reset(state);
+    header.color_code = DPMR_REF_COLOUR_CODE + 1;
+    dpmr_process_header(opts, state, &header, 0);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    const uint64_t code13_epoch = call.epoch;
+    g_capture_closes = 0;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("calling pair on another colour code", 0, 0U, 0, 0U);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("another colour code: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("another colour code: another call", call.epoch != code13_epoch, 1);
+    expect_int("another colour code: no ids", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+    expect_int("another colour code: its own code", state->dpmr_color_code, DPMR_REF_COLOUR_CODE);
+    expect_int("another colour code: the capture closed", g_capture_closes, 1);
+}
+
+#ifdef DPMR_TEST_REAL_CALL_STORE /* the stubs model no reacquisition */
+#include <dsd-neo/core/events.h>
+
+/* The event layer's hook (dsd_event_sync_slot()), which the call store build defines here: whether any sync while armed
+   saw the slot's call carry a number, as the staged history row and the recording export would read it. */
+static int g_sync_armed;
+static int g_sync_saw_numbers;
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    dsd_call_snapshot call;
+    if (g_sync_armed && dsd_call_state_get(state, slot, &call) > 0
+        && (call.ota_target_id != 0U || call.ota_source_id != 0U || call.policy_target_id != 0U)) {
+        g_sync_saw_numbers = 1;
+    }
+}
+
+enum { DPMR_TEST_DECODE_T0_MS = 1000000 };
+
+/* Issue #890, on the production call store: after a sync loss ends a dPMR call, the call store reacquires it within
+   its window. The ended call's numbers are no header of this reception: the same radio's next transmission whose
+   header was missed would be judged by the old destination. The reopened epoch is seeded with its texts but no
+   numbers, so no reader sees them, the event layer's sync for the reopening frame included; its pairs report
+   anonymous; a header that goes on with it names them again. The decode clock is fixed, so the gap the reacquisition
+   window judges is the test's own (80 ms, one frame), not the scheduler's. */
+static void
+test_reacquired_call_is_anonymous(void) {
+    dsd_decode_clock_use_test((uint64_t)DPMR_TEST_DECODE_T0_MS * 1000000ULL);
+    uint32_t called = 0U;
+    uint32_t calling = 0U;
+    reference_frame_stations(&called, &calling);
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    reset_state(state);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = called;
+    header.calling_id = calling;
+    header.mode = 0U;
+    header.color_code = DPMR_REF_COLOUR_CODE;
+    dpmr_process_header(opts, state, &header, 0);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("pair of the header's call", 1, called, 1, calling);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    const uint64_t header_epoch = call.epoch;
+
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_decode_clock_test_set_ns(((uint64_t)DPMR_TEST_DECODE_T0_MS + 80U) * 1000000ULL);
+    dsd_test_scan_activity_reset();
+    g_sync_armed = 1;
+    g_sync_saw_numbers = 0;
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    g_sync_armed = 0;
+    expect_int("reacquired: no sync saw the ended call's numbers", g_sync_saw_numbers, 0);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("reacquired: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("reacquired: the store reopened the ended call",
+               call.epoch != header_epoch && dsd_call_snapshot_transmission(&call) == header_epoch, 1);
+    expect_int("reacquired: no numbers", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+    expect_int("reacquired: its texts kept", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
+    expect_stations("reacquired pair", 0, 0U, 0, 0U);
+
+    /* A header that goes on with the reacquired call names its stations again. */
+    dpmr_process_header(opts, state, &header, 1);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("header after the reacquisition: its numbers",
+               call.ota_target_id == called && call.ota_source_id == calling, 1);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("pair after that header", 1, called, 1, calling);
+    dsd_decode_clock_use_system();
+}
+#endif
 
 int
 main(void) {
@@ -510,11 +807,21 @@ main(void) {
     test_cch_stages_decode_the_reference_frames();
     test_reference_frames_decode_through_process_dpmr_voice();
     test_a_corrected_bit_error_still_passes_and_two_do_not();
+    test_checked_frames_and_headers_report_to_trunk_scan();
+    test_stations_come_only_from_the_calls_header();
+#ifdef DPMR_TEST_REAL_CALL_STORE
+    test_reacquired_call_is_anonymous();
+#endif
+    reset_state(g_state);
     free(g_state);
     free(g_opts);
 
     if (g_failures == 0) {
+#ifdef DPMR_TEST_REAL_CALL_STORE
+        printf("DPMR_CALL_STORE: OK\n");
+#else
         printf("DPMR_REFERENCE_VECTORS: OK\n");
+#endif
     }
     return g_failures == 0 ? 0 : 1;
 }

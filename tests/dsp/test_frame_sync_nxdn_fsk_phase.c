@@ -24,6 +24,19 @@
  * Symbol transitions are shaped over most of a symbol, as a filtered 2400-baud
  * stream's are, so an off-centre window reads a blend of two symbols rather than
  * a clean one and a phase that drifted shows up as wrong dibits.
+ *
+ * The stream runs at several output rates. The 2400 sym/s grid rules were once
+ * keyed on exactly 20 samples per symbol (48 kHz), so at 72 kHz (30 samples per
+ * symbol) the grid never slipped out of a bad starting phase and a third of the
+ * phases decoded wrong; 36, 60 and 96 kHz failed the same way. 24 kHz (10 samples
+ * per symbol) keeps the 4800 sym/s rules for that span and must still decode.
+ *
+ * 96 kHz runs the shorter transition only. This boxcar shape and the open-loop grid
+ * leave some transition lengths on the slicer's edge at every rate: at 48 kHz a
+ * transition of 12 or 16 samples (instead of 8 or 14) fails 10 and 12 phases, and at
+ * 96 kHz the 14-sample share does the same. Which lengths land there moves with the
+ * span; the grid's stopping instants do not (DSP_SYMBOL_REPLAY,
+ * test_2400_grid_rules_scale_by_time()).
  */
 
 #include <dsd-neo/core/dibit.h>
@@ -42,7 +55,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_state_buffers.h"
 
-#define NXDN48_SPS       20
+#define NXDN48_BAUD      2400
 #define NXDN_FSW         "3131331131"
 #define NXDN_FSW_LEN     10
 #define NXDN_FRAME       192
@@ -55,6 +68,8 @@
 static const char kPayloadCycle[] = "0132230110322301";
 
 static size_t g_ramp_samples = 8U;
+static unsigned int g_output_rate_hz = 48000U;
+static size_t g_sps = 20U;
 static float* g_waveform;
 static size_t g_waveform_len;
 static size_t g_waveform_pos;
@@ -102,7 +117,7 @@ build_waveform(size_t ramp_samples) {
     g_ramp_samples = ramp_samples;
     free(g_waveform);
     g_waveform = NULL;
-    const size_t n = g_dibit_count * NXDN48_SPS;
+    const size_t n = g_dibit_count * g_sps;
     float* nrz = (float*)calloc(n, sizeof(float));
     g_waveform = (float*)calloc(n, sizeof(float));
     if (!nrz || !g_waveform) {
@@ -113,8 +128,8 @@ build_waveform(size_t ramp_samples) {
     }
     for (size_t d = 0; d < g_dibit_count; d++) {
         const float level = level_for_dibit(g_dibits[d]);
-        for (size_t s = 0; s < NXDN48_SPS; s++) {
-            nrz[(d * NXDN48_SPS) + s] = level;
+        for (size_t s = 0; s < g_sps; s++) {
+            nrz[(d * g_sps) + s] = level;
         }
     }
     for (size_t i = 0; i < n; i++) {
@@ -171,7 +186,7 @@ fake_output_kind(void) {
 
 static unsigned int
 fake_output_rate_hz(void) {
-    return 48000U;
+    return g_output_rate_hz;
 }
 
 static int
@@ -273,7 +288,7 @@ run_phase_case(int sample_offset, size_t read_chunk, size_t* out_frame_index) {
         state.synctype = sync;
         /* Which transmitted frame the FSW belongs to: the samples consumed so
            far locate it, and the payload cycle is rotated per frame. */
-        size_t consumed_dibits = (g_waveform_pos - (size_t)sample_offset) / NXDN48_SPS;
+        size_t consumed_dibits = (g_waveform_pos - (size_t)sample_offset) / g_sps;
         size_t frame_index = 0;
         if (consumed_dibits > PREAMBLE_DIBITS) {
             frame_index = (consumed_dibits - PREAMBLE_DIBITS) / NXDN_FRAME;
@@ -320,22 +335,31 @@ main(void) {
     build_dibit_stream();
 
     int failures = 0;
-    /* Two transition shapes: at 8 samples the search-time nudge settles wherever
-       the starting offset left it, at 14 it settles on a fixed bias. Neither is
-       the transmitted clock. Two read chunk sizes vary how much sits in the
-       decoder's cache when a symbol is composed. */
-    static const size_t kRamps[] = {8U, 14U};
+    /* Two transition shapes, 8 and 14 samples at 20 samples per symbol and the
+       same share of a symbol at the other rates: at 8 the search-time nudge
+       settles wherever the starting offset left it, at 14 it settles on a fixed
+       bias. Neither is the transmitted clock. Two read chunk sizes vary how much
+       sits in the decoder's cache when a symbol is composed. Every starting
+       sample offset of a symbol is tried at each rate. */
+    static const unsigned int kRates[] = {24000U, 36000U, 48000U, 60000U, 72000U, 96000U};
+    static const size_t kRampsAt20[] = {8U, 14U};
     static const size_t kChunks[] = {512U, 37U};
-    for (size_t r = 0; r < sizeof(kRamps) / sizeof(kRamps[0]); r++) {
-        if (!build_waveform(kRamps[r])) {
-            DSD_FPRINTF(stderr, "failed to build NXDN48 phase fixture\n");
-            return 1;
-        }
-        for (size_t c = 0; c < sizeof(kChunks) / sizeof(kChunks[0]); c++) {
-            for (int off = 0; off < NXDN48_SPS; off++) {
-                size_t frame_index = 0;
-                if (run_phase_case(off, kChunks[c], &frame_index) != 0) {
-                    failures++;
+    for (size_t q = 0; q < sizeof(kRates) / sizeof(kRates[0]); q++) {
+        g_output_rate_hz = kRates[q];
+        g_sps = kRates[q] / NXDN48_BAUD;
+        const size_t ramps = kRates[q] == 96000U ? 1U : sizeof(kRampsAt20) / sizeof(kRampsAt20[0]);
+        for (size_t r = 0; r < ramps; r++) {
+            if (!build_waveform((kRampsAt20[r] * g_sps) / 20U)) {
+                DSD_FPRINTF(stderr, "failed to build NXDN48 phase fixture\n");
+                return 1;
+            }
+            for (int off = 0; off < (int)g_sps; off++) {
+                for (size_t c = 0; c < sizeof(kChunks) / sizeof(kChunks[0]); c++) {
+                    size_t frame_index = 0;
+                    if (run_phase_case(off, kChunks[c], &frame_index) != 0) {
+                        DSD_FPRINTF(stderr, "  at %u Hz (%zu samples per symbol)\n", g_output_rate_hz, g_sps);
+                        failures++;
+                    }
                 }
             }
         }

@@ -34,6 +34,12 @@ typedef enum {
     DSD_SCAN_ENTRY_AVOIDED,  /**< The operator avoided it for the session. */
     DSD_SCAN_ENTRY_LIST_OFF, /**< Its trunk-scan list is switched off. */
     DSD_SCAN_ENTRY_WIDTH,    /**< The width it runs does not fit the input, so the scan skips it at every visit. */
+    /* A TETRA DMO row the scan skips at every visit (issue #890), one reason per kind of fix: */
+    DSD_SCAN_ENTRY_TETRA_INPUT, /**< The input is no radio I/Q input DSD-neo tunes: never, this session. */
+    DSD_SCAN_ENTRY_TETRA_WAIT,  /**< The radio has published no DSP rate yet (it is opening or reopening). */
+    DSD_SCAN_ENTRY_TETRA_RATE,  /**< The DSP rate is not one TETRA runs at (dsd_tetra_dsp_rate_runs()). */
+    DSD_SCAN_ENTRY_TETRA_CHAIN, /**< The TETRA receive chain cannot run: DSD_NEO_CHANNEL_LPF=0, a TED timing that
+                                     disagrees with the rate, or --tetra-uplink. */
 } dsd_scan_entry_reason;
 
 /** dsd_engine_scan_entry_match()'s answer. */
@@ -95,7 +101,9 @@ int dsd_engine_scan_entry_take_failure(dsd_state* state, dsd_scan_entry_failure_
  * before anything narrows either to a long; a placeholder (0 Hz) row never is. A row on the frequency is eligible when
  * the operator has not avoided it, its trunk-scan list is switched on, and the width it runs fits: its effective
  * width (a session edit, its own, else the configured width of its kind) at the published DSP rate, and an am row only
- * where something demodulates AM -- the rule by which the scan skips a row at every visit. A trunk-scan target cooling
+ * where something demodulates AM; a TETRA DMO row (-Y class tetra-dmo, trunk-scan type tetra-dmo-conventional) only
+ * where the TETRA receive chain can run (issue #890: a radio I/Q input at a known TETRA DSP rate, the channel filter
+ * on, no --tetra-uplink) -- the rule by which the scan skips a row at every visit. A trunk-scan target cooling
  * down after a failed retune is eligible: the pick is explicit. In an untyped -Y list a run of adjacent rows on one
  * frequency is one channel (as `L` and `J` walk it), so that run counts once: the row of it the scan is confirmed on
  * speaks for it while that row itself is in the rotation, avoided neighbours or not (the timed step visits every row

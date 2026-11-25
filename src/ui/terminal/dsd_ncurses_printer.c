@@ -277,6 +277,7 @@ ui_synctype_in_scan_class(int synctype, dsd_scan_mode mode) {
         case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_IS_DSTAR(synctype);
         case DSD_SCAN_MODE_YSF: return DSD_SYNC_IS_YSF(synctype);
         case DSD_SCAN_MODE_M17: return DSD_SYNC_IS_M17(synctype);
+        case DSD_SCAN_MODE_TETRA_DMO: return DSD_SYNC_IS_TETRA(synctype);
         /* An analog row has no frame sync: no digital sync type describes it. */
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM: return 0;
@@ -296,6 +297,8 @@ ui_scan_class_idle_synctype(dsd_scan_mode mode, const dsd_state* state) {
         case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_DSTAR_VOICE_POS;
         case DSD_SCAN_MODE_YSF: return DSD_SYNC_YSF_POS;
         case DSD_SCAN_MODE_M17: return DSD_SYNC_M17_STR_POS;
+        /* A DMO channel is acquired on its synchronisation burst (DSB, EN 300 396-2 clause 9.4.3.2). */
+        case DSD_SCAN_MODE_TETRA_DMO: return DSD_SYNC_TETRA_SB_POS;
         case DSD_SCAN_MODE_NFM:
         case DSD_SCAN_MODE_AM:
         case DSD_SCAN_MODE_INHERIT: return DSD_SYNC_NONE;

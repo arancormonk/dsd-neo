@@ -12,6 +12,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
@@ -29,11 +30,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../test_support/scan_activity_capture.h"
 #include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -147,6 +152,18 @@ void
 dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
     (void)model_scramble_frame(state);
     g_skip_calls++;
+}
+
+/* The capture close a colour code change makes (dpmr_end_call_on_colour_change()): counted, nothing to close. */
+static int g_capture_closes;
+
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)opts;
+    (void)state;
+    (void)slot_mask;
+    (void)synctype;
+    g_capture_closes++;
 }
 
 int
@@ -1109,6 +1126,7 @@ test_confirmed_target_only_call_publishes_the_color_code(void) {
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U; /* the code of a frame with a checked half (issue #890) */
 
     dpmr_print_ids(state);
     dpmr_publish_call(opts, state);
@@ -1128,6 +1146,14 @@ test_confirmed_target_only_call_publishes_the_color_code(void) {
     dpmr_publish_call(opts, state);
     rc |= expect_int("undecoded-channel-code-keeps-color", state->dpmr_color_code, 12);
     rc |= expect_int("undecoded-channel-code-keeps-identity", state->rx_id.access, 12);
+
+    /* Nor does a frame no half of which passed its CRC-7: its code is not verified, and stays out of the call's. */
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 13U;
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("unchecked-frame-keeps-color", state->dpmr_color_code, 12);
+    rc |= expect_int("unchecked-frame-keeps-identity", state->rx_id.access, 12);
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
 
     /* An unconfirmed transmission names nothing. */
     dsd_rxid_reset(state);
@@ -2022,6 +2048,70 @@ test_unconfirmed_frame_leaves_nxdn_crypto_alone(void) {
     return rc;
 }
 
+/* Issue #890: a verified colour code change (a frame with a checked CCH half whose channel code decodes to another
+   code than the open call's) is another system's transmission: the open call ends before the frame is judged, so the
+   frame's call is a new one, never the old one specialized (an anonymous old call included), and the old
+   transmission's scrambling and service do not decide the new frame's failed half. */
+static int
+test_colour_code_change_ends_the_call_before_the_frame(void) {
+    int rc = 0;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int c = 0; c < 3; c++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        /* The open call on colour code 13: confirmed, anonymous (no station named), voice. */
+        state->dpmr_confirmed = 1;
+        dpmr_publish_color_code(state, 13); /* the carrier's code, in the received identity too */
+        dsd_call_observation observation = {.protocol = DSD_SYNC_DPMR_FS2_POS, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        (void)dsd_call_state_get(state, 0U, &call);
+        const uint64_t old_epoch = call.epoch;
+        if (c == 1) {
+            state->dpmr_scrambled = 2U; /* the old transmission was scrambled */
+        } else if (c == 2) {
+            state->dpmr_scrambled = 1U;
+            state->dpmr_mode = 2U + 1U; /* the old transmission was a Type 1 data call */
+        }
+        reset_capture();
+        g_channel_code = 0x5D5D55U; /* colour code 12 */
+        if (c == 0) {
+            /* Both halves checked: the frame confirms the new transmission at once and publishes its call. */
+            state->symbolcnt = 70000U;
+            (void)processdPMRvoice(opts, state);
+            DSD_MEMSET(&call, 0, sizeof(call));
+            rc |= expect_int("colour change: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+            rc |= expect_int("colour change: another call, not the anonymous one specialized", call.epoch != old_epoch,
+                             1);
+            rc |= expect_int("colour change: the frame's code", state->dpmr_color_code, 12);
+            rc |= expect_int("colour change: the capture closed", g_capture_closes > 0, 1);
+            rc |= expect_int("colour change: the received identity's code is the frame's",
+                             (state->rx_id.valid & DSD_RXID_ACCESS) != 0U && state->rx_id.access == 12U, 1);
+            continue;
+        }
+        /* Half 0 fails, half 1 is checked clear voice: half 0 takes the new frame's checked half, not the old call's. */
+        g_fail_half = 0;
+        state->symbolcnt = 80000U;
+        (void)processdPMRvoice(opts, state);
+        if (c == 1) {
+            rc |= expect_int("colour change: the failed half is not the old call's scrambled one",
+                             (int)state->dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_CLEAR);
+        } else {
+            rc |= expect_int("colour change: the failed half's mode is not the old call's data",
+                             (int)state->dPMRVoiceFS2Frame.ServiceMode[0], 0);
+        }
+        rc |= expect_int("colour change: the new transmission must prove itself", state->dpmr_confirmed, 0);
+        /* The weak frame publishes nothing, and the old system's code is no longer the carrier's. */
+        rc |= expect_int("colour change: the old code is no longer the received identity's",
+                         (state->rx_id.valid & DSD_RXID_ACCESS) != 0U, 0);
+    }
+    return rc;
+}
+
 /* Issue #890: a checked end frame forgets the transmission's confirmation (dsd_dispatch_handle_dpmr() calls
    dpmr_confirm_reset()). A false FS2 on the carrier's tail with one CRC-valid half then opens no row and plays nothing;
    only a running second frame confirms again. */
@@ -2076,6 +2166,7 @@ main(void) {
     rc |= test_unconfirmed_frame_keeps_the_scrambler_in_phase();
     rc |= test_impossible_half_numbers_keep_the_tracked_place();
     rc |= test_unconfirmed_frame_leaves_nxdn_crypto_alone();
+    rc |= test_colour_code_change_ends_the_call_before_the_frame();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();
     rc |= test_enc_indication_is_the_frames_own();

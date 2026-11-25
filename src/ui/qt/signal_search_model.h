@@ -92,6 +92,9 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE void removeRange(int row);
     Q_INVOKABLE void moveRange(int row, int direction);
     Q_INVOKABLE QString arm();
+    /** The DSP bandwidth a search of the stored ranges starts at, in kHz (issue #748): 72 while any enabled range
+     * identifies TETRA (it runs only at a multiple of 18 kHz), else 48. Settings' default bandwidth never applies. */
+    Q_INVOKABLE int searchBandwidthKhz() const;
     Q_INVOKABLE void cancelArm();
     Q_INVOKABLE bool control(int action, const QString& session, const QString& hit);
     /** Avoid a history row's frequency for the running session @p session (DSD_SEARCH_ACTION_AVOID_FREQUENCY). The
@@ -107,6 +110,11 @@ class SignalSearchModel : public QObject {
     /** Remove a permanent avoid from the store, here; a running search lifts it at its next tick. */
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
+    /** The saved-system map detection @p hit starts (Save as system, Explore here): its recorded receiver's settings,
+     * else @p source's, retuned to it with its mode, gain and DSP bandwidth (72 kHz for TETRA's -fT, else 48, never
+     * the source's; issue #748). A detection whose recorded receiver the app cannot open (SoapySDR, or any input that
+     * is no RTL-SDR, rtl_tcp or Airspy; B18), or whose confirmed protocol this build does not decode (B6), gives only
+     * {handoffRefusal: why}, the reason its row carries too. */
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;
 
     /**

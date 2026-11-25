@@ -44,6 +44,9 @@ void dsd_app_take_capture_stopped(dsd_opts* opts, dsd_state* state);
    dsd_app_take_capture_stopped() says so in a toast of its own, as it does for a seal; a seal not yet taken is
    replaced, the capture being off already. */
 void dsd_app_note_capture_stopped_at_restart(void);
+/* Decoder thread: a Signal search start's commit hook (dsd_signal_search_commit_fn, issue #748 B13), which takes back a
+   -Y resume still waiting on its row (issue #671); @p user is unused. */
+void dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user);
 #ifdef DSD_NEO_TEST_HOOKS
 
 /* Counts contended policy transactions; relaxed, so observing it adds no synchronization. */

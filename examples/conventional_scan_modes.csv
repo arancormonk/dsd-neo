@@ -10,3 +10,4 @@ channel,frequency_hz,name,mode
 9,150000000,Inherit configured decoder,
 10,154430000,Analog NFM example,nfm
 11,118300000,Analog AM example,am
+12,433400000,TETRA DMO example,tetra-dmo

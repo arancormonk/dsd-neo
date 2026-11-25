@@ -539,6 +539,25 @@ __wrap_rtl_stream_get_ted_sps(void) {
 
 static void land_outstanding_tune(fake_retune* r, dsd_trunk_tune_result result);
 
+/* Issue #890: the stream's last receive request and what became of it (dsd_engine_scan_tetra_chain_settled_other()):
+   none queued, so what the stream publishes is settled, unless a case says a request is still pending. */
+static uint32_t g_rtl_rx_request_seq = 0U;
+static int g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_SETTLED;
+
+uint32_t __wrap_rtl_stream_receive_request_seq(void);
+int __wrap_rtl_stream_receive_request_outcome(uint32_t seq);
+
+uint32_t
+__wrap_rtl_stream_receive_request_seq(void) {
+    return g_rtl_rx_request_seq;
+}
+
+int
+__wrap_rtl_stream_receive_request_outcome(uint32_t seq) {
+    (void)seq;
+    return g_rtl_rx_request_outcome;
+}
+
 int
 __wrap_rtl_stream_get_ted_sps_override(void) {
     if (g_fail_in_flight_at_tune_snapshot) {
@@ -701,6 +720,12 @@ __wrap_rtl_stream_clear_pending_retune_profile(void) {
     g_pending_ted_override = 0;
 }
 
+/* Issue #890: a stream that lands every symbol profile on the FSK discriminator with the wide filter, whatever the
+   tune asked for (a case's knob). */
+static int g_rtl_force_fsk_chain = 0;
+/* Issue #890: the TED samples per symbol every landing applies, whatever the tune asked for (0: the tune's). */
+static int g_rtl_force_ted_sps = 0;
+
 static void
 apply_pending_profile(uint32_t target_freq_hz) {
     if (!g_pending_active) {
@@ -741,9 +766,17 @@ apply_pending_profile(uint32_t target_freq_hz) {
         g_rtl_symbol_levels = g_pending_symbol_levels;
         g_rtl_channel_profile = g_pending_channel_profile;
     }
+    if (g_rtl_force_fsk_chain) {
+        g_rtl_cqpsk_enable = 0;
+        g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    }
     if (g_pending_ted_sps > 0) {
         g_rtl_ted_sps = g_pending_ted_sps;
         g_rtl_ted_sps_override = g_pending_ted_override ? g_pending_ted_sps : 0;
+    }
+    if (g_rtl_force_ted_sps > 0) {
+        g_rtl_ted_sps = g_rtl_force_ted_sps;
+        g_rtl_ted_sps_override = 0;
     }
     g_pending_active = 0;
     g_pending_target_freq_hz = 0;
@@ -7006,7 +7039,9 @@ test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
 static int g_leave_demod_ted_sps = 0;
 
 static int
-record_leave_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+record_leave_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                           int ted_sps) {
+    (void)cqpsk_explicit;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
     (void)levels;
@@ -13747,10 +13782,503 @@ test_typed_goto_refused_by_rigctl_keeps_the_frames(void) {
     return rc;
 }
 
+/* --- Issue #890 D5: a typed tetra-dmo -Y row whose TETRA chain stops being able to run while it is on air (a TED
+   override that disagrees with the rate, the DSP rate moved off TETRA's) leaves at once, under its carrier and under an
+   operator hold, which stays and keeps the row the step lands on. A rate the reopening radio has not published yet
+   keeps it. --- */
+
+/* What the fake stream publishes once a TETRA landing applied: the CQPSK chain at 18000 symbols/s with the TETRA
+   channel profile, its TED at @p ted_sps and the override @p override (0: none). */
+static void
+y_tetra_published(int ted_sps, int override) {
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 18000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_TETRA;
+    g_rtl_ted_sps = ted_sps;
+    g_rtl_ted_sps_override = override;
+}
+
+/* How many times @p needle occurs in @p text. */
+static int
+y_count_text(const char* text, const char* needle) {
+    int n = 0;
+    for (const char* p = strstr(text, needle); p != NULL; p = strstr(p + 1, needle)) {
+        n++;
+    }
+    return n;
+}
+
+/* y_tetra_start() with rows 0 and 2 of the modes @p first and @p last (the TETRA DMO row is row 1). */
+static int
+y_tetra_start_rows(dsd_opts* opts, dsd_state* state, const char* what, dsd_scan_mode first, dsd_scan_mode last) {
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 72000;
+    /* The CQPSK chain delivers the complex rate, which the row is timed for (rtl_stream_output_rate_for_family()). */
+    g_rtl_output_rate = 72000;
+    g_rtl_digital_landing_rate = 72000;
+    install_family_rate_hooks();
+    state->lcn_freq_count = 3;
+    state->trunk_lcn_freq[0] = 461012500;
+    state->trunk_lcn_freq[1] = 425012500;
+    state->trunk_lcn_freq[2] = 462012500;
+    rc |= expect_case(what, "rows typed",
+                      dsd_channel_mode_set(state, 0, first) == 0
+                          && dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_TETRA_DMO) == 0
+                          && dsd_channel_mode_set(state, 2, last) == 0);
+    /* The landings run the 72 kHz chain's own TED timing (4), so the TETRA row lands healthy and the fixture names no
+       cause of its own: a row is named once for the session, and a case's cause must be the one it names. */
+    g_rtl_force_ted_sps = 4;
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    g_rtl_force_ted_sps = 0;
+    rc |= expect_case(what, "on the TETRA row",
+                      state->scan_row_index == 1 && opts->frame_tetra == 1
+                          && dsd_engine_channel_scan_on_air_row(state) == 1);
+    return rc;
+}
+
+/* A typed -Y list (DMR, TETRA DMO, DMR) on the fake 72 kHz radio, stepped onto its TETRA row: 0 when it is on air. */
+static int
+y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
+    return y_tetra_start_rows(opts, state, what, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_DMR);
+}
+
+static void
+y_tetra_finish(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    reset_rtl_profile_fakes();
+}
+
+/* @p cause 0: a TED override of 5 samples per symbol at the 72 kHz rate; 1: the rate moved to 48 kHz. */
+static int
+y_tetra_on_air_case(int held, int cause) {
+    const char* what = cause == 0 ? (held ? "held -Y TETRA row, a TED override" : "-Y TETRA row, a TED override")
+                                  : (held ? "held -Y TETRA row, the rate moved" : "-Y TETRA row, the rate moved");
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    /* What the stream applied for the landing is what it is judged by: a TED of 5 at 72 kHz owes the departure, the
+       rate's own 4 does not (the fake stream's own timing for the row is replaced on both sides). */
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(what, "an applied TED that disagrees", dsd_engine_channel_scan_on_departing_row(state));
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(what, "the rate's own TED", !dsd_engine_channel_scan_on_departing_row(state));
+    /* The operator hold (`Y`), as the command sets it. */
+    state->lcn_scan_hold = held ? 1U : 0U;
+    rc |= expect_case(what, "its chain runs: the carrier decodes through", carrier_frames(opts, state, 20) == 21);
+    /* The radio reopening: no rate yet keeps it. */
+    g_rtl_request_rate_hz = 0;
+    rc |= expect_case(what, "the rate not known yet keeps it", carrier_frames(opts, state, 20) == 21);
+    g_rtl_request_rate_hz = 72000;
+    if (cause == 0) {
+        g_rtl_ted_sps_override = 5;
+    } else {
+        g_rtl_request_rate_hz = 48000;
+    }
+    rc |= expect_case(what, "the carrier yields at its first frame", carrier_frames(opts, state, 20) == 1);
+    rc |=
+        expect_case(what, "the row owes its departure",
+                    dsd_engine_channel_scan_on_departing_row(state) && !dsd_engine_channel_scan_hold_keeps_row(state));
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 2",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == 462012500U && state->scan_row_index == 2
+                          && opts->frame_tetra == 0 && !dsd_engine_channel_scan_on_departing_row(state));
+    rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
+    rc |= expect_case(what, "row 2's carrier decodes through", carrier_frames(opts, state, 20) == 21);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: the -Y scan names a tetra-dmo row once for the session whichever check finds it first: the rate moves to
+   48 kHz while the row is on air, the on-air judge names it and the scan leaves it, and the list-wide width check the
+   next step runs at the new rate counts it skipped without naming it again. */
+static int
+y_tetra_rate_change_named_once_case(void) {
+    const char* name = "-Y TETRA row, the rate moved on air";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetrarateonce") == 0;
+    g_rtl_request_rate_hz = 48000;
+    const int yielded = carrier_frames(opts, state, 20) == 1;
+    noCarrier(opts, state);
+    const int left = dsd_engine_channel_scan_on_air_row(state) != 1;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = y_count_text(log, "WARNING: Scan channel 2 (425.012500 MHz):");
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "named once (yielded %d, left %d, %d named)", yielded, left, named);
+    rc |= expect_case(name, detail, yielded && left && named == 1);
+    if (named != 1) {
+        DSD_FPRINTF(stderr, "%s", log);
+    }
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a typed tetra-dmo row lands on its class's chain under a global -mc lock: the CQPSK chain with the TETRA
+   channel profile, not the FSK discriminator with the wide filter the lock's C4FM rf_mod would give it. */
+static int
+y_tetra_locked_chain_case(void) {
+    const char* name = "-Y TETRA row under -mc";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->mod_c4fm = 1;
+    opts->mod_qpsk = 0;
+    opts->mod_gfsk = 0;
+    opts->mod_cli_lock = 1;
+    state->rf_mod = 0;
+    int rc = y_tetra_start(opts, state, name);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "the landing's chain (cqpsk %d, %d sym/s, profile %d)", g_rtl_cqpsk_enable,
+                 g_rtl_symbol_rate_hz, g_rtl_channel_profile);
+    rc |= expect_case(name, detail,
+                      g_rtl_cqpsk_enable == 1 && g_rtl_symbol_rate_hz == 18000
+                          && g_rtl_channel_profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a blank row after the tetra-dmo row runs the configured decoder's chain, here the FSK discriminator of
+   the configured C4FM decoder: the CQPSK choice the TETRA row's timing recorded is not the blank row's. */
+static int
+y_tetra_then_blank_row_case(void) {
+    const char* name = "-Y blank row after a TETRA row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    state->rf_mod = 0;
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_INHERIT);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "on the blank row with the configured chain (row %d, cqpsk %d, profile %d)",
+                 dsd_engine_channel_scan_on_air_row(state), g_rtl_cqpsk_enable, g_rtl_channel_profile);
+    rc |= expect_case(name, detail,
+                      dsd_engine_channel_scan_on_air_row(state) == 2 && g_rtl_cqpsk_enable == 0
+                          && g_rtl_channel_profile != DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: the tetra-dmo row after an nfm row switches the front end back to the digital family with its CQPSK
+   choice its own, so the stream lands the CQPSK chain whatever DSD_NEO_CQPSK says. */
+static int
+y_tetra_after_nfm_row_case(void) {
+    const char* name = "-Y TETRA row after an nfm row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_DMR);
+    const int at = tune_log_index_for(425012500U);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "its family switch is explicit (family %d, cqpsk %d, explicit %d)",
+                 at >= 0 ? g_tune_log_family[at] : -9, at >= 0 ? g_tune_log_cqpsk[at] : -9,
+                 at >= 0 ? g_tune_log_explicit[at] : -9);
+    rc |= expect_case(name, detail,
+                      at >= 0 && g_tune_log_family[at] == DSD_RX_FAMILY_DIGITAL && g_tune_log_cqpsk[at] == 1
+                          && g_tune_log_explicit[at] == 1);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: two tetra-dmo rows whose stream lands every visit on another chain. The scan leaves each at every
+   visit, and names each row's cause once: the cause of each row is remembered on its own, so naming the other row in
+   between does not make it new again. */
+static int
+y_tetra_two_rows_named_once_case(void) {
+    const char* name = "-Y two TETRA rows on another chain";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    g_rtl_force_fsk_chain = 1;
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetratworows") == 0;
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_TETRA_DMO);
+    int visits = 0;
+    for (int step = 0; step < 9; step++) {
+        const int row = dsd_engine_channel_scan_on_air_row(state);
+        dsd_engine_channel_scan_tetra_judge(opts, state);
+        visits += row == 1 || row == 2;
+        state->last_cc_sync_time -= 11;
+        noCarrier(opts, state);
+    }
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    g_rtl_force_fsk_chain = 0;
+    const int named = y_count_text(log, "TETRA DMO needs the CQPSK chain with the TETRA channel filter");
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "each row named once (%d TETRA visits, %d named)", visits, named);
+    rc |= expect_case(name, detail, visits >= 4 && named == 2);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a tetra-dmo row is named once for the scan session: named for a TED timing that disagrees, visited again
+   after the other rows with its timing right, and failing once more, it is not named again. */
+static int
+y_tetra_warned_once_case(void) {
+    const char* name = "-Y TETRA row named once for the session";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetraonce") == 0;
+    int rc = y_tetra_start(opts, state, name);
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    /* Every landing from here runs the 72 kHz chain's own timing, so the return to the TETRA row is healthy from its
+       first judgement (the one its landing makes). */
+    g_rtl_force_ted_sps = 4;
+    int back = 0;
+    for (int step = 0; step < 6 && !back; step++) {
+        state->last_cc_sync_time -= 11;
+        noCarrier(opts, state);
+        back = step > 0 && dsd_engine_channel_scan_on_air_row(state) == 1;
+        dsd_engine_channel_scan_tetra_judge(opts, state);
+    }
+    g_rtl_force_ted_sps = 0;
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = y_count_text(log, "TETRA DMO needs the TED timed at the DSP rate");
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "named at the first visit only (back %d, %d named)", back, named);
+    rc |= expect_case(name, detail, back && named == 1);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a typed tetra-dmo row whose stream settled on another receive profile (the FSK discriminator with the
+   wide filter) cannot decode TETRA, though it publishes no TED timing to disagree with: while a receive request is still
+   pending the published profile is the stream before it and the row waits; once settled, it owes the departure. */
+static int
+y_tetra_settled_other_case(void) {
+    const char* name = "-Y TETRA row on another chain";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    g_rtl_ted_sps = 0;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_rx_request_seq = 7U;
+    g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_PENDING;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(name, "a request still pending: it waits", !dsd_engine_channel_scan_on_departing_row(state));
+    g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_SETTLED;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(name, "settled on another profile: it departs", dsd_engine_channel_scan_on_departing_row(state));
+    g_rtl_rx_request_seq = 0U;
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a frequency typed for the typed tetra-dmo row on air reads the scan's landed verdict: with the TED timing
+   the stream applied found wrong (5 samples per symbol at 72 kHz), the row is no pick and its go-to is refused, not
+   held while the scan leaves it; with the timing right it is the row on air, held. */
+static int
+y_tetra_entry_reads_the_on_air_verdict_case(void) {
+    const char* name = "-Y TETRA row, a typed frequency";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_scan_entry_match_t match;
+    DSD_MEMSET(&match, 0, sizeof match);
+    const int picked = dsd_engine_scan_entry_match(opts, state, 425012500U, &match);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "a TED that disagrees: no pick (picked %d, reason %d)", picked,
+                 (int)match.reason);
+    rc |= expect_case(name, detail, picked == 0 && match.reason == DSD_SCAN_ENTRY_TETRA_CHAIN);
+    const dsd_scan_goto_result go = dsd_engine_channel_scan_goto_row(opts, state, 1);
+    DSD_SNPRINTF(detail, sizeof detail, "and its go-to is no hold (result %d)", (int)go);
+    rc |= expect_case(name, detail, go != DSD_SCAN_GOTO_HOLDING && !state->lcn_scan_entry_hold);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    DSD_MEMSET(&match, 0, sizeof match);
+    rc |= expect_case(name, "the timing right: the row on air",
+                      dsd_engine_scan_entry_match(opts, state, 425012500U, &match) == 1 && match.row == 1);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* The departure's step whose tune fails late (a timeout, then FAILED): the receiver stays on the TETRA row with the
+   cause it had, named once (no second log line or status line), and the next try waits the step cadence the step
+   paced, not the next pass. */
+static int
+y_tetra_late_failure_case(void) {
+    const char* what = "-Y TETRA row, a departure that fails late";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetralatefailure") == 0;
+    g_rtl_ted_sps_override = 5;
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    rc |= expect_case(what, "the step waits on its tune", request != 0U && dsd_engine_channel_scan_waiting(state));
+    /* Passes while it waits judge the row too (the frame-sync hook and noCarrier() ask for the departure). */
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    noCarrier(opts, state);
+    rc |= expect_case(what, "still waiting", dsd_engine_channel_scan_waiting(state));
+    state->ui_msg[0] = '\0';
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "still on the TETRA row, owing its departure",
+                      !dsd_engine_channel_scan_waiting(state) && dsd_engine_channel_scan_on_air_row(state) == 1
+                          && dsd_engine_channel_scan_on_departing_row(state));
+    /* Within the step cadence the departure is not due again, so no pass steps (the failed tune keeps the frame gate
+       closed until a tune lands, as after any failed step). */
+    rc |= expect_case(what, "within the cadence no departure is due",
+                      !dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s()));
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        state->last_cc_sync_time -= 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_case(what, "and no pass retries it", g_rtl_tune_calls == 0);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s", log); /* the failures above went to the capture */
+    }
+    rc |= expect_case(what, "named once",
+                      y_count_text(log, "TETRA DMO needs the TED timed at the DSP rate") == 1
+                          && strstr(state->ui_msg, "Skipped at every visit") == NULL);
+    /* The cadence ran out: the next try goes. */
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the next departure is due",
+                      dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s()));
+    g_rtl_tune_calls = 0;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |=
+        expect_case(what, "and lands another row",
+                    g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) != 1 && opts->frame_tetra == 0);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* A paused -Y scan on its TETRA row judges nothing: a TED override and a rate change there log nothing and add no
+   status line; the manual session decodes on. */
+static int
+y_tetra_paused_case(void) {
+    const char* what = "-Y TETRA row, paused";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    rc |= expect_case(what, "paused", state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+    state->ui_msg[0] = '\0';
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetrapaused") == 0;
+    g_rtl_ted_sps_override = 5;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    (void)carrier_frames(opts, state, 5);
+    g_rtl_request_rate_hz = 48000;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    (void)carrier_frames(opts, state, 5);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s", log); /* the failures above went to the capture */
+    }
+    rc |= expect_case(what, "nothing named", strstr(log, "TETRA") == NULL && state->ui_msg[0] == '\0');
+    rc |= expect_case(what, "nothing owed", !dsd_engine_channel_scan_on_departing_row(state));
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
 static int
 test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
-           | departure_without_a_carrier_case() | typed_departure_case();
+           | departure_without_a_carrier_case() | typed_departure_case() | y_tetra_on_air_case(0, 0)
+           | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1)
+           | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
+           | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case()
+           | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case() | y_tetra_two_rows_named_once_case()
+           | y_tetra_warned_once_case() | y_tetra_rate_change_named_once_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */
@@ -18532,6 +19060,157 @@ test_y_tetra_holds_only_on_checked_content(void) {
     return rc;
 }
 
+/* Issue #890: a typed simplex -Y row holds on what the scan's policy table admits, as a target of its type does
+   (docs/trunk-scan.md): on a typed tetra-dmo row under the default --no-data-calls, frames whose checked content is
+   CRC-valid short data (each a PROVEN note and a data report the table refuses) give no fresh hangtime, so the row
+   leaves at the first frame boundary past -t and noCarrier() steps; frames whose report is a clear voice call the
+   table admits hold it while they come. With @p partial the refused frames note an open verdict instead (an M17
+   packet's chunks, whose CRC only its last frame checks): a transmission the table already refused renews no wait, so
+   the row leaves the same way; with @p partial 2 the refused call ends after its first frame and the frames after it
+   are a later call's open verdicts, which keep the row past -t, as for any row (the refusal was that call's); with
+   @p partial 3 the refused frame is a checked (PROVEN) one and another call begins at the next frame, whose open
+   verdicts keep the row too (the refusal binds at its own frame's boundary, never to the call after it); with
+   @p partial 4 the refused report's frame observes no call while an earlier transmission's call is still active (its
+   end missed), and the open verdicts keep the row (a refusal binds only to a call its own frame observed); with
+   @p partial 5 the decoder also refreshes that stale call's media at the refused frame, which is no observation, and
+   the row is kept the same way. So does
+   a voice call the table would admit but the protocol's own receive filter refused (@p receive_refused: M17's CAN
+   filter, reported refused rather than not at all): the row leaves the same way. */
+static const dsd_trunk_scan_activity_identity* g_y_admit_identity = NULL;
+
+/* The refused transmission's call (issue #890: a refusal is that transmission's alone, bound to its call): with
+   g_y_admit_call, the observer opens the refused report's call on slot 0 at the first frame, and with
+   g_y_admit_call_ends it ends that call at the second, as a protocol ends a transmission, ages the row's -t and makes
+   no more reports, so the frames after it are a later call's, whose open verdicts the -Y rule waits on. */
+static dsd_state* g_y_admit_state = NULL;
+static int g_y_admit_call = 0;
+static int g_y_admit_call_ends = 0;
+/* A call an earlier transmission left active (its end missed): the observer opens it at the first frame, a checked one
+   with no report; the refused report comes at the second frame, which observes no call of its own, and the row's -t
+   runs out there, the frames from it on noting open verdicts. */
+static int g_y_admit_stale_call = 0;
+
+static int
+y_admit_observer(const dsd_opts* opts, const dsd_state* state) {
+    dsd_state* st = g_y_admit_state;
+    if (st && g_y_admit_stale_call && g_frame_count == 0) {
+        dsd_call_observation stale = dsd_call_observation_data(DSD_SYNC_TETRA_SB_POS, 0U, 99U, 299U);
+        stale.observed_m = dsd_decode_now_mono_s();
+        (void)dsd_call_state_observe(st, &stale, DSD_CALL_BOUNDARY_BEGIN);
+        return 0;
+    }
+    if (st && g_y_admit_stale_call && g_frame_count == 1) {
+        yc_age(st, 1);
+        g_frame_evidence = DSD_CONTENT_EVIDENCE_PARTIAL;
+        g_frame_evidence_hold_ms = 80U;
+    }
+    if (st && g_y_admit_stale_call == 2 && g_frame_count >= 1) {
+        /* The decoder still refreshes the old call's media (M17's retained CAN: m17_mark_stream_media()), which is no
+           observation of the reported transmission. */
+        (void)dsd_call_state_update_media(st, 0U, 1, dsd_decode_now_mono_s());
+    }
+    if (st && g_y_admit_call && g_frame_count == 0) {
+        dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_TETRA_SB_POS, 0U, 100U, 300U);
+        call.observed_m = dsd_decode_now_mono_s();
+        (void)dsd_call_state_observe(st, &call, DSD_CALL_BOUNDARY_BEGIN);
+    }
+    if (st && g_y_admit_call_ends && g_frame_count == 1) {
+        (void)dsd_call_state_end(st, 0U, dsd_decode_now_mono_s());
+        yc_age(st, 1);
+        g_y_admit_identity = NULL;
+        if (g_y_admit_call_ends == 2) {
+            /* Another transmission right after: its own call, whose frames only open verdicts. */
+            dsd_call_observation next = dsd_call_observation_data(DSD_SYNC_TETRA_SB_POS, 0U, 101U, 301U);
+            next.observed_m = dsd_decode_now_mono_s();
+            (void)dsd_call_state_observe(st, &next, DSD_CALL_BOUNDARY_BEGIN);
+            g_frame_evidence = DSD_CONTENT_EVIDENCE_PARTIAL;
+            g_frame_evidence_hold_ms = 80U;
+        }
+    }
+    if (g_y_admit_identity) {
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_TETRA_SB_POS, -1, g_y_admit_identity);
+    }
+    return 0;
+}
+
+static int
+y_admit_case(int voice, int partial, int receive_refused) {
+    const char* what = receive_refused ? "typed -Y TETRA row, a voice call its receive filter refused, open verdicts"
+                       : voice         ? "typed -Y TETRA row, an admitted voice call"
+                       : partial == 5  ? "typed -Y TETRA row, a refused report beside a stale call's media refresh"
+                       : partial == 4  ? "typed -Y TETRA row, a refused report with no call of its own"
+                       : partial == 3  ? "typed -Y TETRA row, a new call after a refused checked frame"
+                       : partial == 2  ? "typed -Y TETRA row, a later call after refused data"
+                       : partial       ? "typed -Y TETRA row, refused data with open verdicts"
+                                       : "typed -Y TETRA row, refused short data";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    /* The open verdicts' holds (80 ms after each frame) and the -t the cases age run on the decode clock: frozen from
+       here, a host pause between the frames cannot end a hold before the next frame renews it. Frozen at the wall time
+       the fixture's landing stamped its hangtime anchor with (time(NULL)), so that anchor reads as it did; the stamps
+       of the monotonic clock before it read as long past, as the cases' own aging makes them. */
+    dsd_decode_clock_use_test((uint64_t)dsd_realtime_time() * 1000000000ULL);
+    dsd_trunk_scan_row_activity_hook_set(dsd_engine_scan_y_typed_activity);
+    static dsd_trunk_scan_activity_identity id; /* the observer reads it through g_y_admit_identity */
+    DSD_MEMSET(&id, 0, sizeof id);
+    id.known = DSD_SCAN_ACTIVITY_KNOWN_SOURCE | DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_DATA
+               | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | (voice ? DSD_SCAN_ACTIVITY_KNOWN_PARTY : 0U);
+    id.source = 100U;
+    id.target = voice ? 0x800001U : 300U;
+    id.data_call = (uint8_t)(voice ? 0U : 1U);
+    id.receive_refused = (uint8_t)(receive_refused ? 1U : 0U);
+    g_y_admit_identity = &id;
+    g_y_admit_state = state;
+    g_y_admit_call = partial != 0 && partial < 4;
+    g_y_admit_stale_call = partial == 5 ? 2 : partial == 4;
+    g_y_admit_call_ends = partial == 3 ? 2 : partial == 2;
+    g_process_frame_observer = y_admit_observer;
+    if (partial < 2) {
+        yc_age(state, 1);
+    }
+    g_frame_sync_type = DSD_SYNC_TETRA_SB_POS;
+    const int tunes = g_rtl_tune_calls;
+    const int noted_partial = partial == 1 || partial == 2;
+    run_synced_frames_noting(opts, state, 5, -1,
+                             noted_partial ? DSD_CONTENT_EVIDENCE_PARTIAL : DSD_CONTENT_EVIDENCE_PROVEN,
+                             noted_partial ? 80U : 0U);
+    char label[200];
+    DSD_SNPRINTF(label, sizeof label, "%s: frames %d (content %u, open %u), tunes %d", what, g_frame_count,
+                 (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_partial_seq, g_rtl_tune_calls - tunes);
+    if ((voice && !receive_refused) || partial >= 2) {
+        rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == tunes && state->scan_row_index == 1);
+    } else {
+        rc |= expect_true(label, g_frame_count == 1
+                                     && (partial ? state->scan_y_partial_seq > 0U : state->scan_y_content_seq > 0U));
+        noCarrier(opts, state);
+        DSD_SNPRINTF(label, sizeof label, "%s: and noCarrier() steps off the row (row %d)", what,
+                     state->scan_row_index);
+        rc |= expect_true(label, g_rtl_tune_calls == tunes + 1 && state->scan_row_index == 2);
+    }
+    g_process_frame_observer = NULL;
+    g_y_admit_identity = NULL;
+    g_y_admit_state = NULL;
+    g_y_admit_call = 0;
+    g_y_admit_call_ends = 0;
+    g_y_admit_stale_call = 0;
+    dsd_trunk_scan_row_activity_hook_set(NULL);
+    g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    y_tetra_finish(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+static int
+test_y_typed_row_holds_on_admitted_activity(void) {
+    return y_admit_case(0, 0, 0) | y_admit_case(1, 0, 0) | y_admit_case(0, 1, 0) | y_admit_case(0, 2, 0)
+           | y_admit_case(0, 3, 0) | y_admit_case(0, 4, 0) | y_admit_case(0, 5, 0) | y_admit_case(1, 1, 1);
+}
+
 /* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier
    boundary (a replay retune) or an input interruption inside its block 2 read. The decoder drops it (TETRA_BURST_CUT
    pins what it leaves), and the frame settles as any frame cut so (process_frame_settle_verdict()): UNPRODUCTIVE across
@@ -18616,6 +19295,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_released_hold_republished();
     rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_tetra_holds_only_on_checked_content();
+    rc |= test_y_typed_row_holds_on_admitted_activity();
     rc |= test_tetra_cut_burst_settles_unproven();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);

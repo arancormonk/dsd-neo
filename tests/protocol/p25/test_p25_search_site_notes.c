@@ -139,7 +139,9 @@ capture_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
 }
 
 static void
-capture_access(const dsd_state* state) {
+capture_access(const dsd_state* state, const dsd_signal_search_access_note* note) {
+    /* A P25 proof carries no code: the decoder holds it. */
+    (void)note;
     ++g_access_notes;
     uint16_t value = 0U;
     g_access_read = dsd_access_code_current(state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) ? (int)value : -1;

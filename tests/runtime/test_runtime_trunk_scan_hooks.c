@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -134,6 +135,68 @@ fake_p25_activity(const dsd_opts* opts, const dsd_state* state, int protocol, in
     assert(target == 1001U && source == 2002U);
     assert(is_private == 1 && encrypted == 1 && data_call == 0);
     g_activity_calls++;
+}
+
+/* Issue #890: the simplex digital families' report slot. */
+static int g_digital_calls;
+static int g_digital_protocol;
+static int g_digital_slot;
+static const dsd_trunk_scan_activity_identity* g_digital_identity;
+
+static void
+fake_digital_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                      const dsd_trunk_scan_activity_identity* identity) {
+    (void)opts;
+    (void)state;
+    g_digital_calls++;
+    g_digital_protocol = protocol;
+    g_digital_slot = slot;
+    g_digital_identity = identity;
+}
+
+static int g_search_notes;
+
+static void
+count_search_note(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
+                  const char* access) {
+    (void)state;
+    (void)protocol;
+    (void)sync;
+    (void)slot;
+    (void)target;
+    (void)source;
+    (void)access;
+    g_search_notes++;
+}
+
+/* The slot reaches its implementation with the protocol, slot and identity intact; with nothing installed, or a NULL
+   identity, nothing is called. Unlike the DMR, NXDN and P25 reports it adds no Signal search evidence: each simplex
+   protocol notes its own. */
+static void
+test_digital_activity_slot(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_scan_activity_identity id;
+    DSD_MEMSET(&id, 0, sizeof(id));
+    id.known = DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    id.target = 4242U;
+    dsd_signal_search_evidence_set(count_search_note);
+    dsd_trunk_scan_hooks_set(NULL);
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_YSF_POS, -1, &id);
+    assert(g_digital_calls == 0);
+    dsd_trunk_scan_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.digital_conventional_activity = fake_digital_activity;
+    dsd_trunk_scan_hooks_set(&hooks);
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_TETRA_SB_POS, -1, &id);
+    assert(g_digital_calls == 1 && g_digital_protocol == DSD_SYNC_TETRA_SB_POS && g_digital_slot == -1);
+    assert(g_digital_identity == &id && g_digital_identity->target == 4242U);
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_YSF_POS, -1, NULL);
+    assert(g_digital_calls == 1);
+    assert(g_search_notes == 0);
+    /* The P25 report, for contrast, notes the search. */
+    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, DSD_SYNC_P25P1_POS, 0, 1U, 2U, 0, 0, 0);
+    assert(g_search_notes == 1);
+    dsd_signal_search_evidence_set(NULL);
+    dsd_trunk_scan_hooks_set(NULL);
 }
 
 static void
@@ -388,5 +451,6 @@ main(void) {
     assert(g_list_set_calls == 3);
     test_recovery_ownership();
     test_presumptive_startup_owner();
+    test_digital_activity_slot(&opts, &state);
     return 0;
 }

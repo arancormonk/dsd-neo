@@ -1350,6 +1350,25 @@ def load_cu8_fixture(path):
     return centered[0::2] + 1j * centered[1::2]
 
 
+def load_fixture_iq(sidecar_path):
+    """Read a committed fixture in its own sample format (cu8, or little-endian cs16) from its sidecar.
+
+    Returns (samples, sample_rate_hz, center_frequency_hz), the samples complex baseband with full scale at 1.
+    """
+    with open(sidecar_path, encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    data_path = os.path.join(os.path.dirname(sidecar_path), metadata["data_file"])
+    sample_format = metadata.get("sample_format")
+    if sample_format == "cu8":
+        samples = load_cu8_fixture(data_path)
+    elif sample_format == "cs16" and metadata.get("endianness") == "little":
+        raw = np.fromfile(data_path, dtype="<i2").astype(np.float64) / 32768.0
+        samples = raw[0::2] + 1j * raw[1::2]
+    else:
+        raise ValueError(f"{sidecar_path}: no reader for {sample_format} ({metadata.get('endianness')})")
+    return samples, int(metadata["sample_rate_hz"]), int(metadata["center_frequency_hz"])
+
+
 def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2, sample_rate=SAMPLE_RATE_HZ):
     """Sum the signal with a delayed, attenuated copy cfo_hz off in frequency at sample_rate (48 kHz by default)."""
     if delay_samples > 0:
@@ -2537,8 +2556,9 @@ def tetra_speech_crc(bits, degree, low):
     return [(reg >> i) & 1 for i in range(degree)]
 
 
-def tetra_tch_fs_dibits():
-    """Two 216-bit NDB blocks carrying one known TCH/FS codeword."""
+def tetra_tch_fs_dibits(seed=None):
+    """Two 216-bit NDB blocks carrying one known TCH/FS codeword, scrambled with seed (the register form of
+    tetra_scramble()), by default the trunked synth's cell (MCC 460, MNC 4242, colour code 17)."""
     speech = [((i * 13 + 5) >> 2) & 1 for i in range(274)]
 
     # EN 300 395-2 speech channel coding. Class 0 is uncoded. Classes 1 and
@@ -2584,7 +2604,8 @@ def tetra_tch_fs_dibits():
 
     # The 432 type-4 bits are one block, scrambled as one sequence across both
     # halves of the burst (EN 300 392-2 clause 8.2.5).
-    seed = (((17 | (4242 << 6) | (460 << 20)) << 2) | 3) & 0xFFFFFFFF
+    if seed is None:
+        seed = (((17 | (4242 << 6) | (460 << 20)) << 2) | 3) & 0xFFFFFFFF
     scrambled = tetra_scramble(interleaved, seed)
     dibits = [(scrambled[i] << 1) | scrambled[i + 1] for i in range(0, 432, 2)]
     return dibits[:108], dibits[108:]
@@ -3178,6 +3199,262 @@ def build_tetra_uplink_gap(out_dir):
     return written
 
 
+# A TETRA direct mode (DMO) group call, synthetic, at 72 kHz (issue #890): what a tetra-dmo-conventional scan target
+# holds on. One master DM-MS, its bursts in their DM timeslots (EN 300 396-2 clause 9.4: 255 symbols a slot, four slots a
+# frame, 18 frames a multiframe), the carrier off between them (receiver noise only):
+#
+# - set-up: DM-SETUP in a DSB in all four slots of frames 17 and 18 (EN 300 396-3 clause 4.3.2.1.1, figure 1);
+# - occupation, TETRA_DMO_MULTIFRAMES multiframes: full-slot speech (TCH/S) in a DNB in slot 1 of frames 1 to 17,
+#   DM-OCCUPIED in a DSB in slot 3 of frames 6, 12 and 18 and in slot 1 of frame 18 (clause 4.3.1);
+# - the end: DM-TX CEASED in a DSB in slots 1 and 3 of the next two frames (clause 4.3.5).
+#
+# DSB and DNB layouts are EN 300 396-2 clause 9.4.3.2, tables 15 and 16 (preamble, phase adjustment, then the blocks
+# and training sequences the trunked bursts use). A DSB's SCH/S and SCH/H are scrambled with the all-zero colour code
+# (seed 3), the speech with the DM colour code of the call's MNI and source address (EN 300 396-3 clause 8.2.4). SCH/S:
+# DMO system code 1101, DMAC-SYNC, direct MS-MS, channel A, the slot and frame it is sent in, DM-1 (clear). SCH/H:
+# EN 300 396-3 tables 22, 31 and 36 (the real-air DM-OCCUPIED of tests/protocol/tetra/test_tetra_dmo.c, laid out
+# again with the fixture's own identities). Every identity is made up: MNI 460/4242 (the trunked synth's network), source
+# SSI TETRA_DMO_SOURCE to group TETRA_DMO_GROUP. Bursts start TETRA_DMO_BURST_DELAY symbols into their slot (table 14)
+# with a carrier phase of their own; levels are complex RMS over the burst. Deterministic from the seed.
+TETRA_DMO_NAME = "tetra_dmo_call_synth_72k"
+TETRA_DMO_RATE_HZ = 72000
+TETRA_DMO_CENTRE_HZ = 433000000
+TETRA_DMO_SEED = 0x444D4F43
+TETRA_DMO_MULTIFRAMES = 3
+TETRA_DMO_LEAD_S = 0.25
+TETRA_DMO_TAIL_S = 0.25
+TETRA_DMO_BURST_DELAY = 17
+TETRA_DMO_LEVEL = 0.25  # burst RMS, of full scale before quantization
+TETRA_DMO_NOISE_DB = -30.0  # complex noise power under the burst's
+TETRA_DMO_MCC = 460
+TETRA_DMO_MNC = 4242
+TETRA_DMO_SOURCE = 4321
+TETRA_DMO_GROUP = 6060
+TETRA_DMO_SYSTEM_CODE = 0xD
+TETRA_DMO_MSG_SETUP = 8
+TETRA_DMO_MSG_OCCUPIED = 13
+TETRA_DMO_MSG_TX_CEASED = 15
+TETRA_DMO_P1 = (0, 3, 0, 2, 0, 3)  # EN 300 396-2 clause 9.4.3.3.3 equation 61, as dibits
+TETRA_DMO_P3 = (0, 1, 1, 0, 1, 3)  # clause 9.4.3.3.4 equation 65
+TETRA_DMO_FC = (3,) * 4 + (0,) * 32 + (3,) * 4  # clause 9.4.3.3.1 equations 55 to 57
+TETRA_DMO_TAIL = 0  # clause 9.4.3.3.6: (t1, t2) = (0, 0)
+
+
+def tetra_dmo_mni():
+    """The call's mobile network identity: the 10-bit MCC then the 14-bit MNC (EN 300 396-3 clause 9.3.20)."""
+    return (TETRA_DMO_MCC << 14) | TETRA_DMO_MNC
+
+
+def tetra_dmo_dcc_seed(mni=None, source=TETRA_DMO_SOURCE):
+    """The DM colour code scrambling seed (EN 300 396-3 clause 8.2.4) of mni (the call's by default) and source:
+    e(1) to e(6) the MNI's six least significant bits, e(7) to e(30) the source address, in tetra_scramble()'s
+    register form."""
+    if mni is None:
+        mni = tetra_dmo_mni()
+    e = ((mni & 0x3F) << 24) | (source & 0xFFFFFF)
+    return ((e << 2) | 3) & 0xFFFFFFFF
+
+
+def tetra_dmo_sch_s_dibits(slot, frame):
+    """A DMAC-SYNC SCH/S (EN 300 396-3 table 21) sent in DM timeslot slot (1-4) of frame (1-18), as its 60 DSB block 1
+    dibits."""
+    info = [0] * 60
+    pack_field(info, TETRA_DMO_SYSTEM_CODE, 0, 4)
+    pack_field(info, 0, 4, 2)  # SYNC PDU type: DMAC-SYNC
+    pack_field(info, 0, 6, 2)  # communication type: direct MS-MS
+    pack_field(info, 0, 8, 2)  # master/slave link and gateway generated message flags: reserved in direct mode
+    pack_field(info, 0, 10, 2)  # A/B channel usage: channel A, normal mode
+    pack_field(info, slot - 1, 12, 2)
+    pack_field(info, frame, 14, 5)
+    pack_field(info, 0, 19, 2)  # air interface encryption state: DM-1
+    return tetra_control_block_dibits(info, 11, 3, 120)
+
+
+def tetra_dmo_sch_h_dibits(message, countdown=0):
+    """A DMAC-SYNC SCH/H (EN 300 396-3 table 22) from the call's source to its group carrying message: DM-SETUP or
+    DM-OCCUPIED (tables 31 and 36: a clear group speech call, power class 4) or DM-TX CEASED (table 38, no
+    reservation), then fill bits, as its 108 DSB block 2 dibits."""
+    info = [0] * 124
+    pack_field(info, 0, 0, 10)  # reserved in direct MS-MS operation
+    pack_field(info, 1, 10, 1)  # fill bits follow the PDU
+    pack_field(info, 0, 11, 1)  # not fragmented
+    pack_field(info, countdown, 12, 2)  # frame countdown
+    pack_field(info, 0, 14, 2)  # destination address type: SSI
+    pack_field(info, TETRA_DMO_GROUP, 16, 24)
+    pack_field(info, 0, 40, 2)  # source address type: SSI
+    pack_field(info, TETRA_DMO_SOURCE, 42, 24)
+    pack_field(info, tetra_dmo_mni(), 66, 24)
+    pack_field(info, message, 90, 5)
+    at = 95
+    if message in (TETRA_DMO_MSG_SETUP, TETRA_DMO_MSG_OCCUPIED):
+        # Timing flag, LCH in frame 3 and pre-emption flags 0; power class 4, no power control, 2 reserved; no dual
+        # watch, single frequency; circuit mode 0000 (TCH/S speech), 4 reserved, normal priority. The DM-SDU: no
+        # end-to-end encryption, a group call, no external source, 2 reserved.
+        pack_field(info, 0b000_100_0_00_0_0_0000_0000_00, at, 21)
+        pack_field(info, 0b0_1_0_00, at + 21, 5)
+        at += 26
+    elif message == TETRA_DMO_MSG_TX_CEASED:
+        # No reservation time, no timing or requests flag, no changeover requests, no recent user priority, no timing
+        # change, normal priority; the DM-SDU's cease cause 0.
+        pack_field(info, 0, at, 13)
+        pack_field(info, 0, at + 13, 4)
+        at += 17
+    else:
+        raise ValueError(f"tetra_dmo_sch_h_dibits: no layout for message type {message}")
+    info[at] = 1  # the first fill bit; the rest are 0
+    return tetra_control_block_dibits(info, 101, 3, 216)
+
+
+def tetra_dmo_phase_adjust(dibits_after):
+    """The phase adjustment symbol (EN 300 396-2 clause 9.4.3.3.5, table 18): the dibit whose phase step undoes the
+    steps of symbols SN8 to SN126, given the burst's dibits from SN8 on."""
+    total = sum(TETRA_PHASE_STEP[d] for d in dibits_after[: 126 - 8 + 1])
+    for dibit, step in TETRA_PHASE_STEP.items():
+        if abs((step + total) - 2.0 * math.pi * round((step + total) / (2.0 * math.pi))) < 1e-9:
+            return dibit
+    raise AssertionError("no phase adjustment dibit")
+
+
+def tetra_dmo_dsb(slot, frame, message, countdown=0):
+    """A DM synchronization burst (EN 300 396-2 table 16): 235 dibits."""
+    after = list(TETRA_DMO_FC) + tetra_dmo_sch_s_dibits(slot, frame) + [int(c) for c in TETRA_SSB_SYNC]
+    after += tetra_dmo_sch_h_dibits(message, countdown) + [TETRA_DMO_TAIL]
+    return list(TETRA_DMO_P3) + [tetra_dmo_phase_adjust(after)] + after
+
+
+def tetra_dmo_dnb_speech():
+    """A DM normal burst carrying full-slot speech (EN 300 396-2 table 15, preamble P1 and normal training sequence 1:
+    one TCH, table 17), scrambled with the call's DM colour code: 235 dibits."""
+    block1, block2 = tetra_tch_fs_dibits(tetra_dmo_dcc_seed())
+    after = block1 + [int(c) for c in TETRA_NTS_SYNC] + block2 + [TETRA_DMO_TAIL]
+    return list(TETRA_DMO_P1) + [tetra_dmo_phase_adjust(after)] + after
+
+
+def tetra_dmo_traffic_slots(multiframes=TETRA_DMO_MULTIFRAMES):
+    """The call's traffic, multiframe after multiframe: full-slot speech in slot 1 of frames 1 to 17 and DM-OCCUPIED in
+    slot 1 of frame 18 and slot 3 of frames 6, 12 and 18 (each a burst's dibits, or None for a slot the master does not
+    send in). A whole number of multiframes, so it repeats seamlessly."""
+    slots = []
+    speech = tetra_dmo_dnb_speech()
+    for _ in range(multiframes):
+        for frame in range(1, 19):
+            for slot in (1, 2, 3, 4):
+                if slot == 1 and frame <= 17:
+                    slots.append(speech)
+                elif (slot == 3 and frame in (6, 12, 18)) or (slot == 1 and frame == 18):
+                    slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_OCCUPIED))
+                else:
+                    slots.append(None)
+    return slots
+
+
+def tetra_dmo_slots(multiframes=TETRA_DMO_MULTIFRAMES):
+    """The call's timeslots in order: each a burst's dibits, or None for a slot the master does not send in."""
+    slots = []
+    for frame in (17, 18):
+        for slot in (1, 2, 3, 4):
+            slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_SETUP, countdown=18 - frame))
+    slots += tetra_dmo_traffic_slots(multiframes)
+    for frame in (1, 2):
+        for slot in (1, 2, 3, 4):
+            slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_TX_CEASED) if slot in (1, 3) else None)
+    return slots
+
+
+def tetra_dmo_pres_sch_s_dibits(slot, frame, comm_type=1, rep_modes=1, channel_usage=2):
+    """A DPRES-SYNC SCH/S (EN 300 396-4 table 2) of a DM-REP's free-channel presence signal in DM timeslot slot (1-4)
+    of frame (1-18), as its 60 DSB block 1 dibits: by default a type 2 repeater (operating modes 01) on channel B
+    (channel usage 10), one frequency, channel free."""
+    info = [0] * 60
+    pack_field(info, TETRA_DMO_SYSTEM_CODE, 0, 4)
+    pack_field(info, 1, 4, 2)  # SYNC PDU type: DPRES-SYNC
+    pack_field(info, comm_type, 6, 2)
+    # Not managed direct mode, the gateway flags reserved, one frequency (8 to 11).
+    pack_field(info, rep_modes, 12, 2)
+    # The uplink spacing and the slave link flag zero (14 to 20).
+    pack_field(info, channel_usage, 21, 2)
+    pack_field(info, 0, 23, 2)  # channel state: free
+    pack_field(info, slot - 1, 25, 2)
+    pack_field(info, frame, 27, 5)
+    return tetra_control_block_dibits(info, 11, 3, 120)
+
+
+def tetra_dmo_pres_sch_h_dibits(repeater=17):
+    """A DPRES-SYNC SCH/H (EN 300 396-4 table 3) from repeater address repeater, its MNI all ones (not advertised), as
+    its 108 DSB block 2 dibits."""
+    info = [0] * 124
+    pack_field(info, repeater, 0, 10)
+    pack_field(info, 0xFFFFFF, 10, 24)
+    pack_field(info, 3, 34, 2)  # validity time unit
+    return tetra_control_block_dibits(info, 101, 3, 216)
+
+
+def tetra_dmo_pres_dsb(slot, frame):
+    """A presence signal DM synchronization burst (EN 300 396-2 table 16): 235 dibits."""
+    after = list(TETRA_DMO_FC) + tetra_dmo_pres_sch_s_dibits(slot, frame) + [int(c) for c in TETRA_SSB_SYNC]
+    after += tetra_dmo_pres_sch_h_dibits() + [TETRA_DMO_TAIL]
+    return list(TETRA_DMO_P3) + [tetra_dmo_phase_adjust(after)] + after
+
+
+def tetra_dmo_pres_slots(multiframes=1):
+    """A presence signal train: a DPRES-SYNC burst in slots 1 and 3 of every frame (each a burst's dibits, or None)."""
+    return [tetra_dmo_pres_dsb(slot, frame) if slot in (1, 3) else None
+            for _ in range(multiframes) for frame in range(1, 19) for slot in (1, 2, 3, 4)]
+
+
+def tetra_dmo_samples(slots=None, lead_s=TETRA_DMO_LEAD_S, tail_s=TETRA_DMO_TAIL_S):
+    """The DMO call fixture's complex samples (unnormalized), the noise included; with slots, those timeslots (each a
+    burst's dibits or None) between lead_s and tail_s of noise instead."""
+    rate = TETRA_DMO_RATE_HZ
+    sps = rate // TETRA_SYMBOL_RATE
+    slot_len = TETRA_SLOT_SYMBOLS * sps
+    if slots is None:
+        slots = tetra_dmo_slots()
+    lead = int(round(lead_s * rate))
+    count = lead + len(slots) * slot_len + int(round(tail_s * rate))
+    rng = np.random.default_rng(TETRA_DMO_SEED)
+    signal = np.zeros(count, dtype=np.complex128)
+    pad = 8 * sps
+    for index, dibits in enumerate(slots):
+        if dibits is None:
+            continue
+        # SN0, the phase reference, is the burst delay's last symbol; SN1 follows it (EN 300 396-2 clause 9.4.2.4).
+        start = lead + index * slot_len + TETRA_DMO_BURST_DELAY * sps
+        phase = rng.uniform(0.0, 2.0 * math.pi)
+        impulses = np.zeros((len(dibits) + 1) * sps, dtype=np.complex128)
+        impulses[0] = complex(math.cos(phase), math.sin(phase))
+        for symbol, dibit in enumerate(dibits):
+            phase += TETRA_PHASE_STEP[dibit]
+            impulses[(symbol + 1) * sps] = complex(math.cos(phase), math.sin(phase))
+        shaped = tetra_pulse_shape(np.concatenate([np.zeros(pad), impulses, np.zeros(pad)]), sps)
+        rms = math.sqrt(np.mean(np.abs(shaped[pad : pad + len(impulses)]) ** 2))
+        signal[start - pad : start - pad + len(shaped)] += shaped * (TETRA_DMO_LEVEL / rms)
+    sigma = TETRA_DMO_LEVEL * 10.0 ** (TETRA_DMO_NOISE_DB / 20.0) / math.sqrt(2.0)
+    noise = rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+    return signal + noise
+
+
+def build_tetra_dmo(out_dir):
+    """Write the TETRA direct mode call fixture (TETRA_DMO_NAME)."""
+    samples = tetra_dmo_samples()
+    peak = max(np.max(np.abs(samples.real)), np.max(np.abs(samples.imag)))
+    if peak >= 0.9:
+        raise ValueError(f"{TETRA_DMO_NAME}: the bursts reach the cu8 rails")
+    # to_cu8(normalize=False) scales by its default headroom; divide it back out (build_attenuated()).
+    written = write_fixture(
+        out_dir,
+        TETRA_DMO_NAME,
+        samples / 0.9,
+        normalize=False,
+        sample_rate=TETRA_DMO_RATE_HZ,
+        dsp_bw_khz=TETRA_DMO_RATE_HZ // 1000,
+        center_frequency_hz=TETRA_DMO_CENTRE_HZ,
+        capture_center_frequency_hz=TETRA_DMO_CENTRE_HZ,
+    )
+    print(f"{TETRA_DMO_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
 def analog_voice_band(rng, count):
     """Voice-band audio: noise limited to 300-3000 Hz, louder in syllables than between them.
 
@@ -3471,6 +3748,7 @@ def derived_fixture_names():
         + [TETRA_UPLINK_NAME]
         + [tetra_uplink_phase_name(offset) for offset in TETRA_UPLINK_PHASE_OFFSETS]
         + [TETRA_UPLINK_SHORT_TAIL_NAME, TETRA_UPLINK_GAP_NAME]
+        + [TETRA_DMO_NAME]
     )
 
 
@@ -3512,6 +3790,7 @@ def build_all_derived(out_dir, dmr_synth_gen, speech_synth_gen, cache):
     total += build_tetra_halfband(out_dir)
     total += build_tetra_uplink(out_dir)
     total += build_tetra_uplink_gap(out_dir)
+    total += build_tetra_dmo(out_dir)
     total += build_nfm_synth(out_dir)
     total += build_am_synth(out_dir)
     total += build_analog_synth(out_dir)

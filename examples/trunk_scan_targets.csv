@@ -11,3 +11,8 @@ fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel held on carrie
 tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel held on carrier; the options cell carries its width and an auto squelch 6 dB over its noise floor,,,,,,--am-bandwidth-hz 8333 --squelch auto+6,
 Mall,dmr-conventional,464125000,,500,,shared DMR frequency: the row is Mall (colour code 2) and names the other repeaters on it by colour code,auto,,,,,--dcc-name 7=Hospital --dcc-name 14=Municipality,
 20R Local,nfm-conventional,462675000,,500,500,shared NFM frequency: hears two CTCSS tones and names the traveler tone,,,,,,--squelch noise+3 --nfm-bandwidth-hz 8000 --tone-allow 97.4/141.3 --tone-name '141.3=20R Traveler',
+simplex-ysf,ysf-conventional,433100000,,1500,1200,one YSF (C4FM) simplex channel; a simplex type takes only auto or no modulation,auto,,,,,,,
+simplex-dstar,dstar-conventional,433200000,,1500,3000,one D-STAR simplex channel; the longer hold rides out slow-data text between header repeats,,,,,,,,
+simplex-dpmr,dpmr-conventional,446106250,,1500,1200,one dPMR channel with its own scrambler key (the only key a dPMR row takes),,,,,,-R 1234,,
+simplex-m17,m17-conventional,433300000,,1500,1200,one M17 channel; it takes no keys of its own and uses the session's,,,,,,,,
+simplex-dmo,tetra-dmo-conventional,433400000,,600,1200,one TETRA direct mode channel; visited only at a 72 kHz DSP bandwidth on a radio input,,,,,,,,

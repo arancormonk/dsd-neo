@@ -376,6 +376,45 @@ test_reacquire_runs_on_the_decode_clock(void) {
     free(state);
 }
 
+// Issue #890: a dPMR call's numbers are the header's that opened its epoch, and a reacquired epoch heard none, so the
+// store seeds it with the ended dPMR call's texts but not its numbers; another protocol's reacquired epoch carries both.
+static void
+test_reacquired_dpmr_epoch_keeps_texts_not_numbers(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_decode_clock_use_test(CALL_STATE_TEST_DECODE_T0_NS);
+    static const int k_protocols[] = {DSD_SYNC_DPMR_FS2_POS, 35};
+    for (size_t p = 0; p < sizeof(k_protocols) / sizeof(k_protocols[0]); p++) {
+        const int dpmr = DSD_SYNC_IS_DPMR(k_protocols[p]);
+        decode_clock_at_ms(100000U * (p + 1U));
+        dsd_call_observation call = group_call(0U, 500U, 600U, 0.0);
+        call.protocol = k_protocols[p];
+        call.channel = dpmr ? 0U : call.channel;
+        DSD_SNPRINTF(call.target_text, sizeof(call.target_text), "%s", "1000000");
+        DSD_SNPRINTF(call.source_text, sizeof(call.source_text), "%s", "200000*");
+        assert(dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_call_snapshot snapshot;
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        const uint64_t first_epoch = snapshot.epoch;
+        decode_clock_at_ms((100000U * (p + 1U)) + 1000U);
+        assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+        decode_clock_at_ms((100000U * (p + 1U)) + 1080U);
+        dsd_call_observation reentry = identityless_voice(0U);
+        reentry.protocol = k_protocols[p];
+        assert(dsd_call_state_observe(state, &reentry, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        assert(snapshot.epoch != first_epoch && dsd_call_snapshot_transmission(&snapshot) == first_epoch);
+        assert(strcmp(snapshot.target_text, "1000000") == 0 && strcmp(snapshot.source_text, "200000*") == 0);
+        assert(snapshot.ota_target_id == (dpmr ? 0U : 500U));
+        assert(snapshot.ota_source_id == (dpmr ? 0U : 600U));
+        assert(snapshot.policy_target_id == (dpmr ? 0U : 500U));
+        assert(dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT) == 1);
+    }
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 // dsd_call_snapshot_may_reacquire() answers with the windows the store heals by: each recoverable reason's own (0.5 s
 // after a sync loss, 0.25 s after an unverified terminator), never for a final end, an active call or an ended epoch that
 // names no call; and where it says no, an identity-less re-entry begins a new transmission.
@@ -1374,6 +1413,7 @@ main(void) {
     test_reacquisition_carries_media_timestamps();
     test_channel_fill_only();
     test_reacquire_runs_on_the_decode_clock();
+    test_reacquired_dpmr_epoch_keeps_texts_not_numbers();
     test_may_reacquire_follows_the_heal_windows();
     test_recent_activity(state);
     test_recent_activity_runs_on_the_decode_clock();

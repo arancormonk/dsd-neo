@@ -43,6 +43,7 @@
  */
 #ifndef DSD_NEO_ENGINE_SCAN_LANDING_H
 #define DSD_NEO_ENGINE_SCAN_LANDING_H
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -64,6 +65,14 @@ enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_EN
    stay's, and neither counts for it nor delays its step. */
 static inline void
 dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
+    dsd_engine_scan_owner* owner = DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    if (owner) {
+        owner->y_admitted_seen = owner->y_admitted_seq;
+        owner->y_refused = 0U;
+        owner->y_refused_epoch = 0U;
+        owner->y_call_obs_mark[0] = dsd_call_state_observation_seq(state, 0U);
+        owner->y_call_obs_mark[1] = dsd_call_state_observation_seq(state, 1U);
+    }
     state->scan_y_content_seen = state->scan_y_content_seq;
     state->scan_y_partial_seen = state->scan_y_partial_seq;
     state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;

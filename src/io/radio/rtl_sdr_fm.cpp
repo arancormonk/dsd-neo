@@ -535,6 +535,9 @@ static std::atomic<float> g_pub_monitor_deemph_gain{1.0f};
 /* Whether the decoder asks for the FSK voice lane (rtl_stream_set_voice_lane(), issue #518): EDACS, for the length of
    an analog call. The demod thread takes it before each block (demod_take_voice_lane_setting()). */
 static std::atomic<int> g_voice_lane_requested{0};
+/* Whether the TETRA decoder is on a direct mode carrier (rtl_stream_set_tetra_direct_bursts(), issue #890): the demod
+   thread takes it before each block (demod_take_tetra_direct_bursts()). */
+static std::atomic<int> g_tetra_direct_bursts{0};
 /* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
 static std::atomic<uint32_t> g_rtl_session_generation{0U};
 
@@ -5602,6 +5605,13 @@ demod_take_voice_lane_setting(struct demod_state* d) {
     d->voice_lane_enabled = enabled;
 }
 
+/* The demod thread, before a block: whether the TETRA chain takes each burst's timing from its training, as on a direct
+   mode carrier (dsd_demod_tetra_uplink_timing_runs()). */
+static void
+demod_take_tetra_direct_bursts(struct demod_state* d) {
+    d->tetra_direct_bursts = g_tetra_direct_bursts.load(std::memory_order_acquire) ? 1 : 0;
+}
+
 /* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
@@ -5822,6 +5832,7 @@ demod_thread_fn(void* arg) {
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
         demod_take_voice_lane_setting(d);
+        demod_take_tetra_direct_bursts(d);
         g_demod_fed_since_reset.store(1, std::memory_order_relaxed);
         full_demod(d);
         demod_publish_block_state(d);
@@ -10207,17 +10218,15 @@ stream_open_update_output_rates(void) {
     }
 }
 
-/* The derived-SPS lines of the rate-chain log for an output rate of @p out_hz: the info line in @p info and the
-   atypical-rate warning in @p warn, each empty when there is none. A CQPSK stream (@p cqpsk) gets no 48 kHz advice:
-   its symbols bypass the resampler, so it could not help, and rtl_demod_warn_symbol_timing() already said whether
-   CQPSK can time symbols at this rate. A TETRA stream reports TETRA's samples per symbol (18 ksym/s) and no advice
-   either (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against
-   the ~48 kHz rate the digital decoders assume. */
+/* The derived-SPS line of the rate-chain log for an output rate of @p out_hz into @p info, empty when there is none. A
+   TETRA stream reports TETRA's samples per symbol (18 ksym/s), every other stream the P25 and NXDN48 ones. It is
+   information only: whether the decoder can time symbols at the rate is rtl_demod_warn_symbol_timing()'s to say (a
+   fractional number of samples per symbol after digital_resample), and dsd_tetra_dsp_rate_advice()'s for a rate TETRA
+   cannot run at. The symbol timing scales to any whole number of samples per symbol, so a rate away from 48 kHz is no
+   reason to warn. */
 static void
-stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size, char* warn,
-                              size_t warn_size) {
+stream_open_compose_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
     info[0] = '\0';
-    warn[0] = '\0';
     if (out_hz == 0U) {
         return;
     }
@@ -10232,23 +10241,21 @@ stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, c
     int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
     DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx,
                  sps_p25p1, approx, sps_p25p2, approx, sps_nxdn48);
-    if (cqpsk) {
-        return;
-    }
-    if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
-        || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
-        DSD_SNPRINTF(warn, warn_size,
-                     "WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider "
-                     "enabling resampler to 48000 Hz.\n",
-                     out_hz);
+}
+
+/* Logs the derived-SPS line for @p out_hz (stream_open_compose_sps_line()), and writes it to @p info. */
+static void
+stream_open_log_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
+    stream_open_compose_sps_line(out_hz, frame_tetra, info, info_size);
+    if (info[0] != '\0') {
+        LOG_INFO("%s", info);
     }
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" void
-rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size,
-                                  char* warn, size_t warn_size) {
-    stream_open_compose_sps_lines(out_hz, frame_tetra, cqpsk, info, info_size, warn, warn_size);
+rtl_stream_test_log_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
+    stream_open_log_sps_line(out_hz, frame_tetra, info, info_size);
 }
 #endif
 
@@ -10294,15 +10301,7 @@ stream_open_log_rate_chain_summary(int frame_tetra) {
                  capture_text, base_decim, step_text, post, demod_hz, out_hz);
     }
     char sps_text[160];
-    char sps_warn[192];
-    stream_open_compose_sps_lines(out_hz, frame_tetra, demod.cqpsk_enable, sps_text, sizeof sps_text, sps_warn,
-                                  sizeof sps_warn);
-    if (sps_text[0] != '\0') {
-        LOG_INFO("%s", sps_text);
-    }
-    if (sps_warn[0] != '\0') {
-        LOG_WARN("%s", sps_warn);
-    }
+    stream_open_log_sps_line(out_hz, frame_tetra, sps_text, sizeof sps_text);
 }
 
 static int
@@ -11903,6 +11902,11 @@ rtl_stream_voice_lane_requested(void) {
     return g_voice_lane_requested.load(std::memory_order_acquire);
 }
 
+extern "C" void
+rtl_stream_set_tetra_direct_bursts(int enable) {
+    g_tetra_direct_bursts.store(enable ? 1 : 0, std::memory_order_release);
+}
+
 /* The ring is set up and torn down with the stream on the decoder thread, which is where this is read. */
 extern "C" int
 rtl_stream_voice_lane_available(void) {
@@ -12395,15 +12399,22 @@ rtl_stream_get_iq_balance(void) {
     return g_pub_iq_balance.load(std::memory_order_relaxed);
 }
 
+/* Put the demod on the CQPSK chain. @p entering: the chain was off, so the differential demodulator starts from the
+ * unit phasor; a publish that finds CQPSK on already (a frame-sync republish of the same chain, issue #890: a -m lock's
+ * reapply on a tetra-dmo row) keeps the previous symbol's phasor, since resetting it would measure the next block's first
+ * differential symbol against the wrong phase and could change a dibit with no retune. A retune resets it on its own
+ * (demod_reset_common_state_for_retune()). */
 static void
-rtl_stream_enable_cqpsk_mode(void) {
+rtl_stream_enable_cqpsk_mode(int entering) {
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     demod.symbol_levels = 4;
     demod.ted_enabled = 1;
     demod.mode_demod = &qpsk_differential_demod;
-    demod.cqpsk_diff_prev_r = 1.0f;
-    demod.cqpsk_diff_prev_j = 0.0f;
+    if (entering) {
+        demod.cqpsk_diff_prev_r = 1.0f;
+        demod.cqpsk_diff_prev_j = 0.0f;
+    }
     demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod.symbol_rate_hz);
 }
 
@@ -12534,7 +12545,7 @@ rtl_stream_apply_cqpsk_toggle(int onoff) {
         demod.cqpsk_enable = next;
     }
     if (demod.cqpsk_enable) {
-        rtl_stream_enable_cqpsk_mode();
+        rtl_stream_enable_cqpsk_mode(was == 0);
     } else {
         rtl_stream_disable_cqpsk_mode();
     }
@@ -15739,6 +15750,8 @@ cqpsk_toggle_test_collect(rtl_stream_test_cqpsk_toggle_result* out_result) {
     out_result->fsk_reset_pending_after_toggle = g_fsk_modem_reset_pending.load(std::memory_order_acquire);
     out_result->reset_consumed = rtl_stream_consume_fsk_modem_reset_pending(&demod);
     out_result->have_prev_after_consume = demod.fsk_modem_state.have_prev;
+    out_result->cqpsk_prev_r_after = demod.cqpsk_diff_prev_r;
+    out_result->cqpsk_prev_j_after = demod.cqpsk_diff_prev_j;
 }
 
 extern "C" int

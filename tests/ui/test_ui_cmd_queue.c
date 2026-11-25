@@ -32232,6 +32232,17 @@ test_scan_entry_toasts_fit_the_status_line(void) {
             "; that target is in no list that is on",
         },
         {1, DSD_SCAN_ENTRY_WIDTH, "; #3 fire-dispatch's width does not fit", "; that target's width does not fit"},
+        /* A TETRA DMO row the scan skips at every visit (issue #890). */
+        {0, DSD_SCAN_ENTRY_TETRA_RATE, "; fire-dispatch needs a TETRA DSP bandwidth (72 kHz)",
+         "; that row needs a TETRA DSP bandwidth (72 kHz)"},
+        {1, DSD_SCAN_ENTRY_TETRA_INPUT, "; #3 fire-dispatch needs a radio I/Q input for TETRA",
+         "; that target needs a radio I/Q input for TETRA"},
+        {1, DSD_SCAN_ENTRY_TETRA_WAIT, "; #3 fire-dispatch waits for the radio's DSP rate",
+         "; that target waits for the radio's DSP rate"},
+        {1, DSD_SCAN_ENTRY_TETRA_RATE, "; #3 fire-dispatch needs a TETRA DSP bandwidth (72 kHz)",
+         "; that target needs a TETRA DSP bandwidth (72 kHz)"},
+        {1, DSD_SCAN_ENTRY_TETRA_CHAIN, "; #3 fire-dispatch cannot run the TETRA receive chain",
+         "; that target cannot run the TETRA receive chain"},
     };
 
     static const char k_short[] = "Applied: frequency -> 461.000000 MHz; scan paused";

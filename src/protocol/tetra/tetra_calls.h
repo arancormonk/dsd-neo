@@ -374,9 +374,27 @@ int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
  * A DM-2-C burst, whose addresses and message type are encrypted, publishes an encrypted call without identities.
  * DM-SDS DATA and DM-SDS UDATA become data notices, a repeat of the last within a few seconds not again. What the PDU
  * proved goes to the burst's proof (tetra_confirm_note_proof()): a call or short data PDU DMO_SERVICE, a DM-2-C one
- * DMO_OPAQUE. @p opts may be NULL.
+ * DMO_OPAQUE. Trunk scan's policy table hears (issue #890) a DMAC-SYNC's DM-SETUP, DM-CONNECT ACK and DM-OCCUPIED as the
+ * call they set up (a DM-SETUP PRES and a gateway set-up hold nothing until the call's DM-CONNECT ACK or DM-OCCUPIED),
+ * a DM-2-C DMAC-SYNC as anonymous encrypted direct mode presence, and short data whose FCS did not fail as a data call;
+ * never a reservation, an end or a DMAC-DATA call PDU. @p opts may be NULL.
  */
 void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
+/**
+ * @brief tetra_calls_dmo_pdu() for a DMAC-SYNC whose SCH/S carried DMO system code @p system_code (EN 300 396-3 clause
+ * 9.3.29). A DMO reserved code (1010, 1011, 1110, 1111) counts only once the PDU's content was examined: a DM-2-C
+ * DMAC-SYNC, whose message type and addresses are encrypted, cannot be, so under such a code it proves the TETRA profile
+ * only and holds no scan target. tetra_calls_dmo_pdu() is this with a recognised code.
+ */
+void tetra_calls_dmo_sync_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, uint32_t system_code,
+                              const tetra_dmo_sync_h_t* h);
+
+/**
+ * @brief Direct mode speech whose CRC passed and that re-encodes like speech (a good frame, no concealment), as a scan
+ * hold (issue #890): reported to trunk scan's policy table with the identity the direct mode call on the channel set up
+ * for this transmission (its DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED), anonymous when none did. @p opts may be NULL.
+ */
+void tetra_calls_dmo_speech_activity(const dsd_opts* opts, const dsd_state* state);
 
 /** @brief The protection of the direct mode channel's traffic changed (tetra_dmo_call_crypt()) without a call PDU that
  * publishes it: the direct mode call canonical slot 0 carries takes the new crypto class at once. @p opts may be NULL.

@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -598,10 +599,10 @@ dmo_read_pres_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* p)
     const int gateway = s->comm_type >= 2u;
     p->comm_type = s->comm_type;
     p->mdmo = (uint8_t)tetra_bits_read(r, 1);
-    const uint32_t gw_flags = tetra_bits_read(r, 2); /* SwMI availability and DM-REP function flags, or reserved */
-    const uint32_t two_freq = tetra_bits_read(r, 1); /* two-frequency repeater flag, or reserved */
-    (void)tetra_bits_skip(r, 2);                     /* repeater operating modes, or reserved */
-    const uint32_t spacing = tetra_bits_read(r, 5);  /* spacing of uplink: duplex spacing, then normal/reverse */
+    const uint32_t gw_flags = tetra_bits_read(r, 2);  /* SwMI availability and DM-REP function flags, or reserved */
+    const uint32_t two_freq = tetra_bits_read(r, 1);  /* two-frequency repeater flag, or reserved */
+    const uint32_t rep_modes = tetra_bits_read(r, 2); /* repeater operating modes, or reserved */
+    const uint32_t spacing = tetra_bits_read(r, 5);   /* spacing of uplink: duplex spacing, then normal/reverse */
     const uint32_t reverse = tetra_bits_read(r, 1);
     p->ms_link = (uint8_t)tetra_bits_read(r, 1);
     p->channel_usage = (uint8_t)tetra_bits_read(r, 2);
@@ -620,6 +621,7 @@ dmo_read_pres_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* p)
     p->swmi_up = (uint8_t)(gateway ? (gw_flags >> 1) : 0u);
     p->dmrep = (uint8_t)(gateway ? (gw_flags & 1u) : 0u);
     p->two_freq = (uint8_t)((!gateway || s->comm_type == 3u || p->dmrep) ? two_freq : 0u);
+    p->rep_modes = (uint8_t)((!gateway || p->dmrep) ? rep_modes : 0u);
     p->spacing = (uint8_t)(p->two_freq ? spacing : 0u);
     p->reverse = (uint8_t)(p->two_freq ? reverse : 0u);
     p->priority = (uint8_t)(p->channel_state != 0u ? priority : 0u);
@@ -1212,6 +1214,45 @@ tetra_dmo_describe_elems(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
     return (int)t.len;
 }
 
+/* The all-ones MNI: the open MNI in addressed signalling (EN 300 396-1 clause 6.2), the null value of a DM-REP that has
+ * no MNI or does not broadcast it in its presence signal (EN 300 396-4 clause 10.3.9). */
+#define DMO_MNI_ALL_ONES 0xFFFFFFu
+
+void
+tetra_dmo_format_mni(uint32_t mni, char* buf, size_t buf_len) {
+    if (!buf || buf_len == 0u) {
+        return;
+    }
+    mni &= DMO_MNI_ALL_ONES;
+    if (mni == DMO_MNI_ALL_ONES) {
+        DSD_SNPRINTF(buf, buf_len, "open");
+        return;
+    }
+    DSD_SNPRINTF(buf, buf_len, "%u/%u", (unsigned)((mni >> 14) & 0x3FFu), (unsigned)(mni & 0x3FFFu));
+}
+
+/* Who sent a presence signal: its address and MNI, SCH/H elements shown only once its CRC passed and it was read, else
+ * the kind of equipment alone; then its link. A DM-GATE's master/slave link flag means something only while it provides
+ * a DM-REP function (EN 300 396-5 table 5); a DM-REP/GATE has both links whatever its DM-REP function, and sends its
+ * free-channel presence signal on the slave link (clause 13.4.6.2.1 note 1). */
+static void
+dmo_put_presence_station(dmo_text* t, const tetra_dmo_pres_t* p, int gateway) {
+    if (p->parsed) {
+        dmo_put(t, "%s=%u", gateway ? "gw" : "rep", (unsigned)p->repeater);
+        /* A DM-REP's all-ones MNI is its null value (EN 300 396-4 clause 10.3.9); no SwMI MNI names it either. */
+        if ((p->mni & DMO_MNI_ALL_ONES) != DMO_MNI_ALL_ONES) {
+            char mni[24];
+            tetra_dmo_format_mni(p->mni, mni, sizeof mni);
+            dmo_put(t, " MNI=%s", mni);
+        }
+    } else {
+        dmo_put(t, "%s", gateway ? "gateway" : "repeater");
+    }
+    if (p->comm_type != 2u || p->dmrep) {
+        dmo_put(t, " %s", p->ms_link ? "master" : "slave");
+    }
+}
+
 int
 tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
     /* Channel state (EN 300 396-4 clause 10.3.5): value 3 is the gateway registration phase (EN 300 396-5). */
@@ -1224,10 +1265,12 @@ tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
     dmo_text t = {buf, (size_t)buf_len, 0u};
     const int gateway = p->comm_type >= 2u;
     buf[0] = '\0';
-    dmo_put(&t, "%s=%u MNI=%u/%u %s %s pwr=%u urt=%u", gateway ? "gw" : "rep", (unsigned)p->repeater,
-            ((p->mni >> 14) & 0x3FFu), (p->mni & 0x3FFFu), p->ms_link ? "master" : "slave",
-            (gateway || p->channel_state < 3u) ? DMO_NAME(k_state, p->channel_state) : "reserved",
-            (unsigned)p->power_class, (unsigned)p->urt);
+    dmo_put_presence_station(&t, p, gateway);
+    dmo_put(&t, " %s pwr=%u", (gateway || p->channel_state < 3u) ? DMO_NAME(k_state, p->channel_state) : "reserved",
+            (unsigned)p->power_class);
+    if (p->parsed) {
+        dmo_put(&t, " urt=%u", (unsigned)p->urt);
+    }
     if (gateway) {
         dmo_put(&t, " swmi=%s label=%u", p->swmi_up ? "up" : "down", (unsigned)p->reg_label);
     }
@@ -1272,16 +1315,23 @@ dmo_sync_role(const tetra_dmo_sync_h_t* h) {
     return h->msg_type < DMO_COUNT(k_roles) ? k_roles[h->msg_type] : DMO_ROLE_NONE;
 }
 
-/* The DM colour code from the "mobile network identity" (or the gateway address) and "source address" of this
- * DMAC-SYNC (EN 300 396-3 clause 8.2.4, EN 300 396-5 clause 8.2.4). */
+/* The six network bits of a DMAC-SYNC's DM colour code: the "mobile network identity" of a direct call (EN 300 396-3
+ * clause 8.2.4), the "repeater address" of one through a DM-REP, on both links (EN 300 396-4 clause 8.2.4, which
+ * replaces the EN 300 396-3 clause there), and the "gateway address" of one through a DM-GATE or a DM-REP/GATE (EN 300
+ * 396-5 clause 8.2.4): every communication type but direct carries the 10-bit address first in its SCH/H. */
+static uint32_t
+dmo_dcc_net_id(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+    return s->comm_type != 0u ? (uint32_t)h->relay_addr : h->mni;
+}
+
+/* The DM colour code from the network bits (dmo_dcc_net_id()) and "source address" of this DMAC-SYNC. */
 static void
 dmo_learn_dcc(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     if (h->src_type == 2u) {
         ts->dmo_dcc_valid = 0;
         return;
     }
-    const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
-    ts->dmo_dcc_seed = tetra_dmo_dcc_seed(net_id, h->src);
+    ts->dmo_dcc_seed = tetra_dmo_dcc_seed(dmo_dcc_net_id(s, h), h->src);
     ts->dmo_dcc_valid = 1;
 }
 
@@ -1379,8 +1429,7 @@ dmo_source_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     if (h->src_type == 2u) {
         return 0U;
     }
-    const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
-    return tetra_dmo_dcc_seed(net_id, h->src);
+    return tetra_dmo_dcc_seed(dmo_dcc_net_id(s, h), h->src);
 }
 
 /* DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED protected as @p crypt. One from another source than the transmission in
@@ -1514,9 +1563,20 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     }
 }
 
+/* The carrier's mode, and the radio stream told of it (issue #890): on a direct mode carrier a DM-MS keys its transmitter
+   for its own bursts only, so the TETRA chain takes each burst's timing and carrier phase from its training
+   (rtl_stream_set_tetra_direct_bursts()). Told only when the mode changes. */
+static void
+dmo_set_mode(tetra_state_t* ts, int dmo) {
+    if ((ts->dmo != 0) != (dmo != 0)) {
+        dsd_rtl_stream_io_hook_set_tetra_direct_bursts(dmo);
+    }
+    ts->dmo = (uint8_t)(dmo != 0);
+}
+
 static void
 dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
-    ts->dmo = 1;
+    dmo_set_mode(ts, 1);
     /* The TMO timebase does not run on a direct mode carrier. */
     tetra_tdma_stop(state);
     if (!s->parsed) {
@@ -1581,7 +1641,7 @@ tetra_dmo_forget_carrier(dsd_state* state) {
     if (!ts) {
         return;
     }
-    ts->dmo = 0;
+    dmo_set_mode(ts, 0);
     ts->dmo_comm_type = 0;
     dmo_forget_channel(ts);
 }
@@ -1677,9 +1737,10 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd
     } else {
         DSD_SNPRINTF(dst, sizeof dst, "%u", (unsigned)h.dst);
     }
-    DSD_FPRINTF(stderr, "[TETRA DMO %s] %s src=%u dst=%s MNI=%u/%u%s%s\n", chan, tetra_dmo_msg_name(h.msg_type),
-                (unsigned)h.src, dst, (unsigned)((h.mni >> 14) & 0x3FFu), (unsigned)(h.mni & 0x3FFFu),
-                desc[0] ? " | " : "", desc);
+    char mni[24];
+    tetra_dmo_format_mni(h.mni, mni, sizeof mni);
+    DSD_FPRINTF(stderr, "[TETRA DMO %s] %s src=%u dst=%s MNI=%s%s%s\n", chan, tetra_dmo_msg_name(h.msg_type),
+                (unsigned)h.src, dst, mni, desc[0] ? " | " : "", desc);
 }
 
 int

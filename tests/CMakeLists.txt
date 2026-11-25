@@ -2350,6 +2350,37 @@ add_test(
     COMMAND dsd-neo_test_dpmr_reference_vectors
 )
 
+# The same reference frames against the production call store (call_state.c) instead of the stubs: what the call
+# store itself does with a dPMR call (its sync-loss reacquisition seeding an epoch) is tested on the real one.
+add_executable(
+    dsd-neo_test_dpmr_call_store
+    protocol/dpmr/test_dpmr_reference_vectors.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_header.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr/fixtures
+)
+target_compile_definitions(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE DPMR_TEST_REAL_CALL_STORE
+)
+target_link_libraries(
+    dsd-neo_test_dpmr_call_store
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_fec dsd-neo_platform
+)
+add_test(NAME DPMR_CALL_STORE COMMAND dsd-neo_test_dpmr_call_store)
+
 add_executable(
     dsd-neo_test_ysf_frame
     protocol/ysf/test_ysf_frame.c
@@ -8144,6 +8175,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_avoids
 )
 
+# The Signal search TETRA range value, site note, withdrawal and site text within the hit's field (issue #748).
+add_executable(
+    dsd-neo_test_runtime_signal_search_tetra
+    runtime/test_runtime_signal_search_tetra.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_TETRA
+    COMMAND dsd-neo_test_runtime_signal_search_tetra
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
@@ -9947,6 +9996,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_symbol_profile_full"
             "-Wl,--wrap=rtl_stream_get_ted_sps"
             "-Wl,--wrap=rtl_stream_get_ted_sps_override"
+            "-Wl,--wrap=rtl_stream_receive_request_seq"
+            "-Wl,--wrap=rtl_stream_receive_request_outcome"
             "-Wl,--wrap=rtl_stream_output_rate"
             "-Wl,--wrap=rtl_stream_output_rate_for_family"
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target_with_gain"
@@ -10752,6 +10803,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A tetra-dmo row's eligibility and the TETRA state's lifetime across its landings (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     # The typed-frequency match, which reads a row's effective width (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
@@ -10822,6 +10875,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A TETRA DMO target's eligibility and the TETRA state's lifetime across its landings (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
@@ -10958,6 +11013,17 @@ target_link_libraries(
     dsd-neo_test_engine_scan_entry
     PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
 )
+# The DSP rate a TETRA DMO row's eligibility reads (issue #890), set by the test through a GNU ld --wrap seam.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_engine_scan_entry
+        PRIVATE DSD_TEST_WRAP_SCAN_DSP_RATE=1
+    )
+    target_link_options(
+        dsd-neo_test_engine_scan_entry
+        PRIVATE "LINKER:--wrap=dsd_engine_scan_dsp_rate_hz"
+    )
+endif()
 add_test(NAME ENGINE_SCAN_ENTRY COMMAND dsd-neo_test_engine_scan_entry)
 
 # A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
@@ -11093,6 +11159,8 @@ add_executable(
     engine/test_engine_channel_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # A tetra-dmo row's eligibility, whose TED read is stubbed with the tune (issue #890).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
     # The row confirmed on air, which a typed frequency's go-to reads (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
@@ -14632,7 +14700,7 @@ endif()
 add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
-# test, and decoded by the real FEC.
+# test, and decoded by the real FEC; calloc is wrapped to count and fail the M17 extension's allocation (issue #890).
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_m17_frame_cut
@@ -14654,6 +14722,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             -Wl,--wrap=get_dibit_and_analog_signal
             -Wl,--wrap=getDibitAndSoftSymbol
+            -Wl,--wrap=calloc
     )
     add_test(NAME M17_FRAME_CUT COMMAND dsd-neo_test_m17_frame_cut)
 endif()
@@ -18138,6 +18207,13 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+# The main carrier a SYSINFO names, or forgets, is read back through the TETRA view every frontend shows.
+target_sources(
+    dsd-neo_test_tetra_mac_state
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
 # The unit activity rows are also read back through the app-control view every frontend shows, as names reach users.
 target_sources(
     dsd-neo_test_tetra_tetra_unit_activity
@@ -18174,6 +18250,27 @@ set_tests_properties(
     PROTOCOL_TETRA_FOREIGN_CELL
     PROPERTIES LABELS "protocol;tetra"
 )
+
+# What a Signal search visit's own TETRA bursts prove (issue #748): gate A, gate D, the site note, its withdrawal and the
+# visit's activity, through the burst entry with real bursts read from a symbol file and the search hooks stood in for.
+add_executable(dsd-neo_test_tetra_search protocol/tetra/test_search.c)
+target_include_directories(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME TETRA_SEARCH COMMAND dsd-neo_test_tetra_search)
+set_tests_properties(TETRA_SEARCH PROPERTIES LABELS "protocol;tetra")
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.
@@ -22030,6 +22127,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_talker_alias_utf16
     dsd-neo_test_dmr_talker_alias_utf8
+    dsd-neo_test_dpmr_call_store
     dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
@@ -22255,17 +22353,66 @@ if(DSD_HAS_RADIO)
                 PROPERTIES LABELS "iq-decode" TIMEOUT 120
             )
             # A raw I/Q stream on loopback (issue #743): the UDP receiving notice follows the bind, a mode switch to
-            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected.
+            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected. A
+            # build without the control API, whose CLI refuses --api, runs every case but the API's (--no-api).
+            set(_iq_stream_live_api_arg)
+            if(NOT DSD_ENABLE_API)
+                set(_iq_stream_live_api_arg --no-api)
+            endif()
             add_test(
                 NAME RUNTIME_IQ_STREAM_LIVE
                 COMMAND
                     ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/iq_stream_live_check.py
-                    $<TARGET_FILE:dsd-neo>
+                    $<TARGET_FILE:dsd-neo> ${_iq_stream_live_api_arg}
             )
             set_tests_properties(
                 RUNTIME_IQ_STREAM_LIVE
                 PROPERTIES LABELS "iq-stream" TIMEOUT 120
+            )
+            # The run reads the receive profile off the control API, which a build without it lacks.
+            if(DSD_ENABLE_API)
+                # A real --trunk-scan at the 72 kHz DSP bandwidth on tools/bench_scan_skip_silent.py's paced
+                # rtl_tcp scene (issue #890): NFM, NXDN48, YSF, a TETRA DMO call (tetra_dmo_call_synth_72k) and a
+                # TETRA DMO target on trunked TETRA alone. Each target lands its own profile (the control API's
+                # metrics), the NFM, YSF and DMO calls hold their targets and release them, and the trunked TETRA
+                # never holds. About 40 s in real time. The decoder's dwell and hold run on its real clock, so a slow
+                # runner is carried by the slack: 3 s on every bound, an idle visit's 5 s bound far under the 15 s visit
+                # cap a held trunked target would run to (the run stops at 120 s, the TIMEOUT at 240). numpy, so CTest
+                # reports it skipped where the tests' Python has none.
+                add_test(
+                    NAME ENGINE_TRUNK_SCAN_SIMPLEX_RIG
+                    COMMAND
+                        ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/trunk_scan_simplex_rig_check.py
+                        $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+                )
+                set_tests_properties(
+                    ENGINE_TRUNK_SCAN_SIMPLEX_RIG
+                    PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 240
+                )
+            endif()
+            # Signal search identifies TETRA end to end (issue #748): dsd-neo_test_signal_search_rig runs the search
+            # the app starts (app-control queue, observer and history store) at the 72 kHz DSP bandwidth on the same
+            # paced rtl_tcp scene, with the real-air TETRA call and marginal control channel fixtures, a synthetic
+            # two-carrier cell, the tetra_dmo_call_synth_72k direct mode call and band-limited noise, after an analog
+            # and an Auto visit, then DMO calls whose bursts step through phases against the span measurements and the
+            # landing, and presence signal trains heard and ended at the landing. It checks each detection's protocol,
+            # access code and site line, the history read back from the journal, and the 2.1 s quiet time after a
+            # confirmed TETRA carrier stops. Two runs, about 2 to 3 minutes in real time (a DMO call can take many
+            # passes to meet its phase; the run stops at 180 s). numpy, so CTest reports it skipped where the tests'
+            # Python has none.
+            add_test(
+                NAME ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/signal_search_tetra_rig_check.py
+                    $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 420
             )
         endif()
     endif()
@@ -22986,6 +23133,64 @@ if(DSD_HAS_RADIO)
         "\\[TETRA TCH/FS\\] CC=17  dec_bits=274  crc=ok"
         "crc=bad"
         24
+    )
+    # A synthetic direct mode group call at 72 kHz (tetra_dmo_call_synth_72k, TETRA_DMO_NAME in
+    # tools/build_iq_fixtures.py; issue #890): DM-SETUP in eight DSBs, three multiframes of full-slot speech in slot 1
+    # with DM-OCCUPIED in frames 6, 12 and 18, then DM-TX CEASED, the carrier off between the bursts as a DM-MS keys it.
+    # The 12 DM-OCCUPIED and the 4 DM-TX CEASED must decode, the call must be published as a direct mode group call
+    # (-J), and all 51 DNBs, scrambled with the call's DM colour code, must carry speech whose CRC passes with no
+    # mismatch. Before the TETRA chain took each direct mode burst's timing and carrier phase from its training
+    # (tetra_uplink_timing.h, as the uplink does), its loops free-ran on the noise between bursts and the replay decoded
+    # 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts. The first DSB of the carrier still comes on the free-running
+    # loops, since only a DSB taken on tells the front end the carrier is direct mode: this fixture decodes all 8
+    # DM-SETUP, but 5 of 12 realizations of it (other noise and phases, a sample later each) lose one, so 7 are
+    # required.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_SETUP
+        tetra_dmo_call_synth_72k
+        -fT
+        "\\[TETRA DMO DSB\\] sys=13 comm=0 ch=0 slot=[1-4] frame=1[78] enc=0 \\| DM-SETUP src=4321 dst=6060 MNI=460/4242 cd=[01] dcc=ok \\| group speech"
+        "TETRA needs a DSP rate"
+        7
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_OCCUPIED
+        tetra_dmo_call_synth_72k
+        -fT
+        "\\| DM-OCCUPIED src=4321 dst=6060 MNI=460/4242 cd=0 dcc=ok \\| group speech"
+        ""
+        12
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_TX_CEASED
+        tetra_dmo_call_synth_72k
+        -fT
+        "slot=[13] frame=[12] enc=0 \\| DM-TX CEASED src=4321 dst=6060 MNI=460/4242"
+        ""
+        4
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_SPEECH
+        tetra_dmo_call_synth_72k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok  mismatches=0"
+        ""
+        51
+    )
+    # A "." stands for each ";" of the event line, which an add_test argument would split at.
+    add_test(
+        NAME DECODE_IQ_TETRA_DMO_CALL_EVENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_dmo_call_synth_72k.iq.json"
+            "-DEXPECTED=DM-SETUP src=4321 dst=6060"
+            "-DEVENT_EXPECTED=TETRA DMO TGT: 00006060. SRC: 00004321. FREQ: 433\\.000000 MHz. Group."
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_DMO_CALL_EVENT"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_DMO_CALL_EVENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
     # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
@@ -25358,6 +25563,22 @@ if(DSD_HAS_RADIO)
     # follows. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
     # The jitter leg sleeps after about one read in 16 of the decoder's ~690 and must still
     # be sleeping past 1.5 s.
+    # The direct mode call (issue #890): the decoder tells the front end it is on a direct mode carrier once its first
+    # DSB decodes, and the TETRA chain takes each burst's timing from its training from the next block on. Under the
+    # decoder's pacing that block is the same in every leg, fast, real time, short reads and seeded sleeps alike, so
+    # all 51 speech bursts decode the same way. Each leg measured fsk_samples=0 cqpsk_symbols=68146 media_ms=3786.67;
+    # MIN_CQPSK 68,000 and MIN_TOTAL 544,000 (8 x 68,000) sit just under it. The jitter leg must still be sleeping past
+    # 1 s, inside the call.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_TETRA_DMO_DETERMINISM
+        tetra_dmo_call_synth_72k
+        "-fT -Z"
+        "fast;realtime;short:31;jitter:37:120:16:1000"
+        "DM-OCCUPIED src=4321.*\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok"
+        0
+        68000
+        544000
+    )
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_P25P2_CC_DETERMINISM
         p25p2_cc
@@ -28319,6 +28540,19 @@ if(Python3_Interpreter_FOUND)
             ENVIRONMENT
                 "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
+    # The TETRA search rig's transmitters loop their content seamlessly across a
+    # scene block (tests/signal_search_tetra_rig_check.py, issue #748). numpy, as above.
+    add_test(
+        NAME TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_signal_search_tetra_rig_loop.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
@@ -29370,6 +29604,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The DMR channel provenance a visit must leave alone (discussion #900).
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -29377,10 +29613,19 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+        # Frame syncs noted as the decoders note them, which move the reception generation a call record keeps.
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+        # The start command's handler and the observer it installs, publishing to a stubbed store (issue #748 B11).
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search
-        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
+        PRIVATE
+            USE_RADIO
+            DSD_NEO_TEST_HOOKS
+            dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search
@@ -29396,6 +29641,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The DMR channel provenance the session keeps across visits (discussion #900).
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -29425,6 +29672,44 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_signal_search_bench
         PRIVATE dsd-neo_engine dsd-neo_feature_radio ${LIBS}
     )
+    # The Signal search the app starts (app-control queue, observer and history store) on the decoder a command line
+    # configures, for the paced rtl_tcp rig ENGINE_SIGNAL_SEARCH_TETRA_RIG.
+    add_executable(dsd-neo_test_signal_search_rig engine/signal_search_rig.cpp)
+    target_link_libraries(
+        dsd-neo_test_signal_search_rig
+        PRIVATE dsd-neo_app_control dsd-neo_engine dsd-neo_feature_radio ${LIBS}
+    )
+    # The rig refuses a pass count or a time limit that is not a positive whole number in range (negative, past
+    # uint64, zero, or seconds past a day, whose milliseconds once wrapped the deadline) before it opens anything.
+    foreach(
+        _rig_limit
+        "SECONDS_NEGATIVE:SECONDS=-1"
+        "SECONDS_OVERFLOW:SECONDS=18446744073709551616"
+        "SECONDS_PAST_A_DAY:SECONDS=86401"
+        "SECONDS_ZERO:SECONDS=0"
+        "PASSES_NEGATIVE:PASSES=-1"
+        "PASSES_OVERFLOW:PASSES=18446744073709551616"
+    )
+        string(REGEX REPLACE ":.*" "" _rig_limit_id "${_rig_limit}")
+        string(REGEX REPLACE "^[^:]*:" "" _rig_limit_env "${_rig_limit}")
+        string(REGEX REPLACE "=.*" "" _rig_limit_name "${_rig_limit_env}")
+        add_test(
+            NAME ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            COMMAND
+                ${CMAKE_COMMAND} -E env
+                DSD_SEARCH_RIG_RANGES=r,450000000,450100000,12500,16000,0,3000,0
+                DSD_SEARCH_RIG_${_rig_limit_env}
+                $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+        )
+        set_tests_properties(
+            ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            PROPERTIES
+                PASS_REGULAR_EXPRESSION
+                    "RIG ERROR: bad DSD_SEARCH_RIG_${_rig_limit_name} "
+                FAIL_REGULAR_EXPRESSION "are required|did not open"
+                TIMEOUT 30
+        )
+    endforeach()
 endif()
 if(DSD_ENABLE_QT_UI)
     add_executable(

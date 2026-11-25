@@ -1229,7 +1229,14 @@ main(void) {
     publish_phase(41, DSD_SEARCH_LISTENING, 6);
     assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
     avoid_revision = dsd_app_signal_search_avoids_revision();
+    // The session's end publishes a status of its own, under a revision from the source every publisher takes theirs
+    // from (issue #748 B11): never the last status's plus one, which a coordinator could publish next.
+    const uint64_t before_end = dsd_signal_search_status_revision_next();
     dsd_app_signal_search_session_ended();
+    dsd_signal_search_status ended;
+    dsd_app_signal_search_status_get(&ended, NULL, 0);
+    assert(ended.phase == DSD_SEARCH_STOPPED && ended.revision == before_end + 1);
+    assert(dsd_signal_search_status_revision_next() == before_end + 2);
     assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
     assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
     dsd_signal_search_avoids_session_set(0, NULL, 0);
