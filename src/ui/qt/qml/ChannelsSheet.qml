@@ -493,6 +493,8 @@ ModalSheet {
     // line. Tapping it opens the editor (not under a trunk scan).
     component ChannelRow: Rectangle {
         id: row
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: row.Accessible.focusable
         required property int index
         required property string key
         required property string line
@@ -527,14 +529,16 @@ ModalSheet {
         // keyboard's focus, so the list can be read through by keyboard; it
         // only does not open the editor.
         activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
-        Accessible.role: sheet.readOnly ? Accessible.StaticText : Accessible.Button
+        // Issue #902: out of reach a plain pane, as a single reading is: Qt
+        // keeps a static text a stop with SetFocus whatever its flags.
+        Accessible.role: !navigationAllowed || !visible || !live ? Accessible.Pane : (sheet.readOnly ? Accessible.StaticText : Accessible.Button)
         Accessible.name: navigationAllowed && visible && live ? words : ""
         Accessible.focusable: navigationAllowed && visible && live
         readonly property bool navigationAllowed: Navigation.allows(row)
         Accessible.ignored: !navigationAllowed || !visible || !live
         Accessible.onPressAction: activate()
         function activate() {
-            if (acts && Navigation.allows(row))
+            if (acts && Navigation.allows(row) && row.visible)
                 activated(channel);
         }
         Keys.onPressed: function (event) {
@@ -617,7 +621,7 @@ ModalSheet {
         width: parent.width
         visible: text.length > 0
         text: sheet.status
-        Accessible.role: sheet.statusProblem ? Accessible.AlertMessage : Accessible.StaticText
+        Accessible.role: !reachable ? Accessible.Pane : (sheet.statusProblem ? Accessible.AlertMessage : Accessible.StaticText)
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)

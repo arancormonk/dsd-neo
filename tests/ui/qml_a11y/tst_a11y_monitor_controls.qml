@@ -216,6 +216,53 @@ Item {
             }
             testContext.setPrefs("monitorDetailsExpanded", false);
         }
+        // Issue #902 with discussion #900 F3 and issue #901: the Tier III channels row, the NO FREQ reading and the
+        // other slot's strip line are gated as any control or reading is. Hidden or under a sheet each is nameless, out
+        // of the tree and no stop, gives the keyboard back, and a press a screen reader still holding it sends opens
+        // nothing.
+        function nodes_data() {
+            return [
+                {tag: "channelsRow", name: "monitorChannelsRow", expanded: true, shown: {dmrUserChannels: true, noFreqCount: 0},
+                    hidden: {dmrUserChannels: false}, opens: true},
+                {tag: "noFreqRow", name: "noFreqRow", expanded: true, shown: {noFreqCount: 2}, hidden: {noFreqCount: 0}, opens: true},
+                {tag: "otherSlotNode", name: "otherSlotNode", shown: {twoSlotCarrier: true}, hidden: {twoSlotCarrier: false}}
+            ];
+        }
+        function test_monitor_nodes_follow_their_gate_data() {
+            return nodes_data();
+        }
+        function test_monitor_nodes_follow_their_gate(data) {
+            testContext.setPrefs("monitorDetailsExpanded", data.expanded === true);
+            set(data.shown);
+            var item = findChild(monitor, data.name);
+            var channels = findChild(monitor, "channelsSheet");
+            verify(item !== null && channels !== null);
+            tryVerify(function () { return Ui.Navigation.presented(item); });
+            var node = null;
+            tryVerify(function () { node = testContext.accessibleNode(item); return node.name.length > 0; }, 7000);
+            for (var how of ["hidden", "covered"]) {
+                node = testContext.accessibleNode(item);
+                verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
+                testContext.accessibleDoAction(item, "SetFocus");
+                verify(item.activeFocus, how + ": SetFocus gives it the keyboard");
+                if (how === "hidden")
+                    set(data.hidden);
+                else
+                    Ui.Navigation.modals = [cover];
+                groupGone(item, how);
+                if (data.opens) {
+                    testContext.accessibleClick(item);
+                    item.activate();
+                    verify(!channels.visible, how + ": a press opens nothing");
+                }
+                if (how === "hidden")
+                    set(data.shown);
+                else
+                    Ui.Navigation.modals = [];
+                tryVerify(function () { return testContext.accessibleNode(item).name.length > 0; }, 7000);
+            }
+            testContext.setPrefs("monitorDetailsExpanded", false);
+        }
         function test_site_fields_follow_their_gate() {
             var sheet = siteLoader.item;
             verify(sheet !== null);

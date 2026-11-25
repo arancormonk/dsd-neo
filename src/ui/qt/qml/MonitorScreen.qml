@@ -793,7 +793,7 @@ Item {
                     // the count (on the line below it in the two-line form).
                     // Speech has no width, so the name is never the elided
                     // one drawn (r2 C1).
-                    Accessible.name: navigationAllowed && visible ? screen.withOtherLists(screen.sessionLine) : ""
+                    Accessible.name: reachable ? screen.withOtherLists(screen.sessionLine) : ""
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold
@@ -2355,7 +2355,7 @@ Item {
                 accessibleDescription: screen.detailsSummary.plain
                 // The answer is said as it is while it shows. The summary's SNR
                 // moves every tick: read at the readings' pace (issue #782).
-                Accessible.description: !answering ? detailsSpeech.spoken : detailsRow.Accessible.ignored ? "" : metrics.uiMessage
+                Accessible.description: !answering ? detailsSpeech.spoken : !detailsRow.navigationAllowed || !detailsRow.visible ? "" : metrics.uiMessage
                 SpeechPacer {
                     id: detailsSpeech
                     shown: !detailsRow.Accessible.ignored
@@ -2440,6 +2440,8 @@ Item {
             // the way to correct a saved frequency, by tap, key or screen reader.
             UiPanel {
                 id: channelsRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(channelsRow) && channelsRow.visible
                 objectName: "monitorChannelsRow"
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
@@ -2447,7 +2449,8 @@ Item {
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Tier III channels")
+                Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Tier III channels")
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(channelsRow)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
@@ -2966,6 +2969,8 @@ Item {
             // The tap reaches past its line, up to a full touch target.
             Item {
                 id: noFreqRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(noFreqRow) && noFreqRow.visible
                 objectName: "noFreqRow"
                 readonly property int count: metrics.noFreqCount
                 width: noFreqLine.implicitWidth
@@ -2979,6 +2984,7 @@ Item {
                 activeFocusOnTab: (Navigation.allows(noFreqRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: noFreqSpeech.spoken
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(noFreqRow)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
