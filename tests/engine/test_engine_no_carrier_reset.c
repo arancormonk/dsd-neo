@@ -3446,6 +3446,39 @@ test_run_first_landing_is_never_held(void) {
     return rc;
 }
 
+/* The source key of a stream on a dongle chosen by serial (rtl/sn/<serial>): that dongle wherever it is found, so two
+   serials found at one index are two sources and one serial found at another index is the same one; a dongle chosen
+   by index keeps its index key. */
+static uint64_t
+rtl_source_key_for(dsd_opts* opts, dsd_state* state, const char* spec, const char* serial, int index) {
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", serial);
+    opts->rtl_dev_index = index;
+    dsd_engine_note_stream_source(opts, state, 0);
+    return state->carrier_source_key;
+}
+
+static int
+test_rtl_serial_source_key(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const uint64_t a0 = rtl_source_key_for(opts, state, "rtl:00000001", "00000001", 0);
+    const uint64_t b0 = rtl_source_key_for(opts, state, "rtl:00000002", "00000002", 0);
+    const uint64_t a2 = rtl_source_key_for(opts, state, "rtl:serial=00000001", "00000001", 2);
+    const uint64_t i0 = rtl_source_key_for(opts, state, "rtl:0", "", 0);
+    const uint64_t i0_again = rtl_source_key_for(opts, state, "rtl:0:851.375M", "", 0);
+    const uint64_t i1 = rtl_source_key_for(opts, state, "rtl:1", "", 1);
+    int rc = expect_true("two serials found at one index are two sources", a0 != b0);
+    rc |= expect_true("one serial found at another index is one source", a0 == a2);
+    rc |= expect_true("a serial is not the index it was found at", a0 != i0);
+    rc |= expect_true("an index keeps its key", i0 == i0_again && i0 != i1);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The frequency entry itself (svc_rtl_set_freq(): the tune, then the carrier boundary of a user tune) forgets the left
    call's DMR privacy. */
 static int
@@ -21281,6 +21314,7 @@ main(void) {
     rc |= test_trunk_follow_closes_only_orphaned_recordings();
     rc |= test_carrier_boundary_forgets_dmr_call_privacy();
     rc |= test_run_first_landing_is_never_held();
+    rc |= test_rtl_serial_source_key();
     rc |= test_scan_first_landing_is_never_held();
     rc |= test_frequency_entry_forgets_dmr_call_privacy();
     rc |= test_scan_walk_landing_forgets_dmr_call_privacy();

@@ -10399,6 +10399,36 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_RTL_PREOPENED_FD
         COMMAND dsd-neo_test_engine_rtl_preopened_fd
     )
+
+    # The engine's choice of a local RTL-SDR by serial, and of an index past the
+    # devices found, over a wrapped librtlsdr enumeration.
+    add_executable(
+        dsd-neo_test_engine_rtl_serial_select
+        engine/test_engine_rtl_serial_select.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rtl_serial_select
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_rtl_serial_select
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            dsd-neo_io_radio
+            "-Wl,--end-group"
+            "-Wl,--wrap=rtlsdr_get_device_count"
+            "-Wl,--wrap=rtlsdr_get_device_usb_strings"
+            "-Wl,--wrap=rtl_stream_create"
+            "-Wl,--wrap=rtl_stream_start_gated"
+            "-Wl,--wrap=rtl_stream_destroy"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_RTL_SERIAL_SELECT
+        COMMAND dsd-neo_test_engine_rtl_serial_select
+    )
 endif()
 
 # An I/Q replay whose capture read fails, through the engine (issue #572): the replay

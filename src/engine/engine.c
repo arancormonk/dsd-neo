@@ -141,7 +141,7 @@ struct CODEC2;
 #endif
 #ifdef USE_RTLSDR
 #include <dsd-neo/io/rtl_device.h>
-#include <rtl-sdr.h>
+#include <dsd-neo/io/rtl_device_select.h>
 #endif
 
 #ifdef USE_CODEC2
@@ -952,7 +952,12 @@ dsd_engine_setup_print_tuning_notice(const dsd_opts* opts) {
                  opts->rtl_volume_multiplier);
         return;
     }
-    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
+    char sn[DSD_RTL_SERIAL_MAX + 8];
+    sn[0] = '\0';
+    if (opts->rtl_dev_serial[0] != '\0') {
+        DSD_SNPRINTF(sn, sizeof sn, " (SN %s)", opts->rtl_dev_serial);
+    }
+    LOG_INFO("NOTICE: RTL #%d%s: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index, sn,
              opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
              opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
 }
@@ -980,93 +985,129 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
 }
 
 #ifdef USE_RTLSDR
+/* The devices librtlsdr enumerates, as many as the startup listing shows. */
+#define ENGINE_RTL_LIST_MAX 32
+
+/* Log the devices in @p list (@p shown of @p total), and which one the index selects. */
 static void
-dsd_engine_setup_update_rtl_spec_with_selected_index(dsd_opts* opts) {
-    if (strncmp(opts->audio_in_dev, "rtl:", 4) != 0) {
-        return;
+dsd_engine_setup_log_rtl_devices(const dsd_opts* opts, const struct rtl_device_entry* list, int shown, int total) {
+    LOG_INFO("NOTICE: RTL Input: Found %d device(s):\n", total);
+    for (int i = 0; i < shown; i++) {
+        char line[3 * RTL_DEVICE_STRING_SIZE + 16];
+        rtl_device_entry_describe(&list[i], line, sizeof line);
+        LOG_INFO("NOTICE:   %d:  %s\n", list[i].index, line);
     }
-    const char* rest = strchr(opts->audio_in_dev + 4, ':');
-    if (rest) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d%s", opts->rtl_dev_index, rest);
-    } else {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d", opts->rtl_dev_index);
+    if (total > shown) {
+        LOG_INFO("NOTICE:   ... and %d more (dsd-neo --rtl-list lists them all)\n", total - shown);
     }
-    opts->audio_in_dev[sizeof opts->audio_in_dev - 1] = '\0';
+    if (opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index >= 0 && opts->rtl_dev_index < shown) {
+        const struct rtl_device_entry* e = &list[opts->rtl_dev_index];
+        LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", e->index,
+                 e->readable ? e->serial : RTL_DEVICE_UNREADABLE_TEXT);
+    }
 }
 
+/* The dongle an rtl: spec names by serial, looked up: its index into opts, or the startup refused (-1) with why. */
 static int
-dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char* product, char* serial) {
-    int device_count = 0;
+dsd_engine_setup_select_rtl_serial(dsd_opts* opts) {
+    const char* serial = opts->rtl_dev_serial;
+    struct rtl_device_find_report rep;
+    const rtl_device_find_result found = rtl_device_find_serial(serial, &rep);
+    if (found == RTL_DEVICE_FIND_FOUND) {
+        opts->rtl_dev_index = rep.index;
+        LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", rep.index, serial);
+        return 0;
+    }
+    if (found == RTL_DEVICE_FIND_DUPLICATE) {
+        LOG_ERROR(
+            "%d RTL-SDR devices have serial \"%s\", so it cannot tell them apart. Give each dongle its own serial "
+            "with rtl_eeprom -s <serial> (with only that dongle plugged in).\n",
+            rep.matches, serial);
+        return -1;
+    }
+    if (found == RTL_DEVICE_FIND_FAILED) {
+        LOG_ERROR("Could not look up the RTL-SDR with serial \"%s\": device enumeration failed.\n", serial);
+        return -1;
+    }
+    LOG_ERROR("No RTL-SDR with serial \"%s\" found.\n", serial);
+    if (rep.unreadable > 0) {
+        LOG_ERROR("%d device(s) could not be read (in use by another program, or no permission); a device in use "
+                  "cannot be matched.\n",
+                  rep.unreadable);
+    }
+    LOG_ERROR("Run dsd-neo --rtl-list to see the serials of the connected devices.\n");
+    return -1;
+}
 
+/* An index past the devices found: refused (-1) when its digits are a readable device's serial (the user meant that
+   serial: rtl:serial=<n> names it), else today's fallback to device 0 with the spec saying so. */
+static int
+dsd_engine_setup_rtl_index_out_of_range(dsd_opts* opts, int device_count) {
+    const int requested = opts->rtl_dev_index;
+    if (requested >= 0) {
+        char digits[16];
+        DSD_SNPRINTF(digits, sizeof digits, "%d", requested);
+        struct rtl_device_find_report rep;
+        (void)rtl_device_find_serial(digits, &rep);
+        if (rep.matches > 0) {
+            LOG_ERROR("RTL device index %d is out of range (found %d device(s)), but a device has serial \"%s\". To "
+                      "select it by its serial, use rtl:serial=%s.\n",
+                      requested, device_count, digits, digits);
+            return -1;
+        }
+    }
+    LOG_WARN("WARNING: Requested RTL device index %d out of range (found %d device(s)); using 0\n", requested,
+             device_count);
+    opts->rtl_dev_index = 0;
+    (void)dsd_rtl_spec_set_device(opts->audio_in_dev, sizeof opts->audio_in_dev, 0, NULL);
+    return 0;
+}
+
+/* List the devices and settle which one the spec selects: 1 when one is (opts->rtl_dev_index), 0 when there is none
+   (the run cannot start), -1 when the selection is refused. */
+static int
+dsd_engine_setup_select_rtl_device(dsd_opts* opts) {
     if (rtl_device_preopened_fd_is_set()) {
-        /* The device was chosen in the app, which handed down an open descriptor;
-         * USB discovery is disabled in that mode, so rtlsdr_get_device_count()
-         * reports zero and would hard-fail the run below. */
-        DSD_SNPRINTF(vendor, 256, "%s", "USB");
-        DSD_SNPRINTF(product, 256, "%s", "RTL-SDR");
-        DSD_SNPRINTF(serial, 256, "%s", "");
+        /* The device was chosen in the app, which handed down an open descriptor; USB discovery is disabled in that
+         * mode, so librtlsdr would enumerate no device. A serial is checked on the descriptor's device at its open. */
         LOG_INFO("NOTICE: RTL Input: Using a pre-opened USB descriptor; skipping device enumeration.\n");
         return 1;
     }
-
-#if defined(_MSC_VER) && defined(_WIN32)
-    __try {
-        device_count = (int)rtlsdr_get_device_count();
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        LOG_ERROR("RTL: libusb exception during device enumeration.\n");
-        device_count = 0;
+    struct rtl_device_entry* list = (struct rtl_device_entry*)calloc(ENGINE_RTL_LIST_MAX, sizeof *list);
+    if (!list) {
+        LOG_ERROR("RTL Input: out of memory listing the devices.\n");
+        return -1;
+    }
+    int total = 0;
+    const int shown = rtl_device_list(list, ENGINE_RTL_LIST_MAX, &total);
+    if (shown < 0 || total == 0) {
+        LOG_ERROR(shown < 0 ? "RTL-SDR device enumeration failed.\n" : "No supported devices found.\n");
+        free(list);
         dsd_exitflag_store(1);
+        return 0;
     }
-#else
-    device_count = (int)rtlsdr_get_device_count();
-#endif
-    // cppcheck-suppress knownConditionTrueFalse -- cppcheck does not model MSVC __try assignments.
-    if (device_count == 0) {
-        LOG_ERROR("No supported devices found.\n");
-        dsd_exitflag_store(1);
-        return device_count;
+    dsd_engine_setup_log_rtl_devices(opts, list, shown, total);
+    free(list);
+    if (opts->rtl_dev_serial[0] != '\0') {
+        return dsd_engine_setup_select_rtl_serial(opts) == 0 ? 1 : -1;
     }
-
-    LOG_INFO("NOTICE: RTL Input: Found %d device(s):\n", device_count);
-    for (int i = 0; i < device_count; i++) {
-#if defined(_MSC_VER) && defined(_WIN32)
-        __try {
-            (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            DSD_SNPRINTF(vendor, 256, "%s", "unknown");
-            DSD_SNPRINTF(product, 256, "%s", "unknown");
-            DSD_SNPRINTF(serial, 256, "%s", "unknown");
-        }
-#else
-        (void)rtlsdr_get_device_usb_strings((uint32_t)i, vendor, product, serial);
-#endif
-        LOG_INFO("NOTICE:   %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
-        if (opts->rtl_dev_index == i) {
-            LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", i, serial);
-        }
+    if (opts->rtl_dev_index < 0 || opts->rtl_dev_index >= total) {
+        return dsd_engine_setup_rtl_index_out_of_range(opts, total) == 0 ? 1 : -1;
     }
-    return device_count;
+    return 1;
 }
 #endif
 
 static int
-dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* vendor, char* product, char* serial) {
+dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state) {
     UNUSED(state);
 #ifdef USE_RTLSDR
     if (dsd_rtl_input_spec_apply(opts) < 0) {
         return -1;
     }
-
-    int device_count = dsd_engine_setup_enumerate_rtl_devices(opts, vendor, product, serial);
-    if (device_count <= 0) {
-        return 0;
-    }
-    if (opts->rtl_dev_index < 0 || opts->rtl_dev_index >= device_count) {
-        const int requested = opts->rtl_dev_index;
-        LOG_WARN("WARNING: Requested RTL device index %d out of range (found %d device(s)); using 0\n", requested,
-                 device_count);
-        opts->rtl_dev_index = 0;
-        dsd_engine_setup_update_rtl_spec_with_selected_index(opts);
+    const int selected = dsd_engine_setup_select_rtl_device(opts);
+    if (selected != 1) {
+        return selected;
     }
 
     opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(opts->rtl_volume_multiplier);
@@ -1075,9 +1116,6 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
     return 1;
 #else
     UNUSED(opts);
-    UNUSED(vendor);
-    UNUSED(product);
-    UNUSED(serial);
     return 0;
 #endif
 }
@@ -1088,10 +1126,7 @@ dsd_engine_setup_parse_rtl_input(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
 
-    char vendor[256];
-    char product[256];
-    char serial[256];
-    int rtl_ok = dsd_engine_setup_configure_local_rtl(opts, state, vendor, product, serial);
+    int rtl_ok = dsd_engine_setup_configure_local_rtl(opts, state);
 #ifdef USE_RTLSDR
     if (rtl_ok != 1) {
         LOG_ERROR("RTL-SDR input is unavailable.\n");
@@ -4070,6 +4105,10 @@ carrier_source_key(const dsd_opts* opts) {
         DSD_SNPRINTF(key, sizeof key, "rtltcp/%s/%d", opts->rtltcp_hostname, opts->rtltcp_portno);
     } else if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
         DSD_SNPRINTF(key, sizeof key, "airspy/%s", opts->airspy.serial);
+    } else if (opts->rtl_dev_serial[0] != '\0') {
+        /* A dongle chosen by serial is that dongle at whatever index it is found: two serials found at one index are
+           two sources. */
+        DSD_SNPRINTF(key, sizeof key, "rtl/sn/%s", opts->rtl_dev_serial);
     } else {
         DSD_SNPRINTF(key, sizeof key, "rtl/%d", opts->rtl_dev_index);
     }
