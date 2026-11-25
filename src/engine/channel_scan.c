@@ -1311,9 +1311,14 @@ dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* dea
 }
 
 /* Whether the typed tetra-dmo row on air owes a departure for a chain the scan found cannot run on air (issue #890 D5,
-   dsd_engine_channel_scan_tetra_judge()). One read without a scan extension. */
+   dsd_engine_channel_scan_tetra_judge()). Only while the session holds the TETRA state, which a list with a tetra-dmo
+   row sets at its landing (dsd_engine_scan_tetra_landing()): without it no row was judged, and a healthy pass of any
+   other list makes no lookup for it (issue #899's pass cost). */
 static int
 channel_scan_tetra_departing(const dsd_state* state) {
+    if (!state->tetra_ext_scan_held) {
+        return 0;
+    }
     const channel_scan* scan = channel_scan_get(state);
     if (!scan || scan->tetra_skip == DSD_ENGINE_TETRA_ROW_OK
         || dsd_engine_scan_tetra_row_waits((dsd_engine_tetra_row)scan->tetra_skip)) {
@@ -1348,7 +1353,9 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
    departure keeps its pacing). */
 static channel_scan*
 channel_scan_tetra_judging(const dsd_opts* opts, const dsd_state* state) {
-    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    /* The held TETRA state first (set at the landing of a list with a tetra-dmo row): any other list's pass makes no
+       lookup here (issue #899's pass cost). */
+    channel_scan* scan = state && state->tetra_ext_scan_held ? channel_scan_get(state) : NULL;
     if (!opts || !scan || !scan->has_tetra_rows || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
         || dsd_engine_channel_scan_waiting(state)) {
         return NULL;

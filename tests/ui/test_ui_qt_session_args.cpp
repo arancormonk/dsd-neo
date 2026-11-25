@@ -2800,18 +2800,14 @@ test_dmr_channels_last(void) {
                args.contains(token) && args.lastIndexOf(token) < args.size() - 2);
     }
 
-    /* A "--" in the extra options ends the options the decoder reads, so the saved channels go
-       just before it, still after every option before it; a "--" that is a long option's value ends nothing. */
+    /* A "--" in the extra options would end the options the decoder reads, before the saved channels and the other
+       options the app adds after the extras: such a start is refused (issue #899 B17), never built with the saved
+       channels lost; a "--" that is a long option's value ends nothing. */
     sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides /data/system.csv -- /data/operand.csv");
     prefs.extraArgs.clear();
     const QStringList ended = session_args_build(sys, prefs, &error);
-    const qsizetype terminator = ended.indexOf(QStringLiteral("--"));
-    const qsizetype saved = ended.lastIndexOf(QStringLiteral("--dmr-chan-overrides"));
-    expect("before the extra options' '--'",
-           error == SessionArgsError::None && terminator > 0 && saved == terminator - 2
-               && ended.value(saved + 1) == QStringLiteral("/data/dmr_channels/a.csv"));
-    expect("and after the user's own file", ended.indexOf(QStringLiteral("/data/system.csv")) < saved);
-    expect("the operand stays after it", ended.indexOf(QStringLiteral("/data/operand.csv")) > terminator);
+    expect("a bare '--' in the extra options refuses the start",
+           ended.isEmpty() && error == SessionArgsError::ExtraIncomplete);
     /* A profile named "--" is a name, as the decoder reads it (RUNTIME_CLI_PARSE), so it ends
        nothing either: the saved channels still come last, after the user's file. */
     sys["extraArgs"] = QStringLiteral("--profile -- --dmr-chan-overrides /data/system.csv");

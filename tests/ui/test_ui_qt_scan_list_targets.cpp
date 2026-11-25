@@ -237,8 +237,9 @@ test_simplex_digital_targets() {
                      == QStringLiteral("Simplex: %1 entries take no modulation: clear the modulation saved in this "
                                        "system's Radio settings.")
                             .arg(label));
+        // A digital row runs no dynamic squelch: a saved auto squelch goes to it as off (issue #899 B13, rowSquelch()).
         sys["radioSettings"] = QVariantMap{{"squelch", "auto+12"}};
-        check(build().ok && build().csv.endsWith(",\"Simplex\",--squelch auto+12\n"));
+        check(build().ok && build().csv.endsWith(",\"Simplex\",--squelch off\n"));
         sys.remove("radioSettings");
         // An unnamed system is named for its protocol.
         sys["name"] = "";
