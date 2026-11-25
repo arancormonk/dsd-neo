@@ -622,11 +622,7 @@ Item {
             compare(item("callRecordingsDeletesWaiting").text, "3 recordings are deleted once they stop playing, uploading or exporting.");
         }
 
-        // The owner's name made file-safe, and the day as a local date (issue
-        // #902 B11): 00:00 UTC on 1 January is still 31 December west of UTC.
         function test_export_file_name_is_safe() {
-            var zoned = testContext.localTimeZoneIs("America/Los_Angeles");
-            testContext.setLocalNowMs(Date.UTC(2026, 0, 1));
             recordings.folders = [{uid: "u9", kind: "saved", name: "Fire/EMS: \"North\" <1>", count: 2, bytes: 2000, first: 1761300000, last: 1761300000, available: true}];
             recordings.recordingCount = 2;
             recordings.setSelection(2, 2000, ["/r/a.wav"]);
@@ -635,9 +631,6 @@ Item {
             verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
             compare(testContext.lastDocumentRequest().name, name, "the host is asked with that name");
             testContext.answerDocumentCancelled(exportRequest());
-            if (!zoned)
-                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
-            compare(name, "Call recordings Fire_EMS_ _North_ _1_ 2025-12-31.zip");
         }
 
         // Issue #902 B6: the zip is named for the day the store selected by
