@@ -17,7 +17,7 @@ static void
 check_announcement(dsd_opts* opts, dsd_state* state, uint32_t address, const char* expected, uint32_t crc_ok,
                    uint32_t errors) {
     /* ETSI TS 102 361-4 V1.11.1, Table 7.76: Reg_Window=B, Aloha Mask=15, and all 24 bits of BParms2 are the address.
-       The zero tail supplies the unused MBC continuation read by the shared C_BCAST parser. */
+       A standalone CSBK: the C_BCAST parser reads no appended block from it, so the zero tail is never read. */
     uint8_t bytes[24] = {0xA8, 0x00, 0x20, 0x2E, 0xA0};
     uint8_t bits[sizeof(bytes) * 8];
     bytes[7] = (uint8_t)(address >> 16);

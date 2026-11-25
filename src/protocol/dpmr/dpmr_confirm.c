@@ -51,6 +51,10 @@ dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol) {
     state->dpmr_confirm_last_frame_valid = 1;
     if (!runs_on) {
         state->dpmr_confirm_weak_streak = 0;
+        /* Where the next half lies in its superframe's scrambler holds only while the frames run on (issue #903): after
+           a gap a frame whose halves both fail would be placed by frames that never arrived. The transmission's mode
+           and scrambling stay. */
+        state->dpmr_scramble_place = 0U;
     }
 }
 

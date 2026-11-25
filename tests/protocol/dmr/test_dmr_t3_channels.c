@@ -368,6 +368,44 @@ test_neighbour_never_trust2(void) {
     assert(g_state.dmr_lcn_trust[73] == 1U);
 }
 
+/* Issue #903: the trust byte the trunk state machine reads (lpcn_is_trusted()) has this one writer. A SITE row learned
+   off the control channel (1) is confirmed (2) by a checked SITE write of the same frequency heard on the control
+   channel, though the precedence keeps the row as it is; neither an UNVERIFIED nor a NEIGHBOUR write confirms it, nor a
+   SITE one heard off the control channel. A row the site taught keeps the trust it earned when its frequency is written
+   again from off the control channel, and a channel map file's row is never confirmed. */
+static void
+test_site_row_confirmed_on_control_channel(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    const long hz = 451500000L;
+    g_opts.trunk_is_tuned = 1; /* off the control channel */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 80U, hz, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.dmr_lcn_trust[80] == 1U);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 80U, hz, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.dmr_lcn_trust[80] == 1U);
+    g_opts.trunk_is_tuned = 0;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 80U, hz, DMR_CHAN_ORIGIN_UNVERIFIED) == 0);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 80U, hz, DMR_CHAN_ORIGIN_NEIGHBOUR) == 0);
+    assert(g_state.dmr_lcn_trust[80] == 1U);
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 80U, hz, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.dmr_lcn_trust[80] == 2U && dmr_t3_chan_origin(&g_state, 80U) == DMR_CHAN_ORIGIN_SITE);
+    assert(g_state.trunk_chan_map[80] == hz && dmr_t3_chan_revision(&g_state) == rev);
+
+    /* Learned on the control channel as RAS-accepted (2), then named by a checked CSBK heard off it: SITE, still 2. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 81U, hz + 12500L, DMR_CHAN_ORIGIN_UNVERIFIED) == 1);
+    assert(g_state.dmr_lcn_trust[81] == 2U);
+    g_opts.trunk_is_tuned = 1;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 81U, hz + 12500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(dmr_t3_chan_origin(&g_state, 81U) == DMR_CHAN_ORIGIN_SITE && g_state.dmr_lcn_trust[81] == 2U);
+    g_opts.trunk_is_tuned = 0;
+
+    /* A channel map file's row (trust 0) is neither rewritten nor confirmed. */
+    g_state.trunk_chan_map[82] = hz + 25000L;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 82U, hz + 25000L, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.dmr_lcn_trust[82] == 0U && dmr_t3_chan_origin(&g_state, 82U) == DMR_CHAN_ORIGIN_FILE);
+}
+
 static void
 test_estimates_dropped_when_anchor_changes(void) {
     reset();
@@ -2528,6 +2566,7 @@ main(void) {
     test_identical_hz_origin_promotion_bumps_revision();
     test_ras_unverified_learn_fills_empty_only();
     test_neighbour_never_trust2();
+    test_site_row_confirmed_on_control_channel();
     test_estimates_dropped_when_anchor_changes();
     test_network_change_drops_ota_rows_keeps_file_user();
     test_estimate_confirmed_in_place();

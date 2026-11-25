@@ -77,8 +77,8 @@ int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
  *   trunk-scan park, both unless it is the run's first landing (dsd_state::run_landed);
  * - the release of a followed call, a return to the control channel's included, even when no control channel is
  *   known and the receiver stays;
- * - the DMR machine, for every DMR tune it judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a status
- *   follow, a rest channel, a Connect Plus data tune, a probe, a settle) and for an operator's manual move under DMR
+ * - the DMR machine, for every DMR tune it judges to leave its carrier (dmr_sm_follow_leaves(): a hop, a status follow,
+ *   a rest channel, a probe, a settle) and for an operator's manual move under DMR
  *   trunking or before the trunk's owner is known (dmr_sm_note_operator_leave());
  * - the engine's reading of the receiver, for another trunk machine's tune (P25, NXDN) through the tune hooks and for
  *   an operator's manual move under P25 or NXDN trunking with DMR decoding on (dmr_sm_note_foreign_operator_leave()).
@@ -86,6 +86,9 @@ int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
  * with no slot held, whatever an earlier run on the same state left. docs/code_map.md (the encrypted-audio verdict)
  * has the rules in full. */
 void dmr_enc_class_hold(dsd_state* state);
+/** dmr_enc_class_hold() for slot @p slot alone: the slot's assignment ended while the receiver stays on the carrier for
+ * the other slot's call (dmr_slot_retire()), whose voice and hold are left as they are. */
+void dmr_enc_class_hold_slot(dsd_state* state, uint8_t slot);
 /** The slot's call said whether it is encrypted, as far as the decoder reads it (an LC that passed its check, a PI
  * header or Hytera Enhanced LC naming a cipher), or a run starts: its voice is held no more. */
 void dmr_enc_class_release_hold(dsd_state* state, uint8_t slot);
@@ -135,6 +138,15 @@ void dmr_note_published_live_crypto(dsd_state* state, uint8_t slot, int algid, i
 int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
+/** Non-zero when a Full LC with raw FID @p raw_fid (before any vendor normalisation) and FLCO @p flco is a voice
+ * channel user, which opens a call and carries service options. Under FID 0 only FLCO 0x00 (group) and 0x03 (unit to
+ * unit) are (TS 102 361-2 Table B.1). Raw FID 0x20 takes the FID 0 rule only when @p kenwood_sc is non-zero: the LC
+ * was recognised as a Kenwood scrambler LC (its check passed, PF set, the SO privacy bit set), which dmr_flco() reads
+ * as a standard LC; any other FID 0x20 LC is an unknown LC and opens no call. The Motorola (0x10) and Hytera (0x68,
+ * 0x08) FIDs keep the voice FLCOs dmr_flco() reads as calls: every one but their non-voice LCs, the talker alias and
+ * GPS FLCOs (0x10: the Capacity Max 0x14..0x18; 0x68: 0x04..0x08, as under FID 0), in any LC type. No other FID opens a
+ * call; @p kenwood_sc is ignored for any FID but 0x20. */
+int dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco, int kenwood_sc);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
 /** A DMR burst of the sender kind its sync word names is on over-the-air slot @p slot (0/1; -1 when not known: both)
  * (issue #800, fail closed): the sender evidence and data header binding of another sender kind on its lanes are

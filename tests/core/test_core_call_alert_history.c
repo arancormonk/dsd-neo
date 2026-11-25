@@ -4137,6 +4137,49 @@ render_code_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[
     return &event_history[0].Event_History_Items[0];
 }
 
+// Issue #903: an IDAS (Type-D) row's event line names its parties by their "pp-iiii" text, which tells two home
+// repeater prefixes apart; a Type-C row keeps its numbers.
+static int
+test_nxdn_event_line_names_type_d_text(void) {
+    /* On the heap and freed after the case (dsd_opts and dsd_state are never static or on the stack here). */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2, sizeof(*event_history));
+    if (opts == NULL || state == NULL || event_history == NULL) {
+        free(event_history);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+
+    reset_fixture(opts, state, event_history);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 5U,
+        .policy_target_id = 5U,
+        .ota_source_id = 100U,
+        .observed_m = g_observed_m,
+    };
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "07-0005");
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "03-0100");
+    rc |= expect_int("type-d row opens", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    watchdog_event_current(opts, state, 0);
+    rc |= expect_has_substr("type-d event names text", event_history[0].Event_History_Items[0].event_string,
+                            "TGT: 07-0005; SRC: 03-0100; RAN: ");
+
+    reset_fixture(opts, state, event_history);
+    const Event_History* item = render_code_row(opts, state, event_history, DSD_SYNC_NXDN_POS);
+    rc |= expect_has_substr("type-c event keeps numbers", item->event_string, "TGT: 00051002; SRC: 00041001; ");
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 // A code the decoder never decoded reads as its sentinel -- DMR 16, NXDN (unsigned)-1, dPMR -1, which every carrier
 // boundary now leaves (issue #575) -- and the system identity string and the event line print "--" for it, as the
 // terminal does, rather than the sentinel. NXDN's stand-ins (an IDAS area bit, DCR's fixed 7) are no RAN
@@ -10067,6 +10110,7 @@ main(void) {
     rc |= test_reacquisition_merge_fills_frequency_and_code_only();
     rc |= test_voice_start_alert_waits_for_receive_admission();
     rc |= test_unknown_access_codes_render_as_dashes();
+    rc |= test_nxdn_event_line_names_type_d_text();
     rc |= test_dpmr_event_line_prints_the_decoded_colour_code();
     rc |= test_reacquisition_merge_upgrades_an_unknown_system_code();
     rc |= test_reacquisition_merge_names_a_dpmr_code_in_the_system_identity();

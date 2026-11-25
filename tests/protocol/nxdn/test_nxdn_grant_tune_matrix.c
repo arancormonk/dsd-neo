@@ -15,7 +15,9 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -24,6 +26,7 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -33,6 +36,7 @@
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -43,6 +47,8 @@ void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Me
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t ElementsContentBits);
+dsd_call_kind nxdn_call_type_kind(uint8_t call_type, int type_d);
+int nxdn_call_type_opens_call(uint8_t call_type);
 // Defined here for the real-call-state build and by tests/test_support/call_state_stubs.c for the stubbed one.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
@@ -322,11 +328,11 @@ nxdn_install_hooks(void) {
 }
 
 static int
-nxdn_expect(int cond, const char* test_case, const char* result_name, const char* check) {
+nxdn_expect(int cond, const char* case_label, const char* step, const char* check) {
     if (cond) {
         return 0;
     }
-    DSD_FPRINTF(stderr, "FAIL case=%s result=%s check=%s\n", test_case, result_name, check);
+    DSD_FPRINTF(stderr, "FAIL case=%s result=%s check=%s\n", case_label, step, check);
     return 1;
 }
 
@@ -927,18 +933,16 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "target-fragment",
                       "target updated");
     rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "target-fragment", "replacement epoch started");
-    rc |= nxdn_expect(call.ota_source_id == 1100U, context.name, "target-fragment", "source preserved");
+    /* Another target is another call (issue #903): it takes the carrier and its media, never the previous call's
+       talker, service metadata or crypto. */
+    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', context.name, "target-fragment",
+                      "no talker carried");
     rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "target-fragment",
                       "route preserved");
-    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
-                          && call.priority == 5U,
-                      context.name, "target-fragment", "service metadata preserved");
-    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
-                      context.name, "target-fragment", "crypto preserved");
+    rc |= nxdn_expect(call.has_service_metadata == 0U && call.emergency == 0U, context.name, "target-fragment",
+                      "no service metadata carried");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, context.name, "target-fragment", "no crypto carried");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "target-fragment", "media state preserved");
-    rc |= nxdn_expect(strcmp(call.source_text, "SOURCE 1100") == 0, context.name, "target-fragment",
-                      "counterpart text preserved");
     rc |=
         nxdn_expect(strcmp(call.route_text[0], "RAN 7") == 0, context.name, "target-fragment", "route text preserved");
     previous_epoch = call.epoch;
@@ -950,15 +954,9 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "source-fragment",
                       "target preserved");
     rc |= nxdn_expect(call.ota_source_id == 1200U, context.name, "source-fragment", "source updated");
-    rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "source-fragment", "replacement epoch started");
+    rc |= nxdn_expect(call.epoch == previous_epoch, context.name, "source-fragment", "the talker fills the call in");
     rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "source-fragment",
                       "route preserved");
-    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
-                          && call.priority == 5U,
-                      context.name, "source-fragment", "service metadata preserved");
-    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
-                      context.name, "source-fragment", "crypto preserved");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "source-fragment", "media state preserved");
     return rc;
 }
@@ -1725,11 +1723,43 @@ nxdn_run_lapsed_call_same_carrier_duplicate_case(void) {
     return rc;
 }
 
+/* A confirmed DCR call opens on the receiver's channel, as a checked Call segment observes it
+ * (nxdn_update_sacch2_identity_state()): identity-less voice named "JPN DCR", no numeric party (issue #903). */
+static void
+dcr_call(void) {
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+}
+
+/* The held call for talkgroup 1400 awaits its call after the DCR call (epoch @p dcr_epoch) on the air when it was
+ * followed: a VCALL naming 1400 begins the announced call's own transmission, the call the held call binds to. */
+static int
+expect_awaited_call_binds(const char* name, uint64_t dcr_epoch) {
+    at_seconds(9802.0);
+    voice_live();
+    send_vcall(2200U, 1400U);
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                             && call.epoch != dcr_epoch && call.policy_target_id == 1400U,
+                         name, "awaited", "the announced call's own transmission begins");
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.gap == 0U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "awaited", "the held call binds to it, the call it awaited");
+    return rc;
+}
+
 /* What is on the air when the in-place follow of talkgroup 1400 arrives. */
 typedef enum {
     NXDN_ON_AIR_NAMED = 0, /* a call a VCALL named 1400 */
     NXDN_ON_AIR_ANONYMOUS, /* a late-entry call nothing has named yet */
     NXDN_ON_AIR_OTHER,     /* a call a VCALL named another talkgroup, 1600 */
+    NXDN_ON_AIR_DCR,       /* a DCR call ("JPN DCR"), which names no numeric party */
 } nxdn_on_air_kind;
 
 /* The receiver sits on a carrier (no grant tune) decoding a call (@p on_air), and follows an announcement of talkgroup
@@ -1738,10 +1768,11 @@ typedef enum {
  * has named, instead of awaiting a later one: the call's TX_REL ends it, and the next, anonymous transmission (past the
  * hangtime, or within it when @p within) inherits neither its identity nor its priority, so an outranking preempting
  * call on another channel never takes the receiver from it. A call on the air another message named is not the
- * announced one: the held call awaits the next call. */
+ * announced one, nor is a DCR call (issue #903): the held call awaits the next call, and the announced call's own
+ * transmission, when it begins, is the one it binds to. */
 static int
 nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air, int within) {
-    static const char* const on_air_names[] = {"named", "anonymous", "other"};
+    static const char* const on_air_names[] = {"named", "anonymous", "other", "dcr"};
     char name[96];
     DSD_SNPRINTF(name, sizeof name, "%s-in-place-follow-%s-%s", type_c ? "type-c" : "type-d", on_air_names[on_air],
                  within ? "within-hangtime" : "past-hangtime");
@@ -1762,6 +1793,8 @@ nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air,
     voice_live();
     if (on_air == NXDN_ON_AIR_ANONYMOUS) {
         late_entry_call();
+    } else if (on_air == NXDN_ON_AIR_DCR) {
+        dcr_call();
     } else {
         send_vcall(2200U, on_air == NXDN_ON_AIR_OTHER ? 1600U : 1400U);
     }
@@ -1781,10 +1814,13 @@ nxdn_run_in_place_follow_binds_call_variant(int type_c, nxdn_on_air_kind on_air,
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
                           && call.epoch == a_epoch,
                       name, "follow", "the call on the air stays");
-    if (on_air == NXDN_ON_AIR_OTHER) {
+    if (on_air == NXDN_ON_AIR_OTHER || on_air == NXDN_ON_AIR_DCR) {
         rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
                               && g_state.nxdn_call.call_epoch == 0U && g_state.nxdn_call.call_floor == a_epoch,
                           name, "follow", "a call another message named is not bound: the held call awaits the next");
+        if (on_air == NXDN_ON_AIR_DCR) {
+            rc |= expect_awaited_call_binds(name, a_epoch);
+        }
         return rc;
     }
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
@@ -1828,8 +1864,113 @@ nxdn_run_in_place_follow_binds_call_case(void) {
             rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_ANONYMOUS, within);
         }
         rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_OTHER, 0);
+        rc |= nxdn_run_in_place_follow_binds_call_variant(type_c, NXDN_ON_AIR_DCR, 0);
     }
     return rc;
+}
+
+/* The reverse order of the DCR case above (issue #903): an anonymous late-entry call is on the air when talkgroup 1400
+ * is followed in place, so the held call binds to it; a checked DCR Call segment then names that same transmission
+ * "JPN DCR" (nxdn_update_sacch2_identity_state() continues it). The DCR call is not the announced one: the held call is
+ * detached from it and awaits the next call, as when the DCR call was named first, and the announced call's own
+ * transmission is the one it binds to. */
+static int
+nxdn_run_in_place_follow_dcr_after_bind_case(void) {
+    const char* const name = "type-c-in-place-follow-anonymous-then-dcr";
+    type_c_fixture();
+    const long here = type_c_freq(16U);
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = here; /* the receiver sits on the carrier */
+    policy_row(1400U, 10, 0);
+    at_seconds(9800.0);
+    voice_live();
+    late_entry_call();
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE, name,
+                         "on-air", "an anonymous call is on the air");
+    const uint64_t a_epoch = call.epoch;
+    const uint64_t a_tx = dsd_call_snapshot_transmission(&call);
+    at_seconds(9801.5);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2;
+    send_assignment(0x04U, 1400U, 16U);
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.call_epoch == a_tx, name, "follow",
+                      "the held call is bound to the anonymous call");
+    at_seconds(9801.7);
+    voice_live();
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_CONTINUE);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && dsd_call_snapshot_transmission(&call) == a_tx
+                          && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text),
+                      name, "dcr", "the same transmission is now the DCR call");
+    g_state.last_vc_sync_time = dsd_decode_time() - 2;
+    send_assignment(0x04U, 1400U, 16U); /* the announcement repeats: the follow holds its call */
+    rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == 0U,
+                      name, "dcr", "the held call is detached from the DCR call and awaits the next");
+    rc |= expect_awaited_call_binds(name, a_epoch);
+    return rc;
+}
+
+/* A Type-C VCALL from radio 2200 to the null destination is on the air when an assignment naming group 1400 but no
+ * source is followed in place: the held call is bound to that transmission, so its source is the one the VCALL named
+ * there (issue #903), and it is judged with radio 2200's row. With @p source_row that row ranks it at priority 100, so
+ * a priority-50 preempting call never takes the receiver; without it the unlisted group is taken from (the control). */
+static int
+nxdn_run_in_place_follow_takes_vcall_source_variant(int source_row) {
+    char name[96];
+    DSD_SNPRINTF(name, sizeof name, "type-c-in-place-follow-vcall-source-%s", source_row ? "ranked" : "unranked");
+    type_c_fixture();
+    const long here = type_c_freq(16U);
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.use_rigctl = 1;
+    g_opts.audio_in_type = AUDIO_IN_PULSE;
+    g_rigctl_freq = here; /* the receiver sits on the carrier */
+    if (source_row) {
+        policy_row(2200U, 100, 0);
+    }
+    policy_row(1500U, 50, 1);
+    int rc = 0;
+
+    at_seconds(9900.0);
+    voice_live();
+    send_vcall(2200U, 0U);
+    at_seconds(9901.5);
+    g_state.last_vc_sync_time = dsd_decode_time() - 2; /* past the 1 s voice window */
+    const nxdn_case assignment = {"", NXDN_MATRIX_TYPE_C, 0x04U, 1U, 0U, 1400U, 16U, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &assignment);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(g_tune_count == 1 && g_last_tune_freq == here, name, "follow", "followed in place");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && g_state.nxdn_call.valid == 1U
+                          && g_state.nxdn_call.target == 1400U
+                          && g_state.nxdn_call.call_epoch == dsd_call_snapshot_transmission(&call),
+                      name, "follow", "the held call is bound to the call on the air");
+    rc |= nxdn_expect(g_state.nxdn_call.source == 2200U, name, "follow", "the held call's source is the VCALL's");
+
+    at_seconds(9903.0);
+    voice_live();
+    send_assignment(0x05U, 1500U, 17U);
+    if (source_row) {
+        rc |= nxdn_expect(g_tune_count == 1, name, "preempt", "a priority-50 call never outranks radio 2200's row");
+    } else {
+        rc |= nxdn_expect(g_tune_count == 2 && g_last_tune_freq == type_c_freq(17U), name, "preempt",
+                          "a priority-50 call takes the receiver from the unlisted group");
+    }
+    return rc;
+}
+
+static int
+nxdn_run_in_place_follow_takes_vcall_source_case(void) {
+    return nxdn_run_in_place_follow_takes_vcall_source_variant(1)
+           | nxdn_run_in_place_follow_takes_vcall_source_variant(0);
 }
 
 /* A followed call whose voice arrives with no message naming it (no VCALL, no SCCH: nothing reads the held call while
@@ -2289,8 +2430,8 @@ nxdn_run_type_d_followed_new_call_case(void) {
 }
 
 /* A Type-D held call is described as Type-D admission judges it, with no source fallback: an INFO3 source whose own
- * row ranks high never lends that priority to the held, unlisted group, so a preempting call at the source's priority
- * takes the receiver. */
+ * row ranks high never lends that priority to the held, unlisted group (nor does it enter the held call, whose source
+ * only its naming messages give), so a preempting call at the source's priority takes the receiver. */
 static int
 nxdn_run_type_d_held_no_source_fallback_case(void) {
     static const char* const name = "type-d-held-no-source-fallback";
@@ -2318,8 +2459,8 @@ nxdn_run_type_d_held_no_source_fallback_case(void) {
     voice_live();
     nxdn_run_case_decode(&held);
     rc |= nxdn_expect(g_state.nxdn_call.valid == 1U && g_state.nxdn_call.target == 1400U
-                          && g_state.nxdn_call.source == 1500U,
-                      name, "source", "the held call carries the INFO3 source");
+                          && g_state.nxdn_call.source == 0U,
+                      name, "source", "the INFO3 source stays out of the held call (issue #903)");
 
     nxdn_case other = held;
     other.scch_rep1 = 7U;
@@ -2508,6 +2649,581 @@ nxdn_run_type_d_info2_new_target_case(void) {
     return rc;
 }
 
+/* ---- Call types (NXDN TS 1-A Table 6.5-8, TS 1-E Table 6.6-15) ------------------------------------------------ */
+
+/* A VCALL_ASSGN (or a data assignment) of call type @p call_type, CC Option @p cc_option, to @p target on @p channel. */
+static void
+send_typed_assignment(uint8_t message_type, uint8_t call_type, uint8_t cc_option, uint16_t target, uint16_t channel) {
+    const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, message_type, call_type, 2100U, target, channel, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &c);
+    write_bits_u32(message, 8U, cc_option, 8U);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+}
+
+/* A checked VCALL of a confirmed transmission, of call type @p call_type and CC Option @p cc_option. */
+static void
+send_typed_vcall(uint8_t call_type, uint8_t cc_option, uint16_t source, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x01U);
+    write_bits_u32(bits, 8U, cc_option, 8U);
+    write_bits_u32(bits, 16U, call_type, 3U);
+    write_bits_u32(bits, 24U, source, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    g_state.nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* The classification every call-type site shares: 000/001 group, 100/110/111 private, the rest generic voice; only 010
+ * (TX_REL only) opens no call. Both variants read the table alike. */
+static int
+nxdn_run_call_type_table_case(void) {
+    static const char* const name = "call-type-table";
+    static const dsd_call_kind kinds[8] = {
+        DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_VOICE,         DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_PRIVATE_VOICE,
+    };
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        rc |= nxdn_expect(nxdn_call_type_kind(ct, 0) == kinds[ct] && nxdn_call_type_kind(ct, 1) == kinds[ct], name,
+                          "kind", "call type classified by the table, alike on Type-C and Type-D");
+        rc |= nxdn_expect(nxdn_call_type_opens_call(ct) == (ct != 2U ? 1 : 0), name, "opens", "only 010 opens no call");
+    }
+    return rc;
+}
+
+/* Every call type under every group/private switch pair: 000/001 follow under the group switch, 100/110/111 under the
+ * private switch (and are held as private calls), 010/011/101 never. */
+static int
+nxdn_run_call_type_grant_matrix_case(void) {
+    static const char* const name = "call-type-grant-matrix";
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        const int group_type = ct == 0U || ct == 1U;
+        const int private_type = ct == 4U || ct == 6U || ct == 7U;
+        for (int group_on = 0; group_on <= 1; group_on++) {
+            for (int private_on = 0; private_on <= 1; private_on++) {
+                type_c_fixture();
+                g_opts.trunk_tune_group_calls = group_on;
+                g_opts.trunk_tune_private_calls = private_on;
+                send_typed_assignment(0x04U, ct, 0U, 1100U, 16U);
+                const int expect_follow = (group_type && group_on) || (private_type && private_on);
+                char result[48];
+                DSD_SNPRINTF(result, sizeof result, "ct%u-g%d-p%d", (unsigned)ct, group_on, private_on);
+                rc |= nxdn_expect(g_tune_count == (expect_follow ? 1 : 0), name, result,
+                                  "followed only under the call type's own switch");
+                if (expect_follow) {
+                    rc |= nxdn_expect(g_state.nxdn_call.private_call == (private_type ? 1U : 0U), name, result,
+                                      "held as the call type's class");
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+static int g_conv_count = 0;
+static int g_conv_private = -1;
+
+static void
+nxdn_scan_hook_conventional(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                            int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)encrypted;
+    (void)data_call;
+    g_conv_count++;
+    g_conv_private = is_private;
+}
+
+/* A conventional scan's hold is refreshed by a VCALL of a group or private call, each as its class, and never by one
+ * of generic voice (011, 101) or by 010, which opens no call. */
+static int
+nxdn_run_conventional_hold_call_types_case(void) {
+    static const char* const name = "conventional-hold-call-types";
+    static const int expected[8] = {0, 0, -2, -2, 1, -2, 1, 1}; /* -2: no hold; else the private flag */
+    dsd_trunk_scan_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.nxdn_conventional_activity = nxdn_scan_hook_conventional;
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        type_c_fixture();
+        g_opts.trunk_enable = 0;
+        dsd_trunk_scan_hooks_set(&hooks);
+        g_conv_count = 0;
+        g_conv_private = -1;
+        send_typed_vcall(ct, 0U, 2100U, 1100U);
+        char result[16];
+        DSD_SNPRINTF(result, sizeof result, "ct%u", (unsigned)ct);
+        if (expected[ct] == -2) {
+            rc |= nxdn_expect(g_conv_count == 0, name, result, "no hold");
+        } else {
+            rc |= nxdn_expect(g_conv_count == 1 && g_conv_private == expected[ct], name, result, "hold as its class");
+        }
+    }
+    dsd_trunk_scan_hooks_set(NULL);
+    return rc;
+}
+
+/* What decoding @p decode printed on stderr, into @p out. */
+static int
+capture_stderr_of(void (*decode)(void), char* out, size_t out_size) {
+    /* Empty on every failure path, so a caller's checks of the text read a string and fail, never stale bytes. */
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "nxdn_matrix") != 0) {
+        return -1;
+    }
+    decode();
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return -1;
+    }
+    if (dsd_test_capture_stderr_read(&cap, out, out_size) != 0) {
+        out[0] = '\0';
+        return -1;
+    }
+    out[out_size - 1U] = '\0';
+    return 0;
+}
+
+static void
+decode_session_vcall(void) {
+    send_typed_vcall(3U, 0U, 100U, 200U);
+}
+
+static void
+decode_inter_system_assignment(void) {
+    send_typed_assignment(0x04U, 1U, 0x40U, 1100U, 16U);
+}
+
+static void
+decode_inter_system_vcall(void) {
+    send_typed_vcall(1U, 0x40U, 2100U, 1100U);
+}
+
+static nxdn_case g_busy_case;
+
+static void
+decode_busy_case(void) {
+    nxdn_run_case_decode(&g_busy_case);
+}
+
+/* Call type 011 is a Session Call only on Type-D (TS 1-E Table 6.6-15); Type-C reserves it (TS 1-A Table 6.5-8). CC
+ * Option bit 6 is Intra/Inter: 1 is an inter-system call (TS 1-A Table 6.5-7, TS 1-E Table 6.6-14). */
+static int
+nxdn_run_call_type_labels_case(void) {
+    static const char* const name = "call-type-labels";
+    char out[4096];
+    int rc = 0;
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    rc |= nxdn_expect(capture_stderr_of(decode_session_vcall, out, sizeof out) == 0, name, "type-d", "captured");
+    rc |= nxdn_expect(strstr(out, "Session Call") != NULL, name, "type-d", "011 is a Session Call on Type-D");
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    rc |= nxdn_expect(capture_stderr_of(decode_session_vcall, out, sizeof out) == 0, name, "type-c", "captured");
+    rc |= nxdn_expect(strstr(out, "Session Call") == NULL && strstr(out, "Reserved") != NULL, name, "type-c",
+                      "011 is reserved on Type-C");
+
+    type_c_fixture();
+    rc |= nxdn_expect(capture_stderr_of(decode_inter_system_assignment, out, sizeof out) == 0, name, "assgn-cc-option",
+                      "captured");
+    rc |= nxdn_expect(strstr(out, "Inter-System") != NULL && strstr(out, "Visitor") == NULL, name, "assgn-cc-option",
+                      "an assignment's CC Option bit 6 reads Inter-System");
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    rc |= nxdn_expect(capture_stderr_of(decode_inter_system_vcall, out, sizeof out) == 0, name, "vcall-cc-option",
+                      "captured");
+    rc |= nxdn_expect(strstr(out, "Inter-System") != NULL && strstr(out, "Visitor") == NULL, name, "vcall-cc-option",
+                      "a VCALL's CC Option bit 6 reads Inter-System");
+    return rc;
+}
+
+/* A radio list naming @p id. */
+static int
+install_radio_label(uint32_t id, const char* label) {
+    dsd_source_alias_store* store = dsd_source_alias_store_create();
+    dsd_source_alias_entry entry;
+    DSD_MEMSET(&entry, 0, sizeof entry);
+    entry.id_start = entry.id_end = id;
+    DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", label);
+    if (store == NULL || dsd_source_alias_store_append(store, &entry) != 0) {
+        dsd_source_alias_store_free(store);
+        return -1;
+    }
+    dsd_source_alias_install(&g_state, store);
+    return 0;
+}
+
+/* A Type-D private busy message names its target as a radio (the radio list), never as a talkgroup of that number. */
+static int
+nxdn_run_type_d_private_busy_label_case(void) {
+    static const char* const name = "type-d-private-busy-label";
+    g_busy_case = type_d_fixture(1U, 1500U);
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(1500U, "A", "GROUP-A", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+    int rc = nxdn_expect(install_radio_label(1500U, "UNIT-A") == 0, name, "setup", "radio list installed");
+    char out[4096];
+    rc |= nxdn_expect(capture_stderr_of(decode_busy_case, out, sizeof out) == 0, name, "private", "captured");
+    rc |= nxdn_expect(strstr(out, "[UNIT-A]") != NULL && strstr(out, "[GROUP-A]") == NULL, name, "private",
+                      "the private target is named by the radio list");
+
+    g_busy_case = type_d_fixture(0U, 1500U);
+    if (dsd_tg_policy_make_exact_entry(1500U, "A", "GROUP-A", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+    rc |= nxdn_expect(install_radio_label(1500U, "UNIT-A") == 0, name, "setup", "radio list installed");
+    rc |= nxdn_expect(capture_stderr_of(decode_busy_case, out, sizeof out) == 0, name, "group", "captured");
+    rc |= nxdn_expect(strstr(out, "[GROUP-A]") != NULL && strstr(out, "[UNIT-A]") == NULL, name, "group",
+                      "the group target is named by the group list");
+    return rc;
+}
+
+/* A checked VCALL of a confirmed transmission, of call type @p call_type, encrypted (DES, key id 5) to @p target. */
+static void
+send_encrypted_vcall(uint8_t call_type, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x01U);
+    write_bits_u32(bits, 16U, call_type, 3U);
+    write_bits_u32(bits, 24U, 2100U, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    write_bits_u32(bits, 56U, 2U, 2U);
+    write_bits_u32(bits, 58U, 5U, 6U);
+    g_state.nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* Under --enc-lockout an encrypted interconnect call (110) without a key is dropped like any other (the synthesized
+ * DISC takes the receiver back to the control channel) and locks its called number out for the session in the private
+ * namespace: the same call, a later one, and a clear individual call through that number are not followed again. Under
+ * --enc-follow the lockout is suspended. */
+static int
+nxdn_run_encrypted_interconnect_dropped_case(void) {
+    static const char* const name = "encrypted-interconnect-dropped";
+    type_c_fixture();
+    g_opts.trunk_tune_enc_calls = 0; /* --enc-lockout */
+    int rc = 0;
+    at_seconds(12000.0);
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_opts.trunk_is_tuned == 1, name, "follow", "interconnect followed");
+    at_seconds(12000.2);
+    voice_live();
+    send_encrypted_vcall(6U, 1234U);
+    rc |= nxdn_expect(g_tune_cc_count == 0, name, "tentative", "a lone encrypted VCALL drops nothing");
+    at_seconds(12000.4);
+    voice_live();
+    send_encrypted_vcall(6U, 1234U);
+    rc |= nxdn_expect(g_tune_cc_count == 1 && g_opts.trunk_is_tuned == 0, name, "drop",
+                      "the corroborated encrypted call is dropped back to the control channel");
+    rc |= nxdn_expect(dsd_enc_lockout_lookup(&g_state, 1234U, 0, NULL)
+                          && !dsd_enc_lockout_lookup(&g_state, 1234U, 1, NULL),
+                      name, "drop", "the called number is locked out as a radio");
+    at_seconds(12001.0);
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "same", "the same call is not followed again");
+    at_seconds(12020.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "session", "nor later in the session");
+    send_typed_assignment(0x04U, 4U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "number", "nor another private call through the number");
+    g_opts.trunk_tune_enc_calls = 1; /* --enc-follow */
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 2, name, "enc-follow", "followed again under --enc-follow");
+    return rc;
+}
+
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+/* An SCCH of structure @p sf (INFO4 0, INFO3 1, INFO2 2) naming @p id under Home Repeater / Prefix @p rep2, from repeater
+ * @p rep1. */
+static void
+send_scch_prefixed(uint8_t sf, uint8_t rep1, uint8_t rep2, uint16_t id) {
+    uint8_t message[32];
+    build_scch_identity(message, sf, rep1, id);
+    write_bits_u32(message, 8U, rep2, 5U);
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+}
+
+static void
+type_d_prefix_policy_row(uint32_t id, const char* mode) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, mode, "test", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+}
+
+/* The live call's group verdict, as the audio and scan gates judge it: on its policy target and source. */
+static int
+type_d_prefix_call_allowed(const dsd_call_snapshot* call) {
+    dsd_tg_policy_decision decision;
+    if (dsd_tg_policy_evaluate_group_call(&g_opts, &g_state, (uint32_t)call->policy_target_id,
+                                          (uint32_t)call->ota_source_id, 0, 0, &decision)
+        != 0) {
+        return -1;
+    }
+    return decision.tune_allowed ? 1 : 0;
+}
+
+/* An INFO2 naming another call after an emergency DES group call from 03-0100 to @p group (issue #903): 03-0005 and
+ * another target, 07-0005, or another class, unit 03-0005 by its G/U bit; or the Null Group ID 03-0000 (no numeric
+ * target) and a unit 03-0005. That call carries neither the group call's talker, its emergency flag nor its crypto. An
+ * INFO3 for the same call still keeps them. */
+static int
+nxdn_run_type_d_new_call_case(const char* variant, uint16_t group, uint8_t rep2, uint8_t gu, const char* text,
+                              dsd_call_kind kind) {
+    static const char* const name = "type-d-new-call-drops-old-call";
+    const nxdn_case busy = {
+        "type-d-new-target", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    g_opts.trunk_is_tuned = 1;
+    g_opts.trunk_tune_enc_calls = 1; /* --enc-follow: the encrypted call stays */
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    nxdn_install_hooks();
+    int rc = 0;
+
+    for (int i = 0; i < 2; i++) {
+        at_seconds(9500.0 + (0.1 * (double)i));
+        voice_live();
+        uint8_t bits[96];
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_message_type(bits, 0x01U);
+        write_bits_u32(bits, 8U, 0x80U, 8U); /* emergency */
+        write_bits_u32(bits, 16U, 1U, 3U);
+        write_bits_u32(bits, 24U, 0x1864U, 16U);
+        write_bits_u32(bits, 40U, group, 16U);
+        write_bits_u32(bits, 56U, 2U, 2U); /* DES */
+        write_bits_u32(bits, 58U, 5U, 6U);
+        g_state.nxdn_confirmed = 1;
+        NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+    }
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U && call.ota_source_id == 100U
+                          && call.kind == DSD_CALL_KIND_GROUP_VOICE && call.crypto != DSD_CALL_CRYPTO_UNKNOWN
+                          && call.crypto != DSD_CALL_CRYPTO_CLEAR,
+                      name, variant, "an encrypted emergency group call 03-0005 from 03-0100");
+
+    at_seconds(9500.3);
+    voice_live();
+    send_scch_prefixed(1U, 6U, 3U, 100U); /* INFO3: the same call's talker */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U
+                          && call.crypto != DSD_CALL_CRYPTO_UNKNOWN,
+                      name, variant, "the same call keeps its emergency and crypto");
+
+    at_seconds(9500.4);
+    voice_live();
+    uint8_t message[32];
+    build_scch_identity(message, 2U, 6U, 5U);
+    write_bits_u32(message, 8U, rep2, 5U);
+    message[24] = gu;
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && strcmp(call.target_text, text) == 0
+                          && call.kind == kind,
+                      name, variant, "the call INFO2 names");
+    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', name, variant, "no talker carried");
+    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, variant, "no emergency carried");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, variant, "no crypto carried");
+    return rc;
+}
+
+/* A DCR call ("JPN DCR", no numeric party) with crypto and service metadata, still live when an SCCH names a numbered
+ * party (issue #903): an INFO3 talker 03-0123 (@p sf 1) or an INFO2 target 03-0005 (@p sf 2) is another call. Its
+ * observation carries neither DCR's text identity nor DCR's service metadata or crypto, and the same message again
+ * continues that call. The DCR call's received scrambler (cipher 1, a key loaded) carries across that boundary
+ * through the classification hysteresis, as on main: the new call's own INFO1 or VCALL replaces it once it repeats. */
+static int
+nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* variant) {
+    static const char* const name = "numbered-scch-after-dcr";
+    const nxdn_case busy = {
+        "dcr-then-numbered", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    nxdn_install_hooks();
+    at_seconds(9600.0);
+    voice_live();
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .emergency = 1U,
+        .has_service_metadata = 1U,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = 2U,
+        .audio_permitted = 0U,
+    };
+    (void)dsd_call_state_update_crypto(&g_state, 0U, DSD_SYNC_NXDN_POS, &crypto);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1
+                             && strcmp(call.target_text, DSD_CALL_NXDN_DCR_TARGET_TEXT) == 0,
+                         name, variant, "a live DCR call");
+    const uint64_t dcr_epoch = call.epoch;
+    g_state.R = 0x1234ULL; /* the DCR call's scrambler key */
+    /* Received as the DCR call's SACCH-2 names it (nxdn_sacch2_note_cipher()). */
+    g_state.nxdn_cipher_type = nxdn_cipher_observe_keyed(&g_state, 1U, 0U, 1);
+
+    at_seconds(9600.2);
+    voice_live();
+    send_scch_prefixed(sf, 6U, 3U, id);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch != dcr_epoch,
+                      name, variant, "the numbered party is another call");
+    rc |= nxdn_expect(g_state.nxdn_cipher_type == 1U && nxdn_cipher_established_enc(&g_state)
+                          && g_state.nxdn_cipher_rx_class == 2U,
+                      name, variant, "the DCR call's scrambler carries over");
+    const int info3 = sf == 1U;
+    rc |= nxdn_expect(call.ota_source_id == (info3 ? id : 0U) && call.ota_target_id == (info3 ? 0U : id), name, variant,
+                      "the message's party");
+    rc |= nxdn_expect(strcmp(call.target_text, info3 ? "" : "03-0005") == 0, name, variant, "no DCR target text");
+    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, variant, "no DCR metadata");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, variant, "no DCR crypto");
+    rc |= nxdn_expect(call.media_active == 1U, name, variant, "the carrier's voice stays");
+    const uint64_t numbered_epoch = call.epoch;
+
+    at_seconds(9600.3);
+    voice_live();
+    send_scch_prefixed(sf, 6U, 3U, id);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.epoch == numbered_epoch, name, variant,
+                      "the same message again continues that call");
+    return rc;
+}
+
+static int
+nxdn_run_numbered_scch_after_dcr_case(void) {
+    int rc = 0;
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(1U, 123U, "info3-source");
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(2U, 5U, "info2-target");
+    return rc;
+}
+
+static int
+nxdn_run_type_d_new_target_drops_old_call_case(void) {
+    int rc = 0;
+    rc |= nxdn_run_type_d_new_call_case("other-prefix", 0x1805U, 7U, 0U, "07-0005", DSD_CALL_KIND_GROUP_VOICE);
+    rc |= nxdn_run_type_d_new_call_case("unit-of-same-number", 0x1805U, 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |=
+        nxdn_run_type_d_new_call_case("unit-after-null-group", 0x1800U, 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
+    return rc;
+}
+
+/* A Type-D unit or group ID is unique only under its Home Repeater / Prefix (NXDN TS 1-E §6.6.6-§6.6.8). The call keeps
+ * the 11-bit IDs every policy, lockout, skip, hold and key consumer reads, and names them "pp-iiii" (issue #903 D7):
+ * group 5 under prefixes 3 and 7 are two calls by their text, judged by the one row "5" (a list allowing 5 and blocking
+ * the packed 6149 and 14341 still allows both). The busy (INFO4), source (INFO3) and target (INFO2) messages carry
+ * their prefix into the call's text as the VCALL does. */
+static int
+nxdn_run_type_d_prefix_identity_case(void) {
+    static const char* const name = "type-d-prefix-identity";
+    const nxdn_case busy = {
+        "type-d-prefix", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    type_d_prefix_policy_row(5U, "A");
+    type_d_prefix_policy_row(0x1805U, "B");
+    type_d_prefix_policy_row(0x3805U, "B");
+    nxdn_install_hooks();
+    int rc = 0;
+
+    at_seconds(9400.0);
+    voice_live();
+    late_entry_call();
+    nxdn_run_case_decode(&busy); /* INFO4: group 5 under prefix 3, on the receiver's repeater */
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 5U
+                          && call.policy_target_id == 5U && strcmp(call.target_text, "03-0005") == 0,
+                      name, "info4", "the busy message names 03-0005, ID 5");
+
+    at_seconds(9400.1);
+    voice_live();
+    send_scch_prefixed(1U, 6U, 3U, 100U); /* INFO3: talker 100 under prefix 3 */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_source_id == 100U
+                          && strcmp(call.source_text, "03-0100") == 0 && strcmp(call.target_text, "03-0005") == 0,
+                      name, "info3", "the source message names 03-0100, ID 100");
+    rc |= nxdn_expect(type_d_prefix_call_allowed(&call) == 1, name, "policy-03", "03-0005 is judged by row 5");
+    const uint64_t first = dsd_call_snapshot_transmission(&call);
+
+    at_seconds(9400.2);
+    voice_live();
+    send_vcall(0x3864U, 0x3805U); /* group 5 under prefix 7, talker 100 under prefix 7 */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && dsd_call_snapshot_transmission(&call) != first,
+                      name, "vcall", "07-0005 is another call than 03-0005");
+    rc |= nxdn_expect(call.ota_target_id == 5U && call.policy_target_id == 5U && call.ota_source_id == 100U, name,
+                      "vcall", "its IDs stay 11-bit");
+    rc |= nxdn_expect(strcmp(call.target_text, "07-0005") == 0 && strcmp(call.source_text, "07-0100") == 0, name,
+                      "vcall", "named 07-0005 from 07-0100");
+    rc |= nxdn_expect(type_d_prefix_call_allowed(&call) == 1, name, "policy-07", "07-0005 is judged by row 5 too");
+
+    at_seconds(9400.3);
+    voice_live();
+    send_scch_prefixed(2U, 6U, 7U, 9U); /* INFO2: target 9 under prefix 7 on the receiver's repeater */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 9U
+                          && strcmp(call.target_text, "07-0009") == 0,
+                      name, "info2", "the target message names 07-0009, ID 9");
+    return rc;
+}
+
+/* The assignment's recent-activity row: its kind by the call type, and its notice says TG only for a group call (a
+ * private or interconnect call's destination is a radio or PSTN ID). 010 publishes no row. */
+static int
+nxdn_run_assignment_activity_kind_case(void) {
+    static const char* const name = "assignment-activity-kind";
+    static const dsd_call_kind kinds[8] = {
+        DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_UNKNOWN,
+        DSD_CALL_KIND_VOICE,         DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_PRIVATE_VOICE,
+    };
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        type_c_fixture();
+        g_opts.trunk_tune_group_calls = 0;
+        g_opts.trunk_tune_private_calls = 0;
+        send_typed_assignment(0x04U, ct, 0U, 1100U, 16U);
+        dsd_recent_activity_snapshot snap;
+        DSD_MEMSET(&snap, 0, sizeof snap);
+        (void)dsd_recent_activity_copy_snapshot(&g_state, &snap);
+        const dsd_recent_activity_entry* row = &snap.entries[0];
+        char result[16];
+        DSD_SNPRINTF(result, sizeof result, "ct%u", (unsigned)ct);
+        if (ct == 2U) {
+            rc |= nxdn_expect(row->notice[0] == '\0', name, result, "010 publishes no activity");
+            continue;
+        }
+        rc |= nxdn_expect(row->observation.kind == kinds[ct], name, result, "activity kind by the call type");
+        if (kinds[ct] == DSD_CALL_KIND_GROUP_VOICE) {
+            rc |= nxdn_expect(strstr(row->notice, "TG: 1100") != NULL, name, result, "a group notice says TG");
+        } else {
+            rc |= nxdn_expect(strstr(row->notice, "TG:") == NULL && strstr(row->notice, "TGT: 1100") != NULL, name,
+                              result, "a non-group notice names its target, not a TG");
+        }
+    }
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -2597,17 +3313,29 @@ main(void) {
     rc |= nxdn_run_type_c_takeover_ends_left_call_case();
     rc |= nxdn_run_type_d_takeover_ends_left_call_case();
     rc |= nxdn_run_refollow_after_hangtime_return_case();
+    rc |= nxdn_run_call_type_table_case();
+    rc |= nxdn_run_call_type_grant_matrix_case();
+    rc |= nxdn_run_conventional_hold_call_types_case();
+    rc |= nxdn_run_call_type_labels_case();
+    rc |= nxdn_run_type_d_private_busy_label_case();
+    rc |= nxdn_run_encrypted_interconnect_dropped_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
+    rc |= nxdn_run_assignment_activity_kind_case();
     rc |= nxdn_run_release_reply_keeps_dwell_case();
     rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();
     rc |= nxdn_run_in_place_follow_binds_call_case();
+    rc |= nxdn_run_in_place_follow_dcr_after_bind_case();
+    rc |= nxdn_run_in_place_follow_takes_vcall_source_case();
     rc |= nxdn_run_unnamed_followed_call_fades_case();
     rc |= nxdn_run_type_c_group_preempts_same_number_private_case();
     rc |= nxdn_run_type_d_info3_new_source_keeps_held_call_case();
     rc |= nxdn_run_type_d_abandoned_grant_case();
     rc |= nxdn_run_type_d_abandoned_grant_fade_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
+    rc |= nxdn_run_type_d_prefix_identity_case();
+    rc |= nxdn_run_type_d_new_target_drops_old_call_case();
+    rc |= nxdn_run_numbered_scch_after_dcr_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

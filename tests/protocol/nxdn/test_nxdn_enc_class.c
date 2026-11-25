@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
@@ -155,18 +156,24 @@ write_bits(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
     }
 }
 
-/* VCALL (message type 0x01): body at bit offset 8. */
+/* VCALL (message type 0x01) of call type @p call_type: body at bit offset 8. */
 static void
-build_vcall(uint8_t bits[96], uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
+build_typed_vcall(uint8_t bits[96], uint8_t call_type, uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
     DSD_MEMSET(bits, 0, 96U);
-    write_bits(bits, 2U, 0x01U, 6U);  /* message type */
-    write_bits(bits, 8U, 0x00U, 8U);  /* cc option */
-    write_bits(bits, 16U, 0x01U, 3U); /* call type: group */
+    write_bits(bits, 2U, 0x01U, 6U); /* message type */
+    write_bits(bits, 8U, 0x00U, 8U); /* cc option */
+    write_bits(bits, 16U, call_type, 3U);
     write_bits(bits, 19U, 0x00U, 5U); /* voice call option */
     write_bits(bits, 24U, source, 16U);
     write_bits(bits, 40U, dest, 16U);
     write_bits(bits, 56U, cipher, 2U);
     write_bits(bits, 58U, key_id, 6U);
+}
+
+/* A group (001) VCALL. */
+static void
+build_vcall(uint8_t bits[96], uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
+    build_typed_vcall(bits, 0x01U, cipher, key_id, source, dest);
 }
 
 static void
@@ -230,6 +237,29 @@ test_contradiction_of_tentative_replaces(void) {
     (void)nxdn_cipher_observe(&state, 2U, 0);
     assert(nxdn_cipher_observe(&state, 0U, 0) == 0U);
     assert(nxdn_cipher_established_enc(&state) == 0);
+}
+
+/* The applied key goes with the applied cipher: an observation naming its key ID sets it only when its cipher is the
+ * one applied afterwards, so a held contradiction changes neither half of the pair (issue #903). */
+static void
+test_key_stays_paired_with_the_applied_cipher(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(state != NULL);
+
+    (void)nxdn_cipher_observe_keyed(state, 1U, 5U, 0);
+    assert(nxdn_cipher_observe_keyed(state, 1U, 5U, 0) == 1U);
+    assert(state->nxdn_key == 5U);
+    // A lone contradiction is held: the scrambler and its key 5 stay.
+    assert(nxdn_cipher_observe_keyed(state, 0U, 0U, 0) == 1U);
+    assert(state->nxdn_key == 5U);
+    // A matching repeat under another key ID applies that key with the cipher it came with.
+    assert(nxdn_cipher_observe_keyed(state, 1U, 7U, 0) == 1U);
+    assert(state->nxdn_key == 7U);
+    // The contradiction's repeat applies: its cipher and its key, together.
+    (void)nxdn_cipher_observe_keyed(state, 0U, 0U, 0);
+    assert(nxdn_cipher_observe_keyed(state, 0U, 0U, 0) == 0U);
+    assert(state->nxdn_key == 0U);
+    free(state);
 }
 
 static void
@@ -488,13 +518,47 @@ test_republish_leaves_another_protocols_call_alone(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The lockout entry is the call type's endpoint in its class's namespace: an individual (100), interconnect (110) or
+   speed dial (111) call locks its called number out as a radio, never a talkgroup of that number; a group call (000,
+   001) its talkgroup. A call of generic voice (011, 101) is dropped all the same but locks nothing out. */
+static void
+test_vcall_lockout_endpoint_by_call_type(void) {
+    static const struct {
+        uint8_t call_type;
+        int group; /* -1: no lockout entry */
+    } cases[] = {{0x00U, 1}, {0x01U, 1}, {0x04U, 0}, {0x06U, 0}, {0x07U, 0}, {0x03U, -1}, {0x05U, -1}};
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        Event_History_I* history = (Event_History_I*)calloc(2, sizeof(*history));
+        assert(opts != NULL && state != NULL && history != NULL);
+        uint8_t bits[96];
+        dsd_call_snapshot call;
+        reset_fixture(opts, state, history);
+        build_typed_vcall(bits, cases[i].call_type, 2U, 5U, 100U, 1234U);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED); // the forced DISC
+        assert(dsd_enc_lockout_lookup(state, 1234U, 1, NULL) == (cases[i].group == 1));
+        assert(dsd_enc_lockout_lookup(state, 1234U, 0, NULL) == (cases[i].group == 0));
+        assert(dsd_tg_policy_call_skip_empty(state));
+        dsd_state_ext_free_all(state);
+        free(history);
+        free(state);
+        free(opts);
+    }
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
     test_lone_contradiction_is_quarantined_both_directions();
     test_contradiction_of_tentative_replaces();
+    test_key_stays_paired_with_the_applied_cipher();
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
+    test_vcall_lockout_endpoint_by_call_type();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     test_vcall_cipher_received_once_corroborated();
     test_forced_cipher_is_not_received();

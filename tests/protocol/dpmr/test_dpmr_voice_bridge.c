@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../test_support/scan_activity_capture.h"
+#include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -793,6 +794,179 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     return rc;
 }
 
+/* Issue #903: beside the pairs above, one failed half of either identity's pair, and two passing halves numbered 2/1 or
+   1/0, name nobody (section 11.1.0: FN 0/1 carry the called ID, FN 2/3 the calling one). None of them changes the call
+   (called "1000000", calling "100000*") or starts a caller epoch. */
+static int
+test_unchecked_id_pairs_change_nothing(void) {
+    static const struct {
+        const char* tag;
+        uint32_t fn0, fn1;
+        bool crc0, crc1;
+    } k_rejected[] = {
+        {"calling-both-crc-failed", 2U, 3U, false, false},
+        {"calling-first-half-failed", 2U, 3U, false, true},
+        {"calling-second-half-failed", 2U, 3U, true, false},
+        {"called-second-half-failed", 0U, 1U, true, false},
+        {"mixed-pair-0-3", 0U, 3U, true, true},
+        {"mixed-pair-2-1", 2U, 1U, true, true},
+        {"swapped-pair-1-0", 1U, 0U, true, true},
+    };
+
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    dsd_call_snapshot call;
+    int rc = 0;
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    dpmr_superframe_part part = {.frame_number = {0U, 1U},
+                                 .id_value = 1464100U,
+                                 .crc_ok = {true, true},
+                                 .hamming_ok = {{false, false}, {false, false}}};
+    publish_part(opts, state, &part, 0U, 0U);
+    part = (dpmr_superframe_part){.frame_number = {2U, 3U},
+                                  .id_value = 1464110U,
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("pairs-start-called", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("pairs-start-calling", strcmp(call.source_text, "100000*"), 0);
+    const uint64_t caller_epoch = call.epoch;
+
+    for (size_t i = 0; i < sizeof(k_rejected) / sizeof(k_rejected[0]); i++) {
+        char tag[96];
+        part = (dpmr_superframe_part){.frame_number = {k_rejected[i].fn0, k_rejected[i].fn1},
+                                      .id_value = 2928210U,
+                                      .crc_ok = {k_rejected[i].crc0, k_rejected[i].crc1},
+                                      .hamming_ok = {{true, true}, {true, true}}};
+        publish_part(opts, state, &part, 0U, 0U);
+        (void)dsd_call_state_get(state, 0U, &call);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the calling id", k_rejected[i].tag);
+        rc |= expect_int(tag, strcmp(call.source_text, "100000*"), 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the called id", k_rejected[i].tag);
+        rc |= expect_int(tag, strcmp(call.target_text, "1000000"), 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the caller epoch", k_rejected[i].tag);
+        rc |= expect_int(tag, call.epoch == caller_epoch, 1);
+    }
+    return rc;
+}
+
+/* One CCH half as dpmr_decode_cch_frames() leaves it: its CRC-7 verdict and the fields it decoded. */
+static void
+set_half(dsd_state* state, int o, unsigned crc_ok, unsigned fn, unsigned mode, unsigned version, unsigned ep) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    f->CCHDataCrcOk[o] = crc_ok;
+    f->FrameNumbering[o] = fn;
+    f->CommunicationMode[o] = mode;
+    f->Version[o] = version;
+    f->CommsFormat[o] = 0U;
+    f->EmergencyPriority[o] = ep;
+}
+
+/* Play the frame set_half() built; how many vocoder frames ran. */
+static int
+play_set_frame(dsd_opts* opts, dsd_state* state) {
+    char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+    DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+    reset_capture();
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
+    return (int)g_mbe_calls;
+}
+
+/* Issue #903: a failed half's Communication Mode is not trusted. Once a verified half has said what the transmission
+   carries, a failed half reading a data mode does not cut its voice, and one reading a voice mode does not play a data
+   transmission's payload as speech. */
+static int
+test_failed_cch_mode_does_not_switch_voice(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    int rc = 0;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+
+    set_half(state, 0, 0U, 0U, 2U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 0U, 0U, 0U);
+    rc |= expect_int("failed data-mode half in a voice call plays", play_set_frame(opts, state), 8);
+    set_half(state, 0, 0U, 2U, 3U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 4U, 0U, 0U);
+    rc |= expect_int("failed data-mode pair in a voice call plays", play_set_frame(opts, state), 8);
+
+    /* The next transmission carries data, which a verified pair says. */
+    dpmr_scrambling_reset(state);
+    set_half(state, 0, 1U, 0U, 2U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 2U, 0U, 0U);
+    rc |= expect_int("verified data plays nothing", play_set_frame(opts, state), 0);
+    set_half(state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 1U, 0U, 0U);
+    rc |= expect_int("failed voice-mode pair in a data transmission plays nothing", play_set_frame(opts, state), 0);
+    return rc;
+}
+
+/* Issue #903: emergency and the service options come only from a CCH half whose CRC-7 passed. A failed half in a
+   confirmed transmission neither sets nor clears emergency nor replaces the service options. */
+static int
+test_failed_cch_changes_no_service_metadata(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    int rc = 0;
+    dsd_call_snapshot call;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+
+    /* Verified: voice + slow data, clear, no emergency. */
+    set_half(state, 0, 1U, 0U, 1U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 1U, 0U, 0U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("verified call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    rc |= expect_int("verified no emergency", call.emergency, 0);
+    rc |= expect_int("verified service options", call.service_options, 0x10);
+    rc |= expect_int("verified has metadata", call.has_service_metadata, 1);
+    const uint64_t epoch = call.epoch;
+
+    /* Both halves failed, reading emergency, data mode, another version and format. */
+    set_half(state, 0, 0U, 2U, 2U, 2U, 1U);
+    set_half(state, 1, 0U, 3U, 2U, 2U, 1U);
+    state->dPMRVoiceFS2Frame.CommsFormat[0] = 3U;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("failed pair sets no emergency", call.emergency, 0);
+    rc |= expect_int("failed pair keeps service options", call.service_options, 0x10);
+    rc |= expect_int("failed pair keeps the call", call.epoch == epoch, 1);
+
+    /* The first half failed reading emergency; the second verified none, in voice mode. */
+    set_half(state, 0, 0U, 0U, 2U, 2U, 1U);
+    set_half(state, 1, 1U, 1U, 0U, 0U, 0U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("verified second half: no emergency", call.emergency, 0);
+    rc |= expect_int("verified second half: its service options", call.service_options, 0x00);
+
+    /* A verified emergency sets it, and failed halves reading none do not clear it. */
+    set_half(state, 1, 1U, 1U, 0U, 0U, 1U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("verified emergency", call.emergency, 1);
+    set_half(state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 0U, 0U, 0U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("failed halves keep the emergency", call.emergency, 1);
+    return rc;
+}
+
 /* Issue #890 (B9b, F13): the service a frame publishes is its CRC-valid half's, whatever its failed half read, and a
    checked data CCH is a data call: never voice, and never voice first and data after. */
 static int
@@ -1057,7 +1231,7 @@ test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
     /* The retained text belongs to the earlier transmission: this unconfirmed frame decoded no identity to show. */
     rc |= expect_text("retained-target-not-printed", printed, "1000000", 0);
     rc |= expect_text("retained-caller-not-printed", printed, "200000*", 0);
-    rc |= expect_text("unconfirmed-prints-target-crc-err", printed, "TG=(CRC ERR)", 1);
+    rc |= expect_text("unconfirmed-prints-target-crc-err", printed, "Called=(CRC ERR)", 1);
     rc |= expect_text("unconfirmed-prints-caller-crc-err", printed, "Src=(CRC ERR)", 1);
     return rc;
 }
@@ -1083,7 +1257,9 @@ test_confirmed_call_prints_its_identities(void) {
 
     char printed[256];
     rc |= capture_print_ids(state, printed, sizeof(printed));
-    rc |= expect_text("confirmed-prints-target", printed, "TG=1000000", 1);
+    /* The called ID may be a radio's as well as a group's (issue #903): the line names neither. */
+    rc |= expect_text("confirmed-prints-target", printed, "Called=1000000", 1);
+    rc |= expect_text("confirmed-prints-no-tg-label", printed, "TG=", 0);
     rc |= expect_text("confirmed-prints-caller", printed, "Src=200000*", 1);
     rc |= expect_text("confirmed-prints-channel-code", printed, "Channel Code=12", 1);
     rc |= expect_text("confirmed-no-crc-err", printed, "CRC ERR", 0);
@@ -1139,7 +1315,7 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
         rc |= expect_int("noise-no-voice", (int)g_mbe_calls, 0);
         rc |= expect_text("noise-no-foreign-target", printed, "CQCQCQ", 0);
         rc |= expect_text("noise-no-foreign-caller", printed, "N0CALL", 0);
-        rc |= expect_text("noise-target-crc-err", printed, "TG=(CRC ERR)", 1);
+        rc |= expect_text("noise-target-crc-err", printed, "Called=(CRC ERR)", 1);
         rc |= expect_text("noise-caller-crc-err", printed, "Src=(CRC ERR)", 1);
 
         /* The other protocol's call is left as it was. */
@@ -1564,8 +1740,8 @@ test_frame_prints_the_identity_it_bound(void) {
     if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
         return 1;
     }
-    rc |= expect_text("bound-id-printed", printed, "TG=0000000", 1);
-    rc |= expect_text("no-crc-err-for-the-bound-id", printed, "TG=(CRC ERR)", 0);
+    rc |= expect_text("bound-id-printed", printed, "Called=0000000", 1);
+    rc |= expect_text("no-crc-err-for-the-bound-id", printed, "Called=(CRC ERR)", 0);
     return rc;
 }
 
@@ -1592,6 +1768,44 @@ bridge_play(dsd_opts* opts, dsd_state* state, const bridge_frame* frame) {
     }
     dpmr_resolve_half_scrambling(state);
     dpmr_play_voice_frames(opts, state, ambe_fr);
+}
+
+/* Issue #903: the place a frame whose halves both fail takes in its superframe's Scramble is the cadence's, so it holds
+   only while the frames run on. Checked frames 2/3 then, on time, a failed pair: frames 0/1, from the key. Checked
+   frames 2/3, then a gap of one FS2 (frames 0/1 missed) with no carrier reset: the next failed pair is not placed (it
+   runs on from the register as the last half left it), while the transmission's scrambling and mode stay. */
+static int
+test_frame_gap_forgets_the_scrambler_place(void) {
+    const unsigned long long key = 0x12345ULL;
+    const bridge_frame frames23 = {.crc = {1U, 1U}, .fn = {2U, 3U}, .mode = {0U, 0U}, .version = {3U, 3U}};
+    const bridge_frame failed = {.crc = {0U, 0U}, .fn = {2U, 3U}, .mode = {2U, 2U}, .version = {0U, 0U}};
+    int rc = 0;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int gap = 0; gap <= 1; gap++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        reset_capture();
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->R = key;
+        dpmr_confirm_note_frame_start(state, 1000U);
+        bridge_play(opts, state, &frames23);
+        rc |= expect_int("checked frames 2 and 3 play", (int)g_mbe_calls, 8);
+        const uint32_t next = 1000U + DPMR_CONFIRM_FRAME_SYMBOLS * (gap ? 2U : 1U);
+        dpmr_confirm_note_frame_start(state, next);
+        rc |= expect_int(gap ? "a gap forgets the place" : "an on-time frame keeps the place",
+                         (int)state->dpmr_scramble_place, gap ? 0 : 1);
+        rc |= expect_int("the transmission's scrambling stays", (int)state->dpmr_scrambled, 2);
+        rc |= expect_int("the transmission's mode stays", (int)state->dpmr_mode, 1);
+        const unsigned long long before = state->nxdn_payload_mi;
+        reset_capture();
+        bridge_play(opts, state, &failed);
+        rc |= expect_int("the failed pair plays by the transmission's checked mode", (int)g_mbe_calls, 8);
+        rc |= expect_u64(gap ? "after a gap the failed pair runs on from the register"
+                             : "on time the failed pair is frames 0/1, from the key",
+                         g_mbe_mi[0], gap ? before : scramble_register_at(key, 0));
+    }
+    return rc;
 }
 
 /* Issue #890: a half the bridge does not play keeps its place in the Scramble (four AMBE frames of 49 bits a half,
@@ -1948,6 +2162,7 @@ main(void) {
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
     rc |= test_attached_data_frames_are_no_voice();
     rc |= test_muted_halves_keep_the_scrambler_in_phase();
+    rc |= test_frame_gap_forgets_the_scrambler_place();
     rc |= test_unconfirmed_frame_keeps_the_scrambler_in_phase();
     rc |= test_impossible_half_numbers_keep_the_tracked_place();
     rc |= test_unconfirmed_frame_leaves_nxdn_crypto_alone();
@@ -1966,6 +2181,9 @@ main(void) {
     rc |= test_new_call_without_a_channel_code_has_none();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_service_and_kind_come_from_the_checked_half();
+    rc |= test_unchecked_id_pairs_change_nothing();
+    rc |= test_failed_cch_mode_does_not_switch_voice();
+    rc |= test_failed_cch_changes_no_service_metadata();
     rc |= test_scrambler_reloads_only_at_a_checked_frame_zero();
     rc |= test_unconfirmed_superframe_part_publishes_nothing();
     rc |= test_id_print_does_not_publish_the_color_code();

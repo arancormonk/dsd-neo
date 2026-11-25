@@ -1421,6 +1421,8 @@ test_type1_encrypted_notice_reports_missing_key(void) {
     assert(strstr(state.dmr_lrrp_gps[0], "ENC PDU") != NULL);
 }
 
+/* An MBC whose aggregate length is out of bounds is rejected, and the rejection ends its assembly: the header no longer
+   arms the slot, so no later continuation is taken for it. */
 static void
 test_type2_rejects_out_of_bounds_aggregate_length(void) {
     static dsd_opts opts;
@@ -1438,9 +1440,9 @@ test_type2_rejects_out_of_bounds_aggregate_length(void) {
 
     dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 2);
 
-    assert(state.data_block_counter[0] == 4);
+    assert(state.data_block_counter[0] == 1);
     assert(state.data_block_crc_valid[0][0] == 0);
-    assert(state.data_header_valid[0] == 1);
+    assert(state.data_header_valid[0] == 0);
 }
 
 static int

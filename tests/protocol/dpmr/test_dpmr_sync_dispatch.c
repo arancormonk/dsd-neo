@@ -447,9 +447,10 @@ test_dispatch_voice_sync_alone_opens_no_call(void) {
     g_voice_crc_halves = 2;
 }
 
-/* Issue #655: a CRC-failed half is played by the scrambling the transmission's last verified half signalled, so every
-   transmission boundary the dispatcher sees forgets it before the next call: a header that opens a call (which then
-   sets its own) and a checked end frame (issue #890). A frame that checked nothing is no boundary. */
+/* Issue #655: a CRC-failed half is played by the scrambling (and, issues #890 and #903, the Communications Mode) the
+   transmission's last verified half signalled, so every transmission boundary the dispatcher sees forgets them before
+   the next call: a header that opens a call (which then sets its own) and a checked end frame (issue #890). A frame
+   that checked nothing is no boundary. */
 static void
 test_dispatch_boundaries_forget_the_scrambling(void) {
     dsd_opts* opts = g_opts;
@@ -460,16 +461,20 @@ test_dispatch_boundaries_forget_the_scrambling(void) {
         DSD_MEMSET(opts, 0, sizeof(*opts));
         DSD_MEMSET(state, 0, sizeof(*state));
         state->dpmr_scrambled = 2U;
+        state->dpmr_mode = 1U;
         state->synctype = unchecked[i];
         (void)dsd_dispatch_handle_dpmr(opts, state);
         assert(state->dpmr_scrambled == 2U);
+        assert(state->dpmr_mode == 1U);
     }
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->dpmr_scrambled = 2U;
+    state->dpmr_mode = 1U;
     plant_checked_end(state);
     (void)dsd_dispatch_handle_dpmr(opts, state);
     assert(state->dpmr_scrambled == 0U);
+    assert(state->dpmr_mode == 0U);
     /* A clear voice header: the old verdict goes, the header's own (clear) comes. */
     state->dpmr_scrambled = 2U;
     plant_checked_header(state, 0x0U, 0U, 0U);
@@ -479,9 +484,11 @@ test_dispatch_boundaries_forget_the_scrambling(void) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->dpmr_scrambled = 2U;
+    state->dpmr_mode = 1U;
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     (void)dsd_dispatch_handle_dpmr(opts, state);
     assert(state->dpmr_scrambled == 2U);
+    assert(state->dpmr_mode == 1U);
 }
 
 /* Issue #834: the content notes a scan quiet check hears through the content-evidence hook. */

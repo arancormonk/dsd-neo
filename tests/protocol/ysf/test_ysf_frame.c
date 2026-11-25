@@ -303,6 +303,34 @@ test_ysf_full_rate_imbe_unpack_consumes_144_bits(void) {
     assert((uint8_t)imbe_fr[7][7] == 0x55U);
 }
 
+static void
+test_ysf_fich_sql_code_69_is_a_real_code(void) {
+    char text[32];
+
+    /* 69 is a valid 7-bit SQL code (Yaesu spec Table 4-1), not an "unset" marker: a decoded FICH prints it. */
+    DSD_MEMSET(text, 0x55, sizeof(text));
+    assert(dsd_ysf_format_fich_sql(0, 1U, 69U, text, sizeof(text)) > 0U);
+    assert(strcmp(text, "SQL CODE: 069 ") == 0);
+    assert(dsd_ysf_format_fich_sql(0, 1U, 1U, text, sizeof(text)) > 0U);
+    assert(strcmp(text, "SQL CODE: 001 ") == 0);
+
+    /* The FICH decode verdict says whether the fields were read: a failed FICH prints nothing, even with leftovers. */
+    assert(dsd_ysf_format_fich_sql(-1, 1U, 69U, text, sizeof(text)) == 0U);
+    assert(text[0] == '\0');
+    assert(dsd_ysf_format_fich_sql(-2, 1U, 12U, text, sizeof(text)) == 0U);
+    assert(text[0] == '\0');
+
+    /* The SQL-type bit keeps today's reading: the code prints only while it is set. */
+    assert(dsd_ysf_format_fich_sql(0, 0U, 69U, text, sizeof(text)) == 0U);
+    assert(text[0] == '\0');
+
+    /* A short buffer gets nothing rather than a cut code. */
+    char tiny[4];
+    assert(dsd_ysf_format_fich_sql(0, 1U, 69U, tiny, sizeof(tiny)) == 0U);
+    assert(tiny[0] == '\0');
+    assert(dsd_ysf_format_fich_sql(0, 1U, 69U, NULL, 0U) == 0U);
+}
+
 int
 main(void) {
     test_ysf_vd2_interleave_matrix();
@@ -313,5 +341,6 @@ main(void) {
     test_ysf_event_text_print_guard();
     test_ysf_sync_constants_and_synctypes();
     test_ysf_full_rate_imbe_unpack_consumes_144_bits();
+    test_ysf_fich_sql_code_69_is_a_real_code();
     return 0;
 }

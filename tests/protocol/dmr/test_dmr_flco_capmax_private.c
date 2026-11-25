@@ -6,7 +6,8 @@
 /*
  * Motorola Capacity Max voice LCs under FID 0x10 carry bit 0x10 over the standard FLCO: 0x10 is the group voice
  * channel user and 0x13 the unit-to-unit (private) one. A checked FLCO 0x13 LC opens a private call with the standard
- * target and source; FLCO 0x10 stays a group call, and FLCO 0x13 under any other FID is not read as Capacity Max.
+ * target and source; FLCO 0x10 stays a group call, and FLCO 0x13 under FID 0 is not read as Capacity Max (it opens
+ * no call).
  */
 
 #include <assert.h>
@@ -31,9 +32,10 @@ write_bits(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
     }
 }
 
-/* A voice LC header on slot 0 with the given FLCO and FID, its check passed, and the call it leaves on the slot. */
-static dsd_call_snapshot
-run_voice_header(dsd_opts* opts, uint8_t flco, uint8_t fid, uint32_t target, uint32_t source) {
+/* A voice LC header on slot 0 with the given FLCO and FID, its check passed; returns 1 and fills @p call when it leaves
+   a call on the slot. */
+static int
+try_voice_header(dsd_opts* opts, uint8_t flco, uint8_t fid, uint32_t target, uint32_t source, dsd_call_snapshot* call) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
@@ -49,10 +51,16 @@ run_voice_header(dsd_opts* opts, uint8_t flco, uint8_t fid, uint32_t target, uin
     uint32_t irr = 0;
     dmr_flco(opts, state, bits, 1U, &irr, 1U);
 
-    dsd_call_snapshot call;
-    assert(dsd_call_state_get(state, 0U, &call) > 0);
+    const int have_call = dsd_call_state_get(state, 0U, call) > 0;
     dsd_state_ext_free_all(state);
     free(state);
+    return have_call;
+}
+
+static dsd_call_snapshot
+run_voice_header(dsd_opts* opts, uint8_t flco, uint8_t fid, uint32_t target, uint32_t source) {
+    dsd_call_snapshot call;
+    assert(try_voice_header(opts, flco, fid, target, source, &call));
     return call;
 }
 
@@ -69,8 +77,8 @@ main(void) {
     assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
     assert(call.ota_target_id == 1234U);
 
-    call = run_voice_header(opts, 0x13U, 0x00U, 1234U, 5678U);
-    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+    // Under FID 0, FLCO 0x13 is no voice channel user (TS 102 361-2 Table B.1): it opens no call at all.
+    assert(!try_voice_header(opts, 0x13U, 0x00U, 1234U, 5678U, &call));
 
     // The standard private call user is unchanged.
     call = run_voice_header(opts, 0x03U, 0x00U, 1234U, 5678U);

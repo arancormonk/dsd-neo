@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_slot_reset.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -72,6 +73,8 @@ dmr_sm_slots_reset(dmr_sm_ctx_t* ctx) {
         dmr_sm_slot_identity_clear(&ctx->slots[s]);
     }
     ctx->vc_acquire_slots = 0;
+    ctx->vc_cleared_slots = 0;
+    ctx->vc_reacquire_m = 0.0;
 }
 
 /* A follow takes the carrier the slots' records belong to. One that leaves the carrier the receiver was on (@p leaves)
@@ -90,6 +93,8 @@ dmr_sm_slots_take_carrier(dmr_sm_ctx_t* ctx, long carrier_hz, int leaves) {
         }
     }
     ctx->vc_acquire_slots = 0;
+    ctx->vc_cleared_slots = 0;
+    ctx->vc_reacquire_m = 0.0;
 }
 
 /* Whether the record names a call: one whose identity is known, and not a call that is over (gap). */
@@ -153,14 +158,87 @@ dmr_sm_slot_identity_track(dmr_sm_ctx_t* ctx, int s, const dsd_call_snapshot* ca
     dmr_sm_drop_grant_identity(ctx, s);
 }
 
+/* What names one call on a slot: its policy class, its kind (voice or data), and its talkgroup, or for a private call
+   its two parties. */
+typedef struct {
+    uint8_t group;
+    uint8_t data;
+    uint32_t target;
+    uint32_t source;
+} dmr_sm_call_key_t;
+
+static dmr_sm_call_key_t
+dmr_sm_record_key(const dmr_sm_slot_ctx_t* rec) {
+    const dmr_sm_call_key_t key = {
+        .group = (uint8_t)(rec->judged_group != 0U),
+        .data = (uint8_t)(rec->data_call != 0U),
+        .target = rec->target,
+        .source = rec->source,
+    };
+    return key;
+}
+
+/* Whether @p a and @p b name one call: the same class and kind (a data call and a voice call to one radio are two
+   calls), and the same talkgroup, or for a private call the same two parties (either way round: the reply of the
+   call). The rule an in-place repeat (dmr_sm_grant_names_call()), a kept follow time (dmr_sm_slot_name()) and a
+   binding (dmr_sm_call_names_other()) share. */
+static int
+dmr_sm_call_keys_match(const dmr_sm_call_key_t* a, const dmr_sm_call_key_t* b) {
+    if (a->group != b->group || a->data != b->data) {
+        return 0;
+    }
+    if (a->group) {
+        return a->target == b->target;
+    }
+    return (a->target == b->target && a->source == b->source) || (a->target == b->source && a->source == b->target);
+}
+
+/* Whether a canonical private call to @p target from @p source (0: not known yet) names another pair than @p named:
+   its target is neither party, or its source, once both are known, is not the other one. */
+static int
+dmr_sm_call_names_other_pair(uint64_t target, uint64_t source, const dmr_sm_slot_ctx_t* named) {
+    uint64_t other = 0U;
+    if (target == named->target) {
+        other = named->source;
+    } else if (target == named->source) {
+        other = named->target;
+    } else {
+        return 1;
+    }
+    return source != 0U && other != 0U && source != other;
+}
+
+/* Whether canonical call @p call names another call than @p named (dmr_sm_call_keys_match(), what the call does not
+   name yet left open): another class (a group call for a private one, or the reverse: a talkgroup and a unit may share
+   a number), another media (voice, late-entry voice of no class included, for a data one, or the reverse), another
+   talkgroup, or for a private call another pair. A call that names nothing yet names no other call. */
+static int
+dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named) {
+    // Late-entry voice without an LC (DSD_CALL_KIND_VOICE, mark_vocoder_call_media()) is voice of either class.
+    const int voice = call->kind == DSD_CALL_KIND_GROUP_VOICE || call->kind == DSD_CALL_KIND_PRIVATE_VOICE
+                      || call->kind == DSD_CALL_KIND_VOICE;
+    if ((call->kind == DSD_CALL_KIND_GROUP_VOICE && !named->judged_group)
+        || (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && named->judged_group)
+        || (call->kind == DSD_CALL_KIND_DATA && !named->data_call) || (voice && named->data_call)) {
+        return 1;
+    }
+    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+    if (target == 0U) {
+        return 0;
+    }
+    if (named->judged_group) {
+        return target != named->target;
+    }
+    return dmr_sm_call_names_other_pair(target, call->ota_source_id, named);
+}
+
 /* Bind @p slot's identity to the canonical call it names, and let it go when that call is over. An identity awaiting
    its call binds to the first one to begin on the slot after it was named (a resumed older call is not it) that names
-   no other call (dmr_sm_call_names_other(): a data grant's never binds a voice call, late-entry voice included). Another
+   no other call (dmr_sm_call_names_other(): a data grant's never binds a voice call, late-entry voice included, nor
+   one of another address class or pair). Another
    call on the slot ends the identity; on the followed carrier, one that began within the hangtime of the named call
    leaves a gap record (unknown) whose renaming as the same call keeps the follow time. A new call never inherits the
    identity, and the followed grant's identity no longer stands for the slot either. */
-static int dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named);
-
 static void
 dmr_sm_slot_identity_refresh(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, double now_m) {
     dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
@@ -207,79 +285,6 @@ dmr_sm_slot_identities_refresh(dmr_sm_ctx_t* ctx, const dsd_state* state, double
     }
 }
 
-/* What names one call on a slot: its policy class, its kind (voice or data), and its talkgroup, or for a private call
-   its two parties. */
-typedef struct {
-    uint8_t group;
-    uint8_t data;
-    uint32_t target;
-    uint32_t source;
-} dmr_sm_call_key_t;
-
-static dmr_sm_call_key_t
-dmr_sm_record_key(const dmr_sm_slot_ctx_t* rec) {
-    const dmr_sm_call_key_t key = {
-        .group = (uint8_t)(rec->judged_group != 0U),
-        .data = (uint8_t)(rec->data_call != 0U),
-        .target = rec->target,
-        .source = rec->source,
-    };
-    return key;
-}
-
-/* Whether @p a and @p b name one call: the same class and kind, and the same talkgroup, or for a private call the same
-   two parties (either way round: the reply of the call). The rule an in-place repeat (dmr_sm_grant_names_call()), a
-   kept follow time (dmr_sm_slot_name()) and a binding (dmr_sm_call_names_other()) share. */
-static int
-dmr_sm_call_keys_match(const dmr_sm_call_key_t* a, const dmr_sm_call_key_t* b) {
-    if (a->group != b->group || a->data != b->data) {
-        return 0;
-    }
-    if (a->group) {
-        return a->target == b->target;
-    }
-    return (a->target == b->target && a->source == b->source) || (a->target == b->source && a->source == b->target);
-}
-
-/* Whether a canonical private call to @p target from @p source (0: not known yet) names another pair than @p named:
-   its target is neither party, or its source, once both are known, is not the other one. */
-static int
-dmr_sm_call_names_other_pair(uint64_t target, uint64_t source, const dmr_sm_slot_ctx_t* named) {
-    uint64_t other = 0U;
-    if (target == named->target) {
-        other = named->source;
-    } else if (target == named->source) {
-        other = named->target;
-    } else {
-        return 1;
-    }
-    return source != 0U && other != 0U && source != other;
-}
-
-/* Whether canonical call @p call names another call than @p named (dmr_sm_call_keys_match(), what the call does not
-   name yet left open): another class (a group call for a private one, or the reverse: a talkgroup and a unit may share
-   a number), another kind (voice, late-entry voice of no class included, for a data one, or the reverse), another
-   talkgroup, or for a private call another pair. A call that names nothing yet names no other call. */
-static int
-dmr_sm_call_names_other(const dsd_call_snapshot* call, const dmr_sm_slot_ctx_t* named) {
-    // Late-entry voice without an LC (DSD_CALL_KIND_VOICE, mark_vocoder_call_media()) is voice of either class.
-    const int voice = call->kind == DSD_CALL_KIND_GROUP_VOICE || call->kind == DSD_CALL_KIND_PRIVATE_VOICE
-                      || call->kind == DSD_CALL_KIND_VOICE;
-    if ((call->kind == DSD_CALL_KIND_GROUP_VOICE && !named->judged_group)
-        || (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && named->judged_group)
-        || (call->kind == DSD_CALL_KIND_DATA && !named->data_call) || (voice && named->data_call)) {
-        return 1;
-    }
-    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
-    if (target == 0U) {
-        return 0;
-    }
-    if (named->judged_group) {
-        return target != named->target;
-    }
-    return dmr_sm_call_names_other_pair(target, call->ota_source_id, named);
-}
-
 /* The canonical call on slot @p s that @p named names now, its transmission (0: none yet, in @p floor the slot's epoch,
    after which its call is to begin). @p force: a checked LC, which names the call it was just published on. Otherwise
    the slot's active call when it names that target (or nothing yet), and on the followed carrier only one that began
@@ -321,11 +326,20 @@ dmr_sm_slot_call_may_heal(const dsd_state* state, int s, uint64_t epoch, double 
     return dsd_call_snapshot_transmission(&call) == epoch && dsd_call_snapshot_may_reacquire(&call, now_m);
 }
 
+/* Whether record @p rec describes the call @p named does: one call by dmr_sm_call_keys_match() (class, media, and
+   talkgroup or pair) on the same carrier. */
+static int
+dmr_sm_slot_names_same_call(const dmr_sm_slot_ctx_t* rec, const dmr_sm_slot_ctx_t* named) {
+    const dmr_sm_call_key_t rec_key = dmr_sm_record_key(rec);
+    const dmr_sm_call_key_t named_key = dmr_sm_record_key(named);
+    return rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->carrier_hz == named->carrier_hz
+           && dmr_sm_call_keys_match(&rec_key, &named_key);
+}
+
 /* Name the call on slot @p s (@p named, from dmr_sm_slot_identity_set()) and bind it to its canonical call. The same
-   call named again (dmr_sm_call_keys_match() on the same carrier; a gap record only for the very call that followed
-   it) keeps its follow time and binding, so dwell runs from the conversation's first follow; another call starts at
-   its own. Named again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that
-   binding. */
+   call named again (dmr_sm_slot_names_same_call(); a gap record only for the very call that followed it)
+   keeps its follow time and binding, so dwell runs from the conversation's first follow; another call starts at its
+   own. Named again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that binding. */
 static void
 dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_slot_ctx_t* named, int force,
                  double now_m) {
@@ -333,10 +347,7 @@ dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_
     dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
     uint64_t floor = 0U;
     const uint64_t bound = dmr_sm_slot_call_for(ctx, state, s, named, force, &floor);
-    const dmr_sm_call_key_t rec_key = dmr_sm_record_key(rec);
-    const dmr_sm_call_key_t named_key = dmr_sm_record_key(named);
-    const int raw = rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->carrier_hz == named->carrier_hz
-                    && dmr_sm_call_keys_match(&rec_key, &named_key);
+    const int raw = dmr_sm_slot_names_same_call(rec, named);
     const int same =
         raw && (rec->gap ? (bound != 0U && bound == rec->call_epoch) : rec->kind != (uint8_t)DSD_CALL_KIND_UNKNOWN);
     const dmr_sm_slot_ctx_t prev = *rec;
@@ -372,6 +383,9 @@ dmr_sm_slot_identity_decision(const dsd_opts* opts, const dsd_state* state, cons
 }
 
 static int dmr_sm_grant_identity(const dmr_sm_ctx_t* ctx, dmr_sm_slot_ctx_t* out);
+static int dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves);
+static long dmr_sm_attributed_receiver(const dmr_sm_ctx_t* ctx, const dsd_opts* opts);
+static int dmr_sm_acquire_slots(const dmr_sm_ctx_t* ctx);
 
 /* ============================================================================
  * Internal Helpers
@@ -407,20 +421,44 @@ resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
     return 0;
 }
 
+/* Whether the receiver is on the control channel, as @p ctx knows it: a control channel is known and the receiver
+   either follows one call on the control channel's own carrier (a composite control channel's payload, followed in
+   place), or follows no call (trunk_is_tuned 0) on a carrier that is the control channel's where it is known
+   (dmr_sm_attributed_receiver()): a hunt's probe and an operator's move keep the control channel as the anchor to
+   return to while the receiver listens elsewhere. */
 static int
-lpcn_is_trusted(const dsd_opts* opts, dsd_state* state, int lpcn) {
+dmr_sm_ctx_on_control_channel(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || state->trunk_cc_freq == 0) {
+        return 0;
+    }
+    if (opts->trunk_is_tuned != 0) {
+        return dmr_sm_follows(ctx, state->trunk_cc_freq);
+    }
+    const long receiver = ctx ? dmr_sm_attributed_receiver(ctx, opts) : 0;
+    return receiver <= 0 || receiver == state->trunk_cc_freq;
+}
+
+/* Whether @p lpcn's channel-map frequency may be acted on: always on the control channel
+   (dmr_sm_ctx_on_control_channel()); off it, unless the mapping was learned off the control channel and is still
+   unconfirmed (dmr_lcn_trust 1). A mapping the operator imported or the heuristic filled in (0) or one learned or
+   confirmed on the control channel (2) is usable anywhere. */
+static int
+lpcn_is_trusted(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, int lpcn) {
     if (!state || lpcn <= 0 || lpcn >= 0x1000) {
         return 1;
     }
-    uint8_t trust = state->dmr_lcn_trust[lpcn];
-    int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
-    if (trust < 2 && !on_cc) {
-        if (sm_status_log_enabled(opts)) {
-            DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", lpcn);
-        }
+    return state->dmr_lcn_trust[lpcn] != 1U || dmr_sm_ctx_on_control_channel(ctx, opts, state);
+}
+
+/* The carrier grant @p ev names: its explicit frequency, else its LPCN's mapped frequency where that mapping may be
+   acted on (lpcn_is_trusted()); 0 when it names none. An untrusted mapping names no carrier, so the grant neither
+   tunes (dmr_sm_resolve_tunable_grant()) nor reassigns the followed slot (dmr_sm_end_changed_assignment()). */
+static long
+dmr_sm_grant_freq(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, const dmr_sm_event_t* ev) {
+    if (ev->freq_hz <= 0 && ev->lpcn > 0 && !lpcn_is_trusted(ctx, opts, state, ev->lpcn)) {
         return 0;
     }
-    return 1;
+    return resolve_freq(state, ev->freq_hz, ev->lpcn);
 }
 
 static void
@@ -1269,8 +1307,9 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_status_follow = 0;
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
-    ctx->vc_addresses_known = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 0;
+    ctx->vc_media_heard = 0;
     ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_carrier_m = 0.0;
@@ -1375,8 +1414,8 @@ typedef enum {
 } dmr_sm_resolve_e;
 
 static dmr_sm_resolve_e
-dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev,
-                             long* out_freq) {
+dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state,
+                             const dmr_sm_event_t* ev, long* out_freq) {
     if (opts->trunk_enable != 1 || state->trunk_cc_freq == 0 || ctx->cc_tune_request_id != 0U) {
         return DMR_SM_RESOLVE_REFUSED;
     }
@@ -1384,19 +1423,19 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
     if (!dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_VOICE_POS, ev->slot)) {
         return DMR_SM_RESOLVE_REFUSED;
     }
-    long freq = resolve_freq(state, ev->freq_hz, ev->lpcn);
+    const long freq = dmr_sm_grant_freq(ctx, opts, state, ev);
     if (freq <= 0) {
-        sm_log(opts, "grant-no-freq");
+        if (resolve_freq(state, ev->freq_hz, ev->lpcn) > 0 && sm_status_log_enabled(opts)) {
+            DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", ev->lpcn);
+        } else {
+            sm_log(opts, "grant-no-freq");
+        }
         return DMR_SM_RESOLVE_REFUSED;
     }
     if (dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, freq)) {
         /* The channel's colour code was verified before and the receive policy rejects it: following the grant would
            only hold the receiver for the acquisition window again (issue #637). */
         sm_log(opts, "grant-receive-rejected");
-        return DMR_SM_RESOLVE_REFUSED;
-    }
-
-    if (ev->freq_hz <= 0 && ev->lpcn > 0 && !lpcn_is_trusted(opts, state, ev->lpcn)) {
         return DMR_SM_RESOLVE_REFUSED;
     }
 
@@ -1412,14 +1451,16 @@ dmr_sm_resolve_tunable_grant(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
  * Event Handlers
  * ============================================================================ */
 
+/* A voice sync on @p slot; @p accepted: its burst supplied accepted voice (dmr_sm_voice_evidence_m()), which alone
+   binds a slotless follow to the slot. */
 static void
-update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, double now_m) {
+update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, int accepted, double now_m) {
     if (!state) {
         return;
     }
 
     state->last_vc_sync_time_m = now_m;
-    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0) {
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0 && accepted) {
         ctx->vc_slot = slot;
         state->dmr_mono_slot = slot;
         /* A slotless grant's call is the one its first accepted voice is on: its identity, followed since the tune. */
@@ -1559,10 +1600,11 @@ dmr_sm_lc_record_channel_from_status(dmr_sm_ctx_t* ctx, dmr_sm_slot_ctx_t* rec, 
 }
 
 /* The followed grant's identity names group @p tg on LSN @p lsn (a status named the followed slot's call): kept when it
-   already does, its talker included. A new identity has no talker. Either way the followed channel is the status's
-   LSN (dmr_sm_vc_channel_from_status()): a status naming the same group on another LSN moves the call's channel, and
-   its CRC flags (@p crc_flags) are ORed into the followed call's, so the voice sync, which publishes the identity
-   later outside that burst's scope, keeps every unverified mark the evidence carried. */
+   already does, its talker included. A new identity has no talker, and names voice (a channel status names voice
+   calls). Either way the followed channel is the status's LSN (dmr_sm_vc_channel_from_status()): a status naming the
+   same group on another LSN moves the call's channel, and its CRC flags (@p crc_flags) are ORed into the followed
+   call's, so the voice sync, which publishes the identity later outside that burst's scope, keeps every unverified mark
+   the evidence carried. */
 static void
 dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, int lsn, uint8_t crc_flags) {
     dmr_sm_vc_channel_from_status(ctx, lsn, crc_flags);
@@ -1574,8 +1616,8 @@ dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, int lsn, uint8_t crc_fl
     ctx->vc_src = 0;
     ctx->vc_is_group = 1;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 1;
     ctx->vc_identity_known = 1;
-    ctx->vc_addresses_known = 1;
 }
 
 void
@@ -1753,6 +1795,9 @@ dmr_sm_note_voice_evidence(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, 
         return;
     }
     ctx->slots[slot].voice_active = 1;
+    if (ctx->state == DMR_SM_TUNED && slot == ctx->vc_slot && !ctx->vc_data_call) {
+        ctx->vc_media_heard = 1; // a voice grant's first voice
+    }
     if (evidence_m > ctx->slots[slot].last_active_m) {
         ctx->slots[slot].last_active_m = evidence_m;
     }
@@ -1823,20 +1868,24 @@ dmr_sm_slot_lc_holds_call(const dmr_sm_ctx_t* ctx, const dsd_state* state, int s
     return dsd_call_snapshot_transmission(&call) == rec->call_epoch;
 }
 
-/* The followed grant's identity, published at its first accepted voice on its slot (or, slotless, on the slot that
-   voice is on) with the grant's provenance (vc_crc_flags, which vouches for its channel too). Never over a checked LC
-   that holds the slot's call (dmr_sm_slot_lc_holds_call()): an in-place grant naming that call
-   (dmr_sm_grant_reconcile_in_place()) renames the followed call for P_CLEAR, but republishing its addresses would start
-   another transmission with the grant's talker. Never for a data grant (vc_data_call): voice on its slot is another
-   call, which stays as the voice itself names it (anonymous without an LC). That voice is the slot's first all the
-   same, so the one-shot is spent: a later in-place voice grant never publishes over the call playing there. */
+/* The followed grant's identity, published at its first accepted voice on its slot (a slotless grant's once accepted
+   voice bound it there, update_voice_sync_state(); before that on no slot) with the grant's provenance (vc_crc_flags,
+   which vouches for its channel too), while the slot's call names nothing yet (dmr_sm_grant_publishable()). Never over
+   a checked LC that holds the slot's call (dmr_sm_slot_lc_holds_call()) or a call a voice LC named since the grant (its
+   header comes before the first voice sync): that call is published already as itself, and the grant's identity never
+   renames or splits it; an in-place grant naming that call (dmr_sm_grant_reconcile_in_place()) renames the followed
+   call for P_CLEAR only. Never for a data grant (vc_data_call): voice on its slot is another call, which stays as the
+   voice itself names it (anonymous without an LC). Either way that voice is the slot's first, so the one-shot is
+   spent: a later in-place grant republishes only where it names the followed slot anew
+   (dmr_sm_followed_slot_take_grant()). A sync whose burst supplied no accepted voice (@p accepted 0: the confidence
+   gate has not corroborated it, dmrBSBootstrap() emits the sync first) names nothing and spends nothing: the
+   publication waits for voice that was heard. */
 static void
-dmr_sm_publish_grant_identity(dmr_sm_ctx_t* ctx, dsd_state* state, int s, double now_m) {
-    if (!state || ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0
-        || (ctx->vc_slot >= 0 && ctx->vc_slot != s)) {
+dmr_sm_publish_grant_identity(dmr_sm_ctx_t* ctx, dsd_state* state, int s, int accepted, double now_m) {
+    if (!state || !accepted || ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0 || ctx->vc_slot != s) {
         return;
     }
-    if (ctx->vc_data_call || dmr_sm_slot_lc_holds_call(ctx, state, s)) {
+    if (ctx->vc_data_call || dmr_sm_slot_lc_holds_call(ctx, state, s) || !dmr_sm_grant_publishable(state, s, 0)) {
         ctx->vc_identity_published = 1;
         return;
     }
@@ -1875,12 +1924,22 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     double now_m = dsd_decode_now_mono_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
+    /* Every sync, the receive policy's rejected ones included, sees the slot's accepted voice: a grant is published only
+       on voice the gate accepted since this slot's previous sync (the burst just read), never on voice an earlier sync
+       already handled (a bare sync within DMR_VOICE_EVIDENCE_S of it), filtered or not. */
+    const double evidence_m = dmr_sm_voice_evidence_m(ctx, state, s, now_m);
+    const int accepted = evidence_m > 0.0;
+    const int fresh = accepted && evidence_m > ctx->vc_voice_seen_m[s];
+    ctx->vc_voice_seen_m[s] = accepted ? evidence_m : ctx->vc_voice_seen_m[s];
     if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
         return;
     }
+    /* A slotless follow binds to this voice's slot only when the burst supplied accepted voice (a sync alone, before or
+       without its EMB's colour-code check, binds nothing), and binds first, so that same voice is the grant's first
+       voice (vc_media_heard), not only the next one. */
+    update_voice_sync_state(ctx, state, s, accepted, now_m);
     dmr_sm_note_voice_evidence(ctx, state, s, now_m);
-    update_voice_sync_state(ctx, state, s, now_m);
-    dmr_sm_publish_grant_identity(ctx, state, s, now_m);
+    dmr_sm_publish_grant_identity(ctx, state, s, fresh, now_m);
     dmr_sm_capplus_seed_apply(ctx, opts, state, s, now_m);
     // Bind the slot's identity to the call this voice is on (the publication above may just have opened it).
     dmr_sm_slot_identity_refresh(ctx, state, s, now_m);
@@ -1906,6 +1965,10 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
         return;
     }
     // Accepted data a followed call carries is activity, as accepted voice is: a zero hangtime holds while it flows.
+    // Only a data grant's slot takes it as its own media, though: a voice grant still awaits its first voice.
+    if (ctx->state == DMR_SM_TUNED && s == ctx->vc_slot && ctx->vc_data_call) {
+        ctx->vc_media_heard = 1;
+    }
     ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
@@ -1915,32 +1978,6 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
     }
 
     sm_log(opts, "data-sync");
-}
-
-static void
-handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
-    if (!ctx) {
-        return;
-    }
-
-    if (ctx->state != DMR_SM_TUNED) {
-        return;
-    }
-
-    if (state && state->trunk_sm_force_release != 0) {
-        do_release(ctx, opts, state, "release-forced");
-        return;
-    }
-
-    if (slot < 0 || slot > 1) {
-        // Clear both slots for channel-wide release
-        ctx->slots[0].voice_active = 0;
-        ctx->slots[1].voice_active = 0;
-    } else {
-        ctx->slots[slot].voice_active = 0;
-    }
-
-    sm_log(opts, "release-requested");
 }
 
 static void
@@ -1984,19 +2021,13 @@ has_voice_activity(const dmr_sm_ctx_t* ctx) {
 }
 
 static int
-hangtime_expired(const dmr_sm_ctx_t* ctx, double now_m, double hangtime) {
-    if (ctx->t_voice_m <= 0.0) {
-        return 0;
-    }
-    return (now_m - ctx->t_voice_m) >= hangtime;
-}
-
-static int
 grant_timeout_expired(const dmr_sm_ctx_t* ctx, double now_m, double grant_timeout) {
     if (ctx->t_tune_m <= 0.0) {
         return 0;
     }
-    return (now_m - ctx->t_tune_m) >= grant_timeout;
+    // A cleared slot regranted in place acquires its new call from the regrant (vc_reacquire_m).
+    const double start_m = ctx->vc_reacquire_m > ctx->t_tune_m ? ctx->vc_reacquire_m : ctx->t_tune_m;
+    return (now_m - start_m) >= grant_timeout;
 }
 
 /* Receive admission on the voice channel at @p freq the receiver is on (issue #637), whether a followed grant or a
@@ -2038,6 +2069,31 @@ dmr_sm_receive_check(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long f
     return 1;
 }
 
+/* The carrier's activity since the follow (t_voice_m) that a slot the receive policy admits now carried (0: none). A
+   slot a receive edit rejected holds nothing, its hangtime tail included, as in the busy view (dmr_sm_tuned_members()):
+   with one rejected, the tail runs from the last activity since the follow of a slot still admitted, never from the
+   rejected slot's, heard while it was admitted. */
+static double
+dmr_sm_admitted_activity_m(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (ctx->t_voice_m <= 0.0) {
+        return 0.0;
+    }
+    double latest_m = 0.0;
+    int rejected = 0;
+    for (int s = 0; s < 2; s++) {
+        const double active_m = ctx->slots[s].last_active_m;
+        if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
+            rejected = 1;
+        } else if (active_m >= ctx->t_tune_m && active_m > latest_m) {
+            latest_m = active_m;
+        }
+    }
+    if (!rejected) {
+        return ctx->t_voice_m;
+    }
+    return latest_m < ctx->t_voice_m ? latest_m : ctx->t_voice_m;
+}
+
 static int
 dmr_sm_any_slot_admitted(const dsd_opts* opts, const dsd_state* state) {
     for (int slot = 0; slot < 2; slot++) {
@@ -2049,8 +2105,10 @@ dmr_sm_any_slot_admitted(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* Why a TUNED machine keeps its carrier at @p now_m, without side effects: the rule tick_tuned() applies, shared with
-   the busy view (dmr_sm_describe_held_calls()). Live voice on an admitted slot holds whatever the hangtime; then the
-   hangtime tail from the last activity; before any voice, acquisition for @p acquire_s from the tune. A carrier no slot
+   the busy view (dmr_sm_describe_held_calls()). Live voice on an admitted slot holds whatever the hangtime; then, once
+   there was activity since the follow, the hangtime tail from the last activity on a slot the receive policy admits now
+   (dmr_sm_admitted_activity_m()); before any voice, or with only rejected activity since, acquisition for @p acquire_s
+   from the tune. A carrier no slot
    of which the receive policy admits is held while its receive check runs (the colour code still unknown), but not
    once the code verified there is rejected. */
 typedef enum {
@@ -2060,6 +2118,22 @@ typedef enum {
     DMR_SM_HOLD_ACQUIRING,
 } dmr_sm_hold_e;
 
+/* Whether a P_CLEAR retired the acquisition's every slot (vc_cleared_slots): nothing is left to acquire. */
+static int
+dmr_sm_acquisition_emptied(const dmr_sm_ctx_t* ctx) {
+    return ctx->vc_cleared_slots != 0 && dmr_sm_acquire_slots(ctx) == 0;
+}
+
+/* Before any admitted activity: acquisition for @p acquire_s from the tune, unless nothing is left to acquire
+   (dmr_sm_acquisition_emptied()). */
+static dmr_sm_hold_e
+dmr_sm_acquisition_retention(const dmr_sm_ctx_t* ctx, double now_m, double acquire_s) {
+    if (dmr_sm_acquisition_emptied(ctx)) {
+        return DMR_SM_HOLD_NONE;
+    }
+    return grant_timeout_expired(ctx, now_m, acquire_s) ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_ACQUIRING;
+}
+
 static dmr_sm_hold_e
 dmr_sm_tuned_retention(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m,
                        double hangtime, double grant_timeout, double acquire_s) {
@@ -2067,7 +2141,9 @@ dmr_sm_tuned_retention(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_
         return DMR_SM_HOLD_NONE;
     }
     if (!dmr_sm_any_slot_admitted(opts, state)) {
-        if (dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, ctx->vc_freq_hz)) {
+        // No admitted slot carries activity to retain: an emptied acquisition holds nothing either.
+        if (dsd_receive_carriers_rejects(&ctx->receive_carriers, opts, ctx->vc_freq_hz)
+            || dmr_sm_acquisition_emptied(ctx)) {
             return DMR_SM_HOLD_NONE;
         }
         if (ctx->receive_check_freq_hz == ctx->vc_freq_hz && ctx->receive_check_started_m > 0.0
@@ -2081,10 +2157,11 @@ dmr_sm_tuned_retention(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_
             return DMR_SM_HOLD_LIVE;
         }
     }
-    if (ctx->t_voice_m > 0.0) {
-        return hangtime_expired(ctx, now_m, hangtime) ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_TAIL;
+    const double active_m = dmr_sm_admitted_activity_m(ctx, opts, state);
+    if (active_m > 0.0) {
+        return (now_m - active_m) >= hangtime ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_TAIL;
     }
-    return grant_timeout_expired(ctx, now_m, acquire_s) ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_ACQUIRING;
+    return dmr_sm_acquisition_retention(ctx, now_m, acquire_s);
 }
 
 static void
@@ -2093,15 +2170,25 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
         do_release(ctx, opts, state, "release-forced");
         return;
     }
+    /* With no slot admitted there is no admitted activity to retain: a carrier whose acquisition a P_CLEAR emptied
+       returns now, never waiting out the receive check. */
+    if (!dmr_sm_any_slot_admitted(opts, state) && dmr_sm_acquisition_emptied(ctx)) {
+        do_release(ctx, opts, state, "acquisition-cleared");
+        return;
+    }
     if (dmr_sm_receive_check(ctx, opts, state, ctx->vc_freq_hz, now_m, grant_timeout)) {
         return;
     }
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {
-        // Each active slot's activity is the time of its last accepted voice (handle_voice_sync()).
+        /* Each active slot's activity is the time of its last accepted voice (handle_voice_sync()). Activity from
+           before the follow (a companion call heard on a carrier adopted in place, whose voice timers the follow
+           keeps) holds the carrier while it is live, but is no evidence for the followed grant: it never ends that
+           grant's acquisition. */
         for (int s = 0; s < 2; s++) {
-            if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m > ctx->t_voice_m) {
+            if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m >= ctx->t_tune_m
+                && ctx->slots[s].last_active_m > ctx->t_voice_m) {
                 ctx->t_voice_m = ctx->slots[s].last_active_m;
             }
         }
@@ -2111,6 +2198,71 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
     if (dmr_sm_tuned_retention(ctx, opts, state, now_m, hangtime, grant_timeout, grant_timeout) == DMR_SM_HOLD_NONE) {
         do_release(ctx, opts, state, ctx->t_voice_m > 0.0 ? "hangtime-expired" : "grant-timeout");
     }
+}
+
+/* A release of slot @p s alone (a standard P_CLEAR that forces nothing, applied to its own slot): the system ended that
+   slot's call, not the carrier's. Its liveness ends (its own hangtime tail stays, under the retention rule), and so
+   does everything that would still name a later transmission there: its record, its Capacity Plus seed and its share
+   of a status acquisition, its place in the carrier's acquisition (vc_cleared_slots), and on the followed slot (either
+   slot before a slotless grant's first voice) the followed grant's identity (never published into a later call there
+   whose header was missed, dmr_sm_publish_grant_identity()) and its acquisition (vc_media_heard: it no longer holds
+   the slot in the busy view). The companion slot's call, activity and hangtime, and mono playout, are not touched. */
+static void
+dmr_sm_release_slot(dmr_sm_ctx_t* ctx, int s) {
+    ctx->slots[s].voice_active = 0;
+    dmr_sm_slot_identity_clear(&ctx->slots[s]);
+    dmr_sm_capplus_seed_clear(ctx, s);
+    ctx->vc_acquire_slots &= ~(1 << s);
+    ctx->vc_cleared_slots |= 1 << s;
+    if (s == ctx->vc_slot) {
+        dmr_sm_drop_grant_identity(ctx, s);
+        ctx->vc_media_heard = 1;
+        /* Nor is its media any later call's: a grant of either media may name the slot anew
+           (dmr_sm_grant_replaces_followed()). */
+        ctx->vc_media_known = 0;
+        ctx->vc_data_call = 0;
+    } else if (ctx->vc_slot < 0 && ctx->state == DMR_SM_TUNED) {
+        /* A slotless grant's clear (dmr_sm_follows_slot() matched it on either slot before its first voice): its
+           identity and media are never any later transmission's on the cleared slot. The companion's acquisition and
+           call are not touched. */
+        ctx->vc_identity_known = 0;
+        ctx->vc_identity_published = 1;
+        ctx->vc_media_known = 0;
+        ctx->vc_data_call = 0;
+    }
+}
+
+static void
+handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->state != DMR_SM_TUNED) {
+        return;
+    }
+
+    if (state && state->trunk_sm_force_release != 0) {
+        /* The cleared slot is retired first: a return the tuner defers or refuses leaves the machine tuned (the latch
+           retries it), and voice heard there before the retry must not be published as the cleared grant's call. */
+        if (slot >= 0 && slot <= 1) {
+            dmr_sm_release_slot(ctx, slot);
+        }
+        do_release(ctx, opts, state, "release-forced");
+        return;
+    }
+
+    if (slot < 0 || slot > 1) {
+        // Clear both slots for channel-wide release
+        ctx->slots[0].voice_active = 0;
+        ctx->slots[1].voice_active = 0;
+        sm_log(opts, "release-requested");
+        return;
+    }
+    /* Nothing is released here beyond the slot: the carrier stays while the retention rule holds it (the companion's
+       live call or the hangtime tail), as the next tick judges. */
+    dmr_sm_release_slot(ctx, slot);
+    sm_log(opts, "release-requested");
 }
 
 /* ============================================================================
@@ -2177,11 +2329,12 @@ dmr_sm_describe_identity(const dsd_opts* opts, dsd_state* state, const dmr_sm_sl
 
 /* Before any voice, the slots a TUNED carrier's acquisition is for: the grant's slot (a slotless grant: each slot the
    following status selected or seeded, known identity or not, and each slot named on the carrier, else none, the
-   grant's identity then standing for the carrier), whatever the receive policy admits. */
+   grant's identity then standing for the carrier), whatever the receive policy admits. A slot a P_CLEAR retired since
+   the follow (vc_cleared_slots) is none of them. */
 static int
 dmr_sm_acquire_slots(const dmr_sm_ctx_t* ctx) {
     if (ctx->vc_slot >= 0 && ctx->vc_slot <= 1) {
-        return 1 << ctx->vc_slot;
+        return (1 << ctx->vc_slot) & ~ctx->vc_cleared_slots;
     }
     int acquiring = ctx->vc_acquire_slots & 0x3;
     for (int s = 0; s < 2; s++) {
@@ -2189,7 +2342,7 @@ dmr_sm_acquire_slots(const dmr_sm_ctx_t* ctx) {
             acquiring |= 1 << s;
         }
     }
-    return acquiring;
+    return acquiring & ~ctx->vc_cleared_slots;
 }
 
 /* The acquisition's slots (dmr_sm_acquire_slots()) that hold the carrier: each only on a slot the receive policy's slot
@@ -2219,12 +2372,28 @@ dmr_sm_tuned_holds_nothing(const dmr_sm_ctx_t* ctx, dmr_sm_hold_e hold, int memb
     if (members != 0) {
         return 0;
     }
-    return hold == DMR_SM_HOLD_TAIL || (hold == DMR_SM_HOLD_ACQUIRING && dmr_sm_acquire_slots(ctx) != 0);
+    /* A P_CLEAR's released slot holds no acquisition either (vc_cleared_slots): the cleared grant never stands for the
+       carrier. */
+    return hold == DMR_SM_HOLD_TAIL
+           || (hold == DMR_SM_HOLD_ACQUIRING && (dmr_sm_acquire_slots(ctx) != 0 || (ctx->vc_cleared_slots & 0x3) != 0));
+}
+
+/* Whether the followed grant's own slot still awaits its own media since the follow (its first voice for a voice grant,
+   its first data for a data grant: vc_media_heard), within its acquisition window. Voice on the companion slot ends the
+   carrier's acquisition (the retention rule), not the grant's, nor does a data burst on a voice grant's slot: its call,
+   not yet on the air, still holds the carrier against other candidates. */
+static int
+dmr_sm_followed_slot_acquiring(const dmr_sm_ctx_t* ctx, double now_m) {
+    if (ctx->vc_slot < 0 || ctx->vc_slot > 1) {
+        return 0;
+    }
+    return !ctx->vc_media_heard && !grant_timeout_expired(ctx, now_m, dmr_sm_acquire_window(ctx));
 }
 
 /* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
-   the receive hold: rejected media never holds the receiver, its tail included); before any voice, the acquisition's
-   slots (dmr_sm_acquire_members()). */
+   the receive hold: rejected media never holds the receiver, its tail included); before any voice, and on the followed
+   slot until its own first voice (dmr_sm_followed_slot_acquiring()), the acquisition's slots
+   (dmr_sm_acquire_members()). */
 static int
 dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, double now_m,
                      dmr_sm_hold_e hold) {
@@ -2240,7 +2409,7 @@ dmr_sm_tuned_members(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_st
             members |= 1 << s;
         }
     }
-    if (hold == DMR_SM_HOLD_ACQUIRING) {
+    if (hold == DMR_SM_HOLD_ACQUIRING || dmr_sm_followed_slot_acquiring(ctx, now_m)) {
         members |= dmr_sm_acquire_members(ctx, opts);
     }
     return members;
@@ -2433,8 +2602,9 @@ dmr_sm_event_kind(const dmr_sm_event_t* ev) {
     return ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
-/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same policy class and kind (voice or data),
-   and the same talkgroup, or for a private call the same two parties (either way round: the reply of the call). */
+/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same policy class and media (a data grant
+   names no voice call, nor a voice grant a data call, whatever their numbers), and the same talkgroup, or for a private
+   call the same two parties (either way round: the reply of the call). */
 static int
 dmr_sm_grant_names_call(const dmr_sm_event_t* ev, uint32_t target, const dmr_sm_slot_ctx_t* id, long carrier_hz) {
     if (!dmr_sm_slot_identity_known(id) || id->carrier_hz != carrier_hz) {
@@ -2516,8 +2686,11 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
     ctx->vc_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1;
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_identity_known = identity_known;
-    ctx->vc_addresses_known = identity_known;
+    ctx->vc_voice_seen_m[0] = 0.0;
+    ctx->vc_voice_seen_m[1] = 0.0;
     ctx->vc_data_call = dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA;
+    ctx->vc_media_known = 1;
+    ctx->vc_media_heard = 0;
     // A placeholder names no call: the voice LC will, through the canonical layer.
     ctx->vc_identity_published = (identity_known && dmr_sm_grant_publishable(state, ctx->vc_slot, leaves)) ? 0 : 1;
     ctx->vc_status_follow = 0;
@@ -2613,37 +2786,76 @@ dmr_sm_grant_displacement(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* st
     return 1;
 }
 
-/* The in-place grant @p ev on the followed slot is the followed call now (dmr_sm_grant_reconcile_in_place()): its
-   addresses, which a P_CLEAR is matched to, and its identity. The new identity's provenance is this announcement's
-   (@p crc_flags, read inside its CSBK/MBC burst's CRC scope as dmr_sm_take_grant() reads it), never the replaced
-   grant's: the voice sync publishes it with these flags. The followed channel (vc_lpcn) is this grant's too: the one it
-   names, with the same provenance, or, when it names none (an absolute grant's CdefParms CHAN 0), unknown (0), never
-   the replaced grant's channel kept under the new grant's provenance. */
+/* The followed call's channel and its evidence become in-place grant @p ev's (discussion #900): the channel it names, or
+   unknown (0) when it names none (an absolute grant's CdefParms CHAN 0), with this announcement's CRC provenance (read
+   inside its CSBK/MBC burst's scope, as dmr_sm_take_grant() reads it), never the replaced grant's channel kept under
+   the new grant's provenance. Independent of the grant identity: a grant naming the call a checked LC holds on the
+   slot changes only this and the P_CLEAR addresses, leaving the identity a later grant is compared with
+   (dmr_sm_grant_replaces_followed()) as it was. */
 static void
-dmr_sm_followed_call_rename(dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, int data_call, uint8_t crc_flags) {
+dmr_sm_followed_channel_from_grant(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev) {
+    ctx->vc_lpcn = ev->lpcn > 0 ? ev->lpcn : 0;
+    ctx->vc_channel_kind = ev->lpcn > 0 ? ev->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];
+}
+
+/* The followed slot's grant identity becomes in-place grant @p ev's (dmr_sm_grant_reconcile_in_place()). */
+static void
+dmr_sm_followed_slot_take_grant(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev, int data_call) {
     ctx->vc_tg = ev->tg;
     ctx->vc_dst = ev->dst;
     ctx->vc_src = ev->src;
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_data_call = data_call;
+    ctx->vc_media_known = 1;
     ctx->vc_identity_known = 1;
-    ctx->vc_addresses_known = 1;
-    ctx->vc_crc_flags = crc_flags;
-    ctx->vc_lpcn = ev->lpcn > 0 ? ev->lpcn : 0;
-    ctx->vc_channel_kind = ev->lpcn > 0 ? ev->channel_kind : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    /* The new identity's channel and provenance are this announcement's: the voice sync publishes them together. */
+    dmr_sm_followed_channel_from_grant(ctx, state, ev);
+    /* A grant naming the followed slot anew (an adopted companion's unnamed call) is published into that call at its
+       next voice sync while the call still names nothing, as a grant followed in place is (dmr_sm_take_grant()). */
+    if (ev->origin == DMR_SM_ORIGIN_GRANT) {
+        ctx->vc_identity_published = dmr_sm_grant_publishable(state, ev->slot, 0) ? 0 : 1;
+    }
+}
+
+/* A grant naming a call on slot @p s, which a P_CLEAR retired since the follow (vc_cleared_slots), spends that clear:
+   the slot is acquired again, and on the followed slot the new assignment's acquisition (its first media,
+   vc_media_heard, within a window from now, vc_reacquire_m) starts afresh, as a follow's does. A slot no clear retired
+   keeps its acquisition (a repeat never restarts it). */
+static void
+dmr_sm_slot_regranted(dmr_sm_ctx_t* ctx, int s) {
+    if ((ctx->vc_cleared_slots & (1 << s)) == 0) {
+        return;
+    }
+    ctx->vc_cleared_slots &= ~(1 << s);
+    if (s == ctx->vc_slot) {
+        ctx->vc_media_heard = 0;
+        ctx->vc_reacquire_m = dsd_decode_now_mono_s();
+    }
+}
+
+/* Whether in-place grant @p ev, naming @p target, names a slot's call: a slotted grant whose target is no
+   placeholder. */
+static int
+dmr_sm_in_place_grant_names_slot(const dmr_sm_event_t* ev, uint32_t target) {
+    return ev->slot >= 0 && ev->slot <= 1 && target != 0U && dmr_sm_event_identity_known(ev);
 }
 
 /* A grant for the carrier already followed (IN_PLACE) names the call its slot carries now. Another call there (a new
-   assignment of the slot) takes the slot's record with its follow time now, so preemption compares a candidate with
-   it and its dwell runs from the assignment; on the followed slot it is the grant identity as well. A repeat of the
-   call the slot names keeps the record and its follow time, but on the followed slot still becomes the grant identity
-   (the followed call is the grant's); a repeat of the grant the machine followed there changes nothing. A slotless
-   grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces only a seed
-   or grant identity, never the call a checked LC named on that carrier (as dmr_sm_status_slot_reconcile()). */
+   assignment of the slot: another target, policy class or media, dmr_sm_grant_names_call()) takes the slot's record
+   with its follow time now, so preemption compares a candidate with it and its dwell runs from the assignment; on the
+   followed slot only a channel status, or a grant while neither the slot's record nor the followed grant names a call,
+   names the grant identity anew (any other grant naming another call there ends the assignment instead,
+   dmr_sm_end_changed_assignment()). A repeat of the call the slot names, or of the grant the machine followed there, keeps the record and its follow time.
+   On the followed slot while the followed grant names no call (an adopted companion), a grant repeating the call the
+   slot's record names names the grant identity too, as a first naming does. The grant identity named anew takes the
+   announcement's channel and provenance with it. A slotless grant, or one whose target is a placeholder, names no slot's call. A channel status (Cap+, XPT) replaces
+   only a seed or grant identity, never the call a checked LC named on that carrier (as
+   dmr_sm_status_slot_reconcile()). */
 static void
 dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const dmr_sm_event_t* ev, long freq) {
     const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
-    if (ev->slot < 0 || ev->slot > 1 || target == 0U || !dmr_sm_event_identity_known(ev)) {
+    if (!dmr_sm_in_place_grant_names_slot(ev, target)) {
         return;
     }
     const dmr_sm_slot_ctx_t* rec = &ctx->slots[ev->slot];
@@ -2652,27 +2864,167 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
     }
     dmr_sm_slot_ctx_t grant;
     const int followed_slot = ev->slot == ctx->vc_slot;
-    if (followed_slot && dmr_sm_grant_identity(ctx, &grant) && dmr_sm_grant_names_call(ev, target, &grant, freq)) {
-        return; // a repeat of the grant followed
+    const int grant_known = followed_slot && dmr_sm_grant_identity(ctx, &grant);
+    if (grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq)) {
+        return; // a repeat of the followed grant changes nothing: its record, dwell, channel and publication stay
     }
     const dsd_call_kind kind = dmr_sm_event_kind(ev);
     const int data_call = kind == DSD_CALL_KIND_DATA;
-    const uint8_t crc_flags = state->event_crc_invalid[state->currentslot & 1]; // this announcement's burst scope
-    if (!dmr_sm_grant_names_call(ev, target, rec, freq)) {
+    if (dmr_sm_grant_names_call(ev, target, rec, freq)) {
+        dmr_sm_slot_regranted(ctx, ev->slot);
+        /* The slot's record names this call already (a checked LC's, or a grant heard there before the slot was
+           adopted for a retired one): the record and its follow time stay, and only a grant naming the followed slot
+           while the followed grant names no call goes on to name it below. On the followed slot the grant gives the
+           followed call its channel and provenance (discussion #900); the followed grant's identity stays for
+           comparison (dmr_sm_grant_replaces_followed()) and for a P_CLEAR, but it is never published into a later
+           transmission there under this grant's evidence: its pending publication is spent. */
+        if (!followed_slot || grant_known || ev->origin != DMR_SM_ORIGIN_GRANT) {
+            if (followed_slot) {
+                dmr_sm_followed_channel_from_grant(ctx, state, ev);
+                ctx->vc_identity_published = 1;
+            }
+            return;
+        }
+    } else {
         const double now_m = dsd_decode_now_mono_s();
         dmr_sm_slot_ctx_t named;
         dmr_sm_slot_identity_set(&named, kind, target, (uint32_t)ev->src, ev->is_group, data_call, DMR_SM_ID_GRANT,
                                  ev->lpcn, freq, now_m);
         named.channel_kind = ev->channel_kind;
-        named.channel_crc_flags = crc_flags;
-        named.crc_flags = crc_flags;
+        named.channel_crc_flags = state->event_crc_invalid[state->currentslot & 1]; // this announcement's burst scope
+        named.crc_flags = named.channel_crc_flags;
         dmr_sm_slot_name(ctx, state, ev->slot, &named, 0, now_m);
+        dmr_sm_slot_regranted(ctx, ev->slot);
     }
-    /* On the followed slot the grant is the followed call now, even when the slot's record (a checked LC's) names that
-       call already and keeps its record and follow time: a P_CLEAR is matched to it, never to the call it replaced. */
     if (followed_slot) {
-        dmr_sm_followed_call_rename(ctx, ev, data_call, crc_flags);
+        dmr_sm_followed_slot_take_grant(ctx, state, ev, data_call);
     }
+}
+
+/* Whether grant @p ev, on @p freq, is a grant (not a channel status nor a placeholder) for the followed slot of the
+   followed carrier. */
+static int
+dmr_sm_grant_for_followed_slot(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
+    return ctx->state == DMR_SM_TUNED && ctx->vc_slot >= 0 && ev->slot == ctx->vc_slot && freq == ctx->vc_freq_hz
+           && ev->origin != DMR_SM_ORIGIN_STATUS && dmr_sm_event_identity_known(ev);
+}
+
+/* Whether grant @p ev, for the followed slot of the followed carrier @p freq, names another call than the one that
+   slot carries or is followed for. A grant naming the call the slot's record names (dmr_sm_grant_names_call(): its
+   address class and media, and its talkgroup or, for a private call, its pair either way round) names that call, whatever the followed grant's media was: a
+   call a checked LC opened there since the follow (a voice call on a slot followed for data) goes on. Otherwise another
+   media than the followed assignment's (a data grant for a slot followed for voice, or the reverse; an adopted
+   companion's unknown media is none, vc_media_known), or, where the slot's record or the followed grant names a call,
+   another target or address class than both (a repeat of the followed grant is the same call). A channel status (it
+   reconciles the slot instead), a slotless grant and a placeholder name no other call. */
+static int
+dmr_sm_grant_replaces_followed(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev, long freq) {
+    if (!dmr_sm_grant_for_followed_slot(ctx, ev, freq) || ctx->vc_slot > 1) {
+        return 0;
+    }
+    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[ctx->vc_slot];
+    const int rec_known = dmr_sm_slot_identity_known(rec) && rec->carrier_hz == freq;
+    if (rec_known && target != 0U && dmr_sm_grant_names_call(ev, target, rec, freq)) {
+        return 0;
+    }
+    if (ctx->vc_media_known && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0)) {
+        return 1;
+    }
+    if (target == 0U) {
+        return 0;
+    }
+    dmr_sm_slot_ctx_t grant;
+    const int grant_known = dmr_sm_grant_identity(ctx, &grant);
+    if (!rec_known && !grant_known) {
+        return 0;
+    }
+    return !(grant_known && dmr_sm_grant_names_call(ev, target, &grant, freq));
+}
+
+/* The followed slot @p s's assignment ended (dmr_sm_end_changed_assignment()): the slot is left as a fresh call there
+   finds it, and the companion slot, whose call may keep the receiver, is not touched. The slot's call ends (EXPLICIT,
+   with an event sync), its voice timers, record, Capacity Plus seed and preemption-ledger entry are cleared, the grant
+   identity stands for nothing, and its crypto (privacy state, key selection, MI chain), talker metadata and packet
+   assembly are reset with its voice held until its next call says how it is encrypted (dmr_slot_retire()). */
+static void
+dmr_sm_retire_slot(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int s, double now_m) {
+    if (dsd_call_state_end_ex(state, (uint8_t)s, now_m, DSD_CALL_END_EXPLICIT) > 0) {
+        dsd_event_sync_slot(opts, state, (uint8_t)s);
+    }
+    ctx->slots[s].voice_active = 0;
+    ctx->slots[s].last_active_m = 0.0;
+    dmr_sm_slot_identity_clear(&ctx->slots[s]);
+    dmr_sm_capplus_seed_clear(ctx, s);
+    (void)dsd_tg_policy_clear_active_call(state, s);
+    dmr_sm_drop_grant_identity(ctx, s);
+    dmr_slot_retire(state, (uint8_t)s);
+}
+
+/* The followed call's channel once the companion slot, @p rec its record, is adopted for a retired slot: a Tier III
+   LPCN or a Connect Plus LCN names the carrier, both slots, and stays with its provenance; an LSN (Cap+, XPT) is the
+   retired slot's alone, so the companion's own channel replaces it where its record names one on this carrier, and
+   otherwise none is left, with no provenance (dmr_sm_lc_channel() then gives the companion's LC no channel). */
+static void
+dmr_sm_adopt_companion_channel(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* rec) {
+    if (ctx->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LPCN
+        || ctx->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LCN) {
+        return;
+    }
+    if (rec->carrier_hz == ctx->vc_freq_hz && rec->channel > 0 && rec->channel_kind != (uint8_t)DSD_CALL_CHANNEL_NONE) {
+        ctx->vc_lpcn = rec->channel;
+        ctx->vc_channel_kind = rec->channel_kind;
+        ctx->vc_crc_flags = rec->channel_crc_flags;
+        return;
+    }
+    ctx->vc_lpcn = 0;
+    ctx->vc_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
+    ctx->vc_crc_flags = 0U;
+}
+
+/* A checked grant for the followed slot that names another call (dmr_sm_grant_replaces_followed()) ends that slot's
+   assignment, whether the receiver would follow the grant or not (a call-type switch, data following off, a policy or
+   receive gate refusing it): the slot's call ends, its record and preemption-ledger entry are cleared and the grant
+   identity stands for nothing. The receiver stays on the carrier only for the companion slot's call, while it holds
+   the carrier by the retention rule (live voice or its hangtime tail; the retired grant's acquisition holds nothing):
+   that slot becomes the followed one. Otherwise the follow ends as a release does, back to the control channel, where
+   a repeated grant is followed as any grant is; a return the tuner refuses is asked again at the next tick (the
+   force-release latch). Returns 1 when the grant ended the assignment. */
+static int
+dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
+    if (!dmr_sm_grant_replaces_followed(ctx, ev, dmr_sm_grant_freq(ctx, opts, state, ev))) {
+        return 0;
+    }
+    const int s = ctx->vc_slot;
+    const int companion = s ^ 1;
+    const double now_m = dsd_decode_now_mono_s();
+    dmr_sm_retire_slot(ctx, opts, state, s, now_m);
+    ctx->t_voice_m = ctx->slots[companion].last_active_m; // the carrier's activity is the companion's alone now
+    const dmr_sm_hold_e hold =
+        dmr_sm_tuned_retention(ctx, opts, state, now_m, ctx->hangtime_s, ctx->grant_timeout_s, 0.0);
+    if (hold != DMR_SM_HOLD_LIVE && hold != DMR_SM_HOLD_TAIL) {
+        state->trunk_sm_force_release = 1;
+        do_release(ctx, opts, state, "grant-replaces-followed");
+        return 1;
+    }
+    sm_log(opts, "grant-replaces-followed");
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[companion];
+    ctx->vc_slot = companion;
+    /* The companion's media is its record's, which a grant, status or LC named; with no identity there it is unknown
+       (its voice or data activity alone names no media), and no grant's media contradicts it. */
+    ctx->vc_media_known = dmr_sm_slot_identity_known(rec);
+    ctx->vc_data_call = ctx->vc_media_known && rec->data_call;
+    ctx->vc_media_heard = 1; // the companion's call is on the air: no acquisition is pending for it
+    dmr_sm_adopt_companion_channel(ctx, rec);
+    state->dmr_mono_slot = companion;
+    return 1;
+}
+
+/* Whether @p ev names an origin the machine knows (dmr_sm_origin_e): an event of any other (the retired C_MOVE value
+   among them) is refused whole, so it never ends, reconciles or follows an assignment. */
+static int
+dmr_sm_event_origin_known(const dmr_sm_event_t* ev) {
+    return ev->origin == DMR_SM_ORIGIN_GRANT || ev->origin == DMR_SM_ORIGIN_STATUS;
 }
 
 static dmr_sm_grant_result_e
@@ -2680,9 +3032,20 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     if (!ctx || !ev || !opts || !state) {
         return DMR_SM_GRANT_REFUSED;
     }
+    if (!dmr_sm_event_origin_known(ev)) {
+        sm_log(opts, "grant-origin-unknown");
+        return DMR_SM_GRANT_REFUSED;
+    }
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
     // The slots' identities as of their canonical calls now: an in-place grant matches the calls they name.
     dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
+
+    /* Before any admission: a grant naming another call on the followed slot ends its assignment whatever becomes of
+       the grant. The grant itself is not followed; its repeat is, as any grant is (in place for the slot of a carrier kept for its
+       companion, else from the control channel, with its own tune, acquisition window, channel, provenance and call). */
+    if (dmr_sm_end_changed_assignment(ctx, opts, state, ev)) {
+        return DMR_SM_GRANT_REFUSED;
+    }
 
     if (ev->policy_valid && !ev->policy.tune_allowed) {
         sm_log(opts, "grant-policy-blocked");
@@ -2712,6 +3075,20 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
 static void
 handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     (void)dmr_sm_submit_grant_ctx(ctx, opts, state, ev);
+}
+
+int
+dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
+    if (!opts || !state || !ev || opts->trunk_enable != 1 || !dmr_sm_event_origin_known(ev)) {
+        return 0;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    if (!ctx->initialized) {
+        return 0;
+    }
+    // The slots' identities as of their canonical calls now, as dmr_sm_submit_grant() compares them.
+    dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
+    return dmr_sm_end_changed_assignment(ctx, opts, state, ev);
 }
 
 dmr_sm_grant_result_e
@@ -2910,7 +3287,8 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
             if (!opts || opts->trunk_is_tuned != 1) {
                 tick_on_cc(ctx, opts, state, now_m);
             } else if (state) {
-                /* A voice channel a CSBK path tuned itself (Connect Plus, Hytera XPT) is judged as a followed grant's. */
+                /* A voice channel the receiver is on outside a follow the machine tracks is judged as a followed
+                   grant's. */
                 (void)dmr_sm_receive_check(ctx, opts, state, state->trunk_vc_freq[0], now_m, grant_timeout);
             }
             break;
@@ -3041,18 +3419,25 @@ dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot) {
     return ctx && ctx->state == DMR_SM_TUNED && slot >= 0 && slot <= 1 && (ctx->vc_slot < 0 || ctx->vc_slot == slot);
 }
 
-/* The followed call as the machine records it (vc_*: the followed grant's addresses, or the in-place grant's that
-   renamed the followed slot's call since), whatever transmission the slot carries now (vc_addresses_known): a private
-   call's reverse leg is the same pair. */
+/* The followed call a P_CLEAR is matched to: the followed grant's own identity (dmr_sm_grant_identity(), the one a later
+   grant for the slot is compared with), and only while it names a call. Fail closed: once nothing stands for it (its
+   call ended and another began on the slot, a companion was adopted for a retired slot, a status follow), no addressed
+   clear matches, and the call ends on its terminator, timeout or hangtime. Either party of a private call matches. */
 int
 dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target) {
-    if (!dmr_sm_follows_slot(ctx, slot) || target == 0U || !ctx->vc_addresses_known) {
+    dmr_sm_slot_ctx_t grant;
+    if (!dmr_sm_follows_slot(ctx, slot) || target == 0U || !dmr_sm_grant_identity(ctx, &grant)) {
         return 0;
     }
     if (is_group) {
-        return ctx->vc_is_group && (uint32_t)ctx->vc_tg == target;
+        return grant.judged_group && grant.target == target;
     }
-    return !ctx->vc_is_group && ((uint32_t)ctx->vc_dst == target || (uint32_t)ctx->vc_src == target);
+    return !grant.judged_group && (grant.target == target || grant.source == target);
+}
+
+int
+dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state) {
+    return dmr_sm_ctx_on_control_channel(dmr_sm_get_ctx(), opts, state);
 }
 
 long
@@ -3105,8 +3490,8 @@ dmr_sm_note_status_follow(dsd_opts* opts, dsd_state* state, long freq_hz, int sl
     }
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
-    ctx->vc_addresses_known = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_media_known = 1; // a channel status names voice calls
     // The slots' identities are the status's seeds (dmr_sm_capplus_seed_arm()), or a kept carrier's own.
     dmr_sm_slots_take_carrier(ctx, freq_hz, leaves);
     if (slot >= 0 && slot <= 1) {

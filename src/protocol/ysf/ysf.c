@@ -614,7 +614,7 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info) {
     info->vp = 9;
     info->dt = 9;
     info->st = 9;
-    info->sc = 69;
+    info->sc = 0;
     info->v_error = UINT32_MAX;
 
     for (int i = 0; i < 100; i++) {
@@ -726,9 +726,9 @@ ysf_print_fich_path_and_frame(const ysf_fich_info* info) {
 
 static void
 ysf_print_fich_sql(const ysf_fich_info* info) {
-    if (info->st && info->sc != 69) {
-        DSD_FPRINTF(stderr, "SQL ");
-        DSD_FPRINTF(stderr, "CODE: %03d ", info->sc);
+    char text[32];
+    if (dsd_ysf_format_fich_sql(info->err, info->st, info->sc, text, sizeof text) > 0U) {
+        DSD_FPRINTF(stderr, "%s", text);
     }
 }
 

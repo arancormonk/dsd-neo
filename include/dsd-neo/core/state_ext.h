@@ -53,7 +53,8 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * Core facilities use dedicated slots rather than expanding `dsd_state`. Engine owns 0, 1, 3 and 7; core owns 2, 4,
      * 5 and 8, and 13 and 14 (taken from the io range); runtime owns 6, and 15 (taken from the io range); DSP owns 9,
      * 10 and 11 (taken from the core range, as runtime took 6 from the engine range) and 12 (taken from the io range);
-     * app-control owns 16 and 18, from the ui range; core owns 17, also from the ui range.
+     * app-control owns 16 and 18, from the ui range; core owns 17, also from the ui range; the NXDN module owns 19, also
+     * from the ui range, since the protocol range (24-31) is full.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,
@@ -95,6 +96,9 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
      * set only on the published and consumer snapshots, to storage app-control owns (no cleanup). A live decoder state
      * never has it. */
     DSD_STATE_EXT_APP_DMR_T3_VIEW = 18,
+    /* The NXDN data call header's Type-D Home Repeater / Prefixes (src/protocol/nxdn/nxdn_data_call.c, issue #903),
+     * kept with the header bound to the data call's assembly. Decoder-thread private. */
+    DSD_STATE_EXT_PROTO_NXDN_DATA_CALL = 19,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
     /* The DMR module's extension (src/protocol/dmr/dmr_t3_channels_internal.h): the Reverse Channel notice dedupe and
      * the Tier III channel provenance (<dsd-neo/protocol/dmr/dmr_t3_channels.h>, discussion #900). Decoder-thread

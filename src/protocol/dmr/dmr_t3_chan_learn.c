@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,15 +37,40 @@ dmr_t3_chan_may_write(dmr_chan_origin_e cur, long cur_hz, dmr_chan_origin_e orig
     return cur != DMR_CHAN_ORIGIN_SITE || cur_hz != hz;
 }
 
-/* The trust byte a row learned as @p origin takes: 2 learned on the control channel, else 1; a neighbour site's never
-   more than 1 and an estimate 0. */
+/* The trust byte (dsd_state::dmr_lcn_trust, which the trunk state machine's lpcn_is_trusted() reads) a row learned as
+   @p origin takes: 2 learned on the control channel, else 1; a neighbour site's never more than 1 and an estimate 0.
+   "On the control channel" is the machine's one rule for trusting and for learning (dmr_sm_on_control_channel(), issue
+   #903): a composite control channel's payload followed in place counts, a hunt's probe or an operator's move
+   elsewhere does not. */
 static uint8_t
 dmr_t3_chan_trust(const dsd_opts* opts, const dsd_state* state, dmr_chan_origin_e origin) {
     if (origin == DMR_CHAN_ORIGIN_ESTIMATE) {
         return 0U;
     }
-    const int on_cc = state->trunk_cc_freq != 0 && opts != NULL && opts->trunk_is_tuned == 0;
-    return (origin != DMR_CHAN_ORIGIN_NEIGHBOUR && on_cc) ? 2U : 1U;
+    return (origin != DMR_CHAN_ORIGIN_NEIGHBOUR && dmr_sm_on_control_channel(opts, state)) ? 2U : 1U;
+}
+
+/* Whether a row of origin @p cur holds a frequency the air taught this site (SITE or UNVERIFIED): its trust byte keeps
+   what it earned while the frequency stays the same. */
+static int
+dmr_t3_chan_origin_is_site_learned(dmr_chan_origin_e cur) {
+    return cur == DMR_CHAN_ORIGIN_SITE || cur == DMR_CHAN_ORIGIN_UNVERIFIED;
+}
+
+/* A row the air taught at @p hz, learned off the control channel and still unconfirmed (trust 1), is confirmed (2)
+   only by this site's own CSBK whose CRC passed (@p origin SITE: never one -F accepted as RAS, which is UNVERIFIED,
+   nor another site's announcement, which is NEIGHBOUR) naming the same frequency on the control channel (issue #903).
+   A file's, the user's or an estimated row, and a row holding another frequency, are left as they are; so a mapping
+   learned off the control channel of a RAS site stays unconfirmed (a decided limit). Returns whether it confirmed. */
+static int
+dmr_t3_chan_confirm(const dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_chan_origin_e cur, long hz,
+                    dmr_chan_origin_e origin) {
+    if (origin != DMR_CHAN_ORIGIN_SITE || !dmr_t3_chan_origin_is_site_learned(cur) || state->trunk_chan_map[lpcn] != hz
+        || state->dmr_lcn_trust[lpcn] != 1U || dmr_t3_chan_trust(opts, state, origin) != 2U) {
+        return 0;
+    }
+    state->dmr_lcn_trust[lpcn] = 2U;
+    return 1;
 }
 
 /* A channel notice on the receiving burst's slot, which the emitter marks with that slot's CRC flags. Signalling, not a
@@ -222,6 +248,7 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
     const dmr_chan_origin_e cur = dmr_t3_chan_origin(state, lpcn);
     const long cur_hz = state->trunk_chan_map[lpcn];
     if (!dmr_t3_chan_may_write(cur, cur_hz, origin, freq_hz)) {
+        (void)dmr_t3_chan_confirm(opts, state, lpcn, cur, freq_hz, origin);
         return 0;
     }
     /* Without the origin record a learned row would read as a file's, which nothing over the air may replace. */
@@ -236,7 +263,15 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
     dsd_state_dmr_lcn_ota_set(state, lpcn, 1);
     dmr_t3_missing_note_written(state, ext, lpcn, seq_before);
     ext->origin[lpcn] = (uint8_t)origin;
-    state->dmr_lcn_trust[lpcn] = dmr_t3_chan_trust(opts, state, origin);
+    /* A frequency the site taught keeps the trust it earned (learned or confirmed on the control channel) when a later
+       CSBK names it again from elsewhere: a held mapping is confirmed, never demoted (issue #903). */
+    const uint8_t old_trust = state->dmr_lcn_trust[lpcn];
+    uint8_t trust = dmr_t3_chan_trust(opts, state, origin);
+    if (dmr_t3_chan_origin_is_site_learned(cur) && dmr_t3_chan_origin_is_site_learned(origin) && cur_hz == freq_hz
+        && old_trust > trust) {
+        trust = old_trust;
+    }
+    state->dmr_lcn_trust[lpcn] = trust;
     ext->revision++;
     if (origin == DMR_CHAN_ORIGIN_ESTIMATE) {
         return 1; /* the fill's own row: its summary is the notice */

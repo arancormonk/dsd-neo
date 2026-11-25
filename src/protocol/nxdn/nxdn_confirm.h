@@ -65,8 +65,8 @@ typedef enum {
 #define NXDN_CONFIRM_PARTIAL_HOLD_MS_48 160U
 #define NXDN_CONFIRM_PARTIAL_HOLD_MS_96 80U
 
-/** @brief Forget everything learned about the current transmission. */
-void nxdn_confirm_reset(dsd_state* state);
+/* nxdn_confirm_reset() and nxdn_confirm_frame_proved() are declared once, in <dsd-neo/protocol/nxdn/nxdn.h>, which the
+   engine also reads. */
 
 /**
  * @brief Say where a frame whose body is about to be read begins, before nxdn_confirm_begin_frame().
@@ -78,8 +78,13 @@ void nxdn_confirm_reset(dsd_state* state);
  * next frame (nxdn_confirm_note_evidence()) unless its sync word followed another one frame before it
  * (@p sync_corroborated: dsd_state::nxdn48_accept_corroborated) or another check of the frame passed too. A strong
  * check the frame before left waiting is confirmed only by a frame read one frame after it: the spacing itself, not
- * a run the frame sync vouches for (an NXDN96 frame after a step from 2400/4). Without this call a frame runs on (the
- * unit tests' frames, one after another).
+ * a run the frame sync vouches for (an NXDN96 frame after a step from 2400/4). Another channel's frame
+ * (dsd_state::nxdn_frame_foreign, set before this call, or by a foreign check part way through the frame) is no part of
+ * the followed channel's run either way: it drops a waiting check and starts the streaks over, and the next frame
+ * neither runs on from it nor takes @p sync_runs or @p sync_corroborated within the frame sync's reach of it (NXDN48's
+ * corroboration one frame, the NXDN96 flywheel's DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES for @p sync_runs), since that
+ * sync word is the foreign frame's. Without this call a
+ * frame runs on (the unit tests' frames, one after another).
  */
 void nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_runs, int sync_corroborated);
 
@@ -126,17 +131,6 @@ int nxdn_confirm_scch_confirmed(const dsd_state* state);
 
 /** @brief Whether the current transmission has proved itself. */
 int nxdn_confirm_is_confirmed(const dsd_state* state);
-
-/**
- * @brief Whether the frame just closed carried a passing CRC of its own.
- *
- * Narrower than nxdn_confirm_is_confirmed(), which stays true across a confirmed
- * transmission's empty frames. The SPS hunt needs the narrower answer: only a frame that
- * checked out itself proves the profile it was read on, or the noise syncs that follow a
- * transmission would go on holding a profile nothing is decoding on (#445). Read it after
- * nxdn_confirm_end_frame().
- */
-int nxdn_confirm_frame_proved(const dsd_state* state);
 
 /**
  * @brief Whether this frame's own CRCs proved its content: a strong check, or the short one that completes or continues

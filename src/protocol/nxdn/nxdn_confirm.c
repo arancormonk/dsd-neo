@@ -4,6 +4,8 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -34,6 +36,14 @@ nxdn_confirm_reset(dsd_state* state) {
     state->nxdn_confirm_spacing_due = 0;
     state->nxdn_confirm_frame_spaced = 0;
     state->nxdn_confirm_last_frame_valid = 0;
+    state->nxdn_confirm_last_frame_foreign = 0;
+}
+
+/* Whether a frame that began @p since symbols after the last one read began one frame after it, within the slip. */
+static int
+nxdn_confirm_one_frame_after(uint32_t since) {
+    return since + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP >= NXDN_CONFIRM_FRAME_SYMBOLS
+           && since <= NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
 }
 
 void
@@ -42,15 +52,28 @@ nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_
         return;
     }
     const uint32_t since = frame_symbol - state->nxdn_confirm_last_frame_symbol;
-    const int spaced = state->nxdn_confirm_last_frame_valid
-                       && since + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP >= NXDN_CONFIRM_FRAME_SYMBOLS
-                       && since <= NXDN_CONFIRM_FRAME_SYMBOLS + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
-    const int runs_on = sync_runs || spaced;
+    const int last_valid = state->nxdn_confirm_last_frame_valid != 0;
+    const int last_foreign = last_valid && state->nxdn_confirm_last_frame_foreign != 0;
+    const int one_frame_on = last_valid && nxdn_confirm_one_frame_after(since);
+    /* Another channel's frame (dsd_state::nxdn_frame_foreign, committed before its start is noted) is no part of the
+       followed channel's run, either way. It runs on from nothing and is no frame to run on from, and a sync word the
+       frame sync vouched for from within its reach of it is that foreign frame's: NXDN48's corroboration (an FSW one
+       frame before) only when the foreign frame was read exactly one frame before, an NXDN96 run (a lock its LICH
+       moved and flywheels on) for as long as the flywheel lasts. */
+    const int foreign = state->nxdn_frame_foreign != 0;
+    const uint32_t run_reach =
+        (DSD_FRAME_SYNC_NXDN96_FLYWHEEL_FRAMES * NXDN_CONFIRM_FRAME_SYMBOLS) + NXDN_CONFIRM_FRAME_SYMBOLS_SLIP;
+    const int run_from_foreign = last_foreign && since <= run_reach;
+    const int corroboration_from_foreign = last_foreign && one_frame_on;
+    const int spaced = one_frame_on && !last_foreign;
+    const int corroborated = sync_corroborated && !corroboration_from_foreign;
+    const int runs_on = !foreign && ((sync_runs && !run_from_foreign) || spaced);
     state->nxdn_confirm_spacing_due = 0;
     state->nxdn_confirm_last_frame_symbol = frame_symbol;
     state->nxdn_confirm_last_frame_valid = 1;
+    state->nxdn_confirm_last_frame_foreign = (uint8_t)foreign;
     state->nxdn_confirm_frame_isolated = (uint8_t)!runs_on;
-    state->nxdn_confirm_strong_waits = (uint8_t)(!runs_on && !sync_corroborated);
+    state->nxdn_confirm_strong_waits = (uint8_t)(!runs_on && !corroborated);
     if (!runs_on) {
         state->nxdn_confirm_weak_streak = 0;
         state->nxdn_confirm_scch_streak = 0;
@@ -59,7 +82,8 @@ nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_
     }
     if (state->nxdn_confirm_strong_pending) {
         /* The frame before this one passed a strong check, and this one was read a frame after it: a transmission. A
-           frame the frame sync vouches for on its own run (NXDN96) says nothing of the frame before. */
+           frame the frame sync vouches for on its own run (NXDN96) says nothing of the frame before: the check waited
+           for the followed transmission's next frame, and this is not one. */
         state->nxdn_confirm_strong_pending = 0;
         if (spaced) {
             state->nxdn_confirmed = 1;
@@ -122,6 +146,9 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
         /* Another channel's control traffic on the followed traffic channel proves that channel, not the call followed:
            it is noted as heard, and confirms nothing. */
         state->nxdn_site.foreign_control_m = dsd_decode_now_mono_s();
+        /* A frame its own CAC showed foreign part way through anchors the followed channel's run no more than one
+           committed foreign (nxdn_confirm_note_frame_start()). */
+        state->nxdn_confirm_last_frame_foreign = 1;
         return;
     }
     if (state->nxdn_confirm_strong_waits) {

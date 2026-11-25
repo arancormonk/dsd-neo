@@ -968,7 +968,119 @@ test_ended_hold_keeps_target_name(void) {
     dsd_app_slot_call_view(state, 0U, 13.0, &view);
     assert(view.state == DSD_APP_CALL_LINE_ENDED);
     assert(strcmp(view.name, "KD9ABC") == 0);
+    assert(view.tg_label[0] == '\0');
     destroy_state(state);
+
+    /* A numeric target shown as text (an NXDN Type-D group, 11-bit ID 5 under prefix 3, "03-0005", issue #903) keeps
+       the label cached for its ID: the text shows the prefix, the ID still names the group. */
+    state = make_state_with_history(&history);
+    dsd_call_observation type_d = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 100U, 5U);
+    type_d.kind = DSD_CALL_KIND_GROUP_VOICE;
+    type_d.policy_target_id = 5U;
+    type_d.observed_m = 10.0;
+    DSD_SNPRINTF(type_d.target_text, sizeof(type_d.target_text), "%s", "03-0005");
+    DSD_SNPRINTF(type_d.source_text, sizeof(type_d.source_text), "%s", "03-0100");
+    assert(dsd_call_state_observe(state, &type_d, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    stage_group_name(history, 0U, 5U, "Fireground");
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    DSD_MEMSET(&history[0].Event_History_Items[0], 0, sizeof(history[0].Event_History_Items[0]));
+    cache_target_label(state, 0U, 5U, "Fireground");
+    dsd_app_slot_call_view(state, 0U, 12.0 + DSD_APP_CALL_LINE_ENDED_HOLD_S - 0.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.tg_text, "03-0005") == 0);
+    assert(strcmp(view.tg_label, "Fireground") == 0);
+    assert(strcmp(view.name, "Fireground") == 0);
+    /* Still only for the ID it was cached for. */
+    cache_target_label(state, 0U, 6U, "Elsewhere");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.tg_label[0] == '\0');
+    assert(strcmp(view.name, "03-0005") == 0);
+    destroy_state(state);
+}
+
+/* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric target, so it ranks as a bare number does
+ * (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text; the text stays its
+ * tg_text. A text target (no numeric target) and an M17 callsign keep naming their calls over the channel. */
+static void
+observe_text_call(dsd_state* state, int protocol, uint64_t target, const char* text) {
+    dsd_call_observation observation = dsd_call_observation_data(protocol, 0U, 100U, target);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.policy_target_id = DSD_SYNC_IS_M17(protocol) ? 0U : target;
+    observation.observed_m = 10.0;
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", text);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static void
+test_type_d_text_yields_to_names(void) {
+    Event_History_I* history = NULL;
+    dsd_app_slot_call view;
+
+    /* No list name, a named channel: the channel names it. */
+    dsd_state* state = make_state_with_history(&history);
+    observe_text_call(state, DSD_SYNC_NXDN_POS, 5U, "03-0005");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "Fire Dispatch") == 0);
+    assert(strcmp(view.tg_text, "03-0005") == 0);
+    /* With a list name for ID 5: the list name. */
+    stage_group_name(history, 0U, 5U, "Metro Fire");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "Metro Fire") == 0);
+    destroy_state(state);
+
+    /* Neither: the text. */
+    state = make_state_with_history(&history);
+    observe_text_call(state, DSD_SYNC_NXDN_POS, 5U, "03-0005");
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "03-0005") == 0);
+    destroy_state(state);
+
+    /* A text-only target and an M17 callsign (a numeric address beside it) still name the call over the channel. */
+    state = make_state_with_history(&history);
+    observe_text_call(state, DSD_SYNC_DSTAR_HD_POS, 0U, "CQCQCQ");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "CQCQCQ") == 0);
+    destroy_state(state);
+    state = make_state_with_history(&history);
+    observe_text_call(state, DSD_SYNC_M17_STR_POS, 123456U, "N0CALL");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "N0CALL") == 0);
+    /* Nor does its ended hold take a label cached for the address. */
+    assert(dsd_call_state_end_ex(state, 0U, 12.5, DSD_CALL_END_TERMINATOR) > 0);
+    DSD_MEMSET(&history[0].Event_History_Items[0], 0, sizeof(history[0].Event_History_Items[0]));
+    cache_target_label(state, 0U, 123456U, "Numeric");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.name, "N0CALL") == 0);
+    destroy_state(state);
+}
+
+/* Issue #903: a confirmed DCR call names no party but publishes the text identity "JPN DCR": shown as a call under that
+ * name, where a bare NXDN sync's identity-less provisional epoch stays idle. */
+static void
+test_dcr_call_is_shown_by_name(void) {
+    for (int dcr = 0; dcr <= 1; dcr++) {
+        dsd_state* state = make_state();
+        dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 0U, 0U);
+        observation.kind = DSD_CALL_KIND_VOICE;
+        observation.observed_m = 10.0;
+        if (dcr) {
+            DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        }
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+        dsd_app_slot_call view;
+        dsd_app_slot_call_view(state, 0U, 10.5, &view);
+        assert(view.state == (dcr ? DSD_APP_CALL_LINE_ACTIVE : DSD_APP_CALL_LINE_IDLE));
+        if (dcr) {
+            assert(strcmp(view.name, "JPN DCR") == 0);
+            assert(view.tg_id == 0U);
+        }
+        destroy_state(state);
+    }
 }
 
 /* Issue #773: the view carries the call's kind for a frontend to word it (a private call is not a talkgroup). */
@@ -1247,6 +1359,8 @@ main(void) {
     test_view_carries_call_kind();
     test_source_id_and_label_split();
     test_target_label_independent_of_headline();
+    test_type_d_text_yields_to_names();
+    test_dcr_call_is_shown_by_name();
     test_unknown_numeric_target_has_no_text();
     test_tetra_identityless_epoch_still_shows();
     test_source_labels_keep_identity();

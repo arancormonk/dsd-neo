@@ -30,6 +30,9 @@ _Static_assert((int)DSD_STATE_EXT_CORE_POSITION_FEED < (int)DSD_STATE_EXT_MAX, "
 _Static_assert(DSD_STATE_EXT_APP_DMR_T3_VIEW == 18,
                "the snapshots' DMR Tier III channel record owns state_ext slot 18 (discussion #900)");
 _Static_assert((int)DSD_STATE_EXT_APP_DMR_T3_VIEW < (int)DSD_STATE_EXT_MAX, "slot 18 is inside the table");
+_Static_assert(DSD_STATE_EXT_PROTO_NXDN_DATA_CALL == 19,
+               "the NXDN data call header's Type-D prefixes own state_ext slot 19 (issue #903)");
+_Static_assert((int)DSD_STATE_EXT_PROTO_NXDN_DATA_CALL < (int)DSD_STATE_EXT_MAX, "slot 19 is inside the table");
 _Static_assert(DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA == 30,
                "the D-STAR slow-data assemblies own state_ext slot 30 (issue #800)");
 _Static_assert((int)DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA < (int)DSD_STATE_EXT_MAX, "slot 30 is inside the table");

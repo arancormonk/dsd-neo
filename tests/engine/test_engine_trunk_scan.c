@@ -487,6 +487,13 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
                      : DMR_SM_IDLE;
 }
 
+/* The channel map writer's control-channel rule (dmr_t3_chan_learn()): known and not on a voice channel, as the real
+   machine reads it while it follows nothing. */
+int
+dmr_sm_on_control_channel(const dsd_opts* opts, const dsd_state* state) {
+    return opts != NULL && state != NULL && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 0;
+}
+
 void
 dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz,
                             uint64_t request_id) {
@@ -7299,9 +7306,14 @@ test_nxdn_channel_access_isolated_per_target(void) {
     dsd_nxdn_note_type_c(&state);
     dsd_nxdn_ca_apply(&state, site_a, 1U, 1U, 2U);
     dsd_nxdn_dfa_learn(&state, 10U, 100012500L);
+    dsd_nxdn_note_type_d_layout(&state);
     const uint32_t generation_a = dsd_nxdn_ca_generation(&state);
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_nxdn_type_d_layout_fresh(&state)) {
+        DSD_FPRINTF(stderr, "fresh target took the first target's Type-D address evidence\n");
+        test_rc = 1;
+    }
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_nxdn_ca_valid(&state) || state.nxdn_ca.location_id != 0U
         || state.nxdn_dfa_learned.count != 0U || state.trunk_chan_map[10] != 0 || state.nxdn_site.known != 0U
         || dsd_nxdn_type_c(&state)) {
@@ -7317,6 +7329,11 @@ test_nxdn_channel_access_isolated_per_target(void) {
     dsd_nxdn_dfa_learn(&state, 10U, 400012500L);
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
+    /* The Type-D evidence was the carrier's at the visit it was heard on (issue #903): the next visit proves it again. */
+    if (dsd_nxdn_type_d_layout_fresh(&state)) {
+        DSD_FPRINTF(stderr, "restored target kept an earlier visit's Type-D address evidence\n");
+        test_rc = 1;
+    }
     if (!dsd_nxdn_site_is(&state, site_a) || !dsd_nxdn_type_c(&state)) {
         DSD_FPRINTF(stderr, "restored target lost its site: known=%u site=%06X type_c=%u\n", state.nxdn_site.known,
                     state.nxdn_site.location_id, state.nxdn_site.type_c);

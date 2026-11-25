@@ -26871,7 +26871,7 @@ enum {
     NXDN_RELEASE_ROW_EDIT,
     NXDN_RELEASE_IMPORT,
     NXDN_RELEASE_TYPE_D,       /* the held call names it as Type-D */
-    NXDN_RELEASE_TYPE_D_FRAME, /* only the frame being decoded is a Type-D channel's (RTCH2) */
+    NXDN_RELEASE_TYPE_D_FRAME, /* only the frame being decoded is a Type-D channel's (RTCH2, Type-D layout) */
     NXDN_RELEASE_TYPE_D_ROUTE, /* only the followed route is a Type-D repeater's */
 };
 
@@ -26904,7 +26904,10 @@ test_nxdn_source_fallback_call_released(int scenario) {
         state.nxdn_call.source = 1234U;
         state.nxdn_call.call_epoch = dsd_call_snapshot_transmission(&call);
     } else if (scenario == NXDN_RELEASE_TYPE_D_FRAME) {
+        /* An RTCH2 reading in the Type-D layout: one of a value a composite channel shares, with no Type-D evidence,
+           keeps the Type-C layout and is judged by its source (nxdn_receiver_on_type_d()). */
         state.nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+        state.nxdn_frame_type_d = 1U;
     } else if (scenario == NXDN_RELEASE_TYPE_D_ROUTE) {
         state.nxdn_follow.freq_hz = state.trunk_vc_freq[0];
         state.nxdn_follow.repeater = 3U;

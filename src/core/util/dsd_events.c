@@ -2884,8 +2884,15 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     char ran_buf[12];
     const char* ran = watchdog_event_code_text(
         ran_buf, sizeof ran_buf, ctx->access_code_kind == (uint8_t)DSD_ACCESS_CODE_RAN, ctx->access_code, 1);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08u; SRC: %08u; RAN: %s; ", datestr, timestr, sys_string,
-                 (unsigned)ctx->target_id, (unsigned)ctx->source_id, ran);
+    // An IDAS (Type-D) party is named by its text, "pp-iiii" under its home repeater prefix (issue #903): its 11-bit
+    // number alone does not tell two prefixes apart. Any other party prints as the number.
+    char tgt_buf[16];
+    char src_buf[16];
+    DSD_SNPRINTF(tgt_buf, sizeof tgt_buf, "%08u", (unsigned)ctx->target_id);
+    DSD_SNPRINTF(src_buf, sizeof src_buf, "%08u", (unsigned)ctx->source_id);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s; SRC: %s; RAN: %s; ", datestr, timestr, sys_string,
+                 ctx->tgt_str[0] != '\0' ? ctx->tgt_str : tgt_buf, ctx->src_str[0] != '\0' ? ctx->src_str : src_buf,
+                 ran);
     watchdog_event_append_nxdn_site(ctx, event_string, event_size);
 
     // The call's own channel and the row's own frequency, never the last grant decoded: that is

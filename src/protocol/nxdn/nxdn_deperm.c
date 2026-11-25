@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
@@ -271,6 +272,11 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_MEMSET(nsf_sacch, 0, sizeof(nsf_sacch));
     DSD_MEMCPY(nsf_sacch, trellis_buf + 8, 24U);
 
+    /* The frame's register reloads from the key at its non-superframe SACCH, whatever its check said; another
+       channel's frame (dsd_state::nxdn_frame_foreign) reloads nothing: the register is the followed call's. */
+    if (!state->nxdn_frame_foreign) {
+        nxdn_reset_payload_seed_if_forced(state);
+    }
     const int sacch_crc_ok = (crc == check);
     if (sacch_crc_ok) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
@@ -281,12 +287,10 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
-        nxdn_reset_payload_seed_if_forced(state);
         NXDN_Elements_Content_decode(opts, state, nsf_sacch, sizeof(nsf_sacch));
     } else {
         state->nxdn_part_of_frame = 0;
         DSD_FPRINTF(stderr, "PF X/1");
-        nxdn_reset_payload_seed_if_forced(state);
         DSD_FPRINTF(stderr, " IDLE");
     }
 
@@ -296,18 +300,18 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
 
 /*
  * A superframe SACCH segment of another channel's control traffic (dsd_state::nxdn_frame_foreign): its check says that
- * channel is heard, and nothing of it enters the superframe being assembled. The assembly is dropped too, both ways: the
- * followed channel's segments before it and after it belong to no one superframe with it, and a superframe the next
- * followed segment completed would otherwise mix the two channels' messages.
+ * channel is heard, and nothing of it enters the superframe being assembled, which it breaks
+ * (nxdn_sacch_break_superframe()), as every frame classified foreign does (nxdn_frame_commit_classification()): the
+ * followed channel's segments before it and after it belong to no one superframe with it. The rule holds for a
+ * segment the public entry point (nxdn_deperm_sacch_soft()) decodes outside any frame too.
  */
 static void
 nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_t crc, uint8_t check) {
+    nxdn_sacch_break_superframe(state);
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     }
     DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
-    nxdn_reset_sacch_segments(state);
-    state->nxdn_part_of_frame = 0;
 }
 
 /* Returns the superframe position + 1 a CRC-verified segment gives its frame (nxdn_channel_result::seed_part), else 0. */
@@ -377,7 +381,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 nxdn_channel_result
 nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                   uint8_t check) {
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0};
     if (crc != check) {
         nxdn_reset_sacch_segments(state);
     }
@@ -811,6 +815,41 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
     }
 }
 
+/* A DCR call names no key ID (key ID 0 is none, never keyring entry 0): it decodes with the working key, which no
+   selection loaded, and its own SACCH-2 reports it so at once. @p available: whether that key is there (-1: not known,
+   or no key to report, as for a clear call). */
+static void
+nxdn_note_dcr_working_key(dsd_state* state, int available) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0) {
+        (void)dsd_call_state_note_key_selection(state, 0U, DSD_SYNC_NXDN_POS, call.epoch, DSD_CALL_KEY_DIRECT, 0, -1,
+                                                available, 0);
+    }
+}
+
+/* The live epoch a Call message's first checked segment has just named "JPN DCR", the DCR call now though it was not
+   before, keeps none of what a numbered call's messages published on it (VCALLs naming no party continue an unnamed
+   epoch, issue #903): its class, service metadata, crypto classification, audio permission, ALG ID, key ID, MI and
+   received fields are forgotten (dsd_call_state_forget_call_description()), and its key is the DCR call's working key,
+   before the event layer sees the DCR call. The cipher the decoder applies stays: the hysteresis carries it, as on
+   main. The complete Call message publishes the DCR call's own crypto (nxdn_publish_sacch2_crypto()). */
+static void
+nxdn_withdraw_inherited_description(dsd_state* state) {
+    (void)dsd_call_state_forget_call_description(state, 0U, DSD_SYNC_NXDN_POS);
+    nxdn_note_dcr_working_key(state, -1);
+}
+
+/* The transmission of the DCR call slot 0 holds, active or ended (dsd_call_snapshot_transmission()), else 0. */
+static uint64_t
+nxdn_dcr_call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_NXDN(call.protocol)
+        || !dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
+        return 0U;
+    }
+    return dsd_call_snapshot_transmission(&call);
+}
+
 static void
 nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
@@ -830,15 +869,22 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     state->nxdn_last_ran = 7;
     state->nxdn_last_ran_stand_in = 1U;
     if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
-        const dsd_call_observation observation = {
+        /* Call traffic decoded, but DCR names no group or radio this decoder reads: no numeric target or source,
+         * never a made-up one, and the text identity "JPN DCR", which names the call as a callsign does and tells it
+         * apart from a named NXDN call (issue #903). */
+        dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
-            .kind = DSD_CALL_KIND_GROUP_VOICE,
-            .ota_target_id = 777U,
-            .policy_target_id = 777U,
-            .ota_source_id = 777U,
+            .kind = DSD_CALL_KIND_VOICE,
         };
+        DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        /* The DCR call this segment continues, or reopens after a sync loss (the same transmission), keeps its own
+           crypto; only an epoch newly named the DCR call is withdrawn from what it held before. */
+        const uint64_t dcr_before = nxdn_dcr_call_transmission(state);
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        if (nxdn_live_call_is_dcr(state) && nxdn_dcr_call_transmission(state) != dcr_before) {
+            nxdn_withdraw_inherited_description(state);
+        }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
@@ -855,28 +901,63 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     }
 }
 
+/* How the decoder stands toward a DCR Call whose own cipher field is @p ota_cipher: a clear field is published clear
+   and a reserved one unknown, as on main; a scrambler field by the cipher the decoder applies, which the hysteresis
+   may still hold at an earlier call's (issue #903), and its key (dsd_nxdn_voice_crypto_class(), the vocoder's rule). */
+static dsd_call_crypto_state
+nxdn_dcr_crypto_class(const dsd_state* state, uint8_t ota_cipher) {
+    if (ota_cipher == 0U) {
+        return DSD_CALL_CRYPTO_CLEAR;
+    }
+    if (ota_cipher != 1U) {
+        return DSD_CALL_CRYPTO_UNKNOWN;
+    }
+    switch (dsd_nxdn_voice_crypto_class(state)) {
+        case DSD_VOICE_CRYPTO_CLEAR: return DSD_CALL_CRYPTO_CLEAR;
+        case DSD_VOICE_CRYPTO_DECRYPTABLE: return DSD_CALL_CRYPTO_DECRYPTABLE;
+        case DSD_VOICE_CRYPTO_UNDECRYPTABLE: return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    }
+    return DSD_CALL_CRYPTO_UNKNOWN;
+}
+
+/* Whether a DCR call's working key is there, by the cipher applied, as its classification is (nxdn_dcr_crypto_class()):
+   available when it decrypts, missing when it is pending, else -1 (no key to report, as for a clear call). */
+static int
+nxdn_dcr_key_available(dsd_call_crypto_state classification) {
+    if (classification == DSD_CALL_CRYPTO_DECRYPTABLE) {
+        return 1;
+    }
+    return classification == DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? 0 : -1;
+}
+
+/* A Call message's crypto carries only the DCR call's own content (issue #903): its own cipher field as the ALG ID, no
+   key ID, no MI (DCR carries no IV, and the working register a scrambled call loads from the key is never one), and its
+   own key selection, the working key. A received ALG or key ID that a numbered call's message (a VCALL naming no party)
+   left on the epoch before the DCR call took it over is withdrawn. The classification and audio permission describe
+   the decoder (nxdn_dcr_crypto_class()). */
 static void
-nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher,
-                           uint8_t ota_cipher) {
+nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t ota_cipher) {
     if (!nxdn_dcr_is_sb0_message_type(message_type) || !nxdn_live_call_is_nxdn(state)) {
         return;
     }
-    const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
+    const dsd_call_crypto_state classification = nxdn_dcr_crypto_class(state, ota_cipher);
     const dsd_call_crypto_update crypto = {
-        .classification = cipher == 0U   ? DSD_CALL_CRYPTO_CLEAR
-                          : cipher == 1U ? (has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING)
-                                         : DSD_CALL_CRYPTO_UNKNOWN,
-        .algid = cipher,
+        .classification = classification,
+        .algid = ota_cipher,
         .kid = 0U,
-        /* DCR carries no IV; the working register a scrambled call loads from the key is never an MI. */
-        .mi = nxdn_published_mi(state),
-        .audio_permitted = (uint8_t)(cipher == 0U || has_key),
+        .mi = 0U,
+        .audio_permitted =
+            (uint8_t)(classification == DSD_CALL_CRYPTO_CLEAR || classification == DSD_CALL_CRYPTO_DECRYPTABLE),
+        .contradicted = (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID),
         /* The CRC-checked SACCH-2's own cipher field, not the applied (held) cipher. */
         .enc_observed = ota_cipher == 0U   ? DSD_CALL_ENC_OBSERVED_CLEAR
                         : ota_cipher == 1U ? DSD_CALL_ENC_OBSERVED_ENCRYPTED
                                            : DSD_CALL_ENC_OBSERVED_NONE,
     };
     if (dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto) > 0) {
+        if (ota_cipher <= 1U) {
+            nxdn_note_dcr_working_key(state, nxdn_dcr_key_available(classification));
+        }
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }
@@ -889,7 +970,8 @@ nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, 
         // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
         // established: hold a contradicting observation until it repeats.
         if (acts) {
-            state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
+            /* A DCR SACCH-2 names no key ID, so once its scrambler is the cipher applied the key ID applied is none. */
+            state->nxdn_cipher_type = nxdn_cipher_observe_keyed(state, 1U, 0U, 0);
         }
         if (dsd_key_scalar_present(state, 0)) {
             char key_text[24];
@@ -920,8 +1002,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
 
     if (acts) {
         state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
-        nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes,
-                                   cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher, cipher);
+        nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher);
     }
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
@@ -978,7 +1059,7 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     nxdn_reset_sacch2_if_done(state, &fields);
 }
 
-static int
+int
 nxdn_facch3_udch2_crc_ok(const struct nxdn_facch3_udch2_message* message) {
     return message->crc[0] == message->check[0] && message->crc[1] == message->check[1];
 }
@@ -1265,99 +1346,113 @@ nxdn_handle_facch1(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf,
         if (frame == 1U) {
             facch1_confirmed = nxdn_confirm_is_confirmed(state);
         }
-        NXDN_Elements_Content_decode(opts, state, trellis_buf, 96U);
+        /* Its 80 message bits, never the CRC-12 and tail bits after them (NXDN TS 1-A §4.5), so a message's
+           length check sees a field the FACCH1 does not carry as missing (issue #903). */
+        NXDN_Elements_Content_decode(opts, state, trellis_buf, 80U);
     }
 
     nxdn_print_facch1_payload(opts, m_data, crc, check);
 }
 
 /*
- * Soft-decision FACCH depermute/decode path.
- * Uses per-bit reliability values to weight the convolution decoder.
+ * Soft-decision FACCH1 depermute/decode path: per-bit reliability values weight the convolution decoder, with a
+ * hard-decision retry when the CRC-12 fails. Nothing acts on the result here.
  */
-void
-nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t frame) {
+nxdn_facch1_decode
+nxdn_facch1_decode_soft(const uint8_t bits[144], const uint8_t reliab[144]) {
+    nxdn_facch1_decode out;
     uint8_t deperm[144];
     uint8_t deperm_rel[144];
     uint8_t depunc[192];
     uint8_t depunc_rel[192];
-    uint8_t trellis_buf[96];
-    uint16_t crc = 1;
-    uint16_t check = 0;
+    uint8_t m_data[20];
 
+    DSD_MEMSET(&out, 0, sizeof(out));
     DSD_MEMSET(deperm, 0, sizeof(deperm));
     DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
     DSD_MEMSET(depunc, 0, sizeof(depunc));
     DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     // Deperm: shuffle bits and reliability in parallel
     nxdn_depermute_rel_u8(bits, reliab, 144U, PERM_16_9, deperm, deperm_rel);
     nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
 
-    // Soft convolution decode
-    uint8_t m_data[20];
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
-    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 12);
-
-    crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
-    check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, out.trellis, 12);
+    out.crc = nxdn_facch_crc12_payload_from_trellis(out.trellis);
+    out.check = nxdn_facch_crc12_check_from_trellis(out.trellis);
 
     // Fallback to hard-decision if soft decode fails
-    if (crc != check) {
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 12U, depunc, 92);
-        crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
-        check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
+    if (out.crc != out.check) {
+        nxdn_hard_fallback_decode(out.trellis, sizeof(out.trellis), m_data, 12U, depunc, 92);
+        out.crc = nxdn_facch_crc12_payload_from_trellis(out.trellis);
+        out.check = nxdn_facch_crc12_check_from_trellis(out.trellis);
     }
+    DSD_MEMCPY(out.m_data, m_data, sizeof(out.m_data));
+    return out;
+}
 
-    nxdn_handle_facch1(opts, state, trellis_buf, m_data, crc, check, frame);
+int
+nxdn_facch1_says_type_c(const nxdn_facch1_decode* facch1) {
+    if (facch1 == NULL || facch1->crc != facch1->check) {
+        return 0;
+    }
+    const uint8_t message_type = (uint8_t)convert_bits_into_output(&facch1->trellis[2], 6U);
+    return message_type == 0x1AU;
+}
+
+void
+nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t frame) {
+    const nxdn_facch1_decode facch1 = nxdn_facch1_decode_soft(bits, reliab);
+    nxdn_handle_facch1(opts, state, facch1.trellis, facch1.m_data, facch1.crc, facch1.check, frame);
 }
 
 /*
- * Soft-decision SACCH depermute/decode path.
- * Uses per-bit reliability values to weight the convolution decoder.
+ * The SACCH and SCCH field's shared front end (NXDN TS 1-A §4.5.2, TS 1-E §4.5.1): depermute, depuncture and
+ * soft-decode its 60 bits into 32 trellis bits.
  */
-nxdn_channel_result
-nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+static void
+nxdn_field_decode_soft(const uint8_t* bits, const uint8_t* reliab, nxdn_field_decode* out, uint8_t* depunc) {
     uint8_t deperm[60];
     uint8_t deperm_rel[60];
-    uint8_t depunc[72];
     uint8_t depunc_rel[72];
-    uint8_t trellis_buf[32];
 
+    DSD_MEMSET(out, 0, sizeof(*out));
     DSD_MEMSET(deperm, 0, sizeof(deperm));
     DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
+    DSD_MEMSET(depunc, 0, 72U);
     DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
-    uint8_t crc = 1;
-    uint8_t check = 0;
-
-    // Deperm with reliability
     nxdn_depermute_rel_u8(bits, reliab, 60U, PERM_12_5, deperm, deperm_rel);
     nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
+    nxdn_conv_decode_soft(depunc, depunc_rel, 72U, out->m_data, 32);
+    DSD_UNPACK_ARRAY_TO_BITS(out->m_data, out->trellis, 4);
+}
 
-    uint8_t m_data[5];
-
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-
-    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
-    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 4);
-
-    crc = crc6(trellis_buf, 26);
-    check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6U);
-
-    // Fallback to hard-decision if soft decode fails
-    if (crc != check) {
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
-        crc = crc6(trellis_buf, 26);
-        check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6U);
+/*
+ * Soft-decision SACCH depermute/decode path, with a hard-decision retry when the CRC-6 fails. Nothing acts on the
+ * result here.
+ */
+nxdn_field_decode
+nxdn_sacch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]) {
+    nxdn_field_decode out;
+    uint8_t depunc[72];
+    nxdn_field_decode_soft(bits, reliab, &out, depunc);
+    out.crc = crc6(out.trellis, 26);
+    out.check = (uint8_t)convert_bits_into_output(out.trellis + 26, 6U);
+    if (out.crc != out.check) {
+        nxdn_hard_fallback_decode(out.trellis, sizeof(out.trellis), out.m_data, 4U, depunc, 32);
+        out.crc = crc6(out.trellis, 26);
+        out.check = (uint8_t)convert_bits_into_output(out.trellis + 26, 6U);
     }
+    return out;
+}
 
-    return nxdn_handle_sacch(opts, state, trellis_buf, m_data, crc, check);
+nxdn_channel_result
+nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+    const nxdn_field_decode sacch = nxdn_sacch_decode_soft(bits, reliab);
+    return nxdn_handle_sacch(opts, state, sacch.trellis, sacch.m_data, sacch.crc, sacch.check);
 }
 
 void
@@ -1527,66 +1622,48 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
 }
 
 /*
- * Soft-decision SCCH depermute/decode path.
+ * Soft-decision SCCH depermute/decode path, with a hard-decision retry when the CRC-7 fails. Nothing acts on the result
+ * here.
  */
+nxdn_field_decode
+nxdn_scch_decode_soft(const uint8_t bits[60], const uint8_t reliab[60]) {
+    nxdn_field_decode out;
+    uint8_t depunc[72];
+    nxdn_field_decode_soft(bits, reliab, &out, depunc);
+    out.crc = crc7_scch(out.trellis, 25);
+    out.check = nxdn_scch_crc7_check_from_trellis(out.trellis);
+    if (out.crc != out.check) {
+        nxdn_hard_fallback_decode(out.trellis, sizeof(out.trellis), out.m_data, 4U, depunc, 32);
+        out.crc = crc7_scch(out.trellis, 25);
+        out.check = nxdn_scch_crc7_check_from_trellis(out.trellis);
+    }
+    return out;
+}
+
 nxdn_channel_result
-nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
-    nxdn_channel_result result = {0U, 0U};
+nxdn_scch_commit(dsd_opts* opts, dsd_state* state, const nxdn_field_decode* scch, uint8_t direction) {
+    nxdn_channel_result result = {0};
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " SCCH");
 
-    uint8_t deperm[60];
-    uint8_t deperm_rel[60];
-    uint8_t depunc[72];
-    uint8_t depunc_rel[72];
-    uint8_t trellis_buf[32];
-
-    DSD_MEMSET(deperm, 0, sizeof(deperm));
-    DSD_MEMSET(deperm_rel, 255, sizeof(deperm_rel));
-    DSD_MEMSET(depunc, 0, sizeof(depunc));
-    DSD_MEMSET(depunc_rel, 255, sizeof(depunc_rel));
-    DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
-
-    uint8_t crc = 0;
-    uint8_t check = 0;
-
-    nxdn_depermute_rel_u8(bits, reliab, 60U, PERM_12_5, deperm, deperm_rel);
-    nxdn_depuncture_12_5_rel(deperm, deperm_rel, depunc, depunc_rel);
-
-    uint8_t m_data[5];
-
-    DSD_MEMSET(m_data, 0, sizeof(m_data));
-
-    nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
-    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 4);
-
-    crc = crc7_scch(trellis_buf, 25);
-    check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
-
-    if (crc != check) {
-        nxdn_hard_fallback_decode(trellis_buf, sizeof(trellis_buf), m_data, 4U, depunc, 32);
-        crc = crc7_scch(trellis_buf, 25);
-        check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
-    }
-
-    if (crc == check) {
+    if (scch->crc == scch->check) {
         /* Content TS 1-E does not define (a reserved prefix, an INFO1 with its Spare bit set) is printed, but is no
            evidence of a transmission and changes nothing past its frame (nxdn_scch_content_valid()). */
-        const int valid = nxdn_scch_content_valid(trellis_buf, direction);
+        const int valid = nxdn_scch_content_valid(scch->trellis, direction);
         /* The scrambler register is loaded from the key at each superframe's first SCCH and runs on across its four
            frames, four 49-bit VCH slots each, a FACCH1-stolen slot included (NXDN TS 1-F §16.4.2, Fig 16.4-1). Only a
            verified SCCH's structure places the frame. The position is kept for the frame, which sets the register
            there once this frame's signalling chose the cipher and key (nxdn_frame()); a failed SCCH places nothing,
            and the register runs on. */
         if (valid) {
-            const uint8_t sf = (uint8_t)((trellis_buf[0] << 1) | trellis_buf[1]);
+            const uint8_t sf = (uint8_t)((scch->trellis[0] << 1) | scch->trellis[1]);
             result.seed_part = (uint8_t)(nxdn_sacch_part_of_frame(sf) + 1);
             nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
             nxdn_confirm_note_scch(state);
         } else {
             result.scch_invalid = 1U;
         }
-        NXDN_decode_scch(opts, state, trellis_buf, direction);
+        NXDN_decode_scch(opts, state, scch->trellis, direction);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -1594,15 +1671,21 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n SCCH Payload ");
         for (int i = 0; i < 4; i++) {
-            DSD_FPRINTF(stderr, "[%02X]", m_data[i]);
+            DSD_FPRINTF(stderr, "[%02X]", scch->m_data[i]);
         }
-        if (crc != check) {
+        if (scch->crc != scch->check) {
             DSD_FPRINTF(stderr, "%s", KRED);
             DSD_FPRINTF(stderr, " (CRC ERR)");
             DSD_FPRINTF(stderr, "%s", KNRM);
         }
     }
     return result;
+}
+
+nxdn_channel_result
+nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
+    const nxdn_field_decode scch = nxdn_scch_decode_soft(bits, reliab);
+    return nxdn_scch_commit(opts, state, &scch, direction);
 }
 
 /*
@@ -1689,17 +1772,22 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
 }
 
 /*
- * Soft-decision FACCH3/UDCH2 depermute/decode path.
- * Processes two 144-bit blocks with separate CRCs (same structure as original).
+ * Soft-decision FACCH3/UDCH2 depermute/decode path: two 144-bit blocks with separate CRCs, decoded without acting on
+ * either (nxdn_handle_facch3_udch2_soft() commits them).
  */
-void
-nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
-                              uint8_t type) {
+struct nxdn_facch3_udch2_message
+nxdn_facch3_udch2_decode_soft(const uint8_t bits[288], const uint8_t reliab[288]) {
     struct nxdn_facch3_udch2_message message;
     DSD_MEMSET(&message, 0, sizeof(message));
     for (size_t block = 0; block < 2U; block++) {
         nxdn_decode_facch3_udch2_block_soft(bits, reliab, block, &message);
     }
+    return message;
+}
 
+void
+nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+                              uint8_t type) {
+    const struct nxdn_facch3_udch2_message message = nxdn_facch3_udch2_decode_soft(bits, reliab);
     nxdn_handle_facch3_udch2_soft(opts, state, &message, type);
 }

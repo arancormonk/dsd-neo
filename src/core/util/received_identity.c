@@ -140,6 +140,21 @@ dsd_rxid_reset(dsd_state* state) {
     }
 }
 
+/* The parts of one DMR trunking system a checked message notes fresh: what selects the address layout. The Capacity
+   Max marker is set valid, never fresh. */
+#define RXID_DMR_LAYOUT_PARTS                                                                                          \
+    (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_BRAND        \
+     | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN)
+
+uint8_t
+dsd_rxid_dmr_layout_trunk(const dsd_state* state) {
+    if (state == NULL || state->rx_id.family != (uint8_t)DSD_RXID_FAMILY_DMR
+        || (state->rx_id.fresh & RXID_DMR_LAYOUT_PARTS) == 0U) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    return state->rx_id.dmr_trunk;
+}
+
 /* The protocol a sync of @p family names (dsd_state::rx_sync_protocol): the family itself for a protocol that sends
    identity (both P25 phases, every DMR burst, both polarities are one); for one that sends none, the protocol. */
 static uint16_t
@@ -518,6 +533,32 @@ dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net) {
     id->valid |= DSD_RXID_DMR_T3_CAPMAX;
 }
 
+/* Whether a DMR record's checked parts contradict a Capacity Max marker of @p model and @p net: parts of another
+   trunking system than Tier III, or a Tier III system code of another network (which dsd_rxid_note_dmr_t3_syscode()
+   would drop that marker for). */
+static int
+rxid_capmax_marker_conflicts(const dsd_received_identity* id, uint8_t model, uint16_t net) {
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR) {
+        return 0;
+    }
+    if ((id->valid & RXID_DMR_TRUNK_PARTS) != 0U && id->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        return 1;
+    }
+    if (!rxid_has(id, DSD_RXID_DMR_T3_SYSCODE)) {
+        return 0;
+    }
+    const rxid_t3_code code = rxid_t3_decode(id->dmr_t3_syscode);
+    return code.model != model || code.net != net;
+}
+
+void
+dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint16_t net) {
+    if (state == NULL || rxid_capmax_marker_conflicts(&state->rx_id, model, net)) {
+        return; /* checked parts stand that the marker contradicts: only checked evidence replaces them */
+    }
+    dsd_rxid_note_dmr_t3_capmax(state, model, net);
+}
+
 int
 dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net) {
     if (state == NULL) {
@@ -654,9 +695,10 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
 }
 
 void
-dsd_rxid_forget_nxdn_typed_system(dsd_state* state) {
-    if (state != NULL) {
-        rxid_invalidate(&state->rx_id, DSD_RXID_NXDN_TYPED_SYSTEM);
+dsd_rxid_forget_nxdn_type_d(dsd_state* state) {
+    if (state != NULL && rxid_has(&state->rx_id, RXID_NXDN_TYPE_D)) {
+        /* As a Type-C note drops them (rxid_nxdn()): the control channel went with the Type-D parts. */
+        rxid_invalidate(&state->rx_id, RXID_NXDN_TYPE_D | DSD_RXID_CC_FREQ);
     }
 }
 

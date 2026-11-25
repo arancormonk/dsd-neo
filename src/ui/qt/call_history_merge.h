@@ -22,6 +22,7 @@
 #include <cstring>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -462,14 +463,45 @@ call_history_protocol_names_by_text(int protocol) {
 /**
  * @brief Whether @p text (simplified) is a raw source or target identity of a @p protocol call, rather than a display
  * placeholder: only a protocol that names calls by text has one (call_history_protocol_names_by_text()), and M17's
- * `UNKNOWN` source (the broadcast address where a callsign belongs) names nobody.
+ * `UNKNOWN` source (the broadcast address where a callsign belongs) names nobody. NXDN's text is one too: the only text
+ * it writes is an IDAS (Type-D) party's "pp-iiii", its 11-bit number qualified by its home repeater prefix (issue #903),
+ * so two prefixes of one number are two parties for the merge, as two callsigns are.
  */
 inline bool
 call_history_identity_text_is_raw(int protocol, bool source, const char* text) {
-    if (!call_history_protocol_names_by_text(protocol) || text == nullptr || text[0] == '\0') {
+    if (text == nullptr || text[0] == '\0') {
+        return false;
+    }
+    if (protocol >= 0 && protocol < static_cast<int>(DSD_POSITION_PROTOCOL_NONE) && DSD_SYNC_IS_NXDN(protocol)) {
+        return true;
+    }
+    if (!call_history_protocol_names_by_text(protocol)) {
         return false;
     }
     return !(source && protocol >= 0 && DSD_SYNC_IS_M17(protocol) && std::strcmp(text, "UNKNOWN") == 0);
+}
+
+/**
+ * @brief Whether a row is an NXDN DCR call: no talkgroup and the text identity "JPN DCR"
+ * (DSD_CALL_NXDN_DCR_TARGET_TEXT), which names no party (issue #903).
+ */
+inline bool
+call_history_row_is_nxdn_dcr(int protocol, uint64_t tg, const char* target_text) {
+    return protocol >= 0 && protocol < static_cast<int>(DSD_POSITION_PROTOCOL_NONE)
+           && dsd_call_is_nxdn_dcr(protocol, tg, target_text) != 0;
+}
+
+/**
+ * @brief Whether two rows are a DCR call and a call that knows a party by number (a talkgroup or a source): two calls,
+ * each way round, as the call layer splits them (call_state_dcr_meets_numbered_party(); issue #903). The merge's
+ * wildcards (a missing source, a destination that is only the channel's name) would otherwise fold them.
+ */
+inline bool
+call_history_dcr_meets_numbered_party(int protocol_a, uint64_t tg_a, uint64_t src_a, const char* text_a, int protocol_b,
+                                      uint64_t tg_b, uint64_t src_b, const char* text_b) {
+    const bool dcr_a = call_history_row_is_nxdn_dcr(protocol_a, tg_a, text_a);
+    const bool dcr_b = call_history_row_is_nxdn_dcr(protocol_b, tg_b, text_b);
+    return (dcr_a && (tg_b != 0U || src_b != 0U)) || (dcr_b && (tg_a != 0U || src_a != 0U));
 }
 
 /** @brief Whether two sync types may be one call: the same family, or either not known. */

@@ -332,6 +332,46 @@ call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
     return dsd_call_state_protocol_family(current->protocol) == dsd_call_state_protocol_family(observation->protocol);
 }
 
+// A target known only by number and one known only by text are two calls: no protocol names one call's target each
+// way in turn (an NXDN DCR call's "JPN DCR" after a named NXDN call, or a named call after it; issue #903). A target
+// either side does not know at all is no change.
+static int
+call_state_target_forms_differ(uint64_t old_target, const char* old_text, uint64_t new_target, const char* new_text) {
+    const int old_named = call_state_text_is_known(old_text);
+    const int new_named = call_state_text_is_known(new_text);
+    if (old_target != 0U && !old_named) {
+        return new_target == 0U && new_named;
+    }
+    return old_target == 0U && old_named && new_target != 0U && !new_named;
+}
+
+// An NXDN DCR call names no party by number, only its text identity "JPN DCR" (issue #903): a call that knows a party by
+// number, its source alone included (an IDAS INFO3's talker, a VCALL to the null destination), is another call, each
+// way. A call that names no party at all (a provisional voice call) is no change: it takes DCR's name.
+static int
+call_state_dcr_meets_numbered_party(const dsd_call_snapshot* current, const dsd_call_observation* observation,
+                                    uint64_t old_target, uint64_t new_target) {
+    const int old_dcr = dsd_call_is_nxdn_dcr(current->protocol, old_target, current->target_text);
+    const int new_dcr = dsd_call_is_nxdn_dcr(observation->protocol, new_target, observation->target_text);
+    const int old_numbered = old_target != 0U || current->ota_source_id != 0U;
+    const int new_numbered = new_target != 0U || observation->ota_source_id != 0U;
+    return (old_dcr && new_numbered) || (new_dcr && old_numbered);
+}
+
+// Whether the observation's target contradicts the call's: two numeric targets that differ, a target known only by
+// number against one known only by text (call_state_target_forms_differ()), or DCR's text identity against a numbered
+// party (call_state_dcr_meets_numbered_party()).
+static int
+call_state_target_contradicts(const dsd_call_snapshot* current, const dsd_call_observation* observation) {
+    const uint64_t old_target = call_state_effective_target_snapshot(current);
+    const uint64_t new_target = call_state_effective_target_observation(observation);
+    if (old_target != 0U && new_target != 0U && old_target != new_target) {
+        return 1;
+    }
+    return call_state_target_forms_differ(old_target, current->target_text, new_target, observation->target_text)
+           || call_state_dcr_meets_numbered_party(current, observation, old_target, new_target);
+}
+
 // True when the observation names a different call than the one the slot holds.
 // An absent field on either side is not a change: protocols fill identity in
 // over several bursts, and a partial re-description must not fork the epoch.
@@ -341,9 +381,7 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
         && dsd_call_state_protocol_family(current->protocol) != dsd_call_state_protocol_family(observation->protocol)) {
         return 1;
     }
-    const uint64_t old_target = call_state_effective_target_snapshot(current);
-    const uint64_t new_target = call_state_effective_target_observation(observation);
-    if (old_target != 0U && new_target != 0U && old_target != new_target) {
+    if (call_state_target_contradicts(current, observation)) {
         return 1;
     }
     if (call_state_kind_changed(current->kind, observation->kind)) {
@@ -1031,6 +1069,20 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, 
     return 1;
 }
 
+/* Forget the crypto values a replaced transmission could have published into @p snapshot: ALG ID, key id, MI, received
+   fields, the restored mark and the received encryption indication. */
+static void
+call_state_clear_crypto_values(dsd_call_snapshot* snapshot) {
+    snapshot->algid = 0U;
+    snapshot->kid = 0U;
+    snapshot->mi = 0U;
+    snapshot->crypto_received = 0U;
+    snapshot->received_algid = 0U;
+    snapshot->received_kid = 0U;
+    snapshot->crypto_restored = 0U;
+    snapshot->enc_received = 0U;
+}
+
 /* Whether @p snapshot holds no crypto values a replaced transmission could have published into it. */
 static int
 call_state_crypto_values_empty(const dsd_call_snapshot* snapshot) {
@@ -1046,7 +1098,7 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
-        return -1;
+        return 0; /* no call has opened in any slot yet: no active epoch */
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
@@ -1055,14 +1107,49 @@ dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int protocol
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    snapshot->algid = 0U;
-    snapshot->kid = 0U;
-    snapshot->mi = 0U;
-    snapshot->crypto_received = 0U;
-    snapshot->received_algid = 0U;
-    snapshot->received_kid = 0U;
-    snapshot->crypto_restored = 0U;
-    snapshot->enc_received = 0U;
+    call_state_clear_crypto_values(snapshot);
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+/* Whether @p snapshot holds nothing a message describing another call could have published into it: no class beyond
+   generic voice, no service metadata, no crypto classification, audio permission or values. */
+static int
+call_state_description_empty(const dsd_call_snapshot* snapshot) {
+    return snapshot->kind != DSD_CALL_KIND_GROUP_VOICE && snapshot->kind != DSD_CALL_KIND_PRIVATE_VOICE
+           && snapshot->has_service_metadata == 0U && snapshot->service_options == 0U && snapshot->emergency == 0U
+           && snapshot->priority == 0U && snapshot->crypto == DSD_CALL_CRYPTO_UNKNOWN && snapshot->audio_permitted == 0U
+           && call_state_crypto_values_empty(snapshot);
+}
+
+int
+dsd_call_state_forget_call_description(dsd_state* state, uint8_t slot, int protocol) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0; /* no call has opened in any slot yet: no active epoch */
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || !dsd_call_state_update_is_protocols(snapshot, protocol) || call_state_description_empty(snapshot)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    if (snapshot->kind == DSD_CALL_KIND_GROUP_VOICE || snapshot->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        snapshot->kind = DSD_CALL_KIND_VOICE;
+    }
+    snapshot->service_options = 0U;
+    snapshot->emergency = 0U;
+    snapshot->priority = 0U;
+    snapshot->has_service_metadata = 0U;
+    snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
+    snapshot->audio_permitted = 0U;
+    call_state_clear_crypto_values(snapshot);
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);

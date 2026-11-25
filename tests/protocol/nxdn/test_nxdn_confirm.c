@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -176,6 +177,72 @@ test_frames_run_only_at_frame_spacing(dsd_state* state) {
     nxdn_confirm_reset(state);
 }
 
+/** @brief One frame of another channel's control traffic beginning at @p at, its check noted as foreign. */
+static void
+run_foreign_frame_at(dsd_state* state, uint32_t at, int sync_runs, int sync_corroborated) {
+    state->nxdn_frame_foreign = 1;
+    nxdn_confirm_note_frame_start(state, at, sync_runs, sync_corroborated);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    state->nxdn_frame_foreign = 0;
+}
+
+/* Another channel's frame is no anchor for the followed channel's next frame (issue #903): neither its spacing nor the
+ * sync word a frame before that a frame sync corroborated or ran on from (it is that same foreign frame's) lets the
+ * next frame's lone strong check hold at once. It waits for the followed channel's own next frame. */
+static void
+test_foreign_frame_anchors_no_run(dsd_state* state) {
+    /* NXDN48: a foreign frame, then the followed channel's frame exactly one frame later, its sync word corroborated
+       by the foreign frame's. */
+    nxdn_confirm_reset(state);
+    run_foreign_frame_at(state, 70000U, 0, 0);
+    nxdn_confirm_note_frame_start(state, 70000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a frame after a foreign one waits", nxdn_confirm_is_confirmed(state), 0);
+    run_frame_at(state, 70000U + (2U * NXDN_CONFIRM_FRAME_SYMBOLS), 0, 0);
+    expect("the followed channel's next frame confirms it", nxdn_confirm_is_confirmed(state), 1);
+
+    /* NXDN96: the frame sync's run of its own after a foreign frame (its lock moved by that frame's LICH) is the
+       foreign frame's, at one frame or at several the flywheel spans. */
+    for (uint32_t frames = 1U; frames <= 3U; frames++) {
+        nxdn_confirm_reset(state);
+        run_foreign_frame_at(state, 80000U, 1, 0);
+        run_frame_at(state, 80000U + (frames * NXDN_CONFIRM_FRAME_SYMBOLS), 1, NXDN_EVIDENCE_STRONG);
+        expect("an nxdn96 run from a foreign frame vouches for nothing", nxdn_confirm_is_confirmed(state), 0);
+    }
+
+    /* A frame its own CAC showed foreign part way through (dsd_state::nxdn_frame_foreign set for that channel only)
+       anchors nothing either. */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 90000U, 0, 0);
+    nxdn_confirm_begin_frame(state);
+    state->nxdn_frame_foreign = 1;
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    state->nxdn_frame_foreign = 0;
+    nxdn_confirm_end_frame(NULL, state);
+    nxdn_confirm_note_frame_start(state, 90000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a frame after a part-way foreign one waits", nxdn_confirm_is_confirmed(state), 0);
+
+    /* NXDN48's corroboration reaches one frame back only: a foreign frame, a followed-channel FSW one frame later whose
+       body was not accepted, then a lone strong check one frame after that, whose sync word that FSW corroborated. The
+       corroborating hit is the followed channel's own, not the foreign frame's: the check holds at once. */
+    nxdn_confirm_reset(state);
+    run_foreign_frame_at(state, 95000U, 0, 0);
+    nxdn_confirm_note_frame_start(state, 95000U + (2U * NXDN_CONFIRM_FRAME_SYMBOLS), 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("an nxdn48 sync word corroborated two frames after a foreign one holds at once",
+           nxdn_confirm_is_confirmed(state), 1);
+
+    /* Control: past the frame sync's reach the foreign frame vouches for nothing either way, and a corroborated sync
+       word is the followed channel's own. */
+    nxdn_confirm_reset(state);
+    run_foreign_frame_at(state, 100000U, 0, 0);
+    nxdn_confirm_note_frame_start(state, 100000U + (20U * NXDN_CONFIRM_FRAME_SYMBOLS), 0, 1);
+    run_frame(state, NXDN_EVIDENCE_STRONG);
+    expect("a corroborated frame long after a foreign one holds at once", nxdn_confirm_is_confirmed(state), 1);
+    nxdn_confirm_reset(state);
+}
+
 /* Issue #834: what a scan quiet check hears through the content-evidence hook, the last note and how many. */
 static int g_quiet_notes;
 static int g_quiet_level;
@@ -275,6 +342,15 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     nxdn_confirm_reset(state);
     state->nxdn_frame_foreign = 1;
     expect("another channel's control traffic notes nothing", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), 0);
+    state->nxdn_frame_foreign = 0;
+    /* Another channel's frame a frame after an isolated strong check completes no spacing proof (issue #903). */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 60000U, 0, 0);
+    (void)quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG);
+    state->nxdn_frame_foreign = 1;
+    nxdn_confirm_note_frame_start(state, 60000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 0);
+    expect("a foreign frame's spacing proves nothing", quiet_frame(&opts, state, 0), 0);
+    expect("and confirms nothing", nxdn_confirm_is_confirmed(state), 0);
     state->nxdn_frame_foreign = 0;
     nxdn_confirm_reset(state);
     expect("no opts: nothing", quiet_frame(NULL, state, NXDN_EVIDENCE_STRONG), 0);
@@ -457,6 +533,7 @@ main(void) {
     test_quiet_check_hears_the_frame_verdict(state);
 
     test_frames_run_only_at_frame_spacing(state);
+    test_foreign_frame_anchors_no_run(state);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);

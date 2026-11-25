@@ -57,6 +57,13 @@
  * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
  * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
+ * The DMR address layout (16-bit Capacity Plus and Hytera XPT addresses, dsd_rxid_dmr_layout_trunk()) is the record's
+ * DMR trunking system while one of its checked trunking parts is fresh, and nothing else: a sync of another protocol,
+ * which replaces the record's family, ends it, as do a carrier boundary and the no-carrier pass, until fresh checked
+ * Capacity Plus or XPT evidence. In multi-protocol decoding a false sync of another protocol can therefore make a
+ * Capacity Plus or XPT header read with the standard 24-bit layout until the next checked Cap+ or XPT message (a
+ * decided limit).
+ *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
  *
  * Threading: written on the decoder thread only, and wherever the P25 watchdog's tick could run beside it, under the
@@ -299,9 +306,21 @@ void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
  * of range (NET width Tiny 9, Small 7, Large 4, Huge 2 bits) is ignored. Sets the part valid, never fresh, and moves
  * no epoch. */
 void dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net);
+/** dsd_rxid_note_dmr_t3_capmax() for a marker whose CSBK passed no CRC of its own (a C_ALOHA -F accepted as RAS on a
+ * RAS-confirmed carrier): noted only when no checked part contradicts it, that is when the DMR record holds no parts
+ * of another trunking system than Tier III and no Tier III system code of another network (MODEL and NET). So
+ * unchecked content never drops another system's checked brand or parts, nor adds a marker beside a checked code
+ * of another network. */
+void dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint16_t net);
 /** 1 when @p state's record is DMR and holds the Capacity Max marker for exactly @p model and @p net; else 0 (NULL
  * too). */
 int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net);
+/** The DMR trunking system (dsd_rxid_dmr_trunk) whose address layout DMR decoding reads with: the record's while one
+ * of its trunking parts is fresh (rest LSN, site text, network, site, brand, Tier III system code or XPT free LCN; the
+ * Capacity Max marker is never fresh), else NONE (also for NULL). A stale record (the no-carrier pass, which an
+ * external scanner's move to another channel may be the only sign of) and a record a sync of another protocol dropped
+ * name none until fresh checked evidence. */
+uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
 /** The DMR trunking system (dsd_rxid_dmr_trunk) the record's DMR trunking parts (site text, network and site numbers,
  * brand, system code, Capacity Max marker, rest LSN, free LCN) name now: NONE when the record is not DMR's or none of
  * them is valid. */
@@ -327,10 +346,11 @@ void dsd_rxid_note_nxdn_idas_site(dsd_state* state, uint8_t site_type, uint8_t s
 /** A confirmed Type-D SRV_INFO: the 19-bit system ID and site code. Another system drops the SCCH area and site ID and
  * the control-channel frequency; another site code than the SCCH site ID's drops that site ID. */
 void dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site);
-/** Drops a Type-D SRV_INFO system ID (DSD_RXID_NXDN_TYPED_SYSTEM): the session turned out to decode Type-C, so the
- * Type-D reading that named it was a misreading of a composite control channel. A record that held one moves its
- * epoch. */
-void dsd_rxid_forget_nxdn_typed_system(dsd_state* state);
+/** Drops the whole Type-D part of the record (the SCCH area and site ID, the Type-D SRV_INFO system ID) and the
+ * control-channel frequency noted with it: the session turned out to decode Type-C, or a local composite frame
+ * disproved the Type-D reading of the carrier, so what that reading named was a misreading of a composite control
+ * channel. A record that held a Type-D part moves its epoch; one that held none keeps everything. */
+void dsd_rxid_forget_nxdn_type_d(dsd_state* state);
 
 void dsd_rxid_note_edacs_site(dsd_state* state, uint16_t site);
 void dsd_rxid_note_edacs_area(dsd_state* state, uint16_t area);

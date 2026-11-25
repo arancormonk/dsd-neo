@@ -53,6 +53,7 @@
 #include <string.h>
 #include <time.h>
 #include "dmr_abs_params.h"
+#include "dmr_address_layout.h"
 #include "dmr_call_channel.h"
 #include "dmr_confidence.h"
 #include "dmr_crc_provenance.h"
@@ -77,11 +78,15 @@ dmr_csbk_crc_checked(const dsd_state* state) {
     return !s_dmr_cspdu_synthesized && state->event_crc_invalid[state->currentslot & 1] == 0U;
 }
 
-/* The trunking brand a checked CSBK names, to the received identity record. */
+/* The Hytera XPT branding is display text: the address layout later LCs, preamble CSBKs and data headers are read with
+   comes from the received identity's checked trunking system (dmr_address_layout_of()). Only a CSBK whose own CRC
+   passed sets the branding and notes the XPT brand there: one accepted under relaxed RAS handling (-F) never does, or a
+   later clean standard header could be read with 16-bit addresses and lose its target's high bits. */
 static void
-dmr_csbk_note_brand(dsd_state* state, const char* brand) {
+dmr_csbk_brand_xpt(dsd_state* state) {
     if (dmr_csbk_crc_checked(state)) {
-        dsd_rxid_note_dmr_brand(state, brand);
+        DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+        dsd_rxid_note_dmr_brand(state, "Hytera XPT");
     }
 }
 
@@ -305,9 +310,13 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     } else if (call_kind == DSD_CALL_KIND_GROUP_VOICE) {
         kind = "Active Group Ch";
     }
-    /* Tier III channel numbers read as decimal, as everywhere dsd-neo shows them (discussion #900 B11). */
+    /* Tier III channel numbers read as decimal, as everywhere dsd-neo shows them (discussion #900 B11). An individual
+       grant's recipient (voice or data) is the called radio or gateway: a private target (TGT:), not a TG (issue
+       #903). */
+    const char* target_label = grant->group ? "TG" : "TGT";
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-    DSD_SNPRINTF(notice, sizeof notice, "%s: %u%s TG: %u; ", kind, (unsigned)channel, suf, (unsigned)grant->recipient);
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %u%s %s: %u; ", kind, (unsigned)channel, suf, target_label,
+                 (unsigned)grant->recipient);
     const dmr_csbk_activity_channel lpcn = {channel, (uint8_t)DSD_CALL_CHANNEL_LPCN, frequency};
     dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, &lpcn, emergency, notice);
 }
@@ -325,15 +334,25 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
 
 /* The grant's frequency in @p freq, and for the absolute escape the LPCN its CdefParms define in @p mbc_lpchannum.
    0 for an absolute grant whose parameters are unusable. A logical grant's channel is the user's entry first
-   (dmr_t3_overlay_resolve(): theirs, or none for a hidden one), then the channel map. */
+   (dmr_t3_overlay_resolve(): theirs, or none for a hidden one), then the channel map. @p stated_freq is the part of it
+   the trunk state machine may take as given (issue #903): the absolute escape's frequency or the user's entry, never a
+   channel-map lookup, which the machine resolves and trusts itself (dmr_sm_grant_freq(), lpcn_is_trusted()), so a
+   mapping learned off the control channel and still unconfirmed never tunes the receiver or ends the followed call. */
 static int
 dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
-                                long int* freq, uint16_t* mbc_lpchannum) {
+                                long int* freq, uint16_t* mbc_lpchannum, long int* stated_freq) {
+    *stated_freq = 0;
     if (lpchannum == 0xFFF) {
-        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq, mbc_lpchannum);
+        const int ok = dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq, mbc_lpchannum);
+        *stated_freq = *freq;
+        return ok;
     }
-    if (lpchannum != 0 && !dmr_t3_overlay_resolve(state, lpchannum, freq)) {
-        *freq = state->trunk_chan_map[lpchannum];
+    if (lpchannum != 0) {
+        if (dmr_t3_overlay_resolve(state, lpchannum, freq)) {
+            *stated_freq = *freq;
+        } else {
+            *freq = state->trunk_chan_map[lpchannum];
+        }
     }
     return 1;
 }
@@ -383,9 +402,32 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, const dmr
     return 1;
 }
 
+/* The grant's slot assignment, before any switch or policy refuses the grant (dmr_sm_note_grant_assignment(), issue
+   #903): a grant naming another call on the followed slot ends that assignment whether the receiver follows the grant or
+   not. @p stated_freq is the frequency the grant states (dmr_cspdu_pf0_resolve_frequency()). Returns 1 when it did: the
+   grant itself is not followed. */
+static int
+dmr_cspdu_pf0_note_assignment(dsd_opts* opts, dsd_state* state, const dmr_t3_grant_class* grant, uint8_t lcn,
+                              uint16_t call_channel, long int stated_freq) {
+    const int lpcn = (int)call_channel;
+    dmr_sm_event_t ev = grant->group
+                            ? dmr_sm_ev_group_grant(stated_freq, lpcn, (int)grant->recipient, (int)grant->caller)
+                            : dmr_sm_ev_indiv_grant(stated_freq, lpcn, (int)grant->recipient, (int)grant->caller);
+    ev.slot = (int)(lcn & 1U);
+    ev.channel_kind = call_channel != 0U ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    if (grant->data) {
+        ev.kind = DSD_CALL_KIND_DATA;
+    }
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    return dmr_sm_note_grant_assignment(opts, state, &ev);
+}
+
+/* @p freq is the carrier the grant names (its printout's and activity row's), @p stated_freq the part of it the
+   machine takes as given (dmr_cspdu_pf0_resolve_frequency()). */
 static void
 dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[],
-                                 const dmr_t3_grant_class* grant, uint16_t call_channel, long int freq) {
+                                 const dmr_t3_grant_class* grant, uint16_t call_channel, long int freq,
+                                 long int stated_freq) {
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
         return;
     }
@@ -407,7 +449,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
         return;
     }
-    res.freq_hz = freq;
+    res.freq_hz = stated_freq;
     res.lpcn = call_channel;
     res.policy_valid = 1;
     res.policy = policy_decision;
@@ -461,7 +503,8 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     dmr_gateway_identifier(grant.caller, grant.recipient);
 
     uint16_t mbc_lpchannum = 0;
-    if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum)) {
+    long int stated_freq = 0;
+    if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum, &stated_freq)) {
         return;
     }
     const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
@@ -473,11 +516,13 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, &grant, st2);
 
-    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &grant, freq)) {
+    /* A grant naming no carrier (none mapped, or a channel the user hid) names no assignment. */
+    if ((freq != 0 && dmr_cspdu_pf0_note_assignment(opts, state, &grant, lcn, call_channel, stated_freq))
+        || !dmr_cspdu_pf0_prepare_dispatch(opts, state, &grant, freq)) {
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant, call_channel, freq);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant, call_channel, freq, stated_freq);
 }
 
 /* The TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names (CHAN @p chan, which may name no
@@ -795,7 +840,9 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
     DSD_FPRINTF(stderr, gi == 0 ? "Individual " : "Group ");
     DSD_FPRINTF(stderr, content == 0 ? "CSBK - " : "Data - ");
 
-    if (strcmp(state->dmr_branding_sub, "XPT ") == 0) {
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    const dmr_address_layout layout = dmr_address_layout_of(state);
+    if (layout == DMR_ADDRESS_LAYOUT_XPT) {
         target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
         if (gi == 0) {
@@ -808,7 +855,7 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
         } else {
             DSD_FPRINTF(stderr, "Source: %d - Target: %d ", source, target);
         }
-    } else if (strcmp(state->dmr_branding_sub, "Cap+ ") == 0) {
+    } else if (layout == DMR_ADDRESS_LAYOUT_CAP_PLUS) {
         if (gi == 0) {
             target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         }
@@ -1705,6 +1752,7 @@ dmr_cspdu_pf0_is_standard_only(const dsd_state* state, int csbk_o) {
         case 35: // P_ACKU
         case 38: // NACK_Rsp
         case 42: // P_MAINT
+        case 57: // C_MOVE
             return 1;
         case 56: // BS_Dwn_Act on MS data; elsewhere a grant opcode, which runs for any FID
             return state->synctype == DSD_SYNC_DMR_MS_DATA;
@@ -1725,6 +1773,7 @@ dmr_cspdu_pf0_handle_standard_only(dsd_opts* opts, dsd_state* state, uint8_t cs_
         return;
     }
     dmr_cspdu_pf0_handle_c_ahoy(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
+    dmr_cspdu_pf0_handle_move(opts, state, cs_pdu_bits, csbk_o);
     dmr_cspdu_pf0_handle_p_maint(state, cs_pdu_bits, csbk_o);
     dmr_cspdu_pf0_handle_ackvit(csbk_o);
     dmr_cspdu_pf0_handle_acks(opts, state, cs_pdu_bits, csbk_o);
@@ -1738,19 +1787,17 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
     if (csbk_pf == 0) //okay to run
     {
 
-        //set overarching manufacturer in use when non-standard feature id set is up
-        if (csbk_fid != 0) {
+        // The manufacturer of a non-standard feature set (shown as the branding), only from a CSBK whose own CRC
+        // passed: one -F accepted as RAS would replace a checked trunk brand's vendor.
+        if (csbk_fid != 0 && dmr_csbk_crc_checked(state)) {
             state->dmr_mfid = csbk_fid;
-            if (dmr_csbk_crc_checked(state)) {
-                dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
-            }
+            dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
         }
 
         DSD_FPRINTF(stderr, "%s", KYEL);
 
         dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
 
-        dmr_cspdu_pf0_handle_move(opts, state, cs_pdu_bits, csbk_o);
         dmr_cspdu_pf0_handle_aloha(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
         dmr_cspdu_pf0_handle_p_clear(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
@@ -1897,13 +1944,17 @@ dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_b
 
 static void
 dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    if (!dmr_cap_plus_rest_lsn_valid(ctx->rest_channel)) {
-        return;
-    }
-    // Before the change test: an unchanged repeat proves the rest channel again.
+    const int rest_valid = dmr_cap_plus_rest_lsn_valid(ctx->rest_channel);
+    // A checked status names Capacity Plus whether or not it names a usable rest channel; before the change test, an
+    // unchanged repeat proves the rest channel again.
     if (dmr_csbk_crc_checked(state)) {
-        dsd_rxid_note_dmr_rest_lsn(state, ctx->rest_channel);
+        if (rest_valid) {
+            dsd_rxid_note_dmr_rest_lsn(state, ctx->rest_channel);
+        }
         dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    }
+    if (!rest_valid) {
+        return;
     }
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;
@@ -2143,8 +2194,14 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     }
 }
 
+/* Only a CSBK whose own CRC passed brands the site (dmr_csbk_crc_checked(): never one -F accepted as RAS): "Cap+ " reads
+   later data headers and preamble CSBKs with a 16-bit target and source (dmr_block.c, dmr_cspdu_pf0_handle_preamble()),
+   and any brand replaces a checked "XPT " one. */
 static void
 dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
+    if (!dmr_csbk_crc_checked(state)) {
+        return;
+    }
     state->dmr_mfid = 0x10;
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
@@ -2472,12 +2529,17 @@ dmr_cspdu_handle_cap_plus(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     dmr_cspdu_cap_plus_handle_3e(opts, state, cs_pdu_bits, csbk_o);
 }
 
+/* As dmr_cspdu_cap_plus_3e_set_branding(): only a checked CSBK brands the site, as a "Con+ " brand replaces a "Cap+ "
+   or "XPT " one and the 16-bit layouts they set. */
 static void
 dmr_cspdu_con_plus_set_branding(dsd_state* state) {
+    if (!dmr_csbk_crc_checked(state)) {
+        return;
+    }
     state->dmr_mfid = 0x06;
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "Con+ ");
-    dmr_csbk_note_brand(state, "Connect Plus");
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
 }
 
 static void
@@ -2540,20 +2602,43 @@ dmr_cspdu_con_plus_skip_voice_tune(const dsd_opts* opts, uint8_t opt) {
     return opts->trunk_tune_group_calls == 0 && opt != 2 && opt != 3;
 }
 
-/* A Connect Plus voice grant. Its policy is judged before the voice window, which still refuses an ordinary grant while
-   voice was heard within 2 s (4 s with data calls followed), as it always did; a Hold or preempt grant goes to the trunk
-   state machine with that window as its busy hint, where it is followed only by Hold over a non-held call or by
-   preemption over every call the receiver holds. Group tuning off still refuses every grant, private ones included. */
+/* The trunk state machine's event for a decoded Connect Plus grant on LCN @p lcn, timeslot @p tslot (its LCN's carrier
+   from the channel map): @p kind's media and address class, naming @p target from @p source. Both grant handlers hand
+   it to dmr_sm_note_grant_assignment() before their follow switch (group, private or data following off), policy check
+   and window, as the Tier III grants do (dmr_cspdu_pf0_note_assignment()): a grant naming another call on the followed
+   slot ends that assignment whether the receiver follows the grant or not, and is then not followed itself. */
+static dmr_sm_event_t
+dmr_cspdu_con_plus_grant_event(const dsd_state* state, uint8_t lcn, uint8_t tslot, dsd_call_kind kind, uint32_t target,
+                               uint32_t source) {
+    const long freq = state->trunk_chan_map[lcn];
+    dmr_sm_event_t ev = kind == DSD_CALL_KIND_GROUP_VOICE ? dmr_sm_ev_group_grant(freq, lcn, (int)target, (int)source)
+                                                          : dmr_sm_ev_indiv_grant(freq, lcn, (int)target, (int)source);
+    ev.slot = tslot & 1U;
+    ev.channel_kind = lcn != 0U ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    if (kind == DSD_CALL_KIND_DATA) {
+        ev.kind = DSD_CALL_KIND_DATA;
+    }
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    return ev;
+}
+
+/* A Connect Plus voice grant @p grant (@p g decoded) past its assignment check. Its policy is judged before the voice
+   window, which still refuses an ordinary grant while voice was heard within 2 s (4 s with data calls followed), as it
+   always did; a Hold or preempt grant goes to the trunk state machine with that window as its busy hint, where it is
+   followed only by Hold over a non-held call or by preemption over every call the receiver holds. Group tuning off
+   still refuses every grant, private ones included. */
 static void
-dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g) {
+dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_con_plus_voice_grant* g,
+                                  const dmr_sm_event_t* grant) {
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
-    long f;
 
+    const int is_group = (g->opt == 3) ? 0 : 1;
+    dmr_sm_event_t ev = *grant;
+    const long f = ev.freq_hz;
     if (opts->trunk_tune_group_calls != 1) {
         return;
     }
-    const int is_group = (g->opt == 3) ? 0 : 1;
     policy_allowed = dmr_policy_tune_allowed(opts, state, g->grp_addr, g->src_addr, is_group, 0, &policy_decision);
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
         return;
@@ -2567,16 +2652,10 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
         return;
     }
 
-    f = state->trunk_chan_map[g->lcn];
     if (f == 0) {
         return;
     }
 
-    dmr_sm_event_t ev = is_group ? dmr_sm_ev_group_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr)
-                                 : dmr_sm_ev_indiv_grant(f, g->lcn, (int)g->grp_addr, (int)g->src_addr);
-    ev.slot = g->tslot;
-    ev.channel_kind = g->lcn != 0 ? (uint8_t)DSD_CALL_CHANNEL_LCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
-    ev.origin = DMR_SM_ORIGIN_GRANT;
     ev.caller_busy = window;
     ev.policy_valid = 1;
     ev.policy = policy_decision;
@@ -2622,32 +2701,11 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
 
     dmr_csbk_print_target_label(state, kind, g.grp_addr);
-    if (dmr_cspdu_con_plus_skip_voice_tune(opts, g.opt)) {
+    const dmr_sm_event_t ev = dmr_cspdu_con_plus_grant_event(state, g.lcn, g.tslot, kind, g.grp_addr, g.src_addr);
+    if (dmr_sm_note_grant_assignment(opts, state, &ev) || dmr_cspdu_con_plus_skip_voice_tune(opts, g.opt)) {
         return;
     }
-    dmr_cspdu_con_plus_try_tune_voice(opts, state, &g);
-}
-
-/* Follow a Connect Plus data grant the talkgroup policy allows, unless the receive policy rejects its slot or the
-   colour code verified on its channel (issue #637). Returns 0 only when the tune was refused. */
-static int
-dmr_cspdu_con_plus_tune_data(dsd_opts* opts, dsd_state* state, uint8_t lcn, uint8_t tslot) {
-    const long freq = state->trunk_chan_map[lcn];
-    if (freq == 0 || !dsd_receive_grant_allows(opts, DSD_SYNC_DMR_BS_DATA_POS, tslot)
-        || !dmr_csbk_receive_carrier_allowed(opts, freq)) {
-        return 1;
-    }
-    const long receiver = dmr_sm_receiver_frequency(opts);
-    uint64_t request_id = 0U;
-    const dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id);
-    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        return 0;
-    }
-    /* A tune still in flight is judged once it lands, and one that fails takes nothing from the calls it left. */
-    dmr_sm_note_tracked_carrier_tune(dmr_sm_get_ctx(), state, tune_result, request_id, receiver, freq);
-    state->is_con_plus = 1;
-    dmr_reset_blocks(opts, state);
-    return 1;
+    dmr_cspdu_con_plus_try_tune_voice(opts, state, &g, &ev);
 }
 
 static void
@@ -2685,7 +2743,8 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
         .frequency = state->trunk_chan_map[lcn],
     };
     dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, &channel, 0, notice);
-    if (opts->trunk_tune_data_calls == 0) {
+    const dmr_sm_event_t ev = dmr_cspdu_con_plus_grant_event(state, lcn, tslot, DSD_CALL_KIND_DATA, dtarget, 0U);
+    if (dmr_sm_note_grant_assignment(opts, state, &ev) || opts->trunk_tune_data_calls == 0) {
         return;
     }
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
@@ -2699,12 +2758,24 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     }
 
     policy_allowed = dmr_policy_tune_allowed(opts, state, dtarget, 0, 0, 1, &policy_decision);
-    if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
-        if (!dmr_cspdu_con_plus_tune_data(opts, state, lcn, tslot)) {
-            (void)dsd_recent_activity_restore(state, &activity_transaction);
-        }
-    } else if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1) {
+    if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1) {
+        return;
+    }
+    if (!policy_allowed) {
         dmr_policy_log_block(opts, 0, dtarget, 0, &policy_decision);
+        return;
+    }
+    /* Followed through the trunk state machine's one follow entry point, as every other grant is: the machine owns the
+       assignment (its slot, data media and channel), so a later grant naming another call there ends it, and the receive
+       policy, the tune and the carrier it leaves are judged as for any grant. */
+    dmr_sm_event_t follow = ev;
+    follow.policy_valid = 1;
+    follow.policy = policy_decision;
+    const dmr_sm_grant_result_e result = dmr_sm_submit_grant(opts, state, &follow);
+    if (result == DMR_SM_GRANT_FOLLOWED || result == DMR_SM_GRANT_IN_PLACE) {
+        state->is_con_plus = 1;
+    } else if (result == DMR_SM_GRANT_DEFERRED) {
+        (void)dsd_recent_activity_restore(state, &activity_transaction);
     }
 }
 
@@ -3073,8 +3144,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         dmr_cspdu_xpt_try_tune(opts, state, entries, xpt_bank);
     }
 
-    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
-    dmr_csbk_note_brand(state, "Hytera XPT");
+    dmr_csbk_brand_xpt(state);
 }
 
 static void
@@ -3104,8 +3174,7 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
             DSD_FPRINTF(stderr, "Site:%d Free:%d; ", xpt_site_id[i], xpt_site_rp[i]);
         }
     }
-    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
-    dmr_csbk_note_brand(state, "Hytera XPT");
+    dmr_csbk_brand_xpt(state);
 }
 
 static void
@@ -3176,14 +3245,15 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
 
 /* Opcodes whose MBC form appends absolute parameters (CG_AP, MV_AP, BC_AP: TS 102 361-4 Tables 7.16, 7.18, 7.21):
    C_BCAST, the standard P_CLEAR, the channel grants and C_MOVE. Their handlers run whatever the feature set, except
-   P_CLEAR: another feature set's opcode 46 is the manufacturer's, its content opaque (dmr_cspdu_pf0_handle_p_clear()). */
+   P_CLEAR and C_MOVE: another feature set's opcode 46 or 57 is the manufacturer's, its content opaque
+   (dmr_cspdu_pf0_handle_p_clear(), dmr_cspdu_pf0_is_standard_only()). */
 static int
 dmr_cspdu_appends_abs_params(int csbk_o, int csbk_fid) {
-    return csbk_o == 40 || (csbk_o == 46 && csbk_fid == 0) || (csbk_o >= 48 && csbk_o <= 57);
+    return csbk_o == 40 || ((csbk_o == 46 || csbk_o == 57) && csbk_fid == 0) || (csbk_o >= 48 && csbk_o <= 56);
 }
 
 /* The channel field of a PDU that names its channel by one, or -1: bits 16-27 of a channel grant or a standard
-   P_CLEAR (Table 7.30), the Physical Channel Number (bits 44-55) of a C_MOVE. Each is a logical channel sent as a
+   P_CLEAR (Table 7.30), the Physical Channel Number (bits 44-55) of a standard C_MOVE. Each is a logical channel sent as a
    single CSBK, or 0xFFF heading an MBC (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2). Opcode 56 on MS-sourced data is
    BS_Dwn_Act, not a grant. */
 static int
@@ -3192,7 +3262,7 @@ dmr_cspdu_channel_field(const dsd_state* state, const uint8_t cs_pdu_bits[], int
         || dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
         return (int)convert_bits_into_output(&cs_pdu_bits[16], 12);
     }
-    if (csbk_o == 57) {
+    if (csbk_o == 57 && csbk_fid == 0) {
         return (int)convert_bits_into_output(&cs_pdu_bits[44], 12);
     }
     return -1;
@@ -3439,15 +3509,30 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     }
 }
 
-/* Whether a system code CSBK of feature set @p csbk_fid is Motorola's (FID 0x10), which brands the carrier Motorola. A
-   C_ALOHA of it recognises its network as Capacity Max only when dmr_aloha_recognises_capmax() holds. */
+/* Whether a system code CSBK of feature set @p csbk_fid is Motorola's (FID 0x10), which brands the carrier Motorola
+   when its own CRC passed. A C_ALOHA of it recognises its network as Capacity Max only when
+   dmr_aloha_recognises_capmax() holds. */
 static uint8_t
 dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
     if (csbk_fid != 0x10) {
         return 0U;
     }
-    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    if (dmr_csbk_crc_checked(state)) {
+        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    }
     return 1U;
+}
+
+/* Note the Capacity Max marker of a C_ALOHA dmr_aloha_recognises_capmax() admitted. One -F accepted as RAS is
+   recognition all the same (a RAS network's CRC never verifies), but it never displaces another trunking system's
+   checked parts (dsd_rxid_note_dmr_t3_capmax_unchecked()). */
+static void
+dmr_syscode_note_capmax_marker(dsd_state* state, const dmr_tiii_code* code) {
+    if (dmr_csbk_crc_checked(state)) {
+        dsd_rxid_note_dmr_t3_capmax(state, code->model, code->net);
+    } else {
+        dsd_rxid_note_dmr_t3_capmax_unchecked(state, code->model, code->net);
+    }
 }
 
 /* Whether the Motorola C_ALOHA being handled may recognise its network as Capacity Max (dmr_tiii_site.h): a single
@@ -3545,7 +3630,7 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
     if (type == 0) {
         state->dmr_t3_syscode = syscode;
         if (is_motorola && dmr_aloha_recognises_capmax(opts, state, cs_pdu_bits)) {
-            dsd_rxid_note_dmr_t3_capmax(state, code.model, code.net);
+            dmr_syscode_note_capmax_marker(state, &code);
         }
     }
     const int capmax = dsd_rxid_dmr_t3_is_capmax(state, code.model, code.net);

@@ -62,7 +62,7 @@ nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     const long int route = state->nxdn_follow.freq_hz;
-    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
+    return (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && state->nxdn_frame_type_d != 0U)
            || (state->nxdn_follow.repeater != 0U && route > 0 && dsd_opts_trunk_vc_followed(opts)
                && state->trunk_vc_freq[0] == route);
 }
@@ -72,8 +72,16 @@ nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint6
     if (!state || source > UINT32_MAX) {
         return 0U;
     }
+    /* The call the held identity is bound to carries its own layout verdict, which the receiver's route or live frame
+       never overrides; only a transmission with no verdict of its own is judged by where the receiver is. */
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
-    const int held_type_d =
-        id->type_d && (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
-    return held_type_d || nxdn_receiver_on_type_d(opts, state) ? 0U : (uint32_t)source;
+    const int bound = (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
+    const int type_d = bound ? id->type_d != 0U : nxdn_receiver_on_type_d(opts, state);
+    if (type_d) {
+        return 0U;
+    }
+    /* So does its source: the held call's verified one, as the held-call paths judge it (nxdn_held_policy_source()),
+       never the talker an INFO3 named on the live call since (nxdn_call_identity_follow_source_update()). A call a gap
+       left unnamed has none of its own. */
+    return bound && id->valid ? id->source : (uint32_t)source;
 }

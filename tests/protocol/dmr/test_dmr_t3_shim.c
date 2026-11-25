@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -280,6 +281,46 @@ test_voice_header_and_first_sync_share_epoch(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* A followed TS2 call, then an LPCN-only grant for TS2 naming another call, its LPCN mapped to the followed carrier with
+   trust @p trust. Returns 1 when the followed call and its follow outlived the grant. */
+static int
+followed_call_survives_lpcn_grant(uint8_t trust) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    init_env(opts, state);
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    dmr_sm_init(opts, state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const long vc = 855062500L;
+    dmr_sm_emit_group_grant_slot(opts, state, vc, 0x248, 1, 3101, 4202);
+    test_accepted_voice_sync(opts, state, 1);
+    assert(ctx->state == DMR_SM_TUNED && ctx->vc_slot == 1 && opts->trunk_is_tuned == 1);
+
+    const int lpcn = 0x249;
+    state->trunk_chan_map[lpcn] = vc;
+    state->dmr_lcn_trust[lpcn] = trust;
+    dmr_sm_emit_group_grant_slot(opts, state, /*freq_hz*/ 0, lpcn, 1, 5303, 6404);
+
+    dsd_call_snapshot call;
+    const int survives = ctx->state == DMR_SM_TUNED && ctx->vc_slot == 1 && opts->trunk_is_tuned == 1
+                         && dsd_call_state_get(state, 1U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                         && call.ota_target_id == 3101U;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return survives;
+}
+
+/* Only a trusted LPCN mapping (or an explicit frequency) is evidence that a grant reassigns the followed slot: an
+   unconfirmed mapping learned off the control channel neither tunes nor ends the followed assignment. */
+static void
+test_untrusted_lpcn_grant_keeps_followed_slot(void) {
+    assert(followed_call_survives_lpcn_grant(1U) == 1);
+    assert(followed_call_survives_lpcn_grant(2U) == 0);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -294,6 +335,7 @@ main(int argc, char** argv) {
     test_grant_identity_seeds_matching_voice_slot();
     test_slotless_grant_selects_ts2_on_voice_sync();
     test_voice_header_and_first_sync_share_epoch();
+    test_untrusted_lpcn_grant_keeps_followed_slot();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_SHIM: OK\n");
     return 0;

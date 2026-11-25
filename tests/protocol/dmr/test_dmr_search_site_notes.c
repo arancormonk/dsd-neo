@@ -12,12 +12,15 @@
  * short LCs also feed the Tier III channel map's network baseline, as a checked C_ALOHA does (discussion #900).
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
@@ -1128,6 +1131,100 @@ test_capmax_dmrla(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* The address layout (Cap+ 16-bit or standard 24-bit) of data headers and preamble CSBKs follows the carrier's current
+   checked trunking system in the received identity record, never a display string. On a RAS Capacity Plus carrier
+   under -F the 0x3E statuses never pass their CRC and select nothing; a checked Capacity Plus short LC, or a checked
+   Motorola group voice LC (FID 0x10, FLCO 0x04) naming a rest channel, selects Cap+; a checked Connect Plus short LC
+   after it selects the standard layout again. */
+static int
+test_capplus_slco_selects_layout(dsd_opts* opts, dsd_state* state) {
+    // A group preamble CSBK (opcode 61) whose source bits 56..79 are 0x123456: 1193046 as 24 bits, 13398 (0x3456) as
+    // the Cap+ 16-bit source.
+    static const uint8_t k_preamble[12] = {0x3D, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34, 0x56, 0x00, 0x00};
+    // An individual preamble whose target bits 32..55 are 0x000123 and source bits 56..79 0x010123: the Cap+ layout
+    // reads target 291 and source 291 (bits 64..79), the standard one source 65827, rest LSN 1 as its high byte.
+    static const uint8_t k_private_preamble[12] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23, 0x01, 0x01, 0x23, 0, 0};
+    static const uint8_t k_status[12] = {0x3E, 0x10, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    int rc = 0;
+    clear_record(state);
+    rc |= csbk_send(opts, state, k_status, (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    slco_cap_plus(opts, state, 4, 5, 1);
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("a ras 0x3e and a failed short lc select no cap+ layout", "Source: 1193046");
+    slco_cap_plus(opts, state, 4, 5, 0);
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("a checked cap+ short lc selects the cap+ layout", "Source: 13398");
+    slco_con_plus(opts, state, 0xA, 1234, 5);
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("a checked con+ short lc after it selects the standard layout", "Source: 1193046");
+    clear_record(state);
+
+    // A checked embedded Capacity Plus group LC (TG 7 at bits 40..47, rest LSN 1 at 51..55, radio 0x0123 at 56..71).
+    rc |= csbk_send(opts, state, k_status, (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a ras 0x3e alone selects no cap+ layout", "Source: 65827");
+    uint8_t lc[80];
+    DSD_MEMSET(lc, 0, sizeof(lc));
+    put_bits(lc, 2, 0x04U, 6);
+    put_bits(lc, 8, 0x10U, 8);
+    put_bits(lc, 40, 7U, 8);
+    put_bits(lc, 51, 1U, 5);
+    put_bits(lc, 56, 0x0123U, 16);
+    const int synctype = state->synctype;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->currentslot = 0;
+    uint32_t irr = 0;
+    dsd_test_capture_stderr cap;
+    if (log_begin(&cap) != 0) {
+        return 1;
+    }
+    dmr_flco(opts, state, lc, 1U, &irr, 3U);
+    rc |= log_end(&cap);
+    state->synctype = synctype;
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a checked cap+ group lc selects the cap+ layout", "Source: 291 - Target: 291");
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
+    clear_record(state);
+    return rc;
+}
+
+/* The Cap+ address layout counts while the carrier's checked evidence is fresh: a checked 0x3E status names Capacity
+   Plus even with rest LSN 0; the no-carrier pass (an external scanner may have moved to another channel) returns the
+   standard layout until fresh evidence; a sync of another protocol ends it with the record it drops (an NXDN noise sync
+   in multi-protocol mode included, a decided limit), and DMR bursts back on the same colour code do not restore it:
+   only the next checked Cap+ message does. */
+static int
+test_capplus_layout_counts_while_fresh(dsd_opts* opts, dsd_state* state) {
+    // Target bits 32..55 0x000123, source bits 56..79 0x020123: Cap+ reads target 291 and source 291, the standard
+    // layout source 131363 (rest LSN 2 as its high byte).
+    static const uint8_t k_private_preamble[12] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23, 0x02, 0x01, 0x23, 0, 0};
+    static const uint8_t k_status_rest0[12] = {0x3E, 0x10, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t k_status_rest1[12] = {0x3E, 0x10, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    int rc = 0;
+    clear_record(state);
+    rc |= csbk_send(opts, state, k_status_rest0, 0U);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a checked 0x3e with rest lsn 0 selects the cap+ layout", "Source: 291 - Target: 291");
+
+    dsd_rxid_mark_stale(state);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a stale record after the no-carrier pass selects the standard layout", "Source: 131363");
+
+    rc |= csbk_send(opts, state, k_status_rest1, 0U);
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a foreign sync ends the cap+ layout", "Source: 131363");
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("dmr bursts on the same colour code do not restore it", "Source: 131363");
+    rc |= csbk_send(opts, state, k_status_rest1, 0U);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("the next checked cap+ status restores it", "Source: 291 - Target: 291");
+    clear_record(state);
+    return rc;
+}
+
 static int
 test_capmax_numbering(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -1152,6 +1249,8 @@ test_site_numbers(dsd_opts* opts, dsd_state* state) {
     rc |= test_capplus_csbk_3b_site(opts, state);
     rc |= test_capplus_slco_reserved_bits_no_site(opts, state);
     rc |= test_capplus_slco_and_3b_agree(opts, state);
+    rc |= test_capplus_slco_selects_layout(opts, state);
+    rc |= test_capplus_layout_counts_while_fresh(opts, state);
     rc |= test_capmax_numbering(opts, state);
     set_dmrla(opts, 1, 0);
     g_search_running = 1;

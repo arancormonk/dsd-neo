@@ -97,8 +97,16 @@ dmr_enc_class_hold(dsd_state* state) {
     if (!state) {
         return;
     }
-    state->dmr_enc_class_held[0] = 1U;
-    state->dmr_enc_class_held[1] = 1U;
+    dmr_enc_class_hold_slot(state, 0U);
+    dmr_enc_class_hold_slot(state, 1U);
+}
+
+void
+dmr_enc_class_hold_slot(dsd_state* state, uint8_t slot) {
+    if (!state) {
+        return;
+    }
+    state->dmr_enc_class_held[dmr_enc_class_slot_index(slot)] = 1U;
 }
 
 void

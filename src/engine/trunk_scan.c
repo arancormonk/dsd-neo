@@ -205,6 +205,7 @@ typedef struct {
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
     dsd_nxdn_call_identity nxdn_call;
+    dsd_nxdn_tx_source nxdn_tx_source;
     unsigned int nxdn_last_ran;
     uint32_t nxdn_idas_system_id;
     uint8_t nxdn_last_ran_stand_in;
@@ -2529,6 +2530,7 @@ trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     // preemption a later grant there is judged by compares against its held call.
     snapshot->nxdn_follow = state->nxdn_follow;
     snapshot->nxdn_call = state->nxdn_call;
+    snapshot->nxdn_tx_source = state->nxdn_tx_source;
     snapshot->nxdn_last_ran = state->nxdn_last_ran;
     snapshot->nxdn_last_ran_stand_in = state->nxdn_last_ran_stand_in;
     snapshot->nxdn_location_sys_code = state->nxdn_location_sys_code;
@@ -2557,6 +2559,7 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_grant_freq = snapshot->nxdn_grant_freq;
     state->nxdn_follow = snapshot->nxdn_follow;
     state->nxdn_call = snapshot->nxdn_call;
+    state->nxdn_tx_source = snapshot->nxdn_tx_source;
     state->nxdn_last_ran = snapshot->nxdn_last_ran;
     state->nxdn_last_ran_stand_in = snapshot->nxdn_last_ran_stand_in;
     state->nxdn_location_sys_code = snapshot->nxdn_location_sys_code;

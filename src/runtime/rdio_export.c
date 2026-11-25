@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1292,9 +1293,11 @@ dsd_rdio_fallback_tag(const Event_History* event, dsd_rdio_meta_fields* out) {
 }
 
 /* A numbered call's label: its first name (service, talkgroup name, target text, channel label; "-" is none, B10),
-   else PRIVATE for a private call (gi 1), GROUP for a group call (gi 0). A call of no known kind (gi -1: NXDN's other
-   call types, EDACS without a group or individual flag, TETRA before its setup, X2-TDMA) keeps an empty tag, which
-   rdio-scanner ignores as a label: it names the talkgroup by its number rather than calling every such call private. */
+   else PRIVATE for a private call (gi 1), GROUP for a group call (gi 0). Target text that only spells the numeric
+   talkgroup, an NXDN Type-D group's "pp-iiii" (dsd_call_target_text_is_name(), issue #903), ranks below the channel
+   label, as a bare number does. A call of no known kind (gi -1: NXDN's other call types, EDACS without a group or
+   individual flag, TETRA before its setup, X2-TDMA) keeps an empty tag, which rdio-scanner ignores as a label: it names
+   the talkgroup by its number rather than calling every such call private. */
 static const char*
 dsd_rdio_numbered_tag(const Event_History* event) {
     if (dsd_rdio_tag_usable(event->service_label)) {
@@ -1303,13 +1306,17 @@ dsd_rdio_numbered_tag(const Event_History* event) {
     if (dsd_rdio_tag_usable(event->t_name)) {
         return event->t_name;
     }
-    if (dsd_rdio_tag_usable(event->tgt_str)) {
+    if (dsd_rdio_tag_usable(event->tgt_str)
+        && dsd_call_target_text_is_name(event->systype, event->target_id, event->tgt_str)) {
         return event->tgt_str;
     }
     if (dsd_rdio_tag_usable(event->channel_label)) {
         // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the receiver was parked on
         // a named channel. That name is what the operator would recognise the upload by; "GROUP" is not.
         return event->channel_label;
+    }
+    if (dsd_rdio_tag_usable(event->tgt_str)) {
+        return event->tgt_str;
     }
     if (event->gi == 1) {
         return "PRIVATE";
