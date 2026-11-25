@@ -473,21 +473,16 @@ cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, i
     return 1;
 }
 
-/* --profile: bootstrap reads its name (bootstrap_cli_try_profile_option()) before this parser runs, as the next
-   argument whatever it starts with, and dsd_cli_compact_args() steps over it the same way. A pre-scan here steps over it
-   too, so a profile named "--" or "--print-config" is the name it is, never the end of the options or a one-shot. */
-static int
-cli_option_value_read_by_bootstrap(const char* arg) {
-    return strcmp(arg, "--profile") == 0;
-}
-
+/* Whether bootstrap runs a config one-shot for this argv. Every long option's value is stepped over by the parser's
+   arity (dsd_cli_long_option_span()), as bootstrap steps over it (issue #931), so a value that reads like a one-shot
+   ("--rdio-api-key --print-config", a profile named "--print-config") is a value; the options end at a "--" that is no
+   value. */
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
         return 0;
     }
     for (int i = 1, advance = 1; i < argc; i += advance) {
-        advance = 1;
         const char* arg = argv[i];
         if (!arg) {
             break;
@@ -495,15 +490,13 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
-        if (dsd_cli_option_takes_free_value(arg) || cli_option_value_read_by_bootstrap(arg)) {
-            advance = 2; /* a token or a profile name is any text, a one-shot option's name included */
-            continue;
-        }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
             || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
             || strcmp(arg, "--dump-config-template") == 0) {
             return 1;
         }
+        const int span = dsd_cli_long_option_span(argc, argv, i);
+        advance = span > 0 ? span : 1;
     }
     return 0;
 }
@@ -1502,7 +1495,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
         }                                                                                                              \
-        if (strcmp(argv[i], "--profile") == 0) { /* cli_option_value_read_by_bootstrap(): bootstrap reads the name */  \
+        if (strcmp(argv[i], "--profile") == 0) { /* bootstrap reads the name (bootstrap_cli_try_profile_option()) */   \
             if (i + 1 < argc) {                                                                                        \
                 arg_advance = 2;                                                                                       \
             }                                                                                                          \

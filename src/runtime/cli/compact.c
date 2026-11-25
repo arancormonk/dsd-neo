@@ -317,6 +317,22 @@ dsd_cli_long_option_arity(const char* arg) {
 }
 
 int
+dsd_cli_long_option_span(int argc, char** argv, int i) {
+    if (argv == NULL || i < 0 || i >= argc) {
+        return 0;
+    }
+    const dsd_cli_long_arity arity = dsd_cli_long_option_arity(argv[i]);
+    if (arity == DSD_CLI_LONG_UNKNOWN) {
+        return 0;
+    }
+    if ((arity == DSD_CLI_LONG_NEXT && compact_has_next_nonnull(i, argc, argv))
+        || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && compact_has_next_non_option(i, argc, argv))) {
+        return 2;
+    }
+    return 1;
+}
+
+int
 dsd_cli_long_option_value_optional(const char* arg) {
     return arg != NULL
            && compact_matches_exact(arg, k_skip_exact_next_nonopt_optional,

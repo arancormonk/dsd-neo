@@ -960,6 +960,64 @@ test_option_arity_matches_the_parser(void) {
     return rc;
 }
 
+/* Issue #931 (B10): how many elements a long option spans as the parser reads it, for the raw-argv passes (bootstrap,
+   the one-shot check): every long option's value counts, a secret's or a path's that reads like an option included. */
+static int
+test_long_option_span(void) {
+    char a0[] = "dsd-neo";
+    char key[] = "--rdio-api-key";
+    char print_config[] = "--print-config";
+    char config[] = "--config";
+    char path[] = "x.ini";
+    char dashes[] = "--";
+    char url[] = "--rdio-api-url";
+    char frame_log[] = "--frame-log";
+    char frontend_eq[] = "--frontend=none";
+    char unknown[] = "--no-such-option";
+    char short_opt[] = "-o";
+
+    struct {
+        char* argv[4];
+        int argc;
+        int i;
+        int want;
+    } const cases[] = {
+        {{a0, key, print_config, NULL}, 3, 1, 2},
+        {{a0, key, dashes, NULL}, 3, 1, 2},
+        {{a0, url, config, NULL}, 3, 1, 2},
+        {{a0, frame_log, print_config, NULL}, 3, 1, 2},
+        {{a0, key, NULL, NULL}, 2, 1, 1},
+        {{a0, config, path, NULL}, 3, 1, 2},
+        {{a0, config, print_config, NULL}, 3, 1, 1},
+        {{a0, config, NULL, NULL}, 2, 1, 1},
+        {{a0, print_config, key, NULL}, 3, 1, 1},
+        {{a0, frontend_eq, path, NULL}, 3, 1, 1},
+        {{a0, unknown, path, NULL}, 3, 1, 0},
+        {{a0, short_opt, path, NULL}, 3, 1, 0},
+        {{a0, dashes, path, NULL}, 3, 1, 0},
+        {{a0, key, path, NULL}, 3, 3, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char* argv[4];
+        for (int k = 0; k < 4; k++) {
+            argv[k] = cases[i].argv[k];
+        }
+        const int got = dsd_cli_long_option_span(cases[i].argc, argv, cases[i].i);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu (%s) spans %d, want %d\n", i, argv[cases[i].i] ? argv[cases[i].i] : "-",
+                        got, cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_cli_long_option_span(2, NULL, 1) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a NULL argv spans something\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1001,6 +1059,7 @@ main(void) {
     rc |= test_rdio_unknown_talkgroup_long_opt_is_removed();
     rc |= test_rdio_system_by_frequency_opts_are_removed();
     rc |= test_option_arity_matches_the_parser();
+    rc |= test_long_option_span();
     rc |= test_rtl_list_long_opt_is_removed();
     return rc;
 }

@@ -151,74 +151,92 @@ bootstrap_cli_try_profile_option(int argc, char** argv, int* i, bootstrap_cli_ar
     return 1;
 }
 
+/* The long option at argv[*@p i], a bootstrap option or not, with the value the parser gives it stepped over
+   (dsd_cli_long_option_span()): no option's value is ever read as a bootstrap option (issue #931). Nonzero when the
+   parser knows it. */
 static int
-bootstrap_cli_try_file_rate_override(int argc, char** argv, int* i, bootstrap_cli_args* args) {
-    if (strcmp(argv[*i], "-s") == 0) {
-        args->cli_file_rate_override = 1;
-        if (*i + 1 < argc) {
-            ++(*i);
-        }
-        return 1;
-    }
-    if (strncmp(argv[*i], "-s", 2) == 0 && argv[*i][2] != '\0') {
-        args->cli_file_rate_override = 1;
-        return 1;
-    }
-    return 0;
-}
-
-/* An option whose value may be any text, a "--print-config"-like token included: step over the value, which is never a
-   bootstrap option of its own. */
-static int
-bootstrap_cli_try_skip_free_value(int argc, char** argv, int* i) {
-    if (!dsd_cli_option_takes_free_value(argv[*i])) {
+bootstrap_cli_try_skip_long_option(int argc, char** argv, int* i) {
+    const int span = dsd_cli_long_option_span(argc, argv, *i);
+    if (span <= 0) {
         return 0;
     }
-    if (*i + 1 < argc) {
-        ++(*i);
-    }
+    *i += span - 1;
     return 1;
 }
 
+/* A bootstrap option at argv[*@p i], read in place with its value: --config and --validate-config take the next
+   argument unless it starts with '-', --profile takes it whatever it is. */
+static int
+bootstrap_cli_try_own_option(int argc, char** argv, int* i, bootstrap_cli_args* args) {
+    const char* arg = argv[*i];
+    return bootstrap_cli_try_config_option(argc, argv, i, args)
+           || bootstrap_cli_try_validate_option(argc, argv, i, args)
+           || bootstrap_cli_try_profile_option(argc, argv, i, args)
+           || bootstrap_cli_try_flag(arg, "--interactive-setup", &args->force_bootstrap_cli)
+           || bootstrap_cli_try_flag(arg, "--print-config", &args->print_config_cli)
+           || bootstrap_cli_try_flag(arg, "--dump-config-template", &args->dump_template_cli)
+           || bootstrap_cli_try_flag(arg, "--strict-config", &args->strict_config_cli)
+           || bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)
+           || bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli);
+}
+
+/* getopt's reading of the elements the parser's long-option pass leaves it, as far as bootstrap needs it: whether -s,
+   the file-input rate, is among the options. A short option that takes a value takes the rest of its element, or else
+   the next element whatever it is ("-o -s" sets no rate); a "--" that is no value ends the options, an unknown long
+   option ends the parse, and an operand is stepped over (glibc's getopt permutes past it). */
+typedef struct {
+    int value_pending;
+    int done;
+} bootstrap_short_walk;
+
+static void
+bootstrap_short_walk_feed(bootstrap_short_walk* walk, const char* arg, bootstrap_cli_args* args) {
+    if (walk->done) {
+        return;
+    }
+    if (walk->value_pending) {
+        walk->value_pending = 0;
+        return;
+    }
+    if (strncmp(arg, "--", 2) == 0) {
+        walk->done = 1;
+        return;
+    }
+    if (arg[0] != '-' || arg[1] == '\0') {
+        return;
+    }
+    for (int j = 1; arg[j] != '\0'; j++) {
+        if (arg[j] == 's') {
+            args->cli_file_rate_override = 1;
+        }
+        if (dsd_cli_short_option_takes_value(arg[j])) {
+            walk->value_pending = arg[j + 1] == '\0';
+            return;
+        }
+    }
+}
+
+/* Bootstrap's options, read as the parser reads the argv (issue #931): its long-option pass, up to the first "--" that
+   is no long option's value, steps over every long option's value by the parser's arity, so a value that reads like a
+   bootstrap option ("--rdio-api-key --print-config", "--rdio-api-key --config x.ini") is the value it is, and nothing
+   after that "--" is an option; getopt reads what the pass leaves, the "--" and what follows it included. */
 static void
 bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
     if (!args) {
         return;
     }
     DSD_MEMSET(args, 0, sizeof(*args));
-    for (int i = 1; i < argc; i++) {
-        const char* arg = argv[i];
-        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
+    bootstrap_short_walk walk = {0, 0};
+    int long_pass = 1;
+    for (int i = 1; i < argc && argv[i] != NULL; i++) {
+        if (long_pass && strcmp(argv[i], "--") == 0) {
+            long_pass = 0;
+        } else if (long_pass
+                   && (bootstrap_cli_try_own_option(argc, argv, &i, args)
+                       || bootstrap_cli_try_skip_long_option(argc, argv, &i))) {
             continue;
         }
-        if (bootstrap_cli_try_config_option(argc, argv, &i, args)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--interactive-setup", &args->force_bootstrap_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--print-config", &args->print_config_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--dump-config-template", &args->dump_template_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_validate_option(argc, argv, &i, args)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--strict-config", &args->strict_config_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_profile_option(argc, argv, &i, args)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli)) {
-            continue;
-        }
-        (void)bootstrap_cli_try_file_rate_override(argc, argv, &i, args);
+        bootstrap_short_walk_feed(&walk, argv[i], args);
     }
 }
 
@@ -463,13 +481,16 @@ bootstrap_cli_disables_inherited_trunk_scan(int argc, char** argv, int cfg_path_
         if (!arg) {
             break;
         }
-        /* The option first (--p25-bandplan takes a free value and disables the inherited scan), then its value: a
-           token or a file name is any text, "--iq-replay" included; the compacted pass below drops it with its
-           option. */
+        /* The options end at a "--" that is no value. The option first (--p25-bandplan takes a free value and
+           disables the inherited scan), then its value, by the parser's arity: a token, a key or a file name is any
+           text, "--iq-replay" included; the compacted pass below drops it with its option. */
+        if (strcmp(arg, "--") == 0) {
+            break;
+        }
         if (bootstrap_long_arg_disables_inherited_trunk_scan(arg)) {
             return 1;
         }
-        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
+        if (bootstrap_cli_try_skip_long_option(argc, argv, &i)) {
             continue;
         }
     }

@@ -13284,6 +13284,124 @@ test_print_config_leaves_out_credentials(void) {
     return rc;
 }
 
+/* One bootstrap of @p ini plus @p args (bootstrap_with_ini()): its result, and the options it left, in @p opts. */
+typedef struct {
+    int boot;
+    int exit_rc;
+    int system_id;
+    int sample_rate;
+    char key[256];
+    char err[4096];
+} boot_values_run;
+
+static int
+boot_values(const char* ini, const char* const* args, int nargs, boot_values_run* run) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    run->exit_rc = -1;
+    run->boot = bootstrap_with_ini(ini, args, nargs, &run->exit_rc, run->err, sizeof run->err, opts, state);
+    run->system_id = opts->rdio_system_id;
+    run->sample_rate = opts->wav_sample_rate;
+    DSD_SNPRINTF(run->key, sizeof run->key, "%s", opts->rdio_api_key);
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+/* Issue #931 (B10): bootstrap reads the argv as the parser does. Every long option's value is stepped over by the
+   parser's arity, not only a free-value option's, so a key spelled like a bootstrap option is the key: "--print-config"
+   runs the decoder, "--config" loads no config, and "--" ends no options. The options end at a "--" that is no value,
+   so "--print-config" after it is an operand. --config still takes its path, and -s counts only where getopt reads it
+   as an option ("-o -s" is an output device). */
+static int
+test_bootstrap_steps_over_option_values(void) {
+    static const char ini[] = "[recording]\nrdio_system_id = 77\n";
+    int rc = 0;
+    boot_values_run run;
+
+    static const struct {
+        const char* what;
+        const char* args[4];
+        int nargs;
+        int want_boot;
+        int want_system;
+        const char* want_key;
+    } cases[] = {
+        {"key --print-config", {"--rdio-api-key", "--print-config"}, 2, DSD_BOOTSTRAP_CONTINUE, 0, "--print-config"},
+        {"key --config", {"--rdio-api-key", "--config", "{ini}"}, 3, DSD_BOOTSTRAP_CONTINUE, 0, "--config"},
+        {"url --print-config", {"--rdio-api-url", "--print-config"}, 2, DSD_BOOTSTRAP_CONTINUE, 0, ""},
+        {"key-profile-ref --list-profiles",
+         {"--key-profile-ref", "--list-profiles", "--config", "{ini}"},
+         4,
+         DSD_BOOTSTRAP_CONTINUE,
+         77,
+         ""},
+        {"--no-config -- --print-config", {"--no-config", "--", "--print-config"}, 3, DSD_BOOTSTRAP_CONTINUE, 0, ""},
+        {"--config path", {"--config", "{ini}", "--rdio-api-key", "k"}, 4, DSD_BOOTSTRAP_CONTINUE, 77, "k"},
+        {"key -- then --config", {"--rdio-api-key", "--", "--config", "{ini}"}, 4, DSD_BOOTSTRAP_CONTINUE, 77, "--"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        if (boot_values(ini, cases[i].args, cases[i].nargs, &run) != 0) {
+            return 1;
+        }
+        if (run.boot != cases[i].want_boot || run.system_id != cases[i].want_system
+            || strcmp(run.key, cases[i].want_key) != 0) {
+            DSD_FPRINTF(stderr,
+                        "%s: bootstrap rc=%d exit=%d system=%d key=\"%s\" (want rc %d system %d key \"%s\")\n%s\n",
+                        cases[i].what, run.boot, run.exit_rc, run.system_id, run.key, cases[i].want_boot,
+                        cases[i].want_system, cases[i].want_key, run.err);
+            rc = 1;
+        }
+    }
+
+    /* A key "--" is a value: the --print-config after it is the option, and the run prints. */
+    static char printed[65536];
+    const char* const dash_key[] = {"--rdio-api-key", "--", "--config", "{ini}", "--print-config"};
+    if (print_config_with_ini(ini, dash_key, 5, printed, sizeof printed) != 0
+        || strstr(printed, "rdio_system_id = 77\n") == NULL) {
+        DSD_FPRINTF(stderr, "key -- then --print-config did not print the config:\n%s\n", printed);
+        rc = 1;
+    }
+
+    /* -s, the file input's rate, counts as getopt reads it: the config's file input keeps its rate unless one is. */
+    static const char file_ini[] =
+        "[input]\nsource = \"file\"\nfile_path = \"capture.wav\"\nfile_sample_rate = 96000\n";
+
+    static const struct {
+        const char* what;
+        const char* args[4];
+        int nargs;
+        int want_rate;
+    } rates[] = {
+        {"config rate", {"--config", "{ini}"}, 2, 96000},
+        {"-s 48000", {"--config", "{ini}", "-s", "48000"}, 4, 48000},
+        {"key -s", {"--config", "{ini}", "--rdio-api-key", "-s"}, 4, 96000},
+        {"-o -s", {"--config", "{ini}", "-o", "-s"}, 4, 96000},
+    };
+
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        if (boot_values(file_ini, rates[i].args, rates[i].nargs, &run) != 0) {
+            return 1;
+        }
+        if (run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != rates[i].want_rate) {
+            DSD_FPRINTF(stderr, "%s: bootstrap rc=%d rate=%d (want %d)\n%s\n", rates[i].what, run.boot, run.sample_rate,
+                        rates[i].want_rate, run.err);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 /* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
    positive value off for the run; the config saved from that run leaves the key out. --print-config shows a positive
    value and omits an effective 0. -h lists the option. */
@@ -14655,6 +14773,7 @@ main(void) {
     rc |= test_rdio_system_id_range();
     rc |= test_enum_options_checked_per_occurrence();
     rc |= test_print_config_leaves_out_credentials();
+    rc |= test_bootstrap_steps_over_option_values();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
