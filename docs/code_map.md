@@ -3119,7 +3119,16 @@ suite runs under this compiler.
   else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
   tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
   mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's, is
-  `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  `dsd_rdio_resolve_call_system()`'s (`src/runtime/rdio_export_internal.h`; the public `dsd_rdio_call_system_id()` is
+  its id), an id and the rule that chose it, decided once per export in `dsd_rdio_export_call_fallback()` and handed to
+  the sidecar fields and the API job alike: `opts->rdio_analog_system_id` for an analog row (`DSD_SYNC_ANALOG`: NFM,
+  AM, audio input) when set (ANALOG); else, with `opts->rdio_system_by_frequency` (issue #931), the row's `freq_hz` in
+  whole kHz, rounded down, by the digital kHz rule (`dsd_rdio_digital_khz()`, 1..2147483647, so it fits the `int`
+  system; 999 Hz names none, 530 kHz is 530) (FREQUENCY); else `rdio_system_id` (BASE). EDACS analog and ProVoice rows
+  are not `DSD_SYNC_ANALOG` and take the FREQUENCY/BASE branch. A FREQUENCY call's `short_name` is `System <kHz>`,
+  formatted into the fields' own `system_name` buffer; BASE and ANALOG keep the rule above. The label follows the rule,
+  never a comparison of numbers, and the row's `sysid_string` (WAV name, journal, event feed, analog tag) is not
+  touched.
   Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -6358,9 +6367,11 @@ suite runs under this compiler.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
-    Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
-    (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
-    copied into the job, so an analog system with a base system of 0 still uploads. A digital row with no talkgroup
+    Analog rows (`DSD_SYNC_ANALOG`: NFM, AM, audio input) are exported under `dsd_rdio_analog_talkgroup()`, and every
+    row under `dsd_rdio_resolve_call_system()` (issue #668, #931 `--rdio-system-by-frequency`; Core, sidecar fields);
+    the call's system is resolved once, before the sidecar is written and before the API settings are validated and
+    copied into the job, so the sidecar and the upload name one system, and an analog or per-frequency system with a
+    base system of 0 still uploads. A digital row with no talkgroup
     is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
     `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
     `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields

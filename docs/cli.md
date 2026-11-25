@@ -405,17 +405,25 @@ Windows console runs:
     DirWatch that does not allow deleting it. The first such removal failure is logged once a run. With no dsd-neo
     running on that folder, files ending in `.rdio-upload-audio` or `.rdio-upload-meta` there can be deleted by hand.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
-- `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
-  `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:
-  `[recording] rdio_analog_system_id`.
-- `--rdio-analog-talkgroup <N>` rdio-scanner talkgroup for NFM calls heard with no known frequency (an audio input),
-  0 to 2147483647. 0, the default, leaves those calls unexported. A call with a frequency always uses the frequency in
-  kHz. INI: `[recording] rdio_analog_talkgroup`. Both values are refused outside their range, never clamped.
+- `--rdio-analog-system-id <N>` rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls),
+  0 to 65535. 0, the default, uses `--rdio-system-id`. EDACS analog calls and ProVoice calls follow the digital rule
+  instead. With it set, API uploads of analog calls work even when `--rdio-system-id` is not set. INI: `[recording]
+  rdio_analog_system_id`.
+- `--rdio-analog-talkgroup <N>` rdio-scanner talkgroup for analog calls heard with no known frequency (an audio input
+  with no `-Y` or `--trunk-scan` landing), 0 to 2147483647. 0, the default, leaves those calls unexported. A call with
+  a frequency always uses the frequency in kHz. INI: `[recording] rdio_analog_talkgroup`. Both values are refused
+  outside their range, never clamped.
 - `--rdio-unknown-talkgroup <N>` rdio-scanner talkgroup for digital calls that carry no talkgroup and were heard with
   no known frequency (an audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647. 0, the default,
   leaves those calls unexported. A call with a frequency always uses the frequency in kHz. It is refused outside its
   range, never clamped. INI: `[recording] rdio_unknown_talkgroup`. See [Digital calls with no talkgroup in
   rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner).
+- `--rdio-system-by-frequency` Export each call whose frequency is known to the rdio-scanner system numbered by that
+  frequency in kHz, rounded down (154.4375 MHz is system `154437`), with the `short_name` `System 154437`. A call with
+  no known frequency keeps `--rdio-system-id`, and an analog call keeps `--rdio-analog-system-id` when that is set.
+  `--no-rdio-system-by-frequency` turns it off (the default); the last one given wins, over the config file too. INI:
+  `[recording] rdio_system_by_frequency`. See [One rdio-scanner system per
+  frequency](#one-rdio-scanner-system-per-frequency).
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
@@ -570,8 +578,9 @@ Windows console runs:
   It names the tuned frequency as digital lines do, `FREQ: 154.430000 MHz;`, and leaves it out when there is none, as on
   audio input (earlier versions wrote `Frequency: 154430000 Hz;`, and `Frequency: 0 Hz;` on audio input). On audio input
   an analog line names the frequency a `-Y` row (stepped to by the scan or by `C`/`J`) or a conventional `--trunk-scan`
-  target confirmed it tuned its rigctl peer to; digital lines on audio input still name none, and neither a frequency
-  changed on the peer itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was
+  target confirmed it tuned its rigctl peer to; digital lines on audio input name no tuned frequency (a call that
+  carries its own, such as a trunked call followed through rigctl, still names it), and neither a frequency changed on
+  the peer itself nor one tuned with `=` is named. Last comes the CTCSS tone or DCS code the call was
   received with, as Call Info's `Rx tone:` line writes it:
   `ANALOG NFM; FREQ: 154.430000 MHz; CTCSS 100.0 Hz;`,
   `ANALOG NFM; FREQ: 154.430000 MHz; DCS D023N / D047I;`, `ANALOG AM; FREQ: 119.100000 MHz;`, and on audio input
@@ -827,10 +836,13 @@ What the sidecar holds:
 
 Which rdio-scanner system a call lands in:
 
-- API uploads go to `--rdio-system-id`, like every digital call.
+- API uploads go to `--rdio-system-id`, like every digital call, or with `--rdio-system-by-frequency` to the system
+  numbered by the call's frequency in kHz ([One rdio-scanner system per
+  frequency](#one-rdio-scanner-system-per-frequency)).
 - rdio-scanner 6 files every call in a DirWatch folder under that folder's system.
 - rdio-scanner 8 (tested with 8.0.0-beta.1) picks the system by `short_name`, which names the access code, so calls
-  with two access codes on one frequency can land in two systems there.
+  with two access codes on one frequency can land in two systems there. With `--rdio-system-by-frequency` the
+  `short_name` is `System <kHz>`, one per frequency.
 
 Limits:
 
@@ -866,6 +878,56 @@ Limits:
   own copy is made; that upload is then lost, with an error logged, so use a trunk-recorder-type watch there. On
   Windows, a DirWatch that deletes a call's files can fail while the API upload is still reading its hard link, as
   before.
+
+### One rdio-scanner system per frequency
+
+`--rdio-system-by-frequency` (INI `[recording] rdio_system_by_frequency = true`) files each exported call under the
+rdio-scanner system numbered by the frequency it was heard on, in kHz, rounded down: a call on 154.4375 MHz goes to
+system `154437`, and one on 456.9500 MHz to system `456950`. Two talkgroup 1 calls on those two frequencies then land
+in two systems instead of one talkgroup. It is off by default, and `--no-rdio-system-by-frequency` turns off
+a config file's `true` for the run. The sidecar's `system` and the API upload's `system` field always name the same
+number, and the sidecar's `short_name` is `System <kHz>` (`System 154437`), the name rdio-scanner 6 gives a system it
+creates. The call history, the journal, the file name and the app keep the call's own system name.
+
+Which calls:
+
+- Every exported call whose frequency is known and at least 1 kHz: digital or analog, with a talkgroup or numbered by
+  its frequency. Below 1 MHz the sidecar's `freq` is 0, but the call still gets its system (`530` for 530 kHz).
+- A call with no known frequency keeps `--rdio-system-id`, or `--rdio-analog-system-id` for an analog call when that
+  is set: a digital call on an audio input (PulseAudio, UDP, TCP or a WAV file) that carries no frequency of its own,
+  an analog call there with no `-Y` or `--trunk-scan` landing, and a call played with `-r`. With the option on, API
+  mode needs `--rdio-system-id` only for those calls; without it they are not uploaded, as before.
+- An analog call (NFM, AM, or an audio input's) keeps `--rdio-analog-system-id` when that is set, whatever its
+  frequency. EDACS analog calls and ProVoice calls follow the frequency rule, as digital calls do.
+- A trunked call is filed under its voice channel's frequency, the one it was heard on, so one trunked system's
+  talkgroups spread over one rdio-scanner system per voice channel. Leave the option off for trunked systems.
+
+Each server:
+
+- API uploads (`--rdio-mode api`) work on rdio-scanner 6, rdio-scanner 8 and ThinLine Radio: each picks the system by
+  the upload's `system` field.
+- DirWatch: ThinLine Radio files a call under the sidecar's `system` number. rdio-scanner 8 (tested with
+  8.0.0-beta.1) picks the system by `short_name`, taking the first system with that label, and numbers a system it
+  creates itself. So with `--rdio-mode both` against one rdio-scanner 8 server, the upload and the DirWatch copy of a
+  call land in one system only if a system with that number and a `System <kHz>` label that no other system has
+  exists first. rdio-scanner 6 files every call in a DirWatch folder under that folder's system, so the option
+  changes nothing there.
+
+Limits:
+
+- Two frequencies in one whole kHz share a system: 154.4370 and 154.4379 MHz are both `154437`.
+- A kHz number can equal another system ID you configured (`--rdio-system-id`, `--rdio-analog-system-id`); calls on
+  that frequency then land in that system.
+- An API key limited to some systems must allow the new ones, or their uploads are refused.
+- With auto-populate off, rdio-scanner drops a call for a system it does not know, so create the systems first, and
+  their talkgroups too unless the system's own auto-populate is on. With it on (the default), the first call on a
+  frequency creates its system.
+- ThinLine Radio can file a number that matches no system ID under the system whose database key is that number, and
+  a talkgroup under the subsystem that owns it, so there a kHz number can land in a system you set up for something
+  else.
+- Calls on different frequencies are never duplicates of each other, since every server compares the system. Calls on
+  one frequency with one talkgroup that start together can still be dropped as duplicates, under each server's own
+  rule (see the duplicate limit under [Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner)).
 
 ## IQ Capture And Replay
 
@@ -2461,9 +2523,10 @@ rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)):
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 154.4375 MHz is talkgroup `154437`.
   This is rdio-scanner's own way of numbering conventional channels. The number is used only for the export; the call
   history, the journal and the app still show no talkgroup.
-- On an audio input (PulseAudio, UDP, TCP or a WAV file, even with rigctl) the frequency is not known. Those calls are
-  exported under `--rdio-analog-talkgroup <n>` when it is set, and are not exported otherwise. The first time that
-  happens in a run, one log line says so.
+- On an audio input (PulseAudio, UDP, TCP or a WAV file) the frequency is known only when a `-Y` row or a
+  conventional `--trunk-scan` target confirmed it tuned its rigctl peer there; the call then carries that frequency.
+  Calls with no known frequency are exported under `--rdio-analog-talkgroup <n>` when it is set, and are not exported
+  otherwise. The first time that happens in a run, one log line says so.
 - The talkgroup label (`talkgroup_tag`) is the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the
   call's mode and frequency (`NFM 154.4375 MHz`, `AM 119.1000 MHz`, and below 1 MHz `AM 0.5300 MHz`), else the mode
   alone (`ANALOG` on an audio input).
@@ -2475,10 +2538,12 @@ rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)):
   Below 1 MHz, above that, or when the frequency is not known, `freq` is 0 and there is no `freqList`; the talkgroup
   and the label still name the frequency.
 - `--rdio-analog-system-id <n>` sends analog calls to their own rdio-scanner system: the sidecar's `system` and the API
-  upload's `system` field use it. In DirWatch mode rdio-scanner ignores the sidecar's `system`. rdio-scanner 6 files
-  every call in a watched folder under that folder's system, so to keep analog calls apart there, run them in a separate
-  dsd-neo session that writes to a second folder. rdio-scanner 8 (tested with 8.0.0-beta.1) picks the system by
-  `short_name`, which is already the mode.
+  upload's `system` field use it. In DirWatch mode rdio-scanner 6 and 8 ignore the sidecar's `system` (ThinLine Radio
+  files by it). rdio-scanner 6 files every call in a watched folder under that folder's system, so to keep analog calls
+  apart there, run them in a separate dsd-neo session that writes to a second folder. rdio-scanner 8 (tested with
+  8.0.0-beta.1) picks the system by `short_name`, which is already the mode. With `--rdio-system-by-frequency` and no
+  `--rdio-analog-system-id`, an analog call with a frequency goes to the system of its frequency instead, with the
+  `short_name` `System <kHz>` ([One rdio-scanner system per frequency](#one-rdio-scanner-system-per-frequency)).
 - An analog call has no talkgroup or radio list row, so `stream=off` never applies to it.
 
 Limits:

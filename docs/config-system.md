@@ -523,9 +523,10 @@ audio input) sound no alert.
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
-| `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
-| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
+| `rdio_analog_system_id` | INT | rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls; EDACS analog and ProVoice calls follow the digital rule), 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
+| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for analog calls with no known frequency (audio input with no `-Y` or `--trunk-scan` landing), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
 | `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
+| `rdio_system_by_frequency` | BOOL | Export each call whose frequency is known to the rdio-scanner system numbered by that frequency in kHz, rounded down, with the `short_name` `System <kHz>`; a call with no known frequency keeps `rdio_system_id`, and an analog call keeps `rdio_analog_system_id` when that is set (`--rdio-system-by-frequency`, `--no-rdio-system-by-frequency`) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -550,6 +551,9 @@ An analog call with a frequency is exported under it in kHz; how analog calls ar
 too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in
 `docs/cli.md`, "Digital calls with no talkgroup in rdio-scanner". A saved config writes `rdio_unknown_talkgroup` only
 when it is above 0, and `--rdio-unknown-talkgroup 0` on the command line turns a config's value off.
+A saved config writes `rdio_system_by_frequency` only when it is on, and `--no-rdio-system-by-frequency` on the command
+line turns a config's `true` off. Which calls it moves, how each rdio-scanner server takes the systems, and the limits,
+are in `docs/cli.md`, "One rdio-scanner system per frequency".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
