@@ -364,7 +364,7 @@ p2_end(uint8_t slot, uint32_t group) {
     uint8_t body[17] = {0};
     body[12] = (uint8_t)(TEST_SRC >> 16);
     body[13] = (uint8_t)(TEST_SRC >> 8);
-    body[14] = (uint8_t)TEST_SRC;
+    body[14] = (uint8_t)(TEST_SRC & 0xFFU);
     body[15] = (uint8_t)(group >> 8);
     body[16] = (uint8_t)group;
     facch(slot, MAC_END_PTT, body, (int)sizeof(body));
@@ -380,7 +380,7 @@ p2_voice_user(uint8_t slot, int opcode, uint32_t group) {
         (uint8_t)group,
         (uint8_t)(TEST_SRC >> 16),
         (uint8_t)(TEST_SRC >> 8),
-        (uint8_t)TEST_SRC,
+        (uint8_t)(TEST_SRC & 0xFFU),
     };
     facch(slot, opcode, body, (int)sizeof(body));
 }
@@ -396,7 +396,7 @@ p2_regroup_voice_user(uint8_t slot, uint32_t sg) {
         (uint8_t)sg,
         (uint8_t)(TEST_SRC >> 16),
         (uint8_t)(TEST_SRC >> 8),
-        (uint8_t)TEST_SRC,
+        (uint8_t)(TEST_SRC & 0xFFU),
     };
     facch(slot, MAC_ACTIVE, body, (int)sizeof(body));
 }
@@ -984,10 +984,10 @@ p2_standard_regroup_voice_user(void) {
         0x90,
         0x00,
         (uint8_t)(TEST_SG >> 8),
-        (uint8_t)TEST_SG,
+        (uint8_t)(TEST_SG & 0xFFU),
         (uint8_t)(TEST_SRC >> 16),
         (uint8_t)(TEST_SRC >> 8),
-        (uint8_t)TEST_SRC,
+        (uint8_t)(TEST_SRC & 0xFFU),
     };
     facch(0U, MAC_ACTIVE, body, (int)sizeof(body));
 }
@@ -1001,10 +1001,10 @@ p2_mfid90_extended_regroup_voice_user(void) {
         0x10,
         0x00,
         (uint8_t)(TEST_SG >> 8),
-        (uint8_t)TEST_SG,
+        (uint8_t)(TEST_SG & 0xFFU),
         (uint8_t)(TEST_SRC >> 16),
         (uint8_t)(TEST_SRC >> 8),
-        (uint8_t)TEST_SRC,
+        (uint8_t)(TEST_SRC & 0xFFU),
         0xBE,
         0xE0,
         0x01,
