@@ -3280,6 +3280,7 @@ test_squelch_answer_from_the_state_publication() {
                                                   && model.configuredSquelchRequestAnswered() == 9
                                                   && model.configuredSquelchRequestApplied());
     freeState(&published);
+    freeState(&state);
 }
 
 /* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
