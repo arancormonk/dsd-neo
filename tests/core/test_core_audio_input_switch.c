@@ -533,6 +533,15 @@ test_network_switch_ignores_its_path(void) {
     int rc = expect_int_eq("udp with a stray path", dsd_audio_switch_input(&g_opts, &g_state, &req),
                            DSD_AUDIO_INPUT_SWITCHED);
     rc |= expect_str_eq("named by its endpoint", g_opts.audio_in_dev, "udp:127.0.0.1:7010");
+    /* Not even its length: a path past what a name holds is not read either. */
+    static char longest[sizeof(((dsd_opts*)0)->audio_in_dev) + 8];
+    DSD_MEMSET(longest, 'p', sizeof longest - 1U);
+    longest[sizeof longest - 1U] = '\0';
+    req.path = longest;
+    req.port = 7011;
+    rc |= expect_int_eq("udp with an overlong stray path", dsd_audio_switch_input(&g_opts, &g_state, &req),
+                        DSD_AUDIO_INPUT_SWITCHED);
+    rc |= expect_str_eq("named by its new endpoint", g_opts.audio_in_dev, "udp:127.0.0.1:7011");
     return rc;
 }
 

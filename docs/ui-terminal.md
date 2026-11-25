@@ -366,8 +366,8 @@ stop, and the message says so). From an audio input, a radio that does not start
   it goes back to the radio an audio switch left, else to an RTL-SDR. `Airspy R2 / Mini` always opens the Airspy.
 - A switch names the input it opened (`udp:127.0.0.1:7355`, `tcp:host:port`, `pulse:<device>`, the file), so a saved
   config reopens the same input. Startup tells a file's kind by its extension, so a symbol capture reopens as one only
-  when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream); a capture recorded under another name
-  reopens as PCM audio.
+  when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream), in lower case; a capture recorded under
+  another name (`.SYM` included) reopens as PCM audio.
 
 While a `-Y` scan with rows runs, or a `--trunk-scan` has targets (running or paused), every switch (the audio inputs,
 the radio rows `RTL-SDR` and `Airspy R2 / Mini`, and `Stop replay`) is refused with `Unsupported: stop the scan first`:
