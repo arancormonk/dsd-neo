@@ -189,10 +189,6 @@ typedef struct {
        the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
        call of unknown identity). Cleared with the slots' records (every follow, release and acquisition). */
     int vc_acquire_slots;
-    /* Bit s: a P_CLEAR released slot s since the follow (dmr_sm_release_slot()): it holds no acquisition, carrier-wide
-       or the followed slot's, whatever the retention rule says of the carrier, until a grant names a call there anew.
-       Cleared with vc_acquire_slots. */
-    int vc_cleared_slots;
     /* When a grant named a cleared followed slot's call anew (dmr_sm_slot_regranted()): that assignment's acquisition
        window runs from here, not from the tune (0: none since the follow). Cleared with vc_cleared_slots. */
     double vc_reacquire_m;
@@ -225,6 +221,10 @@ typedef struct {
        follow, or a P_CLEAR of that slot ended its acquisition: from then on its acquisition no longer holds that slot
        in the busy view. */
     int vc_media_heard;
+    /* Bit s: a P_CLEAR released slot s since the follow (dmr_sm_release_slot()): it holds no acquisition, carrier-wide
+       or the followed slot's, whatever the retention rule says of the carrier, until a grant names a call there anew.
+       Cleared with vc_acquire_slots. */
+    int vc_cleared_slots;
 
     /* CC probes do not replace the confirmed/configured return destination.
      * These fields live in each scan target's existing DMR context. */
