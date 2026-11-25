@@ -3477,10 +3477,11 @@ test_record_changes_reach_the_call(void) {
     call = canonical(s.state);
     assert(tetra_calls_peek(s.state, 0x0C)->air_enc == TETRA_ENC_MODE_NONE);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    /* Not trunking, the receiver stays on carrier 100: the call moves to channel 101 on the frequency it is heard on. */
     send_block(&s, 0x300u, NULL, 4, 101);
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.channel == 101U
-           && call.frequency_hz == CARRIER_HZ(101));
+           && call.frequency_hz == CARRIER_HZ(100));
     session_close(&s);
 
     s = session_open();
@@ -3499,6 +3500,49 @@ test_record_changes_reach_the_call(void) {
     assert(!tetra_confirm_carrier_proven(s.state));
     const dsd_call_snapshot named = canonical(s.state);
     assert(named.phase == DSD_CALL_PHASE_ACTIVE && named.epoch == call.epoch && named.ota_source_id == 0x4444u);
+    session_close(&s);
+}
+
+/* Not trunking, a reallocation of the heard call to another carrier moves its channel but not the receiver: the call
+ * keeps the frequency of the carrier it is received on, through the allocation's republication (a MAC-RESOURCE to the
+ * call's party, a D-SETUP naming another carrier) and through the later signalling of the call (D-TX GRANTED), and so
+ * does its history row, staged and committed, which the exports read. */
+static void
+test_trunk_off_reallocation_keeps_the_heard_carrier(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    speech(&s, 2);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_target_id == 0x300u && call.channel == 100U
+           && call.frequency_hz == CARRIER_HZ(100));
+    const uint64_t epoch = call.epoch;
+
+    send_block(&s, 0x300u, NULL, 4, 101);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.channel == 101U
+           && call.frequency_hz == CARRIER_HZ(100));
+    send_tx_granted(&s, 0x300u, 0x0C, 0x4444u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x4444u && call.channel == 101U
+           && call.frequency_hz == CARRIER_HZ(100));
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 102);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.channel == 102U && call.frequency_hz == CARRIER_HZ(100));
+    assert(g_tunes == 0 && dsd_opts_tuned_freq_hz(s.opts) == (uint32_t)CARRIER_HZ(100));
+    const Event_History* const staged = &s.state->event_history_s[0].Event_History_Items[0];
+    assert(staged->target_id == 0x300u && staged->freq_hz == (int64_t)CARRIER_HZ(100));
+
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.frequency_hz == CARRIER_HZ(100));
+    const Event_History* const committed = &s.state->event_history_s[0].Event_History_Items[1];
+    assert(committed->target_id == 0x300u && committed->source_id == 0x4444u
+           && committed->freq_hz == (int64_t)CARRIER_HZ(100));
     session_close(&s);
 }
 
@@ -5878,6 +5922,7 @@ main(void) {
     test_heard_call_speech();
     test_anonymous_call_per_timeslot();
     test_record_changes_reach_the_call();
+    test_trunk_off_reallocation_keeps_the_heard_carrier();
     test_followed_reallocation_moves_the_call();
     test_tetra_reallocation_keeps_one_recording();
     test_takeover_ends_the_call_left();

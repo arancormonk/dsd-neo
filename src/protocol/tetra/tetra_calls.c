@@ -691,6 +691,18 @@ calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_cal
     }
 }
 
+/* The frequency a call on traffic channel @p chan is heard on. Not trunking, nothing follows an allocation to another
+ * carrier: the receiver stays on the carrier the call is received on, so the call keeps that frequency while its
+ * channel names the allocation. */
+static long
+calls_heard_freq(const dsd_opts* opts, const dsd_state* state, const tetra_chan_alloc* chan) {
+    if (opts && opts->trunk_enable == 1) {
+        return chan->freq_hz;
+    }
+    const long rx_hz = tetra_sm_receiver_freq(opts, state);
+    return rx_hz > 0L && chan->freq_hz > 0L && chan->freq_hz != rx_hz ? rx_hz : chan->freq_hz;
+}
+
 /* Observe @p c on canonical slot 0, heard on traffic channel @p chan, and its crypto class. */
 static void
 calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_call_t* c,
@@ -703,7 +715,7 @@ calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const te
     o.policy_target_id = o.ota_target_id;
     o.ota_source_id = calls_source(c);
     o.channel = chan->carrier;
-    o.frequency_hz = chan->freq_hz;
+    o.frequency_hz = calls_heard_freq(opts, state, chan);
     o.service_options = c->basic_service;
     o.priority = c->priority;
     o.has_service_metadata = (uint8_t)((c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u);

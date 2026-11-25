@@ -17482,9 +17482,12 @@ single "current call".
   encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
   published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the
   followed call to another carrier moves its canonical call there when its tune completes
-  (`tetra_calls_followed_moved()`), and not while it is in flight; a grant of another call that took the receiver from
-  the followed one ends the call left as a teardown when its tune completes, and the new call publishes once it proves
-  itself on its carrier. What changes a carried call's crypto class without
+  (`tetra_calls_followed_moved()`), and not while it is in flight, so a followed call that moves carriers
+  mid-recording is filed under the carrier it moved to. Not trunking, nothing follows an allocation: a reallocation of
+  the heard call to another carrier moves its channel, while its frequency stays the carrier the receiver is on
+  (`calls_heard_freq()`), so its row, recording and exports name the carrier it was heard on. A grant of another call
+  that took the receiver from the followed one ends the call left as a teardown when its tune completes, and the new
+  call publishes once it proves itself on its carrier. What changes a carried call's crypto class without
   any PDU of it (a cipher key loaded, the network's KSG learnt, or the timeslot's signalling encryption that classifies
   anonymous speech) reaches it with its next speech (`calls_reclassify()`). Speech marks the media
   (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call
