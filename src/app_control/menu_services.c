@@ -2563,31 +2563,50 @@ typedef struct {
     char spec[sizeof(((dsd_opts*)0)->audio_in_dev)];
 } svc_rtl_device_choice;
 
-/* The spec a device change rewrites: the running RTL-SDR's, or with PCM running the one a switch back opens
-   (dsd_opts::radio_in_dev, which the terminal stages a receiver on). NULL when there is none (the change sets only the
-   selector, which the next start reads). */
+/* The field holding the spec a device change rewrites: the running RTL-SDR's, or with PCM running the one the switch
+   back opens, picked by the switch's own rule (dsd_app_radio_row_source_field(): a spec a config staged in
+   dsd_opts::audio_in_dev before the one a switch to PCM left in dsd_opts::radio_in_dev). DEFAULT when that spec is no
+   RTL-SDR one (the change sets only the selector, which the next start reads). */
+static dsd_app_radio_row_field
+svc_rtl_device_spec_field(const dsd_opts* opts) {
+    const dsd_app_radio_row_field field =
+        opts->audio_in_type == AUDIO_IN_RTL ? DSD_APP_RADIO_ROW_AUDIO_IN_DEV : dsd_app_radio_row_source_field(opts);
+    const char* spec = field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV
+                           ? opts->audio_in_dev
+                           : (field == DSD_APP_RADIO_ROW_RADIO_IN_DEV ? opts->radio_in_dev : "");
+    return dsd_opts_audio_in_dev_is_rtl_spec(spec) ? field : DSD_APP_RADIO_ROW_DEFAULT;
+}
+
 static const char*
 svc_rtl_device_spec(const dsd_opts* opts) {
-    const char* spec = opts->audio_in_type == AUDIO_IN_RTL ? opts->audio_in_dev : opts->radio_in_dev;
-    return dsd_opts_audio_in_dev_is_rtl_spec(spec) ? spec : NULL;
+    switch (svc_rtl_device_spec_field(opts)) {
+        case DSD_APP_RADIO_ROW_AUDIO_IN_DEV: return opts->audio_in_dev;
+        case DSD_APP_RADIO_ROW_RADIO_IN_DEV: return opts->radio_in_dev;
+        case DSD_APP_RADIO_ROW_DEFAULT:
+        default: return NULL;
+    }
 }
 
 static void
 svc_rtl_device_select(dsd_opts* opts, const svc_rtl_device_choice* choice) {
     opts->rtl_dev_index = choice->index;
     DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", choice->serial);
-    if (!svc_rtl_device_spec(opts)) {
-        return;
-    }
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
-    } else {
-        DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
+    switch (svc_rtl_device_spec_field(opts)) {
+        case DSD_APP_RADIO_ROW_AUDIO_IN_DEV:
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
+            break;
+        case DSD_APP_RADIO_ROW_RADIO_IN_DEV:
+            DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
+            break;
+        case DSD_APP_RADIO_ROW_DEFAULT:
+        default: break;
     }
 }
 
 /* Restart the stream on @p next, and on a failed start put @p previous back and start it again, inside one hold of the
-   P25 SM tick guard, which the watchdog reads the input under (svc_airspy_reopen_impl()). */
+   P25 SM tick guard, which the watchdog reads the input under (svc_airspy_reopen_impl()). With no stream running
+   before (an RTL-SDR input whose last start failed), the failed start puts back only the options: there is no receiver
+   to bring back, and starting the previous selector would open a dongle nobody asked for. */
 static int
 svc_rtl_device_reopen(dsd_opts* opts, dsd_state* state, const svc_rtl_device_choice* next,
                       const svc_rtl_device_choice* previous, int* out_capture_stopped) {
@@ -2600,8 +2619,12 @@ svc_rtl_device_reopen(dsd_opts* opts, dsd_state* state, const svc_rtl_device_cho
     const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_rtl_device_select(opts, previous);
-        (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before,
-                                              out_capture_stopped);
+        if (stream_stopped) {
+            (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before,
+                                                  out_capture_stopped);
+        } else if (out_capture_stopped) {
+            *out_capture_stopped = capture_before && !opts->iq_capture_requested;
+        }
     }
     p25_sm_tick_guard_leave();
     return rc;

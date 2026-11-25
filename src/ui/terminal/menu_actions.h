@@ -217,6 +217,8 @@ void act_freq_key(void* v);
 bool is_airspy_input(const void* v);
 bool is_non_airspy_input(const void* v);
 bool tuner_rows_offered(const void* v);
+/* The Device... row: the tuner rows' rule, and not on a running rtl_tcp input, which has no local dongle to select. */
+bool rtl_device_row_offered(const void* v);
 void ui_airspy_set_serial(void* v);
 void ui_airspy_set_sample_rate(void* v);
 void ui_airspy_set_gain_mode(void* v);

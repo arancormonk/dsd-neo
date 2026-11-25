@@ -2179,10 +2179,21 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* The most of a serial a device change's toast names: the failure toast around it, with its note of a stopped I/Q
+   capture, still fits the toast (ui_set_rollback_toast() drops the note otherwise). A longer serial is shown cut, with
+   "..." in the room left; the log names it whole. */
+enum { UI_RTL_TOAST_SERIAL_MAX = 48 };
+
+_Static_assert(sizeof("Failed: RTL device -> serial  (see log); I/Q capture stopped") + UI_RTL_TOAST_SERIAL_MAX
+                   <= sizeof(((dsd_state*)0)->ui_msg),
+               "a device change's failure toast keeps its capture note");
+
 /* The RTL-SDR a device change selects, as its toasts name it: "serial <sn>" or "index <n>". */
 static void
 ui_rtl_device_what(int index, const char* serial, char* out, size_t out_size) {
-    if (serial && serial[0] != '\0') {
+    if (serial && strlen(serial) > (size_t)UI_RTL_TOAST_SERIAL_MAX) {
+        DSD_SNPRINTF(out, out_size, "serial %.*s...", UI_RTL_TOAST_SERIAL_MAX - 3, serial);
+    } else if (serial && serial[0] != '\0') {
         DSD_SNPRINTF(out, out_size, "serial %s", serial);
     } else {
         DSD_SNPRINTF(out, out_size, "index %d", index < 0 ? 0 : index);
@@ -9597,11 +9608,21 @@ ui_cmd_handle_config_metadata_set(dsd_opts* opts, dsd_state* state, const struct
 
 /* An rtl_serial the loader refused (rtl_serial_invalid) refuses a config whose [input] opens the RTL-SDR, or names no
    source (a patch the [input] a save writes takes), before anything changes: the input it names never opens index 0
-   in place of the serial, as the next start refuses it too. */
+   in place of the serial, as the next start refuses it too. A config handed over whole
+   (dsd_app_command_apply_config()) never passed the loader, so its serial is checked here itself: unterminated, or
+   one the rule refuses (dsd_rtl_serial_is_valid()), as the Airspy check does its settings. */
 static int
 cfg_rtl_selector_valid(const dsdneoUserConfig* cfg) {
-    return !cfg->has_input || !cfg->rtl_serial_invalid
-           || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_UNSET);
+    if (!cfg->has_input) {
+        return 1;
+    }
+    if (!memchr(cfg->rtl_serial, '\0', sizeof cfg->rtl_serial)) {
+        return 0;
+    }
+    if (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_UNSET) {
+        return 1;
+    }
+    return !cfg->rtl_serial_invalid && (cfg->rtl_serial[0] == '\0' || dsd_rtl_serial_is_valid(cfg->rtl_serial));
 }
 
 static int

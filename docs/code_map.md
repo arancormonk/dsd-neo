@@ -5582,7 +5582,8 @@ suite runs under this compiler.
       loader marks it (`rtl_serial_invalid`), the spec carries `serial=`, which `dsd_rtl_input_spec_apply()` refuses so
       the start refuses the input (never index 0), the render writes `rtl_serial = ":"` (refused again on load),
       `--validate-config` errors, and a runtime apply refuses the config before anything changes
-      (`cfg_rtl_selector_valid()`). The render quotes the serial, which holds no `"` by the rule, so the comment
+      (`cfg_rtl_selector_valid()`, which also checks the serial itself, since a config handed over whole through
+      `dsd_app_command_apply_config()` never passed the loader). The render quotes the serial, which holds no `"` by the rule, so the comment
       stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
       a serial or an index, the other cleared; a bare `rtl` or an empty field is the session's own selector. Tests:
       `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_PROFILE`.
@@ -8078,10 +8079,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   field the spec does not fit, changes nothing), writes the selector and the spec together (B2: the index alone left
   the old device in the spec, which a save wrote), and reopens inside one hold of the P25 SM tick guard; a failed
   start puts the selector and spec that ran back and starts them again through `svc_rtl_restart_recovery_locked()`,
-  as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note.
-  With PCM running it rewrites the spec the RTL-SDR row opens (`dsd_opts::radio_in_dev`, its tuning kept), so the
-  switch back opens the dongle staged. An active `rtltcp` source has no local dongle: `DSD_ERR_NOT_SUPPORTED`, the
-  server not reconnected. The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
+  as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note
+  (a serial past `UI_RTL_TOAST_SERIAL_MAX` shown cut with `...`, so the note always fits the 128-byte toast). With no
+  stream running before (an RTL-SDR input whose last start failed) the failed start puts back only the options and
+  opens nothing. With PCM running it rewrites the spec the RTL-SDR row opens, picked by the row's own rule
+  (`dsd_app_radio_row_source_field()`: a spec a config staged in `audio_in_dev` before `radio_in_dev`), its tuning
+  kept, so the switch back opens the dongle staged and a save names it. An active `rtltcp` source has no local dongle:
+  `DSD_ERR_NOT_SUPPORTED`, the server not reconnected, and the terminal hides `Device...` there
+  (`rtl_device_row_offered()`; its gain and PPM rows stay). The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
   stays a serial. Tests: `UI_MENU_SERVICES`, `APP_COMMAND_QUEUE`, `API_COMMAND_PAYLOADS`, `API_COMMANDS`. Any
   restart (`svc_rtl_restart_locked()`) of a stream that ran while `--iq-capture` was on turns the capture off before
   its start, whether the start then succeeds or not (issue #743 B16): the stop closed the file with what it recorded,

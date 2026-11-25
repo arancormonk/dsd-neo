@@ -123,7 +123,7 @@ Main Menu
 │       ├── Tuner autogain [On]                      (not on an Airspy)
 │       ├── Bias tee [Off]                           (not on an Airspy)
 │       ├── ─────
-│       ├── Device...                                (not on an Airspy)
+│       ├── Device...                                (not on an Airspy or rtl_tcp)
 │       ├── Restart stream
 │       ├── Auto-PPM & rtl_tcp                       (not on an Airspy)
 │       │   ├── Auto-PPM [On]
@@ -398,7 +398,8 @@ With the RTL-SDR running, the stream reopens on the new dongle (`Applied: RTL de
 does not start (not plugged in, or held by another program), the dongle that ran runs again and the toast says
 `Failed: RTL device -> serial 00000001 (see log)`. With audio input running, the choice waits for the switch back to the
 RTL-SDR, which opens it on the tuning it had. A save writes the dongle chosen (`rtl_serial` or `rtl_device`). Over
-rtl_tcp the server chooses its dongle, so the row answers `Unsupported`. The I/O pane names a dongle chosen by serial on
+rtl_tcp the server chooses its dongle, so the row is hidden there (the API answers `Unsupported`). A serial too long
+for the toast is shown cut with `...`; the log names it whole. The I/O pane names a dongle chosen by serial on
 a row of its own (`| RTL: SN 00000001;`), and the Source row reads `Source: RTL-SDR SN 00000001`.
 
 ### Frequency entry

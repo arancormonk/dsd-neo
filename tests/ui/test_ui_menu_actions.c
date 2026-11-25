@@ -3437,18 +3437,22 @@ test_scan_lists_action(void) {
    does an audio input, whose rows set up the RTL-SDR a switch opens. */
 static int
 test_tuner_rows_follow_tunability(void) {
+    /* The Device... row follows the same rule, except on a running rtl_tcp input: the server chose its dongle, and the
+       row's every answer would be refused there. A PCM session staging an rtl_tcp spec keeps it. */
     static const struct {
         const char* dev;
         int type;
         bool offered;
+        bool device_offered;
     } rows[] = {
-        {"rtl:0:851.0125M", AUDIO_IN_RTL, true},
-        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true},
-        {"airspy", AUDIO_IN_RTL, false},
-        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, false},
-        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, false},
-        {"iqudp:0.0.0.0:7355:48000:cu8", AUDIO_IN_RTL, false},
-        {"pulse", AUDIO_IN_PULSE, true},
+        {"rtl:0:851.0125M", AUDIO_IN_RTL, true, true},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true, false},
+        {"airspy", AUDIO_IN_RTL, false, false},
+        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, false, false},
+        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, false, false},
+        {"iqudp:0.0.0.0:7355:48000:cu8", AUDIO_IN_RTL, false, false},
+        {"pulse", AUDIO_IN_PULSE, true, true},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_PULSE, true, true},
     };
 
     int rc = 0;
@@ -3459,6 +3463,7 @@ test_tuner_rows_follow_tunability(void) {
         opts.audio_in_type = rows[i].type;
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", rows[i].dev);
         rc |= expect_int(rows[i].dev, tuner_rows_offered(&ctx), rows[i].offered);
+        rc |= expect_int(rows[i].dev, rtl_device_row_offered(&ctx), rows[i].device_offered);
     }
     opts.audio_in_dev[0] = '\0';
     opts.audio_in_type = 0;

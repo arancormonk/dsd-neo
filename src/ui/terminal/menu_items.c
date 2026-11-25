@@ -198,7 +198,7 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .on_select = rtl_toggle_bias},
     {.id = "rtl.sep", .kind = NC_ITEM_SEPARATOR},
     {.id = "rtl.dev",
-     .is_enabled = tuner_rows_offered,
+     .is_enabled = rtl_device_row_offered,
      .label = "Device...",
      .help = "Select the RTL-SDR by index or USB serial.",
      .on_select = rtl_set_dev},

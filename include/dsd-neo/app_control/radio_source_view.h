@@ -44,9 +44,23 @@ int dsd_app_iq_stream_describe(const char* spec, char* endpoint, size_t endpoint
  */
 void dsd_app_radio_source_name(const dsd_opts* opts, const char* dev, char* out, size_t out_size);
 
+/** Which options field the radio row opens (dsd_app_radio_row_destination()). */
+typedef enum {
+    DSD_APP_RADIO_ROW_DEFAULT = 0, /* neither: the bare "rtl" */
+    DSD_APP_RADIO_ROW_AUDIO_IN_DEV,
+    DSD_APP_RADIO_ROW_RADIO_IN_DEV
+} dsd_app_radio_row_field;
+
 /**
- * @brief The device DSD_APP_CMD_RTL_ENABLE_INPUT opens (issue #634), the first of: the running radio spec unless it is
- * an Airspy one; the radio spec a switch to PCM replaced (dsd_opts::radio_in_dev) unless it is an Airspy one; "rtl".
+ * @brief The field whose spec DSD_APP_CMD_RTL_ENABLE_INPUT opens (issue #634), the first of: dsd_opts::audio_in_dev when
+ * it is a radio spec other than an Airspy one (the running radio, or one a config staged while PCM runs); the radio
+ * spec a switch to PCM replaced (dsd_opts::radio_in_dev) unless it is an Airspy one; neither. Whatever rewrites the
+ * spec that switch opens (an RTL-SDR device change) picks it with this rule.
+ */
+dsd_app_radio_row_field dsd_app_radio_row_source_field(const dsd_opts* opts);
+
+/**
+ * @brief The device DSD_APP_CMD_RTL_ENABLE_INPUT opens: the spec of dsd_app_radio_row_source_field(), or "rtl".
  */
 void dsd_app_radio_row_destination(const dsd_opts* opts, char* out, size_t out_size);
 
