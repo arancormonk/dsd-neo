@@ -190,6 +190,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_scan_activity_hold_ms = 1200;
     cfg->trunk_scan_voice_only = 0;
     cfg->trunk_scan_skip_silent = 0;
+    cfg->trunk_scan_skip_silent_ms = 0;
     cfg->trunk_scan_voice_qualify_ms = 1000;
     cfg->trunk_scan_voice_hold_ms = 2000;
     cfg->trunk_scan_max_visit_ms = 0;
@@ -217,6 +218,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_api_delete_after_upload = 0;
     cfg->rdio_analog_system_id = 0;
     cfg->rdio_analog_talkgroup = 0;
+    cfg->rdio_unknown_talkgroup = 0;
     cfg->unknown_talkgroups_only = 0;
     cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     cfg->analog_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
@@ -1215,6 +1217,7 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
     DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
     DSD_FPRINTF(out, "scan_skip_silent = %s\n", ini_bool(cfg->trunk_scan_skip_silent));
+    DSD_FPRINTF(out, "scan_skip_silent_ms = %d\n", cfg->trunk_scan_skip_silent_ms);
     DSD_FPRINTF(out, "scan_voice_qualify_ms = %d\n", cfg->trunk_scan_voice_qualify_ms);
     DSD_FPRINTF(out, "scan_voice_hold_ms = %d\n", cfg->trunk_scan_voice_hold_ms);
     DSD_FPRINTF(out, "scan_max_visit_ms = %d\n", cfg->trunk_scan_max_visit_ms);
@@ -1341,6 +1344,9 @@ render_recording_section(FILE* out, const dsdneoUserConfig* cfg) {
     }
     if (cfg->rdio_analog_talkgroup > 0) {
         DSD_FPRINTF(out, "rdio_analog_talkgroup = %d\n", cfg->rdio_analog_talkgroup);
+    }
+    if (cfg->rdio_unknown_talkgroup > 0) {
+        DSD_FPRINTF(out, "rdio_unknown_talkgroup = %d\n", cfg->rdio_unknown_talkgroup);
     }
     DSD_FPRINTF(out, "\n");
 }
@@ -1970,6 +1976,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
     opts->scan_voice_only = cfg->trunk_scan_voice_only ? 1 : 0;
     opts->scan_skip_silent = cfg->trunk_scan_skip_silent ? 1 : 0;
+    opts->scan_skip_silent_ms = cfg->trunk_scan_skip_silent_ms;
     opts->scan_voice_qualify_ms = cfg->trunk_scan_voice_qualify_ms;
     opts->scan_voice_hold_ms = cfg->trunk_scan_voice_hold_ms;
     opts->scan_max_visit_ms = cfg->trunk_scan_max_visit_ms;
@@ -2132,6 +2139,7 @@ apply_recording_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->rdio_api_delete_after_upload = cfg->rdio_api_delete_after_upload;
     opts->rdio_analog_system_id = cfg->rdio_analog_system_id;
     opts->rdio_analog_talkgroup = cfg->rdio_analog_talkgroup;
+    opts->rdio_unknown_talkgroup = cfg->rdio_unknown_talkgroup;
     opts->record_unknown_only = cfg->unknown_talkgroups_only ? 1 : 0;
     opts->analog_record_max_gap_ms = cfg->analog_max_gap_ms;
     opts->analog_record_preroll_ms = cfg->analog_preroll_ms;
@@ -2538,6 +2546,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
         (configured ? configured->p25_prefer_candidates : opts->p25_prefer_candidates) != 0;
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
     cfg->trunk_scan_skip_silent = opts->scan_skip_silent ? 1 : 0; /* session-wide: never captured per row */
+    cfg->trunk_scan_skip_silent_ms = opts->scan_skip_silent_ms;   /* session-wide, as above */
     cfg->trunk_scan_voice_qualify_ms = configured ? configured->scan_voice_qualify_ms : opts->scan_voice_qualify_ms;
     cfg->trunk_scan_voice_hold_ms = configured ? configured->scan_voice_hold_ms : opts->scan_voice_hold_ms;
     cfg->trunk_scan_max_visit_ms = configured ? configured->scan_max_visit_ms : opts->scan_max_visit_ms;
@@ -2618,6 +2627,7 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rdio_api_delete_after_upload = opts->rdio_api_delete_after_upload ? 1 : 0;
     cfg->rdio_analog_system_id = opts->rdio_analog_system_id;
     cfg->rdio_analog_talkgroup = opts->rdio_analog_talkgroup;
+    cfg->rdio_unknown_talkgroup = opts->rdio_unknown_talkgroup;
     cfg->unknown_talkgroups_only = opts->record_unknown_only ? 1 : 0;
     cfg->analog_max_gap_ms = opts->analog_record_max_gap_ms;
     cfg->analog_preroll_ms = opts->analog_record_preroll_ms;

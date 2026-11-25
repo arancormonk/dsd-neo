@@ -151,6 +151,9 @@ class AppPrefs : public QObject {
     /* {latitude, longitude, zoom} of the map's view, or {} when none is saved. The map writes it only while its view
      * owes nothing to the device's own position (MapViewKeeper.qml); AppPrefs only keeps what it is given. */
     Q_PROPERTY(QVariantMap mapViewport READ mapViewport WRITE setMapViewport NOTIFY mapViewportChanged)
+    /* Issue #901: denser rows on the Monitor, Listen, scan lists and call lists, so more fit on the screen. How this
+     * device's screen is arranged, like monitorDetailsExpanded: device-local, off by default. */
+    Q_PROPERTY(bool compactView READ compactView WRITE setCompactView NOTIFY compactViewChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -343,6 +346,10 @@ class AppPrefs : public QObject {
     bool monitorDetailsExpanded() const;
     void setMonitorDetailsExpanded(bool on);
 
+    /** @brief Compact view (issue #901): denser rows so more fit on the screen; off by default. Device-local. */
+    bool compactView() const;
+    void setCompactView(bool on);
+
     /** @brief The Listen tab to open on: "systems", "scanLists" or "explore"; anything else stored reads as "systems".
      *         Device-local. */
     QString listenSection() const;
@@ -506,6 +513,7 @@ class AppPrefs : public QObject {
     void mapTilesChanged();
     void mapAgeFilterChanged();
     void mapViewportChanged();
+    void compactViewChanged();
 
   private:
     /** Drop a fix 24 h old (or from the future); true when one was stored. Tells no one: callers do. */

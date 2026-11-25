@@ -1531,6 +1531,100 @@ test_external_backend_landing_filter_state(void) {
     failed |= expect_int_eq("external landing on the same frequency, new width: output kept", r.same_freq_flushed, 0);
     failed |=
         expect_int_eq("external landing away with no profile queued: output flushed", r.profileless_away_flushed, 1);
+    /* The peer asked again for the channel it is on: no new channel, so the output and the symbol cache stay. */
+    failed |=
+        expect_int_eq("repeated external landing with no profile queued: nothing taken", r.profileless_repeat_taken, 0);
+    failed |=
+        expect_int_eq("repeated external landing with no profile queued: output kept", r.profileless_repeat_flushed, 0);
+    /* The engine saw the peer move (another leg sent it elsewhere and no landing followed): the output is flushed. */
+    failed |=
+        expect_int_eq("external landing after the peer moved with no landing: output flushed", r.moved_back_flushed, 1);
+    return failed;
+}
+
+/* A landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) flushes the output the demod thread
+ * writes. It parks the demod thread first, as a landing with a profile does: a block's output write that loaded the
+ * ring's head before the flush would otherwise publish it after, putting the old channel's samples back under the new
+ * generation. It purges the queued input with it, so only I/Q from after the move feeds the output a repeated tune
+ * keeps. A repeated tune with nothing to flush parks nothing: raising the flag would drop or cut the block's output. */
+static int
+test_external_profileless_landing_waits_for_block(void) {
+    rtl_stream_test_external_profileless_block_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("profile-less landing race hook",
+                               rtl_stream_test_external_profileless_landing_against_block(&r), 0);
+    failed |= expect_int_eq("profile-less landing during a block: waits for it", r.moved.landing_waited, 1);
+    failed |=
+        expect_int_eq("profile-less landing during a block: no flush before it ends", r.moved.flushed_during_block, 0);
+    failed |= expect_int_eq("profile-less landing during a block: its output flushed", r.moved.block_output_left, 0);
+    failed |= expect_int_eq("profile-less landing during a block: output flushed", r.moved.flushed, 1);
+    /* The input queued before the move holds the old channel too: the landing purges it, as a controller retune does. */
+    failed |= expect_int_eq("profile-less landing during a block: input purged", r.moved.input_purged, 1);
+    /* So is an rtl_tcp reader's staged half slice, and the filter samples held back for look-ahead. */
+    failed |= expect_int_eq("profile-less landing during a block: staged slice dropped", r.moved.staged_discarded, 1);
+    failed |= expect_int_eq("profile-less landing during a block: filters start over", r.moved.filters_cleared, 1);
+    failed |=
+        expect_int_eq("profile-less landing during a block: discriminator starts over", r.moved.discriminator_reset, 1);
+    failed |= expect_int_eq("profile-less landing during a block: resampler starts over", r.moved.resampler_reset, 1);
+    failed |=
+        expect_int_eq("profile-less landing during a block: CQPSK history starts over", r.moved.cqpsk_history_reset, 1);
+    failed |= expect_int_eq("profile-less landing during a block: voice lane starts over", r.moved.voice_lane_reset, 1);
+    /* A repeat with nothing to flush or apply leaves the block running and its whole output in place. */
+    failed |= expect_int_eq("repeated landing during a block: does not park it", r.repeat.landing_waited, 0);
+    failed |= expect_int_eq("repeated landing during a block: done while it runs", r.repeat.done_during_block, 1);
+    failed |= expect_int_eq("repeated landing during a block: output kept", r.repeat.block_output_left, 64);
+    failed |= expect_int_eq("repeated landing during a block: nothing flushed", r.repeat.flushed, 0);
+    failed |= expect_int_eq("repeated landing during a block: input kept", r.repeat.input_purged, 0);
+    failed |= expect_int_eq("repeated landing during a block: staged slice kept", r.repeat.staged_discarded, 0);
+    failed |= expect_int_eq("repeated landing during a block: filters kept", r.repeat.filters_cleared, 0);
+    failed |= expect_int_eq("repeated landing during a block: discriminator kept", r.repeat.discriminator_reset, 0);
+    failed |= expect_int_eq("repeated landing during a block: resampler kept", r.repeat.resampler_reset, 0);
+    failed |= expect_int_eq("repeated landing during a block: CQPSK history kept", r.repeat.cqpsk_history_reset, 0);
+    failed |= expect_int_eq("repeated landing during a block: voice lane kept", r.repeat.voice_lane_reset, 0);
+    /* On the CQPSK chain the Gardner delay line and the band-edge FLL's history start over on a move, and stay on a
+       repeat. */
+    failed |= expect_int_eq("CQPSK move: Gardner delay line starts over", r.cqpsk_moved.gardner_reset, 1);
+    failed |= expect_int_eq("CQPSK move: band-edge history starts over", r.cqpsk_moved.band_edge_reset, 1);
+    failed |= expect_int_eq("CQPSK move: differential symbol starts over", r.cqpsk_moved.cqpsk_history_reset, 1);
+    failed |= expect_int_eq("CQPSK repeat: Gardner delay line kept", r.cqpsk_repeat.gardner_reset, 0);
+    failed |= expect_int_eq("CQPSK repeat: band-edge history kept", r.cqpsk_repeat.band_edge_reset, 0);
+    /* The reader's side: half a slice from the channel left never completes a slice with the landed channel's bytes. */
+    int old_reached = -1;
+    failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(1, &old_reached), 0);
+    failed |= expect_int_eq("staged slice across a discard: only the new channel's bytes", old_reached, 0);
+    failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(0, &old_reached), 0);
+    failed |= expect_int_eq("staged slice with no discard: the old bytes go through", old_reached, 1);
+    /* The reader's real chunk path, held between its restart check and its writes while a flush posts its request: the
+       flush waits for the chunk to land, so the purge after it takes it; a wait that runs out poisons the chunk, so
+       nothing of it survives the purge either way. */
+    for (int expire = 0; expire <= 1; expire++) {
+        int returned_mid_chunk = -1;
+        int ring_floats = -1;
+        int poison_cleared = -1;
+        failed |= expect_int_eq(
+            "chunk race hook",
+            rtl_device_test_tcp_reader_chunk_race(expire, &returned_mid_chunk, &ring_floats, &poison_cleared), 0);
+        failed |= expect_int_eq(expire ? "flush past its wait: returns while the chunk is held"
+                                       : "flush during a chunk: waits for it",
+                                returned_mid_chunk, expire ? 1 : 0);
+        failed |= expect_int_eq(expire ? "flush past its wait: none of the chunk survives the purge"
+                                       : "flush during a chunk: none of it survives the purge",
+                                ring_floats, 0);
+        failed |= expect_int_eq("chunk race: the chunk's end clears its poison", poison_cleared, 1);
+    }
+    /* A retune of the device's own drops the I byte the reader held and the Q that completes it. */
+    int held_ring = -1;
+    int held_first = -2;
+    int held_after = -1;
+    failed |= expect_int_eq("held pair hook",
+                            rtl_device_test_tcp_staged_restart_held_pair(1, &held_ring, &held_first, &held_after), 0);
+    failed |= expect_int_eq("device retune: no pair straddles the retune", held_ring, 0);
+    failed |= expect_int_eq("device retune: the next pair starts on an I", held_first, 2);
+    failed |= expect_int_eq("device retune: an odd byte held for its Q", held_after, 1);
+    failed |= expect_int_eq("held pair hook",
+                            rtl_device_test_tcp_staged_restart_held_pair(0, &held_ring, &held_first, &held_after), 0);
+    failed |= expect_int_eq("no retune: the held I pairs with its Q", held_ring, 4);
+    failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }
 
@@ -3845,6 +3939,7 @@ main(void) {
     failed |= test_gate_write_during_landings();
     failed |= test_typed_digital_rows_are_digital();
     failed |= test_pause_against_hunt();
+    failed |= test_external_profileless_landing_waits_for_block();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();

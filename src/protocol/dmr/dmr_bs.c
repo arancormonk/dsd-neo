@@ -835,6 +835,8 @@ decode_dmr_bs_bootstrap_cach_and_tact(dsd_state* state, dmr_bs_bootstrap_ctx* ct
 
     ctx->internalslot = ctx->tact_bits[1];
     state->currentslot = ctx->internalslot;
+    /* A voice burst on the slot ends any MBC being assembled there (dsd_state::dmr_mbc_armed). */
+    state->dmr_mbc_armed[ctx->internalslot & 1U] = 0;
     /* A repeater's burst on two-slot lanes: no single-slot fold (issue #800, fail closed). */
     dmr_note_burst_lane(NULL, state);
     dmr_confidence_note_voice_sync(state, ctx->internalslot);
@@ -977,6 +979,8 @@ process_dmr_bs_iteration(dsd_opts* opts, dsd_state* state, dmr_bs_ctx* ctx) {
         goto HANDLE_ACTION;
     }
 
+    /* A voice burst on the slot ends any MBC being assembled there (dsd_state::dmr_mbc_armed). */
+    state->dmr_mbc_armed[ctx->internalslot & 1U] = 0;
     action = handle_dmr_bs_frame_sync_miss(ctx, &ctx->vc1, &ctx->vc2);
     if (action != DMR_BS_ACTION_CONTINUE) {
         goto HANDLE_ACTION;

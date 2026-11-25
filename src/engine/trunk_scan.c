@@ -33,6 +33,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -195,7 +196,9 @@ typedef struct {
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
     double dmr_confidence_voice_m[2];
-    uint8_t dmr_lcn_trust[0x1000];
+    /* Where each of the target's Tier III channel rows came from, with their trust and the control channels its
+       network named (discussion #900). */
+    dmr_t3_chan_target_snapshot dmr_chan;
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
     dsd_nxdn_call_identity nxdn_call;
@@ -2153,7 +2156,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     } else {
         snapshot->trunk_lcn_freq_ext_count = 0;
     }
-    DSD_MEMCPY(snapshot->dmr_lcn_trust, state->dmr_lcn_trust, sizeof(snapshot->dmr_lcn_trust));
+    dmr_t3_chan_save(state, &snapshot->dmr_chan);
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
     /* A chain comparison in flight has the other chain's frames in p25_p1_validated_rf_mod: the target keeps the chain
@@ -2185,7 +2188,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
-    DSD_MEMCPY(state->dmr_lcn_trust, snapshot->dmr_lcn_trust, sizeof(state->dmr_lcn_trust));
+    dmr_t3_chan_restore(state, &snapshot->dmr_chan);
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
@@ -5260,6 +5263,8 @@ trunk_scan_quiet_classes(const dsd_opts* opts, const dsd_state* state, const dsd
         dsd_scan_option_values scratch;
         scan_quiet_analog_facts(opts, state, kind, trunk_scan_target_values(rt, &scratch), e);
     }
+    /* Whether the target can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
+    e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the target no check, if they give none (issue #834 R6). */
     e->reason = scan_quiet_facts_reason(opts, e, 0);
 }

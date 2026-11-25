@@ -550,10 +550,96 @@ function systemMeta(sys) {
         parts.push(decodeLabel(sys.decodeFlag))
     } else {
         var path = sys.filePath || ""
-        parts.push(path.substring(path.lastIndexOf('/') + 1))
+        // The file's name; its whole path, as saved, on a saved-system card
+        // whose title another card shares (sharedTitle), where the line wraps
+        // (issue #901 r3 S1), so two files of one name in different folders
+        // read apart.
+        parts.push(sys.sharedTitle ? path : path.substring(path.lastIndexOf('/') + 1))
         parts.push(decodeLabel(sys.decodeFlag))
     }
     return parts.join(" · ")
+}
+
+// Issue #901 (D7, B1, B4): where a Listen card (a saved system's, a scan
+// list's) puts its actions, across the card. @a s gives the card's width and
+// side padding, whether it is compact, and the natural widths of its controls
+// (the site button's only counts with hasSites, Play's only with playShown,
+// though Play's place is kept while it is hidden). Only these inputs decide,
+// never the title's laid-out width, so nothing it returns can feed back.
+//
+// The default card has More over Play at the right and the site button left
+// of Play; the compact card is one row, site button, Play and More on the
+// title's line, More at the right edge. In both, the site button is drawn
+// only while the title keeps 96 px beside it (`siteDrawn`; a flat minimum,
+// so a one-site group keeps its button at normal text on a 320 dp phone, a
+// 110 px title, as before); otherwise the card names the count in its supporting line
+// and its More menu (and long press) offer Sites. The card's height never
+// follows it: 122 px by default and 68 compact at normal text while its
+// lines fit (a shared title's wrapping lines grow it).
+function listenCardActions(s) {
+    var gap = 8
+    var labelGap = 12
+    var inner = Math.max(0, s.width - 2 * s.padding)
+    var minimum = 96
+    var siteWidth = Math.min(s.siteWidth, inner)
+    var playPart = s.playShown ? s.playWidth + gap : 0
+    // Beside the labels with the site button, and without it (the default
+    // column keeps Play's width, as Play's place is kept).
+    var withSite = s.compact ? siteWidth + gap + playPart + s.moreWidth : playPart + siteWidth
+    var without = s.compact ? playPart + s.moreWidth : s.playWidth
+    var siteDrawn = s.hasSites && inner - withSite - labelGap >= minimum
+    var out = {siteDrawn: siteDrawn, minimum: minimum, siteWidth: siteWidth,
+        labelsWidth: Math.max(0, inner - (siteDrawn ? withSite : without) - labelGap)}
+    var right = s.width - s.padding
+    if (!s.compact) {
+        out.playX = right - s.playWidth
+        out.moreX = out.playX + (s.playWidth - s.moreWidth) / 2
+        out.siteX = (s.playShown ? out.playX - gap : right) - siteWidth
+    } else {
+        out.moreX = right - s.moreWidth
+        out.playX = out.moreX - gap - s.playWidth
+        out.siteX = (s.playShown ? out.playX : out.moreX) - gap - siteWidth
+    }
+    return out
+}
+
+// Issue #901: the same card's rows, down it, from listenCardActions()'
+// answer @a a and the heights in @a s: its labels column's (`labelsHeight`),
+// the title and ONE supporting line's with the gap between them
+// (`headLines`; a shared title's wrapping supporting line grows the card
+// below, r5 H5),
+// and the controls'. Play's height counts while it is hidden, as its place
+// does. Gives each control's y, the labels' y, where the actions end
+// (`actionsBottom`), the card's height without a refresh hint (`height`) and
+// its bottom padding (`bottomPadding`, under a hint too).
+//
+// Default: More at the top, Play under it, the site button centred on Play,
+// and the labels centred 10 px above the middle of that box (122 px at
+// normal text). Compact: 12 px of padding, the actions centred on a head as
+// tall as the two lines plus that padding, at least Play plus 8 above and
+// below; a receiver or place line under the two lines grows the card.
+function listenCardRows(a, s) {
+    var out = {}
+    if (s.compact) {
+        var head = Math.max(s.headLines + 24, s.playHeight + 16)
+        out.labelsY = (head - s.headLines) / 2
+        out.moreY = (head - s.moreHeight) / 2
+        out.playY = (head - s.playHeight) / 2
+        out.siteY = (head - s.siteHeight) / 2
+        out.actionsBottom = Math.max(out.moreY + s.moreHeight, out.playY + s.playHeight,
+            a.siteDrawn ? out.siteY + s.siteHeight : 0)
+        out.bottomPadding = 12
+        out.height = Math.max(out.labelsY + s.labelsHeight + out.bottomPadding, head)
+        return out
+    }
+    out.bottomPadding = s.padding
+    out.moreY = 0
+    out.playY = s.moreHeight + 6
+    out.siteY = out.playY + (s.playHeight - s.siteHeight) / 2
+    out.actionsBottom = Math.max(s.moreHeight, out.playY + s.playHeight, a.siteDrawn ? out.siteY + s.siteHeight : 0)
+    out.labelsY = Math.max(s.padding, (out.actionsBottom + s.padding - s.labelsHeight) / 2 - 10)
+    out.height = Math.max(out.labelsY + s.labelsHeight, out.actionsBottom) + out.bottomPadding
+    return out
 }
 
 // "Last listened 2 minutes ago" / "Last listened yesterday" / "Not yet listened".
@@ -577,9 +663,13 @@ function heardText(lastHeardSecs, nowMs) {
     return qsTr("Last listened %1 days ago").arg(Math.floor(delta / 86400))
 }
 
-// Compact age for a call row's right edge: "1m", "2h", "3d". nowMs is the decode clock the
-// row's when is stamped on (metrics.decodeNowMs), not the viewer's clock.
+// Compact age for a call row's right edge: "1m", "2h", "3d", and from 1000 days whole
+// years ("3y", at most "99y"), so every age fits the slot the Monitor sizes from its widest
+// forms (issue #901). A call whose time is not known (0) has no age. nowMs is the decode
+// clock the row's when is stamped on (metrics.decodeNowMs), not the viewer's clock.
 function shortAge(whenSecs, nowMs) {
+    if (!(whenSecs > 0))
+        return ""
     var delta = Math.floor(nowMs / 1000) - whenSecs
     if (delta < 60)
         return qsTr("now")
@@ -587,7 +677,10 @@ function shortAge(whenSecs, nowMs) {
         return Math.floor(delta / 60) + "m"
     if (delta < 86400)
         return Math.floor(delta / 3600) + "h"
-    return Math.floor(delta / 86400) + "d"
+    var days = Math.floor(delta / 86400)
+    if (days < 1000)
+        return days + "d"
+    return Math.min(99, Math.floor(days / 365)) + "y"
 }
 
 // "0:07" — the monitor timer and call durations share this shape.
@@ -1088,6 +1181,19 @@ function deleteFailuresText(count, reason) {
     var text = count === 1 ? qsTr("1 recording couldn't be deleted.")
                            : qsTr("%1 recordings couldn't be deleted.").arg(countText(count))
     return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
+}
+
+// Issue #902: accepted deletes a read again of their storage dropped while
+// they waited. Asking again deletes them.
+function deletesCancelledText() {
+    return qsTr("Some recordings weren't deleted because their storage changed. Delete them again.")
+}
+
+// Issue #902: deletes (asked for or by the storage limit) not done because
+// the file at the recording's name was not the one recorded. Nothing to
+// retry: the file stays as it is.
+function deletesSkippedText() {
+    return qsTr("Some files weren't deleted because they changed after they were recorded. They were left as they are.")
 }
 
 // Issue #782: the words a group of plain Text items shows, for the one

@@ -1,4 +1,4 @@
-add_library(dsd-neo_ui_terminal)
+add_library(dsd-neo_ui_terminal STATIC)
 
 target_sources(
     dsd-neo_ui_terminal
@@ -98,11 +98,4 @@ target_link_libraries(
 target_link_libraries(
     dsd-neo_ui_terminal
     PRIVATE dsd-neo_warnings dsd-neo_feature_colors ${CURSES_LIBRARIES}
-)
-
-install(
-    TARGETS dsd-neo_ui_terminal
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

@@ -400,6 +400,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool relaxedCrcEffective READ relaxedCrcEffective NOTIFY controlChanged)
     Q_PROPERTY(bool relaxedCrcRowOverride READ relaxedCrcRowOverride NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
+    /* Moves with each acknowledgement the engine publishes, the same text set again included. */
+    Q_PROPERTY(quint32 uiMessageSeq READ uiMessageSeq NOTIFY uiMessageSeqChanged)
     /* The decode clock's wall-clock now, for QML that ages or cuts off decoded stamps. */
     Q_PROPERTY(qlonglong decodeNowMs READ decodeNowMs NOTIFY decodeNowMsChanged)
 
@@ -2090,6 +2092,17 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The engine's count of the acknowledgements it has published (dsd_state::ui_msg_seq).
+     *
+     * An acknowledgement set again with the text already shown leaves uiMessage
+     * unchanged; this still moves, so a screen tells a new answer from the old one.
+     */
+    quint32
+    uiMessageSeq() const {
+        return m_view.ui_message_seq;
+    }
+
+    /**
      * @brief The decode clock's wall-clock now, in milliseconds since the Unix epoch.
      *
      * The scale of a JavaScript time value, and in live decoding the viewer's own clock, but on the
@@ -2315,6 +2328,7 @@ class MetricsModel : public QObject {
     void toneFilterSettingChanged();
     void tetraChanged();
     void uiMessageChanged();
+    void uiMessageSeqChanged();
     void decodeNowMsChanged();
 
   private:
@@ -2439,6 +2453,7 @@ class MetricsModel : public QObject {
         QString sync_label;
         QString scan_mode;
         QString ui_message;
+        quint32 ui_message_seq = 0;
         QString squelch_readout;
         QString squelch_auto_status;
         bool squelch_gate_open = false;
@@ -2886,6 +2901,8 @@ class MetricsModel : public QObject {
     QString scanAvoidLabel(const dsd_app_scan_avoid_raw_entry& entry) const;
     /** @brief Signal the scan timing row and the avoid list, each only when it moved. */
     void emitScanSignals(bool timing, bool avoids);
+    /** @brief Signal the engine's acknowledgement and its count, each only when it moved. */
+    void emitMessageSignals(bool text, bool seq);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */

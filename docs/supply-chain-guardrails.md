@@ -86,7 +86,7 @@ tools/check_vcpkg_overlay_pins.sh
 
 Run the affected vcpkg build or packaging workflow. Use the same process for `arancormonk/codec2`.
 
-`tools/check_vcpkg_overlay_pins.sh` covers every overlay with a GitHub source: `mbe-neo` (and its PFFFT),
+`tools/check_vcpkg_overlay_pins.sh` covers every overlay with a GitHub source: `mbe-neo` (and its pffft-neo),
 `codec2`, `rtlsdr`, `airspy`, `portaudio`, and the SoapySDR load path the Windows ZIP ships:
 
 | Overlay | Upstream | Pins | Pinned to |

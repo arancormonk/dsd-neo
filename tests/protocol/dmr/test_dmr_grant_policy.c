@@ -34,11 +34,13 @@
 #include <string.h>
 #include <time.h>
 
+#include "dmr_mbc_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #include "../../test_support/radio_policy_test.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -560,6 +562,7 @@ build_aloha(uint8_t* bits, uint8_t* bytes, uint8_t fid) {
     build_pf0(bits, bytes, 25U, fid);
 }
 
+/* A C_MOVE whose bits are laid out as a channel grant's (LPCN 16-27, slot 28, target 32-55, source 56-79). */
 static void
 build_c_move(uint8_t* bits, uint8_t* bytes, uint16_t lpcn, uint8_t slot, uint32_t target, uint32_t source) {
     build_pf0(bits, bytes, 57U, 0U);
@@ -569,15 +572,20 @@ build_c_move(uint8_t* bits, uint8_t* bytes, uint16_t lpcn, uint8_t slot, uint32_
     write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
 }
 
+/* A P_CLEAR (TS 102 361-4 Table 7.30) addressed to @p target, a talkgroup when @p gi (bit 31). */
 static void
-build_p_clear(uint8_t* bits, uint8_t* bytes, uint8_t fid) {
-    build_pf0(bits, bytes, 46U, fid);
+build_p_clear(uint8_t* bits, uint8_t* bytes, uint8_t gi, uint32_t target) {
+    build_pf0(bits, bytes, 46U, 0U);
+    bits[31] = (uint8_t)(gi & 1U);
+    write_bits_u32(bits, 32U, target & 0x00FFFFFFU, 24U);
 }
 
 static void
 build_c_bcast_ann_wd_tscc(uint8_t* bits, uint8_t* bytes, uint16_t ch1, uint16_t ch2, uint8_t ch1_flag,
                           uint8_t ch2_flag) {
     build_pf0(bits, bytes, 40U, 0U);
+    bytes[0] = (uint8_t)(0x80U | 40U); /* a single block: LB 1 (Table 7.20) */
+    bits[0] = 1U;
     write_bits_u32(bits, 16U, 0U, 5U);
     bits[33] = (uint8_t)(ch1_flag & 1U);
     bits[34] = (uint8_t)(ch2_flag & 1U);
@@ -2052,6 +2060,127 @@ test_grant_naming_blocked_radio_not_tuned(dsd_opts* opts, dsd_state* st, uint16_
     return rc;
 }
 
+/* ---- Tier III grant classes (TS 102 361-4 Tables 7.9-7.15, discussion #900 B8) ---- */
+
+/* @p opcode granted on @p lpcn to @p target from @p source on slot 1 with group and private tuning as given; 1 when it
+   was followed to @p freq. */
+static int
+grant_class_followed(dsd_opts* opts, dsd_state* st, uint8_t opcode, int group_on, int private_on, uint16_t lpcn,
+                     long freq, uint32_t target, uint32_t source) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    reset_to_cc(opts, st);
+    opts->trunk_tune_group_calls = group_on;
+    opts->trunk_tune_private_calls = private_on;
+    build_grant(bits, bytes, opcode, lpcn, target, source, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    return opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq;
+}
+
+/* With data tuning on, a data grant is judged by its own class, never rewritten to a group voice grant: PD_GRANT
+   (0x33 single, 0x37 multi) and PD_GRANT_DX (0x36) by the private-call settings, TD_GRANT (0x34 single, 0x38 multi)
+   by the group-call ones. With data tuning off none is followed. */
+static int
+test_data_grant_classes(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const uint8_t k_private_data[] = {0x33U, 0x37U, 0x36U};
+    static const uint8_t k_group_data[] = {0x34U, 0x38U};
+    int rc = 0;
+    init_env(opts, st);
+    st->trunk_chan_map[lpcn] = freq;
+    for (size_t i = 0; i < sizeof k_private_data; i++) {
+        const uint8_t op = k_private_data[i];
+        const uint32_t id = 7100U + (uint32_t)i;
+        rc |= expect_true("private data grant followed with group tuning off",
+                          grant_class_followed(opts, st, op, 0, 1, lpcn, freq, id, id + 100U));
+        rc |= expect_true("private data grant followed as an individual call",
+                          dmr_sm_get_ctx()->vc_is_group == 0 && dmr_sm_get_ctx()->vc_dst == (int)id
+                              && dmr_sm_get_ctx()->vc_src == (int)(id + 100U));
+        rc |= expect_true("private data grant blocked with private tuning off",
+                          !grant_class_followed(opts, st, op, 1, 0, lpcn, freq, id + 10U, id + 110U));
+    }
+    for (size_t i = 0; i < sizeof k_group_data; i++) {
+        const uint8_t op = k_group_data[i];
+        const uint32_t id = 7200U + (uint32_t)i;
+        rc |= expect_true("group data grant followed with private tuning off",
+                          grant_class_followed(opts, st, op, 1, 0, lpcn, freq, id, id + 100U));
+        rc |= expect_true("group data grant followed as a group call",
+                          dmr_sm_get_ctx()->vc_is_group == 1 && dmr_sm_get_ctx()->vc_tg == (int)id);
+        rc |= expect_true("group data grant blocked with group tuning off",
+                          !grant_class_followed(opts, st, op, 0, 1, lpcn, freq, id + 10U, id + 110U));
+    }
+    opts->trunk_tune_data_calls = 0;
+    for (uint8_t op = 0x33U; op <= 0x38U; op++) {
+        if (op == 0x35U) {
+            continue;
+        }
+        rc |= expect_true("data grant not followed with data tuning off",
+                          !grant_class_followed(opts, st, op, 1, 1, lpcn, freq, 7300U + op, 7400U));
+    }
+    opts->trunk_tune_data_calls = 1;
+
+    // Opcode 0x38 on MS-sourced data is BS_Dwn_Act, never a grant: no activity row, nothing followed.
+    (void)dsd_recent_activity_clear(st, 0U);
+    const int synctype = st->synctype;
+    st->synctype = DSD_SYNC_DMR_MS_DATA;
+    rc |= expect_true("BS_Dwn_Act on MS data is not followed",
+                      !grant_class_followed(opts, st, 0x38U, 1, 1, lpcn, freq, 7500U, 7501U));
+    rc |= expect_true("BS_Dwn_Act on MS data publishes no grant activity", recent_activity_is_empty(st, 0U));
+    st->synctype = synctype;
+    reset_to_cc(opts, st);
+    return rc;
+}
+
+/* A duplex grant (PV_GRANT_DX 0x35, PD_GRANT_DX 0x36; Tables 7.10 and 7.14) names its target MS in bits 32-55 and the
+   call partner in bits 56-79; Call Direction (bit 31) says whether that target is the called MS (0) or the calling MS
+   (1). The trunk state machine, the console line and the activity row all name the called MS as the target and the
+   calling MS as the source. */
+static int
+test_duplex_grant_direction(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const struct {
+        uint8_t opcode;
+        uint8_t direction;
+        uint32_t called;
+        uint32_t calling;
+        dsd_call_kind kind;
+        const char* line;
+    } cases[] = {
+        {0x35U, 0U, 8001U, 8002U, DSD_CALL_KIND_PRIVATE_VOICE, "Target: 00008001 - Source: 00008002"},
+        {0x35U, 1U, 8002U, 8001U, DSD_CALL_KIND_PRIVATE_VOICE, "Target: 00008002 - Source: 00008001"},
+        {0x36U, 0U, 8001U, 8002U, DSD_CALL_KIND_DATA, "Target: 00008001 - Source: 00008002"},
+        {0x36U, 1U, 8002U, 8001U, DSD_CALL_KIND_DATA, "Target: 00008002 - Source: 00008001"},
+    };
+
+    int rc = 0;
+    char out[4096];
+    init_env(opts, st);
+    st->trunk_chan_map[lpcn] = freq;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        reset_to_cc(opts, st);
+        (void)dsd_recent_activity_clear(st, 0U);
+        // The target address field (bits 32-55) always holds 8001, the partner field (56-79) 8002.
+        build_grant(bits, bytes, cases[i].opcode, lpcn, 8001U, 8002U, 0U);
+        bits[31] = cases[i].direction;
+        dsd_test_capture_stderr cap;
+        out[0] = '\0';
+        rc |= expect_true("duplex capture begin", dsd_test_capture_stderr_begin(&cap, "dmr_grant_dx") == 0);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        rc |= expect_true("duplex capture end", dsd_test_capture_stderr_end(&cap) == 0);
+        rc |= expect_true("duplex capture read", dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+        rc |= expect_true("duplex grant followed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
+        rc |= expect_true("duplex grant event names the called MS as target and the calling MS as source",
+                          dmr_sm_get_ctx()->vc_is_group == 0 && dmr_sm_get_ctx()->vc_dst == (int)cases[i].called
+                              && dmr_sm_get_ctx()->vc_src == (int)cases[i].calling);
+        rc |= expect_true("duplex grant console line names called and calling", strstr(out, cases[i].line) != NULL);
+        rc |=
+            expect_true("duplex grant activity row names called and calling",
+                        recent_activity_matches(st, 0U, cases[i].kind, cases[i].called, cases[i].calling, lpcn, NULL));
+    }
+    reset_to_cc(opts, st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2071,6 +2200,8 @@ main(void) {
 
     install_trunk_tuning_hooks();
     rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
+    rc |= test_data_grant_classes(opts, st, lpcn, freq);
+    rc |= test_duplex_grant_direction(opts, st, lpcn, freq);
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;
     opts->trunk_use_allow_list = 1;
@@ -2106,11 +2237,11 @@ main(void) {
     reset_to_cc(opts, st);
     build_grant(bits, bytes, 52U, lpcn, 1300U, 2300U, 1U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-    rc |= expect_true("data grant enabled for tuning is normalized to group", dmr_sm_get_ctx()->vc_tg == 1300);
+    rc |= expect_true("TD_GRANT is followed as a group call", dmr_sm_get_ctx()->vc_tg == 1300);
 
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3300U, 4400U, 0U, 88U, 452U, 100U);
-    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dsd_test_dmr_cspdu_mbc(opts, st, bits, bytes);
     rc |= expect_true("absolute grant learns mbc lpcn", st->trunk_chan_map[88] == 452012500L);
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
     rc |= expect_true("absolute grant publishes mbc lpcn activity",
@@ -2122,7 +2253,7 @@ main(void) {
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3310U, 4410U, 0U, 89U, 453U, 200U);
     write_bits_u32(bits, 112U, 3U, 4U);
-    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    dsd_test_dmr_cspdu_mbc(opts, st, bits, bytes);
     rc |= expect_true("unknown absolute cdef does not learn lpcn", st->trunk_chan_map[89] == 0);
     rc |= expect_true("unknown absolute cdef does not tune", opts->trunk_is_tuned == 0);
 
@@ -2526,25 +2657,20 @@ main(void) {
     rc |= expect_true("aloha rtl learns control-channel frequency", pf0_st.trunk_cc_freq == 460012500L);
     rc |= expect_true("aloha rtl rotates output file on cc", g_rotate_symbol_out_file_calls == 1);
 
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 12U, 0U, 0x001234U, 0x005678U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 1 activity",
-                      recent_activity_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x001234U, 0x005678U, 12U,
-                                              "Active Ch: 000C (TDMA S1) TG: 4660;"));
-    rc |= expect_true("c_move slot 1 does not create a call", no_active_call(&pf0_st, 0U));
-    rc |= expect_true("c_move slot 1 debounces opposite slot", pf0_st.dmrburstL == 16 && pf0_st.dmrburstR == 9);
-
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 13U, 1U, 0x002345U, 0x006789U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 2 activity",
-                      recent_activity_matches(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x002345U, 0x006789U, 13U,
-                                              "Active Ch: 000D (TDMA S2) TG: 9029;"));
-    rc |= expect_true("c_move slot 2 does not create a call", no_active_call(&pf0_st, 1U));
-    rc |= expect_true("c_move slot 2 debounces opposite slot", pf0_st.dmrburstR == 16 && pf0_st.dmrburstL == 9);
+    /* C_MOVE is Move TSCC (TS 102 361-4 Table 7.17): bits a channel grant would read as LPCN, slot, target and source
+       name no call, so it publishes no activity row and leaves both burst indicators alone. */
+    for (uint8_t slot = 0U; slot <= 1U; slot++) {
+        init_env(&pf0_opts, &pf0_st);
+        pf0_opts.trunk_enable = 0;
+        pf0_st.dmrburstL = 6;
+        pf0_st.dmrburstR = 6;
+        build_c_move(bits, bytes, (uint16_t)(12U + slot), slot, 0x001234U, 0x005678U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("c_move publishes no activity",
+                          recent_activity_is_empty(&pf0_st, 0U) && recent_activity_is_empty(&pf0_st, 1U));
+        rc |= expect_true("c_move does not create a call", no_active_call(&pf0_st, slot));
+        rc |= expect_true("c_move leaves the burst indicators", pf0_st.dmrburstL == 6 && pf0_st.dmrburstR == 6);
+    }
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_enable = 0;
@@ -2552,21 +2678,25 @@ main(void) {
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 6;
     seed_voice_call(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U);
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 4400U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear trunk disabled leaves slot 1 burst", pf0_st.dmrburstL == 6);
     rc |= expect_true("p_clear trunk disabled leaves opposite burst", pf0_st.dmrburstR == 6);
     rc |= expect_true("p_clear trunk disabled leaves canonical slot 1 call",
                       active_call_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U));
 
+    // The followed call on slot 2 cleared while slot 1 carries data: only slot 2 goes idle, and nothing is forced.
     init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_is_tuned = 1;
+    pf0_st.trunk_chan_map[lpcn] = freq;
+    build_grant(bits, bytes, 49U, lpcn, 9900U, 6500U, 1U);
+    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("p_clear data setup tunes vc", pf0_opts.trunk_is_tuned == 1);
     pf0_st.currentslot = 1;
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 16;
     const dsd_call_observation slot_two_data = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 1U, 0U, 9900U);
     (void)dsd_recent_activity_publish(&pf0_st, 1U, &slot_two_data, "slot two data channel", 1U);
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 9900U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear data clears slot 2 burst state", pf0_st.dmrburstR == 9);
     rc |= expect_true("p_clear data leaves companion burst hint alone", pf0_st.dmrburstL == 6);
@@ -2582,12 +2712,15 @@ main(void) {
     static const unsigned int companion_hints[] = {2U, 6U, 9U, 15U, 17U};
     for (size_t h = 0; h < sizeof(companion_hints) / sizeof(companion_hints[0]); h++) {
         init_env(&pf0_opts, &pf0_st);
-        pf0_opts.trunk_is_tuned = 1;
+        pf0_st.trunk_chan_map[lpcn] = freq;
+        build_grant(bits, bytes, 49U, lpcn, 4400U, 3300U, 0U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("p_clear active companion setup tunes vc", pf0_opts.trunk_is_tuned == 1);
         pf0_st.currentslot = 0;
         pf0_st.dmrburstL = 9;
         pf0_st.dmrburstR = companion_hints[h];
         seed_voice_call(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 7700U, 8800U);
-        build_p_clear(bits, bytes, 0U);
+        build_p_clear(bits, bytes, 1U, 4400U);
         dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
         rc |= expect_true("p_clear active companion does not force release", pf0_st.trunk_sm_force_release == 0);
         rc |= expect_true("p_clear active companion does not return to cc", pf0_st.p25_sm_release_count == 0);
@@ -2621,7 +2754,7 @@ main(void) {
         .tune_to_cc_request = test_tune_request,
         .return_to_cc_request = result_return_to_cc,
     });
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 5500U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     install_trunk_tuning_hooks();
     rc |= expect_true("p_clear hold forced return hook called", g_return_to_cc_result_calls == 1);
@@ -2632,20 +2765,15 @@ main(void) {
 
     init_env(&pf0_opts, &pf0_st);
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast channel frequency learned", pf0_st.trunk_chan_map[77] == 451012500L);
-    rc |= expect_true("c_bcast channel frequency tracked", pf0_st.trunk_lcn_freq[0] == 451012500L);
-    rc |= expect_true("c_bcast first learned frequency sets count", pf0_st.lcn_freq_count == 1);
-
-    /* Distinct announcements append rather than writing modulo a fixed window, and a repeat of
-     * an already-tracked frequency is not appended twice. */
+    /* A Chan_Freq names a logical channel's frequency, not a TSCC (TS 102 361-4 §6.7.1.6): nothing reaches the
+     * positional list, which stays the user's (discussion #900). */
+    rc |= expect_true("c_bcast channel frequency not in the list", pf0_st.lcn_freq_count == 0);
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_bcast second frequency appended", pf0_st.trunk_lcn_freq[1] == 451037500L);
-    rc |= expect_true("c_bcast second frequency raises count", pf0_st.lcn_freq_count == 2);
-    build_c_bcast_chan_freq(bits, bytes, 79U, 451U, 300U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_bcast duplicate frequency not appended", pf0_st.lcn_freq_count == 2);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    rc |= expect_true("c_bcast second channel learned", pf0_st.trunk_chan_map[78] == 451037500L);
+    rc |= expect_true("c_bcast second channel not in the list", pf0_st.lcn_freq_count == 0);
     dsd_state_ext_free_all(&pf0_st);
 
     /* An imported channel map is positional operator intent: a site broadcast must neither write
@@ -2659,7 +2787,7 @@ main(void) {
     }
     pf0_st.lcn_freq_count = 40;
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("imported map still learns the channel", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("imported map keeps its length", pf0_st.lcn_freq_count == 40);
     int imported_intact = 1;
@@ -2681,7 +2809,7 @@ main(void) {
     pf0_st.trunk_chan_map[10] = 451000000L;
     pf0_st.trunk_chan_map[12] = 451025000L;
     build_c_bcast_adjacent_apcn(bits, bytes, 14U, 451U, 400U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast apcn learned anchor", pf0_st.trunk_chan_map[14] == 451050000L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 11", pf0_st.trunk_chan_map[11] == 451012500L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 13", pf0_st.trunk_chan_map[13] == 451037500L);

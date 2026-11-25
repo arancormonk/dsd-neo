@@ -25,6 +25,12 @@ Item {
     required property ListView list
     // The model the list shows while it is visible.
     property var model: null
+    // Whether the model shows what the list is for yet. While it does not (the
+    // Monitor's calls during a session start, before Main has told the view
+    // which session to show: issue #901 r3 M1), a list that is shown is not
+    // handed it; it is once this turns true. A hidden list lets the model go
+    // as always. Default: always ready.
+    property bool ready: true
     // The identity a row delegate stands for, and the view row that identity is
     // at now (-1 when it is gone). Supplied by the screen, which knows its rows.
     property var keyOf: function (row) {
@@ -97,11 +103,12 @@ Item {
     }
 
     function follow() {
-        if (root.list.visible)
-            root.attach();
-        else
+        if (!root.list.visible)
             root.release();
+        else if (root.ready)
+            root.attach();
     }
+    onReadyChanged: follow()
 
     Connections {
         target: root.list

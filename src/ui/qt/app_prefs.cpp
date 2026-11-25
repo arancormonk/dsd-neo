@@ -144,6 +144,8 @@ enum Key {
     // Issue #899: the squelch analog channels run while nothing sets one (off, auto+N, noise+N). Portable with the other tuner
     // defaults; a backup without it restores the default, as an install that never chose one reads it.
     kRadioSquelch,
+    // Issue #901: compact view. Device-local: how this device's screen is arranged, like kMonitorDetailsExpanded.
+    kCompactView,
     kKeyCount
 };
 
@@ -206,6 +208,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"map/viewport", false},
     {"map/ageFilter", false},
     {"radio/squelch", true},
+    {"ui/compactView", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -1181,6 +1184,20 @@ AppPrefs::setMonitorDetailsExpanded(bool on) {
     }
     m_settings.setValue(key_name(kMonitorDetailsExpanded), on);
     Q_EMIT monitorDetailsExpandedChanged();
+}
+
+bool
+AppPrefs::compactView() const {
+    return stored_flag(m_settings.value(key_name(kCompactView)), false);
+}
+
+void
+AppPrefs::setCompactView(bool on) {
+    if (on == compactView()) {
+        return;
+    }
+    m_settings.setValue(key_name(kCompactView), on);
+    Q_EMIT compactViewChanged();
 }
 
 bool

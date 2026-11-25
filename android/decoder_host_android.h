@@ -16,6 +16,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QRect>
 #include <QSet>
 #include <QString>
@@ -23,6 +24,7 @@
 #include <QThreadPool>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <dsd-neo/platform/file_compat.h>
 #include <functional>
 #include <memory>
 #include <stdint.h>
@@ -412,6 +414,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     static void postSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
 
+    /** @brief Whether running transfer @p id's selection still stands (its token): RecordingExport asks over JNI
+     * (DsdNative.nativeRecordingSelectionCurrent()) before it reads the first recording and before it keeps the
+     * document. False for an id no transfer runs under. Any thread. */
+    static bool recordingSelectionCurrent(qint64 id);
+
   protected:
     /**
      * @brief A cancel, a session close or a newer listing retired @p requestId: FileBrowser cancels it too, once, if it
@@ -431,8 +438,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * pickers hand out content:// documents. Progress is polled by refresh(); the end comes back to the GUI thread
      * queued.
      */
-    bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                                bool zip) override;
+    bool beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                                const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                                const RecordingSelectionToken& token) override;
 
     /**
      * @brief RecordingShare: only a .wav inside a recording root is offered, read-only, through the app's chooser, as a
@@ -492,13 +500,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * Static, and through @p link only: a job the destructor stopped waiting for never touches the host.
      */
     static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
-                                     const QStringList& names, const QString& reference, bool zip);
+                                     const QStringList& names, const QList<dsd_file_identity_t>& expected,
+                                     const QString& reference, bool zip, const RecordingSelectionToken& token);
     /**
-     * @brief RecordingExport's transfer of @p paths into the platform document @p reference: its result, with the
-     * paths it found gone added to @p missing. A call that gave no answer discards a Download-folder row (#829).
+     * @brief RecordingExport's transfer of @p paths into the platform document @p reference, each checked against
+     * @p expected right before it is read, and @p token before the first is read and before the document is kept
+     * (recordingSelectionCurrent() answers for it while the call runs): its result, with the paths it found gone added
+     * to @p missing. A call that gave no answer discards a Download-folder row (#829).
      */
     static int transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
-                                  const QString& reference, bool zip, QStringList& missing);
+                                  const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip,
+                                  const RecordingSelectionToken& token, QStringList& missing);
     void noteRecordingTransferTotal(qint64 id, qint64 total);
     void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
     /**
@@ -587,11 +599,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief RecordingPlayback.status(): "generation, state, position, duration, error", tab-separated. */
     static QString platformPlaybackStatus();
     /**
-     * @brief RecordingExport.transfer() on the calling (worker) thread: the result code, then the paths it found gone;
-     * empty when the call failed.
+     * @brief RecordingExport.transfer() on the calling (worker) thread, with each file's size and modification time
+     * as selected (@p expected): the result code, then the paths it found gone; empty when the call failed.
      */
     static QStringList platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
-                                                  const QString& reference, bool zip);
+                                                  const QList<dsd_file_identity_t>& expected, const QString& reference,
+                                                  bool zip);
     /** @brief RecordingExport.progress(): the source bytes written, -1 when transfer @p id is not running. */
     static qint64 platformRecordingTransferProgress(qint64 id);
     static void platformCancelRecordingTransfer(qint64 id);

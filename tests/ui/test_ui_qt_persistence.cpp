@@ -842,6 +842,7 @@ test_app_prefs(void) {
         expect("onboarding starts not-done", !prefs.onboardingDone());
         expect("the monitor's Signal & site readings start closed", !prefs.monitorDetailsExpanded());
         expect("files are chosen with Android's picker first", !prefs.chooseFilesInApp());
+        expect("compact view starts off", !prefs.compactView());
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
         expect("quick lockouts default to saving", prefs.persistTgLockouts());
@@ -1655,6 +1656,43 @@ test_systems_sort_pref() {
         reloaded.setSystemsSort(QStringLiteral("added"));
         expect("choosing the default over the damage writes it",
                stored.value(key).toString() == QStringLiteral("added") && changes == 1);
+    }
+    stored.remove(key);
+}
+
+/* Issue #901: compact view, a device-local switch that is off until chosen. */
+void
+test_compact_view_pref() {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("ui/compactView");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::compactViewChanged, &prefs, [&changes]() { ++changes; });
+        expect("compact view defaults off", !prefs.compactView());
+        prefs.setCompactView(false);
+        expect("choosing off on a fresh install is not a change", changes == 0 && !stored.contains(key));
+        prefs.setCompactView(true);
+        expect("compact view on reads back and is stored",
+               prefs.compactView() && stored.value(key).toBool() && changes == 1);
+        prefs.setCompactView(true);
+        expect("compact view on again does not notify", changes == 1);
+        prefs.setCompactView(false);
+        expect("compact view off reads back and is stored",
+               !prefs.compactView() && stored.contains(key) && !stored.value(key).toBool() && changes == 2);
+        prefs.setCompactView(true);
+        expect("compact view on once more notifies", changes == 3);
+    }
+    {
+        AppPrefs reloaded;
+        expect("compact view persists across instances", reloaded.compactView());
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::compactViewChanged, &reloaded, [&changes]() { ++changes; });
+        stored.setValue(key, QStringLiteral("off"));
+        expect("a garbled stored value reads as off", !reloaded.compactView());
+        reloaded.setCompactView(true);
+        expect("choosing on over the damage writes it", stored.value(key).toBool() && changes == 1);
     }
     stored.remove(key);
 }
@@ -3130,6 +3168,8 @@ test_prefs_key_table(void) {
          "map/viewport"},
         // Issue #899: the squelch a radio session's analog channels run while nothing sets one.
         {"squelch", QStringLiteral("auto+14"), "radio/squelch"},
+        // Issue #901: compact view.
+        {"compactView", true, "ui/compactView"},
     };
     QStringList covered;
     int writable = 0;
@@ -3227,6 +3267,7 @@ test_prefs_key_table(void) {
         QStringLiteral("monitor/detailsExpanded"),
         QStringLiteral("roaming/enabled"),
         QStringLiteral("ui/chooseFilesInApp"),
+        QStringLiteral("ui/compactView"),
         QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
     };
@@ -3236,6 +3277,7 @@ test_prefs_key_table(void) {
            portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
                && !portable.contains(QStringLiteral("listen/section"))
                && !portable.contains(QStringLiteral("listen/systemsSort"))
+               && !portable.contains(QStringLiteral("ui/compactView"))
                && portable.contains(QStringLiteral("listen/keepAwake"))
                && portable.contains(QStringLiteral("listen/lastStartedUid"))
                && portable.contains(QStringLiteral("rr/appKey"))
@@ -3258,7 +3300,8 @@ test_prefs_key_table(void) {
                                                           && !before.contains(QStringLiteral("location/lastLat"))
                                                           && !before.contains(QStringLiteral("ui/onboardingDone"))
                                                           && !before.contains(QStringLiteral("monitor/detailsExpanded"))
-                                                          && !before.contains(QStringLiteral("listen/section")));
+                                                          && !before.contains(QStringLiteral("listen/section"))
+                                                          && !before.contains(QStringLiteral("ui/compactView")));
     for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
         expect("readPortable key is portable", portable.contains(it.key()));
     }
@@ -3289,6 +3332,7 @@ test_prefs_key_table(void) {
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
     file.setValue(QStringLiteral("monitor/detailsExpanded"), true);
     file.setValue(QStringLiteral("listen/section"), QStringLiteral("explore"));
+    file.setValue(QStringLiteral("ui/compactView"), true);
     file.sync();
 
     QVariantMap incoming;
@@ -3298,6 +3342,8 @@ test_prefs_key_table(void) {
     incoming.insert(QStringLiteral("ui/onboardingDone"), false);
     incoming.insert(QStringLiteral("monitor/detailsExpanded"), false);
     incoming.insert(QStringLiteral("listen/section"), QStringLiteral("scanLists"));
+    // Issue #901: an edited backup's contrary compact view does not replace this device's.
+    incoming.insert(QStringLiteral("ui/compactView"), false);
     incoming.insert(QStringLiteral("not/a/key"), 1);
     incoming.insert(QStringLiteral("search/sourceType"), QStringLiteral("airspy"));
     incoming.insert(QStringLiteral("search/port"), 5555);
@@ -3313,7 +3359,8 @@ test_prefs_key_table(void) {
            after.value(QStringLiteral("ui/onboardingDone")).toBool()
                && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
                && after.value(QStringLiteral("location/lastLat")).toInt() == 9
-               && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore"));
+               && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore")
+               && after.value(QStringLiteral("ui/compactView")).toBool());
     for (const QString& key : mapKeys) {
         expect(qPrintable(QStringLiteral("a restore leaves %1 as it was").arg(key)), after.contains(key));
     }
@@ -3340,6 +3387,8 @@ test_prefs_key_table(void) {
         const AppPrefs fresh;
         expect("a restore without the Listen tab keeps the local one",
                fresh.listenSection() == QStringLiteral("explore"));
+        // Issue #901: nor does one without compact view turn this device's off.
+        expect("a restore without compact view keeps the local one", fresh.compactView());
     }
 }
 
@@ -4225,6 +4274,7 @@ main(int argc, char** argv) {
     test_screen_policy_prefs();
     test_listen_section_pref();
     test_systems_sort_pref();
+    test_compact_view_pref();
     test_roaming_prefs();
     test_map_prefs();
     test_hangtime_unreadable_value();

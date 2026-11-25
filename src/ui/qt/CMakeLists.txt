@@ -115,6 +115,7 @@ qt_add_resources(
         qml/qmldir
         qml/Theme.qml
         qml/Navigation.qml
+        qml/LineBoxes.qml
         qml/NavigationLayer.qml
         qml/FocusFrame.qml
         qml/IconButton.qml
