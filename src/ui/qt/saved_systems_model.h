@@ -34,6 +34,8 @@
 #include <functional>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
+class QByteArray;
+
 namespace dsd_qt {
 class ReplayStore;
 
@@ -92,6 +94,47 @@ class SavedSystemsModel : public QAbstractListModel {
      * only what it lacked. Unknown keys are ignored. A place with no entry at all is none.
      */
     static QVariantMap validPlace(const QVariant& raw);
+
+    /**
+     * @brief @p raw as stored DMR Tier III channels (discussion #900 F3): `[{lpcn, hz}]`, the user's channels over the
+     * channel map, hz 0 for a hidden one. Only valid entries (a map with a whole-number lpcn 1..4094 and hz 0 or
+     * 100000..2147483647: an integer, or a double with no fraction; never a bool, text or a fraction), the first for
+     * each channel, at most 256, by channel ascending; an empty list for anything else.
+     */
+    static QVariantList validDmrChannels(const QVariant& raw);
+
+    /** @brief Where a start of saved system @p uid (a canonical uid) writes its --dmr-chan-overrides file; remove()
+     *  deletes it with the system. */
+    static QString dmrChannelsFilePath(const QString& uid);
+
+    /**
+     * @brief Write @p csv as saved system @p uid's channels file (dmrChannelsFilePath()), owner-only, never through a
+     * link: the dmr_channels folder must be a real folder (made when absent), and the file is
+     * replaced, a link at it included (the link goes, never what it names), by renaming a private temporary file
+     * written beside it (<dsd-neo/platform/file_compat.h>). False, with @p reason, when it was not written.
+     */
+    static bool writeDmrChannelsFile(const QString& uid, const QByteArray& csv, QString* reason);
+
+    /** @brief Remove saved system @p uid's channels file, only in a real dmr_channels folder: a link at the file goes,
+     *  never what it names, and nothing is removed through a linked folder. */
+    static void removeDmrChannelsFile(const QString& uid);
+
+    /** @brief The saved system @p uid's DMR Tier III channels (validDmrChannels()'s form); empty for an unknown uid. */
+    Q_INVOKABLE QVariantList dmrChannels(const QString& uid) const;
+
+    /**
+     * @brief Keep one channel edit the decoder accepted (DSD_APP_DMR_CHANNEL_SET_OK) on saved system @p uid: @p op 1
+     * sets channel @p lpcn to @p hz, 2 hides it (hz 0; @p hz not read), 3 drops its entry. Persists first, and touches
+     * no other field: never the channel map file or the RadioReference provenance.
+     *
+     * @return {ok: bool, error: ""} on success; otherwise ok false and error "no-system" (no such uid), "invalid" (no
+     *         such channel, frequency or operation), "full" (a 257th channel), "not-saved" (the save failed; nothing
+     *         changed) or "session-only" (a restore of a channel with no entry: nothing saved with the system set it,
+     *         so there is nothing to keep). One dataChanged follows a change. Every start
+     *         of the system passes the entries (SessionArgsBuilder), after every option the user typed, and the decoder
+     *         applies them when the session decodes DMR frames and runs no trunk scan.
+     */
+    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz);
 
     /** Fills names and county links a place lacks from what is already known (no network); may leave it as it was. */
     using PlaceNameFill = std::function<void(QVariantMap& place)>;
@@ -367,6 +410,7 @@ class SavedSystemsModel : public QAbstractListModel {
         bool keyCsvHex = false;
         QString p25BandplanCsvPath;
         QString srcCsvPath;
+        QVariantList dmrChannels; // validDmrChannels()'s form
     };
 
     static void fillRowKey(const QVariantMap& map, Row& row);

@@ -37,6 +37,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "dmr_channels_model.h"
 #include "import_service.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
@@ -286,6 +287,17 @@ publish_unit_activity(QQmlContext* context, UiController* controller, QObject* o
     controller->setUnitActivity(activity);
     context->setContextProperty(QStringLiteral("unitActivity"), activity);
     context->setContextProperty(QStringLiteral("activityView"), activityView);
+}
+
+// Discussion #900 F3: the DMR Tier III Channels sheet's rows, fed by the controller's tick while the sheet is open, and
+// the saved systems the bridge keeps an applied channel edit on.
+static void
+publish_dmr_channels(QQmlContext* context, UiController* controller, CommandBridge* commands,
+                     SavedSystemsModel* systems, QObject* owner) {
+    commands->setSavedSystems(systems);
+    auto* channels = new DmrChannelsModel(owner);
+    controller->setDmrChannels(channels);
+    context->setContextProperty(QStringLiteral("dmrChannels"), channels);
 }
 
 // Issue #800: the map's tracks, fed by the controller's tick (and by their own background tap while the app is away),
@@ -560,6 +572,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     publish_history_context(context, history, historyExport, &engine);
     publish_recording_context(context, recordings, recordingStatus);
     publish_unit_activity(context, controller, &engine);
+    publish_dmr_channels(context, controller, commands, systems, &engine);
     publish_positions(context, controller, &engine);
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);

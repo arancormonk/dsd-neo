@@ -2901,6 +2901,13 @@ Window {
         value: diagnosticsScreen.visible
     }
 
+    // Discussion #900 F3: the saved system a Tier III channel edit is kept on.
+    Binding {
+        target: dmrChannels
+        property: "sessionSystemUid"
+        value: mainRoot.sessionSavedSystemUid
+    }
+
     LicensesScreen {
         id: licensesScreen
         objectName: "licensesScreen"

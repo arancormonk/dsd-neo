@@ -2355,6 +2355,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
     dmr_t3_chan_restore(state, &snapshot->dmr_chan);
+    dmr_t3_overlay_discard(state); /* the user's channels are the one global map's: a target has none */
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
@@ -3375,6 +3376,12 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
         scan_set_error(err, err_sz, "failed to import chan_csv '%s' for trunk scan target '%s'", target->chan_csv,
                        target->id);
         return -1;
+    }
+    /* A DMR target's map makes its DMR record here, as the -C map does at start, before the build saves the target's
+       snapshot: a checked grant for a mapped channel then keeps its Tier III evidence (the grant path never allocates
+       the record), and the map's rows are the file's. */
+    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
+        dmr_t3_chan_note_map_loaded(state);
     }
     return 0;
 }
@@ -6666,9 +6673,11 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
 }
 
 // Each target carries its own missing-channel ledger and channel map, so the exit summary the
-// engine logs once for a single system becomes one line per target with a channel map here.
+// engine logs once for a single system becomes one line per target here: an NXDN target with a
+// channel map, and any target whose DMR ledger holds a channel, named by its id (discussion #900 F1;
+// an empty ledger logs nothing).
 static void
-trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
+trunk_scan_log_missing_channel_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
     if (!coord || coord->count == 0) {
         return;
     }
@@ -6678,6 +6687,7 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
     }
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        dmr_t3_missing_log_summary_for(&rt->snapshot.dmr_chan.missing, rt->target.id);
         if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
             continue;
         }
@@ -6690,7 +6700,7 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
    whose rollback puts back the scan-start modulation as well (trunk_scan_restore_saved_opts()). */
 static void
 trunk_scan_detach(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int failed_init) {
-    trunk_scan_log_nxdn_diag_summaries(coord, state);
+    trunk_scan_log_missing_channel_summaries(coord, state);
     dsd_engine_channel_scan_leave(opts, state);
     if (failed_init) {
         trunk_scan_restore_saved_opts(opts, coord);

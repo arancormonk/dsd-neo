@@ -31,6 +31,7 @@ target_sources(
         dmr_rc_notify.c
         dmr_t3_chan_learn.c
         dmr_t3_channels.c
+        dmr_t3_overlay.c
         dmr_t3_grant.c
         dmr_text.c
         dmr_pi.c

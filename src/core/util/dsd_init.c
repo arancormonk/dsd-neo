@@ -136,6 +136,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     //csv import filenames
     opts->group_in_file[0] = 0;
     opts->chan_in_file[0] = 0;
+    opts->dmr_chan_overrides_file[0] = 0;
     opts->key_in_file[0] = 0;
     opts->p25_bandplan_in_file[0] = 0;
     opts->src_in_file[0] = 0;

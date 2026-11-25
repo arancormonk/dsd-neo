@@ -26,7 +26,10 @@
 #include <QString>
 #include <QThread>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <algorithm>
 #include <cstring>
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
@@ -225,6 +228,74 @@ test_signal_search_files() {
            shown("signal-search-history.v2").isEmpty() && shown("signal-search-history.v1").isEmpty());
 }
 
+/* Discussion #900: a saved system's DMR Tier III channels file a start could not write is
+   listed as "unwritten", under the channels' own label, whatever was or was not kept. */
+void
+test_dmr_channels_unwritten() {
+    const QString file = QStringLiteral("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv");
+    post_from_worker(file, QString());
+    QCoreApplication::processEvents();
+    expect("channels: unwritten", field(file, "state") == QLatin1String("unwritten"));
+    expect("channels: their own label", field(file, "store") == QLatin1String("dmr-channels"));
+    StoreNotices::instance()->dismiss(file);
+    expect("channels: dismissed", shown(file).isEmpty());
+    /* The same failure posted again stays dismissed. A start that passes the channels withdraws
+       the notice, and the next failure (a new episode) shows again, and is read out again, whether the one before was
+       dismissed or left on the card. */
+    StoreNotices* notices = StoreNotices::instance();
+    const auto post = [&file](quint64 episode) {
+        std::thread worker(
+            [&file, episode] { dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), episode}); });
+        worker.join();
+        QCoreApplication::processEvents();
+    };
+    const auto withdraw = [&file] {
+        std::thread worker([&file] { dsd_qt::json_store_withdraw_notice(file); });
+        worker.join();
+        QCoreApplication::processEvents();
+    };
+    const auto heard = [notices, &file] {
+        const QVariantList fresh = notices->takeUnheard();
+        return std::any_of(fresh.cbegin(), fresh.cend(), [&file](const QVariant& value) {
+            return value.toMap().value(QStringLiteral("file")).toString() == file;
+        });
+    };
+    post(0);
+    expect("channels: the same failure stays dismissed", shown(file).isEmpty());
+    withdraw();
+    expect("channels: withdrawn", shown(file).isEmpty());
+    post(1);
+    expect("channels: after a dismissed one, a new episode shows again",
+           field(file, "state") == QLatin1String("unwritten"));
+    expect("channels: and is read out", heard());
+    // Left on the card, not dismissed: the withdrawal takes it off, and the next failure comes back.
+    int changes = 0;
+    const QMetaObject::Connection connection =
+        QObject::connect(notices, &StoreNotices::noticesChanged, [&changes] { changes++; });
+    withdraw();
+    expect("channels: an undismissed notice is withdrawn", shown(file).isEmpty() && changes == 1);
+    post(2);
+    expect("channels: after an undismissed one, a new episode shows again",
+           field(file, "state") == QLatin1String("unwritten") && changes == 2);
+    expect("channels: and is read out again", heard());
+    /* Withdrawn and failed again before the list's thread saw either: both syncs read the same
+       final list, and its episode alone tells the new failure from the one read out. */
+    std::thread coalesced([&file] {
+        dsd_qt::json_store_withdraw_notice(file);
+        dsd_qt::json_store_post_notice({file, QStringLiteral("test"), QString(), 3});
+    });
+    coalesced.join();
+    QCoreApplication::processEvents();
+    expect("channels: a withdrawal and a new failure in one sync change the list",
+           changes == 3 && field(file, "episode") == QLatin1String("3"));
+    expect("channels: and the new failure is read out", heard());
+    withdraw();
+    expect("channels: withdrawn while shown", changes == 4 && shown(file).isEmpty());
+    withdraw();
+    expect("channels: withdrawing what is not posted changes nothing", changes == 4 && shown(file).isEmpty());
+    QObject::disconnect(connection);
+}
+
 /* A settings file that could not be kept runs on its scratch copy: this run's changes are not saved. */
 void
 test_settings_scratch() {
@@ -285,6 +356,7 @@ main(int argc, char** argv) {
     test_dismiss_and_change();
     test_heard_once();
     test_signal_search_files();
+    test_dmr_channels_unwritten();
     test_settings_scratch();
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

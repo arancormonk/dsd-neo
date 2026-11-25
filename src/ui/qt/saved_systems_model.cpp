@@ -11,6 +11,8 @@
 #include "site_groups.h"
 
 #include <QByteArray>
+#include <QDir>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -22,12 +24,17 @@
 #include <QUuid>
 #include <QVariant>
 #include <QtGlobal>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
+#include <dsd-neo/app_control/dmr_t3_view.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
 #include "local_day_watch.h"
+#include "platform_path.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
 #include "replay_store.h"
@@ -741,7 +748,237 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
     map_take_string(map, QStringLiteral("p25BandplanCsvPath"), &row.p25BandplanCsvPath);
     map_take_string(map, QStringLiteral("srcCsvPath"), &row.srcCsvPath);
+    /* Only an edit that carries the list replaces it: a retune that ends the RadioReference provenance keeps it (the
+       user may retune within the same network), as does a decode flag change. */
+    if (map.contains(QStringLiteral("dmrChannels"))) {
+        row.dmrChannels = validDmrChannels(map.value(QStringLiteral("dmrChannels")));
+    }
     return row;
+}
+
+namespace {
+
+/* Whether @p raw is a whole number, stored in @p value when it is: an integer, or a double with no fraction (a JSON
+   number can come back as either). Not a bool, which QVariant would read as 0 or 1, not text, and not a fraction,
+   which QVariant would round: a malformed entry is skipped rather than read as another channel or a hidden one. */
+bool
+dmr_channel_whole_number(const QVariant& raw, qint64* value) {
+    switch (raw.typeId()) {
+        case QMetaType::Int:
+        case QMetaType::UInt:
+        case QMetaType::Long:
+        case QMetaType::LongLong:
+        case QMetaType::Short:
+        case QMetaType::UShort: *value = raw.toLongLong(); return true;
+        case QMetaType::ULong:
+        case QMetaType::ULongLong: {
+            const qulonglong wide = raw.toULongLong();
+            if (wide > static_cast<qulonglong>(std::numeric_limits<qint64>::max())) {
+                return false;
+            }
+            *value = static_cast<qint64>(wide);
+            return true;
+        }
+        case QMetaType::Double:
+        case QMetaType::Float: {
+            const double number = raw.toDouble();
+            double whole = 0.0;
+            const double fraction = std::modf(number, &whole);
+            // Past 2^53 a double holds no fraction to check; no channel or frequency comes near it.
+            if (!std::isfinite(number) || std::fabs(number) > 9007199254740992.0 || std::fabs(fraction) > 0.0) {
+                return false;
+            }
+            *value = static_cast<qint64>(whole);
+            return true;
+        }
+        default: return false;
+    }
+}
+
+/* One stored Tier III channel entry: true with @p lpcn and @p hz for a valid one. */
+bool
+dmr_channel_entry(const QVariant& raw, int* lpcn, qint64* hz) {
+    if (raw.typeId() != QMetaType::QVariantMap) {
+        return false;
+    }
+    const QVariantMap entry = raw.toMap();
+    qint64 channel = 0;
+    if (!dmr_channel_whole_number(entry.value(QStringLiteral("lpcn")), &channel)
+        || !dmr_channel_whole_number(entry.value(QStringLiteral("hz")), hz) || channel < 1
+        || channel > DSD_UI_DMR_T3_ROWS - 2) {
+        return false;
+    }
+    *lpcn = static_cast<int>(channel);
+    return *hz == 0 || (*hz >= DSD_UI_DMR_T3_MIN_HZ && *hz <= DSD_UI_DMR_T3_MAX_HZ);
+}
+
+QVariantList
+dmr_channel_list(const QMap<int, qint64>& entries) {
+    QVariantList out;
+    for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
+        out.append(QVariantMap{{QStringLiteral("lpcn"), it.key()}, {QStringLiteral("hz"), it.value()}});
+    }
+    return out;
+}
+
+QMap<int, qint64>
+dmr_channel_map(const QVariantList& list) {
+    QMap<int, qint64> entries;
+    for (const QVariant& value : list) {
+        int lpcn = 0;
+        qint64 hz = 0;
+        if (dmr_channel_entry(value, &lpcn, &hz) && !entries.contains(lpcn)) {
+            entries.insert(lpcn, hz);
+        }
+    }
+    return entries;
+}
+
+/* Whether a channel edit names a channel, an operation and, for a SET, a frequency it can keep. */
+bool
+dmr_channel_edit_valid(int lpcn, int op, qint64 hz) {
+    const bool lpcnOk = lpcn >= 1 && lpcn <= DSD_UI_DMR_T3_ROWS - 2;
+    const bool hzOk = op != DSD_UI_DMR_T3_OP_SET || (hz >= DSD_UI_DMR_T3_MIN_HZ && hz <= DSD_UI_DMR_T3_MAX_HZ);
+    const bool opOk = op == DSD_UI_DMR_T3_OP_SET || op == DSD_UI_DMR_T3_OP_HIDE || op == DSD_UI_DMR_T3_OP_RESTORE;
+    return lpcnOk && hzOk && opOk;
+}
+
+/* Whether @p folder, the generated dmr_channels folder, is a real folder, never following a link
+   at it; made first when @p make and it is confirmed absent. */
+bool
+dmr_channels_folder_ready(const QString& folder, bool make) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    int present = dsd_path_type_nofollow(platform_path(folder).constData(), &type);
+    if (present == 0 && make && QDir().mkpath(folder)) {
+        present = dsd_path_type_nofollow(platform_path(folder).constData(), &type);
+    }
+    return present == 1 && type == DSD_PATH_TYPE_DIR;
+}
+
+/* Whether the name @p target can be replaced or removed as a file: absent, a regular file, or a link (the link itself,
+   never what it names). A folder, FIFO or device there is left alone. */
+bool
+dmr_channels_leaf_replaceable(const QByteArray& target) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(target.constData(), &type);
+    return present == 0 || (present == 1 && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK));
+}
+
+QVariantMap
+dmr_channel_edit_result(const char* error) {
+    return {{QStringLiteral("ok"), *error == '\0'}, {QStringLiteral("error"), QString::fromLatin1(error)}};
+}
+
+} // namespace
+
+QVariantList
+SavedSystemsModel::validDmrChannels(const QVariant& raw) {
+    if (raw.typeId() != QMetaType::QVariantList) {
+        return {};
+    }
+    QMap<int, qint64> entries;
+    for (const QVariant& value : raw.toList()) {
+        int lpcn = 0;
+        qint64 hz = 0;
+        if (entries.size() < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS && dmr_channel_entry(value, &lpcn, &hz)
+            && !entries.contains(lpcn)) {
+            entries.insert(lpcn, hz);
+        }
+    }
+    return dmr_channel_list(entries);
+}
+
+QString
+SavedSystemsModel::dmrChannelsFilePath(const QString& uid) {
+    return json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+}
+
+bool
+SavedSystemsModel::writeDmrChannelsFile(const QString& uid, const QByteArray& csv, QString* reason) {
+    const QString path = dmrChannelsFilePath(uid);
+    if (!dmr_channels_folder_ready(QFileInfo(path).absolutePath(), true)) {
+        *reason = QStringLiteral("the dmr_channels folder is not a folder of the app's");
+        return false;
+    }
+    const QByteArray target = platform_path(path);
+    char temp[4096];
+    FILE* f = dsd_fopen_private_temp_for_replace(target.constData(), temp, sizeof temp, "wb");
+    if (f == nullptr) {
+        *reason = qt_error_string(errno);
+        return false;
+    }
+    const size_t size = static_cast<size_t>(csv.size());
+    bool ok = std::fwrite(csv.constData(), 1, size, f) == size;
+    ok = std::fflush(f) == 0 && dsd_fsync(dsd_fileno(f)) == 0 && ok;
+    ok = std::fclose(f) == 0 && ok;
+    if (ok && !dmr_channels_leaf_replaceable(target)) {
+        *reason = QStringLiteral("something other than a file is in its place");
+        ok = false;
+    } else if (ok && dsd_replace_file_with_temp(temp, target.constData()) != 0) {
+        *reason = qt_error_string(errno);
+        ok = false;
+    } else if (!ok) {
+        *reason = QStringLiteral("the file could not be written");
+    }
+    if (!ok) {
+        (void)dsd_remove_file(temp);
+    }
+    return ok;
+}
+
+void
+SavedSystemsModel::removeDmrChannelsFile(const QString& uid) {
+    const QString path = dmrChannelsFilePath(uid);
+    const QByteArray target = platform_path(path);
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    if (dmr_channels_folder_ready(QFileInfo(path).absolutePath(), false)
+        && dsd_path_type_nofollow(target.constData(), &type) == 1
+        && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK)) {
+        (void)dsd_remove_file(target.constData());
+    }
+}
+
+QVariantList
+SavedSystemsModel::dmrChannels(const QString& uid) const {
+    const int row = rowForUid(uid);
+    return row >= 0 ? m_rows.at(row).dmrChannels : QVariantList();
+}
+
+QVariantMap
+SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz) {
+    const int row = rowForUid(uid);
+    if (row < 0) {
+        return dmr_channel_edit_result("no-system");
+    }
+    if (!dmr_channel_edit_valid(lpcn, op, hz)) {
+        return dmr_channel_edit_result("invalid");
+    }
+    QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
+    if (op == DSD_UI_DMR_T3_OP_RESTORE) {
+        if (entries.remove(lpcn) == 0) {
+            /* Nothing saved with the system set the channel, so there is nothing to keep. Which file sets it at
+               the next start is not known here: the decoder reads only the last --dmr-chan-overrides. */
+            return dmr_channel_edit_result("session-only");
+        }
+    } else {
+        if (!entries.contains(lpcn) && entries.size() >= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
+            return dmr_channel_edit_result("full");
+        }
+        entries.insert(lpcn, op == DSD_UI_DMR_T3_OP_SET ? hz : 0);
+    }
+    const QVariantList channels = dmr_channel_list(entries);
+    if (channels == m_rows.at(row).dmrChannels) {
+        return dmr_channel_edit_result("");
+    }
+    auto next = m_rows;
+    next[row].dmrChannels = channels;
+    if (!saveRows(next)) {
+        return dmr_channel_edit_result("not-saved");
+    }
+    m_rows = std::move(next);
+    const QModelIndex idx = index(row);
+    Q_EMIT dataChanged(idx, idx);
+    return dmr_channel_edit_result("");
 }
 
 QString
@@ -790,6 +1027,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("keyCsvHex"), row.keyCsvHex);
     map.insert(QStringLiteral("p25BandplanCsvPath"), row.p25BandplanCsvPath);
     map.insert(QStringLiteral("srcCsvPath"), row.srcCsvPath);
+    map.insert(QStringLiteral("dmrChannels"), row.dmrChannels);
     return map;
 }
 
@@ -943,9 +1181,14 @@ SavedSystemsModel::remove(int row) {
         return false;
     }
     const QString file = m_rows.at(row).filePath;
+    const QString uid = m_rows.at(row).uid;
     beginRemoveRows(QModelIndex(), row, row);
     m_rows = std::move(next);
     endRemoveRows();
+    // The Tier III channels file its starts wrote (SessionArgsBuilder) goes with it.
+    if (!canonicalUid(uid).isEmpty()) {
+        removeDmrChannelsFile(uid);
+    }
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     releaseReplayIfUnused(file);

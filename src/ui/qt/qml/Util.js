@@ -867,6 +867,8 @@ function storeLabel(fileName) {
         return qsTr("Signal search permanent avoids")
     case "dsd-neo-app.ini":
         return qsTr("Settings")
+    case "dmr-channels":
+        return qsTr("A saved system's DMR channels")
     }
     return String(fileName || "")
 }

@@ -18,6 +18,7 @@
 
 #include <dsd-neo/app_control/crc_policy_view.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include "dsd-neo/core/input_level.h"
@@ -2879,6 +2880,18 @@ ui_render_call_info_ysf(const dsd_state* state) {
     ui_print_ysf_remarks(state);
 }
 
+/* The Channels panel shows when the menu toggle is on, or on its own while Tier III channels were granted with no
+   frequency (discussion #900 F3): the receiver cannot follow their calls, so the panel says which. Never compact, and
+   not for them on a carrier that names another system (dsd_app_dmr_t3_view_missing_shown(), as Qt's NO FREQ). */
+static int
+ui_channels_panel_open(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->frontend_terminal_display.terminal_compact != 0) {
+        return 0;
+    }
+    return opts->frontend_display.show_channels == 1
+           || dsd_app_dmr_t3_view_missing_shown(dsd_app_dmr_t3_view(state)) > 0U;
+}
+
 static int
 ui_channel_label_is_locked(const dsd_opts* opts, const dsd_state* state, const char* label) {
     int locked = ui_is_locked_from_label(state, label);
@@ -4546,8 +4559,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     // Bottom border for Call Info section
     ui_print_hr();
 
-    // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
-    if (opts->frontend_display.show_channels == 1 && opts->frontend_terminal_display.terminal_compact == 0) {
+    // Render learned LCNs just under the Call Info section when trunking (toggle in menu), or missing Tier III channels
+    if (ui_channels_panel_open(opts, state)) {
         ui_print_learned_lcns(opts, state);
         // fence bottom only when Channels are shown
         ui_print_hr();

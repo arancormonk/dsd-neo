@@ -22,6 +22,27 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* Discussion #900: a reinitialised options object names no --dmr-chan-overrides file, whatever it named before, so the
+   next start never applies another system's channels. */
+static int
+test_init_opts_clears_dmr_chan_overrides(void) {
+    dsd_opts* opts = (dsd_opts*)malloc(sizeof(*opts));
+    if (!opts) {
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    DSD_MEMSET(opts, 0xA5, sizeof(*opts));
+    DSD_SNPRINTF(opts->dmr_chan_overrides_file, sizeof opts->dmr_chan_overrides_file, "%s", "previous-system.csv");
+    initOpts(opts);
+    const int cleared = opts->dmr_chan_overrides_file[0] == '\0';
+    free(opts);
+    if (!cleared) {
+        DSD_FPRINTF(stderr, "initOpts kept the previous --dmr-chan-overrides file\n");
+        return 31;
+    }
+    return 0;
+}
+
 static int
 test_init_opts_clears_trunk_scan_lists(void) {
     static dsd_opts opts;
@@ -397,6 +418,10 @@ main(void) {
     int init_opts_rc = test_init_opts_clears_trunk_scan_lists();
     if (init_opts_rc != 0) {
         return init_opts_rc;
+    }
+    int overrides_rc = test_init_opts_clears_dmr_chan_overrides();
+    if (overrides_rc != 0) {
+        return overrides_rc;
     }
     int rebase_rc = test_init_stamps_and_rebase_share_one_list();
     if (rebase_rc != 0) {

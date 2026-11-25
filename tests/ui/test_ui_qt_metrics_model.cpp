@@ -33,6 +33,7 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -3193,10 +3194,100 @@ test_block_label_patched_call() {
     dsd_state_ext_free_all(&state);
 }
 
+/* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
+   Channels entry opens on a verified Tier III identity or a session the saved system's Tier III channels applied to
+   (overrides_applied, not the path the engine may have skipped); a RAS-only identity is display only. The entry also
+   opens while the live list holds channels of the user's, without that making the site Tier III. All ride the control
+   group. */
+static void
+test_dmr_tier3_readings() {
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    const auto viewHolder = std::make_unique<dsd_ui_dmr_t3_view>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
+    dsd_ui_dmr_t3_view& view = *viewHolder;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int control = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&control]() { ++control; });
+    model.refresh(&opts, &state);
+    expect("no view: no Tier III, nothing missing", !model.dmrTier3() && model.noFreqCount() == 0);
+    state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
+    view.present = 1U;
+    view.dmr_decoding = 1U;
+    view.tier3_unchecked = 1U;
+    for (uint16_t lpcn : {12U, 40U, 900U}) {
+        view.missing.missing[lpcn >> 3] = static_cast<uint8_t>(view.missing.missing[lpcn >> 3] | (1U << (lpcn & 7U)));
+    }
+    view.missing.detail_count = 1U;
+    view.missing.details[0].lpcn = 12U;
+    const int before = control;
+    model.refresh(&opts, &state);
+    expect("every ledger channel is counted", model.noFreqCount() == 3 && control == before + 1);
+    expect("a RAS-only identity opens no editor", !model.dmrTier3());
+    view.tier3 = 1U;
+    model.refresh(&opts, &state);
+    expect("a verified identity does", model.dmrTier3() && control == before + 2);
+    view.tier3 = 0U;
+    /* The engine leaves the path set when it skipped the file (a trunk scan, a session that does not decode DMR): the
+       path alone opens nothing. */
+    DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    model.refresh(&opts, &state);
+    expect("a channels file the engine skipped opens no editor", !model.dmrTier3());
+    view.overrides_applied = 1U;
+    model.refresh(&opts, &state);
+    expect("so does a session started with the saved system's channels", model.dmrTier3());
+    opts.dmr_chan_overrides_file[0] = '\0';
+    view.overrides_applied = 0U;
+    model.refresh(&opts, &state);
+    expect("a RAS-only site with no channels of the user's has no entry",
+           !model.dmrTier3() && !model.dmrUserChannels());
+    view.overlay_count = 1U;
+    view.overlay[0].lpcn = 12U;
+    model.refresh(&opts, &state);
+    expect("channels of the user's keep the entry open", model.dmrUserChannels() && control == before + 6);
+    expect("and do not make the site Tier III", !model.dmrTier3());
+    /* A carrier naming another system (Connect Plus, or P25 under Auto) has that system's map: no Channels route
+       opens there, the saved system's channels file included. */
+    view.tier3 = 1U;
+    DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    view.overrides_applied = 1U;
+    view.other_system_here = 1U;
+    model.refresh(&opts, &state);
+    expect("another system on the carrier opens no editor",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
+    view.other_system_here = 0U;
+    model.refresh(&opts, &state);
+    expect("back on the Tier III system, the route is back",
+           model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
+    /* A live mode change left DMR off. No Tier III lookup reads the channels and the decoder
+       refuses every edit: no route opens, and nothing reads as missing. */
+    view.dmr_decoding = 0U;
+    model.refresh(&opts, &state);
+    expect("a session not decoding DMR opens no editor",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
+    view.dmr_decoding = 1U;
+    model.refresh(&opts, &state);
+    expect("decoding DMR again, the route is back",
+           model.dmrTier3() && model.dmrUserChannels() && model.noFreqCount() == 3);
+    view.tier3 = 0U;
+    view.overrides_applied = 0U;
+    opts.dmr_chan_overrides_file[0] = '\0';
+    view.present = 0U;
+    model.refresh(&opts, &state);
+    expect("a view with no record reads none",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
+    state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_new_target_drops_sync_hold_in_one_publication();
+    test_dmr_tier3_readings();
     test_tetra_rows();
     test_slot_kind_and_labels();
     test_scan_row();

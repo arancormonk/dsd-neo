@@ -20,8 +20,10 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dmr_abs_params.h"
+#include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -69,6 +71,15 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)observation->ota_target_id;
     (void)notice;
     (void)slot;
+    return 0;
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)notice;
     return 0;
 }
 
@@ -298,6 +309,48 @@ test_ann_wd_single_block_escape_refused(void) {
     return rc;
 }
 
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() makes it, beside the shared row: SET at @p hz, HIDE for 0. */
+static void
+user_entry(dsd_state* state, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL || ext->overlay.op[lpcn] != 0U) {
+        abort();
+    }
+    ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
+    ext->overlay.hz[lpcn] = hz;
+    ext->overlay.count++;
+}
+
+/* A logical Ann_WD_TSCC channel reads the frequency DMR uses for it (the user's entry over the
+   shared row). A set channel whose row another protocol emptied is still a candidate, and the control channel moves to
+   it; a hidden one whose row another protocol filled is none. All frequencies are invented. */
+static int
+test_ann_wd_logical_uses_the_users_channels(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+
+    init_env(&opts, &state);
+    user_entry(&state, 12U, 852137500L);
+    user_entry(&state, 13U, 0L);
+    dsd_state_set_trunk_chan_freq(&state, 12U, 0L);         /* another protocol emptied the row under the entry */
+    dsd_state_set_trunk_chan_freq(&state, 13U, 852162500L); /* and filled the hidden one's */
+    build_ann_wd_tscc(bits, bytes, 12U, 13U, 0U, 0U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd overlay: the set channel is a candidate", candidate_present(&state, 852137500L));
+    rc |= expect_true("ann_wd overlay: the hidden channel is none", !candidate_present(&state, 852162500L));
+
+    /* Withdrawing the control channel the receiver is on moves it to the set channel, at the user's frequency. */
+    dsd_state_set_trunk_chan_freq(&state, 10U, state.trunk_cc_freq);
+    build_ann_wd_tscc(bits, bytes, 10U, 12U, 1U, 0U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd overlay: switched to the user's frequency", state.trunk_cc_freq == 852137500L);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static void
 build_t3_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t target,
                uint32_t source) {
@@ -441,6 +494,12 @@ main(void) {
     rc |= test_ann_wd_absolute_learns_and_adds();
     rc |= test_ann_wd_withdraw_not_added();
     rc |= test_ann_wd_single_block_escape_refused();
+    g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = test_return_to_cc,
+    });
+    rc |= test_ann_wd_logical_uses_the_users_channels();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     if (rc == 0) {
         printf("DMR_T3_ANN_WD_TSCC: OK\n");
     }
