@@ -97,6 +97,10 @@ typedef void (*rtl_stream_tune_completion_callback)(uint64_t request_id, rtl_str
 int rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
 /**
  * @brief Start the stream threads and device I/O.
+ *
+ * For a caller with no decoder loop to write the squelch gate (issue #899): the stream runs the squelch the options it
+ * was created with hold from the first block, resolved as for a channel with no scan row on air, with no closed start.
+ * The decoder starts its streams with rtl_stream_start_gated().
  * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
@@ -118,9 +122,9 @@ typedef struct rtl_stream_start_gate {
 } rtl_stream_start_gate;
 
 /**
- * @brief rtl_stream_start() on the gate @p start_gate the decoder resolved for this start (issue #899; NULL: the
- * stream resolves it from the options it was created with, unresolved, as rtl_stream_start() does). The gate is an
- * argument of this start only. Decoder thread.
+ * @brief rtl_stream_start() on the gate @p start_gate the decoder resolved for this start (issue #899; one with
+ * rtl_stream_start_gate::resolved 0 starts an analog channel closed until the decoder writes; NULL: the options' own,
+ * run from the first block, as rtl_stream_start() does). The gate is an argument of this start only. Decoder thread.
  * @return as rtl_stream_start().
  */
 int rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate);

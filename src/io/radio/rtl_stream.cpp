@@ -76,7 +76,7 @@ RtlSdrOrchestrator::~RtlSdrOrchestrator() {
 
 /**
  * @brief Initialize and start the stream threads and device async I/O.
- * @param start_gate The squelch gate this start opens on (NULL: resolved from the snapshot); this call's alone.
+ * @param start_gate The squelch gate this start opens on (NULL: the snapshot's own, run from the first block); this call's alone.
  * @return 0 on success, <0 on error.
  */
 int

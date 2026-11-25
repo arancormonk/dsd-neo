@@ -79,7 +79,8 @@ rtl_stream_start(RtlSdrContext* ctx) {
  * @brief Start the stream on the squelch gate the decoder resolved for this start (issue #899).
  *
  * @param ctx Stream context created by rtl_stream_create().
- * @param start_gate The gate, this start's alone (NULL: resolved from the options the context was created with).
+ * @param start_gate The gate, this start's alone (NULL: the options the context was created with, run from the first
+ * block).
  * @return 0 on success; otherwise <0 on error.
  */
 extern "C" int

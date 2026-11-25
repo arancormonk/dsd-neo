@@ -9772,14 +9772,16 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz, const rt
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);
-    /* The squelch gate the session opens with (issue #899): the one the decoder resolved for this start, else the
-       options' own, unresolved. No retune of a stream before this one is outstanding. */
+    /* The squelch gate the session opens with (issue #899): the one the decoder resolved for this start. A start with
+       none (rtl_stream_start(): a caller with no decoder loop to write the gate) runs the options' own from the first
+       block, resolved as for a channel with no scan row on air: a closed start would wait for a write that never
+       comes. No retune of a stream before this one is outstanding. */
     if (start_gate) {
         rtl_stream_gate_open(start_gate);
     } else {
-        const dsd_squelch_setting configured = dsd_squelch_setting_configured(opts);
-        const rtl_stream_start_gate unresolved = {0, configured, configured, configured};
-        rtl_stream_gate_open(&unresolved);
+        const dsd_squelch_setting session = dsd_squelch_channel_gate(opts, NULL, NULL, 0);
+        const rtl_stream_start_gate own = {1, dsd_squelch_channel_gate(opts, NULL, NULL, 1), session, session};
+        rtl_stream_gate_open(&own);
     }
     rtl_demod_select_defaults_for_mode(&demod, opts, &output);
     if (stream_prepare_internals(opts) != 0) {

@@ -39,7 +39,7 @@ class RtlSdrOrchestrator {
 
     /**
      * @brief Initialize and start the stream threads and device async I/O.
-     * @param start_gate The squelch gate this start opens on (issue #899; NULL: resolved from the options snapshot),
+     * @param start_gate The squelch gate this start opens on (issue #899; NULL: the options snapshot's own, run from the first block),
      * used by this call only: a start that opens nothing (already started, no snapshot) ignores it.
      * @return 0 on success, <0 on error.
      */

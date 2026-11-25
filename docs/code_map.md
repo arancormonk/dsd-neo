@@ -5961,8 +5961,10 @@ suite runs under this compiler.
     has the scope suspended, as that command left it; a suspended scope's leave takes the configured settings the
     command left first). Closed start, no IDs (review round 7): a new channel on the analog monitor
     (`dsd_demod_analog_monitor_active()`) starts closed in the receiver (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches, and every sample flagged closed, so a
-    decoder reading the flags neither plays nor learns from it): a stream open (`rtl_stream_gate_open()`), a retune the
-    decoder marks as a new channel (`rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
+    decoder reading the flags neither plays nor learns from it): a stream open with no gate resolved for it
+    (`rtl_stream_gate_open()`; `rtl_stream_start()`, for a caller with no decoder loop to write the gate, runs the
+    options' own from the first block instead, resolved as for a channel with no scan row on air), a
+    retune the decoder marks as a new channel (`rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
     attached last since a store replaces the whole profile, a profile for the mark alone, `new_channel_only`, when
     nothing else is queued, unmarked once a tune returned without taking it) landing on the monitor (the controller's
     finalize and an external backend's landing, whatever the profile's family did there), a family switch into the
@@ -6086,7 +6088,8 @@ suite runs under this compiler.
     the stream's first sample heard from its talker's start inside its carrier, a second session after one stopped with
     a request its stream never took), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
     edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
-    `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands),
+    `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands), `IO_RTL_ANALOG_OPEN` (a
+    standalone start never closed),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
     `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
     edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running receiver
