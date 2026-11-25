@@ -2556,50 +2556,53 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
-/* The RTL-SDR selector and the spec a device change rewrites, as the change found them. */
+/* The RTL-SDR selector, and the spec that carries it in the field the next open reads, as the change found them or
+   makes them. */
 typedef struct {
     int index;
     char serial[sizeof(((dsd_opts*)0)->rtl_dev_serial)];
+    dsd_app_radio_row_field field;
     char spec[sizeof(((dsd_opts*)0)->audio_in_dev)];
 } svc_rtl_device_choice;
 
-/* The field holding the spec a device change rewrites: the running RTL-SDR's, or with PCM running the one the switch
-   back opens, picked by the switch's own rule (dsd_app_radio_row_source_field(): a spec a config staged in
-   dsd_opts::audio_in_dev before the one a switch to PCM left in dsd_opts::radio_in_dev). DEFAULT when that spec is no
-   RTL-SDR one (the change sets only the selector, which the next start reads). */
-static dsd_app_radio_row_field
-svc_rtl_device_spec_field(const dsd_opts* opts) {
-    const dsd_app_radio_row_field field =
-        opts->audio_in_type == AUDIO_IN_RTL ? DSD_APP_RADIO_ROW_AUDIO_IN_DEV : dsd_app_radio_row_source_field(opts);
-    const char* spec = field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV
-                           ? opts->audio_in_dev
-                           : (field == DSD_APP_RADIO_ROW_RADIO_IN_DEV ? opts->radio_in_dev : "");
-    return dsd_opts_audio_in_dev_is_rtl_spec(spec) ? field : DSD_APP_RADIO_ROW_DEFAULT;
+/* The spec is the one record of the dongle an input opens (dsd_rtl_spec_select_device()), so a device change writes
+   its selector where the next open reads the spec: the running input's (dsd_opts::audio_in_dev), or with PCM running
+   the field the RTL-SDR row opens (dsd_app_radio_row_source_field(): a spec a config staged in audio_in_dev before the
+   one a switch to PCM left in radio_in_dev), or, when that row would open a bare `rtl` (no RTL-SDR spec remembered),
+   radio_in_dev, where the change creates `rtl:<dev>` for it. DSD_ERR_NOT_SUPPORTED when the row would open another
+   radio (an rtl_tcp server, a SoapySDR device, a replay or stream), which has no local dongle to select. */
+static int
+svc_rtl_device_spec_field(const dsd_opts* opts, dsd_app_radio_row_field* out) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        *out = DSD_APP_RADIO_ROW_AUDIO_IN_DEV;
+        return 0;
+    }
+    const dsd_app_radio_row_field field = dsd_app_radio_row_source_field(opts);
+    if (field == DSD_APP_RADIO_ROW_DEFAULT) {
+        *out = DSD_APP_RADIO_ROW_RADIO_IN_DEV;
+        return 0;
+    }
+    const char* spec = field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV ? opts->audio_in_dev : opts->radio_in_dev;
+    if (!dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    *out = field;
+    return 0;
 }
 
 static const char*
-svc_rtl_device_spec(const dsd_opts* opts) {
-    switch (svc_rtl_device_spec_field(opts)) {
-        case DSD_APP_RADIO_ROW_AUDIO_IN_DEV: return opts->audio_in_dev;
-        case DSD_APP_RADIO_ROW_RADIO_IN_DEV: return opts->radio_in_dev;
-        case DSD_APP_RADIO_ROW_DEFAULT:
-        default: return NULL;
-    }
+svc_rtl_device_field_text(const dsd_opts* opts, dsd_app_radio_row_field field) {
+    return field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV ? opts->audio_in_dev : opts->radio_in_dev;
 }
 
 static void
 svc_rtl_device_select(dsd_opts* opts, const svc_rtl_device_choice* choice) {
     opts->rtl_dev_index = choice->index;
     DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", choice->serial);
-    switch (svc_rtl_device_spec_field(opts)) {
-        case DSD_APP_RADIO_ROW_AUDIO_IN_DEV:
-            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
-            break;
-        case DSD_APP_RADIO_ROW_RADIO_IN_DEV:
-            DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
-            break;
-        case DSD_APP_RADIO_ROW_DEFAULT:
-        default: break;
+    if (choice->field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
+    } else {
+        DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
     }
 }
 
@@ -2641,8 +2644,9 @@ svc_rtl_device_not_selectable(const dsd_opts* opts) {
 }
 
 /* The selector and spec in force (@p previous) and the ones the change makes (@p next), built before anything changes:
-   -1 for a serial the rule refuses or a spec the new device field does not fit. An index selection keeps no serial, so
-   the index opens; a serial keeps the index for the logs until it resolves. */
+   DSD_ERR_NOT_SUPPORTED when the next open is no local RTL-SDR (svc_rtl_device_spec_field()), -1 for a serial the rule
+   refuses or a spec the new device field does not fit. An index selection keeps no serial, so the index opens; a serial
+   keeps the index for the logs until it resolves. */
 static int
 svc_rtl_device_stage(const dsd_opts* opts, int index, const char* serial, svc_rtl_device_choice* previous,
                      svc_rtl_device_choice* next) {
@@ -2650,18 +2654,23 @@ svc_rtl_device_stage(const dsd_opts* opts, int index, const char* serial, svc_rt
     if (by_serial && !dsd_rtl_serial_is_valid(serial)) {
         return -1;
     }
-    const char* spec = svc_rtl_device_spec(opts);
+    dsd_app_radio_row_field field = DSD_APP_RADIO_ROW_DEFAULT;
+    const int where = svc_rtl_device_spec_field(opts, &field);
+    if (where != 0) {
+        return where;
+    }
+    const char* spec = svc_rtl_device_field_text(opts, field);
     previous->index = opts->rtl_dev_index;
     DSD_SNPRINTF(previous->serial, sizeof previous->serial, "%s", opts->rtl_dev_serial);
-    DSD_SNPRINTF(previous->spec, sizeof previous->spec, "%s", spec ? spec : "");
+    previous->field = field;
+    DSD_SNPRINTF(previous->spec, sizeof previous->spec, "%s", spec);
     next->index = by_serial ? opts->rtl_dev_index : (index < 0 ? 0 : index);
     DSD_SNPRINTF(next->serial, sizeof next->serial, "%s", by_serial ? serial : "");
-    /* The spec a save writes names the new dongle (B2: a change used to leave the old one in it). */
-    DSD_SNPRINTF(next->spec, sizeof next->spec, "%s", previous->spec);
-    if (spec && dsd_rtl_spec_set_device(next->spec, sizeof next->spec, next->index, next->serial) != 0) {
-        return -1;
-    }
-    return 0;
+    next->field = field;
+    /* The spec names the new dongle (B2: a change used to leave the old one in it, which a save wrote), or is created
+       for it when no RTL-SDR spec was there. */
+    DSD_SNPRINTF(next->spec, sizeof next->spec, "%s", dsd_opts_audio_in_dev_is_rtl_spec(spec) ? spec : "rtl");
+    return dsd_rtl_spec_set_device(next->spec, sizeof next->spec, next->index, next->serial) == 0 ? 0 : -1;
 }
 
 int
@@ -2677,8 +2686,9 @@ svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* seri
     }
     svc_rtl_device_choice previous;
     svc_rtl_device_choice next;
-    if (svc_rtl_device_stage(opts, index, serial, &previous, &next) != 0) {
-        return -1;
+    const int staged = svc_rtl_device_stage(opts, index, serial, &previous, &next);
+    if (staged != 0) {
+        return staged;
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         svc_rtl_device_select(opts, &next);

@@ -2036,13 +2036,13 @@ ui_pcm_timing_rate_hz(const dsd_opts* opts) {
 
 /* The device a Switch source radio row opens: the Airspy row's own spec, or for the RTL-SDR row the radio a switch to
    PCM left (issue #634), else an RTL-SDR (svc_rtl_row_destination()). */
-static void
+static int
 ui_radio_row_set_device(dsd_opts* opts, int cmd_id) {
     if (cmd_id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
         opts->rtltcp_enabled = 0;
-        return;
+        return 0;
     }
     char destination[sizeof opts->audio_in_dev];
     svc_rtl_row_destination(opts, destination, sizeof destination);
@@ -2050,6 +2050,19 @@ ui_radio_row_set_device(dsd_opts* opts, int cmd_id) {
     /* The backend flag follows the device, as a config's input does: an Airspy run since cleared it, and the retune
        settling reads it (an rtl_tcp stream is buffered). */
     opts->rtltcp_enabled = dsd_opts_audio_in_dev_is_rtltcp_spec(destination) ? 1 : 0;
+    /* An RTL-SDR spec names the dongle it opens: the options select it, as a fresh start of the spec would, whatever an
+       earlier spec selected. A device field the grammar refuses opens nothing (-1). */
+    return dsd_rtl_spec_select_device(opts, destination) < 0 ? -1 : 0;
+}
+
+/* Point the input at the device the radio row @p cmd_id opens and start it (svc_rtl_enable_input_locked()); -1 without a
+   start when that device's spec names no dongle the grammar takes. Caller holds the P25 SM tick guard. */
+static int
+ui_radio_row_start_locked(dsd_opts* opts, dsd_state* state, int cmd_id) {
+    if (ui_radio_row_set_device(opts, cmd_id) != 0) {
+        return -1;
+    }
+    return svc_rtl_enable_input_locked(opts, state);
 }
 
 /* A radio row's stream replaced the input: the PCM input it replaced is closed, as an input switch closes the input it
@@ -2129,8 +2142,7 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
     const int pcm_timing_rate_hz = ui_pcm_timing_rate_hz(opts);
-    ui_radio_row_set_device(opts, c->id);
-    const int rc = svc_rtl_enable_input_locked(opts, state);
+    const int rc = ui_radio_row_start_locked(opts, state, c->id);
     const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
     if (failed) {
         refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
@@ -4750,29 +4762,15 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
                                       ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 
-/* The dongle an RTL-SDR [input] names, as the spec it built names it (rtl_serial over rtl_device; a negative index
-   reads as 0): the restart opens it, not the one the running input selected. A serial clears the index's selection
-   and an index the serial's, so a change from serial A to index 0 opens index 0. A refused rtl_serial never reaches
-   here (cfg_rtl_selector_valid()). The rollback of a failed start puts back the selector that ran (ui_radio_input). */
+/* The dongle an RTL-SDR [input] names is the one its spec names: once the apply wrote a new RTL-SDR spec (the running
+   input's, which the restart reopens, or one staged while PCM runs, which the RTL-SDR row opens), the options select
+   the spec's device (dsd_rtl_spec_select_device()), so a save and the open agree. A refused rtl_serial never reaches
+   here (cfg_rtl_selector_valid()); the rollback of a failed start puts back the selector that ran (ui_radio_input). */
 static void
-apply_cfg_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg) {
-    if (cfg->rtl_serial[0] != '\0') {
-        DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", cfg->rtl_serial);
-        return;
-    }
-    opts->rtl_dev_index = cfg->rtl_device >= 0 ? cfg->rtl_device : 0;
-    opts->rtl_dev_serial[0] = '\0';
-}
-
-/* An RTL-SDR [input] applied while PCM runs stages its spec for the switch back to the radio (the RTL-SDR row opens
-   it), and the dongle that switch opens is the one the options select: the config's, as the spec names it, not the one
-   the session last opened. */
-static void
-apply_cfg_stage_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev) {
-    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_RTL && opts->audio_in_type != AUDIO_IN_RTL
-        && dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+apply_cfg_select_rtl_spec(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev) {
+    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_RTL
         && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
-        apply_cfg_rtl_selector(opts, cfg);
+        (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
     }
 }
 
@@ -4787,7 +4785,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
-        apply_cfg_stage_rtl_selector(opts, cfg, old_audio_in_dev);
+        apply_cfg_select_rtl_spec(opts, cfg, old_audio_in_dev);
         apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }
@@ -4812,7 +4810,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
-        apply_cfg_rtl_selector(opts, cfg);
+        apply_cfg_select_rtl_spec(opts, cfg, old_audio_in_dev);
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {

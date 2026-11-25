@@ -1174,6 +1174,97 @@ test_config_staged_then_device_change_opens_and_saves_it(void) {
     return rc;
 }
 
+/* What a save of the session selects once reloaded: the spec it writes, applied to fresh options. 1 when it selects
+   @p serial (non-empty) or index @p index. */
+static int
+save_reload_selects(const dsd_opts* opts, const dsd_state* state, int index, const char* serial) {
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    test_runtime reloaded;
+    if (alloc_test_runtime(&reloaded) != 0) {
+        return 0;
+    }
+    dsd_apply_user_config_to_opts(&saved, reloaded.opts, reloaded.state);
+    const int ok = dsd_rtl_input_spec_apply(reloaded.opts) == 1 && strcmp(reloaded.opts->rtl_dev_serial, serial) == 0
+                   && (serial[0] != '\0' || reloaded.opts->rtl_dev_index == index);
+    free_test_runtime(&reloaded);
+    return ok;
+}
+
+/*
+ * The spec is the one record of the dongle an input opens. PCM remembered `rtl:3`; a config staged serial A; a device
+ * change selected B (in the staged spec); then the Airspy row ran, replacing the staged spec, and the RTL-SDR row came
+ * back to the remembered `rtl:3`. It used to open B from the options under the spec `rtl:3`, and a save then reopened
+ * index 3: the row now selects the dongle its spec names, so what opens, the spec and the save agree.
+ */
+static int
+test_rtl_row_opens_the_dongle_its_spec_names(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:3:460125000");
+    g_wrap_missing_serial[0] = '\0';
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    DSD_SNPRINTF(cfg.rtl_serial, sizeof cfg.rtl_serial, "%s", "AAAA");
+    cfg.rtl_serial_is_set = 1;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB", 5U);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_command_submit(DSD_APP_CMD_AIRSPY_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_true("the Airspy row ran", dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev));
+    g_wrap_opened_index = -1;
+    g_wrap_opened_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_rtl_selected("the RTL-SDR row opens the dongle its spec names", opts, state, 3, "");
+    rc |= expect_true("a save reloaded opens the same dongle", save_reload_selects(opts, state, 3, ""));
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * PCM with no RTL-SDR spec remembered: a device change creates the spec the RTL-SDR row opens (`rtl:serial=B`), so
+ * the switch opens B under a spec that names it (the receiver keys its learned squelch floors by that spec), and a
+ * save reloaded opens B. It used to leave the serial in the options alone, and the row opened a bare `rtl`.
+ */
+static int
+test_device_change_with_no_spec_remembered_creates_it(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    opts->radio_in_dev[0] = '\0';
+    g_wrap_missing_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB", 5U);
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_true("the change creates the spec", strcmp(opts->radio_in_dev, "rtl:serial=BBBB") == 0);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the opened spec names the serial", strstr(opts->audio_in_dev, "serial=BBBB") != NULL);
+    rc |= expect_true("the switch opens B", strcmp(g_wrap_opened_serial, "BBBB") == 0
+                                                && strcmp(opts->audio_in_dev, "rtl:serial=BBBB") == 0
+                                                && strcmp(opts->rtl_dev_serial, "BBBB") == 0);
+    rc |= expect_true("a save reloaded opens B", save_reload_selects(opts, state, 0, "BBBB"));
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /*
  * A config handed over whole (dsd_app_command_apply_config(), Qt's path) never passed the loader, so a clear
  * rtl_serial_invalid proves nothing: a serial the rule refuses, or one with no terminator, refuses the config before
@@ -4185,6 +4276,8 @@ main(void) {
     rc |= test_config_reopen_opens_the_rtl_device_it_names();
     rc |= test_config_staged_on_pcm_opens_the_rtl_device_it_names();
     rc |= test_config_staged_then_device_change_opens_and_saves_it();
+    rc |= test_rtl_row_opens_the_dongle_its_spec_names();
+    rc |= test_device_change_with_no_spec_remembered_creates_it();
     rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();

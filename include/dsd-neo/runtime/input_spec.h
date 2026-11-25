@@ -121,6 +121,18 @@ int dsd_rtl_device_field_format(int index, const char* serial, char* out, size_t
 int dsd_rtl_spec_set_device(char* spec, size_t spec_size, int index, const char* serial);
 
 /**
+ * @brief Select in @p opts the dongle the device field of the `rtl` / `rtl:...` spec @p spec names, as a fresh start of
+ *        that spec opens it: an index (the serial cleared), a serial (dsd_rtl_device_field_parse()), or, for a bare
+ *        `rtl` or an empty field, index 0 with no serial. The spec is the one record of which dongle an input opens;
+ *        whatever opens a receiver from a spec it did not just write (the RTL-SDR row, a config's spec) selects it here
+ *        first, so the options never open another dongle than the spec a save writes.
+ *
+ * @return 1 when it selected, 0 when @p spec is no `rtl` spec (nothing changes), -1 for a device field the grammar
+ *         refuses or bad arguments (nothing changes).
+ */
+int dsd_rtl_spec_select_device(dsd_opts* opts, const char* spec);
+
+/**
  * @brief Lower-case the scheme of an input spec written in another case (`RTL:0:851M` → `rtl:0:851M`), in place.
  *
  * Only a scheme followed by ':' that matches a known input kind (pulse, rtl, rtltcp, airspy, soapy, iqreplay, iqtcp,
