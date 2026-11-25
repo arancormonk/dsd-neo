@@ -8095,9 +8095,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   opens nothing. No input is staged over a running radio: while a radio stream runs (`state->rtl_ctx` with
   `AUDIO_IN_RTL`: an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay), a config whose
   `[input]` selects a PCM input (Pulse, file, TCP or UDP with its device set, `dsd_user_config_input_sets_device()`)
-  is refused in preflight before anything changes (`cfg_check_input_over_running_radio()` in
-  `cfg_prepare_runtime_apply()`), toasting `Refused: this config selects <input> while the radio runs; use Switch
-  source, or stop the receiver first`. A config apply never switches the input type, so that `[input]` would leave
+  is refused before the command does anything, a scan scope's suspend included (`cfg_check_input_over_running_radio()`
+  through `config_refused_over_running_radio()` at the top of `apply_cmd()`; the command's recording outcome reads as
+  failed), toasting `Refused: this config selects <input> while the radio runs; use Switch source, or stop the receiver
+  first`. A config apply never switches the input type, so that `[input]` would leave
   `audio_in_dev` naming an input that does not run; refused, `audio_in_dev` always names the running receiver while a
   radio runs, which every restart, rollback and device change reopens. A radio `[input]` builds a spec, which reopens
   the receiver when it differs from the running one, or builds none (an RTL-SDR source without `rtl_freq`), applying
