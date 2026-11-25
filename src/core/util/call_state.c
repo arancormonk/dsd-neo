@@ -596,8 +596,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->media_updated_m = previous->media_updated_m;
     snapshot->checked_media_started_m = previous->checked_media_started_m;
     snapshot->checked_media_updated_m = previous->checked_media_updated_m;
-    snapshot->checked_media_visit = previous->checked_media_visit;
-    snapshot->checked_media_carrier_seq = previous->checked_media_carrier_seq;
+    snapshot->checked_media_origin = previous->checked_media_origin;
     // The reopened epoch continues the ending one's transmission, so state bound to that call stays bound to it.
     snapshot->transmission_epoch = dsd_call_snapshot_transmission(previous);
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
@@ -1127,12 +1126,11 @@ dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, 
         return 0;
     }
     const double now_m = call_state_observed_m(observed_m);
-    if (snapshot->checked_media_started_m <= 0.0 || snapshot->checked_media_visit != origin.visit
-        || snapshot->checked_media_carrier_seq != origin.carrier_seq) {
+    if (snapshot->checked_media_started_m <= 0.0 || snapshot->checked_media_origin.visit != origin.visit
+        || snapshot->checked_media_origin.carrier_seq != origin.carrier_seq) {
         /* Checked media of another visit or carrier is no part of this span. */
         snapshot->checked_media_started_m = now_m;
-        snapshot->checked_media_visit = origin.visit;
-        snapshot->checked_media_carrier_seq = origin.carrier_seq;
+        snapshot->checked_media_origin = origin;
     }
     snapshot->checked_media_updated_m = now_m;
     dsd_call_state_ext_unlock(ext);

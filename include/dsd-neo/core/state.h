@@ -3753,13 +3753,6 @@ dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
 }
 
-/** Where a scan observation was obtained (issue #890): the scan visit (dsd_state::scan_landing_visit, 0 for none) and
- * the carrier count (dsd_state::carrier_seq) its read began under. */
-typedef struct {
-    uint64_t visit;
-    uint32_t carrier_seq;
-} dsd_scan_observation_origin;
-
 /**
  * The origin of an observation made now (issue #890), such as a protocol's activity report or a frame its decoder
  * output: inside a frame dispatch, the visit and carrier the frame's read began under (frame_dispatch_scan_visit,

@@ -109,7 +109,7 @@ scan_voice_snapshot_is_voice(const dsd_state* state, const dsd_call_snapshot* ca
     if (call->checked_media_started_m <= 0.0 || call->checked_media_updated_m <= 0.0) {
         return 0;
     }
-    const dsd_scan_observation_origin origin = {call->checked_media_visit, call->checked_media_carrier_seq};
+    const dsd_scan_observation_origin origin = call->checked_media_origin;
     if (!dsd_state_scan_observation_is_current(state, &origin)) {
         return 0;
     }
