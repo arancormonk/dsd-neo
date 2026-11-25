@@ -1323,6 +1323,55 @@ expect_spec(const char* what, const char* got, const char* want) {
     return 0;
 }
 
+/* The dongle a spec names is the one its open selects (dsd_rtl_spec_select_device()), as a fresh start of the spec
+   opens it: an index (the serial cleared), a serial (the index kept for the logs), index 0 with no serial for a bare
+   `rtl` or an empty field. A field the grammar refuses, or one too long for any serial, changes nothing (-1); a spec
+   that is no rtl one changes nothing (0). */
+static int
+test_rtl_spec_select_device(void) {
+    static const struct {
+        const char* spec;
+        int want_rc;
+        int want_index;
+        const char* want_serial;
+    } k_cases[] = {
+        {"rtl:2:851.375M:22", 1, 2, ""},
+        {"rtl:serial=1090:851.375M", 1, 7, "1090"},
+        {"rtl:00000001", 1, 7, "00000001"},
+        {"rtl", 1, 0, ""},
+        {"rtl::851.375M", 1, 0, ""},
+        {"rtl:serial=:851.375M", -1, 7, "OLD"},
+        {"rtl: A:851.375M", -1, 7, "OLD"},
+        {"rtltcp:host:1234", 0, 7, "OLD"},
+        {"pulse", 0, 7, "OLD"},
+    };
+
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    if (!opts) {
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        opts->rtl_dev_index = 7;
+        DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "OLD");
+        const int got = dsd_rtl_spec_select_device(opts, k_cases[i].spec);
+        if (got != k_cases[i].want_rc || opts->rtl_dev_index != k_cases[i].want_index
+            || strcmp(opts->rtl_dev_serial, k_cases[i].want_serial) != 0) {
+            DSD_FPRINTF(stderr, "select %s: rc %d index %d serial \"%s\"\n", k_cases[i].spec, got, opts->rtl_dev_index,
+                        opts->rtl_dev_serial);
+            rc |= 1;
+        }
+    }
+    char too_long[DSD_RTL_SERIAL_MAX + 32];
+    DSD_MEMSET(too_long, 'S', sizeof too_long);
+    DSD_MEMCPY(too_long, "rtl:", 4U);
+    too_long[sizeof too_long - 1U] = '\0';
+    rc |= dsd_rtl_spec_select_device(opts, too_long) != -1;
+    rc |= dsd_rtl_spec_select_device(NULL, "rtl") != -1;
+    free(opts);
+    return rc;
+}
+
 /* The spec's device field is rewritten in place of the old one, every other field kept; a result that does not fit
    leaves the spec as it was. */
 static int
@@ -1560,6 +1609,7 @@ main(void) {
     rc |= test_rtl_device_field_grammar();
     rc |= test_rtl_spec_device_by_serial();
     rc |= test_rtl_spec_set_device();
+    rc |= test_rtl_spec_select_device();
     rc |= test_input_spec_scheme_case();
     rc |= test_spec_squelch_field_parse();
     rc |= test_spec_squelch_field_refused();

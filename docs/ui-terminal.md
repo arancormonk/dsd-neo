@@ -396,8 +396,10 @@ the answer the way `-i rtl:<dev>:...` reads its device field:
 
 With the RTL-SDR running, the stream reopens on the new dongle (`Applied: RTL device -> serial 00000001`); when it
 does not start (not plugged in, or held by another program), the dongle that ran runs again and the toast says
-`Failed: RTL device -> serial 00000001 (see log)`. With audio input running, the choice waits for the switch back to the
-RTL-SDR, which opens it on the tuning it had. A save writes the dongle chosen (`rtl_serial` or `rtl_device`). Over
+`Failed: RTL device -> serial 00000001 (see log)`. With audio input running, the choice is written into the RTL-SDR spec
+the switch back opens (created when none is remembered), which opens it on the tuning it had; when that switch would
+open another radio (an rtl_tcp server, say), the choice is refused. Whatever opens, the switch opens the dongle its
+spec names. A save writes the dongle chosen (`rtl_serial` or `rtl_device`). Over
 rtl_tcp the server chooses its dongle, so the row is hidden there (the API answers `Unsupported`). A serial too long
 for the toast is shown cut with `...`; the log names it whole. The I/O pane names a dongle chosen by serial on
 a row of its own (`| RTL: SN 00000001;`), and the Source row reads `Source: RTL-SDR SN 00000001`.

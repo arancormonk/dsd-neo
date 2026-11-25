@@ -2362,6 +2362,18 @@ test_rtl_set_device_selects_and_rolls_back(void) {
     dsd_app_radio_row_destination(&opts, dest, sizeof dest);
     rc |= expect_str("the switch back opens B", dest, "rtl:serial=BBBB:851375000:22:0:24");
 
+    /* The RTL-SDR row would open another radio (an rtl_tcp server a switch to PCM left): no local dongle to select. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "BBBB");
+    rc |= expect_int("PCM over a remembered rtl_tcp: not supported", svc_rtl_set_device(&opts, &state, 1, NULL, NULL),
+                     DSD_ERR_NOT_SUPPORTED);
+    rc |= expect_int("PCM over a remembered rtl_tcp: nothing changes",
+                     strcmp(opts.rtl_dev_serial, "BBBB") == 0
+                         && strcmp(opts.radio_in_dev, "rtltcp:127.0.0.1:1234:851375000") == 0,
+                     1);
+
     /* No receiver running (an RTL-SDR input whose last start failed): a change whose start fails puts the options back
        and opens nothing in their place. */
     opts.audio_in_type = AUDIO_IN_RTL;
