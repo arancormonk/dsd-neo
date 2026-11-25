@@ -33,6 +33,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
+#include "local_day_watch.h"
 #include "platform_path.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
@@ -471,6 +472,9 @@ SavedSystemsModel::fillPlaceNames(Row& row, const QVariantMap& previous) const {
 
 SavedSystemsModel::SavedSystemsModel(QObject* parent)
     : QAbstractListModel(parent), m_realtime_now_ms(&realtimeMSecsSinceEpoch) {
+    if (const LocalDayWatch* watch = LocalDayWatch::shared()) {
+        connect(watch, &LocalDayWatch::dayChanged, this, &SavedSystemsModel::localDayChanged);
+    }
     load();
 }
 
@@ -1286,6 +1290,19 @@ SavedSystemsModel::getByUid(const QString& uid) const {
 qint64
 SavedSystemsModel::realtimeNowMs() const {
     return m_realtime_now_ms();
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+SavedSystemsModel::setRealtimeClockForTest(qint64 (*clock)()) {
+    m_realtime_now_ms = clock != nullptr ? clock : &realtimeMSecsSinceEpoch;
+}
+#endif
+
+QVariantMap
+SavedSystemsModel::localDay() const {
+    const LocalDayWatch::Day day = LocalDayWatch::current();
+    return {{QStringLiteral("startMs"), day.startMs}, {QStringLiteral("revision"), day.revision}};
 }
 
 void

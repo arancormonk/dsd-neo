@@ -84,13 +84,13 @@ Item {
 
     function summaryFor(type, accepted, skipped, importedAt) {
         if (emptyList(type, accepted, skipped))
-            return [qsTr("Empty list"), Qt.formatDate(new Date(importedAt * 1000), "MMM d")].join(" · ");
+            return [qsTr("Empty list"), Qt.formatDateTime(new Date(importedAt * 1000), "MMM d")].join(" · ");
         if (accepted === 0)
             return qsTr("No usable rows — check the file format");
         var parts = [accepted + " " + nounFor(type, accepted)];
         if (skipped > 0)
             parts.push(skipped === 1 ? qsTr("1 row skipped") : qsTr("%1 rows skipped").arg(skipped));
-        parts.push(Qt.formatDate(new Date(importedAt * 1000), "MMM d"));
+        parts.push(Qt.formatDateTime(new Date(importedAt * 1000), "MMM d"));
         return parts.join(" · ");
     }
 

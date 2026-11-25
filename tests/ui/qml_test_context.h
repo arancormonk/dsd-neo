@@ -52,6 +52,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QInputMethodEvent>
+#include <QJSEngine>
 #include <QKeyEvent>
 #include <QList>
 #include <QMetaEnum>
@@ -69,6 +70,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTimeZone>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
@@ -127,6 +129,7 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "local_day_watch.h"
 #include "location_feed.h"
 #include "location_requests.h"
 #include "map_view_item.h"
@@ -7264,6 +7267,42 @@ class Setup : public QObject {
         return missing;
     }
 
+    /**
+     * @brief Issue #902: run the shared LocalDayWatch (savedSystems.localDay) and savedSystems.realtimeNowMs() on a fake
+     * real clock at @p ms (Unix ms), the watch checked at once; a later call moves that clock and checks again.
+     * resetLocalDay() and each new engine go back to the real clock and the run's own time zone.
+     */
+    Q_INVOKABLE void
+    setLocalNowMs(double ms) {
+        local_now_ms() = static_cast<qint64>(ms);
+        dsd_qt::LocalDayWatch::setClockForTest(&Setup::local_now_clock);
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(&Setup::local_now_clock);
+        }
+    }
+
+    /**
+     * @brief Issue #902: whether the process's local zone is @p id (an IANA name), for QDateTime and JavaScript dates
+     * alike, at every date the QML fixtures use. The suite never sets the zone itself: writing TZ while Qt's threads
+     * read it is a race (docs/testing.md, "Environment variables in tests"). CTest starts the QML runs with
+     * TZ=America/Los_Angeles; a run without it (one started by hand, or Windows, whose C runtime reads no IANA name in
+     * TZ) answers false, and a case then skips what needs that zone.
+     */
+    Q_INVOKABLE bool
+    localTimeZoneIs(const QString& id) const {
+        return local_zone_is(id, m_engine);
+    }
+
+    /** @brief Issue #902: the real clock again for the local-day watch and savedSystems (a case's cleanup). */
+    Q_INVOKABLE void
+    resetLocalDay() {
+        dsd_qt::LocalDayWatch::resetClockForTest();
+        /* Here, not on a new engine: its model starts on the real clock, and the old one is gone. */
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(nullptr);
+        }
+    }
+
   public Q_SLOTS:
 
     /**
@@ -7316,6 +7355,8 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
+        /* Issue #902: each test file starts on the real clock. */
+        dsd_qt::LocalDayWatch::resetClockForTest();
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
@@ -8064,6 +8105,50 @@ class Setup : public QObject {
     hostReadingsInstalled() const {
         return m_engine->rootContext()->contextProperty(QStringLiteral("decoderHost")).value<QObject*>()
                == m_host_readings;
+    }
+
+    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, has @p id's offsets at
+       every date the QML fixtures use, across both of 2025's and 2026's transitions: two zones that agree in January
+       and July can still part in November (America/Vancouver kept UTC-7 from November 2026, America/Los_Angeles went
+       back to UTC-8). */
+    static bool
+    local_zone_is(const QString& id, QJSEngine* engine) {
+        const QTimeZone named{id.toUtf8()};
+        if (!named.isValid()) {
+            return false;
+        }
+        /* UTC noon on: 2025-06-14, 2025-10-26, 2025-11-01, 2025-11-03, 2025-12-31, 2026-01-01, 2026-03-07, 2026-03-09,
+           2026-11-02, 2026-11-09, 2026-11-21, 2026-12-31, 2027-01-01. */
+        static constexpr qint64 kProbes[] = {
+            Q_INT64_C(1749902400000), Q_INT64_C(1761480000000), Q_INT64_C(1761998400000), Q_INT64_C(1762171200000),
+            Q_INT64_C(1767182400000), Q_INT64_C(1767268800000), Q_INT64_C(1772884800000), Q_INT64_C(1773057600000),
+            Q_INT64_C(1793620800000), Q_INT64_C(1794225600000), Q_INT64_C(1795262400000), Q_INT64_C(1798718400000),
+            Q_INT64_C(1798804800000)};
+        for (const qint64 probe : kProbes) {
+            const QDateTime at = QDateTime::fromMSecsSinceEpoch(probe, QTimeZone::UTC);
+            const int offset = named.offsetFromUtc(at);
+            if (at.toLocalTime().offsetFromUtc() != offset) {
+                return false;
+            }
+            if (engine != nullptr
+                && engine->evaluate(QStringLiteral("new Date(%1).getTimezoneOffset()").arg(probe)).toInt()
+                       != -offset / 60) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /* Issue #902: the fake real clock setLocalNowMs() runs the local-day watch on. */
+    static qint64&
+    local_now_ms() {
+        static qint64 ms = 0;
+        return ms;
+    }
+
+    static qint64
+    local_now_clock() {
+        return local_now_ms();
     }
 
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */

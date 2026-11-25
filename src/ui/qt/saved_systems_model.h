@@ -42,6 +42,10 @@ class ReplayStore;
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /* Issue #902: the viewer's local day, {startMs, revision}: the instant today began (ms since the Unix epoch) and
+       the shared LocalDayWatch's revision, a new map whenever the day changes. QML bindings that say a time with its
+       date only when it is not today read this, so they follow midnight, a sleep through it and a clock change. */
+    Q_PROPERTY(QVariantMap localDay READ localDay NOTIFY localDayChanged)
 
   public:
     enum Roles {
@@ -274,6 +278,14 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     Q_INVOKABLE qint64 realtimeNowMs() const;
 
+    /** @brief The local day as LocalDayWatch publishes it: {startMs, revision}. */
+    QVariantMap localDay() const;
+
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Read @p clock (ms since the Unix epoch) for realtimeNowMs() and touch(); null is the real clock again. */
+    void setRealtimeClockForTest(qint64 (*clock)());
+#endif
+
     /** @brief Names of systems whose CSV fields reference @p path; for delete warnings. */
     Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
 
@@ -343,6 +355,7 @@ class SavedSystemsModel : public QAbstractListModel {
   Q_SIGNALS:
     void sitesChanged();
     void countChanged();
+    void localDayChanged();
 
   private:
     struct Row {

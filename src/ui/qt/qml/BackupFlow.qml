@@ -490,7 +490,7 @@ Item {
     // The confirmation names what goes and what stays. The version comes from
     // the file, so it is inserted last, where no later arg() can rewrite it.
     function restoreQuestion(summary) {
-        var day = count(summary.createdAt) > 0 ? Qt.formatDate(new Date(count(summary.createdAt) * 1000), "MMM d, yyyy") : "";
+        var day = count(summary.createdAt) > 0 ? Qt.formatDateTime(new Date(count(summary.createdAt) * 1000), "MMM d, yyyy") : "";
         // Without a leading "v", as Settings shows this build's version.
         var version = String(summary.app || "").replace(/^v/, "");
         var source = day.length && version.length ? Util.fill(qsTr("the backup from %1 (DSD-neo %2)"), [day, version]) : day.length ? qsTr("the backup from %1").arg(day) : version.length ? qsTr("the backup (DSD-neo %1)").arg(version) : qsTr("the backup");

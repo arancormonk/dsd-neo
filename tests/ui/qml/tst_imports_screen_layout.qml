@@ -403,7 +403,7 @@ Item {
             compare(card.node.Accessible.role, Accessible.Button);
             // Named by its file, described by its kind and summary line.
             compare(card.node.Accessible.name, importedFiles.get(1).name);
-            compare(card.node.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDate(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
+            compare(card.node.Accessible.description, "TALKGROUPS · 1 talkgroup · " + Qt.formatDateTime(new Date(Number(importedFiles.get(1).importedAt) * 1000), "MMM d"));
             // The badge, the name and the summary take no stop of their own:
             // the card reads them.
             var badge = findChild(card, "importsKindBadge");
