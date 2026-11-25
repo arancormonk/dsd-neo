@@ -617,12 +617,16 @@ Item {
             // Clear.
             var clear = findChild(squelch, "squelchClearSaved");
             tryCompare(clear, "visible", true);
+            compare(clear.text, "Remove saved squelch");
+            compare(clear.Accessible.name, "Remove Saved Squelch From This System");
             clear.clicked();
             compare(savedSystems.get(0).radioSettings, {});
             verify(findChild(squelch, "squelchClearedNote").visible);
             compare(findChild(squelch, "squelchClearedNote").text, "Saved squelch cleared for the next start.");
-            compare(clear.text, "Remove saved squelch");
-            compare(clear.Accessible.name, "Remove Saved Squelch From This System");
+            // Nothing saved is left to remove: the button hides, and a hidden control is out of a screen reader's
+            // reach (issue #902).
+            verify(!clear.visible);
+            compare(clear.Accessible.name, "");
             squelch.visible = false;
         }
 
