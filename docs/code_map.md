@@ -11717,7 +11717,9 @@ Key public headers:
     into `dsd-neo_io_radio` whatever `DSD_HAVE_LIBUSB` says; without `USE_RTLSDR` every call fails): the one listing
     and lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`, lines from `rtl_device_list_line()`: the
     `-i` argument to paste only for a serial of `[A-Za-z0-9._-]`, any other quoted with a note; every device string
-    shown escaped, any byte but printable ASCII as `\xNN`, by both line formatters) and the open share.
+    shown escaped, any byte but printable ASCII as `\xNN`, by both line formatters and `rtl_device_string_shown()` for
+    log lines; `rtl_device_list_cli()` takes the listing again while it grows, at most 3 times, then prints it with no
+    `-i` argument and no duplicate mark, marked incomplete) and the open share.
     `rtl_device_list()`
     zeroes every entry before its read and checks the result, so an unreadable device never shows another's strings
     (the startup listing once did); a read that fails, or succeeds with no string at all (a driver can return 0 with
@@ -11731,9 +11733,12 @@ Key public headers:
     stands in for them. `rtl_device_create_selected()` takes the serial the `rtl:` spec names
     (`opts->rtl_dev_serial`, `dsd_rtl_device_field_parse()`) into the USB open (`rtl_device_open_by_serial()`): the
     serial is looked up at that open, the index found opened, and the raw handle's serial (`rtl_select_handle_serial()`)
-    must match before anything configures or publishes it; a mismatch closes the handle directly (no bias-tee or FIFO
-    write, as `rtl_device_destroy()` would make) and looks the serial up once more, then the open fails with
-    `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the session's device failure. A pre-opened descriptor
+    must match before this project configures or publishes it; a mismatch closes the handle directly (no tuning, gain,
+    bias-tee or FIFO write, as `rtl_device_destroy()` would make), so it is refused and never streamed, and looks the
+    serial up once more, then the open fails with `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the
+    session's device failure. Decided limit: on the desktop the serial is readable only on a handle `rtlsdr_open()`
+    has opened, which has claimed and initialised the dongle, so one hot-plugged into the looked-up index in that
+    instant is initialised (never streamed) before it is closed; no custom open is built for it. A pre-opened descriptor
     (`rtl_device_open_preopened()`) is never enumerated: with a serial, the dongle behind it must report it or the
     handle is closed and the descriptor handed back (`g_preopened_usb_fd_held` -1), with the same error. Before
     that, and before any reset it owes, `rtl_device_preopened_check_serial()` reads the serial through the descriptor
@@ -11741,9 +11746,13 @@ Key public headers:
     `rtlsdr_open_fd()` claims, writes registers, can reset and inits the tuner: another dongle, or one whose serial
     cannot be read that way, is refused with no open at all, its reset obligation kept (fail closed: the read is a
     control transfer on the same connection the open uses, so a dongle it cannot reach would not open either).
-    Without a serial, the descriptor identity's serial is the opened one. The stream
-    (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index` and its options, and
-    `RtlSdrOrchestrator::start()` hands it to the caller's (decoder-owned) options, as it does `airspy_info`; the log
+    Without a serial, the descriptor identity's serial is the opened one. Every local RTL-SDR stream start selects
+    its dongle from the spec it opens (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`:
+    `dsd_rtl_spec_select_device()`, so a cached index or serial a former spec left never opens another dongle; a field
+    the grammar refuses fails the start before anything opens) and, with a pre-opened descriptor, runs an index as 0
+    with the spec rewritten. The stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index`
+    and its options, and `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the
+    caller's spec moved on) to the caller's (decoder-owned) options, as it does `airspy_info`; the log
     line is `Using RTLSDR Device Index: N (SN <sn>)`. `rtl_device_usb_serial()` is the serial verified on the handle
     (the one chosen by, or for an index the stall recovery identity's), which an I/Q capture's `source_args` records as
     `index=N,serial=<sn>` (`capture_rtl_usb_args()`, only a serial `dsd_rtl_serial_is_valid()` accepts). The auto

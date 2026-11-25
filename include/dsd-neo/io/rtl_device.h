@@ -70,10 +70,14 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  *
  * The serial is looked up at this open (librtlsdr's indexes change between opens; rtl_device_find_serial()), the
  * device found is opened, and its handle is kept only when it reports exactly @p serial. A handle that reports
- * another is closed before anything configures it and the serial is looked up once more; then the open fails with
- * RTL_DEVICE_ESERIAL, as it does when no single readable device carries the serial. With a pre-opened descriptor
- * (rtl_device_set_preopened_fd()) nothing is enumerated: the dongle behind the descriptor must report @p serial, or the
- * open fails with RTL_DEVICE_ESERIAL and the descriptor is handed back. An empty or NULL @p serial opens @p dev_index
+ * another is refused and never streamed: closed with no setting of this project's written to it (no tuning, gain,
+ * bias tee or FIFO reset), and the serial looked up once more; then the open fails with RTL_DEVICE_ESERIAL, as it does
+ * when no single readable device carries the serial. librtlsdr's own open (rtlsdr_open()) has by then claimed and
+ * initialised that dongle, which cannot be avoided: its serial can only be read on the opened handle (a dongle
+ * plugged into the looked-up index in that instant is initialised, never streamed). With a pre-opened descriptor
+ * (rtl_device_set_preopened_fd()) nothing is enumerated, and the dongle behind it must report @p serial through the
+ * descriptor before anything opens or initialises it, and again on the opened handle, or the open fails with
+ * RTL_DEVICE_ESERIAL and the descriptor is handed back. An empty or NULL @p serial opens @p dev_index
  * as rtl_device_create() does.
  *
  * @param dev_index Device index to open when @p serial is empty.

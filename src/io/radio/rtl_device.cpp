@@ -9711,9 +9711,10 @@ rtl_usb_serial_open_refused(const char* serial, rtl_device_find_result found, co
 }
 
 /* Open @p dev on the dongle that carries @p serial, into *@p out_index: looked up at this open (indexes change between
- * opens), opened, and kept only when the opened handle reports exactly that serial, before anything configures it. A
- * handle that reports another (the dongles changed between the lookup and the open) is closed as it is, never
- * configured, and the serial looked up once more. 0, or a negative error, reported as the session's failure (the
+ * opens), opened, and kept only when the opened handle reports exactly that serial, before this project configures or
+ * publishes it. A handle that reports another (the dongles changed between the lookup and the open) is refused, never
+ * streamed: closed with nothing of ours written to it, and the serial looked up once more. rtlsdr_open() has claimed
+ * and initialised it by then (its serial is readable only on the opened handle); that is the accepted limit. 0, or a negative error, reported as the session's failure (the
  * caller frees @p dev). */
 static int
 rtl_device_open_by_serial(struct rtl_device* dev, const char* serial, int* out_index) {

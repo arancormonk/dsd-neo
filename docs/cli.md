@@ -3438,11 +3438,18 @@ dongle:
   (`SN: "1 East"`) with a note to quote the whole `-i` argument (`-i "rtl:1 East:851.375M"`). It exits 0, also when
   no dongle is found, and 1 when the build has no RTL-SDR support or the enumeration failed. A device's strings are
   shown with any byte other than printable ASCII as `\xNN` (and `\` doubled), so a control character a device
-  reports never reaches the terminal; the startup listing shows them the same way.
+  reports never reaches the terminal; the startup listing and every log line that names a device's string show them
+  the same way. A dongle plugged in while the list is read is listed too (the list is taken again); one that keeps
+  changing is listed with no `-i` argument and a note that the list is incomplete.
+- Every start opens the dongle its `-i` spec names, a restart too (a gain or device change, a config applied while
+  running): the spec is read again, never an index or serial a former spec left behind.
 - The serial is looked up at every start, so the dongle is found wherever it is enumerated; the startup lines say
   which (`Selected Device #2 with Serial Number: 00000002`, `RTL #2 (SN 00000002): Freq=...`). After it opens, its
-  serial is read back from the device itself; one that reports another (the dongles changed in that instant) is closed
-  untouched and the serial looked up once more.
+  serial is read back from the device itself; one that reports another (the dongles changed in that instant) is
+  refused and never streamed (closed with none of dsd-neo's settings written to it) and the serial looked up once
+  more. librtlsdr's open has already claimed and initialised that dongle, as any program opening it would: on the
+  desktop the serial can only be read once it is open. Android, where the app hands over the connection, checks the
+  serial before anything opens it (below).
 - No dongle with the serial: the start is refused, never falling back to device 0. The error names the serial, says
   how many devices could not be read, and points at `--rtl-list`.
 - Two or more dongles with the same serial (many generic dongles ship as `00000001`): the start is refused, since
@@ -3458,7 +3465,8 @@ dongle:
 - On Android the app picks the dongle and hands over its USB connection, and nothing is enumerated. A serial in the
   spec must then be that dongle's: it is read through the connection before the dongle is opened or reset (after a
   stall), so another dongle, or one whose serial cannot be read, is refused untouched; it is checked again once
-  open. An index names the one dongle handed over: any index but 0 warns and runs as 0.
+  open. An index names the one dongle handed over: any index but 0 warns and runs as 0, at a restart too (the spec,
+  the options and a capture then all say 0).
 - An I/Q capture records the dongle as `index=N,serial=<sn>` (`source_args` in its sidecar), the serial read from the
   dongle whether it was chosen by serial or by index (by index on the desktop only where stall recovery identified
   it; on Android from the dongle the app handed over).
