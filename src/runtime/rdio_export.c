@@ -123,10 +123,19 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     }
 }
 
+/* Once a decoder run (dsd_rdio_session_reset()): a private input left behind, a call not uploaded for want of a system
+   ID. */
 static atomic_int g_rdio_private_remove_warned = 0;
+static atomic_int g_rdio_no_system_warned = 0;
+
+void
+dsd_rdio_session_reset(void) {
+    atomic_store(&g_rdio_private_remove_warned, 0);
+    atomic_store(&g_rdio_no_system_warned, 0);
+}
 
 /* A private input of a job that is over, removed. One that cannot be (on Windows, while a DirWatch still holds the
-   public WAV open without delete sharing, its hard link too) is left: no retry, said once a process, with how to remove
+   public WAV open without delete sharing, its hard link too) is left: no retry, said once a run, with how to remove
    such files by hand. */
 static void
 dsd_rdio_remove_private_input(const char* path) {
@@ -186,6 +195,8 @@ static size_t g_rdio_upload_aborted = 0;
 #define DSD_RDIO_UPLOAD_CANCELLED (-2)
 /* A job the queue does not admit: the shutdown has begun, or the queue is full. */
 #define DSD_RDIO_UPLOAD_REFUSED   (-3)
+/* A call with no rdio-scanner system to upload to: skipped, no failure (dsd_rdio_validate_api_config()). */
+#define DSD_RDIO_UPLOAD_NO_SYSTEM (-4)
 /* The pause between two attempts of one upload. */
 #define DSD_RDIO_RETRY_BACKOFF_MS 150U
 
@@ -476,6 +487,8 @@ dsd_rdio_copy_api_config(dsd_rdio_api_config* out, const dsd_opts* opts, int sys
     out->api_key[sizeof(out->api_key) - 1] = '\0';
 }
 
+/* 0 when @p api can upload; -1 without an API key; DSD_RDIO_UPLOAD_NO_SYSTEM without a system ID, said once a run: a
+   call skipped that way is no export failure. */
 static int
 dsd_rdio_validate_api_config(const dsd_rdio_api_config* api) {
     if (!api) {
@@ -488,8 +501,11 @@ dsd_rdio_validate_api_config(const dsd_rdio_api_config* api) {
     }
 
     if (api->system_id <= 0) {
-        LOG_WARN("Rdio API upload skipped: missing system ID\n");
-        return -1;
+        if (atomic_exchange(&g_rdio_no_system_warned, 1) == 0) {
+            LOG_WARN("Rdio API upload skipped: no system ID (set --rdio-system-id); later calls without one are "
+                     "skipped silently\n");
+        }
+        return DSD_RDIO_UPLOAD_NO_SYSTEM;
     }
 
     return 0;
@@ -752,7 +768,8 @@ dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, con
     return -1;
 }
 
-/* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none. With
+/* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none
+   (DSD_RDIO_UPLOAD_NO_SYSTEM, with none and nothing made, for a call with no system ID). With
    @p private_meta_src (--rdio-mode both: the sidecar's temp file) the job uploads from its own copies of the pair
    (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place, and only once the queue would
    admit the job: a job it would refuse (DSD_RDIO_UPLOAD_REFUSED: a full queue, the shutdown) costs no WAV copy. After
@@ -764,8 +781,9 @@ dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_pa
     *out_job = NULL;
     dsd_rdio_api_config api;
     dsd_rdio_copy_api_config(&api, opts, system_id);
-    int rc = -1;
-    if (dsd_rdio_validate_api_config(&api) == 0) {
+    int rc = dsd_rdio_validate_api_config(&api);
+    if (rc == 0) {
+        rc = -1;
         if (dsd_rdio_upload_worker_init() != 0) {
             LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
         } else {
@@ -788,6 +806,9 @@ dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_pa
     return rc;
 }
 #else
+void
+dsd_rdio_session_reset(void) {}
+
 void
 dsd_rdio_upload_shutdown(void) {}
 
@@ -1855,7 +1876,7 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
    queued (*@p api_queued set). Beside DirWatch
    the job uploads from its own copies of the pair, made before the public sidecar appears, so a watch that takes and
    deletes the pair the moment its sidecar is there cannot take them first; a job whose copies cannot be made is not
-   queued. */
+   queued. A call with no system ID is not uploaded, and is no failure (dsd_rdio_validate_api_config()). */
 static int
 dsd_rdio_export_api(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                     const char* temp_meta_path, int* api_queued) {
@@ -1891,6 +1912,9 @@ dsd_rdio_export_api(const dsd_opts* opts, int system_id, const char* wav_path, c
     if (queued == DSD_RDIO_UPLOAD_CANCELLED) {
         /* The user's Stop, before or after the job was made: no upload of this run is sent any more. */
         LOG_INFO("Rdio API upload of %s not queued: uploads were stopped\n", wav_path);
+        return 0;
+    }
+    if (queued == DSD_RDIO_UPLOAD_NO_SYSTEM) {
         return 0;
     }
     if (queued != 0) {

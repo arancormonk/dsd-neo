@@ -404,6 +404,11 @@ Windows console runs:
   - Copies a run could not remove are left: one that was killed, or (Windows) one whose copy was still open in a
     DirWatch that does not allow deleting it. The first such removal failure is logged once a run. With no dsd-neo
     running on that folder, files ending in `.rdio-upload-audio` or `.rdio-upload-meta` there can be deleted by hand.
+  - With `api` or `both`, a call that has no system ID to upload to (no `--rdio-system-id`, and for an NFM call no
+    `--rdio-analog-system-id`) is not uploaded: its JSON is still written, no upload copies are made, nothing is
+    queued, and the call is not logged as an export failure. The first such call of a run logs
+    `Rdio API upload skipped: no system ID (set --rdio-system-id); later calls without one are skipped silently`;
+    each new run (each Android session too) logs it again. A missing API key is still an export failure on every call.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls),
   0 to 65535. 0, the default, uses `--rdio-system-id`. EDACS analog calls and ProVoice calls follow the digital rule

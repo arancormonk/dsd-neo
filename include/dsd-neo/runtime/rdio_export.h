@@ -167,6 +167,13 @@ int dsd_rdio_journal_keeps_uploads(const dsd_opts* opts);
 int dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before);
 
 /**
+ * Start a decoder run's once-a-run rdio warnings over: the first call an API upload skips for want of a system ID, and
+ * the first private upload input that cannot be removed, are each said once in the log per run. Called where a run
+ * sets up (the CLI's and the Android app's alike), before its first recording; a no-op in builds without libcurl.
+ */
+void dsd_rdio_session_reset(void);
+
+/**
  * Drain queued rdio API uploads and stop the background worker.
  *
  * Intended for process shutdown after final call files are closed/renamed.

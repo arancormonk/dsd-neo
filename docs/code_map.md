@@ -6371,7 +6371,14 @@ suite runs under this compiler.
     row under `dsd_rdio_resolve_call_system()` (issue #668, #931 `--rdio-system-by-frequency`; Core, sidecar fields);
     the call's system is resolved once, before the sidecar is written and before the API settings are validated and
     copied into the job, so the sidecar and the upload name one system, and an analog or per-frequency system with a
-    base system of 0 still uploads. A digital row with no talkgroup
+    base system of 0 still uploads. A call whose system is still 0 or less (issue #931 B4) is skipped, not failed:
+    `dsd_rdio_validate_api_config()` checks the API key first (missing, it is a failure on every call), then answers
+    `DSD_RDIO_UPLOAD_NO_SYSTEM`, before any worker start, job or private input; the sidecar is published as on every
+    API export (its own failure still fails the export), nothing is queued, the export returns 0 (no `Rdio export
+    failed` at the WAV close, journal `rdio` false), and one LOG_WARN says so the first time in a run. That latch and
+    the private-input removal one are reset per decoder run by `dsd_rdio_session_reset()`, which
+    `dsd_engine_run_common_setup()` calls beside `dsd_wav_recording_session_reset()`, so the CLI and each Android
+    session start over. A digital row with no talkgroup
     is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
     `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
     `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields
@@ -6436,7 +6443,7 @@ suite runs under this compiler.
     `rdio` stays false. A run only ever removes its own private inputs, at
     each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
     them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
-    also blocks the delete of its hard link), which is not retried and is logged once a process
+    also blocks the delete of its hard link), which is not retried and is logged once a run
     (`dsd_rdio_remove_private_input()`); `docs/cli.md` says how to delete such files by hand. A copy that cannot be made
     fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still published. A
     failed join of the worker at shutdown (not expected) detaches the queued jobs under the queue's mutex, which the

@@ -5148,9 +5148,38 @@ rdio_test_read_only_dir_denies_removal(const char* dir) {
 }
 #endif
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* The user's Stop of a run whose uploads keep private inputs in @p dir, made read-only meanwhile so none can be
+   removed: how many times the run said a removal failed, or -1 when stderr could not be captured or @p setup_rc says
+   the run's setup failed (the run is stopped all the same). What was said is printed when it is not once. */
+static int
+rdio_read_only_stop_said(const char* dir, int setup_rc) {
+    dsd_test_capture_stderr cap;
+    const int capturing = setup_rc == 0 && chmod(dir, 0500) == 0 && dsd_test_capture_stderr_begin(&cap, "rdio_ro") == 0;
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    int said = 0;
+    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
+        said++;
+    }
+    if (capturing && said != 1) {
+        DSD_FPRINTF(stderr, "%s\n", out);
+    }
+    return capturing ? said : -1;
+}
+#endif
+
 // Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
-// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Skipped
-// where a read-only folder does not stop a removal (as root, or on a mount that ignores the folder's mode).
+// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Issue
+// #931: once a run, not once a process, so the next run (dsd_rdio_session_reset(), as a second Android session starts)
+// says it again. Skipped where a read-only folder does not stop a removal (as root, or on a mount that ignores the
+// folder's mode).
 static int
 test_both_mode_failed_private_removal_said_once(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -5159,8 +5188,8 @@ test_both_mode_failed_private_removal_said_once(void) {
     dsd_socket_t stalled = DSD_INVALID_SOCKET;
     char api_url[128] = {0};
     char dir[DSD_TEST_PATH_MAX] = {0};
-    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
-    char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    char wav[3][DSD_TEST_PATH_MAX] = {{0}};
+    char json[3][DSD_TEST_PATH_MAX] = {{0}};
     if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_ro")) {
         return 1;
     }
@@ -5190,26 +5219,25 @@ test_both_mode_failed_private_removal_said_once(void) {
         DSD_SNPRINTF(leaf, sizeof(leaf), "ro_%d", i);
         rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-read-only", (uint32_t)(1206 + i), wav[i], json[i]);
     }
-    dsd_test_capture_stderr cap;
-    const int capturing = rc == 0 && chmod(dir, 0500) == 0 && dsd_test_capture_stderr_begin(&cap, "rdio_ro") == 0;
-    dsd_rdio_upload_cancel();
-    dsd_rdio_upload_shutdown();
-    char out[4096] = "";
-    if (capturing) {
-        dsd_test_capture_stderr_end(&cap);
-        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-    }
-    (void)chmod(dir, 0700);
-    int said = 0;
-    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
-        said++;
-    }
-    const int left = rdio_test_private_inputs_in(dir, NULL);
-    if (!capturing || said_before + said != 1 || left != 4) {
+    int said = rdio_read_only_stop_said(dir, rc);
+    int left = rdio_test_private_inputs_in(dir, NULL);
+    if (said < 0 || said_before + said != 1 || left != 4) {
         DSD_FPRINTF(stderr,
-                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n%s\n",
-                    said, said_before, left, out);
+                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n",
+                    said, said_before, left);
         rc = 1;
+    }
+    if (rc == 0) {
+        dsd_rdio_session_reset();
+        rc |= rdio_both_publish(opts, hist, dir, "ro_2", "RIFF-read-only", 1208U, wav[2], json[2]);
+        said = rdio_read_only_stop_said(dir, rc);
+        left = rdio_test_private_inputs_in(dir, NULL);
+        if (said != 1 || left != 6) {
+            DSD_FPRINTF(stderr,
+                        "both read-only folder, next run: said %d time(s), %d private inputs left, want once and 6\n",
+                        said, left);
+            rc = 1;
+        }
     }
 
     rdio_test_remove_dir_tree(dir);
@@ -5217,6 +5245,175 @@ test_both_mode_failed_private_removal_said_once(void) {
     dsd_socket_cleanup();
     free(hist);
     free(opts);
+    return rc;
+#endif
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_NO_SYSTEM_WARNING "Rdio API upload skipped: no system ID (set --rdio-system-id)"
+
+/* Call @p leaf (a WAV in @p dir, talkgroup 1201) exported as @p opts say, its export's stderr captured: the export's
+   result, with *@p queued whether its upload was queued and *@p warned how many times it said the call has no system
+   ID; *@p warned is -1 when stderr could not be captured. */
+static int
+rdio_no_system_export(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, int* queued,
+                      int* warned) {
+    char wav[DSD_TEST_PATH_MAX];
+    *queued = -1;
+    *warned = -1;
+    if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        return -2;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_nosys") == 0;
+    const int rc = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        *warned = 0;
+        for (const char* p = out; (p = strstr(p, RDIO_NO_SYSTEM_WARNING)) != NULL; p++) {
+            (*warned)++;
+        }
+    }
+    return rc;
+}
+
+/* One export of call @p leaf: it succeeds, queues an upload when @p want_queued, and says the no-system warning
+   @p want_warned times. */
+static int
+rdio_no_system_expect(const char* label, const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf,
+                      int want_queued, int want_warned) {
+    int queued = 0;
+    int warned = 0;
+    const int rc = rdio_no_system_export(opts, hist, dir, leaf, &queued, &warned);
+    if (rc != 0 || queued != want_queued || warned != want_warned) {
+        DSD_FPRINTF(stderr, "%s: %s returned %d, queued %d, warned %d time(s); want 0, %d, %d\n", label, leaf, rc,
+                    queued, warned, want_queued, want_warned);
+        return 1;
+    }
+    return 0;
+}
+#endif
+
+// Issue #931 B4: an API upload of a call with no system ID is skipped, not failed: the export succeeds, queues
+// nothing, keeps its sidecar, and the run says so once, the first time. A successful upload of a call that has one
+// between two skips leaves the second silent. Each decoder run (dsd_rdio_session_reset()) says it once again, a run
+// made of skips alone (no upload worker started) and a run whose worker ran alike.
+static int
+test_api_no_system_skip_said_once_a_run(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:1", 5000, 1);
+    opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_system_id = 0;
+    int rc = 0;
+
+    dsd_rdio_session_reset();
+    rc |= rdio_no_system_expect("skips-only run", opts, hist, dir, "skip_a.wav", 0, 1);
+    rc |= rdio_no_system_expect("skips-only run", opts, hist, dir, "skip_b.wav", 0, 0);
+    char json[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(json, sizeof(json), dir, "skip_a.json") != 0 || !file_exists(json)) {
+        DSD_FPRINTF(stderr, "no system ID: the skipped call's sidecar is not in place\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+
+    dsd_rdio_session_reset();
+    if (rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "skip_c.wav", 0, 1);
+    opts->rdio_system_id = 48;
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "sent.wav", 1, 0);
+    opts->rdio_system_id = 0;
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "skip_d.wav", 0, 0);
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 1
+        || strcmp(server.system, "48") != 0) {
+        DSD_FPRINTF(stderr, "no system ID: %d upload(s) with system '%s', want the one with 48\n", server.requests_seen,
+                    server.system);
+        rc = 1;
+    }
+
+    dsd_rdio_session_reset();
+    rc |= rdio_no_system_expect("third run", opts, hist, dir, "skip_e.wav", 0, 1);
+    dsd_rdio_upload_shutdown();
+
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #931 B4: in both modes with an API side, a call skipped for having no system ID still publishes its sidecar,
+// makes no private upload inputs (--rdio-mode both) and queues nothing; a sidecar that cannot be put in place (its name
+// taken by a folder) is still an export failure on that path.
+static int
+test_api_no_system_skip_keeps_the_sidecar_rule(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const int modes[] = {DSD_RDIO_MODE_API, DSD_RDIO_MODE_BOTH};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]) && rc == 0; i++) {
+        char dir[DSD_TEST_PATH_MAX] = {0};
+        char json[DSD_TEST_PATH_MAX] = {0};
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+        if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system_sidecar")
+            || dsd_test_path_join(json, sizeof(json), dir, "blocked.json") != 0) {
+            free(hist);
+            free(opts);
+            return 1;
+        }
+        rdio_cancel_opts(opts, "http://127.0.0.1:1", 5000, 1);
+        opts->rdio_mode = modes[i];
+        opts->rdio_system_id = 0;
+        const char* label = modes[i] == DSD_RDIO_MODE_BOTH ? "no system ID, both" : "no system ID, api";
+        dsd_rdio_session_reset();
+        rc |= rdio_no_system_expect(label, opts, hist, dir, "skip.wav", 0, 1);
+        int files = 0;
+        const int private_inputs = rdio_test_private_inputs_in(dir, &files);
+        if (private_inputs != 0 || files != 2) {
+            DSD_FPRINTF(stderr, "%s: %d private inputs of %d files, want none of 2\n", label, private_inputs, files);
+            rc = 1;
+        }
+        int queued = 0;
+        int warned = 0;
+        const int failed =
+            mkdir(json, 0700) == 0 ? rdio_no_system_export(opts, hist, dir, "blocked.wav", &queued, &warned) : 0;
+        if (failed != -1 || queued != 0 || rdio_test_private_inputs_in(dir, NULL) != 0) {
+            DSD_FPRINTF(stderr, "%s: a sidecar that cannot be put in place returned %d, queued %d\n", label, failed,
+                        queued);
+            rc = 1;
+        }
+        remove_empty_dir(json);
+        rdio_test_remove_dir_tree(dir);
+        dsd_rdio_upload_shutdown();
+        free(hist);
+        free(opts);
+    }
     return rc;
 #endif
 }
@@ -5345,6 +5542,8 @@ main(void) {
     rc |= test_both_mode_stop_before_queueing_releases_the_job();
     rc |= test_both_mode_failed_private_open_leaves_nothing();
     rc |= test_both_mode_failed_private_removal_said_once();
+    rc |= test_api_no_system_skip_said_once_a_run();
+    rc |= test_api_no_system_skip_keeps_the_sidecar_rule();
     /* Last: it leaves the upload worker failed for good. */
     rc |= test_failed_join_releases_queued_jobs();
     free(g_rdio_case_hist);

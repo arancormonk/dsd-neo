@@ -1840,6 +1840,51 @@ read_published_sidecar(const rig* r, const char* pub, char* body, size_t body_si
     }
 }
 
+/* Issue #931 B4: an API upload of a call with no system ID is skipped, not failed: the close logs no export failure,
+   its journal record says no upload was queued, and the run says once why the call was not uploaded (each run anew,
+   dsd_rdio_session_reset()). The sidecar is still put in place. */
+static int
+test_rdio_no_system_skip_is_no_failure(void) {
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_rdio_no_system");
+    r.opts->rdio_mode = DSD_RDIO_MODE_API;
+    r.opts->rdio_system_id = 0;
+    r.opts->rdio_upload_timeout_ms = 100;
+    r.opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+    DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+    dsd_rdio_session_reset();
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 1410U, 14U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "journal_no_system") == 0;
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    char out[8192] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof out);
+    }
+    dsd_rdio_upload_shutdown();
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("no system ID: published", pub != NULL);
+    rc |= expect_str("no system ID: no upload queued", pub ? field_s(pub, "rdio") : "", "false");
+    rc |= expect_true("no system ID: stderr captured", capturing);
+#ifdef USE_CURL
+    rc |= expect_true("no system ID: no export failure", strstr(out, "Rdio export failed") == NULL);
+    rc |= expect_true("no system ID: said why",
+                      strstr(out, "Rdio API upload skipped: no system ID (set --rdio-system-id)") != NULL);
+#endif
+    char body[4096];
+    read_published_sidecar(&r, pub, body, sizeof body);
+    rc |= expect_true("no system ID: the sidecar is in place", strstr(body, "\"talkgroup\": 1410,") != NULL);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(&r);
+    return rc;
+}
+
 /* Issue #668 and the #708 contract for NFM: an NFM call's recording is exported through the real closer, and the
    journal's publish record says whether its API upload was queued, which the exporter decides before the record is
    written. A radio input's call goes up under its frequency in kHz to the analog system, its sidecar beside it, and
@@ -6278,6 +6323,7 @@ main(void) {
     rc |= test_strings_are_escaped();
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_rdio_no_system_skip_is_no_failure();
     rc |= test_nfm_rdio_export_is_journaled();
     rc |= test_wav_stop_follows_a_fresh_stream_verdict();
     rc |= test_analog_recordings_are_named_by_mode();
