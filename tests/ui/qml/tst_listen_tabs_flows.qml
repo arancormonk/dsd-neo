@@ -44,6 +44,7 @@ Item {
         property string storeMessage: ""
         function control(action, session, hit) { return true; }
         function arm() { return ""; }
+        function searchBandwidthKhz() { return 48; }
         function cancelArm() {}
         function removeAvoid(frequency) {}
         function avoidFrequency(session, frequency) { return true; }

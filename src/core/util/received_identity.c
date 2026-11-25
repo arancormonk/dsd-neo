@@ -528,6 +528,18 @@ dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net) {
            && rxid_has(id, DSD_RXID_DMR_T3_CAPMAX) && id->dmr_t3_capmax_model == model && id->dmr_t3_capmax_net == net;
 }
 
+uint8_t
+dsd_rxid_dmr_trunk_named(const dsd_state* state) {
+    if (state == NULL) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    const dsd_received_identity* const id = &state->rx_id;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR || !rxid_has(id, RXID_DMR_TRUNK_PARTS)) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    return id->dmr_trunk;
+}
+
 void
 dsd_rxid_note_dmr_xpt_free_lcn(dsd_state* state, uint8_t lcn) {
     dsd_received_identity* const id = rxid_dmr(state, (uint8_t)DSD_RXID_DMR_TRUNK_XPT);
@@ -759,6 +771,14 @@ dsd_rxid_note_tetra_other_cell(dsd_state* state) {
     dsd_received_identity* const id = rxid_tetra(state);
     if (id != NULL) {
         rxid_invalidate(id, DSD_RXID_TETRA_LA | DSD_RXID_CC_FREQ);
+    }
+}
+
+void
+dsd_rxid_note_tetra_no_main_carrier(dsd_state* state) {
+    dsd_received_identity* const id = rxid_tetra(state);
+    if (id != NULL) {
+        rxid_invalidate(id, DSD_RXID_CC_FREQ);
     }
 }
 

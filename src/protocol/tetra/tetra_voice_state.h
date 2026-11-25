@@ -103,10 +103,20 @@ void tetra_voice_call_renamed(tetra_voice_t* voice, uint16_t old_id, uint16_t ne
  * may no longer be known, is not the next transmission's and starts over. */
 void tetra_voice_transmission_started(tetra_voice_t* voice, uint16_t call_id);
 
+/** A call is admitted on a slot with no active call (issue #888): the speech in progress, heard before the call was,
+ * starts over: its unplayed samples, its confirmation and concealment state and the decoder's history go, so no
+ * sample of the admitted call's audio is played or concealed from speech before it. */
+void tetra_voice_call_admitted(tetra_voice_t* voice);
+
 /** The receiver lost the carrier's samples (tetra_forget_carrier()): the speech in progress starts over, but the
  * transmission it belonged to is kept, so speech after the gap that voice_bind()'s rules call the same transmission
  * does not count as another. */
 void tetra_voice_forget_carrier(tetra_voice_t* voice);
+/** A scan's cold visit to a row (tetra_scan_visit_reset(), issue #890): besides the carrier's speech
+ * (tetra_voice_forget_carrier()), what the codec counted and last reported (frames, concealed, codec_errors,
+ * last_decode_failed) and the transmission a gap kept are the last row's, so the next row starts with none of them and
+ * shows no frame or decode error before its own speech. The decoder stays allocated. */
+void tetra_voice_visit_reset(tetra_voice_t* voice);
 
 #ifdef __cplusplus
 }

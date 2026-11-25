@@ -119,6 +119,15 @@ Item {
                 return browser.entryName(entry);
             }
         }
+        // Issue #902: a row's spoken name is taken once per listing, and says
+        // its date with the year outside the current one: a new year renames
+        // the rows whose words change, as a listing would.
+        Connections {
+            target: savedSystems
+            function onLocalDayChanged() {
+                entryRows.sync();
+            }
+        }
 
         delegate: Item {
             id: entryRow
@@ -274,6 +283,7 @@ Item {
                         Accessible.ignored: true
                     }
                     Text {
+                        objectName: "fileBrowserEntrySubtitle"
                         width: parent.width
                         visible: text.length > 0
                         text: entryRow.entry ? browser.entrySubtitle(entryRow.entry) : ""

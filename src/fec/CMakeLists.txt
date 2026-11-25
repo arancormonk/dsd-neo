@@ -1,5 +1,5 @@
 # FEC module library
-add_library(dsd-neo_fec)
+add_library(dsd-neo_fec STATIC)
 
 target_sources(
     dsd-neo_fec
@@ -23,10 +23,3 @@ target_include_directories(
 target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_ezpwd)
 
 target_link_libraries(dsd-neo_fec PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_fec
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

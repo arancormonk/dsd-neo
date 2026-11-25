@@ -486,6 +486,11 @@ dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
                                                                      : DSD_CALL_REACQUIRE_GAP_S;
 }
 
+int
+dsd_call_snapshot_contradicted_by(const dsd_call_snapshot* call, const dsd_call_observation* observation) {
+    return call != NULL && observation != NULL && call_state_observation_changes_identity(call, observation);
+}
+
 // Whether the ended epoch may still be reacquired, whatever reopens it: a recoverable end of a call that names a
 // call, within its reason's heal window. call_state_reacquires_ended_epoch() adds what the reopening observation
 // must satisfy.
@@ -553,14 +558,27 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
            && call_state_reacquire_site_fits(current, live, observation);
 }
 
+// Whether only a checked message of the epoch itself may give a call of @p protocol its numeric identity (issue #890):
+// a dPMR call's numbers are the Communications_Start header's that opened it, and a reacquired epoch heard none, so a
+// headerless reopen (a new transmission from the same radio whose header was missed looks the same) does not inherit
+// them. Its texts still carry, for display.
+static int
+call_state_numbers_need_own_header(int protocol) {
+    return DSD_SYNC_IS_DPMR(protocol);
+}
+
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
 // the staged history row blank out across the gap and have to relearn everything the previous
-// segment already decoded.
+// segment already decoded. A family whose numbers only its own epoch's header may name keeps them
+// out (call_state_numbers_need_own_header()), so no reader of the reopened epoch, the event layer
+// included, sees them as this reception's.
 static void
 call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_snapshot* previous) {
-    snapshot->ota_source_id = previous->ota_source_id;
-    snapshot->ota_target_id = previous->ota_target_id;
-    snapshot->policy_target_id = previous->policy_target_id;
+    if (!call_state_numbers_need_own_header(previous->protocol)) {
+        snapshot->ota_source_id = previous->ota_source_id;
+        snapshot->ota_target_id = previous->ota_target_id;
+        snapshot->policy_target_id = previous->policy_target_id;
+    }
     DSD_MEMCPY(snapshot->source_text, previous->source_text, sizeof(snapshot->source_text));
     DSD_MEMCPY(snapshot->target_text, previous->target_text, sizeof(snapshot->target_text));
     DSD_MEMCPY(snapshot->route_text, previous->route_text, sizeof(snapshot->route_text));
@@ -584,10 +602,15 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
     snapshot->has_service_metadata = previous->has_service_metadata;
+    snapshot->identity_unread = previous->identity_unread;
     snapshot->emergency = previous->emergency;
     snapshot->priority = previous->priority;
     snapshot->media_started_m = previous->media_started_m;
     snapshot->media_updated_m = previous->media_updated_m;
+    snapshot->checked_media_started_m = previous->checked_media_started_m;
+    snapshot->checked_media_updated_m = previous->checked_media_updated_m;
+    snapshot->checked_media_origin = previous->checked_media_origin;
+    snapshot->checked_media_tetra_direct = previous->checked_media_tetra_direct;
     // The reopened epoch continues the ending one's transmission, so state bound to that call stays bound to it.
     snapshot->transmission_epoch = dsd_call_snapshot_transmission(previous);
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
@@ -684,6 +707,9 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
         snapshot->priority = observation->priority;
         snapshot->has_service_metadata = 1U;
     }
+    if (observation->identity_unread != 0U) {
+        snapshot->identity_unread = 1U;
+    }
 }
 
 /* Voice-error windows belong to a call, including late-entry epochs opened by
@@ -726,6 +752,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         return -1;
     }
     dsd_call_state_ext_lock(ext);
+    ext->observation_seq[slot]++;
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     dsd_receive_identity received;
@@ -1086,6 +1113,57 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
     return 1;
 }
 
+/* The protocol a frame's media counts for: P25 Phase 1 and Phase 2 are one protocol, as for crypto updates. */
+static int
+call_state_media_family(int protocol) {
+    return DSD_SYNC_IS_P25P2(protocol) ? dsd_call_state_protocol_family(DSD_SYNC_P25P1_POS)
+                                       : dsd_call_state_protocol_family(protocol);
+}
+
+static int
+call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, uint8_t tetra_direct, double observed_m) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_scan_observation_origin origin;
+    if (!dsd_state_scan_observation_origin(state, &origin)) {
+        return 0; /* the frame was cut: none of it is any visit's */
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return -1;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || call_state_media_family(snapshot->protocol) != call_state_media_family(protocol)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    const double now_m = call_state_observed_m(observed_m);
+    if (snapshot->checked_media_started_m <= 0.0 || snapshot->checked_media_origin.visit != origin.visit
+        || snapshot->checked_media_origin.carrier_seq != origin.carrier_seq
+        || snapshot->checked_media_tetra_direct != tetra_direct) {
+        /* Checked media of another visit, carrier or TETRA mode is no part of this span. */
+        snapshot->checked_media_started_m = now_m;
+        snapshot->checked_media_origin = origin;
+        snapshot->checked_media_tetra_direct = tetra_direct;
+    }
+    snapshot->checked_media_updated_m = now_m;
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+    return call_state_note_checked_media(state, slot, protocol, 0U, observed_m);
+}
+
+int
+dsd_call_state_note_checked_media_tetra(dsd_state* state, uint8_t slot, int direct, double observed_m) {
+    return call_state_note_checked_media(state, slot, DSD_SYNC_TETRA_NDB_POS, direct ? 1U : 0U, observed_m);
+}
+
 /* The system and site the call's carrier had named when the call ended, while the reception is still the one the call
    began on: the same reception generation (dsd_state_reception_generation()), so not reset or replaced since, and no
    retune or change of P25 phase in between, which keep the record's epoch (issue #800, fail closed).
@@ -1106,8 +1184,22 @@ call_state_capture_ended_identity(const dsd_state* state, dsd_call_snapshot* sna
                                        : 0U;
 }
 
-int
-dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
+/* Whether an end for @p reason, decoded by @p own_protocol's decoder (DSD_SYNC_NONE: by none named) and naming a call
+   of @p own_kind, is the call's own terminator: a verified one, of the call's own protocol, of a kind that does not
+   contradict the call's (call_state_kind_changed()) (dsd_call_snapshot::own_terminator, issue #888). */
+static uint8_t
+call_state_own_terminator(const dsd_call_snapshot* snapshot, dsd_call_end_reason reason, int own_protocol,
+                          dsd_call_kind own_kind) {
+    return reason == DSD_CALL_END_TERMINATOR && own_protocol != DSD_SYNC_NONE
+                   && dsd_call_state_protocol_family(snapshot->protocol) == dsd_call_state_protocol_family(own_protocol)
+                   && !call_state_kind_changed(snapshot->kind, own_kind)
+               ? 1U
+               : 0U;
+}
+
+static int
+call_state_end(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason, int own_protocol,
+               dsd_call_kind own_kind) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
@@ -1143,6 +1235,7 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
             snapshot->end_reason = (reason == DSD_CALL_END_TERMINATOR || corroborates)
                                        ? (uint8_t)DSD_CALL_END_TERMINATOR
                                        : (uint8_t)DSD_CALL_END_EXPLICIT;
+            snapshot->own_terminator = call_state_own_terminator(snapshot, reason, own_protocol, own_kind);
             snapshot->revision = call_state_next_nonzero(snapshot->revision);
             ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
             dsd_call_state_ext_unlock(ext);
@@ -1154,6 +1247,7 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     snapshot->phase = DSD_CALL_PHASE_ENDED;
     call_state_capture_ended_identity(state, snapshot);
     snapshot->end_reason = (uint8_t)reason;
+    snapshot->own_terminator = call_state_own_terminator(snapshot, reason, own_protocol, own_kind);
     snapshot->media_active = 0U;
     snapshot->audio_permitted = 0U;
     snapshot->ended_m = call_state_observed_m(observed_m);
@@ -1162,6 +1256,19 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
     return 1;
+}
+
+int
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
+    return call_state_end(state, slot, observed_m, reason, DSD_SYNC_NONE, DSD_CALL_KIND_UNKNOWN);
+}
+
+int
+dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol, dsd_call_kind kind) {
+    if (protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    return call_state_end(state, slot, observed_m, DSD_CALL_END_TERMINATOR, protocol, kind);
 }
 
 int
@@ -1185,6 +1292,21 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
     atomic_fetch_add(&g_call_state_snapshot_copies, 1);
 #endif
     return out->epoch != 0U ? 1 : 0;
+}
+
+uint32_t
+dsd_call_state_observation_seq(const dsd_state* state, uint8_t slot) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0U;
+    }
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (!ext) {
+        return 0U;
+    }
+    dsd_call_state_ext_lock(ext);
+    const uint32_t seq = ext->observation_seq[slot];
+    dsd_call_state_ext_unlock(ext);
+    return seq;
 }
 
 int
@@ -1332,9 +1454,11 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
         // the monotonic clock is global, so a slot saved mid-fade would still satisfy the gap
         // test on the new target and suppress the first call's VOICE_START alert while seeding
         // it with the old target's identity. A restored end is a hop, never a resumable fade.
-        // This lives on the call snapshot rather than the lifecycle, so it stays here.
+        // This lives on the call snapshot rather than the lifecycle, so it stays here. A teardown is no terminator, so
+        // the mark of the call's own one goes with the reason it replaces (issue #888).
         if (ext->calls.slots[slot].phase == DSD_CALL_PHASE_ENDED) {
             ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            ext->calls.slots[slot].own_terminator = 0U;
         }
     }
     call_state_note_epoch_floor(state, ext);
@@ -1403,6 +1527,11 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
         return 0;
     }
     if (snapshot->source_home.valid != 0U && call_state_source_home_equal(&snapshot->source_home, home)) {
+        /* The same radio, now perhaps with a working address: the home is bound to the one it was named with last. A
+           repeat that names no working address keeps the one the radio was named with, which it does not contradict. */
+        if (home->source != 0U) {
+            snapshot->source_home.source = home->source;
+        }
         dsd_call_state_ext_unlock(ext);
         return 1;
     }
@@ -1410,8 +1539,43 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
         *replaced = snapshot->source_home.valid != 0U;
     }
     snapshot->source_home = *home;
+    snapshot->source_home.withdrawn = 0U;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped) {
+    if (dropped) {
+        *dropped = 0;
+    }
+    if (!state || source == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || !dsd_call_state_update_is_protocols(snapshot, protocol)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    /* A home named with another working address, or with none, is an earlier talker's: the observation that brought
+       this one fills an absent working address without a new epoch, so the call would go on naming that radio. */
+    if (snapshot->source_home.valid != 0U && snapshot->source_home.source != source) {
+        DSD_MEMSET(&snapshot->source_home, 0, sizeof(snapshot->source_home));
+        snapshot->source_home.withdrawn = 1U;
+        snapshot->revision = call_state_next_nonzero(snapshot->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+        if (dropped) {
+            *dropped = 1;
+        }
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

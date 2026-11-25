@@ -39,8 +39,20 @@ Rectangle {
     property string portText: ""
     property var timingText: ({})
     property var entryInputText: ({})
-    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"]
-    readonly property var protocolLabels: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96"), qsTr("NFM (analog)"), qsTr("AM (analog)")]
+    // The scan-list protocols in picker order (issue #890), from the one C++ catalog the target
+    // generator, the known-frequency names and the entry editor read too.
+    readonly property var protocolIds: scanLists.protocols.map(function (p) {
+        return p.id;
+    })
+    readonly property var protocolLabels: scanLists.protocols.map(function (p) {
+        return p.label;
+    })
+    // Bumped by every entry edit made in place (setEntry()), so what reads the entries' protocols
+    // and switches sees it.
+    property int entriesRevision: 0
+    // Issue #890 (D3): whether a target this list scans is TETRA DMO, which runs the whole session
+    // at 72 kHz: App default is 72 kHz, and another bandwidth is refused at start.
+    readonly property bool tetraTargets: (entriesRevision, entries, draft, scanListStarter.hasTetraTargets(selectedDraft()))
 
     // Match the wizard's ASCII checks and explicit fallback values. Locale-aware
     // validators accept digits/grouping that JavaScript's Number cannot parse.
@@ -320,6 +332,7 @@ Rectangle {
         var updated = Object.assign({}, entries[row]);
         updated[field] = value;
         entries[row] = updated;
+        entriesRevision++;
         entryRows.setProperty(row, "entryData", updated);
     }
 
@@ -858,8 +871,14 @@ Rectangle {
                     delegate: ReadableText {
                         required property var modelData
                         // An nfm- or am-conventional target (issue #526) takes no modulation: the parser
-                        // refuses one there.
+                        // refuses one there, and so does one of a class with its own (issue #890: dPMR,
+                        // D-STAR, YSF, M17, TETRA DMO). The catalog names the protocol; a type it does not
+                        // have is shown as written.
+                        readonly property var protocol: scanLists.protocolForType(modelData.type)
                         readonly property bool analog: modelData.type === "nfm-conventional" || modelData.type === "am-conventional"
+                        readonly property bool modulationShown: protocol.id === undefined ? !analog : protocol.modulation === true
+                        readonly property string typeText: protocol.id === undefined ? String(modelData.type || "")
+                            : /-trunk$/.test(modelData.type) ? qsTr("%1 trunked").arg(protocol.label) : protocol.label
 
                         width: ListView.view.width
                         padding: 6
@@ -868,7 +887,7 @@ Rectangle {
                         color: Theme.textPrimary
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
-                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + Util.fill(qsTr("Dwell: %1 · Hold: %2"), [modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms", modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms"]) + (analog ? "" : " · " + qsTr("Modulation: %1").arg(modelData.modulation || qsTr("inherit"))) + " · " + qsTr("Gain: %1").arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb, modelData.squelchMarginDb, modelData.squelchNoise) + (analog || modelData.bandwidthHz !== undefined ? " · " + Util.analogBandwidthSummary(modelData.type === "am-conventional", modelData.bandwidthHz) : "") + (modelData.type === "nfm-conventional" || modelData.toneFilter !== undefined ? " · " + Util.toneFilterSummary(modelData.toneFilter, modelData.toneList) : "") + (modelData.receiveSummary ? "\n" + modelData.receiveSummary : "")
+                        text: modelData.id + " · " + typeText + " · " + modelData.frequency + " MHz\n" + Util.fill(qsTr("Dwell: %1 · Hold: %2"), [modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms", modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms"]) + (!modulationShown ? "" : " · " + qsTr("Modulation: %1").arg(modelData.modulation || qsTr("inherit"))) + " · " + qsTr("Gain: %1").arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb, modelData.squelchMarginDb, modelData.squelchNoise) + (analog || modelData.bandwidthHz !== undefined ? " · " + Util.analogBandwidthSummary(modelData.type === "am-conventional", modelData.bandwidthHz) : "") + (modelData.type === "nfm-conventional" || modelData.toneFilter !== undefined ? " · " + Util.toneFilterSummary(modelData.toneFilter, modelData.toneList) : "") + (modelData.receiveSummary ? "\n" + modelData.receiveSummary : "")
                     }
                 }
             }
@@ -1165,12 +1184,28 @@ Rectangle {
                         comboObjectName: "scanTuner_bandwidthKhz"
                         noteObjectName: "scanBandwidthNote"
                         value: screen.bandwidthSet ? Number(screen.bandwidthText) : -1
-                        inheritNote: qsTr("App default · %1 kHz").arg(sessionArgs.effectiveBandwidthKhz("", screen.draft.sourceType || "usb", prefs.bandwidthKhz))
+                        // With a TETRA DMO target, App default runs the list at the 72 kHz TETRA decodes at.
+                        inheritNote: screen.tetraTargets
+                            ? qsTr("App default · %1 kHz, which the TETRA DMO targets need").arg(scanListStarter.bandwidthKhz(Object.assign({}, screen.selectedDraft(), {bandwidthKhz: -1})))
+                            : qsTr("App default · %1 kHz").arg(sessionArgs.effectiveBandwidthKhz("", screen.draft.sourceType || "usb", prefs.bandwidthKhz))
                         onChosen: function (khz) {
                             screen.bandwidthSet = khz > 0;
                             screen.bandwidthText = khz > 0 ? String(khz) : "";
                             screen.setDraft("bandwidthKhz", khz > 0 ? khz : -1);
                         }
+                    }
+                    // Issue #890 (D3): a bandwidth TETRA cannot decode at, with a TETRA DMO target in
+                    // the list. The start refuses it, so the editor says so beside the choice, in the
+                    // start's own words, as the wizard does for a TETRA system.
+                    ReadableText {
+                        objectName: "scanTetraRateNote"
+                        width: parent.width
+                        visible: text.length > 0
+                        text: screen.tetraTargets ? scanListStarter.rateError(screen.selectedDraft()) : ""
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        color: Theme.magenta
                     }
 
                     MicroLabel {

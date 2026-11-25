@@ -8,6 +8,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -20,10 +21,14 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define UI_TRUNK_SEEN_FREQ_CAP 256
-#define UI_TRUNK_MAX_MAP_PRINT 32
-#define UI_TRUNK_COLS_PER_LINE 3
-#define UI_TRUNK_LCN_COUNT     26
+#define UI_TRUNK_SEEN_FREQ_CAP     256
+#define UI_TRUNK_MAX_MAP_PRINT     32
+#define UI_TRUNK_COLS_PER_LINE     3
+#define UI_TRUNK_LCN_COUNT         26
+/* Missing Tier III channels listed, one per line; the rest are counted. */
+#define UI_TRUNK_MAX_MISSING_PRINT 8
+/* Tier III channel numbers (LPCN 1..4094). */
+#define UI_TRUNK_T3_MAX_LPCN       4094
 
 typedef struct ui_trunk_render_state_s {
     long int seen_freqs[UI_TRUNK_SEEN_FREQ_CAP];
@@ -94,6 +99,12 @@ ui_trunk_flush_row(ui_trunk_render_state* render) {
     }
 }
 
+/* A Tier III channel by its LPCN, in decimal, as every frontend shows it (discussion #900 B11). */
+static void
+ui_trunk_print_t3_channel_freq(int channel, long int freq) {
+    printw("CH %d: %.06lf MHz", channel, (double)freq / 1000000.0);
+}
+
 static void
 ui_trunk_print_channel_freq(const dsd_state* state, int channel, long int freq) {
     attr_t saved_attrs = 0;
@@ -162,17 +173,131 @@ ui_trunk_render_chan_map(const dsd_state* state, uint32_t chan_map_count, ui_tru
     }
 }
 
+/* The Tier III map by LPCN ascending: every LPCN with a frequency DMR uses (the view's channel_hz: the user's entry
+   over the shared row, so a hidden channel is not listed and a set one shows the user's frequency, whatever another
+   protocol left in the row), two sharing one included (each names its own channel). Frequencies are still marked seen,
+   so the positional rows after it skip theirs. */
 static void
-ui_trunk_render_lcn_freqs(const dsd_state* state, uint32_t chan_map_count, ui_trunk_render_state* render) {
+ui_trunk_render_t3_map(const dsd_ui_dmr_t3_view* view, ui_trunk_render_state* render) {
+    int printed = 0;
+    int extra = 0;
+    for (int lpcn = 1; lpcn <= UI_TRUNK_T3_MAX_LPCN; lpcn++) {
+        const long int freq = view->channel_hz[lpcn];
+        if (freq == 0) {
+            continue;
+        }
+        if (printed < UI_TRUNK_MAX_MAP_PRINT) {
+            ui_trunk_begin_row_if_needed(render);
+            ui_trunk_print_t3_channel_freq(lpcn, freq);
+            ui_trunk_advance_column(render);
+            printed++;
+        } else {
+            extra++;
+        }
+        if (!ui_trunk_freq_seen(render, freq)) {
+            ui_trunk_mark_freq_seen(render, freq);
+        }
+    }
+
+    ui_trunk_flush_row(render);
+    if (extra > 0) {
+        ui_print_lborder_green();
+        printw(" ... and %d more learned channels\n", extra);
+    }
+}
+
+static const dsd_ui_dmr_t3_missing_detail*
+ui_trunk_missing_detail(const dsd_ui_dmr_t3_view* view, uint16_t lpcn) {
+    const uint8_t count = view->missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view->missing.detail_count : 0U;
+    for (uint8_t i = 0; i < count; i++) {
+        if (view->missing.details[i].lpcn == lpcn) {
+            return &view->missing.details[i];
+        }
+    }
+    return NULL;
+}
+
+/* "CH 12: no frequency (TG 1234, slot 1)": the channel and the latest grant that named it, when the ledger kept it.
+   Without a detail the checked set still says whether a checked grant named it. */
+static void
+ui_trunk_print_missing_row(const dsd_ui_dmr_t3_view* view, uint16_t lpcn, const dsd_ui_dmr_t3_missing_detail* d) {
+    ui_print_lborder_green();
+    if (d == NULL) {
+        const int checked = (view->missing.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U;
+        printw(" CH %u: no frequency%s\n", (unsigned)lpcn, checked ? "" : " (unchecked)");
+        return;
+    }
+    printw(" CH %u: no frequency (%s %u%s, slot %u%s)\n", (unsigned)lpcn, d->group ? "TG" : "radio",
+           (unsigned)d->recipient, d->data ? ", data" : "", (unsigned)(d->slot & 1U) + 1U,
+           d->unverified ? ", unchecked" : "");
+}
+
+/* The Tier III channels granted without a frequency: the ones heard most recently first, then the rest by LPCN, up to
+   UI_TRUNK_MAX_MISSING_PRINT lines. */
+static void
+ui_trunk_render_missing(const dsd_ui_dmr_t3_view* view, size_t total) {
+    size_t printed = 0U;
+    const uint8_t details =
+        view->missing.detail_count <= DSD_UI_DMR_T3_MISSING_DETAILS ? view->missing.detail_count : 0U;
+    for (uint8_t i = 0; i < details && printed < UI_TRUNK_MAX_MISSING_PRINT; i++) {
+        const dsd_ui_dmr_t3_missing_detail* d = &view->missing.details[i];
+        if (dsd_app_dmr_t3_view_missing_has(view, d->lpcn)) {
+            ui_trunk_print_missing_row(view, d->lpcn, d);
+            printed++;
+        }
+    }
+    for (uint16_t lpcn = 1U; lpcn <= UI_TRUNK_T3_MAX_LPCN && printed < UI_TRUNK_MAX_MISSING_PRINT; lpcn++) {
+        if (dsd_app_dmr_t3_view_missing_has(view, lpcn) && ui_trunk_missing_detail(view, lpcn) == NULL) {
+            ui_trunk_print_missing_row(view, lpcn, NULL);
+            printed++;
+        }
+    }
+    if (total > printed) {
+        ui_print_lborder_green();
+        printw(" ... and %lu more channels with no frequency\n", (unsigned long)(total - printed));
+    }
+}
+
+/* Whether the Tier III map has a channel to list: one LPCN with a frequency DMR uses (the view's channel_hz), which the
+   shared map's count does not tell (another protocol's writer can empty the rows under the user's entries). */
+static int
+ui_trunk_t3_has_rows(const dsd_ui_dmr_t3_view* view) {
+    for (int lpcn = 1; lpcn <= UI_TRUNK_T3_MAX_LPCN; lpcn++) {
+        if (view->channel_hz[lpcn] != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The lowest LPCN DMR uses @p freq for (the view's channel_hz), or -1 for none. */
+static int
+ui_trunk_find_t3_channel_for_freq(const dsd_ui_dmr_t3_view* view, long int freq) {
+    for (int lpcn = 1; lpcn <= UI_TRUNK_T3_MAX_LPCN; lpcn++) {
+        if (view->channel_hz[lpcn] == freq) {
+            return lpcn;
+        }
+    }
+    return -1;
+}
+
+/* The positional rows (the channel map file's LCN list) the map rows left: named by their Tier III LPCN from the
+   frequencies DMR uses (@p t3, NULL when the map does not list as Tier III), else by the shared map's channel. */
+static void
+ui_trunk_render_lcn_freqs(const dsd_state* state, uint32_t chan_map_count, ui_trunk_render_state* render,
+                          const dsd_ui_dmr_t3_view* t3) {
     for (int i = 0; i < UI_TRUNK_LCN_COUNT; i++) {
         const long int freq = state->trunk_lcn_freq[i];
         if (freq == 0 || ui_trunk_freq_seen(render, freq)) {
             continue;
         }
 
-        const int channel = ui_trunk_find_channel_for_freq(state, chan_map_count, freq);
+        const int channel = t3 != NULL ? ui_trunk_find_t3_channel_for_freq(t3, freq)
+                                       : ui_trunk_find_channel_for_freq(state, chan_map_count, freq);
         ui_trunk_begin_row_if_needed(render);
-        if (channel >= 0) {
+        if (channel >= 0 && t3 != NULL) {
+            ui_trunk_print_t3_channel_freq(channel, freq);
+        } else if (channel >= 0) {
             ui_trunk_print_channel_freq(state, channel, freq);
         } else {
             printw("CH ----: %.06lf MHz", (double)freq / 1000000.0);
@@ -209,15 +334,21 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->trunk_enable != 1) {
+    /* Tier III channels granted without a frequency open the panel with trunking off too (monitor mode). */
+    const dsd_ui_dmr_t3_view* t3 = dsd_app_dmr_t3_view(state);
+    const size_t missing = dsd_app_dmr_t3_view_missing_shown(t3);
+    if (opts->trunk_enable != 1 && missing == 0U) {
         return;
     }
 
     int have_lcn_freq = ui_trunk_has_lcn_freq(state);
     const uint32_t chan_map_count = state->trunk_chan_map_used_count;
-    int have_chan_map = chan_map_count > 0U;
+    /* Tier III numbering only while the receiver is on a DMR system: a P25 map keeps its IDEN form after a move. The
+       Tier III map lists the frequencies DMR uses, so whether it has rows is theirs, not the shared map's count. */
+    const int t3_lpcns = dsd_app_dmr_t3_view_lists_lpcns(t3, opts, state);
+    const int have_chan_map = t3_lpcns ? ui_trunk_t3_has_rows(t3) : chan_map_count > 0U;
 
-    if (!have_lcn_freq && !have_chan_map) {
+    if (!have_lcn_freq && !have_chan_map && missing == 0U) {
         return;
     }
 
@@ -226,12 +357,18 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
 
     ui_trunk_render_state render = {0};
 
-    if (have_chan_map) {
+    if (missing > 0U) {
+        ui_trunk_render_missing(t3, missing);
+    }
+
+    if (have_chan_map && t3_lpcns) {
+        ui_trunk_render_t3_map(t3, &render);
+    } else if (have_chan_map) {
         ui_trunk_render_chan_map(state, chan_map_count, &render);
     }
 
     if (have_lcn_freq) {
-        ui_trunk_render_lcn_freqs(state, chan_map_count, &render);
+        ui_trunk_render_lcn_freqs(state, chan_map_count, &render, t3_lpcns ? t3 : NULL);
     }
 
     ui_trunk_render_iden_legend(state);

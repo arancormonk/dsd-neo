@@ -3,6 +3,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_presence.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -18,6 +20,9 @@
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -823,6 +828,82 @@ test_retained_decryption_request(void) {
     freeState(&state);
 }
 
+/* ---- A live key change for the target on air keeps each key type to its family (issue #890) ---- */
+
+/* The class of the fake target on air, and how many keys the fake coordinator installed for it. */
+static unsigned int g_target_key_mode;
+static int g_target_key_installs;
+
+/* The coordinator's material rule for the target on air (validate_target_decryption() in trunk_scan.c): a key set
+   the target's class takes is installed. */
+static int
+fake_target_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force) {
+    (void)opts;
+    (void)state;
+    (void)target_id;
+    (void)generation;
+    (void)map;
+    (void)force;
+    if ((fields & DSD_TRUNK_KEY_MATERIAL) && !dsd_scan_keys_compatible(keys, g_target_key_mode)) {
+        return DSD_TRUNK_KEY_INVALID;
+    }
+    g_target_key_installs++;
+    return DSD_TRUNK_KEY_APPLIED;
+}
+
+/* One target-scoped direct key of @p type and @p value for a target of class @p mode; returns the result status. */
+static int
+target_key_apply(dsd_opts* opts, dsd_state* state, unsigned int mode, int type, const char* value) {
+    g_target_key_mode = mode;
+    g_target_key_installs = 0;
+    dsd_app_decryption_payload p = {0};
+    p.request_id = 2001U + (uint64_t)type;
+    p.session_generation = dsd_app_command_session_generation();
+    p.scope = DSD_APP_KEY_SCOPE_TARGET;
+    p.fields = DSD_APP_DECRYPTION_MATERIAL;
+    p.source = DSD_APP_KEY_SOURCE_DIRECT;
+    p.key_type = type;
+    p.tune_generation = dsd_trunk_tuning_generation();
+    p.key_epoch = state->enc_lockout_key_epoch;
+    DSD_SNPRINTF(p.target_id, sizeof p.target_id, "%s", state->trunk_scan_active_id);
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", value);
+    dsd_app_decryption_result result = {0};
+    const int queued = dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof p) > 0;
+    dsd_app_drain_cmds(opts, state);
+    const int got = queued && dsd_app_decryption_result_get(&result) && result.request_id == p.request_id;
+    DSD_SECURE_ZERO(&p, sizeof p);
+    return got ? result.status : 0;
+}
+
+/* An M17 key (scrambler or AES) is the session's alone: M17 targets take no key of their own, and no other class
+   decodes M17. Flattened, an M17 scrambler of up to four hex digits looks like a dPMR or NXDN scrambler key and an M17
+   AES key like any AES key, so the live path refuses the type before it flattens it, as the scan-list parser does;
+   a dPMR scrambler key and an NXDN one still apply. */
+static void
+test_target_key_keeps_m17_types_to_m17(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    seed(&opts, &state);
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dmo");
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.decryption_apply = fake_target_decryption_apply;
+    dsd_trunk_scan_hooks_set(&hooks);
+    static const char k_aes[] = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    int status = target_key_apply(&opts, &state, DSD_SCAN_MODE_DPMR, DSD_APP_KEY_TYPE_M17_SCRAMBLER, "AB");
+    check(status != DSD_APP_KEY_APPLIED && g_target_key_installs == 0, "dPMR target refuses an M17 scrambler key");
+    status = target_key_apply(&opts, &state, DSD_SCAN_MODE_NXDN96, DSD_APP_KEY_TYPE_M17_SCRAMBLER, "1234");
+    check(status != DSD_APP_KEY_APPLIED && g_target_key_installs == 0, "NXDN target refuses an M17 scrambler key");
+    status = target_key_apply(&opts, &state, DSD_SCAN_MODE_DMR, DSD_APP_KEY_TYPE_M17_AES, k_aes);
+    check(status != DSD_APP_KEY_APPLIED && g_target_key_installs == 0, "DMR target refuses an M17 AES key");
+    status = target_key_apply(&opts, &state, DSD_SCAN_MODE_DPMR, DSD_APP_KEY_TYPE_SCRAMBLER, "171");
+    check(status == DSD_APP_KEY_APPLIED && g_target_key_installs == 1, "dPMR target takes its scrambler key");
+    status = target_key_apply(&opts, &state, DSD_SCAN_MODE_NXDN96, DSD_APP_KEY_TYPE_SCRAMBLER, "4660");
+    check(status == DSD_APP_KEY_APPLIED && g_target_key_installs == 1, "NXDN target takes its scrambler key");
+    dsd_trunk_scan_hooks_set(NULL);
+    freeState(&state);
+}
+
 /* ---- The talkgroup key autoload against every other writer of the working key (issue #834) ---- */
 
 #define AUTOLOAD_TG          123U
@@ -1048,6 +1129,7 @@ main(void) {
     presence_follows_material();
     test_tetra_air_keys();
     test_tetra_air_key_output();
+    test_target_key_keeps_m17_types_to_m17();
     static dsd_state state;
     static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};

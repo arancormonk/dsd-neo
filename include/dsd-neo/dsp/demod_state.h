@@ -271,6 +271,10 @@ struct demod_state {
        receive path TETRA ran on before it had a chain of its own, apart from the TETRA channel filter: the TETRA chain
        never activates for it (dsd_demod_tetra_chain_wanted(), dsd_demod_tetra_channel_runs()). */
     int tetra_uplink;
+    /* 1 while the TETRA decoder is on a direct mode carrier (issue #890: rtl_stream_set_tetra_direct_bursts(), taken
+       before each block): the TETRA chain then takes each DNB's and DSB's timing and carrier phase from its training
+       sequence, as an uplink session does (dsd_demod_tetra_uplink_timing_runs(), tetra_uplink_timing.h). */
+    int tetra_direct_bursts;
     int analog_demod; /* dsd_analog_demod (runtime/analog_channel.h); 0 = FM */
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
@@ -405,8 +409,8 @@ struct demod_state {
 
     /* TED module state */
     ted_state_t ted_state;
-    /* The Gardner's look-ahead and training search on a TETRA uplink session (dsd_demod_tetra_uplink_timing_runs());
-       starts over with the TED (ted_state_t::ul_lookahead_live). */
+    /* The Gardner's look-ahead and training search on a TETRA uplink session or a direct mode carrier
+       (dsd_demod_tetra_uplink_timing_runs()); starts over with the TED (ted_state_t::ul_lookahead_live). */
     dsd_tetra_ul_timing tetra_ul_timing;
 
     /* CQPSK (H-DQPSK) path enable for P25 LSM/TDMA */

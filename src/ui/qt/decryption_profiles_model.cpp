@@ -56,15 +56,15 @@ failure(const QString& text) {
     return {{"ok", false}, {"error", text}};
 }
 
-/* Whether a scan entry is analog (issue #526): a frequency entry's nfm or am protocol, or a saved system whose decode
-   flags are -fA or -fM (scan_list_entry_analog_kind()). An analog entry carries no decryption: the editor hides the
+/* Whether a scan entry's own decryption choice applies (scan_list_entry_takes_keys()): an analog entry (issue #526) and
+   one of a protocol with no keys of its own (issue #890: YSF, D-STAR, M17, TETRA DMO) carry none: the editor hides the
    choice and the starter resolves none, so a profile it still names is not one it uses. */
 bool
-scanEntryAnalog(const QVariantMap& entry, const SavedSystemsModel* systems) {
+scanEntryTakesKeys(const QVariantMap& entry, const SavedSystemsModel* systems) {
     const QString flag = entry.value("kind").toString() == QStringLiteral("system") && systems
                              ? systems->getByUid(entry.value("systemUid").toString()).value("decodeFlag").toString()
                              : QString();
-    return scan_list_entry_analog_kind(entry, flag) >= 0;
+    return scan_list_entry_takes_keys(entry, flag);
 }
 
 /**
@@ -370,7 +370,8 @@ DecryptionProfilesModel::useCount(const QString& uid) const {
             uses += static_cast<int>(
                 std::count_if(scanEntries.cbegin(), scanEntries.cend(), [this, &uid](const QVariant& value) {
                     const auto entry = value.toMap();
-                    return entry.value("decryptionProfileUid").toString() == uid && !scanEntryAnalog(entry, m_systems);
+                    return entry.value("decryptionProfileUid").toString() == uid
+                           && scanEntryTakesKeys(entry, m_systems);
                 }));
         }
     }

@@ -505,6 +505,8 @@ populate(TestHost& host) {
     // Issue #646: the Listen tab this device last showed, which stays on it.
     dsd_qt::AppPrefs().setListenSection("explore");
     dsd_qt::AppPrefs().setSystemsSort("nearest");
+    // Issue #901: compact view, which stays on the device too.
+    dsd_qt::AppPrefs().setCompactView(true);
     return f;
 }
 
@@ -724,6 +726,8 @@ test_round_trip(const Fixture& f) {
            dsd_qt::AppPrefs().listenSection() == "explore" && !snapshot.prefs.contains("listen/section"));
     expect("the saved-systems sort stays on the device",
            dsd_qt::AppPrefs().systemsSort() == "nearest" && !snapshot.prefs.contains("listen/systemsSort"));
+    expect("compact view stays on the device",
+           dsd_qt::AppPrefs().compactView() && !snapshot.prefs.contains("ui/compactView"));
     expect("snapshot avoids come from the in-memory list", snapshot.avoids == QList<quint32>({156800000U, 162550000U}));
     expect("snapshot app tag and time",
            snapshot.app == QString::fromUtf8(GIT_TAG) && snapshot.createdAt > 1700000000LL);
@@ -1754,6 +1758,7 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     prefs.insert("ui/onboardingDone", true);
     prefs.insert("monitor/detailsExpanded", true);
     prefs.insert("listen/section", "scanLists");
+    prefs.insert("ui/compactView", true);
     prefs.insert("evil/key", QJsonArray{1});
     // Issue #800 (spec 4.8): the map's keys are this device's; an edited backup that carries them restores none.
     prefs.insert("map/tilesEnabled", true);
@@ -1766,7 +1771,8 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     expect("unknown and device-local settings are dropped",
            parsed.error == BackupError::None && !parsed.prefs.contains("ui/onboardingDone")
                && !parsed.prefs.contains("monitor/detailsExpanded") && !parsed.prefs.contains("listen/section")
-               && !parsed.prefs.contains("evil/key") && parsed.prefs.value("rr/username") == "scanner");
+               && !parsed.prefs.contains("ui/compactView") && !parsed.prefs.contains("evil/key")
+               && parsed.prefs.value("rr/username") == "scanner");
     for (const char* key :
          {"map/tilesEnabled", "map/tileUrl", "map/tileAttribution", "map/viewport", "map/ageFilter"}) {
         expect(qPrintable(QStringLiteral("a backup's %1 is dropped").arg(QLatin1String(key))),
@@ -1994,7 +2000,7 @@ app_produced_decode_flags(TestHost& host) {
     // The wizard's decode chips (qml/Util.js DECODE_MODES), the older saves it still labels (LEGACY_DECODE_LABELS), the
     // "-f1 -mq" chip saved_systems_model.cpp migrates on load, and a scan list's frequency entries
     // (scan_list_targets.cpp resolveSystem()): QML and file-local code a test cannot call, so listed here.
-    QStringList flags{"",    "-ft", "-mq", "-fs", "-fi", "-fn", "-fd",
+    QStringList flags{"",    "-ft", "-mq", "-fs", "-fi", "-fn", "-fm",    "-fd",
                       "-fy", "-fz", "-fT", "-fA", "-fM", "-f1", "-f1 -mq"};
     // The RadioReference generator, through the function the import calls, for every protocol and answer.
     for (int protocol = 0; protocol < DSD_RR_PROTO_UNSUPPORTED; ++protocol) {

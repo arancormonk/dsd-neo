@@ -77,14 +77,15 @@ internal object UsbReceiverKind {
         "--airspy-mixer-agc", "--airspy-bias-tee", "--input-volume", "--input-level-warn-db", "--frame-log",
         "--p25-sm-log", "--wav-journal", "--rdio-mode", "--rdio-system-id", "--rdio-api-url", "--rdio-api-key",
         "--rdio-upload-timeout-ms", "--rdio-upload-retries", "--rdio-analog-system-id", "--rdio-analog-talkgroup",
-        "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--dmr-tg-key-csv", "--p25-bandplan", "--src-csv",
-        "--p25-bandplan-export",
+        "--rdio-unknown-talkgroup",
+        "--dmr-baofeng-pc5", "--dmr-csi-ee72", "--dmr-vertex-ks-csv", "--p25-bandplan-export",
         "--dmr-force-algid", "--m17-signature-public-key", "--m17-scrambler-key", "--m17-aes-key", "--key-profile-ref",
         "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
         "--p25-grant-voice-timeout", "--p25-mac-hold", "--p25-cc-grace", "--p25-force-release-extra",
         "--p25-force-release-margin", "--p25-p1-err-hold-pct", "--p25-p1-err-hold-sec", "--trunk-scan",
         "--trunk-scan-off", "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms", "--scan-voice-qualify-ms",
-        "--scan-voice-hold-ms", "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch",
+        "--scan-voice-hold-ms", "--scan-max-visit-ms", "--scan-skip-silent-ms", "--nfm-bandwidth-hz",
+        "--am-bandwidth-hz", "--squelch",
         "--tone-allow", "--slot-allow", "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block",
         "--nac-allow", "--nac-block", "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name",
         "--tone-block", "--calc-lcn", "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn",
@@ -98,11 +99,13 @@ internal object UsbReceiverKind {
     )
 
     /**
-     * Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin
-     * with '-'. `k_free_value_options`.
+     * Long options whose value is free text, taken whatever it starts with: an API token, a target id or the name of
+     * a CSV file to read (DMR channels, talkgroup keys, a P25 band plan, source names) may begin with '-'.
+     * `k_free_value_options`.
      */
     private val LONG_FREE_VALUE: Set<String> = setOf(
-        "--api-token", "--api-token-file", "--trunk-scan-hold",
+        "--api-token", "--api-token-file", "--trunk-scan-hold", "--dmr-chan-overrides", "--dmr-tg-key-csv",
+        "--p25-bandplan", "--src-csv",
     )
 
     /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */
@@ -119,11 +122,13 @@ internal object UsbReceiverKind {
         "--rtl-udp-control=", "--rtl-udp-control-bind=", "--api=", "--api-bind=", "--api-token=", "--api-token-file=",
         "--iq-capture=", "--iq-capture-format=", "--iq-capture-max-mb=", "--symbol-capture-format=", "--iq-replay=",
         "--iq-replay-rate=", "--iq-info=", "--tetra-net=", "--tetra-key=", "--dmr-baofeng-pc5=", "--dmr-csi-ee72=",
-        "--dmr-vertex-ks-csv=", "--dmr-tg-key-csv=", "--p25-bandplan=", "--src-csv=", "--p25-bandplan-export=",
+        "--dmr-vertex-ks-csv=", "--dmr-tg-key-csv=", "--dmr-chan-overrides=", "--p25-bandplan=", "--src-csv=",
+        "--p25-bandplan-export=",
         "--dmr-force-algid=", "--m17-signature-public-key=", "--m17-scrambler-key=", "--m17-aes-key=",
         "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-off=", "--trunk-scan-hold=",
         "--trunk-scan-dwell-ms=",
         "--trunk-scan-activity-hold-ms=", "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=",
+        "--scan-skip-silent-ms=",
         "--nfm-bandwidth-hz=", "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=",
         "--dcc-allow=", "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=",
         "--dcc-name=", "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=",
@@ -134,10 +139,10 @@ internal object UsbReceiverKind {
      * Long options with a value that dsd_parse_args()'s pre-scan (DSD_PARSE_ARGS_PRESCAN_BLOCK in
      * src/runtime/cli/args.c) leaves alone, because the bootstrap (src/runtime/bootstrap/bootstrap.c) reads them: the
      * pre-scan steps over the option only, so their value is read as an argument of its own. Every other long option
-     * with a value takes it there.
+     * with a value takes it there, the bootstrap's --profile included, whose name is any text.
      */
     private val PRESCAN_BOOTSTRAP_ONLY: Set<String> = setOf(
-        "--config", "--validate-config", "--profile",
+        "--config", "--validate-config",
     )
 
     /** The I/Q replay option, separate or attached; args.c makes the replay the input once getopt has read "-i". */

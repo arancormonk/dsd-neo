@@ -209,10 +209,21 @@ validate_live_target(const dsd_app_decryption_payload* p, const dsd_state* state
     return vendor_context_active(state) ? DSD_APP_KEY_UNAVAILABLE : DSD_APP_KEY_APPLIED;
 }
 
+/* Whether @p p carries an M17 key (scrambler or AES) of the operator's own typing. An M17 key is the session's alone
+   (issue #890): an M17 target takes no key of its own (dsd_scan_mode_key_capability(): DSD_SCAN_KEYS_SESSION) and no
+   other class decodes M17. Flattened into a key set, the type is gone: an M17 scrambler of up to four hex digits reads
+   as a dPMR or NXDN scrambler key and an M17 AES key as any AES key, so the target path refuses the type before the
+   coordinator judges the set, as the scan-list parser refuses the M17 key options in any target's row. */
+static int
+payload_m17_typed_key(const dsd_app_decryption_payload* p) {
+    return (p->fields & DSD_APP_DECRYPTION_MATERIAL) && p->source == DSD_APP_KEY_SOURCE_DIRECT
+           && (p->key_type == DSD_APP_KEY_TYPE_M17_SCRAMBLER || p->key_type == DSD_APP_KEY_TYPE_M17_AES);
+}
+
 static int
 apply_target(dsd_opts* opts, dsd_state* state, const dsd_app_decryption_payload* p, const dsd_key_set* keys,
              const dsd_dmr_key_map* map) {
-    if (p->source == DSD_APP_KEY_SOURCE_DIRECT_OVERLAY) {
+    if (p->source == DSD_APP_KEY_SOURCE_DIRECT_OVERLAY || payload_m17_typed_key(p)) {
         return DSD_APP_KEY_UNAVAILABLE;
     }
     const uint32_t fields = ((p->fields & DSD_APP_DECRYPTION_MATERIAL) ? DSD_TRUNK_KEY_MATERIAL : 0U)

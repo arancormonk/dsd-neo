@@ -181,8 +181,11 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.replay_retune = dsd_engine_leave_replay_carrier;
     /* Engine-wide, so the skip-silent setting reaches a -Y check as well as a trunk-scan one (issue #834). */
     hooks.scan_quiet_service = dsd_engine_scan_quiet_service;
+    hooks.scan_quiet_event = dsd_engine_scan_quiet_event_service;
     hooks.scan_quiet_setting_changed = dsd_engine_scan_quiet_setting_changed;
     /* What a protocol's CRC/FEC gate made of a frame, for the quiet check: a raw sync is no activity (issue #834). */
     hooks.content_evidence = dsd_engine_scan_quiet_note_evidence;
     dsd_frame_sync_hooks_set(&hooks);
+    /* A typed simplex -Y row holds on the activity the scan's policy table admits (issue #890). */
+    dsd_trunk_scan_row_activity_hook_set(dsd_engine_scan_y_typed_activity);
 }

@@ -248,9 +248,12 @@ void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
  * path). Without it the next carrier's audio would join the same file. A slot with an active call is left to its own
  * commit, so a call that continues across the move as one call (a TETRA reallocation) stays one recording. An empty
  * file, per-call recording off and a static WAV are left alone. Run at every carrier departure, after the departure
- * ended its calls. The check and the close run under the call-state lock, which every commit holds while it rotates
- * a slot, so a flush on the P25 watchdog's thread never closes a file a decoder-thread commit closes too.
- * Callers must not hold the call-state lock or an event-history transaction.
+ * ended its calls, and at the other boundaries past which no call may claim the audio (issue #888): an accepted EDACS
+ * voice grant, before it observes the granted call; the first TETRA call admitted on a slot with no active call,
+ * before it is observed; and each `-r` playback file, once the previous file's call has ended. The check and the close
+ * run under the call-state lock, which every commit holds while it rotates a slot, so a flush on the P25 watchdog's
+ * thread never closes a file a decoder-thread commit closes too. Callers must not hold the call-state lock or an
+ * event-history transaction.
  */
 void dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state);
 /**

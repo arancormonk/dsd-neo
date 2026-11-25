@@ -12,6 +12,8 @@
  *   YHOLD sync t=<s> proven=<n> partial=<n> anchor=<s>  every sync the hunt returned, with the PROVEN and PARTIAL
  *                                       notes so far and the -Y hangtime anchor (last_cc_sync_time)
  *   YHOLD step t=<s> via=<frame|nocarrier> every -Y step attempt, and whether a frame-boundary yield led to it
+ *   YHOLD quiet_requests=<n>            at the end: the scan quiet check's requests to the signal tap, which I/Q replay
+ *                                       must never make (its decode clock is no session the check runs on)
  *
  * Times are decode-mono seconds (the replay's clock). */
 #include <assert.h>
@@ -35,8 +37,10 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "rtl_stream_test_support.h"
 #include "scan_landing.h"
 #include "scan_owner.h"
+#include "scan_quiet.h"
 #include "y_call_hold_replay_seams.h"
 
 static int g_landed = 0;
@@ -67,15 +71,17 @@ enter_row_zero(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, "YHOLD row0 mode=%s\n", dsd_scan_mode_name(mode));
 }
 
-/* Row zero lands, on the replay's clock: what channel_scan_commit() notes, the hangtime and visit clocks with it. */
+/* Row zero lands, on the replay's clock: what channel_scan_commit() notes, the hangtime and visit clocks with it, and
+   the publication that starts its quiet check, which this session's decode clock must refuse. */
 static void
-land_row_zero(dsd_state* state) {
+land_row_zero(const dsd_opts* opts, dsd_state* state) {
     const long freq = *dsd_state_trunk_lcn_slot(state, 0);
     dsd_engine_scan_landing_note_tune(state);
     dsd_engine_scan_landing_note_row(state, 0, freq, 0U);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+    dsd_engine_scan_quiet_publish_row(opts, state);
     g_landed = 1;
     DSD_FPRINTF(stderr, "YHOLD landed t=%.3f\n", state->last_cc_sync_time_m);
 }
@@ -83,7 +89,7 @@ land_row_zero(dsd_state* state) {
 int
 yhold_get_frame_sync(dsd_opts* opts, dsd_state* state) {
     if (!g_landed) {
-        land_row_zero(state);
+        land_row_zero(opts, state);
     }
     const int synctype = yhold_real_get_frame_sync(opts, state);
     if (synctype > DSD_SYNC_NONE) {
@@ -138,6 +144,7 @@ main(int argc, char** argv) {
         assert(state->lcn_freq_count > 1);
         enter_row_zero(opts, state);
         rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+        DSD_FPRINTF(stderr, "YHOLD quiet_requests=%u\n", (unsigned)rtl_signal_measure_test_quiet_requests());
     }
     dsd_scan_mode_leave(opts, state);
     freeState(state);

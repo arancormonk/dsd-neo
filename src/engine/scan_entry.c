@@ -54,6 +54,10 @@ scan_entry_row_reason(const dsd_opts* opts, const dsd_state* state, int row, int
     if (dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
         return DSD_SCAN_ENTRY_AVOIDED;
     }
+    const dsd_scan_entry_reason tetra = dsd_engine_channel_scan_row_tetra_reason(opts, state, row, rate_hz);
+    if (tetra != DSD_SCAN_ENTRY_OK) {
+        return tetra;
+    }
     return dsd_engine_channel_scan_row_width_fits(opts, state, row, rate_hz) ? DSD_SCAN_ENTRY_OK : DSD_SCAN_ENTRY_WIDTH;
 }
 

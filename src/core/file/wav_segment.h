@@ -27,6 +27,20 @@ int wav_recording_table_full_first_this_run(void);
    frequency, no --rdio-analog-talkgroup; issue #668), the one that is logged; reset with the run's failure counts. */
 int wav_recording_analog_rdio_skip_first_this_run(void);
 
+/* 1 the first time this decoder run that a digital voice call the fallback would number is not exported for want of a
+   number (no frequency, no --rdio-unknown-talkgroup; issue #888 B3), the one that is logged; reset with the run's
+   failure counts. */
+int wav_recording_digital_rdio_skip_first_this_run(void);
+
+/* 1 the first time this decoder run that a played SDRTrunk file not in SDRTrunk's own shape is played with no per-call
+   recording (issue #888), the one that is logged; reset with the run's failure counts. */
+int wav_recording_played_file_unrecorded_first_this_run(void);
+
+/* 1 the first time this decoder run that a digital voice call with no talkgroup is not exported because its row may not
+   take the fallback (Event_History::fallback_blocked, issue #888), the one that is logged; reset with the run's failure
+   counts. */
+int wav_recording_fallback_blocked_first_this_run(void);
+
 /* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
    @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */
 int wav_segment_close(SNDFILE* file, int* failed);

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // One disclosure row: title, helper line, trailing caret. The shape of every row
 // that goes somewhere - the wizard's trunking-data pickers, the settings entry
@@ -95,11 +96,15 @@ Item {
         }
 
         Text {
+            id: subtitleLine
             width: parent.width
             // An expandable row may carry its whole label in the title. A reading
             // keeps its line while empty, so the row's height never follows it.
             visible: text.length > 0 || !row.expandable || row.subtitleReading
-            text: row.subtitle
+            // A reading draws one line (issue #901 r2 B1): a line break in it
+            // (an engine answer, a name in the summary) is a space, so the
+            // words after it are not lost to maximumLineCount.
+            text: row.subtitleReading ? Util.oneLine(row.subtitle) : row.subtitle
             textFormat: row.subtitleTextFormat
             font.family: row.subtitleReading ? Theme.mono : Theme.sans
             font.pixelSize: Theme.fontSize(row.subtitleReading ? 11 : 12)
@@ -107,6 +112,22 @@ Item {
             wrapMode: row.subtitleReading ? Text.NoWrap : Text.Wrap
             elide: row.subtitleReading ? Text.ElideRight : Text.ElideNone
             maximumLineCount: row.subtitleReading ? 1 : 1000
+            // A reading's line fits its box (r5 H3): an answer in a taller
+            // script is drawn smaller, never over the row's title.
+            fontSizeMode: row.subtitleReading ? Text.VerticalFit : Text.FixedSize
+            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
+            // A reading's line is a fixed box (LineBoxes, issue #901 D10): its
+            // font's height, never its text's, so no script a reading or an
+            // answer in its place shows (the Monitor's) changes the row's
+            // height. A hint keeps its own wrapped height. subtitleReading is a
+            // row's kind, set where the row is declared and never changed: a
+            // Binding whose `when` turns false puts back the height it found
+            // when it first applied, a fixed number, not the text's own.
+            verticalAlignment: Text.AlignVCenter
+            Binding on height {
+                when: row.subtitleReading
+                value: LineBoxes.lineHeight(subtitleLine.font.family, subtitleLine.font.pixelSize, subtitleLine.font.weight)
+            }
         }
     }
 

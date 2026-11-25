@@ -2319,6 +2319,7 @@ static int g_calls_off_fm;
 static int g_calls_off_am;
 static int g_calls_back_on;
 static int g_rdio_analog_skips;
+static int g_rdio_digital_skips;
 static int g_preroll_warnings;
 
 static long long
@@ -2341,6 +2342,7 @@ count_log_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
         g_rdio_warnings++;
         g_rdio_failed += strstr(text, "Rdio export failed") != NULL;
         g_rdio_analog_skips += strstr(text, "--rdio-analog-talkgroup") != NULL;
+        g_rdio_digital_skips += strstr(text, "--rdio-unknown-talkgroup") != NULL;
     }
     /* Issue #667 D2's notices: paused with the FM monitor's remedies, or AM's (no --tone-allow), and back on. */
     if (level == LOG_LEVEL_INFO && text && strstr(text, "Analog call history and recordings are paused") != NULL) {
@@ -4398,9 +4400,126 @@ nfm_call_files(dsd_opts* opts, dsd_state* state, const char* directory) {
     return found;
 }
 
+/* One digital recording under @p row, closed early (close_and_publish_call_wav(), on slot 0's staged row) or by a
+   commit rotation (close_and_rename_wav_file_ex() with DSD_WAV_EXPORT_COMMITTED); the folder's files, collected and
+   removed. */
+static rdio_files
+digital_close_files(dsd_opts* opts, dsd_state* state, const char* directory, const Event_History* row, int early) {
+    char wav_path[DSD_TEST_PATH_MAX * 2];
+    assert(dsd_test_path_join(wav_path, sizeof wav_path, directory, "digital.wav") == 0);
+    SF_INFO info = {0};
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    SNDFILE* wav = sf_open(wav_path, SFM_WRITE, &info);
+    assert(wav);
+    short pcm[160] = {0};
+    assert(sf_write_short(wav, pcm, 160) == 160);
+    if (early) {
+        state->event_history_s[0].Event_History_Items[0] = *row;
+        assert(close_and_publish_call_wav(wav, opts, state, 0, wav_path, directory, 0) == NULL);
+        DSD_MEMSET(&state->event_history_s[0].Event_History_Items[0], 0, sizeof *row);
+    } else {
+        static Event_History_I ring;
+        DSD_MEMSET(&ring, 0, sizeof ring);
+        ring.Event_History_Items[0] = *row;
+        const dsd_wav_owner owner = {DSD_WAV_OWNER_NONE, 0U, 0U, 0U};
+        assert(close_and_rename_wav_file_ex(wav, opts, wav_path, directory, &ring, 0, DSD_WAV_EXPORT_COMMITTED, &owner)
+               == NULL);
+    }
+    rdio_files found;
+    DSD_MEMSET(&found, 0, sizeof found);
+    found.dir = directory;
+    assert(dsd_dir_list(directory, collect_rdio_files, &found) == 0);
+    return found;
+}
+
+/* Issue #888 B3 and D7: a digital voice row with no talkgroup is skipped without an "export failed" line. Its one log
+   line a decoder run is said only by a row the fallback would number had it a frequency or --rdio-unknown-talkgroup
+   (a commit rotation's voice row, or an early close's voice row that names a call); a row the fallback never numbers
+   (an early close of a row with no identity, a data row) says nothing and leaves the line for the next eligible row.
+   With the option set, or a frequency, the row is exported; a real failure still warns. */
+static void
+test_digital_rdio_skip(dsd_opts* opts, dsd_state* state, const char* directory) {
+    g_rdio_warnings = 0;
+    g_rdio_failed = 0;
+    g_rdio_digital_skips = 0;
+    static Event_History row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    row.category = DSD_EVENT_CATEGORY_VOICE;
+    row.event_time = (time_t)1700000000;
+    static Event_History named;
+    named = row;
+    named.source_id = 77U;
+    static Event_History data;
+    data = row;
+    data.category = DSD_EVENT_CATEGORY_DATA;
+
+    dsd_wav_recording_session_reset();
+    /* An early close of a row that names no call: not eligible, so it says nothing and consumes nothing. */
+    rdio_files found = digital_close_files(opts, state, directory, &row, 1);
+    assert(found.wavs == 1 && found.sidecars == 0 && g_rdio_warnings == 0);
+    /* The commit of the same row is eligible: skipped, said once a run, never as a failure. */
+    for (int i = 0; i < 2; i++) {
+        found = digital_close_files(opts, state, directory, &row, 0);
+        assert(found.wavs == 1 && found.sidecars == 0);
+    }
+    assert(g_rdio_warnings == 1 && g_rdio_digital_skips == 1 && g_rdio_failed == 0);
+    found = digital_close_files(opts, state, directory, &named, 1);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    found = digital_close_files(opts, state, directory, &data, 0);
+    assert(found.wavs == 1 && found.sidecars == 0 && g_rdio_warnings == 1);
+
+    /* A new run: the first eligible row says it again, here an early close of a call that names its source. */
+    dsd_wav_recording_session_reset();
+    found = digital_close_files(opts, state, directory, &data, 0);
+    assert(found.wavs == 1 && found.sidecars == 0 && g_rdio_warnings == 1);
+    found = digital_close_files(opts, state, directory, &named, 1);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    assert(g_rdio_warnings == 2 && g_rdio_digital_skips == 2 && g_rdio_failed == 0);
+    /* With rdio export off there is nothing to say. */
+    dsd_wav_recording_session_reset();
+    opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    found = digital_close_files(opts, state, directory, &row, 0);
+    assert(found.wavs == 1 && found.sidecars == 0 && g_rdio_warnings == 2);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+
+    /* A frequency numbers the eligible rows; the early close of the identity-less row stays local. */
+    static Event_History heard;
+    heard = row;
+    heard.freq_hz = 452312500;
+    found = digital_close_files(opts, state, directory, &heard, 0);
+    assert(found.wavs == 1 && found.sidecars == 1 && strstr(found.sidecar, "\"talkgroup\": 452312,"));
+    found = digital_close_files(opts, state, directory, &heard, 1);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    /* So does --rdio-unknown-talkgroup with none, for the commit and the named early close alike. */
+    opts->rdio_unknown_talkgroup = 4242;
+    found = digital_close_files(opts, state, directory, &row, 0);
+    assert(found.wavs == 1 && found.sidecars == 1 && strstr(found.sidecar, "\"talkgroup\": 4242,"));
+    found = digital_close_files(opts, state, directory, &named, 1);
+    assert(found.wavs == 1 && found.sidecars == 1 && strstr(found.sidecar, "\"talkgroup\": 4242,"));
+    found = digital_close_files(opts, state, directory, &row, 1);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    found = digital_close_files(opts, state, directory, &data, 0);
+    assert(found.wavs == 1 && found.sidecars == 0);
+    assert(g_rdio_warnings == 2 && g_rdio_failed == 0);
+    opts->rdio_unknown_talkgroup = 0;
+
+    /* A real failure still warns: an API upload with no key, for a numbered call. */
+    static Event_History numbered;
+    numbered = row;
+    numbered.target_id = 100U;
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_api_key[0] = '\0';
+    (void)digital_close_files(opts, state, directory, &numbered, 0);
+    assert(g_rdio_failed == 1);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+}
+
 /* Issue #668: with --rdio-mode set, an NFM recording is exported under its frequency in kHz (a radio input), or under
    --rdio-analog-talkgroup when it has none (an audio input). With neither it is not exported: one log line a decoder
-   run says so, and no "export failed" line. A digital row with no talkgroup still warns twice (issue #756). */
+   run says so, and no "export failed" line. The digital rows' skip is test_digital_rdio_skip(). */
 static void
 test_analog_rdio_export(dsd_opts* opts, dsd_state* state) {
     char directory[DSD_TEST_PATH_MAX];
@@ -4464,26 +4583,7 @@ test_analog_rdio_export(dsd_opts* opts, dsd_state* state) {
     opts->rtlsdr_center_freq = 0U;
     opts->rdio_analog_system_id = 0;
 
-    /* The same close for a digital row with no talkgroup still warns, twice: the skip and the failure. */
-    g_rdio_warnings = 0;
-    g_rdio_failed = 0;
-    char wav_path[DSD_TEST_PATH_MAX * 2];
-    assert(dsd_test_path_join(wav_path, sizeof wav_path, directory, "digital.wav") == 0);
-    SF_INFO info = {0};
-    info.samplerate = 8000;
-    info.channels = 1;
-    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-    SNDFILE* wav = sf_open(wav_path, SFM_WRITE, &info);
-    assert(wav);
-    short pcm[160] = {0};
-    assert(sf_write_short(wav, pcm, 160) == 160);
-    static Event_History_I row;
-    DSD_MEMSET(&row, 0, sizeof row);
-    row.Event_History_Items[0].systype = DSD_SYNC_DMR_BS_VOICE_POS;
-    row.Event_History_Items[0].event_time = (time_t)1700000000;
-    const dsd_wav_owner owner = {DSD_WAV_OWNER_NONE, 0U, 0U, 0U};
-    assert(close_and_rename_wav_file_ex(wav, opts, wav_path, directory, &row, 0, 1, &owner) == NULL);
-    assert(g_rdio_warnings == 2 && g_rdio_failed == 1);
+    test_digital_rdio_skip(opts, state, directory);
     opts->rdio_mode = DSD_RDIO_MODE_OFF;
     opts->rdio_system_id = 0;
     assert(dsd_dir_list(directory, remove_recording, directory) == 0);

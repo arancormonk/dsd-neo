@@ -1,4 +1,4 @@
-add_library(dsd-neo_proto_nxdn)
+add_library(dsd-neo_proto_nxdn STATIC)
 
 target_sources(
     dsd-neo_proto_nxdn
@@ -55,10 +55,3 @@ if(Iconv_FOUND)
 else()
     target_compile_definitions(dsd-neo_proto_nxdn PRIVATE DSD_HAVE_ICONV=0)
 endif()
-
-install(
-    TARGETS dsd-neo_proto_nxdn
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

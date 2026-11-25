@@ -40,6 +40,9 @@ int m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res);
 int m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext);
 int m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                                 uint8_t* processed_payload);
+/* An RF stream frame's EOS bit (m17.c): the slot's M17 call ends as by a terminator, a signature not judged by then is
+   incomplete, and the next transmission starts with a fresh signature state. */
+void m17_stream_end_of_stream(const dsd_opts* opts, dsd_state* state);
 
 void m17_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* bert_bits);
 void m17_depuncture_p2_hard(const uint8_t* punctured, uint8_t* depunc, int depunc_bits);
@@ -107,7 +110,16 @@ int m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);
-void m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
+/* Finalize a packet at its last frame (m17.c): 1 when its CRC passed (decoded), 0 when it failed (shown under -F, marked
+   CRC ERR) or the packet had no application byte; neither of those earns credit. Either way the packet transmission
+   ends. */
+int m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
+/* Take one RF packet frame's 26 decoded bytes (its 25-byte chunk and its metadata byte, m17.c) by the strict RF packet
+   rule: the chunk joins the packet only as the next chunk, in order, one frame after the frame before (in one symbol
+   clock epoch), of a packet its checked LSF frame started; anything else drops the whole packet until the next checked
+   LSF frame. A valid last frame (EOF) finalizes a whole packet, and ends the packet transmission either way. Returns
+   the frame's own verdict: 1 for a chunk taken, or an EOF whose packet's CRC passed; 0 for anything rejected. */
+int m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed);
 void m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len);
 /** Decode an LSF this station transmits (@p m17_rnd_bits, the randomized on-air payload) through the receive path, to
  * monitor it: its call is shown, but nothing in it is received identity, META or a position. */

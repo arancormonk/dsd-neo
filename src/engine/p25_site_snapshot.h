@@ -46,6 +46,9 @@ typedef struct dsd_p25_site_snapshot {
        dsd_p25_site_snapshot_clear(). trunk_chan_map_used_count is the number of valid entries. */
     uint16_t* chan_map_chan;
     long int* chan_map_freq;
+    /* Channel 0, which trunk_chan_map_used[] never lists: P25 IDEN 0 channel 0 and a channel map file's key 0 (a DMR
+       Tier III control frequency seed) both land there, so it travels with the rest of the map. */
+    long int chan_map_zero;
     size_t chan_map_capacity;
     uint32_t trunk_chan_map_used_count;
     uint64_t trunk_chan_map_seq;

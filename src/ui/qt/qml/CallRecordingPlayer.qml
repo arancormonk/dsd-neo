@@ -230,6 +230,12 @@ Column {
         if (!part || saveSelection > 0)
             return;
         var selection = recordings.selectRecordings([part.id]);
+        if (selection.loading) {
+            // Issue #902: refused, as an export is, while storage is read
+            // again; nothing is selected or held.
+            say(qsTr("Recordings are still loading. Try again in a moment."), true);
+            return;
+        }
         if (!selection.selection) {
             say(qsTr("This recording is gone."), true);
             return;
@@ -288,6 +294,8 @@ Column {
             say(qsTr("This recording is gone."), true);
         else if (result === 4)
             say(qsTr("An export is running. Save again when it finishes."), true);
+        else if (result === 6)
+            say(qsTr("This recording changed. Save it again."), true);
         else if (result !== 2)
             say(qsTr("Couldn't save the recording. Try another location."), true);
     }
@@ -303,10 +311,16 @@ Column {
         confirmDelete.target = null;
         if (!target)
             return;
+        // Issue #902: refused while storage that came back is read again, or
+        // while its storage is not connected; the recording plays on, as
+        // nothing was deleted.
+        if (recordings.deleteRecording(target.id) === false) {
+            say(recordings.deleteRefusal() === "storageAway" ? qsTr("That storage isn't connected. Delete again once it's back.") : qsTr("Recordings are still loading. Try again in a moment."), true);
+            return;
+        }
         if (decoderHost.playbackPath === target.path && decoderHost.playbackState !== 0)
             decoderHost.stopPlayback();
         playAll = false;
-        recordings.deleteRecording(target.id);
         say("", false);
     }
 

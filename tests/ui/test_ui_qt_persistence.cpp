@@ -13,6 +13,7 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDate>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -36,10 +37,12 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTime>
 #include <QUuid>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <chrono>
@@ -64,6 +67,7 @@
 #include "json_store.h"
 #include "json_store_test_hooks.h"
 #include "listen_pins.h"
+#include "local_day_watch.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "site_groups.h"
@@ -77,6 +81,7 @@ using dsd_qt::json_store_save_array;
 using dsd_qt::JsonStoreLoad;
 using dsd_qt::JsonStoreNotice;
 using dsd_qt::ListenPins;
+using dsd_qt::LocalDayWatch;
 using dsd_qt::SavedSystemsModel;
 using dsd_qt::ScanListsModel;
 
@@ -664,6 +669,42 @@ test_saved_systems(void) {
 /* A restored systems file whose whole numbers are past int's range (a backup keeps a large JSON number as a 64-bit
  * integer): each reads as the field's default, as an absent key does, never as its low 32 bits. Main read port 1234,
  * gain 36 dB, bandwidth 12 kHz, bias tee on, force key 1, RadioReference system 77 site 5 and a "hex" key type. */
+/* Issue #902: localDay is the shared watch's day, {startMs, revision}, and notifies with a new map when it changes. The
+ * test runs a QCoreApplication: the watch makes no app-state connection there, and still publishes. */
+qint64 g_localDayNowMs = 0;
+
+qint64
+local_day_clock() {
+    return g_localDayNowMs;
+}
+
+void
+test_saved_systems_local_day(void) {
+    const QDate day(2026, 4, 14);
+    g_localDayNowMs = QDateTime(day, QTime(15, 30)).toMSecsSinceEpoch();
+    LocalDayWatch::setClockForTest(&local_day_clock);
+    {
+        SavedSystemsModel model;
+        const QVariantMap first = model.property("localDay").toMap();
+        expect("localDay: the injected day's start",
+               first.value(QStringLiteral("startMs")).toLongLong() == day.startOfDay().toMSecsSinceEpoch());
+        int notified = 0;
+        QObject::connect(&model, &SavedSystemsModel::localDayChanged, [&]() { notified++; });
+        g_localDayNowMs += 3600000;
+        LocalDayWatch::shared()->check();
+        expect("localDay: the same day notifies nothing", notified == 0);
+        g_localDayNowMs = QDateTime(day.addDays(1), QTime(0, 0, 3)).toMSecsSinceEpoch();
+        LocalDayWatch::shared()->check();
+        const QVariantMap next = model.property("localDay").toMap();
+        expect("localDay: a new day notifies once", notified == 1);
+        expect("localDay: the new day's start",
+               next.value(QStringLiteral("startMs")).toLongLong() == day.addDays(1).startOfDay().toMSecsSinceEpoch());
+        expect("localDay: a new revision", next.value(QStringLiteral("revision")).toULongLong()
+                                               > first.value(QStringLiteral("revision")).toULongLong());
+    }
+    LocalDayWatch::resetClockForTest();
+}
+
 void
 test_saved_systems_past_int_range(void) {
     const qint64 past = qint64(1) << 32;
@@ -842,6 +883,7 @@ test_app_prefs(void) {
         expect("onboarding starts not-done", !prefs.onboardingDone());
         expect("the monitor's Signal & site readings start closed", !prefs.monitorDetailsExpanded());
         expect("files are chosen with Android's picker first", !prefs.chooseFilesInApp());
+        expect("compact view starts off", !prefs.compactView());
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
         expect("quick lockouts default to saving", prefs.persistTgLockouts());
@@ -1659,6 +1701,43 @@ test_systems_sort_pref() {
     stored.remove(key);
 }
 
+/* Issue #901: compact view, a device-local switch that is off until chosen. */
+void
+test_compact_view_pref() {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("ui/compactView");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::compactViewChanged, &prefs, [&changes]() { ++changes; });
+        expect("compact view defaults off", !prefs.compactView());
+        prefs.setCompactView(false);
+        expect("choosing off on a fresh install is not a change", changes == 0 && !stored.contains(key));
+        prefs.setCompactView(true);
+        expect("compact view on reads back and is stored",
+               prefs.compactView() && stored.value(key).toBool() && changes == 1);
+        prefs.setCompactView(true);
+        expect("compact view on again does not notify", changes == 1);
+        prefs.setCompactView(false);
+        expect("compact view off reads back and is stored",
+               !prefs.compactView() && stored.contains(key) && !stored.value(key).toBool() && changes == 2);
+        prefs.setCompactView(true);
+        expect("compact view on once more notifies", changes == 3);
+    }
+    {
+        AppPrefs reloaded;
+        expect("compact view persists across instances", reloaded.compactView());
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::compactViewChanged, &reloaded, [&changes]() { ++changes; });
+        stored.setValue(key, QStringLiteral("off"));
+        expect("a garbled stored value reads as off", !reloaded.compactView());
+        reloaded.setCompactView(true);
+        expect("choosing on over the damage writes it", stored.value(key).toBool() && changes == 1);
+    }
+    stored.remove(key);
+}
+
 /* Issue #646: the Listen tab last chosen, one of three ids, Systems for anything else. */
 void
 test_listen_section_pref() {
@@ -2040,6 +2119,193 @@ empty_systems(SavedSystemsModel& model) {
     // A removal can fail now (a store left blocked); stop there rather than retry forever.
     while (model.count() && model.remove(0)) {}
     expect("the systems empty", model.count() == 0);
+}
+
+/* Discussion #900 F3: a saved system's DMR Tier III channels ({lpcn, hz}, hz 0 = hidden) as they come back: valid
+ * entries only, one per channel, by channel; from disk after a reload; through edits of other fields, a tuning change
+ * that ends the RadioReference provenance included. */
+QVariantList
+dmr_channels(std::initializer_list<std::pair<int, qint64>> rows) {
+    QVariantList out;
+    for (const auto& row : rows) {
+        out.append(QVariantMap{{"lpcn", row.first}, {"hz", row.second}});
+    }
+    return out;
+}
+
+void
+test_dmr_channels_round_trip() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    const QVariantList given{
+        QVariantMap{{"lpcn", 40}, {"hz", 451137500}},     QVariantMap{{"lpcn", 12}, {"hz", 0}},
+        QVariantMap{{"lpcn", 12}, {"hz", 451200000}}, // a second entry for 12
+        QVariantMap{{"lpcn", 4095}, {"hz", 451000000}},   QVariantMap{{"lpcn", 0}, {"hz", 451000000}},
+        QVariantMap{{"lpcn", 7}, {"hz", 99999}},          QVariantMap{{"lpcn", 8}, {"hz", 2147483648LL}},
+        QVariantMap{{"lpcn", "nine"}, {"hz", 451000000}}, QVariant(QStringLiteral("not a row"))};
+    expect("dmr channels: a Tier III system", model.add({{"name", "Tier III"},
+                                                         {"sourceType", "usb"},
+                                                         {"freqMhz", "451.0125"},
+                                                         {"decodeFlag", "-fs"},
+                                                         {"trunking", true},
+                                                         {"chanCsvPath", "/data/imports/t3.csv"},
+                                                         {"rrSid", 12},
+                                                         {"rrSiteId", 16863},
+                                                         {"siteName", "North"},
+                                                         {"dmrChannels", given}}));
+    expect("dmr channels: a system without any", model.add({{"name", "Plain"}}));
+    const QVariantList want = dmr_channels({{12, 0}, {40, 451137500}});
+    expect("dmr channels: valid entries, one per channel, by channel", model.get(0).value("dmrChannels") == want);
+    expect("dmr channels: read by uid", model.dmrChannels(model.get(0).value("uid").toString()) == want);
+    expect("dmr channels: none is an empty list", model.get(1).value("dmrChannels").toList().isEmpty());
+    {
+        SavedSystemsModel reloaded;
+        expect("dmr channels: a reload returns them",
+               reloaded.get(0).value("dmrChannels") == want && reloaded.get(1).value("dmrChannels").toList().isEmpty());
+    }
+    expect("dmr channels: an edit of another field keeps them",
+           model.update(0, {{"name", "Renamed"}}) && model.get(0).value("dmrChannels") == want);
+    /* Ruling (discussion #900 review): a retune that ends the RadioReference provenance keeps the entries, since a
+       user may retune within the same network; only an edit that carries the list replaces it. */
+    expect("dmr channels: a tuning change ends the provenance and keeps them",
+           model.update(0, {{"freqMhz", "451.0250"}}) && model.get(0).value("rrSid").toInt() == 0
+               && model.get(0).value("dmrChannels") == want);
+    expect("dmr channels: an edit that carries the list stores it",
+           model.update(0, {{"dmrChannels", dmr_channels({{3, 451050000}})}})
+               && model.get(0).value("dmrChannels") == dmr_channels({{3, 451050000}}));
+    expect("dmr channels: a copy of the system carries them",
+           model.add(model.get(0)) && model.get(2).value("dmrChannels") == dmr_channels({{3, 451050000}}));
+    SavedSystemsModel reloaded;
+    expect("dmr channels: the edits persist", reloaded.get(0).value("dmrChannels") == dmr_channels({{3, 451050000}})
+                                                  && reloaded.get(0).value("name") == "Renamed");
+    empty_systems(model);
+}
+
+/* Discussion #900 F3: stored channel entries are whole numbers. A backup restore or a saved-systems file hands a JSON
+ * number back as an integer or a double; a bool, a fraction or text is no channel and no frequency, and is skipped
+ * rather than read as another channel (12.7 as 13) or a hidden one (false as 0). */
+void
+test_dmr_channels_whole_numbers() {
+    const QVariant restored = QJsonDocument::fromJson(R"([{"lpcn": 12, "hz": false},
+                                                         {"lpcn": 12.7, "hz": 451000000},
+                                                         {"lpcn": true, "hz": 451000000},
+                                                         {"lpcn": 14, "hz": 451012500.5},
+                                                         {"lpcn": "15", "hz": 451025000},
+                                                         {"lpcn": 16, "hz": "451037500"},
+                                                         {"lpcn": 17.0, "hz": 451050000.0},
+                                                         {"lpcn": 18, "hz": 0},
+                                                         {"lpcn": 19, "hz": 451062500}])")
+                                  .toVariant();
+    expect("dmr channels: only whole numbers are kept",
+           SavedSystemsModel::validDmrChannels(restored) == dmr_channels({{17, 451050000}, {18, 0}, {19, 451062500}}));
+    const QVariantList typed{QVariantMap{{"lpcn", 20}, {"hz", false}}, QVariantMap{{"lpcn", 21.5}, {"hz", 0}},
+                             QVariantMap{{"lpcn", 22u}, {"hz", 451075000ULL}}};
+    expect("dmr channels: as QML or C++ hands them too",
+           SavedSystemsModel::validDmrChannels(typed) == dmr_channels({{22, 451075000}}));
+}
+
+/* An edit the decoder accepted is kept on its saved system: set, hide and restore of one channel, saved first, no
+ * other field touched (the channel map file and the RadioReference provenance above all). A failed save says so and
+ * changes nothing. */
+void
+test_dmr_channel_edit() {
+    using Op = int;
+    const Op set = 1, hide = 2, restore = 3;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("channel edit: a Tier III system", model.add({{"name", "Tier III"},
+                                                         {"decodeFlag", "-fs"},
+                                                         {"chanCsvPath", "/data/imports/t3.csv"},
+                                                         {"rrSid", 12},
+                                                         {"rrSiteId", 16863},
+                                                         {"siteName", "North"},
+                                                         {"dmrChannels", dmr_channels({{12, 0}})}}));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap before = model.get(0);
+    QStringList log;
+    record_signals(model, log);
+    const auto ok = [](const QVariantMap& r) {
+        return r.value("ok").toBool() && r.value("error").toString().isEmpty();
+    };
+    const auto error = [](const QVariantMap& r) {
+        return r.value("ok").toBool() ? QString() : r.value("error").toString();
+    };
+
+    expect("channel edit: a set is kept", ok(model.applyDmrChannelEdit(uid, 40, set, 451137500)));
+    expect("channel edit: by channel", model.get(0).value("dmrChannels") == dmr_channels({{12, 0}, {40, 451137500}}));
+    expect("channel edit: one dataChanged", log == QStringList{"dataChanged"});
+    expect("channel edit: a second set replaces it",
+           ok(model.applyDmrChannelEdit(uid, 40, set, 451150000))
+               && model.dmrChannels(uid) == dmr_channels({{12, 0}, {40, 451150000}}));
+    expect("channel edit: a hide keeps the channel at 0, its frequency not read",
+           ok(model.applyDmrChannelEdit(uid, 7, hide, -5))
+               && model.dmrChannels(uid) == dmr_channels({{7, 0}, {12, 0}, {40, 451150000}}));
+    expect("channel edit: a restore drops the entry",
+           ok(model.applyDmrChannelEdit(uid, 12, restore, 0))
+               && model.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
+    log.clear();
+    /* Nothing of the system's set it, so a channel file of the user's did: kept for this session
+       only, not reported as saved. */
+    expect("channel edit: restoring a channel with no entry changes nothing, for this session only",
+           error(model.applyDmrChannelEdit(uid, 12, restore, 0)) == "session-only" && log.isEmpty());
+    QVariantMap after = model.get(0);
+    for (const char* key : {"chanCsvPath", "rrSid", "rrSiteId", "siteName", "name", "decodeFlag", "place"}) {
+        expect(qPrintable(QStringLiteral("channel edit: leaves %1 alone").arg(QLatin1String(key))),
+               after.value(QLatin1String(key)) == before.value(QLatin1String(key)));
+    }
+    {
+        SavedSystemsModel reloaded;
+        expect("channel edit: the edits persist", reloaded.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
+    }
+
+    expect("channel edit: an unknown system",
+           error(model.applyDmrChannelEdit("no-such-uid", 40, set, 451150000)) == "no-system");
+    expect("channel edit: no such channel", error(model.applyDmrChannelEdit(uid, 0, set, 451150000)) == "invalid"
+                                                && error(model.applyDmrChannelEdit(uid, 4095, hide, 0)) == "invalid");
+    expect("channel edit: no such frequency",
+           error(model.applyDmrChannelEdit(uid, 40, set, 99999)) == "invalid"
+               && error(model.applyDmrChannelEdit(uid, 40, set, 2147483648LL)) == "invalid");
+    expect("channel edit: no such operation", error(model.applyDmrChannelEdit(uid, 40, 4, 451150000)) == "invalid");
+    /* Kept whatever the system's options say. Every start passes the entries, after the user's
+       own options, and the decoder decides whether the session takes them. */
+    expect("channel edit: an NXDN system with its own channels file",
+           model.add({{"name", "NXDN"},
+                      {"decodeFlag", "-fi"},
+                      {"extraArgs", "--dmr-chan-overrides /data/old.csv"},
+                      {"dmrChannels", dmr_channels({{12, 0}})}}));
+    const QString other = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is kept there too",
+           ok(model.applyDmrChannelEdit(other, 40, set, 451150000))
+               && model.dmrChannels(other) == dmr_channels({{12, 0}, {40, 451150000}}));
+    expect("channel edit: that system removed", model.remove(model.rowForUid(other)));
+
+    QVariantList full;
+    for (int lpcn = 1; lpcn <= 256; ++lpcn) {
+        full.append(QVariantMap{{"lpcn", lpcn}, {"hz", 0}});
+    }
+    expect("channel edit: 256 entries",
+           model.update(0, {{"dmrChannels", full}}) && model.dmrChannels(uid).size() == 256);
+    expect("channel edit: one more is refused", error(model.applyDmrChannelEdit(uid, 300, hide, 0)) == "full");
+    expect("channel edit: one it holds is not", ok(model.applyDmrChannelEdit(uid, 256, set, 451000000)));
+
+    log.clear();
+    const QVariantList kept = model.dmrChannels(uid);
+    expect("channel edit: store blocked", block_systems_store());
+    expect("channel edit: a failed save says so",
+           error(model.applyDmrChannelEdit(uid, 255, set, 451000000)) == "not-saved");
+    expect("channel edit: and changes nothing", model.dmrChannels(uid) == kept && log.isEmpty());
+    expect("channel edit: store unblocked", unblock_systems_store());
+
+    /* The channels file a start wrote for the system goes with it. */
+    const QString file = SavedSystemsModel::dmrChannelsFilePath(uid);
+    QDir().mkpath(QFileInfo(file).absolutePath());
+    QFile written(file);
+    expect("channel edit: a start's file",
+           written.open(QIODevice::WriteOnly) && written.write("lpcn,frequency_hz\n") > 0);
+    written.close();
+    expect("channel edit: the system removed", model.remove(model.rowForUid(uid)));
+    expect("channel edit: and its file", !QFileInfo::exists(file));
+    empty_systems(model);
 }
 
 /* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
@@ -3128,6 +3394,8 @@ test_prefs_key_table(void) {
          QVariantMap{
              {QStringLiteral("latitude"), 22.5}, {QStringLiteral("longitude"), 45.0}, {QStringLiteral("zoom"), 12.0}},
          "map/viewport"},
+        // Issue #901: compact view.
+        {"compactView", true, "ui/compactView"},
     };
     QStringList covered;
     int writable = 0;
@@ -3225,6 +3493,7 @@ test_prefs_key_table(void) {
         QStringLiteral("monitor/detailsExpanded"),
         QStringLiteral("roaming/enabled"),
         QStringLiteral("ui/chooseFilesInApp"),
+        QStringLiteral("ui/compactView"),
         QStringLiteral("ui/notificationExplained"),
         QStringLiteral("ui/onboardingDone"),
     };
@@ -3234,6 +3503,7 @@ test_prefs_key_table(void) {
            portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
                && !portable.contains(QStringLiteral("listen/section"))
                && !portable.contains(QStringLiteral("listen/systemsSort"))
+               && !portable.contains(QStringLiteral("ui/compactView"))
                && portable.contains(QStringLiteral("listen/keepAwake"))
                && portable.contains(QStringLiteral("listen/lastStartedUid"))
                && portable.contains(QStringLiteral("rr/appKey"))
@@ -3255,7 +3525,8 @@ test_prefs_key_table(void) {
                                                           && !before.contains(QStringLiteral("location/lastLat"))
                                                           && !before.contains(QStringLiteral("ui/onboardingDone"))
                                                           && !before.contains(QStringLiteral("monitor/detailsExpanded"))
-                                                          && !before.contains(QStringLiteral("listen/section")));
+                                                          && !before.contains(QStringLiteral("listen/section"))
+                                                          && !before.contains(QStringLiteral("ui/compactView")));
     for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
         expect("readPortable key is portable", portable.contains(it.key()));
     }
@@ -3286,6 +3557,7 @@ test_prefs_key_table(void) {
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
     file.setValue(QStringLiteral("monitor/detailsExpanded"), true);
     file.setValue(QStringLiteral("listen/section"), QStringLiteral("explore"));
+    file.setValue(QStringLiteral("ui/compactView"), true);
     file.sync();
 
     QVariantMap incoming;
@@ -3295,6 +3567,8 @@ test_prefs_key_table(void) {
     incoming.insert(QStringLiteral("ui/onboardingDone"), false);
     incoming.insert(QStringLiteral("monitor/detailsExpanded"), false);
     incoming.insert(QStringLiteral("listen/section"), QStringLiteral("scanLists"));
+    // Issue #901: an edited backup's contrary compact view does not replace this device's.
+    incoming.insert(QStringLiteral("ui/compactView"), false);
     incoming.insert(QStringLiteral("not/a/key"), 1);
     incoming.insert(QStringLiteral("search/sourceType"), QStringLiteral("airspy"));
     incoming.insert(QStringLiteral("search/port"), 5555);
@@ -3310,7 +3584,8 @@ test_prefs_key_table(void) {
            after.value(QStringLiteral("ui/onboardingDone")).toBool()
                && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
                && after.value(QStringLiteral("location/lastLat")).toInt() == 9
-               && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore"));
+               && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore")
+               && after.value(QStringLiteral("ui/compactView")).toBool());
     for (const QString& key : mapKeys) {
         expect(qPrintable(QStringLiteral("a restore leaves %1 as it was").arg(key)), after.contains(key));
     }
@@ -3337,6 +3612,8 @@ test_prefs_key_table(void) {
         const AppPrefs fresh;
         expect("a restore without the Listen tab keeps the local one",
                fresh.listenSection() == QStringLiteral("explore"));
+        // Issue #901: nor does one without compact view turn this device's off.
+        expect("a restore without compact view keeps the local one", fresh.compactView());
     }
 }
 
@@ -4127,6 +4404,7 @@ main(int argc, char** argv) {
     test_private_key_store();
     test_saved_systems();
     test_saved_systems_past_int_range();
+    test_saved_systems_local_day();
     test_saved_systems_gain_range();
     test_saved_systems_csv_fields();
     test_app_prefs();
@@ -4135,6 +4413,7 @@ main(int argc, char** argv) {
     test_screen_policy_prefs();
     test_listen_section_pref();
     test_systems_sort_pref();
+    test_compact_view_pref();
     test_roaming_prefs();
     test_map_prefs();
     test_hangtime_unreadable_value();
@@ -4180,6 +4459,9 @@ main(int argc, char** argv) {
     test_clear_csv_path_clears_geography();
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
+    test_dmr_channels_round_trip();
+    test_dmr_channels_whole_numbers();
+    test_dmr_channel_edit();
     test_apply_place_names();
     test_place_name_cache();
     test_reimport_keeps_place_names();

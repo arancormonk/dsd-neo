@@ -13,6 +13,19 @@ include(CTest) # provides BUILD_TESTING and enables tests when on
 enable_testing()
 include(GNUInstallDirs)
 
+# dsd-neo's own libraries are internal and always static: they call into each
+# other in cycles, the tests replace some of their functions at link time, and
+# only the programs are installed. Some distribution macros pass
+# BUILD_SHARED_LIBS=ON to every build; inside this project it stays off, so no
+# library the project adds, with or without a type, becomes a shared one.
+if(DEFINED CACHE{BUILD_SHARED_LIBS} AND "$CACHE{BUILD_SHARED_LIBS}")
+    message(
+        STATUS
+        "BUILD_SHARED_LIBS=ON is ignored: dsd-neo's own libraries are always static"
+    )
+endif()
+set(BUILD_SHARED_LIBS OFF)
+
 # Prefer modern list operations to update module path
 list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -1392,8 +1405,14 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/legal
     COMPONENT legal
 )
+# mbelib's notice folder, without the other FFT's notice tree (MbelibNotices.cmake).
 install(
-    DIRECTORY "${DSD_MBELIB_NOTICE_DIR}/"
+    DIRECTORY ${DSD_MBELIB_NOTICE_DIRS}
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
+    COMPONENT legal
+)
+install(
+    FILES ${DSD_MBELIB_NOTICE_FILES}
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses/mbelib-neo
     COMPONENT legal
 )
@@ -1405,8 +1424,9 @@ install(
 )
 install(
     FILES
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-README.md"
+        "${DSD_PFFFT_LICENSE_DIR}/pffft-neo-LICENSE.txt"
         "${DSD_PFFFT_LICENSE_DIR}/pffft-LICENSE.txt"
-        "${DSD_PFFFT_LICENSE_DIR}/pffft-NOTICES.txt"
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     COMPONENT legal
 )

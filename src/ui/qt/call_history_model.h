@@ -119,7 +119,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         SystemUidRole,
-        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG", "TIME UNKNOWN" with no start — drives list sections
+        DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG" / "SAT 21 NOV 2015", "TIME UNKNOWN" — list sections
         TimeTextRole,   // "12:04", empty with no start
         KindRole,       // RowKind: voice call or data/control notice
         DetailRole,     // the row's text message and GPS text, joined (issue #800: voice rows too); else empty
@@ -1075,8 +1075,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         pruneSeenMap(m_seen);
     }
 
-    /** @brief Arm m_dayTimer for the next local midnight. */
-    void scheduleDayRollover();
     /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, under one
      * handoff of the background tap. */
     void changeSession(const QString& label, const QString& uid, bool begin);
@@ -1155,9 +1153,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
     quint64 m_clearRev = 0;
     quint64 m_tapClearRev = 0;
-    /* Fires at local midnight: "TODAY"/"YESTERDAY" section labels are derived
-     * from the current date, and nothing else re-reads them when it rolls over. */
-    QTimer m_dayTimer;
     QSettings m_settings;
 #ifdef DSD_NEO_TEST_HOOKS
     int m_peakRowsForTest = 0;

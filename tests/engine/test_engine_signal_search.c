@@ -4,6 +4,9 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
@@ -12,6 +15,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -23,13 +27,20 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
@@ -39,7 +50,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/app_control/command_dispatch.h"
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/engine/scan_owner.h"
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
+#include "test_env.h"
 
 static dsd_signal_search_status status;
 static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
@@ -275,16 +290,31 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t hz, const rtl_strea
     return 0;
 }
 
+/* The symbol profile the latest retune queued: its target, CQPSK, symbol rate, levels, channel filter, TED and whether
+   the TED is kept as an override. */
+static struct {
+    uint32_t hz;
+    int cq, rate, levels, profile, sps, persist;
+} queued_profile;
+
+/* The front end's TED samples-per-symbol override (0: none). */
+static int ted_override;
+
+int
+rtl_stream_get_ted_sps_override(void) {
+    return ted_override;
+}
+
 void
 rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t hz, int cq, int rate, int levels, int profile, int sps,
                                                        int persist, const rtl_stream_retune_gain_profile* g) {
-    (void)hz;
-    (void)cq;
-    (void)rate;
-    (void)levels;
-    (void)profile;
-    (void)sps;
-    (void)persist;
+    queued_profile.hz = hz;
+    queued_profile.cq = cq;
+    queued_profile.rate = rate;
+    queued_profile.levels = levels;
+    queued_profile.sps = sps;
+    queued_profile.persist = persist;
+    queued_profile.profile = profile;
     gain_value = g->tuner_gain_tenth_db;
     gain_auto = g->tuner_gain_is_auto;
     autogain = g->tuner_autogain_on;
@@ -332,6 +362,9 @@ static uint64_t boundary_session, boundary_hit;
    ended were labelled with. */
 static uint64_t boundary_code;
 static uint8_t boundary_proven;
+/* The kind of the latest carrier boundary: a visit's is a tune, which the production boundary runs without dropping the
+   DMR Tier III channels the air taught (ENGINE_STREAM_GAP proves it; discussion #900 F2). */
+static dsd_carrier_boundary_kind boundary_kind = DSD_CARRIER_BOUNDARY_STREAM_GAP;
 
 /* The P25 Phase 2 code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)) @p state holds. */
 static uint64_t
@@ -347,6 +380,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)opts;
     (void)guard;
     ++boundary;
+    boundary_kind = reason;
     boundary_tagged = dsd_signal_search_visit_get(&boundary_session, &boundary_hit);
     boundary_code = code_held(state);
     boundary_proven = state->p2_cc_verified;
@@ -359,6 +393,54 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
         dsd_p25_patch_clear_all(state);
     }
     state->carrier_seq++;
+}
+
+/* The TETRA state's cold starts (issue #748): how many, and the carrier boundaries run, the P25 code held and the visit
+   tag in force at the latest, which say it ran after the departure's boundary closed the visit and before the session's
+   site came back. */
+static int tetra_resets, tetra_reset_boundary, tetra_reset_tagged;
+static uint64_t tetra_reset_code;
+
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    ++tetra_resets;
+    tetra_reset_boundary = boundary;
+    tetra_reset_code = code_held(state);
+    tetra_reset_tagged = dsd_signal_search_visit_get(NULL, NULL);
+}
+
+/* The DSP rate the stream publishes (0: not yet), and the TED timing it applied for a TETRA profile it publishes. */
+static int dsp_rate_hz;
+static int tetra_ted_override, tetra_ted_applied;
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return dsp_rate_hz;
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = tetra_ted_override;
+    }
+    if (applied_sps) {
+        *applied_sps = tetra_ted_applied;
+    }
+}
+
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a case sets. */
+static int tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return tetra_chain_other;
 }
 
 /* What the engine's signal_search_probe answer was at the latest acquisition reset: what the frame sync keeps for its
@@ -2901,6 +2983,71 @@ test_locked_tuple_timed_for_its_landing(dsd_opts* o, dsd_state* s, const dsd_sig
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
 }
 
+/* Issue #748 B16: Stop tunes back with the radio profile the restored decoder runs, the session's TED override
+   included. A -m2 session (6000/4 CQPSK, the P25 Phase 2 profile pinned) used to queue the Auto preset's 4800/4 for
+   the radio while its decoder went back to 6000/4; a -mc session (4800/4 C4FM) queued its own by chance. */
+static void
+test_stop_queues_restored_profile(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    /* -mc and -m2: C4FM, CQPSK, P25 Phase 2 pin; profile, sps, center, rf_mod; symbol rate; the TED override. */
+    static const struct {
+        int c4fm, qpsk, p2_lock;
+        int timing[4];
+        int rate, override;
+    } locked[] = {
+        {1, 0, 0, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0}, 4800, 0},
+        {0, 1, 1, {DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 8, 3, 1}, 6000, 0},
+        {0, 1, 1, {DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 8, 3, 1}, 6000, 8},
+    };
+
+    const int c4fm = o->mod_c4fm;
+    for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); ++i) {
+        const dsd_signal_search_config one = tag_config(config, 94 + (uint64_t)i, 1, 0);
+        o->mod_cli_lock = 1;
+        o->mod_c4fm = locked[i].c4fm;
+        o->mod_qpsk = locked[i].qpsk;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locked[i].p2_lock;
+        const int* t = locked[i].timing;
+        put_timing(s, t[0], t[1], t[2], t[3]);
+        ted_override = locked[i].override;
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        // A visit's retune replaces the front end's TED override (it queues none).
+        ted_override = 0;
+        put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0);
+        stop_tag_session(o, s);
+        assert(timing_is(s, t[0], t[1], t[2], t[3]));
+        assert(queued_profile.hz == 100000000 && queued_profile.rate == locked[i].rate && queued_profile.levels == 4);
+        assert(queued_profile.cq == (t[3] == 1));
+        if (locked[i].override) {
+            assert(queued_profile.sps == locked[i].override && queued_profile.persist);
+        } else {
+            assert(queued_profile.sps == t[1] && !queued_profile.persist);
+        }
+    }
+    ted_override = 0;
+    o->mod_cli_lock = o->mod_qpsk = o->mod_p25p2_profile_lock = 0;
+    o->mod_c4fm = c4fm;
+
+    // A fixed preset's session keeps its preset's profile: an NXDN48 session started on the command line, whose
+    // decoder runs 2400/4 while the hunt index it never used still names 4800/4.
+    dsd_opts* saved = malloc(sizeof(*saved));
+    assert(saved);
+    DSD_MEMCPY(saved, o, sizeof(*o));
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CONFIG, o, s);
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 20, 9, 0);
+    const dsd_signal_search_config nxdn = tag_config(config, 97, 1, 0);
+    start_tag_session(o, s, &nxdn);
+    visit_strongest(o, s);
+    stop_tag_session(o, s);
+    assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 20, 9, 0));
+    assert(queued_profile.hz == 100000000 && queued_profile.rate == 2400 && queued_profile.levels == 4);
+    assert(queued_profile.sps == 20 && !queued_profile.cq && !queued_profile.persist);
+    DSD_MEMCPY(o, saved, sizeof(*o));
+    free(saved);
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
 /* Issue #804 F6: every departure puts the session's own P25 site back whole, never the proof. */
 #define SITE_CODE(wacn, sysid, nac) (((uint64_t)(wacn) << 24) | ((uint64_t)(sysid) << 12) | (uint64_t)(nac))
 static const uint64_t CODE_A = SITE_CODE(0xBEE00, 0x1A3, 0x293);
@@ -3094,6 +3241,135 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
     session_site(s, 0, 0, 0);
 }
 
+/* A DMR Tier III channel the session learned from its site survives the search's visits with its origin and trust: a
+   visit's boundary is a tune, which keeps them, and the departure's restore puts the row back with the provenance the
+   session saved (discussion #900 F2). A visit that hears another network's checked system code (the entry point a
+   checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows; the departure brings the row back as SITE
+   with its trust and the session's baseline with it. */
+enum { LEARNED_CHANNEL = 9, USER_CHANNEL = 10, OVERLAID_CHANNEL = 11 };
+
+/* The user's entry is still there: no restore takes the live overlay away, and it never reached the shared map. */
+static int
+user_dmr_row_kept(const dsd_state* s) {
+    long hz = 0;
+    return s->trunk_chan_map[USER_CHANNEL] == 0 && dmr_t3_chan_effective_hz(s, USER_CHANNEL) == 852112500
+           && dmr_t3_chan_origin(s, USER_CHANNEL) == DMR_CHAN_ORIGIN_USER && dmr_t3_overlay_count(s) == 2U
+           && dmr_t3_overlay_get(s, USER_CHANNEL, &hz) == DMR_T3_OVERLAY_SET && hz == 852112500;
+}
+
+/* The shared row under the user's entry is the session's: the site's SITE row, which a visit that
+   heard another network dropped, comes back with the session's rows, while DMR goes on using the user's frequency. */
+static int
+overlaid_dmr_row_back(const dsd_state* s) {
+    const dmr_ext_t* ext = dmr_ext_get(s);
+    long hz = 0;
+    return dmr_t3_overlay_get(s, OVERLAID_CHANNEL, &hz) == DMR_T3_OVERLAY_SET && hz == 852137500
+           && dmr_t3_chan_effective_hz(s, OVERLAID_CHANNEL) == 852137500
+           && s->trunk_chan_map[OVERLAID_CHANNEL] == 852025000 && ext != NULL
+           && ext->origin[OVERLAID_CHANNEL] == (uint8_t)DMR_CHAN_ORIGIN_SITE
+           && dsd_state_dmr_lcn_ota_get(s, OVERLAID_CHANNEL) && s->dmr_lcn_trust[OVERLAID_CHANNEL] == 2U;
+}
+
+static int
+learned_dmr_row_back(const dsd_state* s, uint32_t session_generation) {
+    return s->trunk_chan_map[LEARNED_CHANNEL] == 852012500 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 2U
+           && dmr_t3_chan_origin(s, LEARNED_CHANNEL) == DMR_CHAN_ORIGIN_SITE
+           && dmr_t3_chan_generation(s) == session_generation;
+}
+
+/* Network B's checked code reaches the visit: the session's rows go. */
+static void
+visit_hears_network_b(dsd_state* s, uint32_t session_generation) {
+    dmr_t3_chan_note_checked_syscode(s, 0x2254U); /* Large model: another MODEL than the session's */
+    assert(s->trunk_chan_map[LEARNED_CHANNEL] == 0 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 0U);
+    assert(dmr_t3_chan_generation(s) == session_generation + 1U);
+}
+
+static void
+test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 85, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    dmr_ext_t* ext = dmr_ext_get_or_create(s);
+    assert(ext != NULL);
+    dmr_t3_chan_note_checked_syscode(s, 0x1234U); /* the session's network: Small model, NET 0x11 */
+    /* As the over-the-air writer leaves a SITE row learned on the control channel. */
+    dsd_state_set_trunk_chan_freq(s, LEARNED_CHANNEL, 852012500);
+    dsd_state_dmr_lcn_ota_set(s, LEARNED_CHANNEL, 1);
+    ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
+    /* And the user's own entry for another channel, as dmr_t3_overlay_apply() makes it: the session's restore keeps it.
+       And an entry over a row the site taught, which the shared map keeps under it. */
+    ext->overlay.op[USER_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[USER_CHANNEL] = 852112500;
+    dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 852025000);
+    dsd_state_dmr_lcn_ota_set(s, OVERLAID_CHANNEL, 1);
+    ext->origin[OVERLAID_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    s->dmr_lcn_trust[OVERLAID_CHANNEL] = 2U;
+    ext->overlay.op[OVERLAID_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[OVERLAID_CHANNEL] = 852137500;
+    ext->overlay.count = 2U;
+    assert(user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
+    const uint32_t session_generation = dmr_t3_chan_generation(s);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    visit_hears_network_b(s, session_generation);
+    /* The visit's network change dropped the SITE row under the entry; DMR still uses the user's frequency. */
+    assert(s->trunk_chan_map[OVERLAID_CHANNEL] == 0 && dmr_t3_chan_effective_hz(s, OVERLAID_CHANNEL) == 852137500);
+    next_visit(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
+    /* Back on the session's network baseline: its own code is no network change. */
+    dmr_t3_chan_note_checked_syscode(s, 0x1223U);
+    assert(learned_dmr_row_back(s, session_generation));
+    visit_hears_network_b(s, session_generation);
+    stop_tag_session(o, s);
+    assert(learned_dmr_row_back(s, session_generation));
+    assert(user_dmr_row_kept(s) && overlaid_dmr_row_back(s));
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    s->dmr_lcn_trust[OVERLAID_CHANNEL] = 0U;
+    dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 0);
+    dmr_t3_overlay_discard(s);
+    dmr_t3_chan_note_map_cleared(s);
+    ext->syscode_valid = 0U;
+    session_site(s, 0, 0, 0);
+}
+
+/* A standard group grant for channel @p lpcn with no frequency, as the CSBK handler records it. */
+static void
+note_missing_dmr_channel(dsd_opts* o, dsd_state* s, uint16_t lpcn) {
+    dmr_t3_grant_class cls;
+    DSD_MEMSET(&cls, 0, sizeof cls);
+    cls.group = 1U;
+    cls.recipient = 1001U;
+    cls.caller = 2002U;
+    dmr_t3_missing_note_grant(o, s, lpcn, &cls, 0U, 0);
+}
+
+/* A session that ends during a visit keeps the visit's site, its DMR ledger included, until the
+   engine's teardown releases it. Only then is the live ledger the session's own, so the exit summary is logged after
+   the release (dsd_engine_cleanup()): before it, the visit's channel would be reported and the session's not. */
+static void
+test_shutdown_during_visit_returns_the_dmr_ledger(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 88, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    note_missing_dmr_channel(o, s, 12U);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    dmr_t3_chan_network_changed(o, s); /* the visit hears another network */
+    note_missing_dmr_channel(o, s, 30U);
+    dsd_engine_signal_search_shutdown(o, s);
+    dmr_t3_missing_ledger ledger;
+    dmr_t3_missing_copy(s, &ledger);
+    assert(dmr_t3_missing_count(s) == 1U && (ledger.missing[30 >> 3] & (1U << (30 & 7))) != 0U);
+    dsd_signal_search_visit_clear(); // the engine's teardown, after its last close
+    dsd_engine_signal_search_release_site(o, s);
+    dmr_t3_missing_copy(s, &ledger);
+    assert(dmr_t3_missing_count(s) == 1U && (ledger.missing[12 >> 3] & (1U << (12 & 7))) != 0U);
+    dmr_t3_chan_network_changed(o, s);
+    session_site(s, 0, 0, 0);
+}
+
 static void
 test_unknown_identity_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     const dsd_signal_search_config one = tag_config(config, 84, 1, 0);
@@ -3170,10 +3446,10 @@ test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     dsd_signal_search_visit_clear(); // the engine's teardown, after its last close
     /* Then, before the band plan export, the session's site comes back unproven: no visited system's code or IDEN
        tables outlive the session. Once. */
-    dsd_engine_signal_search_release_site(s);
+    dsd_engine_signal_search_release_site(o, s);
     assert(session_back(s, CODE_A, 0, 0));
     s->p2_cc = 0x111;
-    dsd_engine_signal_search_release_site(s);
+    dsd_engine_signal_search_release_site(o, s);
     assert(s->p2_cc == 0x111);
 
     one = tag_config(config, 87, 1, 0);
@@ -3189,7 +3465,7 @@ test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     assert(dsd_access_code_current(s, DSD_SYNC_P25P2_POS, 0, 0, &kind, &nac) == 0);
     /* The Stop put it back already: the teardown owes nothing. */
     s->p2_cc = 0x111;
-    dsd_engine_signal_search_release_site(s);
+    dsd_engine_signal_search_release_site(o, s);
     assert(s->p2_cc == 0x111);
     live = 1;
     session_site(s, 0, 0, 0);
@@ -3265,7 +3541,7 @@ test_patches_stay_with_session(dsd_opts* o, dsd_state* s, const dsd_signal_searc
     visit_names_sg(s);
     dsd_engine_signal_search_shutdown(o, s);
     dsd_signal_search_visit_clear();
-    dsd_engine_signal_search_release_site(s);
+    dsd_engine_signal_search_release_site(o, s);
     assert(session_patches_back(s));
     dsd_p25_patch_clear_all(s);
     session_site(s, 0, 0, 0);
@@ -3539,9 +3815,11 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_iden_before_nsb_restored(o, s, config);
     test_pending_announcements_stay_with_their_site(o, s, config);
     test_hardset_restored(o, s, config);
+    test_learned_dmr_channel_survives_visits(o, s, config);
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);
     test_shutdown_during_active_call(o, s, config);
+    test_shutdown_during_visit_returns_the_dmr_ledger(o, s, config);
     test_patches_stay_with_session(o, s, config);
     test_departure_mid_recovery_drops_pending(o, s, config);
     test_code_list_bound_dedupe_order(o, s, config);
@@ -3836,6 +4114,487 @@ test_avoid_interleaving(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     stop_tag_session(o, s);
 }
 
+/* The native store as the start action reaches it (the app-control store, stubbed): the status it keeps is the one a
+   frontend reads (dsd_app_signal_search_status_get()). */
+static dsd_signal_search_status store_status;
+
+void
+dsd_app_signal_search_publish(const dsd_signal_search_status* s, const dsd_signal_search_hit* h, void* ctx) {
+    (void)ctx;
+    store_status = *s;
+    observer(s, h, NULL);
+}
+
+void
+dsd_app_signal_search_status_get(dsd_signal_search_status* s, char* error, size_t capacity) {
+    if (s) {
+        *s = store_status;
+    }
+    if (error && capacity) {
+        error[0] = '\0';
+    }
+}
+
+void
+dsd_app_signal_search_store_flush(void) {}
+
+int
+dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
+    (void)frequency;
+    return DSD_APP_SEARCH_AVOID_ADDED;
+}
+
+int
+dsd_app_command_submit(int id, const void* data, size_t size) {
+    (void)id;
+    (void)data;
+    (void)size;
+    return DSD_APP_COMMAND_SUBMIT_QUEUED;
+}
+
+/* The command queue's -Y take-back, the start's commit hook (issue #748 B13): a -Y resume waiting on its row is taken
+   back, leaving its row's scope (here, a voice-only row's setting) for the session's own. */
+static int scan_resumes_taken;
+
+void
+dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user) {
+    (void)user;
+    if (state->lcn_scan_resume_pending) {
+        state->lcn_scan_resume_pending = 0;
+        opts->scan_voice_only = 0;
+        ++scan_resumes_taken;
+    }
+}
+
+double
+dsd_analog_rx_clock_s(void) {
+    return 0.0;
+}
+
+int
+dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now, dsd_app_rx_tone* out) {
+    (void)opts;
+    (void)state;
+    (void)now;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
+
+/* A frontend's read of the store, as Qt's SignalSearchModel::refresh() makes it: a status whose revision and session
+   both match the last one read is the same status, and is skipped. 1 when this read took a new status. */
+static uint64_t qt_revision = UINT64_MAX, qt_session;
+
+static int
+qt_reads_status(dsd_signal_search_status* out) {
+    dsd_signal_search_status s;
+    dsd_app_signal_search_status_get(&s, NULL, 0);
+    if (s.revision == qt_revision && s.session_id == qt_session) {
+        return 0;
+    }
+    qt_revision = s.revision;
+    qt_session = s.session_id;
+    *out = s;
+    return 1;
+}
+
+/* A start through the command queue's handler, as the decoder drains it: 1 when it went on, 2 when it was refused. */
+static int
+start_action(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static struct dsd_app_command command;
+    DSD_MEMSET(&command, 0, sizeof(command));
+    command.id = DSD_APP_CMD_SIGNAL_SEARCH_START;
+    command.n = sizeof(*config);
+    DSD_MEMCPY(command.data, config, sizeof(*config));
+    return dsd_app_actions_signal_search[0].fn(o, s, &command);
+}
+
+/* Issue #748 B11: a refused start publishes a status of its own, and every later publication of the session must reach
+   a frontend that skips a status whose revision it has read. A refusal took the store's revision plus one, which the
+   paused coordinator's next publication (an edited Resume) reused: the frontend skipped the Resume and kept showing the
+   refusal on a paused search. */
+static void
+test_refusal_then_resume_reaches_frontend(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 90, 0, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    dsd_signal_search_status seen;
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_PAUSED && seen.session_id == 90);
+
+    // An edited Resume the engine refuses: its message shows on the paused search.
+    dsd_signal_search_config refused = one;
+    refused.ranges[0].end_hz = refused.ranges[0].start_hz - 1;
+    assert(start_action(o, s, &refused) == 2);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_PAUSED && seen.message[0] != '\0');
+
+    // The corrected Resume goes on: the frontend reads the running search, not the refusal it already showed.
+    one.ranges[0].end_hz = 100012500;
+    assert(start_action(o, s, &one) == 1);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_SEARCHING && seen.message[0] == '\0');
+    tick(o, s);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_TUNING);
+    land(o, s);
+    stop_tag_session(o, s);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_STOPPED);
+
+    // A fresh start refused with no coordinator, then one that goes on under the same session: the first publication
+    // of the new coordinator reaches the frontend too.
+    dsd_signal_search_config fresh = tag_config(config, 91, 0, 0);
+    dsd_signal_search_config bad = fresh;
+    bad.ranges[0].end_hz = bad.ranges[0].start_hz - 1;
+    assert(start_action(o, s, &bad) == 2);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_ERROR && seen.session_id == 91);
+    assert(start_action(o, s, &fresh) == 1);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_SEARCHING && seen.session_id == 91);
+    tick(o, s);
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
+/* What a Signal search start changes in the options and the decoder state: the decoder settings with the live symbol
+   timing, the -Y row option the test below runs (voice only), the tuned frequency, the scan scope's class and a -Y
+   resume still waiting on its row. */
+typedef struct {
+    dsd_scan_settings settings;
+    uint32_t center_hz;
+    int resume_pending;
+    dsd_scan_mode active;
+    dsd_scan_mode row;
+} start_view;
+
+static void
+start_view_capture(const dsd_opts* o, const dsd_state* s, start_view* v) {
+    dsd_scan_settings_capture(o, s, &v->settings);
+    v->center_hz = o->rtlsdr_center_freq;
+    v->resume_pending = s->lcn_scan_resume_pending;
+    v->active = dsd_scan_mode_active(s);
+    v->row = dsd_scan_mode_row(s);
+}
+
+static int
+start_view_same(const start_view* a, const start_view* b) {
+    return dsd_scan_settings_equal(&a->settings, &b->settings, 1)
+           && a->settings.scan_voice_only == b->settings.scan_voice_only && a->center_hz == b->center_hz
+           && a->resume_pending == b->resume_pending && a->active == b->active && a->row == b->row;
+}
+
+/* Issue #748 B13: a start is validate-then-commit. Each step a fresh start can fail at fails it with nothing changed:
+   the options, the decoder state (a scan owner made for the start goes again), the quiet check a scan owner holds, a -Y
+   resume still waiting on its row, the tuner and the carrier. */
+static void
+test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const int points[] = {DSD_SEARCH_START_FAIL_COORD, DSD_SEARCH_START_FAIL_SCOPE, DSD_SEARCH_START_FAIL_SITE,
+                                 DSD_SEARCH_START_FAIL_OWNER};
+    static start_view before;
+    static start_view after;
+    dsd_signal_search_config one = tag_config(config, 92, 1, 0);
+    o->rtlsdr_center_freq = 100000000;
+    // A session the preset would change, a mono -f1 decoder on a NXDN48 hunt, and a typed -Y row (voice only) whose
+    // resume waits on its tune.
+    o->dmr_stereo = o->dmr_mono = 0;
+    o->frame_dmr = 0;
+    o->scan_voice_only = 1;
+    s->lcn_scan_resume_pending = 1;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0);
+    for (int owned = 0; owned < 2; ++owned) {
+        for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
+            if (owned) {
+                assert(dsd_engine_scan_owner_ensure(s) != NULL);
+            } else {
+                (void)dsd_state_ext_set(s, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
+            }
+            const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(s);
+            const uint32_t quiet_inv = owner ? owner->quiet_inv_seq : 0U;
+            const int before_boundary = boundary;
+            start_view_capture(o, s, &before);
+            dsd_engine_signal_search_test_fail_start(points[i]);
+            assert(start_action(o, s, &one) == 2);
+            dsd_engine_signal_search_test_fail_start(DSD_SEARCH_START_FAIL_NONE);
+            assert(strcmp(store_status.message, "Not enough memory to start Signal search") == 0);
+            assert(store_status.phase == DSD_SEARCH_ERROR && !store_status.owned);
+            start_view_capture(o, s, &after);
+            assert(start_view_same(&before, &after));
+            owner = dsd_engine_scan_owner_get(s);
+            assert(owned ? owner && owner->quiet_inv_seq == quiet_inv : owner == NULL);
+            assert(!dsd_engine_signal_search_active(s) && !dsd_signal_search_is_running(s));
+            assert(boundary == before_boundary && !tuner_owner && !scan_resumes_taken);
+        }
+    }
+    // Nothing was left half made: the same start goes on. It takes the -Y resume back first, so the settings it puts
+    // back at Stop are the session's, not the row's.
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    assert(start_action(o, s, &one) == 1 && scan_resumes_taken == 1 && !s->lcn_scan_resume_pending);
+    tick(o, s);
+    visit_strongest(o, s);
+    // A paused search's edited Resume goes on, through the same commit hook.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    s->lcn_scan_resume_pending = 1;
+    one.ranges[0].end_hz = 100012500;
+    assert(start_action(o, s, &one) == 1 && scan_resumes_taken == 2 && status.phase == DSD_SEARCH_SEARCHING);
+    tick(o, s);
+    land(o, s);
+    stop_tag_session(o, s);
+    assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0) && !o->dmr_stereo && !o->dmr_mono);
+    assert(o->scan_voice_only == 0 && !o->frame_dmr);
+    o->frame_dmr = 1;
+    o->dmr_stereo = 1;
+    scan_resumes_taken = 0;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
+/* A frame sync of @p sync, as the decoder notes it in the received identity (dsd_rxid_note_sync()): another family's
+   sync drops the record, an M17 CAN included. */
+static void
+rx_sync(dsd_state* s, int sync) {
+    s->synctype = sync;
+    dsd_rxid_note_sync(s, sync);
+}
+
+/* An active M17 call on the stream's sync type with CAN @p can in its service options. */
+static void
+m17_stream_call(uint64_t epoch, uint16_t can) {
+    dsd_call_snapshot* call = put_call(0, epoch, 0.0, DSD_SYNC_M17_STR_POS, 0, 0);
+    call->service_options = can;
+    call->has_service_metadata = 1U;
+}
+
+/* What the M17 decoder reports for a CRC-checked LSF of CAN @p can (m17.c, M17decodeLSF() then
+   m17_finalize_lsf_crc()): the CAN it carries through the access hook, then the confirmation and the call note. A
+   call-free LSF (stream data type 0) opens no call record, so the call note finds none. */
+static void
+m17_checked_lsf(dsd_state* s, uint16_t can) {
+    rx_sync(s, DSD_SYNC_M17_LSF_POS);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    dsd_signal_search_note_call(s, 0U);
+}
+
+/* Issue #748 B14: a CRC-checked M17 LSF of stream data type 0 names its CAN and opens no call. The access text of the
+   hit, as the store keeps it, is the latest checked LSF's CAN: a second call-free LSF's replaces the first's, the CAN
+   of an older call still running does not come back over it, and the ended hit keeps it. A DMR code the receive policy
+   rejects never reaches the hit through the same hook. */
+static void
+test_m17_call_free_lsf_can(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    m17_checked_lsf(s, 3U);
+    assert(store_status.hit.confirmed && strcmp(store_status.hit.protocol, "M17") == 0);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    m17_checked_lsf(s, 9U);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // A periodic refresh keeps it.
+    advance(100);
+    tick(o, s);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // A voice LSF of CAN 5 opens a call; a call-free LSF of CAN 9 while that call still runs names CAN 9.
+    dsd_call_snapshot* call = put_call(0, 7, 0.0, DSD_SYNC_M17_LSF_POS, 0, 0);
+    call->service_options = 5U;
+    call->has_service_metadata = 1U;
+    m17_checked_lsf(s, 5U);
+    assert(strcmp(store_status.hit.access, "CAN 5") == 0);
+    m17_checked_lsf(s, 9U);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    advance(100);
+    tick(o, s);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // The stream frames after it publish under another M17 sync type, the call record unchanged: CAN 9 stays.
+    s->synctype = DSD_SYNC_M17_STR_POS;
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // The ended hit keeps it.
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 9") == 0);
+    DSD_MEMSET(calls, 0, sizeof(calls));
+
+    // The next visit: nothing noted on the last one is this one's.
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    land(o, s);
+    assert(!store_status.hit.ended && store_status.hit.access[0] == '\0' && !store_status.hit.confirmed);
+    // A DMR hit on colour code 7, with colour code 3 blocked: a note of colour code 3 neither reaches the hit nor
+    // publishes it.
+    block_cc3(o);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.access, "CC 7") == 0);
+    const int published = hits_published;
+    s->dmr_color_code = 3;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_DMR_BS_DATA_POS, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    assert(hits_published == published && strcmp(store_status.hit.access, "CC 7") == 0);
+    // An allowed one does.
+    s->dmr_color_code = 5;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_DMR_BS_DATA_POS, DSD_ACCESS_CODE_COLOR_CODE, 5U);
+    assert(hits_published == published + 1 && strcmp(store_status.hit.access, "CC 5") == 0);
+    stop_refusal_session(o, s);
+}
+
+/* Issue #748 B14: a carried code belongs to the family that sent it. An Auto visit that confirms M17 (CAN 3), then DMR,
+   then an M17 transmission that names no CAN (a BERT stream) shows no CAN: the first transmission's went when the
+   visit left M17. A code noted for the incoming family before it confirms still shows once it does. */
+static void
+test_access_note_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    m17_checked_lsf(s, 3U);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 3") == 0);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0 && strcmp(store_status.hit.access, "CC 7") == 0);
+    s->synctype = DSD_SYNC_M17_BRT_POS;
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0);
+    assert(!store_status.hit.access_noted && strstr(store_status.hit.access, "CAN 3") == NULL);
+    // A CAN noted while the hit is still DMR waits for M17, and shows once M17 confirms.
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0);
+    rx_sync(s, DSD_SYNC_M17_LSF_POS);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 9U);
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, 9U);
+    assert(strcmp(store_status.hit.access, "CC 7") == 0);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 9") == 0);
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 9") == 0);
+    stop_refusal_session(o, s);
+}
+
+/* Start a one-range Auto session (93) and land on its strongest channel. */
+static void
+start_m17_visit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+}
+
+static void
+end_m17_visit(dsd_opts* o, dsd_state* s) {
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    stop_refusal_session(o, s);
+    dsd_rxid_reset(s);
+}
+
+/* An LSF rebuilt from the stream's LICH: its CAN noted in the received identity and carried to the search, its call
+   active under the stream's sync type. */
+static void
+m17_stream_lsf(dsd_state* s, uint64_t epoch, uint16_t can) {
+    rx_sync(s, DSD_SYNC_M17_STR_POS);
+    m17_stream_call(epoch, can);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_STR_POS, DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+}
+
+/* Two clean M17 stream frames confirm M17, with no LSF: the detection shows no CAN. */
+static void
+m17_stream_frames_show_no_can(dsd_state* s) {
+    for (int frame = 0; frame < 2; ++frame) {
+        rx_sync(s, DSD_SYNC_M17_STR_POS);
+        dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+        assert(strcmp(store_status.hit.protocol, "M17") == 0 && store_status.hit.access[0] == '\0');
+    }
+}
+
+/* Issue #748: an M17 CAN shows only while the received identity holds it, which only a checked LSF of the current
+   reception notes and another family's sync drops. An LSF rebuilt from the stream's LICH names CAN 3, its call still
+   active; DMR traffic confirms on colour code 7 while that call stays active; then two clean M17 stream frames confirm
+   M17 again before any new LSF: no CAN, live or ended. A call whose checked LSF named CAN 6 shows it. */
+static void
+test_access_call_left_family(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.protocol, "M17") == 0 && strcmp(store_status.hit.access, "CAN 3") == 0);
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0 && strcmp(store_status.hit.access, "CC 7") == 0);
+    m17_stream_frames_show_no_can(s);
+    // A call whose checked LSF named CAN 6 (noted in the received identity; carried by no note here) names its CAN.
+    m17_stream_call(8, 6U);
+    dsd_rxid_note_access(s, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, 6U);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.access, "CAN 6") == 0);
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 6") == 0);
+    end_m17_visit(o, s);
+}
+
+/* The same with a DMR burst that syncs and never confirms: the hit stays M17, so neither the access text it last
+   carried, the carried note nor the call record may bring CAN 3 back when M17 stream frames confirm without an LSF. */
+static void
+test_access_sync_without_confirm(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    m17_stream_frames_show_no_can(s);
+    advance(100);
+    tick(o, s);
+    assert(!store_status.hit.ended && store_status.hit.access[0] == '\0');
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && store_status.hit.access[0] == '\0');
+    end_m17_visit(o, s);
+}
+
+/* A reacquired call inherits the service options of the epoch it reopens (call_state_seed_reacquired_snapshot()) with
+   a fresh reception generation: a named call on CAN 3 ends on sync loss after DMR control traffic confirms; an LSF that
+   failed its CRC (decoded under -F) names no CAN; two clean stream frames reopen the call, which still carries CAN 3.
+   The next stream confirmation shows no CAN. */
+static void
+test_access_reacquired_call(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    start_m17_visit(o, s, config);
+    m17_stream_lsf(s, 7, 3U);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    calls[0].phase = DSD_CALL_PHASE_ENDED;
+    rx_sync(s, DSD_SYNC_DMR_BS_DATA_POS);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.protocol, "DMR") == 0);
+    rx_sync(s, DSD_SYNC_M17_STR_POS);
+    m17_stream_call(9, 3U);
+    calls[0].rx_gen = dsd_state_reception_generation(s);
+    m17_stream_frames_show_no_can(s);
+    end_m17_visit(o, s);
+}
+
 static void
 test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_avoid_lists_room(o, s, config);
@@ -3845,6 +4604,809 @@ test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* conf
     test_paused_search_keeps_both_lists(o, s, config);
     test_session_list_ends_with_session(o, s, config);
     test_avoid_interleaving(o, s, config);
+}
+
+/* ---- TETRA identification (issue #748) ---- */
+
+/* The first TETRA mode a visit confirms names the detection: a later report of the other mode changes nothing (the
+   decoder withdraws the site and access instead), and its activity keeps no visit listening. A TETRA detection shows
+   the access code its own evidence carries and no call details: a TETRA call record names nothing on it. */
+static void
+test_tetra_protocol_latched(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    for (int first = 0; first < 2; ++first) {
+        const char* latched = first ? "TETRA DMO" : "TETRA";
+        const char* other = first ? "TETRA" : "TETRA DMO";
+        const dsd_signal_search_config one = tag_config(config, 80 + (uint64_t)first, 1, 0);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        s->synctype = DSD_SYNC_TETRA_SB_POS;
+        dsd_signal_search_note_evidence_at(s, latched, DSD_SYNC_TETRA_SB_POS, -1, 0, 0, first ? NULL : "CC 5");
+        assert(status.hit.confirmed && strcmp(status.hit.protocol, latched) == 0);
+        assert(strcmp(status.hit.access, first ? "" : "CC 5") == 0);
+        const uint64_t revision = status.revision;
+        advance(400);
+        dsd_signal_search_note_evidence_at(s, other, DSD_SYNC_TETRA_NDB_POS, -1, 7, 8, "CC 9");
+        assert(strcmp(status.hit.protocol, latched) == 0 && status.revision == revision);
+        assert(strcmp(status.hit.access, first ? "" : "CC 5") == 0 && status.hit.target == 0);
+        /* No call details: a checked TETRA call record names no target, source or slot. */
+        (void)put_call(0, 1, 1.0, DSD_SYNC_TETRA_NDB_POS, 100, 200);
+        dsd_signal_search_note_call(s, 0);
+        assert(tuple_is(&status.hit, 0, 0, 0, "") && status.revision == revision);
+        DSD_MEMSET(calls, 0, sizeof(calls));
+        /* The other mode's report refreshed nothing: the visit's own quiet time runs from its own evidence. */
+        dsd_signal_search_note_evidence_at(s, latched, DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+        assert(strcmp(status.hit.protocol, latched) == 0);
+        s->synctype = DSD_SYNC_NONE;
+        stop_tag_session(o, s);
+    }
+}
+
+/* One TETRA range of three channels, 100.0 to 100.025 MHz, as the range editor presets it. */
+static dsd_signal_search_config
+tetra_config(const dsd_signal_search_config* base, uint64_t session) {
+    dsd_signal_search_config one = tag_config(base, session, DSD_SEARCH_DIGITAL_TETRA, 0);
+    one.ranges[0].bandwidth_hz = 25000;
+    one.ranges[0].probe_ms = 4000;
+    return one;
+}
+
+/* A front end at the 72 kHz DSP rate, every family landing there. */
+static void
+use_tetra_rate(void) {
+    use_front_end(72000, 72000, 72000, 0, 0);
+    dsp_rate_hz = 72000;
+}
+
+static void
+end_tetra_rate(dsd_opts* o, dsd_state* s) {
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    DSD_MEMSET(&front_end, 0, sizeof(front_end));
+    dsp_rate_hz = 0;
+    o->mod_cli_lock = o->mod_qpsk = o->mod_gfsk = o->mod_p25p2_profile_lock = 0;
+    o->mod_c4fm = 1;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
+/* The latest retune queued TETRA's chain: CQPSK on as the search's own choice, 18000/4 with TETRA's filter, the TED at
+   the 72 kHz rate's 4 samples per symbol. */
+static int
+tetra_profile_queued(void) {
+    return queued_profile.cq == 1 && queued_profile.rate == 18000 && queued_profile.levels == 4
+           && queued_profile.profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA && queued_profile.sps == 4
+           && retune_family.family == DSD_RX_FAMILY_DIGITAL && retune_family.cqpsk_explicit == 1;
+}
+
+/* The session's modulation lock (or none) is in force, with no TETRA decoder. */
+static int
+session_modulation_back(const dsd_opts* o, const dsd_state* s, int lock, int c4fm, int qpsk, int p2lock, int rf_mod) {
+    return o->frame_tetra == 0 && o->mod_cli_lock == lock && o->mod_c4fm == c4fm && o->mod_qpsk == qpsk
+           && o->mod_gfsk == 0 && o->mod_p25p2_profile_lock == p2lock && s->rf_mod == rf_mod;
+}
+
+/* A TETRA range's visit runs the TETRA preset with CQPSK and TETRA's chain and timing for the live rate, whatever -m
+   lock the session runs (none, -mc, -m2); only that visit does: its span tunes, a span return, the next Auto visit and
+   the probe's NFM fallback run the session's own lock and profile, and Stop gives the session its settings back. */
+static void
+test_tetra_visit_lands_tetra_profile(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const struct {
+        int lock, c4fm, qpsk, p2lock, rf_mod, profile;
+    } locks[] = {
+        {0, 1, 0, 0, 0, DSD_FRAME_SYNC_SPS_PROFILE_4800_4},
+        {1, 1, 0, 0, 0, DSD_FRAME_SYNC_SPS_PROFILE_4800_4},
+        {1, 0, 1, 1, 1, DSD_FRAME_SYNC_SPS_PROFILE_6000_4},
+    };
+
+    use_tetra_rate();
+    for (size_t i = 0; i < sizeof(locks) / sizeof(locks[0]); ++i) {
+        o->mod_cli_lock = locks[i].lock;
+        o->mod_c4fm = locks[i].c4fm;
+        o->mod_qpsk = locks[i].qpsk;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locks[i].p2lock;
+        put_timing(s, locks[i].profile, 15, 7, locks[i].rf_mod);
+        dsd_signal_search_config two = tetra_config(config, 82 + (uint64_t)i);
+        /* An Auto range after it, at other frequencies. */
+        two.range_count = 2;
+        two.ranges[1] = two.ranges[0];
+        two.ranges[1].digital = 1;
+        two.ranges[1].bandwidth_hz = 12500;
+        two.ranges[1].start_hz = 100100000;
+        two.ranges[1].end_hz = 100125000;
+        start_tag_session(o, s, &two);
+        /* The span tune runs the session's own decoder. */
+        assert(session_modulation_back(o, s, locks[i].lock, locks[i].c4fm, locks[i].qpsk, locks[i].p2lock,
+                                       locks[i].rf_mod));
+        assert(queued_profile.rate != 18000 && queued_profile.cq == (locks[i].rf_mod == 1));
+        visit_strongest(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING && status.hit.unresolved && !status.hit.confirmed);
+        assert(tetra_profile_queued() && o->frame_tetra == 1);
+        assert(s->rf_mod == 1 && o->mod_qpsk == 1 && o->mod_c4fm == 0 && o->mod_gfsk == 0);
+        assert(s->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_18000_4 && s->samplesPerSymbol == 4);
+        /* TETRA is no Auto hunt. */
+        assert(!dsd_engine_signal_search_probe(o, s));
+        /* A span return runs the session's own lock and profile again. */
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+        assert(session_modulation_back(o, s, locks[i].lock, locks[i].c4fm, locks[i].qpsk, locks[i].p2lock,
+                                       locks[i].rf_mod));
+        assert(queued_profile.rate != 18000 && queued_profile.cq == (locks[i].rf_mod == 1));
+        /* The probe's NFM fallback is the analog monitor, no TETRA decoder. */
+        visit_strongest(o, s);
+        assert(tetra_profile_queued() && status.hit.frequency_hz == 100012500);
+        advance(4000);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_TUNING && family == DSD_RX_FAMILY_ANALOG && o->frame_tetra == 0);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_LISTENING && status.hit.unresolved);
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        /* The rest of the TETRA range, then the Auto range: its visit runs the session's own lock. */
+        for (int n = 0; n < 16 && !(status.phase == DSD_SEARCH_IDENTIFYING && status.range_index == 1); ++n) {
+            if (status.phase == DSD_SEARCH_TUNING) {
+                land(o, s);
+            } else if (status.phase == DSD_SEARCH_SEARCHING) {
+                ready = 1;
+                tick(o, s);
+            } else {
+                act(o, s, DSD_SEARCH_ACTION_SKIP);
+            }
+        }
+        assert(status.phase == DSD_SEARCH_IDENTIFYING && status.range_index == 1);
+        assert(o->frame_tetra == 0 && queued_profile.rate != 18000);
+        assert(s->rf_mod == locks[i].rf_mod && o->mod_cli_lock == locks[i].lock && o->mod_qpsk == locks[i].qpsk);
+        stop_tag_session(o, s);
+        assert(session_modulation_back(o, s, locks[i].lock, locks[i].c4fm, locks[i].qpsk, locks[i].p2lock,
+                                       locks[i].rf_mod));
+        assert(s->sps_hunt_idx == locks[i].profile && s->samplesPerSymbol == 15 && !s->tetra_ext_scan_held);
+    }
+    end_tetra_rate(o, s);
+}
+
+/* The departure ran the TETRA state's cold start once more: after its boundary closed the visit under its tag, before
+   the session's site (code 0) came back over the visit's (CODE_B). */
+static int
+tetra_reset_after_close(int before) {
+    return tetra_resets == before + 1 && tetra_reset_boundary == boundary && tetra_reset_tagged
+           && tetra_reset_code == CODE_B;
+}
+
+/* Land on the next TETRA detection, learning the visited site's code. */
+static void
+tetra_visit(dsd_opts* o, dsd_state* s) {
+    for (int n = 0; n < 16 && status.phase != DSD_SEARCH_IDENTIFYING; ++n) {
+        if (status.phase == DSD_SEARCH_SEARCHING) {
+            ready = 1;
+            tick(o, s);
+        } else {
+            land(o, s);
+        }
+    }
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && tetra_profile_queued());
+    hold_code(s, CODE_B);
+}
+
+/* Every departure from a TETRA visit starts the TETRA state cold, after the visit's calls and recordings closed and
+   before the session's site returns: the probe's fallback, Skip, Avoid, a span return at the quiet time, Pause, Stop,
+   a failed search, an input lost, and a decoder session that ends during a visit, whose cold start waits for the
+   session's final closes. The landing that follows starts it cold too, and the end of the search lets the hold go. */
+static void
+test_tetra_visit_resets_on_departures(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    use_tetra_rate();
+    session_site(s, 0, 0, 0);
+    dsd_signal_search_config one = tetra_config(config, 85);
+    int before = tetra_resets;
+    start_tag_session(o, s, &one);
+    /* The first tune is the search's first landing. */
+    assert(tetra_resets == before + 1 && s->tetra_ext_scan_held);
+
+    tetra_visit(o, s);
+    before = tetra_resets;
+    advance(4000);
+    tick(o, s); /* the probe's NFM fallback */
+    assert(tetra_reset_after_close(before) && code_held(s) == 0);
+    land(o, s);
+    hold_code(s, CODE_B);
+    before = tetra_resets;
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(tetra_reset_after_close(before) && code_held(s) == 0);
+
+    tetra_visit(o, s);
+    before = tetra_resets;
+    act(o, s, DSD_SEARCH_ACTION_AVOID);
+    assert(tetra_reset_after_close(before));
+
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, "CC 5");
+    before = tetra_resets;
+    advance(30000);
+    tick(o, s); /* quiet: back to the span */
+    assert(status.phase == DSD_SEARCH_TUNING && tetra_reset_after_close(before));
+
+    tetra_visit(o, s);
+    before = tetra_resets;
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && tetra_reset_after_close(before));
+    act(o, s, DSD_SEARCH_ACTION_RESUME);
+    tetra_visit(o, s);
+    before = tetra_resets;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(tetra_reset_after_close(before) && s->tetra_ext_scan_held);
+    land(o, s);
+    /* The end of the search: one more cold start for the session's own settings, and the hold goes. */
+    assert(status.phase == DSD_SEARCH_STOPPED && tetra_resets == before + 2 && !s->tetra_ext_scan_held);
+
+    /* A failed search, then a Stop with the input gone. */
+    one = tetra_config(config, 86);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    before = tetra_resets;
+    stalled_ms = 20000;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && tetra_reset_after_close(before));
+    stalled_ms = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && !s->tetra_ext_scan_held);
+    one = tetra_config(config, 87);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    before = tetra_resets;
+    live = 0;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && tetra_reset_after_close(before));
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED && !s->tetra_ext_scan_held);
+    live = 1;
+
+    /* The decoder session ends during a visit: nothing starts cold until its final closes, then before the site. */
+    one = tetra_config(config, 88);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    before = tetra_resets;
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tetra_resets == before && s->tetra_ext_scan_held);
+    dsd_signal_search_visit_clear(); /* the engine's teardown, after its last close */
+    dsd_engine_signal_search_release_site(o, s);
+    assert(tetra_resets == before + 1 && tetra_reset_code == CODE_B && !s->tetra_ext_scan_held);
+    assert(code_held(s) == 0);
+    dsd_engine_signal_search_release_site(o, s);
+    assert(tetra_resets == before + 1);
+
+    /* A search with no TETRA range never takes the hold or starts the TETRA state cold. */
+    one = tag_config(config, 89, 1, 0);
+    before = tetra_resets;
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    next_visit(o, s);
+    stop_tag_session(o, s);
+    assert(tetra_resets == before && !s->tetra_ext_scan_held);
+    end_tetra_rate(o, s);
+}
+
+/* The decoder settings a receive profile puts in force, for comparing a pause's against a span tune's. */
+typedef struct {
+    int frame_tetra, mod_cli_lock, mod_c4fm, mod_qpsk, mod_gfsk, mod_p2lock;
+    int rf_mod, sps_hunt_idx, sps, center;
+    dsd_scan_mode row;
+} decoder_profile;
+
+static decoder_profile
+decoder_profile_of(const dsd_opts* o, const dsd_state* s) {
+    const decoder_profile p = {o->frame_tetra,      o->mod_cli_lock,           o->mod_c4fm,         o->mod_qpsk,
+                               o->mod_gfsk,         o->mod_p25p2_profile_lock, s->rf_mod,           s->sps_hunt_idx,
+                               s->samplesPerSymbol, s->symbolCenter,           dsd_scan_mode_row(s)};
+    return p;
+}
+
+static int
+decoder_profile_is(const dsd_opts* o, const dsd_state* s, const decoder_profile* want) {
+    const decoder_profile now = decoder_profile_of(o, s);
+    return memcmp(&now, want, sizeof(now)) == 0;
+}
+
+/* Issue #748: a Pause or a search error during a TETRA visit closes the visit and puts back the idle receive profile a
+   span tune of the range runs (no TETRA decoder or scan class, the session's modulation lock and timing), while the
+   search keeps the tuner. Paused while the controller owns the visit's tune, the tune keeps the profile it was queued
+   with and its late landing changes nothing; Resume waits for it, then visits TETRA again. Under no lock and -m2. */
+static void
+test_tetra_pause_restores_idle_profile(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const struct {
+        int lock, c4fm, qpsk, p2lock, rf_mod, profile;
+    } locks[] = {
+        {0, 1, 0, 0, 0, DSD_FRAME_SYNC_SPS_PROFILE_4800_4},
+        {1, 0, 1, 1, 1, DSD_FRAME_SYNC_SPS_PROFILE_6000_4},
+    };
+
+    use_tetra_rate();
+    for (size_t i = 0; i < sizeof(locks) / sizeof(locks[0]); ++i) {
+        o->mod_cli_lock = locks[i].lock;
+        o->mod_c4fm = locks[i].c4fm;
+        o->mod_qpsk = locks[i].qpsk;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locks[i].p2lock;
+        put_timing(s, locks[i].profile, 15, 7, locks[i].rf_mod);
+        const dsd_signal_search_config one = tetra_config(config, 64 + (uint64_t)i);
+        start_tag_session(o, s, &one);
+        /* The span tune's profile is the idle one. */
+        const decoder_profile idle = decoder_profile_of(o, s);
+        assert(idle.frame_tetra == 0 && idle.row != DSD_SCAN_MODE_TETRA_DMO);
+
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1 && s->rf_mod == 1 && dsd_scan_mode_row(s) == DSD_SCAN_MODE_TETRA_DMO);
+        const int snapshots_before = snapshots;
+        act(o, s, DSD_SEARCH_ACTION_PAUSE);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        assert(snapshots > snapshots_before && tuner_owner == one.session_id && dsd_signal_search_is_running(s));
+        act(o, s, DSD_SEARCH_ACTION_RESUME);
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1 && s->rf_mod == 1);
+
+        /* Paused while the controller owns the next visit's tune. */
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        for (int n = 0; n < 16 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++n) {
+            if (status.phase == DSD_SEARCH_TUNING) {
+                land(o, s);
+            } else {
+                ready = 1;
+                tick(o, s);
+            }
+        }
+        assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && tune_pending && tetra_profile_queued());
+        const uint32_t owned = ticket;
+        act(o, s, DSD_SEARCH_ACTION_PAUSE);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        assert(ticket == owned && tetra_profile_queued() && tuner_owner == one.session_id);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        act(o, s, DSD_SEARCH_ACTION_RESUME);
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1);
+
+        /* A search error during the visit. */
+        stalled_ms = 20000;
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_ERROR && decoder_profile_is(o, s, &idle));
+        assert(tuner_owner == one.session_id && dsd_signal_search_is_running(s));
+        stalled_ms = 0;
+        act(o, s, DSD_SEARCH_ACTION_STOP);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_STOPPED);
+        assert(session_modulation_back(o, s, locks[i].lock, locks[i].c4fm, locks[i].qpsk, locks[i].p2lock,
+                                       locks[i].rf_mod));
+    }
+    end_tetra_rate(o, s);
+}
+
+/* A start of @p config is refused with @p why and changes nothing: no boundary, tune, owner or running search. */
+static void
+start_refused(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config, const char* why) {
+    const int before = boundary;
+    const uint32_t tickets = ticket;
+    char error[192] = "";
+    assert(dsd_engine_signal_search_start_refused(o, s, config, error, sizeof(error)) < 0);
+    assert(strcmp(error, why) == 0);
+    error[0] = '\0';
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) < 0);
+    assert(strcmp(error, why) == 0);
+    tick(o, s);
+    assert(boundary == before && ticket == tickets && !dsd_signal_search_is_running(s) && !tuner_owner);
+}
+
+/* Issue #748: a search with an enabled TETRA range starts only where the TETRA chain can run, one reason per cause,
+   checked before it changes anything: a published DSP rate TETRA runs at (an unpublished one is no refusal: the visit
+   that lands where TETRA cannot run hears nothing and ends unresolved), the channel filter, the downlink and a TED
+   timing the TETRA profile published is the rate's. A fresh start on a session that decodes TETRA is refused for any
+   ranges, since the Auto baseline would free its decoder; a paused search's Resume never is. */
+static void
+test_tetra_start_checks(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    live = 1;
+    failed = 0;
+    stalled_ms = 0;
+    const dsd_signal_search_config tetra = tetra_config(config, 90);
+    const dsd_signal_search_config auto_only = tag_config(config, 90, 1, 0);
+    dsp_rate_hz = 48000;
+    start_refused(o, s, &tetra, "Identifying TETRA needs a 72 kHz DSP bandwidth, not 48 kHz");
+    dsp_rate_hz = 72000;
+    o->tetra_uplink = 1;
+    start_refused(o, s, &tetra, "Identifying TETRA decodes the downlink, which --tetra-uplink turns off");
+    o->tetra_uplink = 0;
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    start_refused(o, s, &tetra, "Identifying TETRA needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+    tetra_ted_override = 3;
+    start_refused(o, s, &tetra,
+                  "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream runs "
+                  "another timing");
+    /* An override the rate's own is no refusal, and a rate the stream has not published yet is none either. */
+    tetra_ted_override = 4;
+    char error[192] = "";
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    tetra_ted_override = 0;
+    /* The TED timing the published TETRA profile applied counts as well, with no override: 3 at 72 kHz is refused,
+       the rate's own 4 is not. */
+    tetra_ted_applied = 3;
+    start_refused(o, s, &tetra,
+                  "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream runs "
+                  "another timing");
+    tetra_ted_applied = 4;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    /* A stream settled on another receive profile than TETRA's (an Auto session's FSK chain, the usual start) is no
+       refusal, whatever timing it runs: a visit lands TETRA's own chain and timing. */
+    tetra_chain_other = 1;
+    tetra_ted_applied = 3;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    tetra_chain_other = 0;
+    tetra_ted_applied = 0;
+    dsp_rate_hz = 0;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0);
+    /* The rate checks are TETRA's: an Auto search at 48 kHz starts. */
+    dsp_rate_hz = 48000;
+    assert(dsd_engine_signal_search_start_refused(o, s, &auto_only, error, sizeof(error)) == 0);
+    /* A disabled TETRA range needs nothing. */
+    dsd_signal_search_config off = tetra;
+    off.range_count = 2;
+    off.ranges[1] = auto_only.ranges[0];
+    off.ranges[1].start_hz = 100100000;
+    off.ranges[1].end_hz = 100125000;
+    off.ranges[0].enabled = 0;
+    assert(dsd_engine_signal_search_start_refused(o, s, &off, error, sizeof(error)) == 0);
+
+    /* A session decoding TETRA: any fresh start is refused. */
+    o->frame_tetra = 1;
+    start_refused(o, s, &auto_only, "Stop TETRA decoding before Signal search");
+    dsp_rate_hz = 72000;
+    start_refused(o, s, &tetra, "Stop TETRA decoding before Signal search");
+    o->frame_tetra = 0;
+
+    /* A 48 kHz search paused with a TETRA range edited in: its Resume says how to identify TETRA, and the search stays
+       paused as it was. A paused TETRA search's own Resume is never refused for its TETRA decoder. */
+    dsp_rate_hz = 48000;
+    start_tag_session(o, s, &auto_only);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    error[0] = '\0';
+    assert(dsd_engine_signal_search_start(o, s, &tetra, observer, NULL, error, sizeof(error)) < 0);
+    assert(strcmp(error, "To identify TETRA, stop the search and start it again (this clears the session's avoids "
+                         "and learned Phase 2 codes)")
+           == 0);
+    assert(dsd_engine_signal_search_active(s) && status.phase == DSD_SEARCH_PAUSED);
+    stop_tag_session(o, s);
+    dsp_rate_hz = 72000;
+    use_tetra_rate();
+    const dsd_signal_search_config tetra_session = tetra_config(config, 91);
+    start_tag_session(o, s, &tetra_session);
+    tetra_visit(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    o->frame_tetra = 1; /* whatever the decoder runs while paused */
+    assert(dsd_engine_signal_search_start(o, s, &tetra_session, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    stop_tag_session(o, s);
+    assert(o->frame_tetra == 0);
+    o->frame_tetra = 0;
+    end_tetra_rate(o, s);
+}
+
+/* Measure spans until the next detection is chosen, and land on it. */
+static void
+next_detection(dsd_opts* o, dsd_state* s) {
+    for (int n = 0; n < 24; ++n) {
+        if (status.phase == DSD_SEARCH_SEARCHING) {
+            ready = 1;
+            tick(o, s);
+            if (status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.hit.ended) {
+                land(o, s);
+                return;
+            }
+        } else {
+            assert(status.phase == DSD_SEARCH_TUNING);
+            land(o, s);
+        }
+    }
+    assert(0 && "no detection");
+}
+
+/* Confirm the visit as @p protocol and let it go quiet, back to its span. */
+static void
+confirm_and_leave(dsd_opts* o, dsd_state* s, const char* protocol) {
+    dsd_signal_search_note_evidence(s, protocol, 0, 0, NULL);
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, protocol) == 0);
+    advance(3000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+}
+
+/* Two one-channel ranges on 100.025 MHz: an Auto range and a TETRA range, in @p tetra_first order. */
+static dsd_signal_search_config
+overlap_config(const dsd_signal_search_config* base, uint64_t session, int tetra_first) {
+    dsd_signal_search_config two = tag_config(base, session, 1, 0);
+    two.range_count = 2;
+    two.ranges[0].start_hz = two.ranges[0].end_hz = 100025000;
+    two.ranges[1] = two.ranges[0];
+    two.ranges[tetra_first ? 0 : 1].digital = DSD_SEARCH_DIGITAL_TETRA;
+    two.ranges[tetra_first ? 0 : 1].bandwidth_hz = 25000;
+    return two;
+}
+
+/* Issue #748: a pass suppresses a visited frequency per identification kind, TETRA or other, so an overlapping range
+   of the other kind still visits it in the same pass, whichever range comes first. Operator Skip keeps its pass-wide
+   meaning for every kind, avoids apply to both, and the next pass visits everything again. */
+static void
+test_tetra_suppression_per_kind(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    for (int tetra_first = 0; tetra_first < 2; ++tetra_first) {
+        const char* first = tetra_first ? "TETRA" : "P25";
+        const char* second = tetra_first ? "P25" : "TETRA";
+        const dsd_signal_search_config two = overlap_config(config, 92 + (uint64_t)tetra_first, tetra_first);
+        start_tag_session(o, s, &two);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.hit.frequency_hz == 100025000 && status.pass == 1);
+        confirm_and_leave(o, s, first);
+        /* The other kind's range visits it in this pass. */
+        next_detection(o, s);
+        assert(status.hit.range_index == 1 && status.hit.frequency_hz == 100025000 && status.pass == 1);
+        confirm_and_leave(o, s, second);
+        /* Both kinds visited it: the pass wraps, and the next one visits it again. */
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 2);
+        /* Skip suppresses it for the pass whatever the kind: the other range does not visit it. */
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 3);
+        confirm_and_leave(o, s, first);
+        next_detection(o, s);
+        assert(status.hit.range_index == 1 && status.pass == 3);
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 4);
+        /* An avoid takes it from both, for the session. */
+        act(o, s, DSD_SEARCH_ACTION_AVOID);
+        for (int n = 0; n < 40 && (status.pass < 6 || status.phase == DSD_SEARCH_TUNING); ++n) {
+            if (status.phase == DSD_SEARCH_TUNING) {
+                land(o, s);
+            } else {
+                ready = 1;
+                tick(o, s);
+            }
+            assert(status.phase == DSD_SEARCH_TUNING || status.phase == DSD_SEARCH_SEARCHING);
+            assert(!(status.phase == DSD_SEARCH_TUNING && !status.hit.ended));
+        }
+        assert(status.pass >= 6 && status.phase == DSD_SEARCH_SEARCHING);
+        stop_tag_session(o, s);
+    }
+}
+
+/* The visit is still listening (or held) by both expiration paths: the in-frame yield check and the tick. */
+static int
+still_listening(dsd_opts* o, dsd_state* s) {
+    if (dsd_engine_signal_search_should_yield(o, s)) {
+        return 0;
+    }
+    tick(o, s);
+    return status.phase == DSD_SEARCH_LISTENING || status.phase == DSD_SEARCH_HELD;
+}
+
+/* Issue #748: a confirmed TETRA visit, trunked or direct mode, goes quiet 2.1 s after its last activity (one
+   multiframe and a lost frame 18), in the in-frame yield check and the tick alike; the decoder's activity notes refresh
+   that time on the decode clock without publishing, only while a confirmed visit receives. Hold keeps the visit, Skip
+   leaves it, and a finite maximum visit still ends it; with none, activity keeps it. */
+static void
+test_tetra_quiet_and_activity(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const char* const modes[] = {"TETRA", "TETRA DMO"};
+    use_tetra_rate();
+    for (int m = 0; m < 2; ++m) {
+        for (int yield_path = 0; yield_path < 2; ++yield_path) {
+            dsd_signal_search_config one = tetra_config(config, 94 + (uint64_t)(m * 2 + yield_path));
+            start_tag_session(o, s, &one);
+            tetra_visit(o, s);
+            /* Before confirmation an activity note keeps nothing: the probe runs its own time. */
+            dsd_signal_search_note_activity(s);
+            assert(status.phase == DSD_SEARCH_IDENTIFYING && !status.hit.confirmed);
+            dsd_signal_search_note_evidence_at(s, modes[m], DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+            assert(status.phase == DSD_SEARCH_LISTENING);
+            /* A lost multiframe (1.02 s) and more: still the visit's. */
+            advance(2099);
+            if (yield_path) {
+                assert(!dsd_engine_signal_search_should_yield(o, s));
+            } else {
+                tick(o, s);
+                assert(status.phase == DSD_SEARCH_LISTENING);
+            }
+            /* An activity note refreshes the time without a publication. */
+            const uint64_t revision = status.revision;
+            const int published = hits_published;
+            dsd_signal_search_note_activity(s);
+            assert(status.revision == revision && hits_published == published);
+            advance(2099);
+            if (yield_path) {
+                assert(!dsd_engine_signal_search_should_yield(o, s));
+            } else {
+                tick(o, s);
+                assert(status.phase == DSD_SEARCH_LISTENING);
+            }
+            /* One from a frame an input interruption cut refreshes nothing. */
+            s->input_interrupted = 1;
+            dsd_signal_search_note_activity(s);
+            s->input_interrupted = 0;
+            advance(1);
+            if (yield_path) {
+                assert(dsd_engine_signal_search_should_yield(o, s));
+            }
+            tick(o, s);
+            assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+            land(o, s);
+            stop_tag_session(o, s);
+        }
+    }
+
+    /* Hold keeps a quiet confirmed visit, Skip leaves it. */
+    dsd_signal_search_config one = tetra_config(config, 98);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    advance(30000);
+    assert(still_listening(o, s) && status.phase == DSD_SEARCH_HELD);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+
+    /* A finite maximum visit ends a visit its activity keeps; with none, the activity keeps it. */
+    one = tetra_config(config, 99);
+    one.ranges[0].max_visit_ms = 5000;
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    for (int i = 0; i < 4; ++i) {
+        advance(1000);
+        dsd_signal_search_note_activity(s);
+        assert(still_listening(o, s));
+    }
+    advance(999);
+    assert(still_listening(o, s));
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+    one.ranges[0].max_visit_ms = 0;
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    for (int i = 0; i < 60; ++i) {
+        advance(2000);
+        dsd_signal_search_note_activity(s);
+        assert(still_listening(o, s));
+    }
+    stop_tag_session(o, s);
+
+    /* Another protocol keeps its own quiet time. */
+    one = tag_config(config, 97, 1, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    advance(499);
+    assert(still_listening(o, s));
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    stop_tag_session(o, s);
+    end_tetra_rate(o, s);
+}
+
+static dsd_signal_search_site_note
+tetra_tmo_note(void) {
+    dsd_signal_search_site_note note;
+    DSD_MEMSET(&note, 0, sizeof(note));
+    note.kind = DSD_SEARCH_SITE_NOTE_TETRA;
+    note.tetra.mode = DSD_SEARCH_TETRA_TMO;
+    note.tetra.mcc = 228;
+    note.tetra.mnc = 8889;
+    note.tetra.la = 12;
+    note.tetra.la_valid = 1;
+    note.tetra.main_state = DSD_SEARCH_TETRA_MAIN_HZ;
+    note.tetra.main_hz = 426706250;
+    return note;
+}
+
+/* Issue #748: a TETRA detection shows the site its own notes give, by mode ("TETRA DMO" never takes a trunked cell's
+   record), with the access code its evidence carries; no receive filter applies to TETRA. A withdrawal clears site
+   and access together, publishes at once, and keeps them cleared for the rest of the visit: no later note or evidence
+   of the visit, and no repeated withdrawal, brings them back or publishes again. */
+static void
+test_tetra_site_and_withdraw(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const char tmo_text[] = "Main carrier 426.70625 MHz \xC2\xB7 MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 LA 12";
+    use_tetra_rate();
+    /* Filters on every kind that rejects everything they can name: none names TETRA. */
+    o->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_DCC].allow.bits[0] = UINT64_C(1) << 15;
+    o->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_NAC].allow.bits[0] = UINT64_C(1) << 1;
+    o->receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_RAN].allow.bits[0] = UINT64_C(1) << 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 2;
+    dsd_signal_search_config one = tetra_config(config, 70);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    s->synctype = DSD_SYNC_TETRA_SB_POS;
+    dsd_signal_search_site_note tmo = tetra_tmo_note();
+    /* A site noted before the confirmation shows with it. */
+    dsd_signal_search_note_site(s, &tmo);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, 1, 0, 0, "CC 5");
+    assert(status.hit.confirmed && strcmp(status.hit.site, tmo_text) == 0 && strcmp(status.hit.access, "CC 5") == 0);
+    assert(strcmp(published_hit.site, tmo_text) == 0);
+    /* A changed SYSINFO publishes the new line; a repeat publishes nothing. */
+    tmo.tetra.main_state = DSD_SEARCH_TETRA_MAIN_NO_CA;
+    int published = hits_published;
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+    assert(strcmp(status.hit.site, "No main carrier \xC2\xB7 MCC 228 \xC2\xB7 MNC 8889") == 0);
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+
+    /* Withdrawn: site and access together, at once. */
+    dsd_signal_search_site_note withdraw;
+    DSD_MEMSET(&withdraw, 0, sizeof(withdraw));
+    withdraw.kind = DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW;
+    published = hits_published;
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(hits_published == published + 1 && published_hit.site[0] == '\0' && published_hit.access[0] == '\0');
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, "TETRA") == 0);
+    /* Nothing of the visit brings them back, and a repeat publishes nothing. */
+    dsd_signal_search_note_site(s, &withdraw);
+    tmo = tetra_tmo_note();
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_NDB_POS, -1, 0, 0, "CC 5");
+    assert(status.hit.site[0] == '\0' && status.hit.access[0] == '\0' && published_hit.access[0] == '\0');
+    /* Nor the ended hit. */
+    advance(2100);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && published_hit.ended);
+    assert(published_hit.site[0] == '\0' && published_hit.access[0] == '\0');
+    /* The next detection starts with nothing withdrawn. */
+    land(o, s);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, "CC 6");
+    dsd_signal_search_note_site(s, &tmo);
+    assert(strcmp(status.hit.site, tmo_text) == 0 && strcmp(status.hit.access, "CC 6") == 0);
+    /* A withdrawal with no site shown still clears the access. */
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, "CC 7");
+    published = hits_published;
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(hits_published == published + 1 && status.hit.access[0] == '\0' && published_hit.access[0] == '\0');
+
+    /* Direct mode: the route, never a trunked cell's record. */
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    tetra_visit(o, s);
+    dsd_signal_search_note_site(s, &tmo);
+    dsd_signal_search_note_evidence_at(s, "TETRA DMO", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    assert(strcmp(status.hit.protocol, "TETRA DMO") == 0 && status.hit.site[0] == '\0');
+    dsd_signal_search_site_note dmo;
+    DSD_MEMSET(&dmo, 0, sizeof(dmo));
+    dmo.kind = DSD_SEARCH_SITE_NOTE_TETRA;
+    dmo.tetra.mode = DSD_SEARCH_TETRA_DMO;
+    dmo.tetra.route = DSD_SEARCH_TETRA_ROUTE_REPEATER;
+    dsd_signal_search_note_site(s, &dmo);
+    assert(strcmp(status.hit.site, "Via repeater") == 0 && status.hit.access[0] == '\0');
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(status.hit.site[0] == '\0');
+    dmo.tetra.route = DSD_SEARCH_TETRA_ROUTE_DIRECT;
+    dsd_signal_search_note_site(s, &dmo);
+    assert(status.hit.site[0] == '\0');
+
+    s->synctype = DSD_SYNC_NONE;
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    stop_tag_session(o, s);
+    end_tetra_rate(o, s);
 }
 
 int
@@ -4046,6 +5608,22 @@ main(void) {
     test_rejected_code_p25p2_slot(o, s, &config);
     test_p25_site_and_codes(o, s, &config);
     test_avoid_lists(o, s, &config);
+    test_refusal_then_resume_reaches_frontend(o, s, &config);
+    test_failed_start_changes_nothing(o, s, &config);
+    test_m17_call_free_lsf_can(o, s, &config);
+    test_access_note_left_family(o, s, &config);
+    test_access_call_left_family(o, s, &config);
+    test_access_sync_without_confirm(o, s, &config);
+    test_access_reacquired_call(o, s, &config);
+    test_stop_queues_restored_profile(o, s, &config);
+    test_tetra_protocol_latched(o, s, &config);
+    test_tetra_visit_lands_tetra_profile(o, s, &config);
+    test_tetra_visit_resets_on_departures(o, s, &config);
+    test_tetra_pause_restores_idle_profile(o, s, &config);
+    test_tetra_start_checks(o, s, &config);
+    test_tetra_suppression_per_kind(o, s, &config);
+    test_tetra_quiet_and_activity(o, s, &config);
+    test_tetra_site_and_withdraw(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

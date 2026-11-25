@@ -1093,18 +1093,143 @@ test_chan_tier3_fixture(void) {
      * while ch_id is the channel number the site actually announces. */
     expect_str("tier3 ch_id override", text,
                "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
-               "999,856912500,default cc\n"
-               "302,855787500\n"
-               "347,856912500\n");
+               "347,856912500\n"
+               "302,855787500\n");
+    /* The control frequency is row 347 already, so it needs no seed row, and 999 is a channel a grant can name. Its row
+       comes first, so a cold hunt starts on the control channel. */
+    expect("tier3 no invented 999", strstr(text, "999,") == NULL);
 
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof(counts));
     if (validate_generated(text, 0, &counts) == 0) {
-        expect_counts("tier3 round-trip", &counts, 3U, 0U);
+        expect_counts("tier3 round-trip", &counts, 2U, 0U);
     }
     free(text);
     dsd_rr_warning_list_free(&warnings);
     dsd_rr_site_list_free(&sites);
+}
+
+/*
+ * Issue #900: 999 is a Tier III channel number (1..4094), so a seed row there tuned every grant to channel 999 onto
+ * the control channel. Every marked control frequency the rows do not already hold is written under key 0 instead:
+ * LPCN 0 is CHNULL, never a grant's channel, while the row still takes its positional slot in the hunt list. lcn is a
+ * row ordinal on Tier III, so a frequency without a parseable ch_id is skipped rather than keyed by its ordinal. The
+ * numbered control rows lead (primary, then alternate), then the seeds, then the other rows by channel.
+ */
+static void
+test_chan_tier3_control_seeds(void) {
+    dsd_rr_site_freq freqs[9];
+    freq_set(&freqs[0], 1, 451012500LL, "", "5");
+    freq_set(&freqs[1], 2, 451112500LL, "d", NULL); /* the primary CC, no channel number */
+    freq_set(&freqs[2], 3, 451212500LL, "a", NULL); /* an alternate CC, no channel number */
+    freq_set(&freqs[3], 4, 451312500LL, "a", "7");  /* an alternate CC the rows hold already */
+    freq_set(&freqs[4], 5, 451412500LL, "", "999"); /* a real channel 999 */
+    freq_set(&freqs[5], 6, 451512500LL, "", NULL);  /* an ordinal only */
+    freq_set(&freqs[6], 7, 451612500LL, "", "7x");  /* a ch_id that does not parse */
+    freq_set(&freqs[7], 8, 451112500LL, "a", NULL); /* the primary again, marked alternate */
+    freq_set(&freqs[8], 9, 451712500LL, "d", "40"); /* a numbered primary CC */
+    dsd_rr_site site;
+    site_init(&site, freqs, 9U);
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 seeds generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect_str("tier3 seeds golden", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "40,451712500\n"
+               "7,451312500\n"
+               "0,451112500,default cc\n"
+               "0,451212500,default cc\n"
+               "5,451012500\n"
+               "999,451412500\n");
+    expect("tier3 missing ch_id warned",
+           warned(&warnings, "RadioReference lists no channel number for 5 frequencies; add them in the app"));
+    expect("tier3 no generic channel-number warning", !warned(&warnings, "carry no channel number"));
+    if (!warned(&warnings, "add them in the app")) {
+        dump_warnings(&warnings);
+    }
+
+    dsd_csv_validation counts;
+    DSD_MEMSET(&counts, 0, sizeof(counts));
+    if (validate_generated(text, 0, &counts) == 0) {
+        expect_counts("tier3 seeds round-trip", &counts, 6U, 0U);
+    }
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Only control frequencies and no channel numbers: a seed-only file, which still loads as a hunt list. */
+    dsd_rr_site_freq cc_only[2];
+    freq_set(&cc_only[0], 1, 452012500LL, "d", NULL);
+    freq_set(&cc_only[1], 2, 452112500LL, "a", NULL);
+    site_init(&site, cc_only, 2U);
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 seed-only generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect_str("tier3 seed-only golden", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "0,452012500,default cc\n"
+               "0,452112500,default cc\n");
+    DSD_MEMSET(&counts, 0, sizeof(counts));
+    if (text != NULL && validate_generated(text, 0, &counts) == 0) {
+        expect_counts("tier3 seed-only round-trip", &counts, 2U, 0U);
+    }
+    expect("tier3 seed-only warns for 2 frequencies",
+           warned(&warnings, "RadioReference lists no channel number for 2 frequencies; add them in the app"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* One frequency without a channel number is one frequency, not "1 frequencies". */
+    dsd_rr_site_freq one_missing[2];
+    freq_set(&one_missing[0], 1, 452212500LL, "", "3");
+    freq_set(&one_missing[1], 2, 452312500LL, "", NULL);
+    site_init(&site, one_missing, 2U);
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 one missing generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect("tier3 one missing warns in the singular",
+           warned(&warnings, "RadioReference lists no channel number for 1 frequency; add it in the app"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* A site that claims frequencies it does not carry is treated as empty, not dereferenced. */
+    site_init(&site, one_missing, 2U);
+    site.freqs = NULL;
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 null freqs generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+}
+
+/* Discussion #900: when the only primary control frequency has no channel number but an alternate has one, the
+   primary's key-0 seed leads, so a cold hunt reaches the known primary before it probes the alternate. */
+static void
+test_chan_tier3_seeded_primary_first(void) {
+    dsd_rr_site_freq seed_primary[3];
+    freq_set(&seed_primary[0], 1, 452412500LL, "", "5");
+    freq_set(&seed_primary[1], 2, 452512500LL, "a", "7");
+    freq_set(&seed_primary[2], 3, 452612500LL, "d", NULL);
+    dsd_rr_site site;
+    site_init(&site, seed_primary, 3U);
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 seeded primary generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect_str("tier3 seeded primary golden", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "0,452612500,default cc\n"
+               "7,452512500\n"
+               "5,452412500\n");
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
 }
 
 static void
@@ -1778,6 +1903,8 @@ main(void) {
     test_chan_p25_fixture();
     test_chan_conplus();
     test_chan_tier3_fixture();
+    test_chan_tier3_control_seeds();
+    test_chan_tier3_seeded_primary_first();
     test_chan_tier3_no_false_cap();
     test_chan_capplus_and_xpt();
     test_chan_nxdn();

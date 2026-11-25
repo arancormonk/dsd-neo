@@ -1,4 +1,4 @@
-add_library(dsd-neo_core)
+add_library(dsd-neo_core STATIC)
 
 target_compile_definitions(
     dsd-neo_core
@@ -68,6 +68,7 @@ target_sources(
         file/dsd_import.c
         file/p25_bandplan_csv.c
         file/source_alias_csv.c
+        file/dmr_chan_overrides_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
         gps/nmea_sentence.c
@@ -113,10 +114,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_core PRIVATE dsd-neo_warnings dsd-neo_feature_lz)
-
-install(
-    TARGETS dsd-neo_core
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

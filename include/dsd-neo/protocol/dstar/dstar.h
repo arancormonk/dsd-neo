@@ -33,12 +33,13 @@ extern "C" {
 int processDSTAR(dsd_opts* opts, dsd_state* state);
 
 /**
- * @brief Decode a D-STAR header frame and the voice frame that follows it.
+ * @brief Decode a D-STAR header frame, voice frame 0 and the resynchronization word behind it, and the superframe
+ * behind them.
  *
- * @return 1 when the header's CRC-16/X.25 matched, 0 otherwise. A header opens a
- *         transmission, so this stays the header's own verdict rather than riding evidence
- *         an earlier frame supplied; the voice superframe behind it reports separately
- *         through processDSTAR() (#391, #421).
+ * @return 1 when the header's CRC-16/X.25 matched, or when a CRC in the superframe's own slow data (a header
+ *         rebroadcast or a D-PRS record) proved the transmission; 0 otherwise. A header opens a transmission, so
+ *         this never rides evidence an earlier frame supplied, nor the resynchronization word or a weak streak
+ *         (#391, #421, #890).
  */
 int processDSTAR_HD(dsd_opts* opts, dsd_state* state);
 void processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd);

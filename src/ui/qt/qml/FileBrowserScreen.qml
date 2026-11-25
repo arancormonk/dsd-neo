@@ -635,12 +635,14 @@ Item {
             return problemText(d.folderStatus);
         }
     }
+    // The year shows outside the current one; reading savedSystems.localDay
+    // re-reads a binding when the year turns (issue #902).
     function dateText(ms) {
         if (!ms)
             return "";
         var stamp = new Date(ms);
-        var now = new Date(savedSystems.realtimeNowMs());
-        return Qt.formatDate(stamp, stamp.getFullYear() === now.getFullYear() ? "MMM d" : "MMM d, yyyy");
+        var now = new Date(savedSystems.localDay.startMs);
+        return Qt.formatDateTime(stamp, stamp.getFullYear() === now.getFullYear() ? "MMM d" : "MMM d, yyyy");
     }
     // "4.2 MB · Nov 9"; a file with no time (a FAT drive's) shows its size only.
     function entrySubtitle(entry) {

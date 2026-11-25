@@ -17,12 +17,28 @@ UiPanel {
     // RTL gain applies only to an RTL-SDR or rtl_tcp list. On any other
     // source the gain is hidden, holds nothing and is left as stored.
     property bool gainOffered: true
-    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"]
+    // The scan-list protocols in picker order (issue #890), from the one C++ catalog.
+    readonly property var protocols: scanLists.protocols
+    readonly property var protocolIds: protocols.map(function (p) {
+        return p.id;
+    })
     readonly property var modulationIds: ["", "c4fm", "cqpsk", "gfsk"]
+    readonly property string systemFlag: entry.kind === "system" ? String(savedSystems.getByUid(entry.systemUid).decodeFlag || "") : ""
+    // The catalog's entry for this one: a frequency entry's protocol, a saved system's decode
+    // flags; empty for flags a scan list does not map (the list refuses those).
+    readonly property var protocol: entry.kind === "freq" ? (protocols[protocolIds.indexOf(entry.protocol || "p25")] || ({}))
+        : entry.kind === "system" ? scanLists.protocolForFlag(systemFlag) : ({})
     // An nfm or am entry (issue #526) holds on carrier: it has no digital modulation, keys or
     // talkgroups, so the modulation and decryption choices are hidden and never written for it.
     readonly property bool analog: entry.kind === "freq" ? (entry.protocol === "nfm" || entry.protocol === "am")
-        : entry.kind === "system" && Util.decodeFlagIsAnalog(savedSystems.getByUid(entry.systemUid).decodeFlag)
+        : entry.kind === "system" && Util.decodeFlagIsAnalog(systemFlag)
+    // Issue #890: dPMR, D-STAR, YSF, M17 and TETRA DMO run their class's own modulation, so the
+    // choice shows only where the catalog offers one.
+    readonly property bool modulationOffered: protocol.id === undefined ? !analog : protocol.modulation === true
+    // The key matrix: P25, DMR and NXDN take any keys, dPMR its scrambler; M17 runs the
+    // session's keys and the rest decrypt nothing, so neither shows a choice of its own.
+    readonly property string keys: protocol.keys || (analog ? "none" : "full")
+    readonly property bool decryptionOffered: keys === "full" || keys === "scrambler"
     // The gain choice: 0 Inherit, 1 Automatic, 2 Set. Once chosen it lives in
     // the editor's draft for this entry, so a Set whose text is refused stays
     // Set; until then it follows the stored -1 / 0 / n.
@@ -109,7 +125,9 @@ UiPanel {
             width: parent.width
             visible: row.entry.kind === "freq"
             accessibleName: qsTr("Entry protocol")
-            model: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96"), qsTr("NFM (analog)"), qsTr("AM (analog)")]
+            model: row.protocols.map(function (p) {
+                return p.label;
+            })
             currentIndex: Math.max(0, row.protocolIds.indexOf(row.entry.protocol || "p25"))
             onActivated: row.changed("protocol", row.protocolIds[currentIndex])
         }
@@ -131,13 +149,25 @@ UiPanel {
         }
 
         MicroLabel {
-            visible: !row.analog
+            visible: row.decryptionOffered || row.keys === "session"
             text: qsTr("Decryption profile")
+        }
+        // M17 has no keys of its own in a scan list: say where they come from instead of
+        // offering a choice the row would refuse.
+        ReadableText {
+            objectName: "scanEntrySessionKeys"
+            width: parent.width
+            visible: row.keys === "session"
+            text: qsTr("%1 entries use the session's keys. Set them in the app's decoder options.").arg(row.protocol.label || "")
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(12)
+            color: Theme.textSecondary
         }
         PlexComboBox {
             objectName: "scanEntryDecryptionScope"
             width: parent.width
-            visible: !row.analog
+            visible: row.decryptionOffered
             accessibleName: qsTr("Scan entry decryption scope")
             model: [row.entry.kind === "system" ? qsTr("Inherit saved-system profile") : qsTr("Inherit session defaults"), qsTr("Use a profile"), qsTr("No keys")]
             currentIndex: Math.max(0, ["inherit", "profile", "none"].indexOf(row.entry.decryptionMode || "inherit"))
@@ -146,10 +176,11 @@ UiPanel {
         DecryptionProfileSelector {
             objectName: "scanEntryDecryptionProfile"
             width: parent.width
-            visible: !row.analog && row.entry.decryptionMode === "profile" && available
+            visible: row.decryptionOffered && row.entry.decryptionMode === "profile" && available
             overlayParent: row.overlayParent
             profileUid: row.entry.decryptionProfileUid || ""
-            protocol: row.entry.kind === "system" ? Util.decryptionProtocol(savedSystems.getByUid(row.entry.systemUid).decodeFlag) : String(row.entry.protocol || "mixed").indexOf("nxdn") === 0 ? "nxdn" : row.entry.protocol || "mixed"
+            // The catalog's profile protocol (dPMR's own for its scrambler), else what the flags read as.
+            protocol: row.protocol.profileProtocol || (row.entry.kind === "system" ? Util.decryptionProtocol(row.systemFlag) : "mixed")
             onSelected: function (uid) {
                 row.changed("decryptionProfileUid", uid);
             }
@@ -199,13 +230,13 @@ UiPanel {
             }
         }
         MicroLabel {
-            visible: !row.analog
+            visible: row.modulationOffered
             text: qsTr("Modulation")
         }
         PlexComboBox {
             objectName: "scanEntryModulation"
             width: parent.width
-            visible: !row.analog
+            visible: row.modulationOffered
             accessibleName: qsTr("Entry modulation")
             model: [qsTr("Inherit"), qsTr("C4FM"), qsTr("QPSK (simulcast)"), qsTr("GFSK")]
             currentIndex: Math.max(0, row.modulationIds.indexOf(row.entry.modulation || ""))

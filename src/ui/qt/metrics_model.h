@@ -198,6 +198,19 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
+    /* Discussion #900 F3: the Monitor's NO FREQ count, the DMR Tier III channels granted without a frequency (the
+       app-control Tier III view's ledger, the channels past its details included), and whether the session is a Tier
+       III one the Channels sheet edits: an identity checked messages named Tier III (never a RAS-only one), or a
+       session a saved system's Tier III channels applied to (--dmr-chan-overrides; the view's overrides_applied, not
+       the path, which stays set when the engine skipped the file). All three read none while the carrier names
+       another system (dsd_ui_dmr_t3_view::other_system_here): its channel map is that system's; and while the session
+       does not decode DMR (dmr_decoding 0, after a live mode change), when no Tier III lookup reads the channels. */
+    Q_PROPERTY(int noFreqCount READ noFreqCount NOTIFY controlChanged)
+    Q_PROPERTY(bool dmrTier3 READ dmrTier3 NOTIFY controlChanged)
+    /* Discussion #900 F3: the session's live channel list holds channels of the user's (set or hidden), whatever
+       named the site Tier III: the Channels sheet stays reachable from the Site sheet after the last channel without
+       a frequency that only RAS evidence named was given one. Says nothing of the site's identity (dmrTier3). */
+    Q_PROPERTY(bool dmrUserChannels READ dmrUserChannels NOTIFY controlChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
     Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
@@ -386,6 +399,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool relaxedCrcEffective READ relaxedCrcEffective NOTIFY controlChanged)
     Q_PROPERTY(bool relaxedCrcRowOverride READ relaxedCrcRowOverride NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
+    /* Moves with each acknowledgement the engine publishes, the same text set again included. */
+    Q_PROPERTY(quint32 uiMessageSeq READ uiMessageSeq NOTIFY uiMessageSeqChanged)
     /* The decode clock's wall-clock now, for QML that ages or cuts off decoded stamps. */
     Q_PROPERTY(qlonglong decodeNowMs READ decodeNowMs NOTIFY decodeNowMsChanged)
 
@@ -1525,6 +1540,21 @@ class MetricsModel : public QObject {
         return m_view.enc_lockout_count;
     }
 
+    int
+    noFreqCount() const {
+        return m_view.no_freq_count;
+    }
+
+    bool
+    dmrTier3() const {
+        return m_view.dmr_tier3;
+    }
+
+    bool
+    dmrUserChannels() const {
+        return m_view.dmr_user_channels;
+    }
+
     /**
      * @brief Whether a scan rotation is running that hold and avoid can act on.
      *
@@ -2045,6 +2075,17 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The engine's count of the acknowledgements it has published (dsd_state::ui_msg_seq).
+     *
+     * An acknowledgement set again with the text already shown leaves uiMessage
+     * unchanged; this still moves, so a screen tells a new answer from the old one.
+     */
+    quint32
+    uiMessageSeq() const {
+        return m_view.ui_message_seq;
+    }
+
+    /**
      * @brief The decode clock's wall-clock now, in milliseconds since the Unix epoch.
      *
      * The scale of a JavaScript time value, and in live decoding the viewer's own clock, but on the
@@ -2270,6 +2311,7 @@ class MetricsModel : public QObject {
     void toneFilterSettingChanged();
     void tetraChanged();
     void uiMessageChanged();
+    void uiMessageSeqChanged();
     void decodeNowMsChanged();
 
   private:
@@ -2394,6 +2436,7 @@ class MetricsModel : public QObject {
         QString sync_label;
         QString scan_mode;
         QString ui_message;
+        quint32 ui_message_seq = 0;
         QString squelch_readout;
         QString squelch_auto_status;
         bool squelch_gate_open = false;
@@ -2450,6 +2493,9 @@ class MetricsModel : public QObject {
         int effective_squelch_margin_db = 0;
         int ppm = 0;
         int enc_lockout_count = 0;
+        int no_freq_count = 0;
+        bool dmr_tier3 = false;
+        bool dmr_user_channels = false;
         int scan_avoid_count = 0;
         int scan_target_ordinal = 0;
         int scan_target_count = 0;
@@ -2761,11 +2807,17 @@ class MetricsModel : public QObject {
         bool
         controlEquals(const View& other) const {
             return receive_status == other.receive_status && audio_muted == other.audio_muted
-                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && inputKindEquals(other)
-                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other)
-                   && relaxedCrcEquals(other);
+                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && dmrTier3Equals(other)
+                   && inputKindEquals(other) && trunking_enabled == other.trunking_enabled
+                   && scanner_mode == other.scanner_mode && scanControlEquals(other) && scan_mode == other.scan_mode
+                   && decode_mode == other.decode_mode && decryptionEquals(other) && radioControlsEqual(other)
+                   && tgLockoutsEqual(other) && relaxedCrcEquals(other);
+        }
+
+        bool
+        dmrTier3Equals(const View& other) const {
+            return no_freq_count == other.no_freq_count && dmr_tier3 == other.dmr_tier3
+                   && dmr_user_channels == other.dmr_user_channels;
         }
 
         bool
@@ -2831,6 +2883,8 @@ class MetricsModel : public QObject {
     QString scanAvoidLabel(const dsd_app_scan_avoid_raw_entry& entry) const;
     /** @brief Signal the scan timing row and the avoid list, each only when it moved. */
     void emitScanSignals(bool timing, bool avoids);
+    /** @brief Signal the engine's acknowledgement and its count, each only when it moved. */
+    void emitMessageSignals(bool text, bool seq);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
     /** @brief The received sub-audible tone and the configured tone policy (#522). */

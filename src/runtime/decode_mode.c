@@ -660,7 +660,10 @@ dsd_decode_mode_leave_tetra(dsd_opts* opts, dsd_state* state) {
         return;
     }
     opts->frame_tetra = 0;
-    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    /* A scan session that holds the extension keeps it for its next TETRA row, which starts it cold (issue #890). */
+    if (!state->tetra_ext_scan_held) {
+        (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, NULL, NULL);
+    }
     DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
     dsd_tetra_publication_reset(&state->tetra_pub);
 }

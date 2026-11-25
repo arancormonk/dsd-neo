@@ -537,12 +537,18 @@ rr_plan_finish(dsd_rr_import_plan* plan, const dsd_rr_system_info* info, const d
      * map. The generator reports "no rows" as a valid outcome, so without this
      * the preview reads as a clean success and the import produces a system
      * that can follow nothing. Warned rather than blocked: the talkgroup list
-     * is still worth having. */
+     * is still worth having. A Tier III site can send its channels'
+     * frequencies over the air itself, so there the map is needed only when the
+     * site does not. */
     if (plan->chan_need == 2 && plan->chan_csv_text == NULL) {
         (void)dsd_rr_warning_list_add(&plan->warnings,
-                                      "RadioReference has no usable channel numbers for this site, so no channel map "
-                                      "was generated. This system needs one to follow a call - the talkgroup list "
-                                      "still imports.");
+                                      (plan->protocol == DSD_RR_PROTO_DMR_TIER3)
+                                          ? "RadioReference has no usable channel numbers for this site, so no "
+                                            "channel map was generated. This system needs a channel map unless the "
+                                            "site sends frequencies - the talkgroup list still imports."
+                                          : "RadioReference has no usable channel numbers for this site, so no "
+                                            "channel map was generated. This system needs one to follow a call - the "
+                                            "talkgroup list still imports.");
     }
 
     /* Defaults come from the RadioReference record for the SITE the user

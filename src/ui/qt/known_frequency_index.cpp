@@ -33,6 +33,7 @@
 #include "saved_systems_model.h"
 #include "scan_entry_name.h"
 #include "scan_lists_model.h"
+#include "scan_protocol_catalog.h"
 #include "session_args.h"
 
 namespace dsd_qt {
@@ -94,13 +95,18 @@ matchValue(const QString& name, qint64 hz, const QVariant& systemUid, const QVar
     return value;
 }
 
-/* @p identity with the label of @p protocol (a scan-list protocol id), which tells two matches of one name apart;
-   none for no protocol (a saved system that auto-detects). */
+/* @p identity with protocol label @p label, which tells two matches of one name apart; none for no protocol (a saved
+   system that auto-detects). */
+QVariantMap
+withLabel(QVariantMap identity, const QString& label) {
+    identity.insert(QStringLiteral("protocolLabel"), label);
+    return identity;
+}
+
+/* @p identity with the label of @p protocol (a scan-list protocol id). */
 QVariantMap
 withProtocol(QVariantMap identity, const QString& protocol) {
-    identity.insert(QStringLiteral("protocolLabel"),
-                    protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
-    return identity;
+    return withLabel(std::move(identity), protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
 }
 
 /* A channel map's row under @p identity's list, if any: it names the channel and starts nothing. */
@@ -551,34 +557,29 @@ rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& co
     row.insert(QStringLiteral("targetId"), id);
     row.insert(QStringLiteral("selectable"),
                identity.value(QStringLiteral("selectable")).toBool() && session_args_scan_hold_id_valid(id));
-    // A target's type is its protocol and its kind: "nxdn48-conventional".
-    row.insert(QStringLiteral("protocolLabel"),
-               scan_entry_protocol_label(fields.value(columns.mode).section(QLatin1Char('-'), 0, 0).toLower()));
+    // A target's type is its protocol and its kind: "nxdn48-conventional", "tetra-dmo-conventional" (issue #890: the
+    // catalog reads the whole type, since a protocol's own name can hold a hyphen).
+    row.insert(QStringLiteral("protocolLabel"), scan_entry_type_label(fields.value(columns.mode)));
     return row;
 }
 } // namespace
 
-/* The channel width @p mode names: a decode flag, compared exactly since its case is significant (-fm is dPMR, -fM is
-   AM), or a channel-map mode, scan target type or protocol name, compared without case. NXDN48, dPMR and D-STAR run the
-   receiver's 6.25 kHz channel; any other mode a 12.5 kHz one. */
+/* Whether @p mode names AM: its decode flag (exactly -fM), its scan class or its target type (without case). */
 static bool
 amMode(const QString& mode) {
     static const QSet<QString> amNames{QStringLiteral("am"), QStringLiteral("am-conventional")};
     return mode == QStringLiteral("-fM") || amNames.contains(mode.toLower());
 }
 
+/* The channel width @p mode names (issue #890: the scan-list catalog's, scan_protocol_for_mode()): a decode flag,
+   compared exactly since its case is significant (-fm is dPMR, -fM is AM, -fT is TETRA and -ft P25), or a channel-map
+   mode, scan target type or protocol name, compared without case and read whole ("dpmr-conventional",
+   "tetra-dmo-conventional"). NXDN48, dPMR and D-STAR run the receiver's 6.25 kHz channel; TETRA a 25 kHz carrier
+   (EN 300 392-2 4.5.1, EN 300 396-2 4.5 and 6.2); AM its 6 kHz default; any other mode a 12.5 kHz one. */
 static double
 modeWidth(const QString& mode) {
-    static const QSet<QString> narrowFlags{QStringLiteral("-fi"), QStringLiteral("-fm"), QStringLiteral("-fd")};
-    static const QSet<QString> narrowNames{QStringLiteral("dpmr"), QStringLiteral("dstar"), QStringLiteral("d-star")};
-    const QString name = mode.toLower();
-    if (amMode(mode)) {
-        return 6000;
-    }
-    if (narrowFlags.contains(mode) || narrowNames.contains(name) || name.startsWith(QLatin1String("nxdn48"))) {
-        return 6250;
-    }
-    return 12500;
+    const ScanProtocol* protocol = scan_protocol_for_mode(mode);
+    return protocol != nullptr ? protocol->widthHz : 12500;
 }
 
 /* The width option of @p mode's analog kind: an AM channel's --am-bandwidth-hz, an NFM channel's --nfm-bandwidth-hz;
@@ -763,8 +764,7 @@ appendSessionTargets(const QString& path, int number, const QString& listUid, co
             {QStringLiteral("frequencyHz"), row.hz},
             {QStringLiteral("width"), csvRowWidth(mode, row.fields.value(columns.options), 12500)},
             {QStringLiteral("name"), listName + QStringLiteral(" / ") + rowName(row.fields, columns)},
-            {QStringLiteral("protocolLabel"),
-             scan_entry_protocol_label(mode.section(QLatin1Char('-'), 0, 0).toLower())},
+            {QStringLiteral("protocolLabel"), scan_entry_type_label(mode)},
         });
     }
     earlierIds->unite(ids);
@@ -790,13 +790,13 @@ KnownFrequencyIndex::rebuild() {
     if (m_systems) {
         for (int i = 0; i < m_systems->count(); ++i) {
             auto s = m_systems->get(i);
-            // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it.
+            // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it;
+            // a -fT system is TETRA, trunked or direct mode (issue #748, scan_entry_system_label()).
+            const QString label = scan_entry_system_label(s.value(QStringLiteral("decodeFlag")).toString());
             add(s,
-                scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
-                                s.value(QStringLiteral("freqMhz")).toString()),
-                withProtocol(matchIdentity(QStringLiteral("system"), QString(), QString(), true),
-                             scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString())));
+                scan_entry_labelled_name(s.value(QStringLiteral("name")).toString(), label,
+                                         s.value(QStringLiteral("freqMhz")).toString()),
+                withLabel(matchIdentity(QStringLiteral("system"), QString(), QString(), true), label));
         }
     }
     if (m_lists) {

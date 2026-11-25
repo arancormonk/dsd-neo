@@ -15,43 +15,27 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <time.h>
+#include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-enum { DMR_RC_NOTIFY_KEYS = 3, DMR_RC_NOTIFY_WINDOW_S = 5 };
+enum { DMR_RC_NOTIFY_WINDOW_S = 5 };
 
-/* Per-key repeat suppression for RC event rows. Keys 0/1 are the embedded
- * SB/RC path per slot index, key 2 the standalone burst; keeping them apart
- * stops an embedded repeat train from masking a standalone burst and vice
- * versa. */
-typedef struct {
-    uint8_t last_cmd[DMR_RC_NOTIFY_KEYS];
-    uint8_t valid[DMR_RC_NOTIFY_KEYS];
-    time_t last_time[DMR_RC_NOTIFY_KEYS];
-} dmr_rc_dedup_t;
+/* The dedupe is a member of the DMR state extension (dmr_t3_channels_internal.h); NULL while nothing allocated it. */
+static dmr_rc_dedup_t*
+dmr_rc_dedup_get(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? &ext->rc : NULL;
+}
 
 static dmr_rc_dedup_t*
 dmr_rc_dedup_get_or_create(dsd_state* state) {
-    dmr_rc_dedup_t* dedup = DSD_STATE_EXT_GET_AS(dmr_rc_dedup_t, state, DSD_STATE_EXT_PROTO_DMR_RC);
-    if (dedup != NULL) {
-        return dedup;
-    }
-
-    dedup = (dmr_rc_dedup_t*)calloc(1, sizeof(*dedup));
-    if (dedup == NULL) {
-        return NULL;
-    }
-    if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_DMR_RC, dedup, free) != 0) {
-        free(dedup);
-        return NULL;
-    }
-    return dedup;
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    return ext != NULL ? &ext->rc : NULL;
 }
 
 void
@@ -72,7 +56,7 @@ dmr_rc_notify_command(dsd_opts* opts, dsd_state* state, uint8_t emit_slot, uint8
     /* An identical command inside the sliding window is a repeat train, not a
      * new operator event; refreshing the timestamp keeps a continuous train
      * collapsed to one row. Read-only: suppression never allocates. */
-    dmr_rc_dedup_t* dedup = DSD_STATE_EXT_GET_AS(dmr_rc_dedup_t, state, DSD_STATE_EXT_PROTO_DMR_RC);
+    dmr_rc_dedup_t* dedup = dmr_rc_dedup_get(state);
     if (dedup != NULL && dedup->valid[dedup_key] != 0U && dedup->last_cmd[dedup_key] == rc_command
         && now >= dedup->last_time[dedup_key] && now - dedup->last_time[dedup_key] < DMR_RC_NOTIFY_WINDOW_S) {
         dedup->last_time[dedup_key] = now;

@@ -34,7 +34,8 @@ dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " DATA         ");
-    /* The header CRC-16/X.25 runs before processDSTAR() consumes the voice frame behind it,
-     * so a header that fails condemns the whole 2652-symbol call. */
+    /* The header CRC-16/X.25 runs before the voice behind it is read. A header that fails condemns the read unless a
+     * CRC in the superframe's own slow data (a header rebroadcast, a D-PRS record) proves it; the resynchronization
+     * word alone never does. */
     return processDSTAR_HD(opts, state) != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }

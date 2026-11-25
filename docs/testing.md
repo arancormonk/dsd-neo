@@ -764,6 +764,27 @@ data with a recorded stream gap, a `RETUNE` and a `RESET` as an RTL-SDR stall re
 burst 2005) requires all 16 bursts in order, fast and in real time (`_REALTIME`): the reset starts the burst timing
 over, and before the replay pushed its look-ahead out at a `RETUNE` or `RESET` it dropped the last 108 symbols of 2005.
 
+`tetra_dmo_call_synth_72k` (`TETRA_DMO_NAME`, `build_tetra_dmo()`, issue #890) is a direct mode group call from one
+master at 72 kHz, every identity made up (MNI 460/4242, source 4321, group 6060): DM-SETUP in a DSB in all four slots of
+frames 17 and 18, three multiframes of full-slot speech in a DNB in slot 1 of frames 1 to 17 with DM-OCCUPIED in a DSB
+in slot 3 of frames 6, 12 and 18 and in slot 1 of frame 18, then DM-TX CEASED in slots 1 and 3 of two frames (EN 300
+396-3 clause 4.3). Each burst sits 17 symbols into its slot (EN 300 396-2 tables 14 to 16: preamble, phase adjustment
+symbol, then the trunked blocks and training sequences) with a carrier phase of its own, and the carrier is off between
+bursts (30 dB of noise below the bursts). The DSB blocks are scrambled with the zero colour code, the speech with the DM
+colour code of the MNI and source (EN 300 396-3 clause 8.2.4). `DECODE_IQ_TETRA_DMO_SETUP`, `_OCCUPIED` and `_TX_CEASED`
+require 7 of the 8, all 12 and all 4 of those DSBs (the carrier's first DSB comes before the front end knows it is
+direct mode, on free-running loops, and 5 of 12 realizations lose one), `_SPEECH` all 51 speech bursts with the class-2
+CRC passing and no mismatch, `_CALL_EVENT` the call in the event history as a direct mode group call, and `_DETERMINISM`
+the same decode in fast, real-time, short-read and seeded-sleep legs. The chain's symbol timing and carrier loops
+free-run on the noise between bursts and pulled each burst in late: before the TETRA chain took a direct mode burst's
+timing and carrier phase from its training sequence, as the uplink does (`tetra_uplink_timing.h`, code_map "Direct mode
+bursts"), the replay decoded 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts, and with random symbols in the
+empty slots (a carrier that never stops) all of them. The A/B behind the change, 12 realizations each of this call at 30
+and 15 dB (other noise seeds and burst phases, a sample later each) and of the real-air trunked captures and the uplink
+with their first samples dropped, is in the issue #890 PR. `TOOLS_BUILD_IQ_FIXTURES_TETRA` checks each burst's layout,
+its phase adjustment symbol (SN7 to SN126 turn the carrier by whole turns, table 18), the colour code against the
+decoder's seed for the real-air call of `TETRA_DMO`, and the timeslots.
+
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are pi/4-DQPSK
 shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
 `tetra_pulse_shape()`), the transmit half of the matched pair the TETRA receive chain completes; they once used a full
@@ -829,12 +850,13 @@ every frame of the transmission; they differ only in the superframe behind the h
 `dpmr_synth` is the exception to all of that: it is modulated from the CCH
 reference vectors in `tests/protocol/dpmr/fixtures`, the same vectors
 `DPMR_REFERENCE_VECTORS` decodes, as continuous-phase 4FSK at 2400 baud with
-dPMR's ±1050/±350 Hz deviations. It exists because the off-air `dpmr` recording
-carries no recoverable CCH — its Hamming syndromes sit at the random rate and its
-4FSK eye is closed — so nothing decoded from it is a decode, and no integrity
-check could be validated against it (issue #407). `dpmr_synth` is correct by
-construction: every CCH CRC-7 in it passes, and `DECODE_IQ_DPMR_SYNTH` asserts
-the identity the vectors encode. Its voice payload is deterministic filler, so
+dPMR's ±1050/±350 Hz deviations. It was made because the off-air `dpmr` recording
+was thought to carry no recoverable CCH (issue #407); the recording is received at
+inverted polarity, and read with `-xd` it decodes (issue #890: its nine headers,
+all 18 MI copies, pass the CRC-8 from a zero register, and 56 of its 57 CCH frames
+pass both CRC-7 halves; `DECODE_IQ_DPMR_OFF_AIR`). `dpmr_synth` is correct by
+construction, in the default polarity: every CCH CRC-7 in it passes, and
+`DECODE_IQ_DPMR_SYNTH` asserts the identity the vectors encode. Its voice payload is deterministic filler, so
 the run reports vocoder errors; the CCH is what it pins.
 
 `m17_lsf_weak` (`M17_SYNTH`, 233 kB) is synthetic as well: four M17 voice transmissions, each a preamble, a link setup
@@ -1039,7 +1061,7 @@ The unit tests:
 | Case | What it pins |
 | --- | --- |
 | `IO_IQ_WAV` | The parser's container rules (RIFF, RF64 and BW64 with chunks after `data`, unfinalized RIFFs with RIFF size 0 and 0xFFFFFFFF, pad bytes and the ambiguous missing-pad layouts, `fmt` after `data`, an empty `data` chunk refused), every encoding and EXTENSIBLE through the reader's `cf32` conversion, 64-bit float extremes (DBL_MAX, infinities, NaN), the reader's partial-read contract (complete frames of a short read returned, the error on the next call; reads smaller than one frame), truncation, rewind and seek, the refusals with their messages, the centre and start time from `auxi` and from file names, `--iq-info`, a sidecar beside a WAV (bogus, or semantically invalid) ignored whether the replay is opened by the `.wav` or the `.json` path, and an unfinalized WAV read near its end past 4 GiB (a sparse file; skipped where the filesystem cannot make one). |
-| `PLATFORM_FILE_LARGE` | `dsd_stat_path()`/`dsd_fstat()` sizes and `dsd_fseek64()`/`dsd_ftell64()` offsets past 2 GiB and 4 GiB, on sparse files (skipped where they cannot be made). |
+| `PLATFORM_FILE_LARGE` | `dsd_stat_path()`/`dsd_fstat()` sizes and `dsd_fseek64()`/`dsd_ftell64()` offsets past 2 GiB and 4 GiB, on sparse files (skipped where they cannot be made). The sparse fixtures (`tests/test_support/sparse_file.h`, also used by `IO_IQ_WAV` and `CORE_WAV_SIZE_PROBE`) set the file's end without writing the gap: on Windows the file is marked sparse, then its end is set with `SetFilePointerEx()` and `SetEndOfFile()` (`_chsize_s()` would write the gap as zeros, which NTFS allocates). |
 | `DSP_IQ_RESAMPLER` | The ratio and its ppm error per case (48,254 to 72,000 Hz is 4063/2723, +0.01 ppm), the filter's edges, passband ripple within 0.1 dB and at least 60 dB at every frequency that folds into the protected band (2.048 to 1.152 MS/s, 48,254 Hz to 72 kHz and others), tone frequency, group delay (measured against the reported one), output independent of how input is cut into calls, no I/Q cross-talk, a clear equal to a fresh design, the output bound, and the refusals. |
 | `IO_IQ_REPLAY_RATE_PLAN` | Every committed fixture sidecar keeps its recorded chain (and every TETRA one under TETRA but the 50 kHz source, which is resampled), the fold of a power-of-two `post_downsample`, the general rule's examples, an explicit request met exactly, the refusals, the applied config passing the replay validators, and the chunk rule (`dsd_iq_replay_chunk_bytes_for()` equal to `dsd_iq_replay_chunk_bytes()` at equal rates, and a resampled chunk within one live transfer). The source-neutral planner (issue #743): for 28 stream rates from 8 kHz to 1.152 MS/s at TETRA's 72 kHz, 48 kHz and 24 kHz, a WAV's and an explicit sidecar's replay plans equal `dsd_iq_plan_general_rate()`'s and a stream's equals the sidecar's, with its R = D x 2^k shape; the stream refusals in its own words (a stream above the 3.2 MS/s ceiling among them, a sidecar at that rate still planned) and the replay's unchanged; and the live block size (`dsd_iq_live_block_samples()`, the replay's equal-rate chunk in samples). |
 | `IO_RTL_REPLAY_RESAMPLE` (radio) | A 48 kHz `cu8` capture with the fs/4 shift, a `MUTE`, a `RETUNE` and `RESET` and a second `MUTE`, replayed at its own chain and under TETRA at 72 kHz: each TETRA block is the native block of the same capture span resampled, the resampler starting over at each event, media spans contiguous but for what a `MUTE` omits, the input level taken from the raw chunk, and identical blocks fast, realtime and with short reads; and a 30 kHz WAV with no centre looping under `--iq-loop`, every pass the same. |
@@ -1446,6 +1468,97 @@ within the same bound from the landing (today the off-air `dpmr` capture, typed 
 sync (PROVEN and PARTIAL notes so far, the hangtime anchor) and every step attempt, which is the timeline to read when
 a case fails. Steps `noCarrier()` takes between a call's frames are the hangtime working as set and are reported, not
 failed.
+
+#### Simplex digital targets on a tunable input (issue #890)
+
+I/Q replay is no tunable input, so a replayed `--trunk-scan` can never visit a `tetra-dmo-conventional` target.
+`ENGINE_TRUNK_SCAN_SIMPLEX_RIG` (`tests/trunk_scan_simplex_rig_check.py`, label `scan-rig`; radio builds with the
+control API, not Windows, and numpy, else skipped) runs the real `dsd-neo` against the paced rtl_tcp scene of
+`tools/bench_scan_skip_silent.py` (its `Scene`, with channels of the script's own) at the 72 kHz DSP bandwidth: five
+targets 2 MHz apart, `nfm-conventional` (`nfm_tone_synth`, 3 s), `nxdn48-conventional` (noise only), `ysf-conventional`
+(`ysf_synth`, 4 s), `tetra-dmo-conventional` (`tetra_dmo_call_synth_72k`, 3.8 s) and a second `tetra-dmo-conventional`
+target on trunked TETRA alone (`tetra_bsch_synth_72k`, on the air the whole run). A call plays once, from the first
+retune onto its channel. Every target has a 2 s dwell and a 1 s hold and the visits are capped at 15 s. The run lasts
+until every target has had two whole visits (about 40 s; it stops at 120 s, and the CTest TIMEOUT is 240 s). From the
+scene's record of every retune and the control API's `metrics` lines (`--api`) it checks that every visit lands its
+target's own profile (symbol rate, levels, `rf_mod`, channel profile and width, output rate; the NFM monitor's width and
+output rate), that the NFM, YSF and DMO calls hold their targets for the call and release them within the hold, the
+dwell and 3 s after it, that every other visit is an idle one (its dwell and 3 s), and that the trunked TETRA target
+never holds though its BSCH is decoded. The targets' dwell and hold come from the target CSV over far longer session
+defaults (`--trunk-scan-dwell-ms 8000`, `--trunk-scan-activity-hold-ms 6000`), so a target that ignored its row's would
+hold or idle past its bound (a CSV without the hold column held each call about 11 s and failed). The case runs in real
+time in the default set. A visit is measured in stream time, the samples the paced source delivered between two retunes,
+but the decoder's dwell and hold run on its real clock and the source catches up after a blocked send, so a stalled
+decoder can end a visit early or late by about the stall: what carries a slow or loaded runner is the slack, 3 s on
+every bound and an idle visit's 5 s bound far under the 15 s visit cap a held trunked target would run to. A visit's
+profile is read from the metrics lines between the retune commands as the source received them (not as its next block
+went out, which a stalled decoder delays), leaving out 0.3 s after each and before the next, as the API's lines and the
+commands come on two sockets read apart. With trunked speech reported as direct mode activity (a deliberate break of
+`tetra_nb_speech_decoded()`) the trunked target held to the visit cap on both visits and the case failed. The script
+resamples each channel's call to the 1.152 MHz capture rate before the run: done at the first landing, on the paced
+source's thread, it stalled the stream for a second or more.
+
+#### Signal search identifies TETRA on a tunable input (issue #748)
+
+Signal search refuses an I/Q replay, so its TETRA identification is tested on the same paced rtl_tcp scene.
+`ENGINE_SIGNAL_SEARCH_TETRA_RIG` (`tests/signal_search_tetra_rig_check.py`, label `scan-rig`; radio builds, not
+Windows, and numpy, else skipped) runs `dsd-neo_test_signal_search_rig` (`tests/engine/signal_search_rig.cpp`), which
+starts the search the way the app does: the decoder configured from a command line (`-i rtltcp:...:72`, the 72 kHz DSP
+bandwidth the app starts a TETRA search at, no decode flag), the app-control frontend runtime and the native history
+store opened around it, and the search submitted through the app-control command queue, so the real coordinator, the
+app-control observer and the store all run. It reads its ranges from the environment and prints the store's status as
+it changes, then the history, then the history read back after the store is closed and opened again, as JSON lines.
+
+Each transmitter is a committed fixture read in its own format and rate (`load_fixture_iq()` in
+`tools/build_iq_fixtures.py` reads cu8 and little-endian cs16 from the sidecar), resampled to the 1.152 MHz capture
+rate, looped from the start of the scene and placed at its frequency against every tune; it stops 4 s after the search
+first lands on it. Run a searches, in this order, an analog-only range (`nfm_tone_synth`), an Auto range (`dmr_voice`,
+DMR) and TETRA ranges with `tetra_call_real_air_72k` at its own carrier (426.7 MHz), `tetra_cc_marginal_real_air_144k`
+(cs16 at 144 kHz, 467.9125 MHz), a synthetic two-carrier cell (`tetra_bsch_synth_72k` on its advertised main carrier,
+408.03125 MHz, and on a traffic carrier 100 kHz above), `tetra_dmo_call_synth_72k` and band-limited noise; run b
+searches `tetra_call_awgn_72k` at 426.7 MHz and the noise again, then four DMO calls and two presence signal trains
+built from `tools/build_iq_fixtures.py`'s DMO bursts (`tetra_dmo_traffic_slots()`, `tetra_dmo_pres_slots()`; the
+committed fixture's bytes are unchanged). Each call is one multiframe of traffic looped (a burst in slot 1 of every
+frame and DM-OCCUPIED every 340 ms, about 29 % of the time on air), its bursts held at a fixed phase against each tune
+that holds it and moved an eighth of a frame (7.1 ms) on at the next, the four starting a quarter frame apart, so the
+span measurements and the landings meet them at every phase; each must be found and confirmed as `TETRA DMO`,
+`Direct`, by pass 64. The RF detector needs a burst across both of its 10 ms windows, so most phases are missed: in
+two runs the measurement that found a call had its bursts 14.2 ms after the tune for 5 of 8 calls, 28.3 ms for 2 and
+42.5 ms for 1, and never at the other five phases (the windows shift by a block or so from tune to tune); over five
+runs the 20 calls landed on passes 1 to 15, at landing phases from 21.2 to 49.6 ms. A landing is the first status
+after the tune has landed, not the tuning status the engine publishes when it queues the tune (0.13 to 0.19 s
+earlier); counted so, 12 calls over three runs confirmed 0.16 to 0.83 s after landing, 10 of them in 0.16 or
+0.17 s. A presence signal train (DPRES-SYNC from a
+type 2 repeater in slots 1 and 3) heard on its visit confirms as `TETRA DMO`, `presence signal`, and stays on until
+the search leaves it (8 s after landing at most, so a later pass does not visit it again); the same train
+switched off at the search's landing tune (the visit tunes a quarter of the capture rate below its channel, which no
+span measurement does) confirms nothing and ends unresolved. The checks: each transmitter is visited and has one
+history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETRA DMO`), access code (`CC 1`, `CC 44`,
+`CC 17`, none for DMO) and exact site line, location area included (`Main carrier 426.70000 MHz · MCC 228 · MNC 8889 ·
+LA 1`; LA 1052 for the marginal control channel and LA 777 for the synthetic cell, whose traffic carrier's line names
+408.03125 MHz too; `Direct`), and the live status shows them confirmed while their carrier is on; the noise visit
+confirms nothing and ends unresolved, and every history row in a TETRA range has ended, live and read back, whether
+or not it is a transmitter's (the noise's and the switched-off presence train's too); the reloaded history matches the live one in each row's frequency, protocol, access code, site
+line and confirmed, ended and unresolved flags; the source only ever runs at 1.152 MHz; and a
+confirmed TETRA visit leaves 2.1 s after its carrier stops (1.8 to 3.6 s; the runs measured 2.0 to 2.15 s, and the
+analog and DMR visits 0.5 to 0.8 s). The departure is the retune that leaves the search's first visit to the
+transmitter, so a visit that leaves too early fails rather than a later range's retune standing in for it. A trunked
+downlink refreshes the visit every slot, so its departure is timed from the stop. A direct mode visit refreshes only on checked call content (speech, DM-SETUP, DM-OCCUPIED; never DM-TX
+CEASED), so a DMO departure is timed from the end of the last such burst the scene sent before the stop, from the
+fixture's own layout: the call fixture's loop has no call content for 0.64 s around its set-up, and a run whose stop
+fell 0.36 s into that gap once left 1.77 s after the stop (2.13 s after the last refresh). The presence signal's visit
+leaves in the same window after its first confirmation, and must leave before its train's 8 s are up: a presence
+signal never refreshes the visit's activity (a run measured 2.11 s; one that refreshed it, or that left only once the
+train stopped, would stay past the 8 s). Each run lasts until every transmitter has been visited, stopped and left; the
+rig stops when the script creates the stop file (`stop`) in its working directory, not on a signal, so it still prints the
+history.
+The DMO call is bursty and passes the RF detector only at some burst phases, so it is often found on a later pass. With
+the TETRA quiet time set to 500 ms the awgn visit left 0.47 s after its carrier stopped and the case failed.
+About 2 to 3 minutes in real time (a run stops at 180 s); the CTest TIMEOUT is 420 s.
+
+The measured times and costs in [Signal search verification](signal-search.md#verification-and-measured-limits) were
+taken with a local harness around the same rig executable; the harness is not part of the repository.
+`ENGINE_SIGNAL_SEARCH_RIG_LIMIT_*` check that the rig refuses a negative, overflowing, zero or over-a-day limit.
 
 #### Received tone (CTCSS) on the analog monitor
 
@@ -2021,9 +2134,12 @@ Known gaps and caveats:
   `TETRA_VOICE_CODEC` and `DECODE_IQ_TETRA_REAL_AIR_CALL_AUDIO` check that mbelib-neo's decoder plays, not how the
   speech sounds. The uplink is not decoded.
 - **X2-TDMA** has no usable public sample and is untested here.
-- **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
-  it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
-  it still syncs and still publishes no identity; `DECODE_IQ_DPMR_SYNTH` is the accept case.
+- **dPMR** decodes only what its CRCs verify (issues #407, #890). The `dpmr` off-air capture is received at inverted
+  polarity: under `-xd` it decodes (`DECODE_IQ_DPMR_OFF_AIR`: the nine powersave and normal Communications_Start
+  headers of one key-up, called and calling `3939*5*`, channel code 2, one call row, the CCH CRC-7 passing), and its
+  end frame lies past the capture's 10 s. Read in the default polarity it carries nothing checkable, which is why the
+  CRC was once thought to be broken: `DECODE_IQ_DPMR_MARGINAL` pins that it still syncs and publishes no identity
+  then. `DECODE_IQ_DPMR_SYNTH` is the synthetic accept case.
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
 - Call-state timers run on the capture's clock under replay (issue #572), so an
@@ -2253,6 +2369,167 @@ next number. `YSF_MBE_CAPTURE` compiles `test_ysf_dch_decode.c` again with `DSD_
 real vocoder in place of the `processMbeFrame` stub, so the V/D1 and full-rate frames YSF hands the borrowed NXDN and
 P25 Phase 1 decoders reach the capture writer.
 
+### rdio-scanner export of digital calls with no talkgroup (issue #888)
+
+`DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG` (CTest label `iq-decode`, radio builds with Codec2) runs the real binary three
+times through `tests/rdio_dirwatch_check.cmake`, each with `-P -7 <dir>/calls --wav-journal <dir>/journal.jsonl
+--rdio-mode dirwatch --rdio-system-id 48`, on the synthetic M17 call `m17` (851.375 MHz), which names its parties by
+callsign alone (no talkgroup number). Every leg must exit 0, print the decode regex, report no sanitizer error, and
+leave at least one recording, no `TEMP_` file, and one journal `publish` line a recording, not failed, naming a file in
+the folder, with the `target` the script is given (`-DTARGET=BROADCAST`; empty by default): the number is the export's
+alone. Each leg runs with `DSD_NEO_CONFIG` unset (`cmake -E env --unset`), so it neither loads a developer's config nor
+autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
+
+| Leg | Input | What each recording's sidecar must hold |
+| --- | --- | --- |
+| `rf` | `--iq-replay m17.iq.json -6 raw.wav` (the replay's discriminator audio is saved for the next legs) | talkgroup `851375` (the frequency in kHz), tag `M17 CAN 7 851.3750 MHz`, `freq` 851375000 and a `freqList` naming it, system 48, `short_name` `M17_CAN_7`, not emergency, not encrypted |
+| `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `M17 CAN 7` (no MHz), `freq` 0 and no `freqList`, system 48, `short_name` `M17_CAN_7` |
+| `audio_off` | `-i raw.wav` with no `--rdio-unknown-talkgroup` | no sidecar at all; the "not exported" line logged exactly once, and no "skipped" or "export failed" line |
+
+`DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` runs the same three legs on the synthetic YSF call `ysf_synth`, which names no
+target or source and has no terminator (the capture ends first), with `-DNO_FALLBACK=ON`: a YSF call takes the
+fallback only once it has ended on a decoded terminator, so every leg leaves its recordings with no sidecar and logs
+the "did not end on its own terminator" line exactly once.
+
+The canonical paths are pinned in unit tests: `CORE_CALL_ALERT_HISTORY` through the real observation, render and commit
+rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup
+as decoded, one above it and the broadcast address take the kHz number and the `M17 CAN 3 433.4750 MHz` label, a source
+above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and export
+(`test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once signalling
+proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
+no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
+its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
+`test_playback_records_play_as_one_call`: a file of two records makes one history row, named by the identity the row
+ends with and filed at the first frame of the last call the call-state layer opened, and, not being in SDRTrunk's own
+shape, no recording at all (no WAV, no temp file, nothing published), with the run's one line said;
+`test_playback_stream_off_record_stays_local`: a stream=off radio's record before an unrestricted one's is not recorded
+or exported with it, and the unrestricted record alone is exported;
+`test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` takes no stamp of the
+first call's;
+`test_tetra_first_call_conceals_nothing_before_it`: a TETRA call admitted on a half slot after earlier speech conceals
+nothing from that speech; `test_tetra_first_call_starts_the_high_pass_over`: with the digital high-pass on, the call's
+recording after five bursts of speech no call owned is sample for sample the one it makes with none before it;
+`test_playback_malformed_frames_play_nothing`: a short or long `hex` of hex digits, and an 18-digit frame in a P25
+Phase 1 export, play and record nothing while the file's good frames are recorded, and an empty or non-hex `hex`
+leaves the file out of SDRTrunk's shape, so nothing of it is recorded;
+`test_playback_file_shape_decides_its_recording`: a file is checked against SDRTrunk's writer before it plays. A
+`from`, `to` or `encrypted` after the frames, two records (one of frames alone, or the first with its frames before
+its protocol), a `metadata` object (with or without frames of its own), an escaped key (`"\u0074o"`), an unclosed
+record, an outer array, `"to":[]` and a frame with no `hex` leave no WAV, no temp file (counted apart from the WAVs:
+a `TEMP_` name has no extension) and nothing published, the run's one line said; a file in SDRTrunk's own order is
+exported, a Stop part-way included (the Stop is the log tap setting the exit flag at a 17-digit frame's warning, so it
+lands after three frames); a zero-padded source (`"00000005678"`) is radio 5678, whose `stream=off` row keeps the
+recording local; a `to` the reader cannot read (`Q:77`), and a roaming source (`ROAM 5678(...)`) to an ISSI
+talkgroup, are recorded but get no fallback talkgroup (no sidecar), and a roaming source to talkgroup 1234 is exported
+under 1234; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is talkgroup 1234, whose `stream=off` row
+keeps the recording local; an escaped `from` (`"56\u00378"`, its radio `stream=off`) or `to`, an escape JSON has not
+(`\q`), a short `\u` escape or bytes that are not UTF-8 in `system` or `site`, a `version` with a `site` after the
+frames, no `version` with a `system` before them, a bare `02`, a negative `version`, `time` or key id (`-2`, `-5`,
+`-1`, `-0`), a `version` or key id past 16 bits (65536), an algorithm past 8 bits (256), a `time` past a Java `long`,
+a tagged frame in a record with no `version` (the `site` after `frames`, or no location at all), and an NXDN tag
+written with an escape that names a SACCH place (`SACCH \u0031`, `\u0053ACCH 1`, `SACCH \t1`) leave nothing
+recorded, while every JSON escape and UTF-8 text in `system` and `site`, and `version` 65535, is exported. A case
+installs its policy rows by flags (`played_policy`), so a talkgroup-0 row is installed too: a `stream=off`
+talkgroup 0 record alone is recorded and not exported, as is the two-record file;
+`test_playback_unread_ids_say_they_stay_local`: a played call with an unreadable `to` (`Q:77`), and one from a roaming
+source to an ISSI talkgroup (no ID and no text on the row, so the run-end early close does not allow the fallback),
+are recorded, kept local, and the run's one line says so; `-r unread.mbe next.mbe` with the roaming call first says it
+at the file boundary, where the event layer drops its row and rotates the recording unexported, with no sidecar,
+while the next call's is exported under 1234 (`playback_unread_ids_then_a_call()`);
+`test_playback_sdrtrunk_written_files_record`: calls printed as Jackson's pretty printer prints SDRTrunk's (DMR, P25
+Phase 1 and 2, NXDN with `tag`, NXDN with a free-text `tag` holding an escape (`UN\u004bNOWN`, and naming no SACCH
+place: `SACCH UN\u004bNOWN`, `SACCH \u0035`, `SACCH \"1\"`), DMR with `SACCH \u0031`, the writer before
+2025-11 with `system` and `site` after `frames`, CRLF line ends, a value with escaped quotes) are recorded whole and
+exported under 1234 from 5678;
+`test_playback_empty_file_leaves_the_next_recording`: `-r empty.mbe normal.mbe` (an empty array, or a call of no
+frames from an unread source) records and exports the second file's call;
+`test_empty_segment_discard_checks_the_removal`: an empty recording whose removal fails (a read-only folder, skipped
+where that does not stop a removal; then a read-only folder and a recording made unreadable by the discard seam,
+`dsd_wav_test_set_discard_hook()`, after the close read its size; the leg fails when the hook never ran or could not
+set the modes, and is skipped only when it set them and a mode-0000 file can still be read) is left with one warning
+and an `error` of kind `discard` naming it, no `discard`;
+`test_playback_next_file_takes_no_earlier_stamp`: an export of a protocol the reader does not play stages its frame's
+`time` with no call, and the next file's unstamped call is filed on the decode clock, in the journal and the file name;
+`test_playback_long_export_plays_once`: an export with more than 1 MiB of text before its last frames is one recording
+of all its frames, exported once, and an export over `DSD_SDRTRUNK_JSON_MAX_BYTES` (written sparse) is refused with one
+log line and records nothing). `CORE_MBE_FILE_IO` `test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in
+key position: `time`, `protocol` and `to` inside a quoted value, escaped quotes included, change nothing.
+`CORE_MBE_FILE_IO` `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place` plays encrypted P25 Phase 1 (v1 and v2),
+P25 Phase 2 and DMR RC4 calls of four frames whole and with the second malformed (no hex digits, an array, an object
+holding a `hex` of its own), each pass on a state of its own on the heap, and compares the MBE capture records: the
+frames after the lost one are byte for byte those of the same frames in the whole call (so each took its own keystream
+bits), and NXDN's published DES-OFB vectors with one frame lost still decrypt to their tone;
+`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi` builds a superframe whose frames carry a chosen MI's
+late-entry fragments (an MI whose first Golay word is all zero), played as AES and with a forced RC4 algorithm, and
+checks the MI is taken from the whole superframe and not when that word's six frames are lost;
+`test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a 3 MiB export, written with `dsd_test_mkstemp()`
+in the test temp folder and removed after with `dsd_remove_file()`, on `sdrtrunk_run_open()`'s heap fixtures: the
+reader reads no more than its first MiB. `test_sdrtrunk_json_stop_during_the_shape_check` sets it before a small
+export, which the read takes whole: the shape check sees the Stop and the reader returns before it touches the call, so
+an earlier call on the slot is still active with its epoch. `test_sdrtrunk_json_stop_in_a_long_span` plays a call with
+a 2 MiB `system` of six-byte `\u00e9` escapes and 2 MiB of white space after it through the shape check's poll seam
+(`dsd_sdrtrunk_test_set_shape_poll_hook()`, `src/core/file/sdrtrunk_test_support.h`): no two looks at the exit flag are
+more than a MiB apart, and a Stop the seam raises in the white space after the record leaves the earlier call active.
+`test_sdrtrunk_json_playlist_stop_during_the_shape_check` plays `-r first.mbe next.mbe` through `playMbeFiles()` (the
+same long call as `next.mbe`): a Stop raised in `next.mbe`'s check leaves `first.mbe`'s call active with no committed
+row, and the speech decoder as `first.mbe` alone leaves it; with no Stop, `next.mbe` ends it and its row commits.
+`test_sdrtrunk_json_refused_file_leaves_the_earlier_call` reads a sparse export one byte over
+`DSD_SDRTRUNK_JSON_MAX_BYTES`: the reader refuses it and the earlier call on the slot is still active, its row not
+committed.
+`test_sdrtrunk_json_wav_honors_talkgroup_policy` also
+plays a file in no shape of SDRTrunk's (a record-level `hex`, string `version` and `encrypted`): its static WAV is
+written as the policy allows, its per-call WAV gets nothing.
+`CORE_WAV_JOURNAL` `test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members
+the reader does not know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the
+call one call, whose row has its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of
+another object's `frames` does not stamp it (each row is filed at its first voice frame's second); none of these
+members is SDRTrunk's, so the files get no per-call recording. The number and label
+rules themselves are in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*`
+cases. `test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar removed only when its upload succeeded,
+which needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps
+the sidecar).
+
+`RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under the longest public stem
+whose temp sidecar (`<stem>.json.tmp.XXXXXX`) fits the test folder's name limit (`pathconf(_PC_NAME_MAX)`, at most 255;
+the case is skipped below 64), no copy and no job after a Stop, a Stop at the sidecar's
+publication (through `dsd_rdio_set_sidecar_published_observer()`, after the private inputs and before the enqueue)
+leaving the job unqueued and its WAV unheld, no private input made for a call a full queue refuses (counted at its
+sidecar's publication), and removals that fail (a read-only folder) leaving their files with one log line a run; those
+cases first check that a folder turned read-only (`chmod` 0500) really refuses a removal there, and are skipped where it
+does not (as root, or on a FAT or CIFS mount whose options fix the permissions). The
+failures no real file system gives on demand are simulated by test doubles of the calls, linked in through GNU ld
+`--wrap` (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or Clang builds off macOS and Windows, as the other `--wrap` tests): a hard
+link that fails as on a drive with none while the Stop arrives (the copy fallback then ends), a private open that makes
+its file and no stream (also with the folder turned read-only right after, so that file's removal fails and is the run's
+one log line), a hard link that fails with the folder turned read-only first (the WAV's copy then fails, and the private
+sidecar copy already made, which cannot be removed, goes through the same once-a-run warning, not a second line), and a
+worker join that reports failure after the worker ended (the queued jobs are released). That last case leaves the upload
+worker failed for good, so it runs last in `main()`. `--wrap` reaches only calls the linker resolves into the test: the
+callers in `dsd-neo_runtime` and `dsd-neo_platform` must be static libraries (not `BUILD_SHARED_LIBS`), and under
+IPO/LTO the wrapped calls can be resolved before the linker sees them. So the doubles and their cases are left out
+there, as on macOS and Windows: with a shared runtime or platform library, with `DSD_ENABLE_LTO`, with `-flto` in
+`CMAKE_C_FLAGS` or `CMAKE_CXX_FLAGS` (as `CFLAGS`/`CXXFLAGS` set them), and in any configuration whose
+`CMAKE_<LANG>_FLAGS_<CONFIG>` carries `-flto` or whose `CMAKE_INTERPROCEDURAL_OPTIMIZATION` or
+`CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>` is on (generator expressions, so a multi-config build decides per
+configuration; the definition and the `--wrap` options follow the same answer). The issue #888 sidecar cases share one
+heap ring and options (`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static
+ring.
+
+`PLATFORM_FILE_COMPAT` checks `dsd_hard_link()` in a folder the test makes (`dsd_test_mkdtemp()`), never the working
+folder. Whether that folder's file system takes hard links is asked of the platform: on Windows the volume's
+`FILE_SUPPORTS_HARD_LINKS` flag, asked through the wide or the ANSI call as `dsd_hard_link()` picks it
+(`dsd_win32_path_wide()`, so the code page 1252 folder with byte `0xE9` is asked as an ANSI path) for the folder's full
+path (`GetFullPathName()`: for a relative path `GetVolumePathName()` answers the boot volume), on POSIX a `link()`
+between names the probe creates exclusively there, removing only what it made. A link over a taken name must fail with
+`EEXIST`, and a missing source with `ENOENT`, only where the volume takes links; where it takes none, a refusal with the
+files as they were is enough, as a FAT or exFAT volume can refuse the link before it looks at the name, and a runner
+whose policy denies `link()` refuses it with `EPERM` before the source is looked up. Where the Windows volume cannot be
+asked (its full path or root does not resolve), the capability is unknown: only what holds either way is checked, that
+neither refused link (over a taken name, from a missing source) changes or makes a file. A missing source is linked to an
+unused name, so `ENOENT` does not compete with a taken name. Every fixture and probe name is built with
+`dsd_test_path_join()`, so under a long `DSD_NEO_TEST_TMPDIR` a name that does not fit fails the case before any file is
+touched, and none is cut short to another folder's name.
+
 ### Digital voice chain checks (issue #653)
 
 Every decoded voice frame runs once through its slot's voice chain (high-pass, then gain) before anything consumes it,
@@ -2326,7 +2603,24 @@ override plays it, and YSF full rate on the P25 decoder decodable; P25 Phase 2 d
 while unknown); D-STAR and ProVoice decodable. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0
 count that repeats), `.dmb` and `.imb` records and SDRTrunk JSON (clear and encrypted with no key, speech, silence
 and a repeat). `YSF_DCH_DECODE` checks
-V/D2's frames from stubbed mbelib results. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
+V/D2's frames from stubbed mbelib results. `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback` plays a
+V/D1 call through a repeater (header, frame 0 with CSD1, frame 1 with the repeaters' CSD2, terminator), syncing the
+history after each frame as the frame sync does, on heap fixtures: one epoch and one row, the caller's, which takes
+the fallback talkgroup. `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`: a call ended by a sync
+loss, and a group call that a private one follows in band, get no fallback number; the private call, ended by its
+terminator, does. `test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator`: a call that another
+protocol's terminator ends on the slot (`dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`, as a P25 TDU heard
+next in Auto mode ends slot 0) gets no fallback number.
+`test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`: an open group call (CM 0), then a
+private call's (CM 3) or a Radio ID call's (CM 1) terminator whose FICH verifies and whose DCH fails, ends the call on a
+terminator, not its own, and gives no fallback number; the group call's own terminator (CM 0), its DCH failed too,
+gives 4242. `test_process_ysf_faded_call_takes_no_other_callers_terminator`: a group call ended by a sync loss (its YSF
+strings cleared as `noCarrier()` clears them), then a CM 0 terminator whose verified DCH names another caller, is a
+terminator end but not its own; the caller's own terminator, and one whose DCH failed, are its own.
+`CORE_CALL_STATE` `test_context_restore_clears_the_own_terminator_mark`: a YSF call ended on its own terminator, saved
+and restored as a call context, is an EXPLICIT end with `own_terminator` 0.
+Every CSD2 these tests write is the downlink callsign first, then the uplink, as the YSF spec has it
+(`test_dch_csd2_tracks_uplink_and_downlink`; V/D2 frame 2 downlink, frame 3 uplink). `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
 decoded samples as they are under a fixed `-g 3` and under auto, and leaves the receive slot's speech AGC as it
 started. `TETRA_VOICE_PIPELINE` checks the 240-to-160
@@ -3722,7 +4016,14 @@ ctest --preset dev-debug -L qml --output-on-failure
 ```
 
 Each carries its own headless environment (offscreen platform, software renderer)
-in the CTest registration, so it needs no window server and no GPU.
+in the CTest registration, so it needs no window server and no GPU. Off Windows that
+environment also sets `TZ=America/Los_Angeles`, a zone west of UTC with daylight saving,
+so the date cases can assert literal local dates (issue #902). The zone is set before
+the process starts, never by the running suite (see "Environment variables in tests"):
+a case calls `testContext.localTimeZoneIs("America/Los_Angeles")`, which checks the
+native and JavaScript offsets at the dates the fixtures use, and skips what needs the
+zone when it is false (a run started by hand without `TZ`, or Windows, whose C runtime
+reads no IANA name in `TZ`).
 
 `UI_QT_DISPLAY_SCALE` (the Android display-size follow) uses Qt's private
 `Qt6::GuiPrivate` module, whose Linux package needs the XKB development files

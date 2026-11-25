@@ -1,9 +1,10 @@
-add_library(dsd-neo_proto_dmr)
+add_library(dsd-neo_proto_dmr STATIC)
 
 target_sources(
     dsd-neo_proto_dmr
     PRIVATE
         dmr_34_viterbi.c
+        dmr_abs_params.c
         dmr_ars.c
         dmr_block.c
         dmr_block_crypto.c
@@ -28,6 +29,10 @@ target_sources(
         dmr_pdu.c
         dmr_rc.c
         dmr_rc_notify.c
+        dmr_t3_chan_learn.c
+        dmr_t3_channels.c
+        dmr_t3_overlay.c
+        dmr_t3_grant.c
         dmr_text.c
         dmr_pi.c
         dmr_utils.c
@@ -52,10 +57,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_dmr PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_dmr
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

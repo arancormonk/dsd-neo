@@ -604,6 +604,40 @@ Item {
             }
         }
 
+        // Issue #890: the preview names each target's protocol as the editor does, read whole from its
+        // type, and gives a modulation only where the type takes one. The import reads the file through
+        // the engine's parser, which takes the simplex types.
+        function test_imported_target_preview_names_simplex_types() {
+            var source = testContext.writeFixtureCsv("simplex-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                + "pmr,dpmr-conventional,446106250,,,,,\n"
+                + "dmo,tetra-dmo-conventional,430500000,,,,,\n"
+                + "fusion,ysf-conventional,145500000,,,,,\n"
+                + "dig,dmr-conventional,461000000,,,,,\n");
+            // The engine's target parser takes the types: a one-entry YSF list validates.
+            var probe = scanListStarter.validate({uid: "simplex-probe", name: "Probe", sourceType: "usb",
+                entries: [{uid: "probe", kind: "freq", protocol: "ysf", freqMhz: "430", enabled: true}]});
+            verify(probe.ok, probe.error);
+            var result = testContext.importNow(source, "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.selectTargets(result.path);
+                compare(screen.targetRows.length, 4);
+                var preview = visualChild(screen, "scanTargetPreview");
+                verify(preview !== null);
+                tryVerify(function() { return preview.count === 4 && preview.itemAtIndex(3) !== null; });
+                var want = ["pmr · dPMR · 446.106250 MHz", "dmo · TETRA DMO · 430.500000 MHz",
+                            "fusion · YSF (C4FM) · 145.500000 MHz", "dig · DMR · 461.000000 MHz"];
+                for (var i = 0; i < 4; ++i) {
+                    var text = preview.itemAtIndex(i).text;
+                    verify(text.indexOf(want[i]) === 0, text);
+                    verify((text.indexOf("Modulation:") >= 0) === (i === 3), text);
+                }
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         function test_reselect_manual_targets_keeps_entries() {
             screen.addFrequency("First unsaved target", "dmr", "461");
             screen.addFrequency("Second unsaved target", "nxdn", "462");
@@ -790,6 +824,8 @@ Item {
 
         function choose(name, index, root) {
             var picker = control(name, root);
+            // An entry the picker does not have fails here rather than stepping forever.
+            verify(index >= 0 && index < picker.count, name + " has no entry " + index);
             while (picker.currentIndex < index)
                 picker.incrementCurrentIndex();
             while (picker.currentIndex > index)
@@ -1503,10 +1539,16 @@ Item {
             compare(control("scanEntryModulation").currentIndex, data.modulation);
         }
 
+        // Issue #890: the picker order is P25, DMR, NXDN96, NXDN48, dPMR, D-STAR, YSF, M17, TETRA
+        // DMO, then the analog modes, from the C++ catalog the target generator reads.
+        readonly property var protocolNames: ["P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF (C4FM)", "M17", "TETRA DMO", "NFM (analog)", "AM (analog)"]
+        readonly property var protocolIds: ["p25", "dmr", "nxdn", "nxdn48", "dpmr", "dstar", "ysf", "m17", "tetra_dmo", "nfm", "am"]
+
         function test_human_protocol_labels_map_to_ids() {
             edit("scanListName", "Protocols");
-            var names = ["P25", "DMR", "NXDN48", "NXDN96", "NFM (analog)", "AM (analog)"];
-            var ids = ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"];
+            var names = protocolNames;
+            var ids = protocolIds;
+            compare(control("scanAddProtocol").count, ids.length);
             for (var i = 0; i < ids.length; ++i) {
                 var picker = control("scanAddProtocol");
                 compare(picker.textAt(i), names[i]);
@@ -1539,7 +1581,7 @@ Item {
                 compare(screen.entries[0].modulation, "gfsk");
                 verify(control("scanEntryModulation").visible && control("scanEntryDecryptionScope").visible);
                 for (var analog of ["nfm", "am"]) {
-                    choose("scanEntryProtocol", ["p25", "dmr", "nxdn48", "nxdn", "nfm", "am"].indexOf(analog));
+                    choose("scanEntryProtocol", protocolIds.indexOf(analog));
                     compare(screen.entries[0].protocol, analog);
                     verify(!control("scanEntryModulation").visible, analog);
                     verify(!control("scanEntryDecryptionScope").visible, analog);
@@ -1548,7 +1590,7 @@ Item {
                 choose("scanEntryProtocol", 0);
                 verify(control("scanEntryModulation").visible && control("scanEntryDecryptionScope").visible);
                 compare(control("scanEntryModulation").currentIndex, 3);
-                choose("scanEntryProtocol", 5);
+                choose("scanEntryProtocol", protocolIds.indexOf("am"));
                 screen.removeEntry(0);
                 choose("scanSystemPicker", savedRow);
                 control("scanAddSystem").Accessible.pressAction();
@@ -1559,6 +1601,78 @@ Item {
             } finally {
                 savedSystems.remove(savedRow);
             }
+        }
+
+        // Issue #890: each protocol shows only the choices its row takes. dPMR, D-STAR, YSF, M17 and
+        // TETRA DMO run their own modulation; YSF, D-STAR and TETRA DMO decrypt nothing; M17 runs the
+        // session's keys and says so; dPMR keeps the decryption choice for its scrambler key. Hidden
+        // values are kept, not written. A saved TETRA system's entry is TETRA DMO.
+        function test_simplex_entries_follow_the_catalog() {
+            var savedRow = savedSystems.count;
+            verify(savedSystems.add({name: "DMO site", sourceType: "usb", freqMhz: "430.5", decodeFlag: "-fT"}));
+            try {
+                edit("scanListName", "Simplex");
+                screen.addFrequency("Net", "p25", "430.1");
+                choose("scanEntryModulation", 3);
+                const rows = {
+                    "dpmr": {modulation: false, decryption: true, session: false},
+                    "dstar": {modulation: false, decryption: false, session: false},
+                    "ysf": {modulation: false, decryption: false, session: false},
+                    "m17": {modulation: false, decryption: false, session: true},
+                    "tetra_dmo": {modulation: false, decryption: false, session: false},
+                    "p25": {modulation: true, decryption: true, session: false},
+                    "nxdn48": {modulation: true, decryption: true, session: false}
+                };
+                for (var id in rows) {
+                    choose("scanEntryProtocol", protocolIds.indexOf(id));
+                    compare(screen.entries[0].protocol, id);
+                    compare(control("scanEntryModulation").visible, rows[id].modulation, id);
+                    compare(control("scanEntryDecryptionScope").visible, rows[id].decryption, id);
+                    compare(control("scanEntrySessionKeys").visible, rows[id].session, id);
+                }
+                choose("scanEntryProtocol", protocolIds.indexOf("m17"));
+                compare(control("scanEntrySessionKeys").text, "M17 entries use the session's keys. Set them in the app's decoder options.");
+                // The hidden modulation is kept for a protocol that has one.
+                choose("scanEntryProtocol", 0);
+                compare(control("scanEntryModulation").currentIndex, 3);
+                compare(screen.entryLabel(screen.entries[0]), "Net · 430.1 MHz");
+                screen.removeEntry(0);
+                choose("scanSystemPicker", savedRow);
+                control("scanAddSystem").Accessible.pressAction();
+                verify(!control("scanEntryModulation").visible && !control("scanEntryDecryptionScope").visible);
+                verify(!control("scanEntrySessionKeys").visible);
+            } finally {
+                savedSystems.remove(savedRow);
+            }
+        }
+
+        // Issue #890 (D3): a TETRA DMO target runs the list at 72 kHz. App default says so; an
+        // explicit bandwidth TETRA cannot decode at is named as the problem, with its fix, beside the
+        // choice, and validation refuses it; switching the target off (it leaves the CSV) clears both.
+        function test_tetra_rate_notice() {
+            edit("scanListName", "DMO");
+            screen.addFrequency("Direct", "p25", "430.5");
+            var note = control("scanBandwidthNote");
+            // The tuner settings sit under Advanced, which may be closed: the notes are read by their text.
+            var rate = control("scanTetraRateNote");
+            verify(!screen.tetraTargets && note.text.indexOf("TETRA") < 0 && rate.text.length === 0);
+            choose("scanEntryProtocol", protocolIds.indexOf("tetra_dmo"));
+            verify(screen.tetraTargets);
+            compare(note.text, "App default · 72 kHz, which the TETRA DMO targets need");
+            verify(rate.text.length === 0);
+            chooseWidth("48 kHz");
+            verify(rate.text.length > 0);
+            // The start's own refusal, word for word.
+            compare(rate.text, "This scan has TETRA DMO targets, which decode only at a bandwidth of 72 kHz. Set this list's bandwidth to 72 kHz or App default, or remove the TETRA DMO targets.");
+            verify(!screen.validate());
+            verify(screen.validationText.indexOf("decode only at a bandwidth of 72 kHz") >= 0, screen.validationText);
+            chooseWidth("72 kHz");
+            verify(rate.text.length === 0);
+            chooseWidth("48 kHz");
+            control("scanEntryEnabled").toggle();
+            control("scanEntryEnabled").toggled();
+            compare(screen.entries[0].enabled, false);
+            verify(!screen.tetraTargets && rate.text.length === 0);
         }
 
         function test_save_empty_name_stays_open_data() {

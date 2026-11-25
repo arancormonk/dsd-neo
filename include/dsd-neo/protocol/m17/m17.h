@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_M17_M17_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -19,20 +20,57 @@ extern "C" {
 #endif
 
 /* The four RF frame decoders return non-zero when the frame validated something -- a CRC, a
- * LICH, a PRBS9 lock -- or when an earlier frame in the same transmission already did. A zero
- * means the decoder consumed a frame's worth of symbols and proved nothing, which is what the
- * SPS hunt needs to hear to stop crediting a false sync (#399, #419). */
+ * LICH, a PRBS9 lock -- or, for the stream, LSF and BERT decoders, when an earlier frame in the
+ * same transmission already did. A zero means the decoder consumed a frame's worth of symbols and
+ * proved nothing, which is what the SPS hunt needs to hear to stop crediting a false sync (#399,
+ * #419). A frame any of them drops as cut by a flagged interruption or a carrier boundary
+ * (dsd_state_frame_read_lost()) returns zero. processM17STR(), processM17LSF() and processM17PKT()
+ * also count the input's end inside the frame (shutdown, or a pending fallback to another input)
+ * as a cut, marking it interrupted (dsd_state_note_input_end()) and returning zero, and the stream
+ * and LSF readers drop a frame the symbol clock restarted inside (split between two receptions)
+ * the same way, before any of it is decoded (issue #890); the BERT reader checks only
+ * dsd_state_frame_read_lost(). processM17PKT() returns only the packet frame's own verdict (issue #890): 1 for a
+ * chunk the strict RF packet rule accepted in order, or for a last frame (EOF) whose packet's CRC
+ * passed, only the latter verifying the packet; zero for a frame the rule rejects (a chunk out of
+ * order or out of step, malformed metadata, an empty packet, a failed packet CRC) even while the
+ * transmission stays confirmed (m17_confirm_is_confirmed()), so a caller tells a rejected frame
+ * from a lost confirmation by asking the latter. */
 int processM17STR(dsd_opts* opts, dsd_state* state);
 int processM17PKT(dsd_opts* opts, dsd_state* state);
 int processM17LSF(dsd_opts* opts, dsd_state* state);
 int processM17BRT(dsd_opts* opts, dsd_state* state);
 int processM17IPF(dsd_opts* opts, dsd_state* state);
 
-/** @brief Forget what the current M17 transmission proved; the next one proves itself again. */
+/** @brief The one M17 transmission boundary: drop everything held from the current transmission (what it proved, its
+ * link setup, raw LSF bits and LICH chunks, packet, BERT receiver, signature and texts being assembled), so nothing of
+ * it is combined with the next one, which proves itself again (src/protocol/m17/m17_confirm.h). */
 void m17_confirm_reset(dsd_state* state);
+
+/**
+ * @brief The decoder session ends (dsd_engine_cleanup(), before the state's extensions are freed): what M17 keeps for
+ * the session with the M17 extension goes with it, the network lost-end fallback (dsd_state::m17_ip_ended_lost)
+ * included, so the next session starts with an empty ended-stream table and no fallback. Transmission boundaries never
+ * clear it.
+ */
+void m17_end_session(dsd_state* state);
 
 /** @brief Whether the current M17 transmission has produced CRC-verified content. */
 int m17_confirm_is_confirmed(const dsd_state* state);
+
+/**
+ * @brief End the slot's call for an M17 end (the EOT marker, a stream frame's EOS bit, an IP stream's EOT, EOTX or
+ * DISC, a packet's end) with @p reason, and sync its event.
+ *
+ * Only an M17 call ends, and with @p data_only only a data one: another protocol's call on the slot is no transmission
+ * this end belongs to. An M17 call a fade already ended (recoverable) is made final by it (dsd_call_state_end_ex()).
+ */
+void m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only);
+
+/**
+ * @brief The RF transmission ended (its EOT marker): a signature it advertised and has not judged is reported
+ * incomplete, before m17_confirm_reset() forgets it.
+ */
+void m17_note_transmission_end(dsd_state* state);
 int encodeM17STR(dsd_opts* opts, dsd_state* state);
 void encodeM17BRT(dsd_opts* opts, dsd_state* state);
 int encodeM17PKT(dsd_opts* opts, dsd_state* state);

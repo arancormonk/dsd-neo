@@ -89,7 +89,9 @@ fake_stream_active(void) {
 }
 
 static int
-fake_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+fake_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                         int ted_sps) {
+    (void)cqpsk_explicit;
     g_apply_demod_profile_calls++;
     g_apply_cqpsk_enable = cqpsk_enable;
     g_apply_symbol_rate_hz = symbol_rate_hz;
@@ -603,7 +605,7 @@ main(void) {
     assert(input_level.status == DSD_INPUT_LEVEL_UNKNOWN);
     assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN);
     assert(input_level.sample_count == 0U);
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == -1);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 0, 6000, 4, 5, 8) == -1);
     /* A scan row's squelch has nowhere to go without an installed demodulator (issue #521). */
     assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == -1);
     assert(g_set_channel_squelch_calls == 0);
@@ -712,7 +714,7 @@ main(void) {
     assert(input_level.sample_count == 4096U);
     assert(input_level.updated_ms == 12345U);
 
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == 8);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 0, 6000, 4, 5, 8) == 8);
     assert(g_apply_demod_profile_calls == 1);
     assert(g_apply_cqpsk_enable == 1);
     assert(g_apply_symbol_rate_hz == 6000);

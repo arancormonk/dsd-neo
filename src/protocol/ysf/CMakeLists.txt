@@ -1,4 +1,4 @@
-add_library(dsd-neo_proto_ysf)
+add_library(dsd-neo_proto_ysf STATIC)
 
 target_sources(dsd-neo_proto_ysf PRIVATE ysf.c ysf_frame.c)
 
@@ -14,10 +14,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_ysf PRIVATE dsd-neo_dsp dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_ysf
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

@@ -95,6 +95,13 @@ dsd_rtl_stream_io_hook_set_voice_lane(int enable) {
     }
 }
 
+void
+dsd_rtl_stream_io_hook_set_tetra_direct_bursts(int enable) {
+    if (g_rtl_stream_io_hooks.set_tetra_direct_bursts) {
+        g_rtl_stream_io_hooks.set_tetra_direct_bursts(enable);
+    }
+}
+
 int
 dsd_rtl_stream_io_hook_voice_lane_available(void) {
     if (!g_rtl_stream_io_hooks.read_lanes) {

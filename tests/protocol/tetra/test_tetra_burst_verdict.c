@@ -35,7 +35,10 @@
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -43,6 +46,7 @@
 #include <string.h>
 
 #include "protocol_dispatch_impl.h"
+#include "scan_activity_capture.h"
 #include "test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
@@ -1440,8 +1444,333 @@ test_every_burst_ends_with_its_publication(void) {
     session_close(&s);
 }
 
+/* What the scan quiet check heard (dsd_frame_sync_hook_content_evidence() with skip-silent on): PROVEN notes. */
+static int g_proven_notes;
+
+static void
+count_content_evidence(dsd_state* state, int level, uint32_t hold_ms) {
+    (void)state;
+    (void)hold_ms;
+    if (level == DSD_CONTENT_EVIDENCE_PROVEN) {
+        g_proven_notes++;
+    }
+}
+
+/* One burst's proof and what it reported: @p proof, and checked content (one PROVEN note, which a -Y row holds on, and
+   which only a scan quiet check hears with skip-silent @p on) when @p content. */
+static void
+expect_burst_proof(const session* s, uint32_t* content_seq, int* notes, int on, dsd_tetra_burst_proof proof,
+                   int content, const char* what) {
+    const uint32_t want_seq = *content_seq + (content ? 1U : 0U);
+    const int want_notes = *notes + ((content && on) ? 1 : 0);
+    const int ok = tetra_burst_proof(s->state) == proof && s->state->scan_y_content_seq == want_seq
+                   && g_proven_notes == want_notes && s->state->scan_y_partial_seq == 0U;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL %s (skip-silent %d): proof %d (want %d), content %u (want %u), notes %d (want %d)\n",
+                    what, on, (int)tetra_burst_proof(s->state), (int)proof, (unsigned)s->state->scan_y_content_seq,
+                    (unsigned)want_seq, g_proven_notes, want_notes);
+    }
+    assert(ok);
+    *content_seq = want_seq;
+    *notes = want_notes;
+}
+
+/* Bits @p at.. of @p bits set to the @p n low bits of @p value, first bit highest. */
+static void
+put_bits(uint8_t* bits, int at, int n, uint32_t value) {
+    for (int i = 0; i < n; i++) {
+        bits[at + i] = (uint8_t)((value >> (n - 1 - i)) & 1u);
+    }
+}
+
+/* k_dmo_sch_h with message type DM-RESERVED (EN 300 396-3 table 27) in place of DM-OCCUPIED, after its addresses and
+   MNI: a reservation after a call transaction, 30 frames left. */
+static void
+dmo_reserved_sch_h(uint8_t* bits) {
+    bits_of(k_dmo_sch_h, bits);
+    put_bits(bits, 90, 5, TETRA_DMO_MSG_RESERVED);
+    put_bits(bits, 95, 1, 0u);  /* channel reservation type: after a call transaction */
+    put_bits(bits, 96, 6, 5u);  /* reservation time remaining: 30 frames */
+    put_bits(bits, 102, 3, 0u); /* timing, requests and changeover requests flags */
+    put_bits(bits, 105, 3, 4u); /* power class 4 */
+    put_bits(bits, 108, 3, 0u); /* power control, priority normal */
+}
+
+/* What a burst proved of the channel (tetra_burst_proof(), issue #890), and the checked content it reported for a -Y
+ * row (dsd_state::scan_y_content_seq) and, with skip-silent on, a scan quiet check: trunked signalling, a direct mode
+ * call PDU, an encrypted DM-2-C DMAC-SYNC and direct mode speech are checked content; a failed burst, a DSB that only
+ * the soft decision decoded (its SCH/H unread), one whose SCH/H failed, and one carrying DM-RESERVED proved the TETRA
+ * profile at most, and report nothing, with the setting on or off. No burst leaves a verdict open. */
+static void
+test_burst_proof_reports_checked_content(int on) {
+    dsd_frame_sync_hooks saved;
+    dsd_frame_sync_hooks_get(&saved);
+    dsd_frame_sync_hooks hooks = saved;
+    hooks.content_evidence = count_content_evidence;
+    dsd_frame_sync_hooks_set(&hooks);
+    g_proven_notes = 0;
+    uint32_t content = 0U;
+    int notes = 0;
+
+    session s = session_open();
+    s.opts->scan_skip_silent = on;
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_TMO, 1, "a BSCH and SYSINFO");
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_NONE, 0, "a failed synchronisation burst");
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_TMO, 1, "a normal burst's SYSINFO");
+    assert(nts2_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_NONE, 0, "a failed normal burst");
+    session_close(&s);
+
+    s = session_open();
+    s.opts->scan_skip_silent = on;
+    content = 0U; /* the new session's state counts from 0 */
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    assert(dmo_sync_burst_as(&s, sch_s, NULL, 0, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a soft-only DSB");
+    assert(dmo_sync_burst(&s, sch_s, NULL) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a DSB whose SCH/H failed");
+    dmo_reserved_sch_h(sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_PROFILE, 0, "a DSB carrying DM-RESERVED");
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->dmo && !ts->calls.dmo.active && ts->calls.published == TETRA_PUB_NONE);
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_SERVICE, 1, "a DSB carrying DM-OCCUPIED");
+    /* The call's full-slot speech in a DNB, scrambled with its DM colour code. */
+    const uint8_t speech[TTB_TCH_FS_BITS] = {0};
+    uint8_t slot[2 * BLOCK_DIBITS];
+    ttb_encode_tch_fs(speech, ts->dmo_dcc_seed, slot);
+    feed(&s, slot + BLOCK_DIBITS, BLOCK_DIBITS);
+    DSD_MEMCPY(s.state->tetra_sync.b1_dibuf, slot, BLOCK_DIBITS);
+    s.state->tetra_sync.b1_valid = 1;
+    s.state->tetra_sync.b1_soft_valid = 0;
+    s.state->tetra_sync.nts2 = 0;
+    s.state->tetra_sync.cb = 0;
+    s.state->tetra_sync.b2_lead_count = 0;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_SPEECH, 1, "direct mode speech");
+    dmo_sch_s(TETRA_DMO_AIE_DM2C, sch_s);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    expect_burst_proof(&s, &content, &notes, on, DSD_TETRA_BURST_PROOF_DMO_OPAQUE, 1, "a DM-2-C DSB");
+    /* A carrier boundary forgets what the last burst proved. */
+    tetra_forget_carrier(s.state);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_NONE);
+    session_close(&s);
+    dsd_frame_sync_hooks_set(&saved);
+}
+
+/* A carrier boundary as the engine runs it at a scan's switch (tetra_forget_carrier(), the carrier count moving), then
+   the visit reset of a scan that holds the TETRA state (issue #890). */
+static void
+scan_switch(session* s) {
+    tetra_forget_carrier(s->state);
+    s->state->carrier_seq++;
+    tetra_scan_visit_reset(s->opts, s->state);
+}
+
+/* Issue #890: a scan's visit to a TETRA row starts cold. Row A is a trunked cell, received inverted: its BSCH and
+ * SYSINFO (MCC 460, MNC 4242, colour 17, the main carrier, the location area) set the network, the cell, the scrambling
+ * seed, the carrier's polarity and what the frontends show. After the switch, row B's first burst fails its CRC and
+ * publishes nothing of row A: the network and its seed, the cell's SYSINFO, the polarity and the publication are gone,
+ * not only what a carrier boundary forgets. The TETRA state is the same allocation, its speech decoder's storage and the
+ * operator's air keys kept; a --tetra-net preset seeds the identity again at the next burst. */
+static void
+test_scan_visit_reset_forgets_the_last_row(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts && ts->net_known && ts->mcc == 460U && ts->mnc == 4242U && ts->colour == 17U && ts->sysinfo_known
+           && ts->lfsr_seed != 0U && ts->decode_ok > 0U);
+    assert(s.state->tetra_sync.polarity == 1U && s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 460U);
+    const void* const codec = ts->voice.codec;
+    s.state->tetra_air_keys[0].loaded = 1U;
+    s.state->tetra_air_keys[0].mcc = 460U;
+    const uint32_t generation = s.state->tetra_pub.generation;
+    /* What row A's speech left with the codec: frames decoded, concealed and failed, the last decode failing, and a
+       transmission a carrier gap kept. */
+    ts->voice.frames = 12U;
+    ts->voice.concealed = 3U;
+    ts->voice.codec_errors = 2U;
+    ts->voice.last_decode_failed = 1U;
+    ts->voice.gap_kept = 1U;
+    ts->voice.gap_last_good_m = 5.0;
+
+    scan_switch(&s);
+    assert(tetra_st_existing(s.state) == ts && ts->voice.codec == codec);
+    if (ts->voice.frames != 0U || ts->voice.codec_errors != 0U || ts->voice.last_decode_failed != 0U) {
+        DSD_FPRINTF(stderr, "FAIL the scan visit kept row A's codec counts (%u frames, %u errors)\n",
+                    (unsigned)ts->voice.frames, (unsigned)ts->voice.codec_errors);
+    }
+    assert(ts->voice.frames == 0U && ts->voice.concealed == 0U && ts->voice.codec_errors == 0U
+           && ts->voice.last_decode_failed == 0U && ts->voice.gap_kept == 0U);
+    assert(!ts->net_known && ts->mcc == 0U && ts->mnc == 0U && ts->colour == 0U && ts->lfsr_seed == 0U);
+    assert(!ts->sysinfo_known && ts->dl_carrier_hz == 0L && ts->la == 0U && ts->decode_ok == 0U && !ts->tdma_valid);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_NONE && s.state->tetra_sync.polarity == 0U);
+    assert(!s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 0U && !s.state->tetra_pub.cc_known
+           && s.state->tetra_pub.generation != generation);
+    assert(s.state->tetra_air_keys[0].loaded == 1U && s.state->tetra_air_keys[0].mcc == 460U);
+
+    /* Row B: a synchronisation burst whose BSCH fails, read at the normal polarity. */
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(!ts->net_known && !ts->sysinfo_known && s.state->tetra_sync.polarity == 0U);
+    assert(!s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 0U && s.state->tetra_pub.mnc == 0U
+           && !s.state->tetra_pub.cc_known && !s.state->tetra_pub.la_known);
+
+    /* Row B's first checked burst publishes the cell, and nothing of row A's codec. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_pub.net_known && s.state->tetra_pub.codec_frames == 0U
+           && s.state->tetra_pub.codec_errors == 0U && s.state->tetra_pub.codec_status == DSD_TETRA_CODEC_UNKNOWN);
+
+    /* A --tetra-net preset is configuration: the next burst after another switch seeds the descrambler from it. */
+    scan_switch(&s);
+    preset_network(&s, 17U);
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(ts->net_known && ts->mcc == 460U && ts->mnc == 4242U
+           && ts->lfsr_seed == tetra_compute_scramb_seed(460, 4242, 17));
+    session_close(&s);
+}
+
+/* Issue #890: two TETRA DMO rows, each a radio of its own. Row A's DM-OCCUPIED from source 100 sets up its call, its DM
+ * colour code and the canonical call; after the switch nothing of it is left (direct mode, the colour code, the call
+ * and its canonical call), and row B's DM-OCCUPIED from source 200 is a call of its own, with the colour code its
+ * source gives. */
+static void
+test_scan_visit_reset_two_direct_mode_rows(void) {
+    session s = session_open();
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts && ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active && ts->calls.dmo.src == 100U);
+    const uint32_t seed_a = ts->dmo_dcc_seed;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == 100U);
+
+    scan_switch(&s);
+    assert(tetra_st_existing(s.state) == ts);
+    assert(!ts->dmo && !ts->dmo_dcc_valid && ts->dmo_dcc_seed == 0U && !ts->calls.dmo.active);
+    assert(dsd_call_state_get(s.state, 0U, &call) == 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(s.state->tetra_pub.mode == 0U && s.state->tetra_pub.dmo_class == 0U);
+
+    put_bits(sch_h, 42, 24, 200u); /* the source address (EN 300 396-3 table 22) */
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active && ts->calls.dmo.src == 200U
+           && ts->dmo_dcc_seed != seed_a);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == 200U);
+    session_close(&s);
+}
+
+/* Issue #890: the bursts of test_burst_proof_reports_checked_content() on the way to trunk scan's policy table, on an
+ * untyped row and on a row of the tetra-dmo class (@p typed). Only direct mode reports, from a hard-path DSB whose
+ * SCH/H passed: DM-OCCUPIED as its call (source 100, destination 0x800001, a clear group speech call), the call's
+ * speech with that identity, and a DM-2-C DSB as anonymous encrypted presence, known to be no data call. Trunked
+ * bursts, a failed burst, a soft-only DSB, one whose SCH/H failed and one carrying DM-RESERVED report nothing. On the
+ * typed row trunked bursts prove the profile only (no -Y content), and the direct mode ones are content as on the
+ * untyped row. */
+static void
+test_burst_reports_to_trunk_scan(int typed) {
+    session s = session_open();
+    if (typed) {
+        assert(dsd_scan_mode_enter(s.opts, s.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+        s.opts->frame_tetra = 1;
+    }
+    dsd_test_scan_activity_install();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    uint32_t content = s.state->scan_y_content_seq;
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_TMO);
+    assert(s.state->scan_y_content_seq - content == (typed ? 0U : 1U));
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->scan_y_content_seq - content == (typed ? 0U : 2U));
+    assert(g_test_scan_activity.count == 0);
+    session_close(&s);
+
+    s = session_open();
+    if (typed) {
+        assert(dsd_scan_mode_enter(s.opts, s.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+        s.opts->frame_tetra = 1;
+    }
+    dsd_test_scan_activity_install();
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    (void)dmo_sync_burst_as(&s, sch_s, NULL, 0, 1);
+    (void)dmo_sync_burst(&s, sch_s, NULL);
+    dmo_reserved_sch_h(sch_h);
+    (void)dmo_sync_burst(&s, sch_s, sch_h);
+    assert(g_test_scan_activity.count == 0);
+    content = s.state->scan_y_content_seq;
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->scan_y_content_seq - content == 1U);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_TETRA(g_test_scan_activity.protocol)
+           && g_test_scan_activity.slot == -1);
+    const dsd_trunk_scan_activity_identity call = g_test_scan_activity.last;
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_TARGET) && call.target == 0x800001u);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE) && call.source == 100u);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) && call.is_private == 0U);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED) && call.encrypted == 0U);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_DATA) && call.data_call == 0U);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    const uint8_t speech[TTB_TCH_FS_BITS] = {0};
+    uint8_t slot[2 * BLOCK_DIBITS];
+    ttb_encode_tch_fs(speech, ts->dmo_dcc_seed, slot);
+    feed(&s, slot + BLOCK_DIBITS, BLOCK_DIBITS);
+    DSD_MEMCPY(s.state->tetra_sync.b1_dibuf, slot, BLOCK_DIBITS);
+    s.state->tetra_sync.b1_valid = 1;
+    s.state->tetra_sync.b1_soft_valid = 0;
+    s.state->tetra_sync.nts2 = 0;
+    s.state->tetra_sync.cb = 0;
+    s.state->tetra_sync.b2_lead_count = 0;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_DMO_SPEECH);
+    assert(g_test_scan_activity.count == 2 && g_test_scan_activity.last.target == 0x800001u
+           && g_test_scan_activity.last.source == 100u && g_test_scan_activity.last.data_call == 0U);
+    dmo_sch_s(TETRA_DMO_AIE_DM2C, sch_s);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(g_test_scan_activity.count == 3);
+    /* Known encrypted, and known no data call: presence (the ruling of the #890 B3 review). */
+    assert(g_test_scan_activity.last.known == (DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.encrypted == 1U && g_test_scan_activity.last.data_call == 0U);
+    dsd_trunk_scan_hooks_set(NULL);
+    session_close(&s);
+}
+
 int
 main(void) {
+    test_burst_proof_reports_checked_content(0);
+    test_burst_proof_reports_checked_content(1);
+    test_burst_reports_to_trunk_scan(0);
+    test_burst_reports_to_trunk_scan(1);
     test_every_burst_ends_with_its_publication();
     test_uplink_registration_proposes_its_algorithm();
     test_noise_is_unproductive();
@@ -1466,6 +1795,8 @@ main(void) {
     test_burst_entry_settles();
     test_frame_18_tries_no_speech();
     test_aach_tells_traffic_from_signalling();
+    test_scan_visit_reset_forgets_the_last_row();
+    test_scan_visit_reset_two_direct_mode_rows();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
 }

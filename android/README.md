@@ -506,6 +506,49 @@ DSD-neo copies it right away. DSD-neo's file browser reads the inbox without one
 described in [Choosing files without a file picker](#choosing-files-without-a-file-picker); it copies the file the
 same way. A CSV can also be opened from another app with Open with or Share (see "Opening files from other apps").
 
+## DMR Tier III channels
+
+On a DMR Tier III system, the control channel tells radios which channel each call is on. Many systems send only the
+channel number, not its frequency. If DSD-neo does not know that channel's frequency, it cannot follow the call.
+
+- **NO FREQ on Monitor.** Monitor shows **NO FREQ** and a number in the alert colour when calls went to channels with
+  no frequency. The number is how many such channels were heard. It is hidden when there are none. Tap it to open the
+  channels list.
+- **Site → Channels.** On a DMR Tier III site, the Site sheet has a **Channels** button. It opens the same list:
+  **No frequency** (the channels calls went to, with the talkgroup or radios and when each was last heard) and
+  **Channels** (every channel that has a frequency, and where it came from: from file, yours, heard from site,
+  unchecked, from a neighbour site, estimated, or hidden). The button also shows while you have channels of your own
+  in the list. **Channels** lists 50 at a time, by number; **Show more channels** adds the next 50.
+- **Adding a frequency.** Tap a row under **No frequency**, or **Add channel**, and type the frequency in MHz. Use the
+  channel number DSD-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take
+  (number − 1) ÷ 2 and drop the remainder: 603 and 604 are both channel 301. Calls on that channel are followed from
+  the next call; a call already in progress stays where it is. If the channel changed while you were typing (a
+  reloaded channel map, say), nothing is changed: the editor closes and the list says so. Open the channel again to
+  see what it holds now.
+- **Use control channel frequency.** Some systems give the control channel its own channel number too. When DSD-neo
+  has checked that it is on the control channel right now, **Use control channel frequency** fills in that frequency.
+  Otherwise the button is greyed out.
+- **Hide, Restore, Remove.** Tap a row under **Channels** to change it. **Hide** stops DSD-neo following calls on a
+  channel (for example one whose frequency is wrong); the channel stays listed as hidden. **Restore** brings a hidden
+  channel back. **Remove** (tap twice) takes away a frequency you entered; the channel goes back to the frequency the
+  channel map or the site gives it, if any.
+- **Kept per saved system.** What you enter is saved with the saved system you are listening to, and applied again
+  every time that system starts. It never changes your channel map file. In Explore, or anything that is not a saved
+  system, a change lasts only until you stop listening, and the sheet says so. If a change could not be saved, the
+  sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
+  opens the list. If the system's extra decoder arguments (or the app's) also name a channels file with
+  `--dmr-chan-overrides`, the channels you saved with the system are used instead of that file whenever the system
+  has any. Extra decoder arguments that end on an option missing its value can take the next argument as that value,
+  as they would on the command line: a `--profile` with nothing after it loses the saved channels, and some options
+  (`-C` with nothing after it) stop the start instead. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
+  the sheet says so. If DSD-neo can't write your channels when the system starts (the device is out of storage, say),
+  the system starts without them and Home says so until a start passes them again.
+- **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
+  session to a mode that does not decode DMR, the channels can't be changed until DMR is decoded again.
+
+The same channels can be given to the command-line decoder with `--dmr-chan-overrides` (see
+[DMR Tier III](../docs/csv-formats.md#dmr-tier-iii)).
+
 ## Call recordings
 
 Settings → **Call recording** → **Record calls** saves each call you hear as a WAV file, so you can play it again from
@@ -584,10 +627,18 @@ time, system, talkgroup and radio, and an analog FM call's with the date, time, 
   every recording: export the ones you want to keep first.
 - When that storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
   reach (Share, Save to file and Export still can). Recordings on storage that is away stay listed and are never
-  deleted; Settings and **Call recordings** say the storage is not available.
+  deleted; Settings and **Call recordings** say the storage is not available. A delete that includes any of them (one
+  recording, a system's, **Delete all** or **Delete unfinished**) deletes nothing and says "That storage isn't
+  connected. Delete again once it's back."
 - DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
   unless it is named like an unfinished recording (`TEMP_…`, below). A recording you delete from a computer leaves the
-  app's list the next time DSD-neo starts or tries to play, share or export it.
+  app's list the next time DSD-neo starts or tries to play, share or export it. DSD-neo doesn't watch for other changes
+  to these folders while it runs (files replaced, folders swapped, permissions changed). Right before a delete or the
+  storage limit removes a recording, it checks the file's size and modification time and leaves a file that doesn't
+  match; the screen then says "Some files weren't deleted because they changed after they were recorded. They were
+  left as they are." A delete still waiting when the storage was read again (disconnected and back) is dropped, and
+  the screen says "Some recordings weren't deleted because their storage changed. Delete them again." The storage
+  limit waits until every recordings folder on connected storage has been read.
 
 ### Playing a recording
 
@@ -618,7 +669,12 @@ Download/DSD-neo as** the file's name (for Save to file, **Saved to Download/DSD
 that result out. Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing
 there. When the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free
 again, as they are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile
-is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+is left out, and the result says how many. Each recording is opened once and checked before it goes into the file: if
+one was replaced by another file meanwhile, or the storage was disconnected and read again after you chose them (even
+while the export runs), nothing is saved and the screen says **Those recordings changed. Export again.** (for Save to
+file, **This recording changed. Save it again.**); DSD-neo reads that recording's folder again, so the next export
+takes what is there now. While DSD-neo is still reading the recordings (just after the storage comes back), Export and
+Save to file say **Recordings are still loading. Try again in a moment.** A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
 ### Storage limit
@@ -690,7 +746,9 @@ A scan list also owns its scan settings, so a scan list's start is refused when 
 them: input, decoder and modulation options (`-i`, `-f`, `-m`), trunking and scan modes (`-T`, `-Y`, `-C`,
 `--trunk-scan`, `--p25-bandplan`, `--iq-replay`), and the switches of the list's **Voice only** and **Skip silent
 channels** checkboxes: `--scan-voice-only`, `--no-scan-voice-only`, `--scan-skip-silent` and `--no-scan-skip-silent`.
-Any option that starts with one of them is refused too, such as `-fa` or `--trunk-scan-dwell-ms`. This refusal says
+Any option that starts with one of them is refused too, such as `-fa` or `--trunk-scan-dwell-ms`, except
+`--scan-skip-silent-ms <ms>` (or `--scan-skip-silent-ms=<ms>`): the checkbox does not set how long the check reads,
+so Extra decoder arguments may set it for the whole session, and the decoder checks its range. This refusal says
 only that a prohibited option is present. A saved system's own Extra decoder arguments still take the four scan
 switches, since a saved conventional system can run `-Y`.
 
@@ -2730,8 +2788,13 @@ under the Entries choice until another target CSV is chosen, the list switches
 to saved systems & frequencies, or the editor closes; Validate and Save then say
 the list has no target CSV yet.
 
-Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
-into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
+Listen's **Scan lists** tab combines saved systems and bare frequencies (P25, DMR, NXDN96,
+NXDN48, dPMR, D-STAR, YSF, M17, TETRA DMO, NFM and AM) into a single trunk-scan session. The
+simplex digital entries (dPMR, D-STAR, YSF, M17 and TETRA DMO) are conventional only; a list with
+a TETRA DMO entry runs the whole session at 72 kHz under **App default**, and a list set to another
+bandwidth is refused at start (see
+[Simplex digital targets](../docs/trunk-scan.md#simplex-digital-targets)).
+Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
 Scan lists use the app's voice hang time; per-system hang-time overrides do not apply.

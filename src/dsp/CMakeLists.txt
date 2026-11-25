@@ -1,5 +1,5 @@
 # DSP module library
-add_library(dsd-neo_dsp)
+add_library(dsd-neo_dsp STATIC)
 
 target_sources(
     dsd-neo_dsp
@@ -27,6 +27,7 @@ target_sources(
         dsd_symbol.c
         frame_sync_level.c
         dsd_frame_sync.c
+        frame_sync_m17_eot.c
         frame_sync_profile.c
         frame_sync_p25_sync_context.c
         frame_sync_p25p1_anchor.c
@@ -36,6 +37,7 @@ target_sources(
         unflushed_retune.c
         frame_sync_watchdog_tick.c
         frame_sync_policy.c
+        frame_sync_dpmr.c
         sync_hamming.c
         dmr_sync.c
         sync_calibration.c
@@ -285,10 +287,3 @@ if(BUILD_TESTING)
         PRIVATE dsd-neo_warnings dsd-neo_feature_pvc
     )
 endif()
-
-install(
-    TARGETS dsd-neo_dsp
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

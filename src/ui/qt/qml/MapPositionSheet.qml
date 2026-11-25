@@ -307,7 +307,7 @@ ModalSheet {
                 if (block.receivedWhen === 0 || !block.hasFix)
                     return "";
                 // The receive time with its date when not today, as "Measured at".
-                var at = MapText.clockText(block.fix.receivedTime, savedSystems.realtimeNowMs()) || block.fix.timeText || "";
+                var at = MapText.clockText(block.fix.receivedTime, savedSystems.localDay) || block.fix.timeText || "";
                 var ago = MapText.agoText(block.ageSeconds, at);
                 return ago.length > 0 ? qsTr("Received %1").arg(ago) + (block.ageSeconds >= 0 && at.length > 0 ? " · " + at : "") : "";
             }
@@ -322,7 +322,7 @@ ModalSheet {
             visible: text.length > 0
             step: block.stepKey + ":" + (block.fix.fixTime || 0)
             // With its date when not today (MapText.clockText()).
-            readonly property string at: block.fix.fixTime > 0 ? MapText.clockText(block.fix.fixTime, savedSystems.realtimeNowMs()) : ""
+            readonly property string at: block.fix.fixTime > 0 ? MapText.clockText(block.fix.fixTime, savedSystems.localDay) : ""
             // A report with no time of its own (LIP) may still say how old the
             // position was when sent: that bound, not nothing.
             text: at.length === 0 ? MapText.sentAgeText(block.fix.ageAtSendMaxSeconds) : block.reportAgeSeconds >= 0 ? qsTr("Measured %1").arg(MapText.agoText(block.reportAgeSeconds, at)) : qsTr("Measured at %1").arg(at)

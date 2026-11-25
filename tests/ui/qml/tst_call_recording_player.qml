@@ -575,6 +575,7 @@ Item {
                 {tag: "failed", result: 1, text: "Couldn't save the recording. Try another location."},
                 {tag: "missing", result: 3, text: "This recording is gone."},
                 {tag: "busy", result: 4, text: "An export is running. Save again when it finishes."},
+                {tag: "changed", result: 6, text: "This recording changed. Save it again."},
                 {tag: "cancelled", result: 2, text: ""}
             ];
         }
@@ -790,6 +791,57 @@ Item {
             var calls = recordings.calls();
             compare(calls[calls.length - 1].name, "deleteRecording");
             compare(calls[calls.length - 1].id, "t-2");
+        }
+
+        // Issue #902: a save the store refuses (storage is read again) says so,
+        // as an export does, and opens no picker.
+        function test_save_refused_while_loading() {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            recordings.setLoading(true);
+            var requests = testContext.lastDocumentRequest();
+            tap("recordingSave");
+            compare(lastStoreCall().name, "selectRecordings");
+            compare(item("historyRecording").saveSelection, 0, "nothing is held");
+            compare(item("recordingNotice").text, "Recordings are still loading. Try again in a moment.");
+            verify(!findChild(item("historyRecording"), "recordingSavePicker").visible, "no picker opens");
+            compare(testContext.lastDocumentRequest(), requests, "nothing is asked of the platform");
+            recordings.setLoading(false);
+        }
+
+        // Issue #902: a delete the store refuses (storage that came back is read
+        // again) says so and leaves the recording playing.
+        function test_delete_refused_while_loading() {
+            openWith([rec("t-1", pathA, 12000)]);
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            recordings.setLoading(true);
+            var stops = hostCallsNamed("stopPlayback").length;
+            tap("recordingDelete");
+            var confirm = findChild(sheet(), "recordingDeleteConfirm");
+            findChild(confirm, "confirmActionButton").activate();
+            verify(!confirm.visible);
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(hostCallsNamed("stopPlayback").length, stops, "nothing was deleted, so it plays on");
+            compare(item("recordingNotice").text, "Recordings are still loading. Try again in a moment.");
+            recordings.setLoading(false);
+        }
+
+        // Issue #902: a delete of a recording whose storage is not connected is
+        // refused at once; the player says so and plays on.
+        function test_delete_refused_while_storage_away() {
+            openWith([rec("t-1", pathA, 12000)]);
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            recordings.setStorageAway(true);
+            var stops = hostCallsNamed("stopPlayback").length;
+            tap("recordingDelete");
+            var confirm = findChild(sheet(), "recordingDeleteConfirm");
+            findChild(confirm, "confirmActionButton").activate();
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(hostCallsNamed("stopPlayback").length, stops, "nothing was deleted, so it plays on");
+            compare(item("recordingNotice").text, "That storage isn't connected. Delete again once it's back.");
+            recordings.setStorageAway(false);
         }
 
         function test_delete_cancelled() {

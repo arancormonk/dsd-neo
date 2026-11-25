@@ -140,6 +140,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "scan_voice_only", "Only stop scan on channels carrying voice", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "scan_skip_silent", "Skip a silent conventional scan channel after a quick RF check", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "scan_skip_silent_ms",
+     "Expert: length of the skip-silent reading in ms, rounded up to 10 ms slices (0 = the calibrated reading; else "
+     "10..500)",
+     "0", NULL, DSDCFG_TYPE_INT, 0, DSD_SCAN_SKIP_SILENT_MS_MAX},
     {"trunking", "scan_voice_qualify_ms", "Window after sync in which voice must appear or the scan moves on", "1000",
      NULL, DSDCFG_TYPE_INT, 100, 600000},
     {"trunking", "scan_voice_hold_ms", "Time to stay after the last voice frame", "2000", NULL, DSDCFG_TYPE_INT, 100,
@@ -166,8 +170,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      DSDCFG_TYPE_STRING, 0, 0},
     {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
     {"trunk_scan", "activity_hold_ms",
-     "Default conventional DMR/P25/NXDN activity hold and analog (nfm/am-conventional) carrier tail", "1200", NULL,
-     DSDCFG_TYPE_INT, 250, 600000},
+     "Default conventional digital activity hold (DMR, P25, NXDN, YSF, D-STAR, dPMR, M17, TETRA DMO) and analog "
+     "(nfm/am-conventional) carrier tail",
+     "1200", NULL, DSDCFG_TYPE_INT, 250, 600000},
 
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
@@ -227,6 +232,17 @@ static const dsdcfg_schema_entry_t s_schema[] = {
         "recording",
         "rdio_analog_talkgroup",
         "rdio-scanner talkgroup for analog calls with no known frequency (audio input); 0 leaves them unexported",
+        "0",
+        NULL,
+        DSDCFG_TYPE_INT,
+        0,
+        2147483647,
+    },
+    {
+        "recording",
+        "rdio_unknown_talkgroup",
+        "rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an "
+        "SDRTrunk .mbe call played with -r); 0 leaves them unexported",
         "0",
         NULL,
         DSDCFG_TYPE_INT,

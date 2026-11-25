@@ -20,6 +20,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -105,9 +106,10 @@ typedef enum {
     TETRA_DMO_E_POWER_CONTROL,
     TETRA_DMO_E_DUAL_WATCH,
     TETRA_DMO_E_TWO_FREQ,
-    TETRA_DMO_E_CIRCUIT_MODE, /* 0 TETRA speech, 1..7 circuit mode data, 8 proprietary speech */
-    TETRA_DMO_E_PRIORITY,     /* 0 normal, 1 high, 2 pre-emptive, 3 emergency */
-    TETRA_DMO_E_RESERVATION,  /* reservation time remaining, units of 6 frames */
+    TETRA_DMO_E_CIRCUIT_MODE,     /* 0 TETRA speech, 1..7 circuit mode data, 8 proprietary speech */
+    TETRA_DMO_E_PRIORITY,         /* 0 normal, 1 high, 2 pre-emptive, 3 emergency */
+    TETRA_DMO_E_RESERVATION,      /* reservation time remaining, units of 6 frames */
+    TETRA_DMO_E_RESERVATION_TYPE, /* channel reservation type: 0 after a call transaction, 1 during a gateway set-up */
     TETRA_DMO_E_REQUESTS_FLAG,
     TETRA_DMO_E_TIMING_CHANGE, /* timing change announced or required */
     TETRA_DMO_E_TIMING_ADJUST, /* timing adjustment code; the delay is the code times 5 symbols */
@@ -180,8 +182,11 @@ typedef struct {
     uint8_t null_pdu; /* DMAC-DATA: a Null PDU, nothing follows */
     uint8_t num_schf; /* DMAC-SYNC with frag_flag: SCH/F slots that follow */
     uint8_t frame_countdown;
+    uint8_t sync_frame; /* DMAC-SYNC: the frame number 1..18 of the DSB that carried it, from its SCH/S, set by
+                           tetra_dmo_apply_sync(); 0 for DMAC-DATA or a frame number not known */
     uint8_t dst_type;
-    uint8_t src_type;
+    uint8_t src_type;      /* 0 true SSI (with the MNI as given), 1 pseudo SSI, 2 none (EN 300 396-3 clause 9.3.27) */
+    uint8_t has_mni;       /* the MNI element was present (always but for a gateway's pseudo or absent addresses) */
     uint8_t dst_encrypted; /* DM-2-B: the destination address is encrypted; dst reads 0 */
     uint8_t has_addrs;     /* 1 when the header through the message type was read in the clear */
     uint8_t msg_type;
@@ -211,6 +216,8 @@ typedef struct {
     uint8_t swmi_up;       /* gateway: SwMI availability flag */
     uint8_t dmrep;         /* gateway: DM-REP function flag */
     uint8_t two_freq;      /* 1: duplex pair (type 1B / type 2, or a gateway acting as one) */
+    uint8_t rep_modes;     /* repeater operating modes (EN 300 396-4 clause 10.3.12; 00 a type 1 DM-REP), valid from a
+                              DM-REP or a gateway with the DM-REP function */
     uint8_t spacing;       /* 5-bit duplex spacing code, valid when two_freq */
     uint8_t reverse;       /* 1: uplink = downlink - spacing */
     uint8_t ms_link;       /* 0 slave link, 1 master link */
@@ -251,6 +258,10 @@ int tetra_dmo_parse_presence(const uint8_t* sch_s, const uint8_t* sch_h, tetra_d
  * length written. */
 int tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len);
 
+/* A DMAC-SYNC's 24-bit MNI as "mcc/mnc", or "open" for the all-ones open MNI (EN 300 396-1 clause 6.2), in @p buf
+ * (always terminated when @p buf_len > 0). */
+void tetra_dmo_format_mni(uint32_t mni, char* buf, size_t buf_len);
+
 /* Read the 124 SCH/H type-1 bits of a DMAC-SYNC as if they were clear. The SCH/S communication type selects the
  * leading address field. tetra_dmo_apply_sync() then clears what the SCH/S security class encrypts. Returns 1. */
 int tetra_dmo_parse_sync_h(const uint8_t* bits, int comm_type, tetra_dmo_sync_h_t* out);
@@ -278,6 +289,49 @@ void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_d
 
 /* How the traffic of the current direct mode call is protected; UNKNOWN outside direct mode. */
 tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
+
+/* What a DM-RESERVED says of the call it is sent for (EN 300 396-3 clauses 9.4.1, 9.6.2, 9.6.15, 8.4.3.3). */
+typedef enum {
+    TETRA_DMO_RSV_NONE = 0,      /* not a DM-RESERVED of a DSB, or its message dependent elements were not read */
+    TETRA_DMO_RSV_AFTER_TX,      /* the channel is reserved after a call transaction: that transmission is over */
+    TETRA_DMO_RSV_GATEWAY_SETUP, /* the channel is reserved during a call set-up through a gateway */
+    TETRA_DMO_RSV_ENDED,         /* the reservation, and with it the call, is over: reservation time remaining 0 sent in
+                                    a frame 6, 12 or 18 */
+} tetra_dmo_reservation_e;
+
+/* The reservation @p h describes. Reservation time remaining counts to the end of a frame 6, 12 or 18 (clause 9.6.15),
+ * so 0 ends the reservation only when sent in one of those frames (@p h->sync_frame); in any other frame, or with the
+ * frame not known, the reservation runs to the end of the next one (clause 8.4.5.1.8 note 2). */
+tetra_dmo_reservation_e tetra_dmo_reservation(const tetra_dmo_sync_h_t* h);
+
+/* Who sent a DMAC-SYNC or DMAC-DATA, as EN 300 396-3 clause 8.5.2.1.1 names the master of a call transaction: the
+ * source address with its type (clause 9.3.27: a true SSI, a pseudo SSI or none), the MNI when the PDU carried one, and
+ * the repeater or gateway address a DMAC-SYNC carries for a call through one (table 22). The SSI alone names no one:
+ * co-channel networks may share a true SSI, a pseudo SSI is any random value, and a gateway's pseudo addresses come
+ * with no MNI at all. */
+typedef struct {
+    uint32_t src;
+    uint32_t mni;
+    uint16_t relay;
+    uint8_t src_type;
+    uint8_t has_mni;
+    uint8_t has_relay;
+    uint8_t known; /* set from a PDU whose addresses were read in the clear */
+} tetra_dmo_party;
+
+/* The party @p h names in @p out; not known when its addresses were not read (DM-2-C). */
+void tetra_dmo_party_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out);
+
+/* 1 when @p h is from party @p p as a message of its transmission must be (clause 8.5.2.1.1): the same source address
+ * type and address, the same repeater or gateway where both name one, and the same MNI where both carry one, whatever
+ * the address type, since a DM-OCCUPIED repeats the MNI of the set-up that started its transmission, which the
+ * scrambling uses (note 4). A source that names none matches one that names none. */
+int tetra_dmo_party_continues(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+
+/* 1 when the DM-RESERVED @p h is from party @p p (clause 8.5.2.1.1): as tetra_dmo_party_continues(), but the MNI
+ * counts only for a true SSI, for which alone a DM-RESERVED shall repeat it; behind a pseudo SSI it need not be a true
+ * MNI. */
+int tetra_dmo_party_reserves(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next

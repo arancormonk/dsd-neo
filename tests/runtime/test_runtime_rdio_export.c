@@ -3,9 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -17,9 +19,12 @@
 #include <limits.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <pthread.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -379,6 +384,8 @@ expect_sidecar_times(const char* label, const char* body, long long start, long 
 }
 
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_TEST_REQUESTS_MAX 4
+
 typedef struct {
     dsd_socket_t listen_sock;
     dsd_thread_t thread;
@@ -394,6 +401,19 @@ typedef struct {
     char meta[4096];
     // The upload's "system" part, or "" when the request carried none.
     char system[32];
+    // Per request, in arrival order (the first RDIO_TEST_REQUESTS_MAX): the "meta" part, the "audio" part's bytes, and
+    // the file names the two parts carry.
+    int requests_seen;
+    char req_meta[RDIO_TEST_REQUESTS_MAX][1024];
+    unsigned char req_audio[RDIO_TEST_REQUESTS_MAX][256];
+    size_t req_audio_len[RDIO_TEST_REQUESTS_MAX];
+    char req_audio_name[RDIO_TEST_REQUESTS_MAX][256];
+    char req_meta_name[RDIO_TEST_REQUESTS_MAX][256];
+    // When set, the first request is accepted (first_accepted) and left unread until release_first is set: the worker
+    // stays inside that upload meanwhile.
+    int hold_first;
+    atomic_int first_accepted;
+    atomic_int release_first;
 } rdio_test_http_server;
 
 // Find @p needle in the first @p hay_len bytes of @p hay. The request is not a string: the WAV in its "audio" part,
@@ -412,30 +432,61 @@ rdio_test_find_bytes(const char* hay, size_t hay_len, const char* needle) {
     return NULL;
 }
 
-// Copy the body of the request's multipart part named by @p name_attr (`name="meta"`) into @p out.
+// The body of the request's multipart part named by @p name_attr (`name="meta"`), copied into @p out (at most
+// @p out_size bytes, not terminated): its length, or 0 when the request has no such part.
+static size_t
+rdio_test_capture_part_bytes(const char* request, size_t used, const char* name_attr, unsigned char* out,
+                             size_t out_size) {
+    const char* part = rdio_test_find_bytes(request, used, name_attr);
+    if (!part) {
+        return 0;
+    }
+    const size_t part_off = (size_t)(part - request);
+    const char* body = rdio_test_find_bytes(part, used - part_off, "\r\n\r\n");
+    if (!body) {
+        return 0;
+    }
+    body += 4;
+    const size_t body_off = (size_t)(body - request);
+    const char* end = rdio_test_find_bytes(body, used - body_off, "\r\n--");
+    if (!end) {
+        return 0;
+    }
+    size_t len = (size_t)(end - body);
+    if (len > out_size) {
+        len = out_size;
+    }
+    DSD_MEMCPY(out, body, len);
+    return len;
+}
+
+// Copy the body of the request's multipart part named by @p name_attr (`name="meta"`) into @p out, as a string.
 static void
 rdio_test_capture_part(const char* request, size_t used, const char* name_attr, char* out, size_t out_size) {
+    const size_t len = rdio_test_capture_part_bytes(request, used, name_attr, (unsigned char*)out, out_size - 1U);
+    out[len] = '\0';
+}
+
+// The `filename="..."` the request's part named by @p name_attr carries, or "" when it carries none.
+static void
+rdio_test_capture_part_file_name(const char* request, size_t used, const char* name_attr, char* out, size_t out_size) {
     out[0] = '\0';
     const char* part = rdio_test_find_bytes(request, used, name_attr);
     if (!part) {
         return;
     }
     const size_t part_off = (size_t)(part - request);
-    const char* body = rdio_test_find_bytes(part, used - part_off, "\r\n\r\n");
-    if (!body) {
+    const char* line_end = rdio_test_find_bytes(part, used - part_off, "\r\n");
+    const char* name = rdio_test_find_bytes(part, used - part_off, "filename=\"");
+    if (!name || !line_end || name > line_end) {
         return;
     }
-    body += 4;
-    const size_t body_off = (size_t)(body - request);
-    const char* end = rdio_test_find_bytes(body, used - body_off, "\r\n--");
-    if (!end) {
-        return;
+    name += strlen("filename=\"");
+    size_t len = 0;
+    while (name + len < line_end && name[len] != '"' && len + 1U < out_size) {
+        len++;
     }
-    size_t len = (size_t)(end - body);
-    if (len >= out_size) {
-        len = out_size - 1U;
-    }
-    DSD_MEMCPY(out, body, len);
+    DSD_MEMCPY(out, name, len);
     out[len] = '\0';
 }
 
@@ -496,6 +547,16 @@ rdio_test_http_serve_one(rdio_test_http_server* server, dsd_socket_t client) {
     }
     rdio_test_capture_part(request, used, "name=\"meta\"", server->meta, sizeof(server->meta));
     rdio_test_capture_part(request, used, "name=\"system\"", server->system, sizeof(server->system));
+    const int seen = server->requests_seen++;
+    if (seen < RDIO_TEST_REQUESTS_MAX) {
+        rdio_test_capture_part(request, used, "name=\"meta\"", server->req_meta[seen], sizeof(server->req_meta[seen]));
+        server->req_audio_len[seen] = rdio_test_capture_part_bytes(
+            request, used, "name=\"audio\"", server->req_audio[seen], sizeof(server->req_audio[seen]));
+        rdio_test_capture_part_file_name(request, used, "name=\"audio\"", server->req_audio_name[seen],
+                                         sizeof(server->req_audio_name[seen]));
+        rdio_test_capture_part_file_name(request, used, "name=\"meta\"", server->req_meta_name[seen],
+                                         sizeof(server->req_meta_name[seen]));
+    }
 
     const char default_response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
     const char* response = server->response[0] ? server->response : default_response;
@@ -549,6 +610,13 @@ rdio_test_http_server_thread(void* arg) {
             break;
         }
         server->saw_request = 1;
+        if (i == 0 && server->hold_first) {
+            atomic_store(&server->first_accepted, 1);
+            const uint64_t t0 = dsd_realtime_mono_ms();
+            while (atomic_load(&server->release_first) == 0 && dsd_realtime_mono_ms() - t0 < 10000U) {
+                dsd_sleep_ms(1U);
+            }
+        }
         if (rdio_test_http_serve_one(server, client) == 0) {
             server->requests_done++;
         }
@@ -562,14 +630,17 @@ rdio_test_http_server_thread(void* arg) {
 }
 
 static int
-rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
-                              const char* response, int no_request_expected, unsigned int accept_timeout_ms,
-                              int requests_expected) {
+rdio_test_http_server_start_cfg(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                                const char* response, int no_request_expected, unsigned int accept_timeout_ms,
+                                int requests_expected, int hold_first) {
     if (!server || !out_api_url || out_api_url_size == 0) {
         return 1;
     }
 
     DSD_MEMSET(server, 0, sizeof(*server));
+    server->hold_first = hold_first;
+    atomic_store(&server->first_accepted, 0);
+    atomic_store(&server->release_first, 0);
     server->listen_sock = DSD_INVALID_SOCKET;
     server->rc = 1;
     server->no_request_expected = no_request_expected;
@@ -633,6 +704,14 @@ rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, 
     }
 
     return 0;
+}
+
+static int
+rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                              const char* response, int no_request_expected, unsigned int accept_timeout_ms,
+                              int requests_expected) {
+    return rdio_test_http_server_start_cfg(server, out_api_url, out_api_url_size, response, no_request_expected,
+                                           accept_timeout_ms, requests_expected, 0);
 }
 
 static int
@@ -1202,52 +1281,6 @@ test_export_guards_and_invalid_mode_are_noops(void) {
 }
 
 static int
-test_missing_talkgroup_rejects_sidecar(void) {
-    char dir_template[DSD_TEST_PATH_MAX] = {0};
-    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_missing_tg")) {
-        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
-        return 1;
-    }
-
-    char wav_path[DSD_TEST_PATH_MAX] = {0};
-    char json_path[DSD_TEST_PATH_MAX] = {0};
-    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "call.wav") != 0
-        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "call.json") != 0) {
-        DSD_FPRINTF(stderr, "path join failed\n");
-        remove_empty_dir(dir_template);
-        return 1;
-    }
-
-    if (write_dummy_wav(wav_path) != 0) {
-        remove_empty_dir(dir_template);
-        return 1;
-    }
-
-    static dsd_opts opts;
-    static Event_History_I hist;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&hist, 0, sizeof(hist));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 48;
-    hist.Event_History_Items[0].event_time = (time_t)1700000300;
-
-    int rc = 0;
-    if (dsd_rdio_export_call(&opts, &hist, wav_path, 0) == 0) {
-        DSD_FPRINTF(stderr, "export accepted missing talkgroup\n");
-        rc = 1;
-    }
-    if (file_exists(json_path)) {
-        DSD_FPRINTF(stderr, "missing talkgroup should not create sidecar\n");
-        (void)remove(json_path);
-        rc = 1;
-    }
-
-    (void)remove(wav_path);
-    remove_empty_dir(dir_template);
-    return rc;
-}
-
-static int
 test_sidecar_escapes_strings_and_tgt_fallback(void) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_escape")) {
@@ -1475,10 +1508,11 @@ test_sidecar_channel_label_fallback(void) {
 // Export one row's sidecar into a fresh directory under @p with_opts (NULL: DirWatch, no system) and return the sidecar's
 // body in @p body, or -1 when the export was refused (-2 if it left a sidecar anyway). The recording is an 8 kHz WAV
 // @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at
-// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
+// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not). A negative
+// @p allow_fallback exports through dsd_rdio_export_call_ex(), else through dsd_rdio_export_call_fallback() with it.
 static int
-export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
-                         time_t started, char* body, size_t body_size) {
+export_sidecar_body_full(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
+                         time_t started, int allow_fallback, char* body, size_t body_size) {
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1499,9 +1533,12 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    const dsd_opts* use = with_opts ? with_opts : &opts;
+    const int exported =
+        allow_fallback < 0 ? dsd_rdio_export_call_ex(use, hist, wav_path, opened, started, NULL)
+                           : dsd_rdio_export_call_fallback(use, hist, wav_path, opened, started, allow_fallback, NULL);
     int rc = 0;
-    if (dsd_rdio_export_call_ex(with_opts ? with_opts : &opts, hist, wav_path, opened, started, NULL) != 0
-        || read_file(json_path, body, body_size) != 0) {
+    if (exported != 0 || read_file(json_path, body, body_size) != 0) {
         rc = -1;
     }
     // A refused export leaves no sidecar behind.
@@ -1513,6 +1550,12 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
     (void)remove(wav_path);
     remove_empty_dir(dir_template);
     return rc;
+}
+
+static int
+export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
+                         time_t started, char* body, size_t body_size) {
+    return export_sidecar_body_full(with_opts, hist, wav_seconds, opened, started, -1, body, body_size);
 }
 
 static int
@@ -1550,7 +1593,8 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
 
 // The sidecar's freq is the frequency the call was heard on (Event_History::freq_hz). A row's channel is a trunk
 // channel number, an LCN or a dPMR colour code, never Hz, and must not be read as one even when it is large enough to
-// pass the 1 MHz floor. A frequency that does not fit the field, or sits below the floor, is reported as 0.
+// pass the 1 MHz floor. A frequency below 1 MHz, or one rdio-scanner's signed 32-bit frequency columns cannot store
+// (issue #888 B5, B13), is reported as 0, and only a usable one is listed in freqList (D5, D8).
 static int
 test_sidecar_freq_comes_from_the_row_frequency(void) {
     static Event_History_I hist;
@@ -1560,12 +1604,19 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         uint32_t channel;
         int64_t freq_hz;
         const char* want;
+        const char* want_list; /* NULL: no freqList key */
     } cases[] = {
-        {"channel number without a frequency", 851012500U, 0, "\"freq\": 0,"},
-        {"row frequency beside a channel number", 0x10C8U, 453212500, "\"freq\": 453212500,"},
-        {"frequency past 32 bits", 0U, INT64_C(5000000000), "\"freq\": 0,"},
-        {"negative frequency", 0U, -851012500, "\"freq\": 0,"},
-        {"sub-MHz frequency", 0U, 999999, "\"freq\": 0,"},
+        {"channel number without a frequency", 851012500U, 0, "\"freq\": 0,", NULL},
+        {"row frequency beside a channel number", 0x10C8U, 453212500, "\"freq\": 453212500,",
+         "\"freqList\": [{\"pos\": 0, \"freq\": 453212500}],"},
+        {"frequency past 32 bits", 0U, INT64_C(5000000000), "\"freq\": 0,", NULL},
+        {"negative frequency", 0U, -851012500, "\"freq\": 0,", NULL},
+        {"sub-MHz frequency", 0U, 999999, "\"freq\": 0,", NULL},
+        {"exactly 1 MHz", 0U, 1000000, "\"freq\": 1000000,", "\"freqList\": [{\"pos\": 0, \"freq\": 1000000}],"},
+        {"signed 32-bit limit", 0U, INT64_C(2147483647), "\"freq\": 2147483647,",
+         "\"freqList\": [{\"pos\": 0, \"freq\": 2147483647}],"},
+        {"one above the signed 32-bit limit", 0U, INT64_C(2147483648), "\"freq\": 0,", NULL},
+        {"2.4 GHz", 0U, INT64_C(2400000000), "\"freq\": 0,", NULL},
     };
 
     int rc = 0;
@@ -1581,6 +1632,11 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         }
         if (!strstr(body, cases[i].want)) {
             DSD_FPRINTF(stderr, "%s: sidecar missing %s\n%s\n", cases[i].label, cases[i].want, body);
+            rc = 1;
+        }
+        if (cases[i].want_list ? !strstr(body, cases[i].want_list) : strstr(body, "freqList") != NULL) {
+            DSD_FPRINTF(stderr, "%s: freqList should %s\n%s\n", cases[i].label,
+                        cases[i].want_list ? cases[i].want_list : "be absent", body);
             rc = 1;
         }
     }
@@ -1731,7 +1787,8 @@ test_analog_sidecar_fields(void) {
 
 // Issue #668 D3/D5: the talkgroup comes from the frequency, in whole kHz; a call with none (audio input) takes
 // --rdio-analog-talkgroup, and with neither it is not exported. The frequency wins over the fallback. Below 1 MHz the
-// sidecar's freq is 0 but the call is still exported under its kHz; a frequency past 32 bits still names its kHz.
+// sidecar's freq is 0 but the call is still exported under its kHz; a frequency past signed 32 bits (issue #888 B13)
+// still names its kHz with freq 0.
 static int
 test_analog_talkgroup_sources(void) {
     static const struct {
@@ -1757,6 +1814,9 @@ test_analog_talkgroup_sources(void) {
         {"the largest fallback", 0, 2147483647, 1, "\"talkgroup\": 2147483647,", "\"freq\": 0,", "NFM"},
         {"below the 1 MHz floor", 530000, 0, 1, "\"talkgroup\": 530,", "\"freq\": 0,", "NFM 0.5300 MHz"},
         {"past 32 bits", INT64_C(5000000000), 0, 1, "\"talkgroup\": 5000000,", "\"freq\": 0,", "NFM 5000.0000 MHz"},
+        {"exactly 1 MHz", 1000000, 0, 1, "\"talkgroup\": 1000,", "\"freq\": 1000000,", "NFM 1.0000 MHz"},
+        {"past signed 32-bit Hz", INT64_C(3000000000), 0, 1, "\"talkgroup\": 3000000,", "\"freq\": 0,",
+         "NFM 3000.0000 MHz"},
         {"no frequency, no fallback", 0, 0, 0, NULL, NULL, NULL},
         {"under 1 kHz, no fallback", 999, 0, 0, NULL, NULL, NULL},
         {"negative frequency, no fallback", -154437500, 0, 0, NULL, NULL, NULL},
@@ -1942,6 +2002,625 @@ test_sidecar_tag_of_unknown_kind_is_empty(void) {
         }
         rc |= expect_body_has(cases[i].label, body, cases[i].want);
     }
+    return rc;
+}
+
+/* The ring and options the issue #888 sidecar cases share, zeroed for each case that asks: one ring (about 3.7 MiB)
+   for the run, not one a case, and the options on the heap. NULL when they cannot be had. Freed at the end of main(). */
+static Event_History_I* g_rdio_case_hist = NULL;
+static dsd_opts* g_rdio_case_opts = NULL;
+
+static Event_History_I*
+rdio_case_hist(void) {
+    if (g_rdio_case_hist == NULL) {
+        g_rdio_case_hist = (Event_History_I*)calloc(1, sizeof(*g_rdio_case_hist));
+    } else {
+        DSD_MEMSET(g_rdio_case_hist, 0, sizeof(*g_rdio_case_hist));
+    }
+    return g_rdio_case_hist;
+}
+
+static dsd_opts*
+rdio_case_opts(void) {
+    if (g_rdio_case_opts == NULL) {
+        g_rdio_case_opts = (dsd_opts*)calloc(1, sizeof(*g_rdio_case_opts));
+    } else {
+        DSD_MEMSET(g_rdio_case_opts, 0, sizeof(*g_rdio_case_opts));
+    }
+    return g_rdio_case_opts;
+}
+
+// Issue #888 B6: the sidecar's emergency is the row's own flag (an NXDN VCALL with the emergency bit, say), never a
+// constant false.
+static int
+test_sidecar_emergency_from_the_row(void) {
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (int emergency = 0; emergency <= 1; emergency++) {
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->event_time = (time_t)1700001200;
+        item->target_id = 301U;
+        item->emergency = (uint8_t)emergency;
+        char body[4096];
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(emergency ? "emergency row" : "routine row", body,
+                              emergency ? "\"emergency\": true," : "\"emergency\": false,");
+    }
+    return rc;
+}
+
+// Issue #888 B8: short_name is the row's system string, else the protocol's word, so a row with no system string (an
+// X2-TDMA call) still names a system for an rdio-scanner v8 DirWatch, which resolves the system from short_name.
+static int
+test_sidecar_short_name_falls_back_to_the_protocol(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        const char* sysid;
+        const char* want;
+    } cases[] = {
+        {"X2-TDMA, no system string", DSD_SYNC_X2TDMA_VOICE_POS, "", "\"short_name\": \"X2-TDMA\","},
+        {"D-STAR, no system string", DSD_SYNC_DSTAR_VOICE_NEG, "", "\"short_name\": \"D-STAR\","},
+        {"P25 phase 2, no system string", DSD_SYNC_P25P2_POS, "", "\"short_name\": \"P25\","},
+        {"NXDN with a system string", DSD_SYNC_NXDN_NEG, "NXDN_RAN_9", "\"short_name\": \"NXDN_RAN_9\","},
+        {"no protocol", DSD_SYNC_DIGITAL, "", "\"short_name\": \"\","},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = (int8_t)cases[i].systype;
+        item->event_time = (time_t)1700001300;
+        item->target_id = 12U;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
+        char body[4096];
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, cases[i].want);
+    }
+    return rc;
+}
+
+// Issue #888 B10: rdio-scanner discards a tag of exactly "-", so "-" is no name at any step of the chain: the next
+// candidate labels the call. An analog channel label of "-" gives way to the frequency tag.
+static int
+test_sidecar_dash_tag_is_absent(void) {
+    static const struct {
+        const char* label;
+        const char* service;
+        const char* t_name;
+        const char* tgt_str;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {"dash service name", "-", "Ops", "", "", "\"talkgroup_tag\": \"Ops\","},
+        {"dash talkgroup name", "", "-", "TG-A", "", "\"talkgroup_tag\": \"TG-A\","},
+        {"dash target text", "", "", "-", "Dispatch", "\"talkgroup_tag\": \"Dispatch\","},
+        {"dash everywhere", "-", "-", "-", "-", "\"talkgroup_tag\": \"GROUP\","},
+        {"a name that starts with a dash", "-East", "Ops", "", "", "\"talkgroup_tag\": \"-East\","},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_DMR_BS_VOICE_POS;
+        item->event_time = (time_t)1700001400;
+        item->target_id = 77U;
+        item->gi = 0;
+        DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", cases[i].service);
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        char body[4096];
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_body_has(cases[i].label, body, cases[i].want);
+    }
+    analog_row(hist, 154437500);
+    DSD_SNPRINTF(hist->Event_History_Items[0].channel_label, sizeof hist->Event_History_Items[0].channel_label, "%s",
+                 "-");
+    char body[4096];
+    if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+        return 1;
+    }
+    rc |= expect_body_has("analog dash channel label", body, "\"talkgroup_tag\": \"NFM 154.4375 MHz\",");
+    return rc;
+}
+
+// Issue #888 B11: sidecar strings are JSON, which is UTF-8. A name cut mid-character (a CSV import) or any other byte
+// that is no part of a well-formed character becomes U+FFFD, one for each maximal ill-formed run; well-formed text,
+// multibyte characters included, is written untouched.
+static int
+test_sidecar_strings_are_valid_utf8(void) {
+    static const struct {
+        const char* label;
+        const char* in;
+        const char* want;
+    } cases[] = {
+        {"well-formed text", "Caf\xC3\xA9 \xE6\x97\xA5 \xF0\x9F\x93\xBB", "Caf\xC3\xA9 \xE6\x97\xA5 \xF0\x9F\x93\xBB"},
+        {"cut two-byte character", "Caf\xC3", "Caf\xEF\xBF\xBD"},
+        {"cut three-byte character",
+         "A\xE6\x97"
+         "B",
+         "A\xEF\xBF\xBD"
+         "B"},
+        {"lone continuation byte",
+         "A\x80"
+         "B",
+         "A\xEF\xBF\xBD"
+         "B"},
+        {"overlong form", "\xC0\xAF", "\xEF\xBF\xBD\xEF\xBF\xBD"},
+        {"surrogate", "\xED\xA0\x80", "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD"},
+        {"past U+10FFFF",
+         "\xF4\x90\x80\x80"
+         "Z",
+         "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD"
+         "Z"},
+        {"escape after a bad byte", "\xFF\"", "\xEF\xBF\xBD\\\""},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->event_time = (time_t)1700001500;
+        item->target_id = 77U;
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].in);
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].in);
+        char body[4096];
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            rc = 1;
+            continue;
+        }
+        char want[256];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+    }
+    return rc;
+}
+
+// A digital voice row with no talkgroup number, heard on @p freq_hz with access code @p kind/@p code.
+static void
+unnumbered_row(Event_History_I* hist, int systype, int64_t freq_hz, uint8_t kind, uint16_t code) {
+    DSD_MEMSET(hist, 0, sizeof(*hist));
+    Event_History* item = &hist->Event_History_Items[0];
+    item->systype = (int8_t)systype;
+    item->category = DSD_EVENT_CATEGORY_VOICE;
+    item->gi = -1;
+    item->event_start_time = (time_t)1700002000;
+    item->event_time = (time_t)1700002003;
+    item->freq_hz = freq_hz;
+    item->access_code_kind = kind;
+    item->access_code = code;
+}
+
+// Issue #888: a digital call with no talkgroup number is never exported through the entries that predate the fallback,
+// nor through the new one with the fallback off: no sidecar is written, whatever the row and options hold.
+static int
+test_unnumbered_digital_call_without_fallback_writes_nothing(void) {
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 48;
+    opts->rdio_unknown_talkgroup = 9000;
+    opts->rdio_analog_talkgroup = 8000;
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist->Event_History_Items[0].source_id = 1234U;
+    char body[4096];
+    int rc = 0;
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, -1, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "dsd_rdio_export_call_ex() gave an unnumbered digital call a talkgroup\n");
+        rc = 1;
+    }
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 0, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "the fallback entry with the fallback off exported an unnumbered digital call\n");
+        rc = 1;
+    }
+    if (dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], 0) != 0U) {
+        DSD_FPRINTF(stderr, "dsd_rdio_call_talkgroup() gave a number with the fallback off\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 D2: the number dsd_rdio_call_talkgroup() exports a call under. A decoded target always; for a digital
+// voice row without one, with the fallback on, the frequency in whole kHz (rounded down, 1..2147483647), else
+// --rdio-unknown-talkgroup, else none. A row of no known protocol gets no fallback number (its label would be a bare
+// frequency, and an rdio-scanner v8 DirWatch could pick no system for it). Analog rows keep their own rule (#668), whose
+// kHz range runs to UINT32_MAX.
+static int
+test_call_talkgroup_number(void) {
+    static const struct {
+        const char* label;
+        int64_t freq_hz;
+        int systype;
+        uint32_t target;
+        int allow;
+        int option;
+        uint32_t want;
+        uint8_t category;
+    } cases[] = {
+        {"decoded target", 452312500, DSD_SYNC_DMR_BS_VOICE_POS, 77U, 1, 9000, 77U, DSD_EVENT_CATEGORY_VOICE},
+        {"decoded target, fallback off", 0, DSD_SYNC_DMR_BS_VOICE_POS, 77U, 0, 0, 77U, DSD_EVENT_CATEGORY_DATA},
+        {"target above the signed range", 0, DSD_SYNC_M17_STR_POS, 0xFFFFFFF0U, 1, 0, 0xFFFFFFF0U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"kHz", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 0, 452312U, DSD_EVENT_CATEGORY_VOICE},
+        {"kHz over the option", 452312999, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 452312U, DSD_EVENT_CATEGORY_VOICE},
+        {"no frequency: the option", 0, DSD_SYNC_YSF_POS, 0U, 1, 9000, 9000U, DSD_EVENT_CATEGORY_VOICE},
+        {"no frequency, no option", 0, DSD_SYNC_YSF_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"999 Hz: the option", 999, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 9000, 9000U, DSD_EVENT_CATEGORY_VOICE},
+        {"999 Hz, no option", 999, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"1000 Hz", 1000, DSD_SYNC_DSTAR_VOICE_POS, 0U, 1, 9000, 1U, DSD_EVENT_CATEGORY_VOICE},
+        {"kHz at the signed limit", INT64_C(2147483647999), DSD_SYNC_DPMR_FS1_POS, 0U, 1, 0, 2147483647U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"kHz over the signed limit", INT64_C(2147483648000), DSD_SYNC_DPMR_FS1_POS, 0U, 1, 9000, 9000U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"negative frequency", -452312500, DSD_SYNC_DPMR_FS1_POS, 0U, 1, 0, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"fallback off", 452312500, DSD_SYNC_NXDN_POS, 0U, 0, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"data row", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_DATA},
+        {"cleared row", 452312500, DSD_SYNC_NXDN_POS, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_UNKNOWN},
+        {"no protocol word: no kHz", 452312500, DSD_SYNC_DIGITAL, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"no sync: no option", 0, DSD_SYNC_NONE, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"unknown sync type", 452312500, 45, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+        {"no protocol word, numbered", 452312500, DSD_SYNC_DIGITAL, 77U, 1, 9000, 77U, DSD_EVENT_CATEGORY_VOICE},
+        {"analog kHz", 154437500, DSD_SYNC_ANALOG, 0U, 0, 9000, 154437U, DSD_EVENT_CATEGORY_VOICE},
+        {"analog kHz past the signed range", INT64_C(3000000000000), DSD_SYNC_ANALOG, 0U, 1, 9000, 3000000000U,
+         DSD_EVENT_CATEGORY_VOICE},
+        {"analog never takes the digital option", 0, DSD_SYNC_ANALOG, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        hist->Event_History_Items[0].category = cases[i].category;
+        hist->Event_History_Items[0].target_id = cases[i].target;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_unknown_talkgroup = cases[i].option;
+        const uint32_t got = dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], cases[i].allow);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: talkgroup %u, want %u\n", cases[i].label, (unsigned)got, (unsigned)cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_call_talkgroup(opts, NULL, 1) != 0U) {
+        DSD_FPRINTF(stderr, "no row, no talkgroup\n");
+        rc = 1;
+    }
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist->Event_History_Items[0], 1) != 452312U) {
+        DSD_FPRINTF(stderr, "no options: still the kHz\n");
+        rc = 1;
+    }
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist->Event_History_Items[0], 1) != 0U) {
+        DSD_FPRINTF(stderr, "no options and no frequency: no talkgroup\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 B3: dsd_rdio_call_fallback_eligible() says whether the fallback numbers a row, or would with a frequency or
+// --rdio-unknown-talkgroup: a digital VOICE row with no target whose sync type names a protocol and whose
+// fallback_blocked is clear, with the fallback on. The WAV close spends its once-a-run "no number" line only on such a
+// row. A row the fallback may not number (an ID its decoder could not read, a YSF call not ended on a terminator; issue
+// #888) is not, and dsd_rdio_call_talkgroup() gives it none, though --rdio-unknown-talkgroup is set; a talkgroup it
+// does have it keeps.
+static int
+test_call_fallback_eligible(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        uint8_t category;
+        uint32_t target;
+        int allow;
+        uint8_t blocked;
+        int want;
+    } cases[] = {
+        {"NXDN voice, no target", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 1},
+        {"X2-TDMA voice, no target", DSD_SYNC_X2TDMA_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 1},
+        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 0U, 0},
+        {"numbered: no fallback needed", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 1, 0U, 0},
+        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 1, 0U, 0},
+        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 1, 0U, 0},
+        {"no protocol word", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"no sync", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"analog: its own rule", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"YSF voice, blocked", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1U, 0},
+        {"P25 voice, blocked", DSD_SYNC_P25P2_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1U, 0},
+        {"P25 voice, blocked, numbered", DSD_SYNC_P25P2_POS, DSD_EVENT_CATEGORY_VOICE, 1234U, 1, 1U, 0},
+    };
+
+    dsd_opts* const opts = rdio_case_opts();
+
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(hist, cases[i].systype, 0, DSD_ACCESS_CODE_NONE, 0);
+        hist->Event_History_Items[0].category = cases[i].category;
+        hist->Event_History_Items[0].target_id = cases[i].target;
+        hist->Event_History_Items[0].fallback_blocked = cases[i].blocked;
+        const int got = dsd_rdio_call_fallback_eligible(&hist->Event_History_Items[0], cases[i].allow);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "%s: eligible %d, want %d\n", cases[i].label, got, cases[i].want);
+            rc = 1;
+        }
+        if (cases[i].blocked != 0U && opts != NULL) {
+            opts->rdio_unknown_talkgroup = 9000;
+            const uint32_t tg = dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], cases[i].allow);
+            if (tg != cases[i].target) {
+                DSD_FPRINTF(stderr, "%s: talkgroup %u, want %u\n", cases[i].label, (unsigned)tg,
+                            (unsigned)cases[i].target);
+                rc = 1;
+            }
+            opts->rdio_unknown_talkgroup = 0;
+        }
+    }
+    if (dsd_rdio_call_fallback_eligible(NULL, 1) != 0) {
+        DSD_FPRINTF(stderr, "no row is not eligible\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 D3: a call exported under the fallback number is labelled by its service name, else its channel label,
+// else "<protocol> <access code> <MHz> MHz" with the unknown parts left out; never by per-call identity text (talkgroup
+// name, target or source text) nor PRIVATE/GROUP. "-" is no label at any step (B10). Access codes are spelled and
+// bounded as the app's views spell them: RAN, CC and CAN in decimal from 0, NAC as three uppercase hex digits from 001
+// to FFE; a code out of its range, or of a kind not known, is left out.
+static int
+test_fallback_call_label(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        int64_t freq_hz;
+        uint8_t kind;
+        uint16_t code;
+        int gi;
+        const char* service;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {"NXDN", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9, -1, "", "", "NXDN RAN 9 452.3125 MHz"},
+        {"DMR service name", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "Yard Crew",
+         "Base", "Yard Crew"},
+        {"channel label", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "", "Base", "Base"},
+        {"dash everywhere", DSD_SYNC_DMR_MS_VOICE, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, -1, "-", "-",
+         "DMR CC 3 452.3125 MHz"},
+        {"unaddressed NXDN group call", DSD_SYNC_NXDN_NEG, 452312500, DSD_ACCESS_CODE_RAN, 9, 0, "", "",
+         "NXDN RAN 9 452.3125 MHz"},
+        {"source-only private call", DSD_SYNC_DMR_BS_VOICE_NEG, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3, 1, "", "",
+         "DMR CC 3 452.3125 MHz"},
+        {"valid RAN 0", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 0, -1, "", "", "NXDN RAN 0 452.3125 MHz"},
+        {"RAN out of range", DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 64, -1, "", "", "NXDN 452.3125 MHz"},
+        {"P25 phase 1 NAC", DSD_SYNC_P25P1_POS, 851012500, DSD_ACCESS_CODE_NAC, 0x2A3, -1, "", "",
+         "P25 NAC 2A3 851.0125 MHz"},
+        {"P25 phase 2 NAC", DSD_SYNC_P25P2_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0x001, -1, "", "",
+         "P25 NAC 001 851.0125 MHz"},
+        {"NAC out of range", DSD_SYNC_P25P1_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0xFFF, -1, "", "", "P25 851.0125 MHz"},
+        {"NAC 000", DSD_SYNC_P25P1_NEG, 851012500, DSD_ACCESS_CODE_NAC, 0x000, -1, "", "", "P25 851.0125 MHz"},
+        {"DMR CC 0", DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 0, -1, "", "",
+         "DMR CC 0 452.3125 MHz"},
+        {"colour code out of range", DSD_SYNC_TETRA_NDB_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 64, -1, "", "",
+         "TETRA 452.3125 MHz"},
+        {"TETRA CC 63", DSD_SYNC_TETRA_SB_NEG, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 63, -1, "", "",
+         "TETRA CC 63 452.3125 MHz"},
+        {"M17 CAN 15", DSD_SYNC_M17_STR_POS, 433475000, DSD_ACCESS_CODE_CAN, 15, -1, "", "", "M17 CAN 15 433.4750 MHz"},
+        {"CAN out of range", DSD_SYNC_M17_LSF_NEG, 433475000, DSD_ACCESS_CODE_CAN, 16, -1, "", "", "M17 433.4750 MHz"},
+        {"unknown code kind", DSD_SYNC_DPMR_FS2_POS, 446106250, 9, 3, -1, "", "", "dPMR 446.1063 MHz"},
+        {"D-STAR", DSD_SYNC_DSTAR_VOICE_POS, 145670000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "D-STAR 145.6700 MHz"},
+        {"YSF", DSD_SYNC_YSF_NEG, 145670000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "YSF 145.6700 MHz"},
+        {"EDACS", DSD_SYNC_EDACS_POS, 851012500, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "EDACS 851.0125 MHz"},
+        {"ProVoice", DSD_SYNC_PROVOICE_NEG, 851012500, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "ProVoice 851.0125 MHz"},
+        {"protocol only", DSD_SYNC_X2TDMA_VOICE_POS, 0, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "X2-TDMA"},
+        {"protocol and code only", DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_RAN, 9, -1, "", "", "NXDN RAN 9"},
+        {"1000 Hz", DSD_SYNC_DSTAR_VOICE_NEG, 1000, DSD_ACCESS_CODE_NONE, 0, -1, "", "", "D-STAR 0.0010 MHz"},
+        {"2.4 GHz", DSD_SYNC_M17_STR_NEG, INT64_C(2400000000), DSD_ACCESS_CODE_NONE, 0, -1, "", "",
+         "M17 2400.0000 MHz"},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, cases[i].kind, cases[i].code);
+        Event_History* item = &hist->Event_History_Items[0];
+        item->gi = (int8_t)cases[i].gi;
+        item->source_id = 4321U;
+        DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", cases[i].service);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        // Per-call identity text, never a fallback label.
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "Some Name");
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "CQCQCQ");
+        DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", "N0CALL");
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_unknown_talkgroup = 9000;
+        char body[4096];
+        if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want);
+        rc |= expect_body_has(cases[i].label, body, want);
+        rc |= expect_body_has(cases[i].label, body, "\"srcList\": [{\"pos\":0,\"src\":4321}],");
+    }
+    return rc;
+}
+
+// Issue #888 D3: a ProVoice call an EDACS grant named (its row carries the grant's LCN) is labelled, and short-named
+// when it has no system string, "EDACS", as the analog calls on its channel are, so the kHz talkgroup they share keeps
+// one label, whether or not a site was decoded. A standalone ProVoice call (channel 0) keeps "ProVoice", whatever its
+// system string.
+static int
+test_fallback_edacs_provoice_label(void) {
+    static const struct {
+        const char* label;
+        int systype;
+        uint32_t channel;
+        int64_t freq_hz;
+        const char* sysid;
+        const char* want_tag;
+        const char* want_short_name;
+    } cases[] = {
+        {"EDACS ProVoice", DSD_SYNC_PROVOICE_POS, 4U, 851012500, "EDACS_SITE_012_Digital_Call", "EDACS 851.0125 MHz",
+         "EDACS_SITE_012_Digital_Call"},
+        {"EDACS ProVoice, inverted", DSD_SYNC_PROVOICE_NEG, 7U, 851012500, "EDACS_SITE_001_Digital_Emergency_Call",
+         "EDACS 851.0125 MHz", "EDACS_SITE_001_Digital_Emergency_Call"},
+        {"EDACS ProVoice, no site decoded", DSD_SYNC_PROVOICE_POS, 4U, 851012500, "EDACS_SITE_000_Digital_Call",
+         "EDACS 851.0125 MHz", "EDACS_SITE_000_Digital_Call"},
+        {"EDACS ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 4U, 0, "", "EDACS", "EDACS"},
+        {"EDACS analog all-call", DSD_SYNC_EDACS_POS, 4U, 851012500, "EDACS_SITE_012_Analog_Call", "EDACS 851.0125 MHz",
+         "EDACS_SITE_012_Analog_Call"},
+        {"standalone ProVoice", DSD_SYNC_PROVOICE_POS, 0U, 851012500, "EDACS_SITE_000_Analog_Call",
+         "ProVoice 851.0125 MHz", "EDACS_SITE_000_Analog_Call"},
+        {"standalone ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 0U, 0, "", "ProVoice", "ProVoice"},
+    };
+
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        Event_History* item = &hist->Event_History_Items[0];
+        item->source_id = 4321U;
+        item->channel = cases[i].channel;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_unknown_talkgroup = 9000;
+        char body[4096];
+        if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
+            rc = 1;
+            continue;
+        }
+        char want[160];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\",", cases[i].want_tag);
+        rc |= expect_body_has(cases[i].label, body, want);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", cases[i].want_short_name);
+        rc |= expect_body_has(cases[i].label, body, want);
+    }
+    return rc;
+}
+
+// Issue #888 D2/D3/D5/D8: the whole sidecar of a fallback call. The kHz number, the generated label, the row's start,
+// its Hz in freq and freqList, the row's own system (never the analog override), a protocol short_name when the row has
+// no system string, and the rest as for a numbered call. With no frequency (audio input) --rdio-unknown-talkgroup is
+// the number, freq is 0 and freqList is left out. A numbered row exported with the fallback on is unchanged.
+static int
+test_fallback_call_sidecar(void) {
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 5;
+    opts->rdio_analog_system_id = 9;
+    opts->rdio_unknown_talkgroup = 9000;
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist->Event_History_Items[0].enc = 1;
+    char body[4096];
+    if (export_sidecar_body_full(opts, hist, 2, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "fallback sidecar: export failed\n");
+        return 1;
+    }
+    int rc = 0;
+    rc |= expect_body_has("fallback sidecar", body, "\"talkgroup\": 452312,");
+    rc |= expect_body_has("fallback sidecar", body, "\"talkgroup_tag\": \"NXDN RAN 9 452.3125 MHz\",");
+    rc |= expect_body_has("fallback sidecar", body, "\"srcList\": [],");
+    rc |= expect_body_has("fallback sidecar", body, "\"freq\": 452312500,");
+    rc |= expect_body_has("fallback sidecar", body, "\"freqList\": [{\"pos\": 0, \"freq\": 452312500}],");
+    rc |= expect_body_has("fallback sidecar", body, "\"system\": 5,");
+    rc |= expect_body_has("fallback sidecar", body, "\"short_name\": \"NXDN\",");
+    rc |= expect_body_has("fallback sidecar", body, "\"encrypted\": true");
+    rc |= expect_sidecar_times("fallback sidecar", body, 1700002000LL, 1700002002LL);
+    if (hist->Event_History_Items[0].target_id != 0U) {
+        DSD_FPRINTF(stderr, "fallback sidecar: the export number was stored on the row\n");
+        rc = 1;
+    }
+
+    unnumbered_row(hist, DSD_SYNC_YSF_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    DSD_SNPRINTF(hist->Event_History_Items[0].sysid_string, sizeof hist->Event_History_Items[0].sysid_string, "%s",
+                 "YSF_DG-ID_0");
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "audio-input fallback sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("audio-input fallback", body, "\"talkgroup\": 9000,");
+    rc |= expect_body_has("audio-input fallback", body, "\"talkgroup_tag\": \"YSF\",");
+    rc |= expect_body_has("audio-input fallback", body, "\"freq\": 0,");
+    rc |= expect_body_has("audio-input fallback", body, "\"short_name\": \"YSF_DG-ID_0\",");
+    if (strstr(body, "freqList") != NULL) {
+        DSD_FPRINTF(stderr, "audio-input fallback: freqList without a usable frequency\n%s\n", body);
+        rc = 1;
+    }
+
+    opts->rdio_unknown_talkgroup = 0;
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != -1) {
+        DSD_FPRINTF(stderr, "no frequency and no option: a fallback call was exported\n");
+        rc = 1;
+    }
+
+    unnumbered_row(hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
+    hist->Event_History_Items[0].target_id = 77U;
+    hist->Event_History_Items[0].gi = 0;
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "numbered row with the fallback on: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("numbered row, fallback on", body, "\"talkgroup\": 77,");
+    rc |= expect_body_has("numbered row, fallback on", body, "\"talkgroup_tag\": \"GROUP\",");
     return rc;
 }
 
@@ -3009,6 +3688,65 @@ analog_api_upload(const char* label, int mode, int journaled, int fail, int want
 #endif
 }
 
+// Issue #888: an API upload of a fallback call carries the same number and label in its meta part, and the row's
+// system in its system part.
+static int
+test_api_fallback_call_meta_and_system(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_export_fallback_api")
+        || dsd_test_path_join(wav_path, sizeof(wav_path), dir, "fallback_api.wav") != 0
+        || write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: setup failed\n");
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_id = 5;
+    opts->rdio_analog_system_id = 9;
+    unnumbered_row(hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
+
+    int rc = 0;
+    int queued = 0;
+    if (dsd_rdio_export_call_fallback(opts, hist, wav_path, 0, 0, 1, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "fallback API upload: the upload was not queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: the server did not receive a complete upload\n");
+        rc = 1;
+    }
+    if (strcmp(server.system, "5") != 0) {
+        DSD_FPRINTF(stderr, "fallback API upload: form system part '%s', want 5\n", server.system);
+        rc = 1;
+    }
+    rc |= expect_body_has("fallback API upload", server.meta, "\"talkgroup\": 452312,");
+    rc |= expect_body_has("fallback API upload", server.meta, "\"talkgroup_tag\": \"DMR CC 3 452.3125 MHz\",");
+    rc |= expect_body_has("fallback API upload", server.meta, "\"system\": 5,");
+    (void)remove(wav_path);
+    remove_empty_dir(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 static int
 test_analog_api_upload_contract(void) {
     int rc = 0;
@@ -3090,6 +3828,1085 @@ test_analog_api_upload_holds(void) {
 #endif
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+static int
+rdio_test_has_suffix(const char* name, const char* suffix) {
+    const size_t n = strlen(name);
+    const size_t k = strlen(suffix);
+    return n > k && strcmp(name + n - k, suffix) == 0;
+}
+
+// dsd_dir_list() visitor: counts a folder's files, and among them the upload's private inputs, told by the suffixes
+// dsd-neo gives them.
+typedef struct {
+    int files;
+    int private_inputs;
+    size_t longest_private; /* the longest private input name */
+} rdio_dir_census;
+
+static int
+rdio_census_visit(const char* name, void* user) {
+    rdio_dir_census* census = (rdio_dir_census*)user;
+    census->files++;
+    if (rdio_test_has_suffix(name, ".rdio-upload-audio") || rdio_test_has_suffix(name, ".rdio-upload-meta")) {
+        census->private_inputs++;
+        census->longest_private = strlen(name) > census->longest_private ? strlen(name) : census->longest_private;
+    }
+    return 0;
+}
+
+// The private upload inputs in @p dir, or -1 when it cannot be listed; @p out_files, when given, gets every file.
+static int
+rdio_test_private_inputs_in(const char* dir, int* out_files) {
+    rdio_dir_census census = {0, 0, 0U};
+    if (dsd_dir_list(dir, rdio_census_visit, &census) != 0) {
+        return -1;
+    }
+    if (out_files) {
+        *out_files = census.files;
+    }
+    return census.private_inputs;
+}
+
+// The longest private upload input name in @p dir, 0 for none.
+static size_t
+rdio_test_longest_private_in(const char* dir) {
+    rdio_dir_census census = {0, 0, 0U};
+    return dsd_dir_list(dir, rdio_census_visit, &census) == 0 ? census.longest_private : 0U;
+}
+
+// Remove every file in a test folder, then the folder.
+static int
+rdio_test_remove_visit(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof(path), (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+static void
+rdio_test_remove_dir_tree(const char* dir) {
+    if (dir && dir[0] != '\0') {
+        (void)dsd_dir_list(dir, rdio_test_remove_visit, (void*)dir);
+        remove_empty_dir(dir);
+    }
+}
+
+// One "both" call in @p dir: @p leaf.wav holding @p audio, published with talkgroup @p tg; 0 when its upload was queued.
+static int
+rdio_both_publish(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* audio,
+                  uint32_t tg, char* out_wav, char* out_json) {
+    char wav_leaf[320];
+    char json_leaf[320];
+    DSD_SNPRINTF(wav_leaf, sizeof(wav_leaf), "%s.wav", leaf);
+    DSD_SNPRINTF(json_leaf, sizeof(json_leaf), "%s.json", leaf);
+    if (dsd_test_path_join(out_wav, DSD_TEST_PATH_MAX, dir, wav_leaf) != 0
+        || dsd_test_path_join(out_json, DSD_TEST_PATH_MAX, dir, json_leaf) != 0
+        || write_bytes_file(out_wav, (const unsigned char*)audio, strlen(audio)) != 0) {
+        return 1;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = tg;
+    int queued = 0;
+    if (dsd_rdio_export_call_ex(opts, hist, out_wav, 0, 0, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "both: %s was not queued\n", leaf);
+        return 1;
+    }
+    return 0;
+}
+
+// The server's request @p i carried @p audio under @p audio_name, and a meta part naming talkgroup @p tg under
+// @p meta_name.
+static int
+rdio_both_expect_request(const char* label, const rdio_test_http_server* server, int i, const char* audio,
+                         const char* audio_name, const char* meta_name, uint32_t tg) {
+    int rc = 0;
+    if (server->req_audio_len[i] != strlen(audio) || memcmp(server->req_audio[i], audio, strlen(audio)) != 0) {
+        DSD_FPRINTF(stderr, "%s: request %d audio part has %zu bytes, not the call's %zu\n", label, i,
+                    server->req_audio_len[i], strlen(audio));
+        rc = 1;
+    }
+    char want_tg[48];
+    DSD_SNPRINTF(want_tg, sizeof(want_tg), "\"talkgroup\": %u,", tg);
+    rc |= expect_body_has(label, server->req_meta[i], want_tg);
+    if (strcmp(server->req_audio_name[i], audio_name) != 0 || strcmp(server->req_meta_name[i], meta_name) != 0) {
+        DSD_FPRINTF(stderr, "%s: request %d parts named '%s' and '%s', want '%s' and '%s'\n", label, i,
+                    server->req_audio_name[i], server->req_meta_name[i], audio_name, meta_name);
+        rc = 1;
+    }
+    return rc;
+}
+#endif
+
+// Issue #888 B15: in --rdio-mode both a DirWatch with delete-after on the same folder takes each public pair once its
+// sidecar is there. With the first upload held by the server, the second call is published and its public pair
+// deleted, as that watch does: its queued upload still carries its own audio and metadata, under the public file
+// names. Delete-after-upload is on and ignored beside DirWatch: the first call's public pair stays, and once the
+// uploads are over no private input is left and nothing is held.
+static int
+test_both_mode_upload_survives_dirwatch_delete(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const audio[2] = {"RIFF-both-call-one-audio", "RIFF-both-call-two-audio-bytes"};
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
+    char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_race")
+        || rdio_test_http_server_start_cfg(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 2, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+
+    int rc = rdio_both_publish(opts, hist, dir, "both_race_0", audio[0], 1201, wav[0], json[0]);
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    while (rc == 0 && atomic_load(&server.first_accepted) == 0) {
+        if (dsd_realtime_mono_ms() - t0 > 5000U) {
+            DSD_FPRINTF(stderr, "both race: the first upload never started\n");
+            rc = 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    rc |= rdio_both_publish(opts, hist, dir, "both_race_1", audio[1], 1202, wav[1], json[1]);
+    if (rc == 0 && dsd_rdio_upload_holds(wav[1]) != 1) {
+        DSD_FPRINTF(stderr, "both race: the queued call's public WAV is not held\n");
+        rc = 1;
+    }
+    // The watch ingests the second pair and deletes it while the first upload is still going.
+    (void)remove(json[1]);
+    (void)remove(wav[1]);
+    atomic_store(&server.release_first, 1);
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 2) {
+        DSD_FPRINTF(stderr, "both race: the server saw %d of 2 complete uploads\n", server.requests_done);
+        rc = 1;
+    } else {
+        rc |= rdio_both_expect_request("both race", &server, 0, audio[0], "both_race_0.wav", "both_race_0.json", 1201);
+        rc |= rdio_both_expect_request("both race", &server, 1, audio[1], "both_race_1.wav", "both_race_1.json", 1202);
+    }
+    if (!file_exists(wav[0]) || !file_exists(json[0])) {
+        DSD_FPRINTF(stderr, "both race: the first call's public pair was not kept\n");
+        rc = 1;
+    }
+    int files = 0;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 2) {
+        DSD_FPRINTF(stderr, "both race: %d files left, want the first call's public pair only\n", files);
+        rc = 1;
+    }
+    if (dsd_rdio_upload_holds(wav[0]) != 0 || dsd_rdio_upload_holds(wav[1]) != 0) {
+        DSD_FPRINTF(stderr, "both race: held after the session\n");
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// A DirWatch with delete-after that takes the pair the moment its sidecar is in place (the sidecar-published seam):
+// the private inputs it found then, and the public pair removed, as that watch does.
+static struct {
+    char dir[DSD_TEST_PATH_MAX];
+    char wav[DSD_TEST_PATH_MAX];
+    int seen;
+    int private_inputs;
+} g_rdio_eager_watch;
+
+/* The eager watch armed for the pair @p wav in @p dir, with nothing seen yet. */
+static void
+rdio_eager_watch_arm(const char* dir, const char* wav) {
+    DSD_MEMSET(&g_rdio_eager_watch, 0, sizeof g_rdio_eager_watch);
+    DSD_SNPRINTF(g_rdio_eager_watch.dir, sizeof g_rdio_eager_watch.dir, "%s", dir);
+    DSD_SNPRINTF(g_rdio_eager_watch.wav, sizeof g_rdio_eager_watch.wav, "%s", wav);
+}
+
+static void
+rdio_eager_watch_takes_pair(const char* meta_path) {
+    g_rdio_eager_watch.seen++;
+    g_rdio_eager_watch.private_inputs = rdio_test_private_inputs_in(g_rdio_eager_watch.dir, NULL);
+    (void)remove(meta_path);
+    (void)remove(g_rdio_eager_watch.wav);
+}
+#endif
+
+// Issue #888 B15: in --rdio-mode both the upload's private inputs exist before the public sidecar does, so a DirWatch
+// with delete-after that takes the pair as soon as the sidecar appears (before a slow WAV copy where the drive has no
+// hard links, could finish) still leaves the upload its audio and metadata.
+// Before, the sidecar was published first: the watch's delete left the job no WAV to link, and nothing was uploaded.
+static int
+test_both_mode_private_inputs_precede_the_sidecar(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const audio = "RIFF-both-eager-watch-audio";
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    char json[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_eager")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "both_eager.wav") != 0
+        || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    rdio_eager_watch_arm(dir, wav);
+    dsd_rdio_set_sidecar_published_observer(rdio_eager_watch_takes_pair);
+    int rc = rdio_both_publish(opts, hist, dir, "both_eager", audio, 1203, wav, json);
+    dsd_rdio_set_sidecar_published_observer(NULL);
+    if (g_rdio_eager_watch.seen != 1 || g_rdio_eager_watch.private_inputs != 2) {
+        DSD_FPRINTF(stderr, "both eager watch: the sidecar appeared %d time(s) with %d private inputs, want 1 with 2\n",
+                    g_rdio_eager_watch.seen, g_rdio_eager_watch.private_inputs);
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 1) {
+        DSD_FPRINTF(stderr, "both eager watch: the server saw %d of 1 complete upload\n", server.requests_done);
+        rc = 1;
+    } else {
+        rc |=
+            rdio_both_expect_request("both eager watch", &server, 0, audio, "both_eager.wav", "both_eager.json", 1203);
+    }
+    int files = -1;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 0) {
+        DSD_FPRINTF(stderr, "both eager watch: %d files left, want none\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888 B15: a "both" upload the server refuses, after every attempt, leaves the public pair for DirWatch and no
+// private input. A call whose WAV is gone before the export queues nothing, leaves its sidecar, and makes no private
+// input either.
+static int
+test_both_mode_failed_upload_removes_private_inputs(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    char json[DSD_TEST_PATH_MAX] = {0};
+    char gone_wav[DSD_TEST_PATH_MAX] = {0};
+    char gone_json[DSD_TEST_PATH_MAX] = {0};
+    const char* refused = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_fail")
+        || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), refused, 0, 5000U, 2) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 2);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+
+    int rc = rdio_both_publish(opts, hist, dir, "both_fail", "RIFF-both-refused", 1201, wav, json);
+    int queued = 0;
+    if (dsd_test_path_join(gone_wav, sizeof(gone_wav), dir, "both_gone.wav") != 0
+        || dsd_test_path_join(gone_json, sizeof(gone_json), dir, "both_gone.json") != 0
+        || dsd_rdio_export_call_ex(opts, hist, gone_wav, 0, 0, &queued) == 0 || queued) {
+        DSD_FPRINTF(stderr, "both failure: a call with no WAV was queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.requests_seen != 2) {
+        DSD_FPRINTF(stderr, "both failure: the server saw %d of 2 attempts\n", server.requests_seen);
+        rc = 1;
+    }
+    int files = 0;
+    if (!file_exists(wav) || !file_exists(json) || !file_exists(gone_json)
+        || rdio_test_private_inputs_in(dir, &files) != 0 || files != 3) {
+        DSD_FPRINTF(stderr, "both failure: %d files left, want the public pair and the lone sidecar\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888 B15 against a stalled endpoint, for @p mode: while the first upload hangs, every public WAV is held, and
+// "both" has made each queued call its two private inputs (API-only none). The user's Stop aborts the one in flight
+// and the shutdown drops the rest: every public pair stays, none is held, and no private input is left.
+static int
+stalled_uploads_then_stop(const char* label, int mode) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    (void)label;
+    (void)mode;
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[3][DSD_TEST_PATH_MAX] = {{0}};
+    char json[3][DSD_TEST_PATH_MAX] = {{0}};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_stop")
+        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_mode = mode;
+    int rc = 0;
+    for (int i = 0; i < 3 && rc == 0; i++) {
+        char leaf[32];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "stop_%d", i);
+        rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-stalled-call", (uint32_t)(1201 + i), wav[i], json[i]);
+        if (rc == 0 && i == 0 && rdio_test_wait_for_connection(stalled, 5000U) <= 0) {
+            DSD_FPRINTF(stderr, "%s: the first upload never started\n", label);
+            rc = 1;
+        }
+    }
+    const int want_private = mode == DSD_RDIO_MODE_BOTH ? 6 : 0;
+    const int private_inputs = rdio_test_private_inputs_in(dir, NULL);
+    if (private_inputs != want_private) {
+        DSD_FPRINTF(stderr, "%s: %d private inputs while uploading, want %d\n", label, private_inputs, want_private);
+        rc = 1;
+    }
+    for (int i = 0; i < 3 && rc == 0; i++) {
+        if (dsd_rdio_upload_holds(wav[i]) != 1) {
+            DSD_FPRINTF(stderr, "%s: public WAV %d is not held\n", label, i);
+            rc = 1;
+        }
+    }
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    int files = 0;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 6) {
+        DSD_FPRINTF(stderr, "%s: %d files left after the Stop, want the three public pairs only\n", label, files);
+        rc = 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!file_exists(wav[i]) || !file_exists(json[i]) || dsd_rdio_upload_holds(wav[i]) != 0) {
+            DSD_FPRINTF(stderr, "%s: public pair %d after the Stop: deleted or held\n", label, i);
+            rc = 1;
+        }
+    }
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+static int
+test_both_mode_stop_removes_private_inputs(void) {
+    int rc = 0;
+    rc |= stalled_uploads_then_stop("both Stop", DSD_RDIO_MODE_BOTH);
+    rc |= stalled_uploads_then_stop("API-only Stop", DSD_RDIO_MODE_API);
+    return rc;
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// The folder a sidecar-published observer counts private inputs in, and the count it found there; -1 before.
+static char g_rdio_count_dir[DSD_TEST_PATH_MAX];
+static int g_rdio_private_at_sidecar = -1;
+
+static void
+rdio_count_private_at_sidecar(const char* meta_path) {
+    (void)meta_path;
+    g_rdio_private_at_sidecar = rdio_test_private_inputs_in(g_rdio_count_dir, NULL);
+}
+#endif
+
+// Issue #888 B15: an upload the full queue refuses leaves no private input. Behind a stalled upload, the one in
+// flight and a full queue hold two private inputs each; the next call is refused with its public pair alone, and its
+// own copies are never made: when its sidecar appears, the folder holds the queued jobs' private inputs alone. Before,
+// the refused call's WAV was linked or copied (a whole WAV on a drive without hard links) and its sidecar copied, then
+// both removed when the full queue refused the job.
+static int
+test_both_mode_refused_upload_leaves_no_private_inputs(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    enum { calls = 130 };
+
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_full")
+        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    hist->Event_History_Items[0].target_id = 1201;
+    int rc = 0;
+    int queued_count = 0;
+    int last_queued = 1;
+    for (int i = 0; i < calls && rc == 0; i++) {
+        char leaf[32];
+        char wav[DSD_TEST_PATH_MAX];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "full_%03d.wav", i);
+        if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0
+            || write_bytes_file(wav, (const unsigned char*)"RIFF-full", 9U) != 0) {
+            rc = 1;
+            break;
+        }
+        int queued = 0;
+        if (i == calls - 1) {
+            DSD_SNPRINTF(g_rdio_count_dir, sizeof g_rdio_count_dir, "%s", dir);
+            dsd_rdio_set_sidecar_published_observer(rdio_count_private_at_sidecar);
+        }
+        (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+        dsd_rdio_set_sidecar_published_observer(NULL);
+        queued_count += queued;
+        last_queued = queued;
+        if (i == 0 && (!queued || rdio_test_wait_for_connection(stalled, 5000U) <= 0)) {
+            DSD_FPRINTF(stderr, "both full queue: the first upload never started\n");
+            rc = 1;
+        }
+    }
+    int files = 0;
+    const int private_inputs = rdio_test_private_inputs_in(dir, &files);
+    if (rc == 0 && (queued_count != 129 || last_queued || private_inputs != 2 * 129 || files != 2 * calls + 2 * 129)) {
+        DSD_FPRINTF(stderr, "both full queue: %d queued, %d private inputs of %d files\n", queued_count, private_inputs,
+                    files);
+        rc = 1;
+    }
+    if (rc == 0 && g_rdio_private_at_sidecar != 2 * 129) {
+        DSD_FPRINTF(stderr, "both full queue: %d private inputs when the refused call's sidecar appeared, want %d\n",
+                    g_rdio_private_at_sidecar, 2 * 129);
+        rc = 1;
+    }
+    g_rdio_private_at_sidecar = -1;
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 2 * calls) {
+        DSD_FPRINTF(stderr, "both full queue: %d files left after the Stop, want the public pairs only\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// The eager watch's view of the private inputs: their longest name when the sidecar appeared.
+static size_t g_rdio_eager_longest_private = 0U;
+
+static void
+rdio_eager_watch_measures(const char* meta_path) {
+    g_rdio_eager_longest_private = rdio_test_longest_private_in(g_rdio_eager_watch.dir);
+    rdio_eager_watch_takes_pair(meta_path);
+}
+#endif
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* The longest stem whose temp sidecar (<stem>.json.tmp.XXXXXX, 16 characters more) still fits the name limit of
+   folder @p dir, at most 255 characters; 0 when that limit leaves no room for the test (the private names' 45
+   characters, and a stem longer than them). */
+static size_t
+rdio_test_longest_stem_in(const char* dir) {
+    errno = 0;
+    const long name_max = pathconf(dir, _PC_NAME_MAX);
+    const long limit = (name_max < 0 || name_max > 255) ? 255 : name_max;
+    return limit >= 64 ? (size_t)(limit - 16) : 0U;
+}
+#endif
+
+// Issue #888: a "both" recording whose public names fit the file system's name limit is uploaded, however long its
+// stem: the private inputs are named by this run's id and a number, at most 45 characters, not after the public stem.
+// Before, they were the stem with the id and suffix appended, 35 characters more, so the longest stem that fits the
+// WAV, the sidecar and its temp file (239 characters under the usual 255-byte limit) had no private inputs and was
+// never uploaded. The stem is sized from the test folder's own limit (an eCryptfs folder takes 143).
+static int
+test_both_mode_private_names_do_not_grow_with_the_stem(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const audio = "RIFF-both-long-stem-audio";
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    char json[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_long")) {
+        return 1;
+    }
+    const size_t stem_len = rdio_test_longest_stem_in(dir);
+    if (stem_len == 0U) {
+        DSD_FPRINTF(stderr, "both long stem: skipped, the test folder's name limit is too short\n");
+        rdio_test_remove_dir_tree(dir);
+        return 0;
+    }
+    char stem[256];
+    DSD_MEMSET(stem, 'L', stem_len);
+    stem[stem_len] = '\0';
+    char want_wav[264];
+    char want_json[264];
+    DSD_SNPRINTF(want_wav, sizeof(want_wav), "%s.wav", stem);
+    DSD_SNPRINTF(want_json, sizeof(want_json), "%s.json", stem);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || dsd_test_path_join(wav, sizeof(wav), dir, want_wav) != 0
+        || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    rdio_eager_watch_arm(dir, wav);
+    g_rdio_eager_longest_private = 0U;
+    dsd_rdio_set_sidecar_published_observer(rdio_eager_watch_measures);
+    int rc = rdio_both_publish(opts, hist, dir, stem, audio, 1204, wav, json);
+    dsd_rdio_set_sidecar_published_observer(NULL);
+    if (g_rdio_eager_watch.private_inputs != 2 || g_rdio_eager_longest_private == 0U
+        || g_rdio_eager_longest_private > 45U) {
+        DSD_FPRINTF(stderr,
+                    "both long stem: %d private inputs, the longest name %zu characters, want 2 of at most 45\n",
+                    g_rdio_eager_watch.private_inputs, g_rdio_eager_longest_private);
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 1) {
+        DSD_FPRINTF(stderr, "both long stem: the server saw %d of 1 complete upload\n", server.requests_done);
+        rc = 1;
+    } else {
+        rc |= rdio_both_expect_request("both long stem", &server, 0, audio, want_wav, want_json, 1204);
+    }
+    int files = -1;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 0) {
+        DSD_FPRINTF(stderr, "both long stem: %d files left, want none\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#ifdef DSD_TEST_WRAP_RDIO_SEAMS
+/* Link seams (GNU ld --wrap, POSIX only): test doubles of the calls. Each simulated failure is set for one call on a
+   private input name, so every other caller, the test's own included, reaches the real call. */
+// GNU ld --wrap entry points must keep the reserved __wrap_* and __real_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_dsd_hard_link(const char* existing, const char* new_path);
+FILE* __real_dsd_fopen_private(const char* path, const char* mode);
+FILE* __real_dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened);
+int __real_pthread_join(pthread_t thread, void** ret);
+int __wrap_dsd_hard_link(const char* existing, const char* new_path);
+FILE* __wrap_dsd_fopen_private(const char* path, const char* mode);
+FILE* __wrap_dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened);
+int __wrap_pthread_join(pthread_t thread, void** ret);
+
+static int
+seam_names_private(const char* path, const char* suffix) {
+    const size_t n = path != NULL ? strlen(path) : 0U;
+    const size_t k = strlen(suffix);
+    return n > k && strcmp(path + n - k, suffix) == 0;
+}
+
+/* The private WAV's hard link fails as on a drive with none, and the user's Stop arrives as its copy begins. */
+static atomic_int g_seam_link_then_stop = 0;
+/* The private sidecar copy's open creates its file and then cannot make the stream (as fdopen() out of memory). */
+static atomic_int g_seam_stream_fails = 0;
+/* The worker's join reports failure, after the worker has ended. */
+static atomic_int g_seam_join_fails = 0;
+/* With g_seam_stream_fails: the folder made read-only once the open has made its file, so removing that file fails.
+   Empty when off. */
+static char g_seam_lock_dir[DSD_TEST_PATH_MAX];
+/* The private WAV's hard link fails as on a drive with none, its folder made read-only first: the copy that follows
+   cannot be made, nor the private sidecar copy already made removed. Empty when off. */
+static char g_seam_link_locks_dir[DSD_TEST_PATH_MAX];
+
+int
+__wrap_dsd_hard_link(const char* existing, const char* new_path) {
+    if (seam_names_private(new_path, ".rdio-upload-audio") && atomic_exchange(&g_seam_link_then_stop, 0) != 0) {
+        dsd_rdio_upload_cancel();
+        errno = EPERM;
+        return -1;
+    }
+    if (seam_names_private(new_path, ".rdio-upload-audio") && g_seam_link_locks_dir[0] != '\0') {
+        (void)chmod(g_seam_link_locks_dir, 0500);
+        g_seam_link_locks_dir[0] = '\0';
+        errno = EPERM;
+        return -1;
+    }
+    return __real_dsd_hard_link(existing, new_path);
+}
+
+/* An open that made its file and no stream: the file is there, empty, and NULL comes back. */
+static FILE*
+seam_open_without_stream(const char* path, int* out_opened) {
+    FILE* made = __real_dsd_fopen_private_ex(path, "wbx", NULL);
+    // Asked before the close: a closed stream's pointer has no value to compare.
+    const int created = made != NULL;
+    if (made != NULL) {
+        (void)fclose(made);
+    }
+    if (g_seam_lock_dir[0] != '\0') {
+        (void)chmod(g_seam_lock_dir, 0500);
+        g_seam_lock_dir[0] = '\0';
+    }
+    if (out_opened != NULL) {
+        *out_opened = created;
+    }
+    errno = ENOMEM;
+    return NULL;
+}
+
+FILE*
+__wrap_dsd_fopen_private(const char* path, const char* mode) {
+    if (seam_names_private(path, ".rdio-upload-meta") && atomic_exchange(&g_seam_stream_fails, 0) != 0) {
+        return seam_open_without_stream(path, NULL);
+    }
+    return __real_dsd_fopen_private(path, mode);
+}
+
+FILE*
+__wrap_dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
+    if (seam_names_private(path, ".rdio-upload-meta") && atomic_exchange(&g_seam_stream_fails, 0) != 0) {
+        return seam_open_without_stream(path, out_opened);
+    }
+    return __real_dsd_fopen_private_ex(path, mode, out_opened);
+}
+
+int
+__wrap_pthread_join(pthread_t thread, void** ret) {
+    const int rc = __real_pthread_join(thread, ret);
+    return atomic_exchange(&g_seam_join_fails, 0) != 0 ? ESRCH : rc;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// One "both" export of @p leaf in @p dir that is not to be queued: its public pair is published and it leaves no private
+// input. 0 when so.
+static int
+rdio_both_expect_not_queued(const char* label, const dsd_opts* opts, Event_History_I* hist, const char* dir,
+                            const char* leaf) {
+    char wav[DSD_TEST_PATH_MAX];
+    char json[DSD_TEST_PATH_MAX];
+    char wav_leaf[64];
+    char json_leaf[64];
+    DSD_SNPRINTF(wav_leaf, sizeof(wav_leaf), "%s.wav", leaf);
+    DSD_SNPRINTF(json_leaf, sizeof(json_leaf), "%s.json", leaf);
+    if (dsd_test_path_join(wav, sizeof(wav), dir, wav_leaf) != 0
+        || dsd_test_path_join(json, sizeof(json), dir, json_leaf) != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        return 1;
+    }
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1205;
+    int queued = -1;
+    const int exported = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    int files = 0;
+    const int private_inputs = rdio_test_private_inputs_in(dir, &files);
+    if (queued != 0 || !file_exists(wav) || !file_exists(json) || private_inputs != 0
+        || dsd_rdio_upload_holds(wav) != 0) {
+        DSD_FPRINTF(stderr,
+                    "%s: export %d, queued %d, public pair %s, %d private inputs, held %d, want unqueued, kept, none, "
+                    "unheld\n",
+                    label, exported, queued, file_exists(wav) && file_exists(json) ? "kept" : "missing", private_inputs,
+                    dsd_rdio_upload_holds(wav));
+        return 1;
+    }
+    return 0;
+}
+
+// The user's Stop, the moment a sidecar is in place: after the private inputs are made, before the job is queued.
+static void
+rdio_stop_at_sidecar(const char* meta_path) {
+    (void)meta_path;
+    dsd_rdio_upload_cancel();
+}
+#endif
+
+// Issue #888: after the user's Stop a "both" export makes no private inputs and queues nothing (no upload of the run is
+// sent any more), and a Stop that comes while the WAV is being copied (a drive with no hard links) ends the copy and
+// removes what it made. The public pair is DirWatch's all the same. Before, the copy ran to the end and the upload was
+// queued for a worker that would never send it.
+static int
+test_both_mode_stop_ends_private_copies(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_cancel")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    dsd_rdio_upload_cancel();
+    int rc = rdio_both_expect_not_queued("both after a Stop", opts, hist, dir, "after_stop");
+    dsd_rdio_upload_shutdown();
+#ifdef DSD_TEST_WRAP_RDIO_SEAMS
+    atomic_store(&g_seam_link_then_stop, 1);
+    rc |= rdio_both_expect_not_queued("both Stop during the copy", opts, hist, dir, "stop_in_copy");
+    rc |= atomic_load(&g_seam_link_then_stop) == 0 ? 0 : 1;
+    atomic_store(&g_seam_link_then_stop, 0);
+    dsd_rdio_upload_shutdown();
+#endif
+    rdio_test_remove_dir_tree(dir);
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888: a Stop that comes after a "both" job's private inputs are made but before it is queued (here as its
+// sidecar appears) leaves it unqueued: its private inputs removed, its WAV not held, the public pair DirWatch's. Before,
+// the job was queued for a worker that would never send it, held the WAV and kept its private inputs until the
+// shutdown, and the journal said it was queued.
+static int
+test_both_mode_stop_before_queueing_releases_the_job(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_admit")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    dsd_rdio_set_sidecar_published_observer(rdio_stop_at_sidecar);
+    int rc = rdio_both_expect_not_queued("both Stop before queueing", opts, hist, dir, "stop_at_admission");
+    dsd_rdio_set_sidecar_published_observer(NULL);
+    dsd_rdio_upload_shutdown();
+    rdio_test_remove_dir_tree(dir);
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888: a private sidecar copy whose open made the file but no stream leaves no file behind, and an existing file
+// of that name is never removed. Before, the empty file stayed, owned by no job. Needs the link seams.
+static int
+test_both_mode_failed_private_open_leaves_nothing(void) {
+#if !defined(DSD_TEST_WRAP_RDIO_SEAMS) || !defined(USE_CURL)
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_open")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    atomic_store(&g_seam_stream_fails, 1);
+    int rc = rdio_both_expect_not_queued("both private open without a stream", opts, hist, dir, "no_stream");
+    rc |= atomic_load(&g_seam_stream_fails) == 0 ? 0 : 1;
+    atomic_store(&g_seam_stream_fails, 0);
+    dsd_rdio_upload_shutdown();
+    rdio_test_remove_dir_tree(dir);
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#if defined(DSD_TEST_WRAP_RDIO_SEAMS) && defined(USE_CURL)
+/* A private sidecar copy whose open made its file and no stream, in a folder that then turns read-only: the file cannot
+   be removed, and that is said (the run's one warning), with the open's own error kept for the copy's failure. 0 when
+   so, with *@p said set. Before, the failed removal was silent. */
+static int
+rdio_partial_copy_removal_said(const dsd_opts* opts, Event_History_I* hist, int* said) {
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_partial")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "partial.wav") != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        return 1;
+    }
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1205;
+    DSD_SNPRINTF(g_seam_lock_dir, sizeof g_seam_lock_dir, "%s", dir);
+    atomic_store(&g_seam_stream_fails, 1);
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_partial") == 0;
+    int queued = -1;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    g_seam_lock_dir[0] = '\0';
+    atomic_store(&g_seam_stream_fails, 0);
+    *said = 0;
+    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
+        (*said)++;
+    }
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    int rc = 0;
+    if (!capturing || queued != 0 || *said != 1 || left != 1 || strstr(out, strerror(ENOMEM)) == NULL) {
+        DSD_FPRINTF(stderr,
+                    "both partial copy left: queued %d, said %d time(s), %d private inputs left, want 0, once, 1, and "
+                    "the open's error\n%s\n",
+                    queued, *said, left, out);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    return rc;
+}
+
+/* The private sidecar copy made, then the WAV's link and copy failing in a folder that turned read-only: that copy
+   cannot be removed, and its removal is a private input's, said by the run's one warning (already said here, so not
+   again), not as an upload's own file. 0 when so. Before, it was said again as "private upload metadata", with no
+   word on removing it by hand. */
+static int
+rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I* hist) {
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_wav_fails")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "wav_fails.wav") != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        return 1;
+    }
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1208;
+    DSD_SNPRINTF(g_seam_link_locks_dir, sizeof g_seam_link_locks_dir, "%s", dir);
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_wav_fails") == 0;
+    int queued = -1;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    const int double_unused = g_seam_link_locks_dir[0] != '\0';
+    g_seam_link_locks_dir[0] = '\0';
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    int rc = 0;
+    if (!capturing || double_unused || queued != 0 || left != 1 || strstr(out, "private upload metadata") != NULL
+        || strstr(out, "failed to delete the private upload input") != NULL) {
+        DSD_FPRINTF(stderr,
+                    "both WAV copy failed: queued %d, %d private inputs left, seam %s, want 0, 1, used, and no second "
+                    "removal warning\n%s\n",
+                    queued, left, double_unused ? "unused" : "used", out);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    return rc;
+}
+#endif
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* Whether a read-only folder (chmod 0500) keeps a file in @p dir from being removed here: not as root, nor on a mount
+   whose permissions are fixed by its options (FAT, CIFS), where chmod fails or changes nothing. The folder is left
+   writable and empty of the probe. */
+static int
+rdio_test_read_only_dir_denies_removal(const char* dir) {
+    char probe[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(probe, sizeof(probe), dir, "ro_probe") != 0) {
+        return 0;
+    }
+    FILE* f = dsd_fopen_private(probe, "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    (void)fclose(f);
+    // The folder made read-only and writable again through one descriptor, so both act on the folder opened here.
+    const int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    const int denied = dir_fd >= 0 && dsd_fchmod(dir_fd, 0500) == 0 && remove(probe) != 0;
+    if (dir_fd >= 0) {
+        (void)dsd_fchmod(dir_fd, 0700);
+        (void)dsd_close(dir_fd);
+    }
+    (void)remove(probe);
+    return denied;
+}
+#endif
+
+// Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
+// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Skipped
+// where a read-only folder does not stop a removal (as root, or on a mount that ignores the folder's mode).
+static int
+test_both_mode_failed_private_removal_said_once(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
+    char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_ro")) {
+        return 1;
+    }
+    if (!rdio_test_read_only_dir_denies_removal(dir)) {
+        DSD_FPRINTF(stderr, "both read-only folder: skipped, a read-only folder does not stop a removal here\n");
+        rdio_test_remove_dir_tree(dir);
+        return 0;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    int rc = 0;
+    int said_before = 0;
+#ifdef DSD_TEST_WRAP_RDIO_SEAMS
+    rc |= rdio_partial_copy_removal_said(opts, hist, &said_before);
+    rc |= rdio_meta_left_after_failed_wav_said_once(opts, hist);
+#endif
+    for (int i = 0; i < 2 && rc == 0; i++) {
+        char leaf[32];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "ro_%d", i);
+        rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-read-only", (uint32_t)(1206 + i), wav[i], json[i]);
+    }
+    dsd_test_capture_stderr cap;
+    const int capturing = rc == 0 && chmod(dir, 0500) == 0 && dsd_test_capture_stderr_begin(&cap, "rdio_ro") == 0;
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    int said = 0;
+    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
+        said++;
+    }
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    if (!capturing || said_before + said != 1 || left != 4) {
+        DSD_FPRINTF(stderr,
+                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n%s\n",
+                    said, said_before, left, out);
+        rc = 1;
+    }
+
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888: a shutdown whose join of the upload worker fails (not expected; forced here, after the worker ended)
+// releases the jobs still queued: their private inputs go and their public WAVs are no longer held. The job in flight
+// is the worker's and is not touched. Before, the queued jobs stayed linked and held their files for the rest of the
+// session. Leaves the upload worker failed for good, so it runs last. Needs the link seams.
+static int
+test_failed_join_releases_queued_jobs(void) {
+#if !defined(DSD_TEST_WRAP_RDIO_SEAMS) || !defined(USE_CURL)
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[3][DSD_TEST_PATH_MAX] = {{0}};
+    char json[3][DSD_TEST_PATH_MAX] = {{0}};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_join_fail")
+        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    int rc = 0;
+    for (int i = 0; i < 3 && rc == 0; i++) {
+        char leaf[32];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "join_%d", i);
+        rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-join-fails", (uint32_t)(1208 + i), wav[i], json[i]);
+        if (rc == 0 && i == 0 && rdio_test_wait_for_connection(stalled, 5000U) <= 0) {
+            DSD_FPRINTF(stderr, "failed join: the first upload never started\n");
+            rc = 1;
+        }
+    }
+    atomic_store(&g_seam_join_fails, 1);
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    atomic_store(&g_seam_join_fails, 0);
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    const int held = dsd_rdio_upload_holds(wav[1]) + dsd_rdio_upload_holds(wav[2]);
+    if (left != 0 || held != 0) {
+        DSD_FPRINTF(stderr, "failed join: %d private inputs left and %d public WAVs held, want none\n", left, held);
+        rc = 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!file_exists(wav[i]) || !file_exists(json[i])) {
+            DSD_FPRINTF(stderr, "failed join: public pair %d is gone\n", i);
+            rc = 1;
+        }
+    }
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3102,7 +4919,6 @@ main(void) {
     rc |= test_duration_uses_zero_for_missing_or_truncated_wav();
     rc |= test_export_guards_and_invalid_mode_are_noops();
     rc |= test_sidecar_service_name_keeps_numeric_identity();
-    rc |= test_missing_talkgroup_rejects_sidecar();
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
@@ -3113,10 +4929,21 @@ main(void) {
     rc |= test_analog_tag_is_stable();
     rc |= test_analog_system_id();
     rc |= test_sidecar_tag_of_unknown_kind_is_empty();
+    rc |= test_sidecar_emergency_from_the_row();
+    rc |= test_sidecar_short_name_falls_back_to_the_protocol();
+    rc |= test_sidecar_dash_tag_is_absent();
+    rc |= test_sidecar_strings_are_valid_utf8();
+    rc |= test_unnumbered_digital_call_without_fallback_writes_nothing();
+    rc |= test_call_talkgroup_number();
+    rc |= test_call_fallback_eligible();
+    rc |= test_fallback_call_label();
+    rc |= test_fallback_edacs_provoice_label();
+    rc |= test_fallback_call_sidecar();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_journaled_upload_keeps_the_wav();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
+    rc |= test_api_fallback_call_meta_and_system();
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();
     rc |= test_api_cancel_during_drain_returns_promptly();
@@ -3128,5 +4955,19 @@ main(void) {
     rc |= test_api_upload_holds_until_the_delete_is_over();
     rc |= test_analog_api_upload_contract();
     rc |= test_analog_api_upload_holds();
+    rc |= test_both_mode_upload_survives_dirwatch_delete();
+    rc |= test_both_mode_private_inputs_precede_the_sidecar();
+    rc |= test_both_mode_failed_upload_removes_private_inputs();
+    rc |= test_both_mode_stop_removes_private_inputs();
+    rc |= test_both_mode_refused_upload_leaves_no_private_inputs();
+    rc |= test_both_mode_private_names_do_not_grow_with_the_stem();
+    rc |= test_both_mode_stop_ends_private_copies();
+    rc |= test_both_mode_stop_before_queueing_releases_the_job();
+    rc |= test_both_mode_failed_private_open_leaves_nothing();
+    rc |= test_both_mode_failed_private_removal_said_once();
+    /* Last: it leaves the upload worker failed for good. */
+    rc |= test_failed_join_releases_queued_jobs();
+    free(g_rdio_case_hist);
+    free(g_rdio_case_opts);
     return rc;
 }

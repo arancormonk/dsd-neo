@@ -48,33 +48,30 @@
  * (EN 300 392-2 table 9.27). Past that the symbol count may no longer measure air time, so the next BSCH sets the clock. */
 #define TETRA_TDMA_MAX_GAP_SLOTS        TETRA_TDMA_SLOTS_PER_MULTIFRAME
 
-typedef struct {
-    uint8_t colour;
-    uint8_t tn;
-    uint8_t fn;
-    uint8_t mn;
-    uint16_t mcc;
-    uint16_t mnc;
-} tetra_sync_pdu;
+typedef tetra_bsch_sync tetra_sync_pdu;
 
 /* EN 300 392-2 table 21.76 with the D-MLE-SYNC PDU of table 18.17. */
-static int
-tetra_sync_pdu_read(const uint8_t* bits, int len, tetra_sync_pdu* p) {
+int
+tetra_bsch_read_sync(const uint8_t* bits, int len, tetra_bsch_sync* p) {
+    if (!bits || !p) {
+        return 0;
+    }
     tetra_bit_reader r = tetra_bits_reader(bits, len, 0);
-    (void)tetra_bits_skip(&r, 4); /* system code */
+    p->system_code = (uint8_t)tetra_bits_read(&r, 4);
     p->colour = (uint8_t)tetra_bits_read(&r, 6);
     p->tn = (uint8_t)(tetra_bits_read(&r, 2) + 1u);
     p->fn = (uint8_t)tetra_bits_read(&r, 5);
     p->mn = (uint8_t)tetra_bits_read(&r, 6);
-    (void)tetra_bits_skip(&r, 8); /* sharing mode, TS reserved frames, U-plane DTX, frame 18 extension, reserved */
+    p->sharing_mode = (uint8_t)tetra_bits_read(&r, 2);
+    (void)tetra_bits_skip(&r, 6); /* TS reserved frames, U-plane DTX, frame 18 extension, reserved */
     p->mcc = (uint16_t)tetra_bits_read(&r, 10);
     p->mnc = (uint16_t)tetra_bits_read(&r, 14);
     (void)tetra_bits_skip(&r, 5); /* neighbour cell broadcast, cell load CA, late entry supported */
     return tetra_bits_ok(&r);
 }
 
-static int
-tdma_numbers_ok(uint8_t tn, uint8_t fn, uint8_t mn) {
+int
+tetra_bsch_tdma_numbers_ok(uint8_t tn, uint8_t fn, uint8_t mn) {
     return tn >= 1u && tn <= 4u && fn >= 1u && fn <= 18u && mn >= 1u && mn <= 60u;
 }
 
@@ -124,7 +121,7 @@ tdma_advance(tetra_state_t* ts, uint32_t slots) {
 /* Run the clock to the slot that started at `slot_start`; 0 when it had to stop instead. */
 static int
 tdma_run(tetra_state_t* ts, uint32_t slot_start) {
-    if (!ts->tdma_valid || !tdma_numbers_ok(ts->tn, ts->fn, ts->mn)) {
+    if (!ts->tdma_valid || !tetra_bsch_tdma_numbers_ok(ts->tn, ts->fn, ts->mn)) {
         tdma_stop(ts);
         return 0;
     }
@@ -143,7 +140,7 @@ tdma_run(tetra_state_t* ts, uint32_t slot_start) {
  * clock did, the number moves by one to match. */
 static void
 tdma_anchor(tetra_state_t* ts, const tetra_sync_pdu* p, uint32_t slot_start) {
-    if (!tdma_numbers_ok(p->tn, p->fn, p->mn)) {
+    if (!tetra_bsch_tdma_numbers_ok(p->tn, p->fn, p->mn)) {
         /* A reserved frame or multiframe number sets no clock. */
         tdma_stop(ts);
         return;
@@ -207,6 +204,7 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         state->trunk_cc_freq = 0;
     }
     ts->dl_carrier_hz = 0;
+    ts->cell_main_hz = 0;
     ts->frames_sysinfo = 0;
     ts->sysinfo_main_carrier = 0;
     ts->la = 0;
@@ -217,6 +215,18 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     ts->sec_valid = 0;
     ts->aie_known = 0;
     ts->aie_available = 0;
+}
+
+/* What is keyed by the identities a network's SwMI gives out, which another network's BSCH forgets: the call records with
+ * the follow of their identifiers, the concatenated short data being reassembled from its senders, and its D-MM STATUS
+ * (bsch_identity_change(), tetra_bsch_forget_network()). */
+static void
+bsch_forget_network_parties(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    tetra_calls_forget_calls(opts, state);
+    tetra_mle_forget_reassembly(state);
+    /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
+    ts->mm_status_valid = 0;
+    ts->mm_status_code = 0;
 }
 
 /* What a BSCH naming another cell or another network leaves behind, decided in one place. Another cell (another colour
@@ -237,12 +247,26 @@ bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const 
         bsch_forget_cell(opts, state, ts);
     }
     if (other_network) {
-        tetra_calls_forget_calls(opts, state);
-        tetra_mle_forget_reassembly(state);
-        /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
-        ts->mm_status_valid = 0;
-        ts->mm_status_code = 0;
+        bsch_forget_network_parties(opts, state, ts);
     }
+}
+
+void
+tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    /* What another network's BSCH forgets (bsch_identity_change()), with the identity still known, as that rule reads
+       it: what is keyed by its identities (the D-MM STATUS, the call records, the short data being rebuilt), then its
+       cell; then the identity and its scrambling seed, net_known last (issue #890 F6). */
+    bsch_forget_network_parties(opts, state, ts);
+    bsch_forget_cell(opts, state, ts);
+    ts->mcc = 0;
+    ts->mnc = 0;
+    ts->colour = 0;
+    ts->lfsr_seed = 0;
+    ts->net_known = 0;
 }
 
 void
@@ -259,12 +283,14 @@ tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, 
     if (!ts) {
         return;
     }
-    const int other_main = ts->dl_carrier_hz > 0L && main_carrier_hz > 0L && main_carrier_hz != ts->dl_carrier_hz;
+    /* The cell's last main carrier, not the published one: a SYSINFO naming none in between withdraws that, and two
+       cells of one network, colour code and location area differ only here. */
+    const int other_main = ts->cell_main_hz > 0L && main_carrier_hz > 0L && main_carrier_hz != ts->cell_main_hz;
     const int other_area = ts->sysinfo_known && la_present && la != ts->la;
     if (other_main || other_area) {
         TETRA_LOG_VERBOSE(ts, 1,
                           "[TETRA SYSINFO] main carrier %ld Hz, location area %u: another cell than %ld Hz, %u\n",
-                          main_carrier_hz, (unsigned)la, ts->dl_carrier_hz, (unsigned)ts->la);
+                          main_carrier_hz, (unsigned)la, ts->cell_main_hz, (unsigned)ts->la);
         bsch_forget_cell(opts, state, ts);
         /* The received identity forgets the last cell's location area and control channel too. */
         dsd_rxid_note_tetra_other_cell(state);
@@ -292,7 +318,7 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
         return TETRA_BSCH_UNREAD;
     }
     DSD_MEMSET(&p, 0, sizeof(p));
-    if (!tetra_sync_pdu_read(bits, len, &p)) {
+    if (!tetra_bsch_read_sync(bits, len, &p)) {
         TETRA_LOG_PAYLOAD(ts, "[TETRA BSCH] short PDU len=%d, need %d\n", len, TETRA_SYNC_PDU_BITS);
         return TETRA_BSCH_UNREAD;
     }

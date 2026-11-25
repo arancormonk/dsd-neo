@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -8429,6 +8430,48 @@ test_rdio_analog_options(void) {
     return test_rc;
 }
 
+/* Issue #888: --rdio-unknown-talkgroup (0..2147483647) takes a whole number in range, 0 included to reset; anything
+ * else, past the range or past int's, is refused, never clamped. Left out, it is 0. */
+static int
+test_rdio_unknown_talkgroup_option(void) {
+    static const struct {
+        const char* value;
+        int want_rc;
+        int want_talkgroup;
+        const char* want_text;
+    } cases[] = {
+        {NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {"4242", DSD_PARSE_CONTINUE, 4242, NULL},
+        {"0", DSD_PARSE_CONTINUE, 0, NULL},
+        {"2147483647", DSD_PARSE_CONTINUE, 2147483647, NULL},
+        {"2147483648", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"2147483648\""},
+        {"4294971538", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"4294971538\""},
+        {"-1", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"-1\""},
+        {"9x", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"9x\""},
+        {"", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"\""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].value ? "--rdio-unknown-talkgroup" : "-P", cases[i].value,
+                                    NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->rdio_unknown_talkgroup != cases[i].want_talkgroup || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "--rdio-unknown-talkgroup %s: rc=%d talkgroup=%d exit_rc=%d\n%s\n",
+                        cases[i].value ? cases[i].value : "(left out)", run.rc, run.opts->rdio_unknown_talkgroup,
+                        run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* What -h prints, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it. */
 static int
 help_text(char* out, size_t out_size) {
@@ -8497,6 +8540,7 @@ test_value_options_refuse_a_missing_value(void) {
         "--rdio-upload-retries",
         "--rdio-analog-system-id",
         "--rdio-analog-talkgroup",
+        "--rdio-unknown-talkgroup",
         "--frame-log",
         "--p25-sm-log",
         "--input-volume",
@@ -10200,6 +10244,361 @@ test_src_csv_allowed_with_trunk_scan(void) {
     return test_rc;
 }
 
+/* --dmr-chan-overrides (discussion #900 F3): both spellings keep the path for the decoder, which applies the file over
+   the channel map at start; the parse itself applies nothing. */
+static int
+test_dmr_chan_overrides_long_option_parse(void) {
+    int test_rc = 0;
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents("lpcn,frequency_hz\n12,451137500\n", csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--dmr-chan-overrides";
+        char arg_eq[1200];
+        DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--dmr-chan-overrides=%s", csv_path);
+        char* argv_pair[] = {arg0, arg1, csv_path, NULL};
+        char* argv_eq[] = {arg0, arg_eq, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(shape == 0 ? 3 : 2, shape == 0 ? argv_pair : argv_eq, opts, state,
+                                      &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, csv_path) != 0
+            || dmr_t3_overlay_count(state) != 0U || state->trunk_chan_map[12] != 0) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides shape %d: rc=%d exit=%d file=\"%s\"\n", shape, rc, exit_rc,
+                        opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* A repeated --dmr-chan-overrides keeps the last one, in either spelling and either order, so the
+   app's saved channels, put after every option the user typed, are the file the decoder reads. */
+static int
+test_dmr_chan_overrides_last_wins(void) {
+    static const char k_first[] = "dsdneo_overrides_first.csv";
+    static const char k_last[] = "dsdneo_overrides_last.csv";
+    char arg0[] = "dsd-neo";
+    char arg_bare[] = "--dmr-chan-overrides";
+    char arg_first_value[] = "dsdneo_overrides_first.csv";
+    char arg_last_value[] = "dsdneo_overrides_last.csv";
+    char arg_first_eq[] = "--dmr-chan-overrides=dsdneo_overrides_first.csv";
+    char arg_last_eq[] = "--dmr-chan-overrides=dsdneo_overrides_last.csv";
+    char* argv_pair_eq[] = {arg0, arg_bare, arg_first_value, arg_last_eq, NULL};
+    char* argv_eq_pair[] = {arg0, arg_first_eq, arg_bare, arg_last_value, NULL};
+    char* argv_pairs[] = {arg0, arg_bare, arg_first_value, arg_bare, arg_last_value, NULL};
+
+    struct {
+        char** argv;
+        int argc;
+    } cases[] = {{argv_pair_eq, 4}, {argv_eq_pair, 4}, {argv_pairs, 5}};
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, k_last) != 0
+            || strcmp(opts->dmr_chan_overrides_file, k_first) == 0) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides twice (case %zu): rc=%d exit=%d file=\"%s\"\n", i, rc, exit_rc,
+                        opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* --profile's name is the next argument whatever it starts with, as bootstrap reads it before the parser runs: a profile
+   named "--" ends no options, so a --dmr-chan-overrides after it is kept (the app puts the saved system's channels
+   there), and one named "--print-config" is no one-shot, so a hold without a trunk scan is still refused. */
+static int
+test_profile_value_is_a_value(void) {
+    int test_rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--profile";
+    char arg2[] = "--";
+    char arg3[] = "--dmr-chan-overrides";
+    char arg4[] = "dsdneo_profile_overrides.csv";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc = dsd_parse_args(5, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || strcmp(opts->dmr_chan_overrides_file, arg4) != 0) {
+        DSD_FPRINTF(stderr, "--profile -- --dmr-chan-overrides: rc=%d exit=%d file=\"%s\"\n", rc, exit_rc,
+                    opts->dmr_chan_overrides_file);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+
+    char h1[] = "--profile", h2[] = "--print-config", h3[] = "--trunk-scan-hold", h4[] = "fire";
+    char* hold[] = {h1, h2, h3, h4};
+    test_rc |= expect_trunk_scan_lists_refused(
+        "hold after a profile named --print-config", 4, hold, NULL,
+        "--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with [trunk_scan] lists");
+    return test_rc;
+}
+
+/* A missing value is refused at parse. A missing file is not: only the engine, once it knows the
+   session takes the file (it decodes DMR and runs no trunk scan), opens it, so a session that ignores the option starts
+   whatever the path names. A trunk scan (in either order) is not refused either: the path is kept, and the
+   decoder starts without the file, with a notice, as it does for a session that does not decode DMR. */
+static int
+test_dmr_chan_overrides_refusals(void) {
+    char csv_path[1024];
+    if (test_create_temp_csv_with_contents("12,451137500\n", csv_path, sizeof csv_path) != 0) {
+        return 1;
+    }
+    char arg_eq[1200];
+    DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--dmr-chan-overrides=%s", csv_path);
+    char arg0[] = "dsd-neo";
+    char arg_missing[] = "--dmr-chan-overrides=dsdneo_missing_overrides_file.csv";
+    char arg_empty[] = "--dmr-chan-overrides=";
+    char arg_bare[] = "--dmr-chan-overrides";
+    char arg_scan[] = "--trunk-scan=targets.csv";
+    char* argv_missing[] = {arg0, arg_missing, NULL};
+    char* argv_bare[] = {arg0, arg_bare, NULL};
+    char* argv_empty[] = {arg0, arg_empty, NULL};
+    char* argv_scan_a[] = {arg0, arg_scan, arg_eq, NULL};
+    char* argv_scan_b[] = {arg0, arg_eq, arg_scan, NULL};
+
+    struct {
+        char** argv;
+        const char* name;
+        const char* kept; /* the path kept, NULL for a refusal */
+        int argc;
+        int scan;
+    } cases[] = {
+        {argv_missing, "a missing file", "dsdneo_missing_overrides_file.csv", 2, 0},
+        {argv_bare, "no value", NULL, 2, 0},
+        {argv_empty, "an empty value", NULL, 2, 0},
+        {argv_scan_a, "after --trunk-scan", csv_path, 3, 1},
+        {argv_scan_b, "before --trunk-scan", csv_path, 3, 1},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            (void)remove(csv_path);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(cases[i].argc, cases[i].argv, opts, state, &argc_effective, &exit_rc);
+        if (cases[i].kept == NULL && (rc != DSD_PARSE_ERROR || exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected a refusal, rc=%d exit=%d\n", cases[i].name, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+        if (cases[i].kept != NULL
+            && (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != cases[i].scan
+                || strcmp(opts->dmr_chan_overrides_file, cases[i].kept) != 0)) {
+            DSD_FPRINTF(stderr, "--dmr-chan-overrides with %s: expected it kept, rc=%d exit=%d file=\"%s\"\n",
+                        cases[i].name, rc, exit_rc, opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    (void)remove(csv_path);
+    return test_rc;
+}
+
+/* The bootstrap pre-scan steps over the channels file's separate value, as the parser does: a file
+   named like a one-shot option ("--print-config", in the working directory) is the file, never the option. Read as the
+   option, the bootstrap would print the config and exit 0 instead of starting with the file. */
+static int
+test_dmr_chan_overrides_value_is_not_an_option(void) {
+    if (!dsd_cli_option_takes_free_value("--dmr-chan-overrides")
+        || dsd_cli_option_takes_free_value("--dmr-chan-overrides=--print-config")) {
+        DSD_FPRINTF(stderr, "--dmr-chan-overrides is not registered as an option taking a free value\n");
+        return 1;
+    }
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_overrides_name") != 0) {
+        return 1;
+    }
+    static const char k_name[] = "--print-config";
+    FILE* fp = dsd_fopen_private(k_name, "w");
+    if (fp == NULL) {
+        (void)dsd_test_temp_cwd_leave(&cwd);
+        return 1;
+    }
+    (void)fputs("lpcn,frequency_hz\n12,451137500\n", fp);
+    (void)fclose(fp);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int test_rc = 1;
+    if (opts && state) {
+        initOpts(opts);
+        initState(state);
+        (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--dmr-chan-overrides";
+        char arg2[] = "--print-config";
+        char* argv[] = {arg0, arg1, arg2, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int brc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+        const size_t len = strlen(opts->dmr_chan_overrides_file);
+        const int named = len >= sizeof k_name - 1U
+                          && strcmp(opts->dmr_chan_overrides_file + len - (sizeof k_name - 1U), k_name) == 0;
+        test_rc = 0;
+        if (brc != DSD_BOOTSTRAP_CONTINUE || !named) {
+            DSD_FPRINTF(stderr, "bootstrap with --dmr-chan-overrides --print-config: rc=%d exit_rc=%d file=\"%s\"\n",
+                        brc, exit_rc, opts->dmr_chan_overrides_file);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+    }
+    free(opts);
+    free(state);
+    (void)remove(k_name);
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        test_rc = 1;
+    }
+    return test_rc;
+}
+
+/* Whether the file @p option named was read: the path it keeps ends in @p name, or its rows were imported. */
+static int
+file_option_was_read(const char* option, const dsd_opts* opts, const dsd_state* state, const char* name) {
+    const char* file = NULL;
+    if (strcmp(option, "--p25-bandplan") == 0) {
+        file = opts->p25_bandplan_in_file;
+    } else if (strcmp(option, "--src-csv") == 0) {
+        file = opts->src_in_file;
+    } else {
+        return state->dmr_tg_key_map_count == 1;
+    }
+    const size_t len = strlen(file);
+    const size_t want = strlen(name);
+    return len >= want && strcmp(file + len - want, name) == 0;
+}
+
+/* The other options naming a CSV to read take a separate value whatever it starts with, as --dmr-chan-overrides does:
+   the bootstrap pre-scan steps over a file named like a one-shot option (--dump-config-template) rather than running
+   that option. */
+static int
+test_file_option_values_are_not_options(void) {
+    static const struct {
+        const char* option;
+        const char* contents;
+    } k_cases[] = {
+        {"--p25-bandplan",
+         "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n4,451000000,12500,1,0,0,,\n"},
+        {"--src-csv", "id,name,tags\n1201,Unit 1201,Ops\n"},
+        {"--dmr-tg-key-csv", "tg (dec),keyid (hex)\n123,7B\n"},
+    };
+
+    static const char k_name[] = "--dump-config-template";
+    int test_rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; ++c) {
+        const char* option = k_cases[c].option;
+        char attached[64];
+        DSD_SNPRINTF(attached, sizeof attached, "%s=%s", option, k_name);
+        if (!dsd_cli_option_takes_free_value(option) || dsd_cli_option_takes_free_value(attached)
+            || dsd_cli_long_option_arity(option) != DSD_CLI_LONG_NEXT) {
+            DSD_FPRINTF(stderr, "%s is not registered as an option taking a free value\n", option);
+            test_rc = 1;
+        }
+        dsd_test_temp_cwd cwd;
+        if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cli_file_option_name") != 0) {
+            return 1;
+        }
+        FILE* fp = dsd_fopen_private(k_name, "w");
+        if (fp == NULL) {
+            (void)dsd_test_temp_cwd_leave(&cwd);
+            return 1;
+        }
+        (void)fputs(k_cases[c].contents, fp);
+        (void)fclose(fp);
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (opts && state) {
+            initOpts(opts);
+            initState(state);
+            (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+            (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+            char arg0[] = "dsd-neo";
+            char arg1[64];
+            char arg2[sizeof k_name];
+            DSD_SNPRINTF(arg1, sizeof arg1, "%s", option);
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", k_name);
+            char* argv[] = {arg0, arg1, arg2, NULL};
+            int argc_effective = 0;
+            int exit_rc = -1;
+            const int brc = dsd_runtime_bootstrap(3, argv, opts, state, &argc_effective, &exit_rc);
+            const int read = file_option_was_read(option, opts, state, k_name);
+            if (brc != DSD_BOOTSTRAP_CONTINUE || !read) {
+                DSD_FPRINTF(stderr, "bootstrap with %s %s: rc=%d exit_rc=%d read=%d\n", option, k_name, brc, exit_rc,
+                            read);
+                test_rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+        } else {
+            test_rc = 1;
+        }
+        free(opts);
+        free(state);
+        (void)remove(k_name);
+        if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+            test_rc = 1;
+        }
+    }
+    return test_rc;
+}
+
 static int
 test_p25_bandplan_manual_identity(void) {
     const char* contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
@@ -11009,6 +11408,116 @@ test_scan_max_visit_warns_without_scan_mode(void) {
     return test_rc;
 }
 
+/* --scan-skip-silent-ms (#834) parses in both long-option spellings and keeps the value as given: 10, 500 and a value
+ * between whole slices (85) all land in dsd_opts unchanged, since rounding to 10 ms slices is the engine's. */
+static int
+test_scan_skip_silent_ms_parses(void) {
+    static const int wanted[] = {10, 85, 500};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof wanted / sizeof wanted[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            if (opts->scan_skip_silent_ms != 0) {
+                DSD_FPRINTF(stderr, "scan_skip_silent_ms defaults to %d, want 0\n", opts->scan_skip_silent_ms);
+                test_rc = 1;
+            }
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--scan-skip-silent-ms";
+            char value[16];
+            char equals_form[48];
+            DSD_SNPRINTF(value, sizeof value, "%d", wanted[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--scan-skip-silent-ms=%d", wanted[i]);
+            char* argv_space[] = {arg0, arg_flag, value, NULL};
+            char* argv_equals[] = {arg0, equals_form, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = equals ? 2 : 3;
+
+            int argc_effective = 0;
+            int exit_rc = 0;
+            int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+            if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->scan_skip_silent_ms != wanted[i]) {
+                DSD_FPRINTF(stderr, "%s form: expected scan-skip-silent-ms %d, got rc=%d exit_rc=%d ms=%d\n",
+                            equals ? "equals" : "space", wanted[i], rc, exit_rc, opts->scan_skip_silent_ms);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
+/* 0 (the calibrated reading is the default, not a value to give), 9, 501, a negative value, text that is no whole
+ * number and a missing value are refused in both spellings with an error naming the option; nothing reaches
+ * dsd_opts. */
+static int
+test_scan_skip_silent_ms_refuses_values_outside_range(void) {
+    static const char* const values[] = {"0", "9", "501", "-10", "abc", "50ms", ""};
+    int test_rc = 0;
+    for (size_t i = 0; i <= sizeof values / sizeof values[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            const int missing = i == sizeof values / sizeof values[0];
+            if (missing && equals) {
+                continue;
+            }
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--scan-skip-silent-ms";
+            char value[16];
+            char equals_form[48];
+            DSD_SNPRINTF(value, sizeof value, "%s", missing ? "" : values[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--scan-skip-silent-ms=%s", value);
+            char* argv_space[] = {arg0, arg_flag, missing ? NULL : value, NULL};
+            char* argv_equals[] = {arg0, equals_form, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = (equals || missing) ? 2 : 3;
+
+            char output[4096];
+            int argc_effective = 0;
+            int exit_rc = -1;
+            int rc =
+                parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+            if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->scan_skip_silent_ms != 0
+                || !strstr(output, "--scan-skip-silent-ms")) {
+                DSD_FPRINTF(stderr, "%s form \"%s\": expected a refusal, got rc=%d exit_rc=%d ms=%d stderr \"%s\"\n",
+                            equals ? "equals" : "space", missing ? "(missing)" : values[i], rc, exit_rc,
+                            opts->scan_skip_silent_ms, output);
+                test_rc = 1;
+            }
+            if (!missing && values[i][0] != '\0' && strspn(values[i], "-0123456789") == strlen(values[i])
+                && !strstr(output, "10..500")) {
+                DSD_FPRINTF(stderr, "\"%s\": the refusal does not name 10..500: \"%s\"\n", values[i], output);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
 /* Runs the bootstrap (INI first, then argv) and returns the stderr text. The caller owns opts and state. */
 static int
 scan_warn_bootstrap(const char* ini, char* a1, char* a2, dsd_opts* opts, dsd_state* state, char* out, size_t out_size) {
@@ -11064,15 +11573,37 @@ test_scan_option_warnings_name_their_source(void) {
          "--scan-max-visit-ms has no effect without", "[trunking] scan_max_visit_ms has no effect"},
         {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=0", NULL, NULL, "scan_max_visit_ms has no"},
         /* An active scan (-Y on argv, or scanner = true in the INI) leaves every one of them silent. */
-        {"[trunking]\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n", "-Y", NULL, NULL,
-         "has no effect without"},
-        {"[trunking]\nscanner = true\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n",
+        {"[trunking]\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n"
+         "scan_skip_silent_ms = 50\n",
+         "-Y", NULL, NULL, "has no effect without"},
+        {"[trunking]\nscanner = true\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n"
+         "scan_skip_silent_ms = 50\n",
          NULL, NULL, NULL, "has no effect without"},
         {"[trunking]\nscan_skip_silent = true\n", NULL, NULL, "[trunking] scan_skip_silent has no effect without",
          "--scan-skip-silent has no effect"},
         {"[trunking]\nscan_skip_silent = false\n", "--scan-skip-silent", NULL,
          "--scan-skip-silent has no effect without", "[trunking] scan_skip_silent has no effect"},
         {"[trunking]\nscan_skip_silent = true\n", "--no-scan-skip-silent", NULL, NULL, "scan_skip_silent has no"},
+        /* The skip-silent reading length (#834): no effect without a scan, named by where it was set... */
+        {"[trunking]\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", NULL, NULL,
+         "WARNING: [trunking] scan_skip_silent_ms has no effect without -Y or --trunk-scan.",
+         "--scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", "--scan-skip-silent-ms=40", NULL,
+         "WARNING: --scan-skip-silent-ms has no effect without -Y or --trunk-scan.",
+         "[trunking] scan_skip_silent_ms has no effect"},
+        /* ...and none under a scan with skip-silent off, where only the setting it changes is missing. */
+        {"[trunking]\nscan_skip_silent = false\n", "-Y", "--scan-skip-silent-ms=50",
+         "WARNING: --scan-skip-silent-ms has no effect without --scan-skip-silent.\n", "without -Y or --trunk-scan"},
+        {"[trunking]\nscanner = true\nscan_skip_silent_ms = 50\n", NULL, NULL,
+         "WARNING: [trunking] scan_skip_silent_ms has no effect without --scan-skip-silent.\n",
+         "--scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscanner = true\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", "--no-scan-skip-silent",
+         NULL, "WARNING: [trunking] scan_skip_silent_ms has no effect without --scan-skip-silent.\n", NULL},
+        {"[trunking]\nscanner = true\nscan_skip_silent_ms = 50\n", "--scan-skip-silent", NULL, NULL,
+         "scan_skip_silent_ms has no effect"},
+        {"[trunking]\nscanner = true\n", "--scan-skip-silent", "--scan-skip-silent-ms=500", NULL,
+         "scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscanner = true\n", NULL, NULL, NULL, "skip_silent_ms has no effect"},
     };
     int test_rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -11167,7 +11698,8 @@ test_scan_skip_silent_cli_and_ini(void) {
 }
 
 /* Help: both skip-silent flags and --no-scan-voice-only sit in the Trunking Options section beside
- * --scan-voice-only, and -t says what it does not do in --trunk-scan. */
+ * --scan-voice-only, the skip-silent reading length (#834) follows them with its range, and -t says what it does not do
+ * in --trunk-scan. */
 static int
 test_scan_flags_are_in_the_trunking_help_section(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -11207,9 +11739,11 @@ test_scan_flags_are_in_the_trunking_help_section(void) {
             const char* no_voice = section ? strstr(section, "--no-scan-voice-only") : NULL;
             const char* skip = section ? strstr(section, "--scan-skip-silent  ") : NULL;
             const char* no_skip = section ? strstr(section, "--no-scan-skip-silent") : NULL;
+            const char* skip_ms = section ? strstr(section, "--scan-skip-silent-ms <ms>") : NULL;
             const char* first_no_voice = strstr(text, "--no-scan-voice-only");
             if (!voice || !no_voice || !skip || !no_skip || first_no_voice != no_voice || !(voice < no_voice)
-                || !(no_voice < skip) || !(skip < no_skip)
+                || !(no_voice < skip) || !(skip < no_skip) || !skip_ms || !(no_skip < skip_ms)
+                || !strstr(skip_ms, "10..500")
                 || !strstr(section, "In --trunk-scan, -t never shortens a conventional target's idle dwell")) {
                 DSD_FPRINTF(stderr, "scan switches are not together in the Trunking Options help section\n");
                 test_rc = 1;
@@ -12265,6 +12799,129 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
     }
     (void)remove(cfg_path);
     return boot;
+}
+
+/* --print-config of a bootstrap of @p ini plus the @p nargs arguments @p args (as bootstrap_with_ini() takes them):
+   what it printed, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it and the bootstrap
+   exited 0. */
+static int
+print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_print_config");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (!opts || !state || saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        free(opts);
+        free(state);
+        return -1;
+    }
+    dsd_close(fd);
+    initOpts(opts);
+    initState(state);
+    int exit_rc = -1;
+    char err[4096];
+    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, sizeof err, opts, state);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    freeState(state);
+    free(opts);
+    free(state);
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    if (boot != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "--print-config: bootstrap rc=%d exit=%d\n%s\n", boot, exit_rc, err);
+        return -1;
+    }
+    return read_rc;
+}
+
+/* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
+   positive value off for the run; the config saved from that run leaves the key out. --print-config shows a positive
+   value and omits an effective 0. -h lists the option. */
+static int
+test_bootstrap_rdio_unknown_talkgroup_cli_over_ini(void) {
+    static const char ini[] = "[recording]\nrdio_unknown_talkgroup = 4242\n";
+
+    static const struct {
+        const char* args[4];
+        int nargs;
+        int want;
+    } cases[] = {
+        {{"--config", "{ini}"}, 2, 4242},
+        {{"--config", "{ini}", "--rdio-unknown-talkgroup", "0"}, 4, 0},
+        {{"--config", "{ini}", "--rdio-unknown-talkgroup", "77"}, 4, 77},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+        if (!opts || !state || !snap) {
+            free(opts);
+            free(state);
+            free(snap);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot = bootstrap_with_ini(ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        dsd_snapshot_opts_to_user_config(opts, state, snap);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_unknown_talkgroup != cases[i].want
+            || snap->rdio_unknown_talkgroup != cases[i].want) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d exit=%d talkgroup=%d saved=%d (want %d)\n%s\n", i, boot,
+                        exit_rc, opts->rdio_unknown_talkgroup, snap->rdio_unknown_talkgroup, cases[i].want, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+        free(snap);
+
+        static char printed[65536];
+        const char* print_args[5];
+        for (int a = 0; a < cases[i].nargs; a++) {
+            print_args[a] = cases[i].args[a];
+        }
+        print_args[cases[i].nargs] = "--print-config";
+        if (print_config_with_ini(ini, print_args, cases[i].nargs + 1, printed, sizeof printed) != 0) {
+            rc = 1;
+            continue;
+        }
+        char want_line[64];
+        DSD_SNPRINTF(want_line, sizeof want_line, "rdio_unknown_talkgroup = %d\n", cases[i].want);
+        const int shown = strstr(printed, "rdio_unknown_talkgroup") != NULL;
+        if (cases[i].want > 0 ? strstr(printed, want_line) == NULL : shown) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config %s rdio_unknown_talkgroup (want %d):\n%s\n", i,
+                        shown ? "shows" : "omits", cases[i].want, printed);
+            rc = 1;
+        }
+    }
+
+    static char help[65536];
+    if (help_text(help, sizeof help) != 0
+        || strstr(help, "--rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and "
+                        "no known frequency\n"
+                        "                 (audio input, or an SDRTrunk .mbe call played with -r; 0 to 2147483647, 0 = "
+                        "not\n")
+               == NULL) {
+        DSD_FPRINTF(stderr, "-h does not list --rdio-unknown-talkgroup\n");
+        rc = 1;
+    }
+    return rc;
 }
 
 #ifdef USE_RADIO
@@ -13343,6 +14000,8 @@ main(void) {
     rc |= test_scan_max_visit_warns_without_scan_mode();
     rc |= test_scan_option_warnings_name_their_source();
     rc |= test_scan_skip_silent_cli_and_ini();
+    rc |= test_scan_skip_silent_ms_parses();
+    rc |= test_scan_skip_silent_ms_refuses_values_outside_range();
     rc |= test_scan_flags_are_in_the_trunking_help_section();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_squelch_option();
@@ -13382,6 +14041,12 @@ main(void) {
     rc |= test_src_csv_long_option_parse();
     rc |= test_src_csv_missing_file_returns_error();
     rc |= test_src_csv_missing_value_returns_error();
+    rc |= test_dmr_chan_overrides_long_option_parse();
+    rc |= test_dmr_chan_overrides_last_wins();
+    rc |= test_profile_value_is_a_value();
+    rc |= test_dmr_chan_overrides_refusals();
+    rc |= test_dmr_chan_overrides_value_is_not_an_option();
+    rc |= test_file_option_values_are_not_options();
     rc |= test_src_csv_allowed_with_trunk_scan();
     rc |= test_p25_bandplan_manual_identity();
     rc |= test_p25_bandplan_long_option_parse();
@@ -13461,6 +14126,8 @@ main(void) {
     rc |= test_analog_record_max_gap_option();
     rc |= test_analog_record_preroll_option();
     rc |= test_rdio_analog_options();
+    rc |= test_rdio_unknown_talkgroup_option();
+    rc |= test_bootstrap_rdio_unknown_talkgroup_cli_over_ini();
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();

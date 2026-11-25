@@ -49,6 +49,7 @@
 #include <errno.h>
 #include <iterator>
 #include <limits.h>
+#include <memory>
 #include <mutex>
 #include <new>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -667,6 +668,13 @@ struct rtl_device {
     /* A retune went out: the reader drops what it buffered for the old frequency (rtl_tcp_drop_buffered_for_retune()),
      * which it owns, before its next chunk. */
     std::atomic<int> tcp_restart_pending{0};
+    /* Bumped as the reader starts and as it ends each chunk's processing (odd: a chunk is being written), so an external
+     * retune's flush (rtl_device_discard_staged_input()) can wait for a chunk that passed its restart check to land
+     * before the input is purged. */
+    std::atomic<uint32_t> tcp_chunk_seq{0U};
+    /* Set by a restart whose wait for the chunk in progress ran out (rtl_tcp_request_restart()): that chunk's writes
+     * fail as stale until the reader ends it, so none of them survives the purge around the restart. */
+    std::atomic<int> tcp_chunk_poisoned{0};
     struct rtl_tcp_took tcp_took{};
     /* The manual gain last asked for (tenths of a dB, as asked; RTL_AUTO_GAIN with automatic gain), beside gain, the
      * step it went out as on the connection it took on: a reconnect replays it as the new server's own step. */
@@ -1301,7 +1309,8 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
             input_ring_request_discard(s->input_ring);
         }
 #endif
-        if (!input_ring_commit_if_generation(s->input_ring, produced, discard_generation)) {
+        if (s->tcp_chunk_poisoned.load(std::memory_order_acquire) != 0
+            || !input_ring_commit_if_generation(s->input_ring, produced, discard_generation)) {
             if (moments && need > 0U) {
                 (void)dsd_input_level_cu8_moments_accumulate(moments, src + done, need);
             }
@@ -2772,7 +2781,8 @@ replay_event_is_stream_gap(const dsd_iq_event* event) {
 }
 
 /* A resampled replay's signal is discontinuous here (a retune, a reset, samples a MUTE omitted, a loop rewind): its
- * resampler starts over from silence, as the demod's filters do. */
+ * resampler starts over, as the demod's filters do, from the first sample after the cut (a replay that resumes on a
+ * carrier is no step from silence). */
 static void
 replay_clear_resampler(struct rtl_device* s) {
     if (s && s->replay_resampler) {
@@ -7510,6 +7520,29 @@ rtl_tcp_drop_buffered_for_retune(struct rtl_device* s) {
     rtl_stream_input_level_reset();
 }
 
+/* What a retune asked of the reader (tcp_restart_pending, bits): drop what it staged (the device's own retune), or that,
+ * the I byte it holds and the whole chunk it takes the request with (an external retune's flush). */
+enum {
+    RTL_TCP_RESTART_STAGED = 1,
+    RTL_TCP_RESTART_CHUNK = 2,
+};
+
+/* The reader's side of a retune's request (tcp_restart_pending): drop what it buffered before its next chunk. Returns
+ * the request taken (RTL_TCP_RESTART_* bits, 0 for none). Sequentially consistent against the external flush's store,
+ * with the chunk counter's bump before it (rtl_tcp_reader_process_chunk()): either this chunk sees the request or the
+ * flush sees the chunk in progress and waits for it. */
+static int
+rtl_tcp_take_restart(struct rtl_device* s) {
+    if (s->tcp_restart_pending.load(std::memory_order_seq_cst) == 0) {
+        return 0;
+    }
+    const int taken = s->tcp_restart_pending.exchange(0, std::memory_order_seq_cst);
+    if (taken != 0) {
+        rtl_tcp_drop_buffered_for_retune(s);
+    }
+    return taken;
+}
+
 /* One receive on @p conn into the loop buffer after its first @p held bytes; @p timed_out set when it ended for the
  * receive timeout alone. Where a
  * receive that timed out leaves the socket in an unknown state (Winsock, as for a send), the reader waits for data
@@ -7603,15 +7636,57 @@ rtl_tcp_reader_empty_read(struct rtl_device* s, struct rtl_tcp_conn** conn, stru
     return *conn ? 1 : -1;
 }
 
+/* An external retune's flush took this chunk (RTL_TCP_RESTART_CHUNK): the held I byte and every byte received go, all
+ * of them possibly the channel left's, and the pair phase carries on: when they leave the stream on an I whose Q is
+ * still to come, that Q (the next chunk's first byte) is dropped too (@p skip_odd). */
+static void
+rtl_tcp_drop_chunk_for_restart(int r, size_t* held, int* skip_odd) {
+    const uint32_t dropped = (uint32_t)*held + (uint32_t)r - (*skip_odd ? 1U : 0U);
+    *held = 0U;
+    *skip_odd = (dropped & 1U) ? 1 : 0;
+}
+
 /* Process @p r bytes the reader received behind the @p *held odd byte at the front of the loop buffer: whole I/Q pairs
  * go through rtl_tcp_process_pairs(), and an odd last byte stays at the front for its Q. */
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* Called by the reader right after a chunk's restart check, before anything of the chunk is processed. */
+static void (*g_test_tcp_after_restart_check)(void*) = nullptr;
+static void* g_test_tcp_after_restart_check_ctx = nullptr;
+#endif
+
+/* A retune of the device's own took this chunk (RTL_TCP_RESTART_STAGED alone): the I byte held from the last read was
+ * the channel left's, and so is the Q that completes it (the first byte received), so both go and the next pair starts
+ * on an I. Returns the bytes left at the front of @p u8. */
+static uint32_t
+rtl_tcp_drop_held_pair_for_restart(unsigned char* u8, size_t* held, uint32_t total) {
+    if (*held == 0U) {
+        return total;
+    }
+    const uint32_t drop = total < 2U ? total : 2U;
+    DSD_MEMMOVE(u8, u8 + drop, total - drop);
+    *held = 0U;
+    return total - drop;
+}
+
 static void
 rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st, int r, size_t* held, int* skip_odd) {
-    if (s->tcp_restart_pending.load(std::memory_order_relaxed)
-        && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
-        rtl_tcp_drop_buffered_for_retune(s);
+    const int restart = rtl_tcp_take_restart(s);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_tcp_after_restart_check) {
+        g_test_tcp_after_restart_check(g_test_tcp_after_restart_check_ctx);
+    }
+#endif
+    if ((restart & RTL_TCP_RESTART_CHUNK) != 0) {
+        rtl_tcp_drop_chunk_for_restart(r, held, skip_odd);
+        return;
     }
     uint32_t total = (uint32_t)*held + (uint32_t)r;
+    if ((restart & RTL_TCP_RESTART_STAGED) != 0) {
+        total = rtl_tcp_drop_held_pair_for_restart(st->u8, held, total);
+        if (total == 0U) {
+            return;
+        }
+    }
     if (*skip_odd) {
         *skip_odd = 0;
         DSD_MEMMOVE(st->u8, st->u8 + 1, total - 1U);
@@ -7629,6 +7704,16 @@ rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st
     if (*held != 0U) {
         st->u8[0] = odd_byte;
     }
+}
+
+/* One chunk, marked in progress (tcp_chunk_seq odd) from before its restart check to after its last write, so a restart
+ * can wait for it (rtl_tcp_request_restart()); a chunk a timed-out restart poisoned ends the poison with it. */
+static void
+rtl_tcp_reader_handle_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st, int r, size_t* held, int* skip_odd) {
+    (void)s->tcp_chunk_seq.fetch_add(1U, std::memory_order_seq_cst);
+    rtl_tcp_reader_process_chunk(s, st, r, held, skip_odd);
+    s->tcp_chunk_poisoned.store(0, std::memory_order_release);
+    (void)s->tcp_chunk_seq.fetch_add(1U, std::memory_order_release);
 }
 
 /* TCP reader thread: read u8 IQ, widen to float, push to ring. A lost connection (an error, the server closing it,
@@ -7697,7 +7782,7 @@ tcp_thread_fn(void* arg) {
             held = 0U;
             continue;
         }
-        rtl_tcp_reader_process_chunk(s, &st, r, &held, &skip_odd);
+        rtl_tcp_reader_handle_chunk(s, &st, r, &held, &skip_odd);
     }
 
     rtl_tcp_conn_unref(conn);
@@ -10592,6 +10677,63 @@ rtl_device_source_is_fixed(const struct rtl_device* dev) {
     return dev->backend == RTL_BACKEND_IQ_REPLAY || dev->backend == RTL_BACKEND_NET_IQ;
 }
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* Called once a restart posted its request, before it waits for the chunk in progress. */
+static void (*g_test_tcp_restart_posted)(void*) = nullptr;
+static void* g_test_tcp_restart_posted_ctx = nullptr;
+/* How long a restart waits for the chunk in progress (tests shorten it). */
+static std::atomic<int> g_test_tcp_restart_wait_ms{1000};
+#define RTL_TCP_RESTART_WAIT_MS() g_test_tcp_restart_wait_ms.load(std::memory_order_relaxed)
+#else
+#define RTL_TCP_RESTART_WAIT_MS() 1000
+#endif
+
+/* Ask the rtl_tcp reader to restart (@p bits: RTL_TCP_RESTART_*) and wait for a chunk it is already writing to land:
+ * that chunk passed its restart check before the request, and may hold bytes from before the retune. Called with the
+ * stream's reconfigure gate held (a controller retune, an external landing), so the demod thread takes the input purge
+ * around it only after this returns: what the chunk wrote by then goes with that purge. The wait is bounded (a chunk's
+ * processing never waits on the network); one that runs out fails closed: the chunk is poisoned (its remaining writes
+ * fail as stale) and the ring's discard generation moves, so a write it reserved before is rejected too, and none of it
+ * survives the purge. Sequentially consistent against the reader's mark (rtl_tcp_reader_handle_chunk()) and its
+ * restart check: either the chunk sees the request or this sees the chunk in progress. */
+static void
+rtl_tcp_request_restart(struct rtl_device* dev, int bits) {
+    (void)dev->tcp_restart_pending.fetch_or(bits, std::memory_order_seq_cst);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_tcp_restart_posted) {
+        g_test_tcp_restart_posted(g_test_tcp_restart_posted_ctx);
+    }
+#endif
+    const uint32_t seq = dev->tcp_chunk_seq.load(std::memory_order_seq_cst);
+    if ((seq & 1U) == 0U) {
+        return;
+    }
+    const int limit_ms = RTL_TCP_RESTART_WAIT_MS();
+    for (int waited_ms = 0; waited_ms < limit_ms; waited_ms++) {
+        if (dev->tcp_chunk_seq.load(std::memory_order_acquire) != seq) {
+            return;
+        }
+        dsd_sleep_ms(1);
+    }
+    if (dev->tcp_chunk_seq.load(std::memory_order_acquire) == seq) {
+        dev->tcp_chunk_poisoned.store(1, std::memory_order_seq_cst);
+        if (dev->input_ring) {
+            input_ring_request_discard(dev->input_ring);
+        }
+    }
+}
+
+void
+rtl_device_discard_staged_input(struct rtl_device* dev) {
+    if (!dev || dev->backend != RTL_BACKEND_TCP) {
+        return;
+    }
+    /* The reader restarts as for a retune of the device's own (its staged slice goes), and drops the whole chunk it
+       takes the request with and the I byte it holds: received before the next chunk boundary, they may be the
+       channel left's. */
+    rtl_tcp_request_restart(dev, RTL_TCP_RESTART_STAGED | RTL_TCP_RESTART_CHUNK);
+}
+
 /**
  * @brief Set device center frequency.
  *
@@ -10616,7 +10758,9 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
             dev->tcp_took.freq = 1;
         });
         if (rc == 0) {
-            dev->tcp_restart_pending.store(1, std::memory_order_release);
+            /* The reader drops its staged slice and the I/Q pair it straddles, and a chunk it is already writing lands
+               before the controller's purge is taken (rtl_tcp_request_restart()). */
+            rtl_tcp_request_restart(dev, RTL_TCP_RESTART_STAGED);
             /* A retune restarts the throughput watchdog's grace, as the rate write each hop made always did; a hop
                that keeps the rate sends no rate command now (issue #782 D3). */
             rtl_tcp_lock(dev);
@@ -13598,6 +13742,294 @@ rtl_device_test_collect_write_moments(unsigned char* input, size_t input_len, si
     g_rtl_test_force_u8_generation_stale.store(0, std::memory_order_release);
     input_ring_destroy(&ring);
     return 0;
+}
+
+/* One rtl_tcp stand-in that holds the first @p pending bytes of @p old_bytes as a partial slice of @p slice bytes, and
+ * then receives @p fresh: with @p discard, rtl_device_discard_staged_input() comes between, as an external retune's
+ * flush does, and the reader takes it before the chunk (rtl_tcp_take_restart()). Copies the floats the ring took into
+ * @p out (at most @p cap) and returns how many, or -1. */
+static int
+rtl_device_test_tcp_staged_run(int discard, const unsigned char* old_bytes, size_t pending, const unsigned char* fresh,
+                               size_t fresh_len, size_t slice, float* out, size_t cap) {
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 64U) != 0) {
+        return -1;
+    }
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_TCP;
+    dev.buf_len = (uint32_t)slice;
+    if (pending > 0U) {
+        dev.tcp_pending = static_cast<unsigned char*>(malloc(slice));
+        if (!dev.tcp_pending) {
+            input_ring_destroy(&ring);
+            return -1;
+        }
+        dev.tcp_pending_cap = slice;
+        DSD_MEMCPY(dev.tcp_pending, old_bytes, pending);
+        dev.tcp_pending_len = pending;
+    }
+    if (discard) {
+        rtl_device_discard_staged_input(&dev);
+    }
+    (void)rtl_tcp_take_restart(&dev);
+    unsigned char chunk[64];
+    const size_t n_in = fresh_len < sizeof chunk ? fresh_len : sizeof chunk;
+    DSD_MEMCPY(chunk, fresh, n_in);
+    rtl_u8_transform_policy_state policy{0, 0, 0};
+    rtl_tcp_reassemble_and_submit(&dev, chunk, (uint32_t)n_in, &policy, NULL);
+    const size_t used = input_ring_used(&ring);
+    const size_t n = used < cap ? used : cap;
+    for (size_t i = 0U; i < n; i++) {
+        out[i] = ring.buffer[(ring.tail.load() + i) % ring.capacity];
+    }
+    free(dev.tcp_pending);
+    input_ring_destroy(&ring);
+    return (int)n;
+}
+
+extern "C" int
+rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring) {
+    if (!out_old_bytes_reached_ring) {
+        return -1;
+    }
+    /* Half a 4-byte slice from the channel left, then a whole slice from the channel landed on. */
+    static const unsigned char old_bytes[2] = {91U, 92U};
+    static const unsigned char fresh[4] = {10U, 20U, 30U, 40U};
+    float with_old[16] = {0.0f};
+    float fresh_only[16] = {0.0f};
+    const int n_run = rtl_device_test_tcp_staged_run(discard, old_bytes, 2U, fresh, sizeof fresh, 4U, with_old, 16U);
+    const int n_ref = rtl_device_test_tcp_staged_run(0, old_bytes, 0U, fresh, sizeof fresh, 4U, fresh_only, 16U);
+    if (n_run < 0 || n_ref < 0) {
+        return -2;
+    }
+    int same = n_run == n_ref;
+    for (int i = 0; same && i < n_run; i++) {
+        same = std::fabs(with_old[i] - fresh_only[i]) <= 1e-6f;
+    }
+    *out_old_bytes_reached_ring = same ? 0 : 1;
+    return 0;
+}
+
+extern "C" struct rtl_device*
+rtl_device_test_tcp_staging_device(void) {
+    std::unique_ptr<rtl_device> dev(new (std::nothrow) rtl_device{});
+    if (!dev) {
+        return nullptr;
+    }
+    dev->backend = RTL_BACKEND_TCP;
+    return dev.release();
+}
+
+extern "C" int
+rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev) {
+    return (dev && dev->tcp_restart_pending.exchange(0, std::memory_order_acq_rel) != 0) ? 1 : 0;
+}
+
+namespace {
+/* The real reader's chunk path raced against a restart (rtl_device_test_tcp_reader_chunk_race()). */
+struct TcpChunkRace {
+    struct rtl_device* dev = nullptr;
+    struct rtl_tcp_loop_state st{};
+    size_t held = 0U;
+    int skip_odd = 0;
+    std::atomic<int> checked{0}; /* the reader passed its restart check */
+    std::atomic<int> posted{0};  /* the restart posted its request */
+    std::atomic<int> release{0}; /* the reader may go on to its writes */
+    std::atomic<int> flush_returned{0};
+};
+
+/* Static storage: both threads and the hooks keep its address while the race runs. */
+TcpChunkRace g_tcp_chunk_race;
+
+/* Wait (bounded) until @p flag is set. */
+void
+tcp_chunk_race_wait(const std::atomic<int>* flag, int max_ms) {
+    for (int waited_ms = 0; !flag->load(std::memory_order_acquire) && waited_ms < max_ms; waited_ms++) {
+        dsd_sleep_ms(1);
+    }
+}
+} // namespace
+
+/* The reader, right after its restart check: it says so, waits for the restart to post its request, then holds until
+ * released, as a reader descheduled between its check and its writes would. */
+static void
+tcp_chunk_race_after_check(void* arg) {
+    TcpChunkRace* r = static_cast<TcpChunkRace*>(arg);
+    r->checked.store(1, std::memory_order_release);
+    tcp_chunk_race_wait(&r->posted, 5000);
+    tcp_chunk_race_wait(&r->release, 5000);
+}
+
+static void
+tcp_chunk_race_posted(void* arg) {
+    static_cast<TcpChunkRace*>(arg)->posted.store(1, std::memory_order_release);
+}
+
+static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
+tcp_chunk_race_reader(void* arg) {
+    TcpChunkRace* r = static_cast<TcpChunkRace*>(arg);
+    rtl_tcp_reader_handle_chunk(r->dev, &r->st, 4, &r->held, &r->skip_odd);
+    DSD_THREAD_RETURN;
+}
+
+static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
+tcp_chunk_race_flush(void* arg) {
+    TcpChunkRace* r = static_cast<TcpChunkRace*>(arg);
+    rtl_device_discard_staged_input(r->dev);
+    r->flush_returned.store(1, std::memory_order_release);
+    DSD_THREAD_RETURN;
+}
+
+/* The stream's purge around the restart, as the demod takes it once the gate is open: everything the ring holds goes. */
+static void
+tcp_chunk_race_purge(struct input_ring_state* ring) {
+    input_ring_request_discard(ring);
+    input_ring_discard_all_consumer(ring);
+}
+
+/* Run the race on @p r (its reader thread already started): the flush on a thread of its own, then the purge in the
+ * order the flush allows. Returns 1 when the flush returned while the reader's chunk was still held. */
+static int
+tcp_chunk_race_run(TcpChunkRace* r, struct input_ring_state* ring, int expire) {
+    dsd_thread_t flush{};
+    tcp_chunk_race_wait(&r->checked, 5000);
+    const int flush_started = dsd_thread_create(&flush, tcp_chunk_race_flush, r) == 0 ? 1 : 0;
+    tcp_chunk_race_wait(&r->posted, 5000);
+    tcp_chunk_race_wait(&r->flush_returned, expire ? 5000 : 300);
+    const int returned_early = r->flush_returned.load(std::memory_order_acquire);
+    if (returned_early) {
+        /* The flush let the stream go on: the demod takes the purge, and only then does the reader write. */
+        tcp_chunk_race_purge(ring);
+        r->release.store(1, std::memory_order_release);
+    } else {
+        r->release.store(1, std::memory_order_release);
+    }
+    if (flush_started) {
+        (void)dsd_thread_join(flush);
+    }
+    if (!returned_early) {
+        tcp_chunk_race_purge(ring);
+    }
+    return returned_early;
+}
+
+/* The race cleared for a run on @p dev reading @p u8 (@p cap bytes), with the hooks installed and the restart's wait
+ * shortened (@p expire) so it runs out while the chunk is held, or long enough that it does not. */
+static TcpChunkRace*
+tcp_chunk_race_setup(struct rtl_device* dev, unsigned char* u8, size_t cap, int expire) {
+    TcpChunkRace* r = &g_tcp_chunk_race;
+    r->dev = dev;
+    r->st = rtl_tcp_loop_state{};
+    r->st.u8 = u8;
+    r->st.bufsz = cap;
+    r->held = 0U;
+    r->skip_odd = 0;
+    r->checked.store(0, std::memory_order_relaxed);
+    r->posted.store(0, std::memory_order_relaxed);
+    r->release.store(0, std::memory_order_relaxed);
+    r->flush_returned.store(0, std::memory_order_relaxed);
+    g_test_tcp_after_restart_check_ctx = r;
+    g_test_tcp_after_restart_check = tcp_chunk_race_after_check;
+    g_test_tcp_restart_posted_ctx = r;
+    g_test_tcp_restart_posted = tcp_chunk_race_posted;
+    g_test_tcp_restart_wait_ms.store(expire ? 50 : 5000, std::memory_order_relaxed);
+    return r;
+}
+
+static void
+tcp_chunk_race_teardown(void) {
+    g_test_tcp_after_restart_check = nullptr;
+    g_test_tcp_restart_posted = nullptr;
+    g_test_tcp_restart_wait_ms.store(1000, std::memory_order_relaxed);
+}
+
+extern "C" int
+rtl_device_test_tcp_reader_chunk_race(int expire, int* out_flush_returned_mid_chunk, int* out_ring_floats,
+                                      int* out_poison_cleared) {
+    if (!out_flush_returned_mid_chunk || !out_ring_floats || !out_poison_cleared) {
+        return -1;
+    }
+    /* Static: the device and the race state keep pointers to the ring and the buffer while the reader thread runs,
+       so neither lives on this stack. input_ring_init() resets every position and counter. */
+    static input_ring_state ring;
+    static unsigned char u8[64];
+    DSD_MEMSET(u8, 0, sizeof u8);
+    u8[0] = 10U;
+    u8[1] = 20U;
+    u8[2] = 30U;
+    u8[3] = 40U;
+    if (input_ring_init(&ring, 64U) != 0) {
+        return -2;
+    }
+    struct rtl_device* dev = rtl_device_test_tcp_staging_device();
+    if (!dev) {
+        input_ring_destroy(&ring);
+        return -2;
+    }
+    dev->backend = RTL_BACKEND_TCP;
+    dev->input_ring = &ring;
+    dev->buf_len = 4U;
+    TcpChunkRace* r = tcp_chunk_race_setup(dev, u8, sizeof u8, expire);
+    dsd_thread_t reader{};
+    int returned_mid_chunk = 0;
+    int rc = 0;
+    if (dsd_thread_create(&reader, tcp_chunk_race_reader, r) == 0) {
+        returned_mid_chunk = tcp_chunk_race_run(r, &ring, expire);
+        (void)dsd_thread_join(reader);
+    } else {
+        rc = -3;
+    }
+    tcp_chunk_race_teardown();
+    const int ring_floats = (int)input_ring_used(&ring);
+    const int poison_cleared = dev->tcp_chunk_poisoned.load(std::memory_order_acquire) == 0 ? 1 : 0;
+    *out_flush_returned_mid_chunk = returned_mid_chunk;
+    *out_ring_floats = ring_floats;
+    *out_poison_cleared = poison_cleared;
+    free(dev->tcp_pending);
+    dev->tcp_pending = nullptr;
+    dev->input_ring = nullptr;
+    r->st.u8 = nullptr;
+    rtl_device_test_tcp_staging_device_free(dev);
+    input_ring_destroy(&ring);
+    return rc;
+}
+
+extern "C" int
+rtl_device_test_tcp_staged_restart_held_pair(int restart, int* out_ring_floats, int* out_pending_first, int* out_held) {
+    if (!out_ring_floats || !out_pending_first || !out_held) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 64U) != 0) {
+        return -2;
+    }
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_TCP;
+    dev.input_ring = &ring;
+    dev.buf_len = 4U;
+    if (restart) {
+        (void)dev.tcp_restart_pending.fetch_or(RTL_TCP_RESTART_STAGED, std::memory_order_seq_cst);
+    }
+    /* The I byte held from the read before the retune (0xAA), then four bytes received after it. */
+    unsigned char u8[64] = {0xAAU, 1U, 2U, 3U, 4U};
+    rtl_tcp_loop_state st{};
+    st.u8 = u8;
+    st.bufsz = sizeof u8;
+    size_t held = 1U;
+    int skip_odd = 0;
+    rtl_tcp_reader_handle_chunk(&dev, &st, 4, &held, &skip_odd);
+    *out_ring_floats = (int)input_ring_used(&ring);
+    *out_pending_first = dev.tcp_pending_len > 0U ? (int)dev.tcp_pending[0] : -1;
+    *out_held = (int)held;
+    free(dev.tcp_pending);
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" void
+rtl_device_test_tcp_staging_device_free(struct rtl_device* dev) {
+    delete dev;
 }
 
 extern "C" int

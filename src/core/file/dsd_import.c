@@ -1161,8 +1161,9 @@ chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const c
 /*
  * Parse a row's mode cell. An unknown mode is refused with the accepted spellings; an analog FM alias is
  * echoed with the one spelling that is accepted instead (the cell matched a fixed word, so it is safe to
- * repeat; any other cell is not repeated). An analog row decrypts nothing, so a key column that would load
- * key material for it is refused as well, without echoing the cell.
+ * repeat; any other cell is not repeated). A row whose class takes no key columns (an analog row, D-STAR, YSF,
+ * TETRA DMO, M17, dPMR: dsd_scan_mode_key_refusal()) has a key column that would load key material for it refused as
+ * well, without echoing the cell.
  */
 static int
 chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_scan_mode* mode) {
@@ -1179,7 +1180,11 @@ chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_s
         }
         return -1;
     }
-    if (!dsd_scan_mode_is_analog(*mode)) {
+    /* A class that takes no key columns (issue #890 key matrix, dsd_scan_mode_key_capability()): the analog classes,
+       D-STAR, YSF and TETRA DMO decrypt nothing, M17 takes the session's keys, dPMR its scrambler key in the options
+       cell (-R) alone. */
+    const char* why = dsd_scan_mode_key_refusal(*mode);
+    if (why == NULL) {
         return 0;
     }
     static const int key_columns[] = {CHAN_KEYS_HEX, CHAN_KEYS_DEC, CHAN_SINGLE_HEX, CHAN_SINGLE_DEC};
@@ -1187,8 +1192,13 @@ chan_import_row_mode(char** fields, const char* base_path, int row_number, dsd_s
         if (chan_key_cell_present(chan_key_cell(fields, CHAN_FIELD_COUNT, key_columns[i]))) {
             char row_text[32] = "?";
             (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
-            LOG_ERROR("channel map file '%s' row %s: key columns are not supported for mode %s\n", base_path, row_text,
-                      dsd_scan_mode_name(*mode));
+            if (dsd_scan_mode_is_analog(*mode)) {
+                LOG_ERROR("channel map file '%s' row %s: key columns are not supported for mode %s\n", base_path,
+                          row_text, dsd_scan_mode_name(*mode));
+            } else {
+                LOG_ERROR("channel map file '%s' row %s: key columns are not supported for mode %s: %s\n", base_path,
+                          row_text, dsd_scan_mode_name(*mode), why);
+            }
             return -1;
         }
     }

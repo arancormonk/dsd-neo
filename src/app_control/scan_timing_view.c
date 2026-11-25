@@ -68,7 +68,8 @@ _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0]))
  * every cut of it hold. The sentence is the full reason, read only by the Qt/Android screen reader, so it names the
  * setting as that UI does ("Skip silent channels"); the WARN line in the log says how to fix it. WIDTH and NO_WIDTH
  * share a phrase but not a sentence, since their remedies differ. MODES names no remedy: it covers both a decoder set
- * with no known width and the M17 encoder, whose fixes differ.
+ * with no known width and the M17 encoder, whose fixes differ. UNSUPPORTED_MODE names none either: a TETRA DMO channel
+ * has no check, whatever is set (issue #890).
  */
 typedef struct {
     const char* phrase;
@@ -98,11 +99,13 @@ static const dsd_scan_quiet_row k_scan_quiet_no_check[] = {
     [DSD_SCAN_QUIET_REASON_NO_WIDTH] = {"No check: width",
                                         "Skip silent channels can't check this channel with no NFM channel width set. "
                                         "Set a width to have it checked. Normal scan timing applies."},
+    [DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE] =
+        {"No check: mode", "Skip silent channels can't check TETRA DMO channels. Normal scan timing applies."},
 };
 
 /* A reason the decoder can publish but this table cannot render would show the plain phrase and hide why. */
 _Static_assert((int)(sizeof(k_scan_quiet_no_check) / sizeof(k_scan_quiet_no_check[0]))
-                   == (int)DSD_SCAN_QUIET_REASON_NO_WIDTH + 1,
+                   == (int)DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE + 1,
                "every dsd_scan_quiet_reason needs a display row");
 
 /** @brief Longest countdown the view will report, guarding the cast below. */

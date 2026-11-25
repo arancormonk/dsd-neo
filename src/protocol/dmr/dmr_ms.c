@@ -580,6 +580,8 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     state->dmrburstL = 16;
     state->currentslot = 0;
+    /* A voice burst on the slot ends any MBC being assembled there (dsd_state::dmr_mbc_armed). */
+    state->dmr_mbc_armed[0] = 0;
     dmr_sm_emit_voice_sync(opts, state, 0);
     /* Each superframe starts here, at its burst A sync: the lane's sender kind (issue #800, fail closed). */
     dmr_note_burst_lane(opts, state);

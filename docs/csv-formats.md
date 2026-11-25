@@ -127,8 +127,9 @@ Notes:
   `relevant_CLI_switches` alias. This preserves legacy free-text note columns, including notes with commas.
 - Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
   Longer rows reject the import with an error; they are never split into additional channels.
-- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) and
-  `am` (analog AM), case-insensitively and trimmed. Empty or missing values inherit the configured global decoder
+- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `tetra-dmo` (TETRA Direct Mode, the
+  TETRA decoder on one simplex channel), `nfm` (analog narrowband FM) and `am` (analog AM), case-insensitively and
+  trimmed. Empty or missing values inherit the configured global decoder
   settings. Invalid nonempty values reject the import with file and row diagnostics, including on rows whose channel
   number is invalid; the diagnostic lists the accepted modes. There are no aliases: `fm`, `analog`, `wfm`, `nbfm` and
   `fm-conventional` are rejected with the hint `use nfm`.
@@ -207,14 +208,31 @@ Notes:
   frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
   itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
   learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
+- **DMR Tier III keys.** A Tier III row is keyed by the decimal channel number (LPCN) a grant names, `1..4094`; a
+  row keyed `0` seeds the control-channel hunt and names no channel a grant uses. See [DMR Tier III](#dmr-tier-iii)
+  below.
 
-Example:
+Example (a Connect Plus map, as in `examples/connect_plus_chan.csv`):
 
 ```csv
 ChannelNumber(dec),frequency(Hz),note
 999,862093750,default cc
 1,863093750
 2,862093750
+```
+
+The `999` row seeds the control channel at the front of the hunt list. That works for Connect Plus, whose channel
+numbers never reach 999. On DMR Tier III, 999 is a real channel number, so a grant to channel 999 would tune the
+control channel: seed it under key `0` instead. A key `0` row takes its place in the list and names no channel a DMR
+grant can use. It does fill channel `0` of the shared map, so in one session that decodes both DMR and P25, a P25
+grant for channel `0` can resolve to that row until the site's band plan arrives; trunk-scan targets keep their own
+channel `0`.
+
+```csv
+ChannelNumber(dec),frequency(Hz),note
+0,451112500,default cc
+5,451012500
+7,451312500
 ```
 
 Example with names (`examples/conventional_scan_named.csv`):
@@ -248,6 +266,65 @@ channel,frequency_hz,name,mode,options
 7,150000000,Inherit configured decoder,,
 8,453212500,Public works NFM noise squelch,nfm,--nfm-bandwidth-hz 12500 --squelch noise+12
 ```
+
+### DMR Tier III
+
+A Tier III row is keyed by the channel number a grant names: the logical physical channel number (LPCN), in decimal,
+`1..4094`. It is the number dsd-neo shows for Tier III everywhere (the event history, the terminal's Channels panel,
+the app's Channels sheet); Tier III numbers are never shown in hex.
+
+- **Lists that count timeslots.** DSD+ and some RadioReference sites give each timeslot its own number
+  (`2 x channel + slot`). Convert such a number `N` to `floor((N - 1) / 2)`: `603` and `604` are both channel `301`.
+  If the channel numbers dsd-neo shows are about half of the ones in your list, your list counts timeslots. See
+  [DMR Tier III channel maps](radioreference-import.md#dmr-tier-iii-channel-maps) for RadioReference's Ch ID.
+- **Key `0` rows seed the hunt.** Channel `0` is the null channel, which no grant names. A row keyed `0` puts its
+  frequency in the control-channel hunt list, in file order; that is how a control channel frequency is given. It
+  also fills channel `0` of the shared map, which only matters when one session decodes both DMR and P25 (see the
+  Connect Plus note above). Do not seed it under `999` as Connect Plus maps do: on Tier III, 999 is a real channel.
+- **What dsd-neo learns by itself.** Frequencies the site sends over the air, from messages that passed their check:
+  a grant that carries its own frequency (an absolute grant), the channel frequency announcement (C_BCAST
+  Chan_Freq), and the control channel an absolute announcement (Ann_WD_TSCC) or move (C_MOVE, P_CLEAR) names. A
+  learned frequency fills a row the map leaves empty or replaces an earlier learned one; it never replaces a row from
+  your file or one you entered. A neighbour site's frequencies (Vote_Now, Adjacent_Site) only fill empty rows. The
+  learned rows are dropped when the receiver moves to another network; the rows from your file stay.
+- **What needs entering.** Many sites send only a channel number in their grants and never that channel's
+  frequency. dsd-neo cannot follow calls on such a channel until it has a frequency: give it in the channel map, in
+  the `--dmr-chan-overrides` file below, or in the app's Channels sheet. Each one is logged once (`DMR Tier III:
+  channel 12 has no frequency; dsd-neo cannot retune to its calls`), the terminal's Channels panel lists it, the app
+  shows a NO FREQ count, and the summary at exit lists them all. `(unchecked)` marks a channel only grants that `-F`
+  accepted as RAS named.
+
+#### Your channels file (`--dmr-chan-overrides <file>`)
+
+Your own Tier III channels. DMR Tier III uses them in place of the channel map's rows for those channels; the channel
+map itself is not changed, so P25, NXDN and the other trunking protocols, which share its channel numbers, never see
+them.
+
+1. `lpcn` (decimal, `1..4094`): the channel number dsd-neo shows.
+2. `frequency_hz` (decimal Hz, `100000..2147483647`), or `0` to hide the channel: its calls are not followed, and it
+   is not reported as missing.
+
+```csv
+lpcn,frequency_hz
+12,451012500
+40,451137500
+41,0
+```
+
+- A first line that does not start with a number is a header. Blank lines are skipped.
+- A row with another shape or a number out of range is skipped with a warning, as `-C` skips its rows. A channel
+  given twice keeps its later row.
+- At most 256 channels; a row naming one more is skipped with a warning.
+- The rows are applied before the first frame and stay in force when the map is imported again, reloaded, cleared or
+  refreshed from RadioReference. Nothing heard over the air replaces them. Take a row out and, from the next start,
+  the channel's frequency from the map or the air is used again; Remove in the app does the same at once.
+- dsd-neo never writes the file and never changes the channel map file. The Android app writes one into its private
+  folder for each start of a saved system that has channels of yours.
+- Applied only when the session decodes DMR frames and runs no trunk scan, judged after the config file (its
+  `[mode] decode`), `--profile` and the command line. MBE playback (`-r`), M17 encoding and the M17 UDP/IP decoder
+  (`-fU`) decode no frames. Any other session starts without it, logs one notice
+  (`DMR Tier III channels in <file> not applied: ...`) and never opens the file, so a missing file does not stop it.
+  A session that applies it stops at start when the file is missing or cannot be read. There is no INI key.
 
 ### Scoped row options
 
@@ -346,6 +423,20 @@ so a cell that loaded before keeps its meaning.
 Import previews summarize the row's filters and naming-rule count. Live **This channel** edits are session-only;
 **Use default** inherits the configured value and **List value** restores the imported row. These edits never
 rewrite the imported CSV or change a permanent target ID.
+
+### Simplex digital rows and keys
+
+The key switches follow each mode's key matrix (issue #890), on `-Y` rows and trunk-scan targets alike:
+
+- `ysf`, `dstar` and `tetra-dmo` rows (and `ysf-conventional`, `dstar-conventional`, `tetra-dmo-conventional`
+  targets) take no key setting at all: these modes are not decrypted.
+- `m17` rows (and `m17-conventional` targets) take no key setting of their own: the session's keys apply.
+- `dpmr` rows (and `dpmr-conventional` targets) take only `-R` (a scrambler key, 0 to 32767), `-4`, `--no-force-key`,
+  `--key-profile-ref` and `--no-decryption-keys`.
+
+Every other key or forcing switch, and every legacy key column (`keys_hex_csv`, `keys_dec_csv`, `single_key_hex`,
+`single_key_dec`), is refused on those rows, the switch named with why (`-R: a tetra-dmo row or target takes no key
+setting: it decrypts nothing`), a key column without echoing the cell.
 
 ### Analog rows
 
@@ -558,9 +649,9 @@ An analog (`nfm` or `am`) row has no symbol profile: it runs the analog monitor 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
 
 Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96,
-NXDN48, analog NFM and analog AM conventional targets. Qt/Android can import this format as a playable scan list with a
-read-only preview and privately stored companion files. See `docs/trunk-scan.md` for the full setup workflow and
-troubleshooting guide.
+NXDN48, simplex digital (YSF, D-STAR, dPMR, M17, TETRA DMO), analog NFM and analog AM conventional targets. Qt/Android
+can import this format as a playable scan list with a read-only preview and privately stored companion files. See
+`docs/trunk-scan.md` for the full setup workflow and troubleshooting guide.
 
 The header must start with this exact prefix:
 
@@ -581,13 +672,13 @@ Columns:
 | Column | Required | Behavior |
 |--------|----------|----------|
 | `id` | Yes | Short name, unique within the file (the same id in another list of the session names the same target; see [Several lists](trunk-scan.md#several-lists)), shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists (an analog call's label itself, ahead of its frequency; see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)), and in log messages. Empty or too-long IDs are rejected, and so is an ID that is not valid UTF-8 (save the file as UTF-8): the avoid list puts a target back by its exact ID. |
-| `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
+| `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), the simplex digital types `ysf-conventional`, `dstar-conventional`, `dpmr-conventional`, `m17-conventional` and `tetra-dmo-conventional` (conventional only; see [Simplex digital targets](trunk-scan.md#simplex-digital-targets) and [Simplex digital rows and keys](#simplex-digital-rows-and-keys)), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
+| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types, the simplex digital types and the analog types. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
-| `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`), and an analog target's hold after its carrier drops. Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
+| `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) and simplex digital activity hold (`250..600000`), and an analog target's hold after its carrier drops. Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
 | `notes` | No | Ignored. Use for local notes. |
-| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. An analog (`nfm-conventional`, `am-conventional`) target takes none. |
+| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. A simplex digital target takes only `auto` (its class's own modulation). An analog (`nfm-conventional`, `am-conventional`) target takes none. |
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the configured gain, including one set live during the scan. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
@@ -615,9 +706,9 @@ Validation notes:
 - Optional column names match ASCII case-insensitively in this format. Duplicate direct-key headers, malformed direct values, and
   rows that mix a direct value with a key-file path are rejected without echoing the key value.
 - `chan_csv` and `p25_bandplan_csv` on conventional
-  (`p25-conventional`/`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`/`nfm-conventional`/`am-conventional`)
-  rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
-  the whole import.
+  (`p25-conventional`/`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`, the simplex digital types,
+  `nfm-conventional`/`am-conventional`) rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a
+  band plan that fails to load fails the whole import.
 - An `nfm-conventional` or `am-conventional` row also rejects a `modulation` value and every key column
   (`keys_hex_csv`, `keys_dec_csv`, `single_key_dec`, `single_key_hex`), without echoing a key. `nfm-trunk` and
   `am-trunk` are rejected with `analog targets are conventional only` (use `nfm-conventional`/`am-conventional`),
@@ -1310,6 +1401,8 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+- At most 4096 frequency rows, each at most 1023 bytes counting its line ending; the limits and the grid checks are in
+  [Environment Variables](cli.md#environment-variables-advanced-tuning).
 
 ### Frontend-generated scan lists
 
@@ -1446,7 +1539,7 @@ One row per detection in the history, newest first.
 | `frequency_hz`, `frequency_mhz` | The frequency in hertz, and in megahertz with six decimals. |
 | `listen_mode` | `am` or `nfm`: how the range listens, for digital detections too. |
 | `identification` | `confirmed` (checked digital signalling), `unresolved` (a digital range that was not confirmed), or `rf-only` (an analog range, detected by power only). |
-| `protocol`, `access`, `tone`, `site`, `encryption` | The detection's last values, as the screen shows them. Empty when it never had one. |
+| `protocol`, `access`, `tone`, `site`, `encryption` | The detection's last values, as the screen shows them. Empty when it never had one. A TETRA site's `Main carrier` is the conventional-access main carrier the cell advertises, not a check of the detection's own frequency (see [TETRA identification](signal-search.md#tetra-identification)). |
 | `slot` | `1` or `2`, empty when there is none. |
 | `target`, `source` | The call's talkgroup and source, as text when DSD-neo received a name, else the number. |
 | `power_dbfs`, `noise_dbfs` | Levels in dBFS with one decimal. Empty when not measured. |

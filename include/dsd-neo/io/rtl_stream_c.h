@@ -295,6 +295,14 @@ void rtl_stream_set_voice_lane(int enable);
 int rtl_stream_voice_lane_requested(void);
 
 /**
+ * @brief Tell the demod the TETRA decoder is on a direct mode carrier, or no longer (issue #890). From its next block the
+ * TETRA chain takes each DNB's and DSB's timing and carrier phase from its training sequence
+ * (dsd_demod_tetra_uplink_timing_runs()), since a DM-MS keys its transmitter only for its own bursts. Off the TETRA chain
+ * it does nothing, and it costs nothing while off. Process-wide, like rtl_stream_set_voice_lane().
+ */
+void rtl_stream_set_tetra_direct_bursts(int enable);
+
+/**
  * @brief Whether the open stream can carry the FSK voice lane: 0 with no stream, or when its output ring's lane buffer
  * could not be allocated (it is allocated with the ring, so a device short of memory may run without it). Without it
  * every voice-lane sample reads 0, so a reader plays the FSK output instead.
@@ -1049,9 +1057,16 @@ void rtl_stream_supersede_familyless_retunes(void);
  * the frequency of the last external landing that took a profile, which keeps them as a live width edit does (issue
  * #572). That record is set only when a landing takes a profile; a landing with no profile queued (which applies
  * nothing) forgets it, and so does every retune or open of the stream's own, so the next landing starts the filters
- * over wherever it lands.
+ * over wherever it lands. Every landing, with a profile or without, flushes the output (moving its generation, so the
+ * decoder drops its cached symbols) and purges the input I/Q captured before it, with the demod thread parked, when
+ * @p peer_moved (the engine saw the peer sent a frequency since the last landing: RigctlFrequencyMoves(), which counts
+ * every leg, a manual tune or the legacy direct return to the control channel included) or the last external landing
+ * since the stream's last retune or open was on another frequency: a repeated tune to the channel the peer is on keeps
+ * what it holds. A landing with @p peer_moved also starts the filters over, whatever the record says. A landing with
+ * nothing queued and nothing to flush takes the reconfigure gate, to be ordered with the controller, but leaves the
+ * demod thread running, so a block in flight keeps its whole output.
  */
-void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz);
+void rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int peer_moved);
 
 /**
  * @brief Clear any queued retune profile that has not yet been consumed.
