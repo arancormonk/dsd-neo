@@ -2422,14 +2422,15 @@ rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 dest
 as decoded, one above it and the broadcast address take the kHz number and the `M17 CAN 3 433.4750 MHz` label, a source
 above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and export
 (`test_rdio_system_by_frequency_in_one_session`, issue #931: in one session, with `--rdio-mode both` and one stand-in
-API server a call, a numbered DMR talkgroup 1 call on 154.4375 MHz and one on 456.9500 MHz go to systems `154437` and
+API server per call, a numbered DMR talkgroup 1 call on 154.4375 MHz and one on 456.9500 MHz go to systems `154437` and
 `456950` named `System <kHz>`, each upload's form `system` part and meta part naming its sidecar's system, the first
 call still on its own carrier although the `-Y` hop's tune was written and rendered before it closed; the label, the
-file name less its random field and the journal's `system` match the same session with the option off, where both go
-to system 48; `test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once signalling
-proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
-no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
-its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
+file name less its random field and the journal's `system` match the same session with the option off, where both go to
+system 48; `test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once
+signalling proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played
+SDRTrunk call with no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under
+`--rdio-unknown-talkgroup` at its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept
+local without the option;
 `test_playback_records_play_as_one_call`: a file of two records makes one history row, named by the identity the row
 ends with and filed at the first frame of the last call the call-state layer opened, and, not being in SDRTrunk's own
 shape, no recording at all (no WAV, no temp file, nothing published), with the run's one line said;

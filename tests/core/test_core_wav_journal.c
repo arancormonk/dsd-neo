@@ -3618,7 +3618,7 @@ test_rdio_system_by_frequency_in_one_session(void) {
     for (int c = 0; c < BY_FREQ_CALLS; c++) {
         char tag[200];
         char want[96];
-        const unsigned khz = k_by_freq_hz[c] / 1000U;
+        const unsigned khz = by_freq_want_system(1, c);
         DSD_SNPRINTF(tag, sizeof tag, "call %d, option on: the sidecar", c + 1);
         DSD_SNPRINTF(want, sizeof want, "\"system\": %u,", khz);
         rc |= expect_true(tag, strstr(on[c].sidecar, want) != NULL);
@@ -3628,7 +3628,8 @@ test_rdio_system_by_frequency_in_one_session(void) {
         rc |= expect_true(tag, strstr(on[c].sidecar, want) != NULL);
         rc |= expect_true(tag, strstr(on[c].sidecar, "\"talkgroup\": 1,") != NULL);
         DSD_SNPRINTF(tag, sizeof tag, "call %d, option off: the sidecar", c + 1);
-        rc |= expect_true(tag, strstr(off[c].sidecar, "\"system\": 48,") != NULL);
+        DSD_SNPRINTF(want, sizeof want, "\"system\": %u,", by_freq_want_system(0, c));
+        rc |= expect_true(tag, strstr(off[c].sidecar, want) != NULL);
         rc |= expect_true(tag, strstr(off[c].sidecar, "\"talkgroup\": 1,") != NULL);
         DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", off[c].system);
         DSD_SNPRINTF(tag, sizeof tag, "call %d, option off: short_name is the journal's system", c + 1);

@@ -883,11 +883,11 @@ Limits:
 
 `--rdio-system-by-frequency` (INI `[recording] rdio_system_by_frequency = true`) files each exported call under the
 rdio-scanner system numbered by the frequency it was heard on, in kHz, rounded down: a call on 154.4375 MHz goes to
-system `154437`, and one on 456.9500 MHz to system `456950`. Two talkgroup 1 calls on those two frequencies then land
-in two systems instead of sharing talkgroup 1 in one system. It is off by default, and `--no-rdio-system-by-frequency` turns off
-a config file's `true` for the run. The sidecar's `system` and the API upload's `system` field always name the same
-number, and the sidecar's `short_name` is `System <kHz>` (`System 154437`), the name rdio-scanner 6 gives a system it
-creates. The call history, the journal, the file name and the app keep the call's own system name.
+system `154437`, and one on 456.9500 MHz to system `456950`. Two talkgroup 1 calls on those two frequencies then land in
+two systems instead of sharing talkgroup 1 in one system. It is off by default, and `--no-rdio-system-by-frequency`
+turns off a config file's `true` for the run. The sidecar's `system` and the API upload's `system` field always name the
+same number, and the sidecar's `short_name` is `System <kHz>` (`System 154437`), the name rdio-scanner 6 gives a system
+it creates. The call history, the journal, the file name and the app keep the call's own system name.
 
 Which calls:
 
