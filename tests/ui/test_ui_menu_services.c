@@ -2410,6 +2410,39 @@ test_rtl_set_device_selects_and_rolls_back(void) {
     return rc;
 }
 
+/* A trunk-scan pause on a target with its own gain reopens on the configured gain; with another input staged over the
+   running receiver that reopen is refused before it stops anything, and nothing brings the receiver back either: no
+   stop, no open, the I/Q capture still on, the gain waiting for the next start. */
+static int
+test_trunk_scan_gain_over_a_staged_input_stops_nothing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    reset_rtl_restart_stubs();
+    g_rtl_create_result = g_rtl_start_result = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_running_dev, sizeof opts->radio_running_dev, "%s", "rtl:serial=AAAA:851375000");
+    opts->iq_capture_requested = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    dsd_test_trunk_scan_pause_restarts_gain(1);
+    (void)svc_pause_trunk_scan_in_place(opts, state);
+    dsd_test_trunk_scan_pause_restarts_gain(0);
+    int rc = expect_int("staged gain reopen stops nothing",
+                        g_rtl_stop_calls == 0 && g_rtl_destroy_calls == 0 && g_rtl_create_calls == 0, 1);
+    rc |= expect_int(
+        "staged gain reopen keeps the stream and capture",
+        state->rtl_ctx == (RtlSdrContext*)state && opts->iq_capture_requested == 1 && opts->rtl_needs_restart == 1, 1);
+    reset_rtl_restart_stubs();
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_rtl_service_option_contracts(void) {
     int rc = 0;
@@ -3773,6 +3806,7 @@ main(void) {
     rc |= test_rtl_gain_scan_contracts();
     rc |= test_rtl_service_option_contracts();
     rc |= test_rtl_set_device_selects_and_rolls_back();
+    rc |= test_trunk_scan_gain_over_a_staged_input_stops_nothing();
     rc |= test_nfm_bandwidth_services();
     rc |= test_rtl_bandwidth_holds_the_analog_width_in_force();
     rc |= test_am_bandwidth_services();

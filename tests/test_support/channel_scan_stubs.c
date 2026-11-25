@@ -18,6 +18,13 @@
 #include "channel_scan_stubs.h"
 
 static int g_leave_saw_scanner_mode = -1;
+static int g_pause_restart_gain = 0;
+
+void
+dsd_test_trunk_scan_pause_restarts_gain(int restart_gain) {
+    g_pause_restart_gain = restart_gain;
+}
+
 static int g_leave_saw_row_keys = -1;
 
 void
@@ -68,7 +75,7 @@ dsd_engine_trunk_scan_pause_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trun
     (void)kind;
     if (out) {
         out->monitor_request = 0;
-        out->restart_gain = 0;
+        out->restart_gain = g_pause_restart_gain;
     }
     return -1;
 }

@@ -8098,10 +8098,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`apply_cfg_note_staged_input()`, `dsd_opts::radio_running_dev`, cleared by every start that works). While the two
   differ (`svc_rtl_staged_input_blocks_restart()`), a device change, `RTL_RESTART`, a gain or DSP-bandwidth edit and
   any other restart of the running receiver (`svc_rtl_restart_locked()`) are refused with `SVC_ERR_INPUT_STAGED`
-  before anything stops, toasting `Refused: another input (<name>) is staged; switch to it, or apply the config
-  again`; the paths that open the named input on purpose (an input switch, a config reopen, an Airspy or device
-  change) use `svc_rtl_restart_onto_locked()`, and a rollback reopens the recorded running spec with the staged name
-  kept (`svc_rtl_start_the_receiver_that_ran_locked()`). The spec is the one record of the dongle an input opens: the
+  before anything stops, toasting `Refused: <name> is staged; use Switch source to open it, or load a config for the
+  running radio`; so is an Airspy setting edit (`svc_airspy_apply()`), which is no input switch, and a scan's gain
+  reopen (`scan_row_edit_restart_gain()`, `svc_trunk_scan_settle_gain()`) skips its recovery on that refusal, so the
+  stream and its I/Q capture keep running. The paths that open the named input on purpose (an input switch, a config
+  reopen, an Airspy or device change) use `svc_rtl_restart_onto_locked()`, and a rollback reopens the recorded running
+  spec with the staged name kept (`svc_rtl_start_the_receiver_that_ran_locked()`); the record is part of the rollback
+  snapshot (`ui_radio_input`), so a reopen whose start cleared it and that a scan row then refuses still reopens the
+  receiver that ran. A config's reopen decision and its preflight compare the spec it builds with the receiver that
+  runs (`cfg_running_radio_dev()`), never with a staged name. A switch to PCM remembers the running radio's spec in
+  `radio_in_dev` and ends the record (`switch_commit_name()`), so the RTL-SDR row comes back to the radio that ran. The spec is the one record of the dongle an input opens: the
   change writes it where the next open reads the spec (`dsd_app_rtl_device_spec_field()` in
   `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which must be a local `rtl` spec; with PCM
   running the one the RTL-SDR row opens, picked by the row's own rule, `dsd_app_radio_row_source_field()`, a spec a
