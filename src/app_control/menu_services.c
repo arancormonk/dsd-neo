@@ -2574,6 +2574,12 @@ typedef struct {
 static int
 svc_rtl_device_spec_field(const dsd_opts* opts, dsd_app_radio_row_field* out) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
+        /* The running stream's spec must be a local RTL-SDR one: a config can stage another input's name there while an
+           rtl_tcp stream still runs (a Pulse [input] writes "pulse"), and a restart, or a rollback, would open that name
+           as a local dongle. Refused before anything stops. */
+        if (!dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
+            return DSD_ERR_NOT_SUPPORTED;
+        }
         *out = DSD_APP_RADIO_ROW_AUDIO_IN_DEV;
         return 0;
     }

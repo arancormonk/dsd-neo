@@ -31967,96 +31967,104 @@ expect_saved_rtl_device(const char* tag, const dsd_opts* opts, const dsd_state* 
  */
 static int
 test_rtl_device_commands(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
     int rc = 0;
-    init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+    init_running_radio(opts, state, "rtl:0:851375000:22:0:48:0:2");
 
     rc |= expect_int("serial command queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "00000001"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("serial command drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("serial command toast", state.ui_msg, "Applied: RTL device -> serial 00000001");
+    rc |= expect_int("serial command drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("serial command toast", state->ui_msg, "Applied: RTL device -> serial 00000001");
     rc |= expect_true("serial command reopened on the serial",
                       g_config_rtl_creates == 1 && strcmp(g_config_rtl_create_serial, "00000001") == 0
-                          && strcmp(opts.audio_in_dev, "rtl:serial=00000001:851375000:22:0:48:0:2") == 0);
-    rc |= expect_saved_rtl_device("a save writes the serial (B2)", &opts, &state, 0, "00000001");
+                          && strcmp(opts->audio_in_dev, "rtl:serial=00000001:851375000:22:0:48:0:2") == 0);
+    rc |= expect_saved_rtl_device("a save writes the serial (B2)", opts, state, 0, "00000001");
 
     rc |= expect_int("index command queued", post_i32(DSD_APP_CMD_RTL_SET_DEV, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("index command drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("index command toast", state.ui_msg, "Applied: RTL device -> index 1");
-    rc |= expect_true("index command drops the serial", opts.rtl_dev_serial[0] == '\0' && opts.rtl_dev_index == 1
+    rc |= expect_int("index command drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("index command toast", state->ui_msg, "Applied: RTL device -> index 1");
+    rc |= expect_true("index command drops the serial", opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index == 1
                                                             && g_config_rtl_create_serial[0] == '\0');
-    rc |= expect_saved_rtl_device("a save writes index 1, not the index that ran (B2)", &opts, &state, 1, "");
+    rc |= expect_saved_rtl_device("a save writes index 1, not the index that ran (B2)", opts, state, 1, "");
 
     rc |= expect_int("numeric serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "1090"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("numeric serial drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("numeric serial toast", state.ui_msg, "Applied: RTL device -> serial 1090");
-    rc |= expect_saved_rtl_device("a numeric serial stays a serial", &opts, &state, 1, "1090");
+    rc |= expect_int("numeric serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("numeric serial toast", state->ui_msg, "Applied: RTL device -> serial 1090");
+    rc |= expect_saved_rtl_device("a numeric serial stays a serial", opts, state, 1, "1090");
 
     const int creates = g_config_rtl_creates;
     rc |= expect_int("refused serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "A:B"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("refused serial drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_contains("refused serial toast", state.ui_msg, "Refused: not an RTL-SDR serial");
+    rc |= expect_int("refused serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("refused serial toast", state->ui_msg, "Refused: not an RTL-SDR serial");
     rc |= expect_true("refused serial changes nothing",
-                      g_config_rtl_creates == creates && strcmp(opts.rtl_dev_serial, "1090") == 0);
+                      g_config_rtl_creates == creates && strcmp(opts->rtl_dev_serial, "1090") == 0);
 
     g_config_rtl_fail_starts = 1;
     rc |= expect_int("missing serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("missing serial drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("missing serial toast", state.ui_msg, "Failed: RTL device -> serial BBBB (see log)");
+    rc |= expect_int("missing serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("missing serial toast", state->ui_msg, "Failed: RTL device -> serial BBBB (see log)");
     rc |= expect_true("missing serial puts 1090 back and runs it",
-                      g_config_rtl_creates == creates + 2 && state.rtl_ctx != NULL
+                      g_config_rtl_creates == creates + 2 && state->rtl_ctx != NULL
                           && strcmp(g_config_rtl_create_serial, "1090") == 0);
-    rc |= expect_saved_rtl_device("a save after the rollback writes 1090", &opts, &state, 1, "1090");
+    rc |= expect_saved_rtl_device("a save after the rollback writes 1090", opts, state, 1, "1090");
 
     /* The longest serial: the failure toast shows it cut, so the note of the I/Q capture its rollback stopped stays. */
     char longest[DSD_RTL_SERIAL_MAX + 1];
     DSD_MEMSET(longest, 'L', DSD_RTL_SERIAL_MAX);
     longest[DSD_RTL_SERIAL_MAX] = '\0';
-    opts.iq_capture_requested = 1;
-    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    opts->iq_capture_requested = 1;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", "cap.iq");
     g_config_rtl_fail_starts = 1;
     rc |= expect_int("longest serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, longest),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("longest serial drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("longest serial drained", dsd_app_drain_cmds(opts, state), 1);
     const char* note = "; I/Q capture stopped";
-    const size_t len = strlen(state.ui_msg);
+    const size_t len = strlen(state->ui_msg);
     rc |= expect_true("longest serial: the capture note survives",
-                      len > strlen(note) && strcmp(state.ui_msg + len - strlen(note), note) == 0);
-    rc |= expect_contains("longest serial: shown cut", state.ui_msg, "Failed: RTL device -> serial LLLL");
-    rc |= expect_contains("longest serial: marked cut", state.ui_msg, "... (see log)");
-    end_running_radio(&state);
+                      len > strlen(note) && strcmp(state->ui_msg + len - strlen(note), note) == 0);
+    rc |= expect_contains("longest serial: shown cut", state->ui_msg, "Failed: RTL device -> serial LLLL");
+    rc |= expect_contains("longest serial: marked cut", state->ui_msg, "... (see log)");
+    end_running_radio(state);
 
-    init_running_radio(&opts, &state, "rtltcp:127.0.0.1:1234:851375000");
+    init_running_radio(opts, state, "rtltcp:127.0.0.1:1234:851375000");
     rc |=
         expect_int("rtl_tcp device change queued", post_i32(DSD_APP_CMD_RTL_SET_DEV, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("rtl_tcp device change drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("rtl_tcp device change toast", state.ui_msg,
+    rc |= expect_int("rtl_tcp device change drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("rtl_tcp device change toast", state->ui_msg,
                      "Unsupported: this radio source has no RTL-SDR device to select");
-    rc |= expect_true("rtl_tcp keeps its connection", g_config_rtl_creates == 0 && opts.rtl_dev_index == 0);
-    end_running_radio(&state);
+    rc |= expect_true("rtl_tcp keeps its connection", g_config_rtl_creates == 0 && opts->rtl_dev_index == 0);
+    end_running_radio(state);
 
     /* Staged while PCM runs, then the RTL-SDR row: it opens the staged serial on the tuning it ran. */
-    init_running_radio(&opts, &state, "pulse");
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    state.rtl_ctx = NULL;
-    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:48:0:2");
-    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "AAAA");
+    init_running_radio(opts, state, "pulse");
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    state->rtl_ctx = NULL;
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:48:0:2");
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "AAAA");
     rc |= expect_int("staged serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("staged serial drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("staged serial drained", dsd_app_drain_cmds(opts, state), 1);
     rc |=
-        expect_true("staged serial starts nothing", g_config_rtl_creates == 0 && opts.audio_in_type == AUDIO_IN_PULSE);
+        expect_true("staged serial starts nothing", g_config_rtl_creates == 0 && opts->audio_in_type == AUDIO_IN_PULSE);
     rc |= expect_int("RTL-SDR row queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT), DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("RTL-SDR row drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("RTL-SDR row drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_true("the switch back opens the staged serial",
-                      opts.audio_in_type == AUDIO_IN_RTL && strcmp(g_config_rtl_create_serial, "BBBB") == 0
-                          && strcmp(opts.audio_in_dev, "rtl:serial=BBBB:851375000:22:0:48:0:2") == 0);
-    rc |= expect_saved_rtl_device("a save after the switch writes the staged serial", &opts, &state, 0, "BBBB");
-    end_running_radio(&state);
+                      opts->audio_in_type == AUDIO_IN_RTL && strcmp(g_config_rtl_create_serial, "BBBB") == 0
+                          && strcmp(opts->audio_in_dev, "rtl:serial=BBBB:851375000:22:0:48:0:2") == 0);
+    rc |= expect_saved_rtl_device("a save after the switch writes the staged serial", opts, state, 0, "BBBB");
+    end_running_radio(state);
+    free(state);
+    free(opts);
     return rc;
 }
 
